@@ -1,6 +1,6 @@
-# Compositing, media, and colour
+# Compositing, media, and color
 
-The three passes, blend modes, presentation and the canvas surface, Oklab, pluggable colour spaces, and the generated CPU↔shader mirrors — §6.3, §6.4, §6.5, §6.7, §6.10.
+The three passes, blend modes, presentation and the canvas surface, Oklab, pluggable color spaces, and the generated CPU↔shader mirrors — §6.3, §6.4, §6.5, §6.7, §6.10.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
@@ -11,8 +11,8 @@ Three passes turn tiles into pixels. The first two are the substance; the third
 is chrome.
 
 **A — composite.** Every visible tile of every visible layer is drawn, bottom to
-top, into two viewport-sized offscreen targets: colour (premultiplied "over", in
-the working colour space) and the `(height)` aux (additive). Layer opacity rides
+top, into two viewport-sized offscreen targets: color (premultiplied "over", in
+the working color space) and the `(height)` aux (additive). Layer opacity rides
 on the instance.
 
 A layer's "over" weight is its **visible alpha** — per-unit opacity and amount
@@ -20,7 +20,7 @@ combined by the slab law `1 − exp(−K·opacity·height)`, the same law
 `paint_common.wesl` uses to stack parcels *within* a layer — so a layer covers
 the stack below exactly as much as it shows. (Weighting by opacity alone was the
 old defect: a film with opacity 1 and no thickness — every soft brush's fringe —
-drew as nothing over bare canvas yet replaced the colour over another layer's
+drew as nothing over bare canvas yet replaced the color over another layer's
 paint.) Because the slab is multiplicative in optical mass, "over" on these
 weights accumulates the *stack's* coverage in the target's alpha, and the media
 pass reads it there instead of re-deriving it. `tests/composite.rs` guards it.
@@ -75,13 +75,13 @@ painterly result, and it is where the "old masters" look lives:
   a per-texel `wet` channel here; nothing could source it after
   `BrushParams::wetness` was removed, so it was a stored zero every pass carried.)
 - **Present.** The working channels are converted to the surface's display space
-  and composited over the substrate colour. This is the *only* place
-  gamma-encoded colour exists.
+  and composited over the substrate color. This is the *only* place
+  gamma-encoded color exists.
 
 **The reference invariant.** Under `Neutral` (exposure 1.0), with
 `height_strength = 0`, the media pass is an identity — paint comes back out its
-own colour, within about two bytes. That is what makes the neutral environment
-worth having: it is the light you switch to in order to *judge* a colour rather
+own color, within about two bytes. That is what makes the neutral environment
+worth having: it is the light you switch to in order to *judge* a color rather
 than enjoy it. Three things have to hold, each a constraint on the model rather
 than a correction bolted on:
 
@@ -92,7 +92,7 @@ than a correction bolted on:
   front-facing canvas ever sees, leaving flat paint ~13% dark.
 - **The diffuse keeps `1 - spec_energy`, not `1 - fresnel`.** The split-sum's
   `env_brdf` already integrates Fresnel, so subtracting a second Schlick term was
-  double-counting it and losing ~2.4% of every colour.
+  double-counting it and losing ~2.4% of every color.
 - **The tonemap is a reference curve, not a look.** Khronos "PBR Neutral", with
   its black point set to the sheen this fragment's BRDF actually contributed
   instead of an assumed F0 = 0.04, and its highlight knee at 1.0 instead of 0.8 so
@@ -110,7 +110,7 @@ judged at. `tests/reference.rs` pins the invariant.
 **The blend modes** are deliberately not Photoshop's: each is ordinary **addition
 of light, conjugated by a tone curve** — `f(a,b) = T(T⁻¹(a) + T⁻¹(b))` —
 evaluated in **CIE XYZ normalized to the display white**, the only space in play
-that is linear in light, non-negative for every real colour, and free of an
+that is linear in light, non-negative for every real color, and free of an
 opinion about the display's primaries.
 
 | Mode | `T(x)` | `f(a,b)` | Identity | Character |
@@ -147,10 +147,10 @@ rather than RGB also means two saturated glazes cross without the dead channel a
 RGB multiply produces when one primary sits near zero.
 
 Being conjugations of `+` makes all three commutative and associative with a
-neutral element, so reordering a stack of them is not a colour decision. **That
+neutral element, so reordering a stack of them is not a color decision. **That
 holds at any coverage, and for a long time it did not.** Porter-Duff weighs a
 layer by its coverage in the *working space* — the `(1 − αb)·Cs` term — which
-applies the blend function to the accumulator's coverage-*averaged* colour, and
+applies the blend function to the accumulator's coverage-*averaged* color, and
 averaging does not commute with a curve. Reordering three glow layers moved the
 canvas by up to **20 levels** at every partly-covered texel, which is most of a
 stroke: the slab law leaves an ordinary interior around 45% covered, so this was
@@ -198,10 +198,10 @@ because it is the one place these modes part company with the rest of the
 compositor.
 
 The neutral element is where the family splits and where the tests split with it.
-Each colour space supplies only its channels ↔ light conversion, which for Mixbox
+Each color space supplies only its channels ↔ light conversion, which for Mixbox
 is the pigment polynomial and its inverse LUT (`mixbox_lut.wesl`) — the one place
 the engine inverts Mixbox on the GPU. In a pigment document the emissive path is
-also *simpler* than it was: the whole colour falls out of one sum, so the latent's
+also *simpler* than it was: the whole color falls out of one sum, so the latent's
 residual is decoded from that answer rather than merged separately. The rest of
 the darkening family attaches at the same seam: one more `T`, one more variant, no
 new machinery.
@@ -602,9 +602,9 @@ has opened a file whose ground had not arrived.
 > charcoal is tooth with no bleed and stays broken, oil is tooth with bleed and
 > levels out.
 
-## 6.5 Colour management (Oklab)
+## 6.5 Color management (Oklab)
 
-Colour flows through exactly three representations, and conversions live in one
+Color flows through exactly three representations, and conversions live in one
 module (`color.rs`, with matching WESL helpers):
 
 ```
@@ -624,10 +624,10 @@ Oklab ──→ display (sRGB/Rec.2020) (only in the media pass's final blit)
   display transform is chosen from the surface format at present time.
 
 
-## 6.7 Pluggable colour spaces (Oklab & Mixbox pigment mixing)
+## 6.7 Pluggable color spaces (Oklab & Mixbox pigment mixing)
 
-Tile channels are **colour-space-agnostic**: tools deposit values and only assume
-they *blend linearly*, never what colour they represent. The meaning — and the
+Tile channels are **color-space-agnostic**: tools deposit values and only assume
+they *blend linearly*, never what color they represent. The meaning — and the
 translation to screen — lives behind a trait:
 
 ```rust
@@ -641,24 +641,24 @@ pub trait ColorSpace {
     // Picker / export: straight display RGB ↔ the space's channels.
     fn rgb_to_channels(&self, rgb: [f32; 3]) -> [f32; 4];
     fn channels_to_rgb(&self, ch: [f32; 4]) -> [f32; 3];
-    // GPU: how a dab writes its channels, and how channels become display colour.
+    // GPU: how a dab writes its channels, and how channels become display color.
     fn stamp_shader(&self) -> &'static str;  // MRT deposit (§6.2)
     fn media_shader(&self) -> &'static str;  // media/lighting + present (§6.3)
 }
 ```
 
-A document has one colour space (`CanvasMeta.color_space`), so tile format, blend
+A document has one color space (`CanvasMeta.color_space`), so tile format, blend
 state and shaders are fixed per document and chosen at engine construction. Pass
 A is generic; only the **stamp** and **media** shaders, the formats and the
 blends are space-specific.
 
 **`OkLabColorSpace`** — `color = Rgba16Float` holding premultiplied
-`(L, a, b, coverage)`, `aux = R16Float (height)`, premultiplied-"over" colour
+`(L, a, b, coverage)`, `aux = R16Float (height)`, premultiplied-"over" color
 blend (coverage *is* the blend alpha), additive aux.
 
 **`MixboxColorSpace`** — realistic pigment mixing via **Mixbox** (Secret
 Weapons), where blue + yellow makes green like real paint rather than the muddy
-grey of an RGB blend. Mixbox represents a colour as a *latent* of pigment
+grey of an RGB blend. Mixbox represents a color as a *latent* of pigment
 concentrations `c0..c3` plus a small residual, and mixes by **linear interpolation
 in latent space**, then maps latent → RGB through a trained polynomial. The
 decisive fit: *latents blend linearly*, so the ordinary premultiplied-"over"
@@ -667,12 +667,12 @@ pass. The tile layout is **identical to Oklab**: `color = Rgba16Float` holding
 premultiplied `(c0, c1, c2, coverage)` and `aux = R16Float (height)`, **plus a third
 `resid` texture** (below). The stamp law is reused; the **media shader differs** — it
 un-premultiplies the concentrations, evaluates Mixbox's polynomial (`c3 = 1 −
-(c0+c1+c2)` derived), adds the residual back, and hands the base colour to the shared
+(c0+c1+c2)` derived), adds the residual back, and hands the base color to the shared
 impasto lighting.
 
 Mixbox's latent **residual is carried in a third tile texture** —
 `resid = Rgba16Float` holding premultiplied `(r0, r1, r2, opacity)`, over-blended by
-the colour's own rule. It is not optional and never was:
+the color's own rule. It is not optional and never was:
 
 - Four trained pigments do not span sRGB, so the polynomial alone reaches neither
   black — whose concentrations render `#383838`, a mid-grey — nor the saturated
@@ -680,13 +680,13 @@ the colour's own rule. It is not optional and never was:
   max **0.389**; it is ≈0 only near white. *(This paragraph previously claimed "the
   residual ≈ 0 in gamut", which is what made dropping it look free.)*
 - It is **not recoverable from the concentrations**. `rgb → c` is many-to-one: the
-  262144 cube samples collapse to 154391 distinct quantized triples, up to 70 colours
+  262144 cube samples collapse to 154391 distinct quantized triples, up to 70 colors
   to a bucket, spanning 0.38 of the cube. A linear-in-`c` correction — the only form
   that commutes with mixing — leaves the mean at 0.048; a degree-8 polynomial in `c`
   leaves 0.027 with black at `#2A281A`. No function of the stored channels could have
   stood in for the stored value.
 
-A residual is not a second quantity to conserve but **the rest of the same colour**,
+A residual is not a second quantity to conserve but **the rest of the same color**,
 so every pass does to it exactly what it already does to the latent: the same
 premultiply, the same "over", the same parcel law on the same masses, the same
 bilinear taps. The blend pass gains from it too — its trip back from light now stores
@@ -694,9 +694,9 @@ bilinear taps. The blend pass gains from it too — its trip back from light now
 the polynomial's reachable set (`tests/blend.rs` carried an 8/255 and a 40/255
 tolerance for that; both are 2/255 now, the same as Oklab's).
 
-**Oklab pays nothing.** Its three channels reproduce every sRGB colour, so
+**Oklab pays nothing.** Its three channels reproduce every sRGB color, so
 `resid_format()` is `None`, no third texture is allocated, and the eight passes that
-carry a tile's colour are built in a second variant under WESL's `@if(resid)`
+carry a tile's color are built in a second variant under WESL's `@if(resid)`
 conditional compilation (`RESID_ENTRY_POINTS`). `media_mixbox.wesl` and
 `blend_mixbox.wesl` declare their own residual bindings — past where the shared
 `media_common`/`blend_common` stop — so a colorimetric document gets a shorter bind
@@ -706,13 +706,13 @@ lane per **mirrored** struct (`Media.bg_resid`, `TileXform.resid`, `Stamp.j`,
 mirror generator reads *unlinked* sources (§6.10) and has no feature set to evaluate,
 so a member that came and went with the variant would give one host struct two
 layouts. They are genuinely zero there — `rgb_to_resid` returns `[0.0; 3]` for a
-space whose channels are already the whole colour.
+space whose channels are already the whole color.
 
 One cost the channel does carry, stated rather than hidden:
 
 - **The device limit.** The stamp loop's `exchange` wrote four storage textures — the
-  footprint snapshot's colour and aux, which ride in the tail of that dispatch (§6.2),
-  and the reservoir's colour and aux — which is exactly WebGPU's guaranteed
+  footprint snapshot's color and aux, which ride in the tail of that dispatch (§6.2),
+  and the reservoir's color and aux — which is exactly WebGPU's guaranteed
   `maxStorageTexturesPerShaderStage`. The residual's two put it at six, so
   `minimum_required_limits` now asks for six. See `gpu/context.rs` for what that costs
   and for the packing that would get back to four if a device ever reports it.
@@ -761,7 +761,7 @@ Three consequences worth stating, because each is a place the obvious move is wr
   `EngineError::UnsupportedColorSpace` at the one boundary an untrusted space id
   crosses. A frontend builds its picker from `ColorSpaceId::all_available`.
 - **Falling back to Oklab would be worse than failing.** The two spaces read the same
-  tile bytes as different colours, so opening a pigment document through a
+  tile bytes as different colors, so opening a pigment document through a
   colorimetric one renders every pixel wrong while looking like it worked.
 - **The residual goes with it.** A residual is what a *pigment* space needs and this
   is the only one, so without the feature no space declares a `resid_format`: the

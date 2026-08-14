@@ -6,7 +6,7 @@
 
 use stark_core::gpu::{AllocSource, GpuContext, TilePool};
 
-/// The pool's colour channel format — the free list most of these tests watch.
+/// The pool's color channel format — the free list most of these tests watch.
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// Acquire a context, or `None` if the machine has no usable adapter *and*
@@ -57,7 +57,7 @@ fn pool_recycles_dropped_tiles() {
     assert_eq!(pool.free_count(COLOR), 1, "acquire reuses a recycled tile");
 }
 
-/// Free lists are keyed by format: recycling a colour texture must not satisfy a
+/// Free lists are keyed by format: recycling a color texture must not satisfy a
 /// request for an aux one. This is what lets a scratch tile take a wider aux
 /// (`SCRATCH_AUX_FORMAT`) from the same pool as a persistent tile (§6.1).
 #[test]
@@ -68,15 +68,15 @@ fn free_lists_do_not_cross_formats() {
 
     let c = pool.acquire_tex(COLOR, AllocSource::Unknown);
     drop(c);
-    assert_eq!(pool.free_count(COLOR), 1, "the colour texture was recycled");
+    assert_eq!(pool.free_count(COLOR), 1, "the color texture was recycled");
     assert_eq!(pool.free_count(aux), 0, "and landed on its own free list");
 
-    // Taking an aux texture must allocate, not steal the recycled colour one.
+    // Taking an aux texture must allocate, not steal the recycled color one.
     let _a = pool.acquire_tex(aux, AllocSource::Unknown);
     assert_eq!(
         pool.free_count(COLOR),
         1,
-        "an aux acquire must not consume the colour free list"
+        "an aux acquire must not consume the color free list"
     );
 }
 

@@ -295,7 +295,7 @@ which WebGPU cannot storage-write at all. What shipped keeps every rounding
 bit-identical instead: one region-sized render pass narrows the wide region
 aux to the persistent height channel (`slice.wesl`, now uniform-free and
 resid-free), and each tile then cuts its whole `TILE_TEX` block out of the
-region by `copy_texture_to_texture` — colour and residual straight from the
+region by `copy_texture_to_texture` — color and residual straight from the
 region textures (the tile formats are the region's own), aux from the narrowed
 texture. A copy is bit-exact, and the narrow pass render-writes a loaded f16
 value back to its own lattice point, so every golden passes unchanged. The

@@ -22,7 +22,7 @@ pub(super) use stark_shaders::mirror::matte::MatteInstance;
 pub(super) struct TilePass {
     pub(super) pipeline: wgpu::RenderPipeline,
     /// Matte layers, drawn inside pass A at their place in the stack (§15.4). Its
-    /// own pipeline because its blend state differs from the colour space's: `over`
+    /// own pipeline because its blend state differs from the color space's: `over`
     /// on *both* targets, so an opaque matte erases the relief beneath it rather
     /// than letting underlying impasto emboss through.
     pub(super) matte_pipeline: wgpu::RenderPipeline,
@@ -74,11 +74,11 @@ impl TilePass {
             "stark composite layout",
             &[Some(&view_bgl), Some(&tile_bgl)],
         );
-        // Pass A's blends come from the colour space (§6.7): premultiplied `over` on
-        // colour, additive on the height aux.
-        // The residual composites through the *colour's* blend, never the aux's: it is
+        // Pass A's blends come from the color space (§6.7): premultiplied `over` on
+        // color, additive on the height aux.
+        // The residual composites through the *color's* blend, never the aux's: it is
         // premultiplied by the same coverage and covers by the same rule, being the
-        // rest of the same colour (§6.7).
+        // rest of the same color (§6.7).
         let mut space_targets = vec![
             desc::blended_target(color_format, Some(color_space.color_blend())),
             desc::blended_target(aux_format, Some(color_space.aux_blend())),

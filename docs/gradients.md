@@ -9,12 +9,12 @@ browser-local library — §22.
 ## 22. Gradients
 
 Every prior-art gradient editor asks the artist to place control points on a
-strip and colour-pick each one — a dialog's answer to a painter's question. The
-observation this chapter is built on is that the colours an artist wants in a
+strip and color-pick each one — a dialog's answer to a painter's question. The
+observation this chapter is built on is that the colors an artist wants in a
 ramp are usually **already on the canvas**, mixed by hand in the painting or on
 a scrap corner of it. So Stark's gradients are *captured*, not authored: the
 artist traces a line through their painting, and the machinery of control
-points — where the stops go, what colours they carry, how many are needed — is
+points — where the stops go, what colors they carry, how many are needed — is
 the engine's problem. The trace is the eyedropper generalized from a point to a
 line (§18.0.2), and everything below follows from taking that sentence
 literally.
@@ -28,8 +28,8 @@ function rather than laying it as paint.
 
 ### 22.1 The model: stops in sRGB, a ramp in Oklab
 
-`stark_core::gradient::Gradient` is a list of colour stops — a position `t` in
-`[0,1]` and a colour — with three invariants held **by construction** rather
+`stark_core::gradient::Gradient` is a list of color stops — a position `t` in
+`[0,1]` and a color — with three invariants held **by construction** rather
 than checked by consumers: at least two stops, positions ascending, endpoints
 at 0 and 1 (`Gradient::new` normalizes and refuses; deserialization funnels
 through the same gate, so a stored or received stop list cannot smuggle in an
@@ -37,11 +37,11 @@ unsampleable ramp). A `Gradient` in hand is always sampleable, which is the
 §1 habit of ruling out a class rather than enumerating its instances.
 
 Stops store **straight sRGB**, because that is the convention on every CPU
-colour boundary — `BrushParams::color`, the matte and substrate colours, the
+color boundary — `BrushParams::color`, the matte and substrate colors, the
 eyedropper's answer (§6.5) — and a gradient's stops are exactly that kind of
-value: colours the picker could show and the brush could wear. Interpolation
+value: colors the picker could show and the brush could wear. Interpolation
 between stops happens **in Oklab** (`Gradient::sample`), the same argument as
-§1.6: a perceptually uniform ramp passes through the colours an artist would
+§1.6: a perceptually uniform ramp passes through the colors an artist would
 mix on the way, where an sRGB lerp detours through grey. CSS interpolates
 `linear-gradient(in oklab, …)` identically, which is what makes the panel's
 preview strip *be* the gradient rather than a picture of it (§22.3).
@@ -87,7 +87,7 @@ Inside the request:
 1. **Resample by arc length** (`gradient::resample`): evenly spaced samples,
    `t` = arc-length fraction. Spacing aims at 4 canvas px — comparable to the
    5×5 patch each sample averages, so consecutive patches overlap and the ramp
-   cannot skip a colour narrower than a patch — capped at `MAX_SAMPLES` = 128,
+   cannot skip a color narrower than a patch — capped at `MAX_SAMPLES` = 128,
    which bounds what one trace may cost the way `MAX_PICK_RADIUS` bounds one
    pick.
 2. **Pick every sample exactly as the eyedropper picks.** The same
@@ -109,7 +109,7 @@ Inside the request:
    - *Median-of-3* per Oklab channel — a single outlier sample (the trace
      nicking a dark line) becomes a stop under any least-error criterion, and
      no artist means one sample of it. Endpoints are kept verbatim: they are
-     the colours the artist deliberately started and finished on.
+     the colors the artist deliberately started and finished on.
    - *Box-3 smoothing* — the patch average already handles texel noise; this
      handles sample-to-sample paint grain, so the fitter chases the ramp and
      not the tooth.
@@ -119,11 +119,11 @@ Inside the request:
      difference, Oklab L spanning `[0,1]`) or `MAX_STOPS` is reached.
      Farthest-point insertion rather than a corner detector because the
      criterion *is* the promise: nowhere along the trace does the fitted ramp
-     drift a visible distance from the paint. A clean two-colour blend fits to
+     drift a visible distance from the paint. A clean two-color blend fits to
      exactly two stops; a palette with a hard turn earns a stop at the turn.
 
 `tests/gradient.rs` holds the capture to the promises: ends match an eyedropper
-pick at the same points in both colour spaces, bare canvas refuses, a mid-trace
+pick at the same points in both color spaces, bare canvas refuses, a mid-trace
 gap stays a red-to-blue mixture with nothing foreign joining the ramp. The
 fitter's own behaviour (two stops for a clean ramp, a stop at a turn, an
 outlier ignored, the normalization refusals) is pinned CPU-side in
@@ -140,7 +140,7 @@ painted — the same classification call as brush presets and the shape library
 JSON so the format outlives postcard's positional encoding), never enter the
 document, and never reach a peer. When the gradient fill lands, the chosen ramp
 is **embedded in the `FillOp` it commits** — the way a stroke embeds its brush
-colour — so documents stay self-contained and replayable with no reference
+color — so documents stay self-contained and replayable with no reference
 into anyone's library.
 
 Unlike the presets there are **no built-in entries**: a gradient's whole story
@@ -164,13 +164,13 @@ invisible, so the button is the mode's indicator as well as its switch.
 ### 22.4 The gradient fill: a parcel that varies with position
 
 The fill §18.0.4 promised, at exactly the seam it named: `FillOp`'s paint
-became a **`Parcel`** — `Solid` (a colour) or `Gradient` (a §22.1 `Gradient`
+became a **`Parcel`** — `Solid` (a color) or `Gradient` (a §22.1 `Gradient`
 embedded **by value** and a `GradientAxis`). Region, gate, stacking law, action,
 footprint and inverse are all untouched: a gradient fill is gated by the
 selection exactly as a brush is, deposits paint with real height, and stacks by
 the shared parcel law. The ramp varies the parcel's *latent* only — one
 `FillOp::opacity` for the whole fill, because a transition in thickness would
-read as a lighting feature, not a colour one. Beyond either end of the axis the
+read as a lighting feature, not a color one. Beyond either end of the axis the
 ramp holds its end stop: the fill covers its whole region, the axis only places
 the transition.
 
@@ -187,7 +187,7 @@ drag the hand already made instead of throwing it away.
 
 **Interpolation happens in the working space, per fragment.** Every stop
 converts on the CPU once per fill — `rgb_to_channels` *and* `rgb_to_resid`,
-because in Mixbox the residual is half the colour (§6.7) — and the shader
+because in Mixbox the residual is half the color (§6.7) — and the shader
 lerps between adjacent stops in those channels. In an Oklab document that is
 exactly `Gradient::sample`, so the painted ramp is the panel's strip; in a
 Mixbox document it is a **pigment ramp** — yellow-to-blue passes through green
@@ -218,7 +218,7 @@ This is what makes the library's rows *selectable*: "the gradient in hand" now
 means something, so clicking a row takes it (the highlight always resolves —
 an unset or orphaned choice falls back to the first entry), and picking a
 different ramp mid-mode re-previews immediately. The choice is per-session
-working state like the brush colour, not a stored fact about the library.
+working state like the brush color, not a stored fact about the library.
 
 The wire cost was taken openly: replacing `color` with the `Parcel` enum
 reshapes `FillOp`, so `WIRE_VERSION` moved to 7 — and to 9 when the parcel's
@@ -237,7 +237,7 @@ mode with a matte target instead of a fill target, the drag is still the axis,
 and Done commits one `SetMattePaint`. One interface for laying a ramp, wherever
 the ramp lands. The one deliberate asymmetry: a fill reads its ramp live off
 the library, while a matte target *carries* its ramp — re-composing an old
-gradient's axis must not silently swap its colours for whatever the library
+gradient's axis must not silently swap its colors for whatever the library
 happens to have selected; a library click mid-mode still replaces it, because a
 click is a choice.
 
@@ -257,6 +257,6 @@ One deliberate asymmetry against §22.4: the fill and the matte interpolate
 their stops in the **working space**, so a pigment document lays a pigment
 ramp; the map interpolates in **Oklab**, `Gradient::sample`'s own space, in
 every document. Those lay paint, and paint should mix like paint — a map is a
-colour adjustment, and adjustments here are defined in Oklab (§21.5). The
+color adjustment, and adjustments here are defined in Oklab (§21.5). The
 library strip previews the map exactly for the same reason it previews the
 Oklab fill exactly (§22.3).

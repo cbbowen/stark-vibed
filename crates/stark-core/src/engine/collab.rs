@@ -191,7 +191,7 @@ impl Engine {
     ///
     /// For tests and diagnostics, beside [`live_head_count`](Self::live_head_count).
     /// Pixels cannot stand in for it: a drag preview that changes no *tiles* — the
-    /// substrate colour, say — leaves a stale head drawing exactly the right paint, so
+    /// substrate color, say — leaves a stale head drawing exactly the right paint, so
     /// the picture is right while the rule that keeps it right has been broken. It only
     /// becomes visible for a preview that does move tiles, by which point the cause is
     /// several commands behind.

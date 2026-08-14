@@ -41,7 +41,7 @@ pub fn GradientsPanel() -> Element {
     let trace_title = if armed {
         "Stop tracing"
     } else {
-        "Trace a line through the painting to make a gradient of the colours it crosses"
+        "Trace a line through the painting to make a gradient of the colors it crosses"
     };
 
     rsx! {
@@ -68,7 +68,7 @@ pub fn GradientsPanel() -> Element {
             div { class: "gradient-list",
                 if entries.is_empty() && !armed {
                     div { class: "gradient-empty",
-                        "No gradients yet. Trace a line through your painting and the colours it crosses become one."
+                        "No gradients yet. Trace a line through your painting and the colors it crosses become one."
                     }
                 }
                 {

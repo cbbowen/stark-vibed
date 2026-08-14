@@ -3,7 +3,7 @@
 //!
 //! One caller: the blend pass, which combines *light* and then has to say which
 //! mixture of pigments would have produced it. Every other GPU path in the engine
-//! runs Mixbox one way — `mixbox_poly.wesl` evaluates concentrations → colour — and
+//! runs Mixbox one way — `mixbox_poly.wesl` evaluates concentrations → color — and
 //! the CPU handles the rare reverse with the vendored `mixbox` crate. A per-texel
 //! inverse is what forces the table onto the GPU.
 //!
@@ -11,7 +11,7 @@
 //! layout Mixbox's shaders expect: the 64³ cube unrolled into an 8×8 grid of 64×64
 //! slices, 512×512 RGBA8. It is embedded rather than fetched by the frontend, on the
 //! same footing as the polynomial `build.rs` transpiles out of the same submodule:
-//! this is part of what the colour space *is*, not content a document supplies. It
+//! this is part of what the color space *is*, not content a document supplies. It
 //! is also loaded only in a Mixbox document — an Oklab one never decodes it.
 //!
 //! Mixbox 2.0 (c) 2022 Secret Weapons, authors Sarka Sochorova and Ondrej Jamriska.
@@ -119,7 +119,7 @@ impl PigmentLut {
         }
     }
 
-    /// A 1×1 stand-in for colour spaces whose blend pass never samples the LUT.
+    /// A 1×1 stand-in for color spaces whose blend pass never samples the LUT.
     ///
     /// The blend pass has one bind group layout across every space, so the binding
     /// exists either way; this is what fills it without decoding 512² of table a

@@ -2,7 +2,7 @@
 //
 // The brush-dynamics stamp loop works over one 1:1 canvas *region* rather than
 // per-tile targets, so the selection mask has to be gathered into a region-sized R8
-// texture the loop can read alongside the colour and aux regions. The region is
+// texture the loop can read alongside the color and aux regions. The region is
 // tile-aligned by construction, so each mask tile's full `TILE_TEX` block lands at an
 // integral offset and is copied 1:1 with `textureLoad` — no filtering, no drift.
 //

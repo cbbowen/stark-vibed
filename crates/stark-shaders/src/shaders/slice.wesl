@@ -1,12 +1,12 @@
 // Region-aux narrowing for the stamp loop's write-back (§6.2).
 //
 // After the loop evolves the stroke's canvas region, each affected tile is written
-// back as a fresh copy-on-write tile. Colour and residual leave the region as plain
+// back as a fresh copy-on-write tile. Color and residual leave the region as plain
 // texture copies — their tile formats are the region's own, and a copy is bit-exact
 // — so the one channel that changes representation is the aux: the wide region aux
 // narrows to the persistent single channel (height). This pass does that narrowing
 // once over the whole region; the per-tile copies then cut their TILE_TEX blocks
-// out of its result exactly as they cut colour out of the region itself. Because
+// out of its result exactly as they cut color out of the region itself. Because
 // every rewritten tile's block is cut from the same region-sized textures, a tile's
 // apron is bit-identical to its neighbour's interior over their overlap — the seam
 // invariant (§6.4) holds by construction.

@@ -1,7 +1,7 @@
 //! Selection-mask rasterization and gathering (§6.8).
 //!
-//! Three small pieces, all colour-space independent (a mask is one coverage channel,
-//! whatever the paint is made of), so this survives a colour-space rebuild untouched:
+//! Three small pieces, all color-space independent (a mask is one coverage channel,
+//! whatever the paint is made of), so this survives a color-space rebuild untouched:
 //!
 //! - [`SelectionRenderer::apply`] — rasterize one [`SelectionOp`] into fresh mask
 //!   tiles, combining with the previous mask. Copy-on-write, exactly like paint: the

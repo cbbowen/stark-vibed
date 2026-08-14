@@ -34,7 +34,7 @@ fn is_green(c: [u8; 4]) -> bool {
 fn conservative_smear_preserves_uniform_field() {
     // With `add = 0` the tool only *moves* paint between canvas and reservoir.
     // Smearing entirely inside a uniform field has nothing to move — the lift
-    // takes paint up and the deposit lays the same colour straight back — so the
+    // takes paint up and the deposit lays the same color straight back — so the
     // field must stay essentially unchanged (paint neither destroyed nor piled).
     let Some(mut engine) = engine_or_skip() else {
         return;
@@ -136,7 +136,7 @@ fn smear_carries_paint_onto_bare_canvas() {
 fn eraser_thins_without_retint() {
     // An eraser (`load > 0, deposit = 0, add = 0`) fills its reservoir but lays
     // nothing back — paint it crosses must only *thin* (height drops), never take
-    // on the colour the tool picked up earlier.
+    // on the color the tool picked up earlier.
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -186,7 +186,7 @@ fn eraser_thins_without_retint() {
 #[test]
 fn smear_over_empty_canvas_adds_nothing() {
     // Bare canvas has no paint to lift, so an `add = 0` tool must lay nothing —
-    // no colour, no height (no relief raised out of nothing).
+    // no color, no height (no relief raised out of nothing).
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -685,7 +685,7 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
 /// Measured as the **worst** lightening along the smear rather than as total ink,
 /// because that is what the eye is picking up and because a global average dilutes a
 /// hole the size of a tip into nothing. Inside a uniform field a conservative smear
-/// has nothing to move — the lift takes paint up and the deposit lays the same colour
+/// has nothing to move — the lift takes paint up and the deposit lays the same color
 /// straight back — so the only lightening the law permits is the load the tool is
 /// still carrying, one tip's worth of a pass. `conservative_smear_preserves_uniform_field`
 /// makes the same argument at `lift = deposit = 0.5`; the rates here are the ones that
@@ -984,7 +984,7 @@ fn bar_then_glaze(add: f32, deposit: f32) -> Option<stark_core::RgbaImage> {
 ///
 /// It is drawn *over existing paint*, which is where the two can differ without the
 /// media pass covering for them. Over bare canvas visible alpha is `opacity × height`
-/// and the height was always right, so a path that laid the colour by the brush's
+/// and the height was always right, so a path that laid the color by the brush's
 /// per-unit opacity alone still came out faint; over a stroke already on the canvas
 /// nothing checks it, and a 2%-flow glaze repainted the bar at full strength. That
 /// was the swept path's `integrate`, covering by opacity rather than by the parcel's
@@ -1016,7 +1016,7 @@ fn a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs() {
     // …and the glaze must actually be a glaze, or the two paths above agree only
     // because they are both ignoring `add`. Against the bar alone and against the
     // same stroke at full flow, at the crossing: a fiftieth of the flow has to move
-    // the colour a great deal less than all of it.
+    // the color a great deal less than all of it.
     let (Some(bar), Some(opaque)) = (bar_then_glaze(0.0, 0.0), bar_then_glaze(1.0, 0.0)) else {
         return;
     };
@@ -1038,9 +1038,9 @@ fn a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs() {
 /// The `bleed` axis is a *lateral* flux: it must move paint between neighbouring
 /// canvas texels and do nothing else. Run alone over a uniform field it therefore
 /// has to be very nearly the identity — every neighbourhood difference it trades
-/// on is zero — and, because it is not a source, none of the brush's own colour
+/// on is zero — and, because it is not a source, none of the brush's own color
 /// may reach the canvas however hard it scrubs. The brush is deliberately GREEN
-/// over RED paint so that failure mode has a colour.
+/// over RED paint so that failure mode has a color.
 #[test]
 fn bleed_alone_neither_lays_paint_nor_disturbs_a_uniform_field() {
     let Some(mut engine) = engine_or_skip() else {
@@ -1080,7 +1080,7 @@ fn bleed_alone_neither_lays_paint_nor_disturbs_a_uniform_field() {
 
     assert!(
         is_red(center(&after)),
-        "a bleed-only brush re-tinted the field towards its own colour: {:?}",
+        "a bleed-only brush re-tinted the field towards its own color: {:?}",
         center(&after)
     );
     let frac = frac_exceeding(&before, &after, 40);
@@ -1093,15 +1093,15 @@ fn bleed_alone_neither_lays_paint_nor_disturbs_a_uniform_field() {
 }
 
 /// The headline behaviour: scrubbing a bleed-only brush along the boundary between
-/// two colours softens it — the transition spreads, so its *steepest step* drops.
+/// two colors softens it — the transition spreads, so its *steepest step* drops.
 /// Measured on the per-row difference of a signed red-vs-green signal, which is
 /// what "blur" means and does not care which side of the image either stripe
 /// landed on, or exactly where the dominance predicates would draw their lines.
-/// (A first cut counted rows that read as *neither* colour instead, and failed
+/// (A first cut counted rows that read as *neither* color instead, and failed
 /// backwards: the stripes met over a sliver of paper, diffusion pulled paint into
 /// the gap, and the "mixed" band narrowed while the edge genuinely softened.)
 #[test]
-fn bleed_softens_a_colour_boundary() {
+fn bleed_softens_a_color_boundary() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -1296,7 +1296,7 @@ fn a_bleed_trail_across_an_edge_has_no_step_in_it() {
 /// axis "worked" but was invisible at any usable brush size).
 ///
 /// Measured as the red-vs-green contrast 10 px to each side of the boundary
-/// dropping materially after a single pass, which no orientation, colour-space
+/// dropping materially after a single pass, which no orientation, color-space
 /// or dominance-threshold detail can fake: only paint arriving from across the
 /// boundary moves those readings toward one another.
 #[test]
@@ -1829,7 +1829,7 @@ fn a_bleeding_strokes_preview_is_its_commit() {
     }) else {
         return;
     };
-    // Two long parallel bands with a hard colour step between them — structure for
+    // Two long parallel bands with a hard color step between them — structure for
     // the diffusion to move, everywhere along the stroke.
     for (color, y) in [(GREEN, -22.0f32), ([0.95, 0.85, 0.1, 1.0], 22.0)] {
         let mut b = brush(color, 26.0);

@@ -12,7 +12,7 @@
 //     as much as it covers resident paint. The accumulated alpha is then the
 //     stack's coverage and the media pass reads it directly. (Weighting by
 //     opacity alone let a film with opacity 1 and no thickness — every soft
-//     brush's fringe — replace the colour beneath while drawing as nothing over
+//     brush's fringe — replace the color beneath while drawing as nothing over
 //     bare canvas.)
 //
 //   · `fs_raw` — the passthrough. The dynamics loop composites base tiles into
@@ -57,7 +57,7 @@ struct FsOut {
     @location(1) aux: vec4<f32>,
     // Re-premultiplied by the same coverage as `color` and over-blended by the same
     // rule, so the accumulator's residual composites through the stack exactly as its
-    // latent does — the two are one colour (§6.7).
+    // latent does — the two are one color (§6.7).
     @if(resid) @location(2) resid: vec4<f32>,
 }
 
@@ -86,14 +86,14 @@ fn fs_main(in: VsOut) -> FsOut {
     let c = textureSample(tile_color, samp, in.uv);
     let h = textureSample(tile_aux, samp, in.uv);
     // The layer's visible alpha, scaled by layer opacity: coverage fades
-    // linearly with the layer slider, and the latent colour is untouched.
+    // linearly with the layer slider, and the latent color is untouched.
     let w = (1.0 - exp(-OPACITY_K * c.a * h.x)) * in.opacity;
     var out: FsOut;
     // Re-premultiplied by coverage, so the fixed-function "over" both weighs the
-    // colour and accumulates the stack's total coverage in alpha.
+    // color and accumulates the stack's total coverage in alpha.
     out.color = vec4<f32>(c.rgb / max(c.a, PAINT_EPS) * w, w);
     out.aux = h * in.opacity;
-    // Un-premultiplied by the *colour's* alpha, not the residual target's own: that
+    // Un-premultiplied by the *color's* alpha, not the residual target's own: that
     // target's alpha is a duplicate of the same per-unit opacity, carried only because
     // the fixed-function "over" reads each target's own alpha, and one of the two has
     // to be the source of truth.

@@ -23,7 +23,7 @@ use crate::{EngineError, Result};
 /// What sits under the paint when rendering (§15.6).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum Background {
-    /// The document's substrate colour, lit and textured by the canvas weave —
+    /// The document's substrate color, lit and textured by the canvas weave —
     /// what the screen shows.
     #[default]
     Substrate,
@@ -536,14 +536,14 @@ impl Engine {
                 // surrounding — it says how much of this layer the *document* shows,
                 // which is the question the other two pick sources ask. Turning a
                 // layer down does not turn its paint into a paler paint, so
-                // "sample this layer" must answer the same colour at any setting.
+                // "sample this layer" must answer the same color at any setting.
                 //
-                // The pick already reported that colour, because it divides by the
+                // The pick already reported that color, because it divides by the
                 // coverage it sums and the opacity cancels (`mean_channels`). What
                 // dropping it changes is where the pick answers **at all**: a faded
                 // layer's coverage was scaled down towards `PICK_MIN_OPACITY`, so a
                 // thin glaze on a layer at 20% could report "nothing here" while the
-                // same paint at 100% reported its colour.
+                // same paint at 100% reported its color.
                 vec![CompositeGroup::leaf(CompositeParams::IDENTITY, items)]
             };
         }
@@ -705,8 +705,8 @@ impl Engine {
                     crate::document::MatteRegion::Everything => 1.0,
                 };
                 // sRGB in the log, working-space channels on the GPU — the same
-                // conversion the brush colour gets, so a matte means the same
-                // colour in an Oklab and a Mixbox document. A gradient converts
+                // conversion the brush color gets, so a matte means the same
+                // color in an Oklab and a Mixbox document. A gradient converts
                 // every stop the same way, once per item build, and the shader
                 // interpolates in the working space (§22.4).
                 let (channels, resid, ramp) = match paint {

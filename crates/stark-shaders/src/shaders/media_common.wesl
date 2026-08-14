@@ -11,7 +11,7 @@ import package::lib::paint_common::{PAINT_EPS};
 struct Media {
     light: vec4<f32>,  // _, _, _, height_strength (relief slope; xyz unused under IBL)
     bg: vec4<f32>,     // background (substrate) in latent color space
-    // The substrate colour's **residual** (.xyz), the half of it the space's three
+    // The substrate color's **residual** (.xyz), the half of it the space's three
     // channels cannot express (§6.7); .w unused. Zero for every space but
     // Mixbox — and a black ground is exactly the case that made this channel
     // necessary, since Mixbox's pigment polynomial renders black as `#383838`.
@@ -67,7 +67,7 @@ fn paint_height_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
 }
 
 // The paint's visible alpha at `p`. Pass A weighs each layer by its own slab
-// visible alpha (composite.wesl), so the accumulated colour alpha *is* the stack's
+// visible alpha (composite.wesl), so the accumulated color alpha *is* the stack's
 // coverage — read, not re-derived; re-deriving it from the stack totals is what
 // let one layer cover by its opacity alone (the §6.3 defect). 0 on bare canvas,
 // → 1 for thick opaque paint.
@@ -109,14 +109,14 @@ fn background_color() -> vec4<f32> {
 // Whether this is a transparent export: the substrate is skipped entirely and the
 // paint's own visible alpha becomes the image's alpha (§15.6). A real
 // branch rather than an alpha tweak — compositing over the substrate and *then*
-// setting alpha would leave every bare-canvas texel carrying substrate colour at
+// setting alpha would leave every bare-canvas texel carrying substrate color at
 // zero alpha, which fringes the moment the PNG is composited over anything else.
 fn is_transparent() -> bool {
     return m.surf_b.y > 0.5;
 }
 
 // The substrate a fragment composites over, and the alpha it ends up with. On a
-// transparent export the paint keeps its own colour (no substrate mixed in) and
+// transparent export the paint keeps its own color (no substrate mixed in) and
 // carries `vis` out as alpha; otherwise it is opaque over the substrate.
 fn over_substrate(paint: vec3<f32>, vis: f32) -> vec4<f32> {
     if is_transparent() {
@@ -172,7 +172,7 @@ fn env_brdf_approx(n_dot_v: f32, roughness: f32) -> vec2<f32> {
 
 // Khronos "PBR Neutral" tonemap, re-tuned so the pass is a *reference* rather than a
 // look: it compresses HDR into [0,1] preserving hue, desaturating only the brightest
-// highlights. Two things differ from the stock Khronos curve, both so that a colour
+// highlights. Two things differ from the stock Khronos curve, both so that a color
 // already inside display range survives unchanged (§6.3):
 //
 //   · `black_point` is the sheen the BRDF actually added at this fragment, passed in
@@ -252,7 +252,7 @@ fn finish(base: vec3<f32>, paint: f32, alpha: f32, p: vec2<f32>, dim: vec2<i32>)
     // How much energy the specular lobe actually carries off. The diffuse keeps the
     // rest — `1 - spec_energy`, not `1 - fresnel`: the split-sum's `brdf` already
     // integrates Fresnel, so taking a second Schlick term out of the diffuse was
-    // double-counting it and quietly losing ~2.4% of every colour.
+    // double-counting it and quietly losing ~2.4% of every color.
     let spec_energy = f0 * brdf.x + brdf.y;
     let kd = 1.0 - spec_energy;
 
@@ -265,7 +265,7 @@ fn finish(base: vec3<f32>, paint: f32, alpha: f32, p: vec2<f32>, dim: vec2<i32>)
     // reflecting an actual light sits far above this, so gloss survives the subtraction
     // — only the uniform dielectric floor over the whole canvas comes off.
     let sheen = spec_energy * dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722)) * exposure;
-    // Straight (un-premultiplied) alpha: PNG stores straight, and the colour here is
+    // Straight (un-premultiplied) alpha: PNG stores straight, and the color here is
     // the paint's own, not paint-times-coverage.
     return vec4<f32>(linear_to_srgb(commerce_tonemap(lit, sheen)), alpha);
 }

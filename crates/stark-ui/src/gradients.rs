@@ -1,4 +1,4 @@
-//! The gradient library (§22.3): named colour ramps, captured off the canvas.
+//! The gradient library (§22.3): named color ramps, captured off the canvas.
 //!
 //! A gradient is made by **tracing a line through the painting** — through a
 //! palette the artist has already mixed on it — not by placing control points
@@ -13,7 +13,7 @@
 //! **with**, not part of what they have painted. What consumes one — the
 //! gradient fill's parcel (§22.4), a matte's graded paint (§15.4) — embeds the
 //! ramp **by value** in the action it commits, the way a stroke embeds the
-//! brush colour, so a document stays self-contained and this library stays
+//! brush color, so a document stays self-contained and this library stays
 //! personal.
 //!
 //! Unlike the preset library there are no built-in entries at all: a gradient's
@@ -66,7 +66,7 @@ pub struct GradientsState {
     /// The entry the next gradient fill uses (§22.4), by name; `None` — or a
     /// name a removal has since orphaned — falls back to the first entry
     /// ([`current`]). Per-session, deliberately: which ramp is in hand is
-    /// working state like the brush colour, not a fact about the library.
+    /// working state like the brush color, not a fact about the library.
     pub selected: Signal<Option<String>>,
     /// Whether the trace mode is armed: the canvas catcher is mounted and the
     /// next drag across the painting is sampled into a gradient.
@@ -211,10 +211,10 @@ pub fn next_name(entries: &[GradientEntry]) -> String {
 /// The CSS that draws an entry's strip: a `linear-gradient(in oklab, …)` whose
 /// stops are the gradient's own, as `oklab()` literals.
 ///
-/// CSS interpolating in Oklab between the same stop colours *is*
+/// CSS interpolating in Oklab between the same stop colors *is*
 /// [`Gradient::sample`]'s interpolation, so the strip previews exactly the ramp
 /// the engine fitted — the invariant that makes the preview trustworthy, and
-/// the reason the colours are handed over in Oklab rather than as hex CSS
+/// the reason the colors are handed over in Oklab rather than as hex CSS
 /// would re-convert.
 pub fn css_strip(g: &Gradient) -> String {
     let stops: Vec<String> = g

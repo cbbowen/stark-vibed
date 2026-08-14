@@ -1,8 +1,8 @@
 //! The brush preset library: named [`BrushParams`] snapshots, shown as a
 //! section at the foot of the Brush panel.
 //!
-//! A preset is a whole brush **except the painting colour**: applying one keeps
-//! the current RGB (colour belongs to the Color panel) while everything else —
+//! A preset is a whole brush **except the painting color**: applying one keeps
+//! the current RGB (color belongs to the Color panel) while everything else —
 //! including the brush's own opacity, `color[3]` — comes from the preset
 //! ([`wear`]).
 //!
@@ -338,7 +338,7 @@ pub fn is_builtin(entries: &[PresetEntry], name: &str) -> bool {
     entries.iter().any(|e| e.builtin && e.name == name)
 }
 
-/// Make `name`'s preset the live brush — the painting colour stays, everything
+/// Make `name`'s preset the live brush — the painting color stays, everything
 /// else comes from the preset ([`wear`]).
 pub fn apply(state: AppState, name: &str) {
     let entry = state
@@ -351,15 +351,15 @@ pub fn apply(state: AppState, name: &str) {
     wear(state, entry.brush);
 }
 
-/// Put `brush` on: make it the live brush, **keeping the painting colour** and
+/// Put `brush` on: make it the live brush, **keeping the painting color** and
 /// resolving its stamp.
 ///
 /// The rule this module's docs state, as a function, because it is not only the
 /// preset library's any more — the quick-brush rack (`crate::slots`) swaps
 /// brushes in and out through it too, in both directions. Stated once, so "a
-/// tool is everything but the colour" cannot come to mean two things: a slot
-/// that changed the colour under the hand on the way in, or handed back the old
-/// one on the way out, would make the colour a property of which key was last
+/// tool is everything but the color" cannot come to mean two things: a slot
+/// that changed the color under the hand on the way in, or handed back the old
+/// one on the way out, would make the color a property of which key was last
 /// pressed.
 ///
 /// The RGB kept is the *live* one, so it survives every swap; the brush's own
@@ -456,7 +456,7 @@ pub fn next_name(entries: &[PresetEntry]) -> String {
         .unwrap()
 }
 
-/// Whether the live brush *is* this preset — everything but the painting colour
+/// Whether the live brush *is* this preset — everything but the painting color
 /// (RGB), which [`apply`] deliberately leaves alone. Exact equality on purpose:
 /// the row highlights until any knob moves off the preset, then goes out.
 pub fn matches(current: &BrushParams, preset: &BrushParams) -> bool {

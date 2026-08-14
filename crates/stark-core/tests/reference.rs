@@ -8,15 +8,15 @@
 //! Under the procedural `Neutral` environment — whose exposure is 1.0 — with the
 //! relief flattened, the media pass is supposed to be an identity: what you painted is what
 //! you see. That is the whole claim the `Neutral` environment makes — it is the light
-//! you switch to in order to judge a colour rather than enjoy it — and it is a claim
+//! you switch to in order to judge a color rather than enjoy it — and it is a claim
 //! about the *entire* tail of the pipeline, so nothing here reaches into it. Each test
-//! paints (or grounds) a known sRGB colour, renders, and reads the byte back.
+//! paints (or grounds) a known sRGB color, renders, and reads the byte back.
 //!
 //! The pass is not, and cannot be, exactly the identity: paint is a dielectric, so a
 //! flat patch still carries the environment's ambient sheen, and the diffuse it leaves
 //! behind is `1 - spec_energy` of the albedo — about 1.6%. [`TOL`] is that residue and
 //! nothing more. It is deliberately tight: it is what stops the media pass from
-//! drifting back into being a *look* applied to every colour on its way to the screen.
+//! drifting back into being a *look* applied to every color on its way to the screen.
 
 mod common;
 
@@ -40,7 +40,7 @@ const REFERENCE: MediaParams = MediaParams {
 /// dielectric sheen described above, which peaks at white.
 const TOL: i32 = 2;
 
-/// Colours to check: the greyscale ramp (where a tonemap's black point and shoulder
+/// Colors to check: the greyscale ramp (where a tonemap's black point and shoulder
 /// do their damage) and a few saturated ones (where a hue-shifting one does).
 const PROBES: &[[f32; 3]] = &[
     [0.0, 0.0, 0.0],
@@ -61,8 +61,8 @@ fn center_rgb(engine: &mut stark_core::Engine) -> [u8; 3] {
 }
 
 /// `want` is straight sRGB in `[0,1]`, which is exactly what the render target stores,
-/// so the expected byte is a plain rescale — no encode, no colour-space conversion.
-/// Anything the media pass does to the colour shows up here as a difference.
+/// so the expected byte is a plain rescale — no encode, no color-space conversion.
+/// Anything the media pass does to the color shows up here as a difference.
 fn assert_reproduces(what: &str, want: [f32; 3], got: [u8; 3]) {
     let expect = want.map(|c| (c * 255.0).round() as i32);
     let delta = [
@@ -93,7 +93,7 @@ fn reference_light_reproduces_the_substrate() {
 }
 
 /// The same claim for actual paint, which is the one a painter cares about: lay an
-/// opaque patch and it must come back its own colour.
+/// opaque patch and it must come back its own color.
 ///
 /// Each probe is painted twice, on black and on white. Visible alpha is
 /// `1 - exp(-opacity · thickness)` — it approaches 1 without reaching it — so a patch

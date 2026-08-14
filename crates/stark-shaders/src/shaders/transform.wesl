@@ -82,7 +82,7 @@ struct Quad {
 @group(1) @binding(1) var src_aux: texture_2d<f32>;
 @group(1) @binding(2) var src_mask: texture_2d<f32>;
 // The source tile's residual channel (§6.7), carried under the same map
-// and sampled at the same uv as the colour it belongs to.
+// and sampled at the same uv as the color it belongs to.
 @if(resid) @group(1) @binding(3) var src_resid: texture_2d<f32>;
 
 // Combine inputs (a separate pipeline; these bindings are unused by the quad
@@ -95,7 +95,7 @@ struct Quad {
 @group(0) @binding(4) var base_mask: texture_2d<f32>;
 @group(0) @binding(5) var parcel_color: texture_2d<f32>;
 @group(0) @binding(6) var parcel_aux: texture_2d<f32>;
-// The residual halves of the combine's two colours. Like the five above, either a
+// The residual halves of the combine's two colors. Like the five above, either a
 // real tile or a 1×1 constant, read through the same clamped loads.
 @if(resid) @group(0) @binding(8) var base_resid: texture_2d<f32>;
 @if(resid) @group(0) @binding(9) var parcel_resid: texture_2d<f32>;
@@ -137,8 +137,8 @@ fn src_uv(frag: vec2<f32>) -> vec2<f32> {
 struct ParcelOut {
     @location(0) color: vec4<f32>,
     @location(1) aux: vec4<f32>,
-    // The parcel's residual — written through unscaled beside the colour, since it
-    // is the rest of the same colour and the cut scales height alone (§16.2).
+    // The parcel's residual — written through unscaled beside the color, since it
+    // is the rest of the same color and the cut scales height alone (§16.2).
     @if(resid) @location(2) resid: vec4<f32>,
 }
 
@@ -271,7 +271,7 @@ fn gated_src(frag: vec2<f32>) -> vec2<f32> {
 
 // The moved parcel under a rect-scoped map: the lift law's `(latent, op,
 // h·m·box)` — coverage of the author's mask *and* of the source rect scale the
-// height, never the colour (§16.2).
+// height, never the color (§16.2).
 @fragment
 fn fs_parcel_gated(@builtin(position) frag: vec4<f32>) -> ParcelOut {
     let s = gated_src(frag.xy);
@@ -360,13 +360,13 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     // Untouched: not under the selection, and no parcel landed here.
     //
     // **A parcel is what it carries, which is its height.** `fs_parcel` writes the
-    // source's colour through unscaled — coverage scales the height, never the colour
+    // source's color through unscaled — coverage scales the height, never the color
     // (§16.2) — so a quad rasterizing past the selection it was cut from leaves `pc.a`
-    // set and `ph` at zero, and keying this branch on the colour too sent those texels
+    // set and `ph` at zero, and keying this branch on the color too sent those texels
     // down the general path. Nothing there changes what the arithmetic *means*: with
     // `h₁ = 0` the parcel adds no height and no mass, and `blend_latent` returns the
     // base's own latent. What it changes is the rounding — the path rebuilds `op` as
-    // `bc.a·h/h` and the colour as `(bc.rgb/bc.a)·op`, and a divide-then-multiply
+    // `bc.a·h/h` and the color as `(bc.rgb/bc.a)·op`, and a divide-then-multiply
     // round trip is not the identity in f32 — so a texel the transform provably could
     // not touch came back one f16 ulp off, which the lighting's height gradient then
     // prints (§16.4's byte-exactness, failing on two rim texels of a stroke's cap).

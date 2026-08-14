@@ -28,7 +28,7 @@ const STROKE: &[Vec2] = &[Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)];
 /// The neutral filter — what `AddFilter` lands.
 const NEUTRAL: Filter = Filter::Color(ColorAdjust::NEUTRAL);
 
-/// Every colour drained away. The sharpest filter to test with: it is visible on
+/// Every color drained away. The sharpest filter to test with: it is visible on
 /// any painting, it is checkable without knowing the render's exact numbers (the
 /// three channels simply have to agree), and it is the one setting whose *correct*
 /// answer differs from the naive one — dropping Oklab chroma keeps lightness where
@@ -38,8 +38,8 @@ const GREY: Filter = Filter::Color(ColorAdjust {
     ..ColorAdjust::NEUTRAL
 });
 
-/// The colour drained away and one put back: a greyscale **toned** to a single
-/// colour, which is the tint's own defining claim (§21.5). Asymmetric on purpose —
+/// The color drained away and one put back: a greyscale **toned** to a single
+/// color, which is the tint's own defining claim (§21.5). Asymmetric on purpose —
 /// `a` and `b` different, and of different signs — so the direction it produces
 /// cannot be reached by swapping the two axes or by flipping either.
 const TONED: Filter = Filter::Color(ColorAdjust {
@@ -140,7 +140,7 @@ fn painted() -> Option<Engine> {
 /// The core claim: a filter rewrites the paint composited beneath it, without being
 /// paint itself.
 #[test]
-fn a_filter_recolours_what_is_beneath_it() {
+fn a_filter_recolors_what_is_beneath_it() {
     let Some(mut engine) = painted() else { return };
     let before = engine.render_to_image();
     assert!(
@@ -158,7 +158,7 @@ fn a_filter_recolours_what_is_beneath_it() {
     );
 }
 
-/// **Chroma, and nothing else.** Draining the colour leaves *perceived lightness*
+/// **Chroma, and nothing else.** Draining the color leaves *perceived lightness*
 /// where it was, which is the whole reason the adjustment runs in Oklab.
 ///
 /// Measured as Oklab `L`, and the distinction is the test rather than a detail of
@@ -188,7 +188,7 @@ fn desaturating_keeps_the_lightness_it_found() {
     );
 }
 
-/// **The tint is the colour a grey becomes.** That sentence is the whole definition
+/// **The tint is the color a grey becomes.** That sentence is the whole definition
 /// of the knob (§21.5), and it is a claim about *where in the adjustment the offset
 /// lands*: last, after the rotation and the gain, so that an achromatic texel — which
 /// arrives at the origin of the `(a, b)` plane and is left there by both — comes out
@@ -197,12 +197,12 @@ fn desaturating_keeps_the_lightness_it_found() {
 /// Worth a render rather than a unit test on the struct, because the ordering the
 /// claim rests on exists only in the shader, and the pair of knobs that would break
 /// it are exactly the two the panel draws around it: hue and saturation are a
-/// rotation and a scale, and *either* applied after the tint would turn the colour
-/// under the pointer into some other colour. Checked as a direction in Oklab and not
+/// rotation and a scale, and *either* applied after the tint would turn the color
+/// under the pointer into some other color. Checked as a direction in Oklab and not
 /// as an RGB triple: the media pass's tonemap moves the magnitude and must be allowed
 /// to, while the hue it lands on is the filter's alone.
 #[test]
-fn a_tint_is_the_colour_a_grey_becomes() {
+fn a_tint_is_the_color_a_grey_becomes() {
     let Some(mut engine) = painted() else { return };
     add_filter(&mut engine, None, GREY);
     let grey = center(&engine.render_to_image());
@@ -212,11 +212,11 @@ fn a_tint_is_the_colour_a_grey_becomes() {
     let got = center(&engine.render_to_image());
     assert!(
         !is_grey(got),
-        "a tint over a greyscale should put a colour back: {got:?}",
+        "a tint over a greyscale should put a color back: {got:?}",
     );
 
     let Filter::Color(c) = TONED else {
-        unreachable!("TONED is a colour filter")
+        unreachable!("TONED is a color filter")
     };
     let ab = chroma_ab(got);
     let want = c.tint;
@@ -550,7 +550,7 @@ fn a_filter_undoes() {
 
 /// A slider drag previews per pointer move and logs **once**, on release — the same
 /// bargain the frame drag and the opacity slider make (§21.6), and the one this
-/// feature could least do without, since a colour adjustment is judged by looking.
+/// feature could least do without, since a color adjustment is judged by looking.
 #[test]
 fn dragging_a_filter_previews_without_logging() {
     let Some(mut engine) = painted() else { return };
@@ -762,8 +762,8 @@ fn a_filter_survives_save_and_load() {
 
 /// **The gradient map's index is Oklab `L`, and its lerp is `Gradient::sample`'s**
 /// (§21.11) — both pinned at once by the one ramp with a closed-form answer: the
-/// black→white ramp maps every colour to `(L, 0, 0)`, which is exactly what the
-/// colour filter's saturation-0 setting produces. Two different filters, two
+/// black→white ramp maps every color to `(L, 0, 0)`, which is exactly what the
+/// color filter's saturation-0 setting produces. Two different filters, two
 /// different code paths (a chroma gain against a stop walk), one picture — a wrong
 /// index (luminance, or un-saturated `L`), a wrong interpolation space, or a
 /// mis-packed stop lane all break the agreement, and nothing else has to be known
@@ -789,7 +789,7 @@ fn a_black_to_white_gradient_map_is_the_lightness_preserving_greyscale() {
 /// **A gradient map repaints; coverage stays put** (§21.11, §21.3.1). A ramp whose
 /// two stops are the same red maps *every* lightness to red — the sharpest way to
 /// see the repaint — while the bare canvas around the stroke must not change by a
-/// byte: the pass writes colour, not coverage, so paint that is not there cannot
+/// byte: the pass writes color, not coverage, so paint that is not there cannot
 /// be graded into being.
 #[test]
 fn a_gradient_map_repaints_the_paint_and_only_the_paint() {
@@ -860,7 +860,7 @@ fn a_rampless_gradient_map_changes_no_pixel() {
     );
 }
 
-/// The gradient map in a **pigment** document (§21.11, §6.7): the mapped colour
+/// The gradient map in a **pigment** document (§21.11, §6.7): the mapped color
 /// re-enters through the inverse LUT with the residual recomputed — the leg that,
 /// missing, renders a mapped black as `#383838` (the very defect §6.7 records).
 /// An all-red ramp onto a blue stroke exercises a saturated answer the polynomial

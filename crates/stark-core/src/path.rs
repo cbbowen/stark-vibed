@@ -176,7 +176,7 @@ pub struct IntermediateSample {
     pub tilt: Vec2,
     pub time: f32,
     /// Arc length from the stroke start (canvas px), measured along the emitted
-    /// polyline — the distance axis that the load drain, the colour-dynamics
+    /// polyline — the distance axis that the load drain, the color-dynamics
     /// noise, and the tool reservoir are parameterized by (§6.2).
     pub dist: f32,
 }

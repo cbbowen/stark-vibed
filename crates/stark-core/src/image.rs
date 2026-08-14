@@ -40,7 +40,7 @@ impl RgbaImage {
     /// `Rgba8Unorm` — but a browser surface is typically `Bgra8Unorm`, and the
     /// result was an exported PNG with red and blue swapped: salmon paper came out
     /// pale blue, orange paint came out blue. Green, black and white all survive a
-    /// R↔B swap unchanged, which is what made it look like a colour-space bug
+    /// R↔B swap unchanged, which is what made it look like a color-space bug
     /// rather than a byte-order one.
     pub fn from_target_bytes(
         width: u32,

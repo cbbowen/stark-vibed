@@ -119,7 +119,7 @@ pub struct PeerInfo {
 }
 
 impl PeerInfo {
-    /// The peer's colour as a CSS `rgb(...)`, for chips and cursors.
+    /// The peer's color as a CSS `rgb(...)`, for chips and cursors.
     pub fn css_color(&self) -> String {
         let [r, g, b] = self
             .color
@@ -128,7 +128,7 @@ impl PeerInfo {
     }
 
     /// A one- or two-character badge: the name's initials, so a chip reads as a
-    /// person rather than as a coloured dot.
+    /// person rather than as a colored dot.
     pub fn initials(&self) -> String {
         self.name
             .split_whitespace()
@@ -151,7 +151,7 @@ impl Renderer {
     }
 
     /// Replay a full stroke with a caller-chosen jitter seed, so repeated
-    /// replays of the same samples keep the same colour dynamics and dither
+    /// replays of the same samples keep the same color dynamics and dither
     /// (see `Engine::replay_stroke_seeded`).
     pub fn replay_stroke_seeded(&mut self, tool: Tool, samples: &[InputSample], seed: u64) {
         self.engine.replay_stroke_seeded(tool, samples, seed);
@@ -171,7 +171,7 @@ impl Renderer {
     }
 
     /// Start a fresh document in `color_space`, on `surface` (§6.7).
-    /// The colour space cannot be changed any other way — see
+    /// The color space cannot be changed any other way — see
     /// [`Engine::new_document`].
     pub fn new_document(&mut self, color_space: ColorSpaceId, surface: SurfaceId) {
         if let Err(e) = self.engine.new_document(color_space, surface) {
@@ -443,7 +443,7 @@ impl Renderer {
         true
     }
 
-    /// Sample the canvas colour at `at` — the eyedropper (§18.0.2).
+    /// Sample the canvas color at `at` — the eyedropper (§18.0.2).
     ///
     /// The same borrow bargain as [`Renderer::export`], and it matters more here:
     /// the sample is taken mid-gesture, so the caller has to be able to drop its

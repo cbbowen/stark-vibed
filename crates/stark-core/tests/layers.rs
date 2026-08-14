@@ -328,7 +328,7 @@ fn blend_of(engine: &Engine, id: LayerId) -> Option<BlendMode> {
 const RADIANCE: BlendMode = BlendMode::Drago { k: DRAGO_K };
 
 /// An opacity drag previews live but logs once (§14.6) — the third rider on the
-/// preview slot, beside the frame drag and the canvas colour (`tests/matte.rs`),
+/// preview slot, beside the frame drag and the canvas color (`tests/matte.rs`),
 /// and here for the reason those two are: a slider reports a value per pointer
 /// *move*, so without this one adjustment buries the history under a hundred
 /// one-percent-apart edits and undo stops being able to take it back.

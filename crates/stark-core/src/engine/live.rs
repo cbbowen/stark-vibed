@@ -40,7 +40,7 @@ use crate::peer::{GestureView, LiveGesture, Peer};
 pub(super) struct Preview {
     /// The unlogged document edit in flight: a whole document that stands in for
     /// the committed one, because what these edits change — a matte's rect
-    /// (§15.7), the substrate colour (§15.5) — is document state rather than a
+    /// (§15.7), the substrate color (§15.5) — is document state rather than a
     /// tile edit, so there is nothing to draw *over* the document the way a stroke
     /// preview does. One slot, not one per kind: only one such drag can be in
     /// flight at a time (they all belong to a single held pointer), and the
@@ -279,10 +279,10 @@ impl Preview {
             range: head.spans..all,
             dist: head.dist,
         };
-        // The diagnostic recolours only what this move actually redrew, so the seam
+        // The diagnostic recolors only what this move actually redrew, so the seam
         // between tinted and untinted paint *is* the freezing boundary. Build-time
         // only (the `debug-unfrozen` feature): a shipping build has no code path that
-        // paints the tail in anything but the stroke's own colour.
+        // paints the tail in anything but the stroke's own color.
         #[cfg(feature = "debug-unfrozen")]
         let tinted = {
             let mut r = rec.clone();
@@ -304,9 +304,9 @@ impl Preview {
     }
 }
 
-/// Colour the live tail is drawn in under the `debug-unfrozen` feature.
+/// Color the live tail is drawn in under the `debug-unfrozen` feature.
 /// Full-opacity magenta: it has to read against paint of any hue, and against the
-/// stroke's own colour in particular.
+/// stroke's own color in particular.
 #[cfg(feature = "debug-unfrozen")]
 const DEBUG_UNFROZEN_COLOR: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
 
@@ -325,7 +325,7 @@ pub(super) struct FrozenHead {
     /// How many leading spans `state` already has drawn on it.
     spans: usize,
     /// Arc length at the end of those spans — where the tail's `dist` resumes.
-    /// Not recoverable from `spans` alone, and the `drain` falloff and colour
+    /// Not recoverable from `spans` alone, and the `drain` falloff and color
     /// dynamics both read it (see `gpu::stroke::StrokeSpans`).
     dist: f32,
     /// The brush state the tail must resume from, for a stroke that runs the
@@ -517,7 +517,7 @@ fn advance_head(
         // arc length is accumulated along the *emitted* polyline, and only the renderer
         // knows the budget it flattened at (a dynamics brush may have coarsened it), so
         // a second measurement here could hand the tail a distance the head never
-        // reached — which `drain` and the colour-dynamics noise would both show.
+        // reached — which `drain` and the color-dynamics noise would both show.
         let (state, carry) =
             render_span_range(ctx, author, &head.state, rec, spans, head.tool.as_ref());
         let mut dirty = head.dirty;

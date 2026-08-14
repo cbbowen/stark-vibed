@@ -2,8 +2,8 @@
 
 A GPU-accelerated 2D painting application in Rust, focused on:
 
-- **Beautiful, natural brush strokes** that carry channels beyond colour — paint
-  height, and the wet-mixing of what is already on the canvas. Colour blends in a
+- **Beautiful, natural brush strokes** that carry channels beyond color — paint
+  height, and the wet-mixing of what is already on the canvas. Color blends in a
   perceptual space (Oklab) or in real pigment (Mixbox), so work can look like the
   oil paintings of the old masters.
 - **Performant painting and compositing** built on WGPU, tiled for an infinite
@@ -39,7 +39,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [rendering.md](docs/rendering.md) | §6.3–§6.5, §6.7, §6.10 | The three compositing passes, blend modes, the media/lighting pass, aprons and the canvas surface, Oklab and Mixbox, the generated uniform mirrors |
 | [selection.md](docs/selection.md) | §6.8, §16 | The soft-mask coverage field every tool acts through, fill, and transform |
 | [layers.md](docs/layers.md) | §14, §15 | Groups and clipping as one mechanism; merging a layer down without changing the picture; matte layers, framing and export |
-| [filters.md](docs/filters.md) | §21 | Filter layers: adjustment as a layer, where it sits *is* its scope, the colour filter, the spectral chromatic aberration, the gradient map |
+| [filters.md](docs/filters.md) | §21 | Filter layers: adjustment as a layer, where it sits *is* its scope, the color filter, the spectral chromatic aberration, the gradient map |
 | [gradients.md](docs/gradients.md) | §22 | Gradients: stops fitted from a line traced through the painting — the eyedropper generalized — the browser-local library of them, the gradient fill (a `FillOp` parcel that varies with position), and the shared gradient bar that also grades matte paint |
 | [engine.md](docs/engine.md) | §7–§11 | The actor target, the save format, golden tests, the extensibility map, the Dioxus frontend |
 | [collaboration.md](docs/collaboration.md) | §12, §17 | The CRDT over the action log, iroh transport, owned selections, the presence roster |
@@ -131,7 +131,7 @@ The workspace is on **nightly** for exactly one reason: `history`'s
   `1 − exp(−k·τ)`** (§6.2). Any other shape makes stroke weight depend on the
   *number* of segments — invisible under uniform sampling, immediate under
   adaptive.
-- **Conserve `height`, never alpha** (§6.1). Colour alpha is per-unit opacity, a
+- **Conserve `height`, never alpha** (§6.1). Color alpha is per-unit opacity, a
   material property; the amount of paint is the height channel. The two meet only
   in the slab law `1 − exp(−K · opacity · thickness)`.
 - **Postcard encodes struct fields in order and enums by index** (§8). Appending

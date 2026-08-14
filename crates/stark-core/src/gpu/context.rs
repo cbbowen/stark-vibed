@@ -49,8 +49,8 @@ impl GpuContext {
         // **The stamp loop's `exchange` writes six storage textures where WebGPU
         // guarantees four.**
         //
-        // The four it always wrote — the footprint snapshot's colour and aux, and the
-        // reservoir's colour and aux, since the segment's `snapshot` rides in the tail
+        // The four it always wrote — the footprint snapshot's color and aux, and the
+        // reservoir's color and aux, since the segment's `snapshot` rides in the tail
         // of that same dispatch (§6.2) — sit exactly on the downlevel limit, so the
         // residual channel's two (§6.7) put it over. This is the one limit Stark asks
         // for above the guaranteed floor for a *feature* rather than for canvas size,
@@ -58,7 +58,7 @@ impl GpuContext {
         //
         // It is asked of every device, including one that will only ever open Oklab
         // documents, because limits are settled when the device is created and the
-        // colour space is a property of a document opened long after. Every adapter
+        // color space is a property of a document opened long after. Every adapter
         // Stark targets — D3D12, Vulkan, Metal, and WebGPU in Chrome — reports at
         // least eight; a conformant device reporting exactly four would fail to start
         // rather than fail to open a Mixbox file, which is the honest failure but not

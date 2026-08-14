@@ -153,7 +153,7 @@ fn check_the_stroke_as_it_is_drawn(
     let stride = rest.len().div_ceil(CHECKPOINTS).max(1);
     for (i, s) in rest.iter().enumerate() {
         engine.process(GestureCommand::To { sample: *s });
-        // The preview's colour is only meaningful with the tail untinted; under
+        // The preview's color is only meaningful with the tail untinted; under
         // `debug-unfrozen` the live tail is repainted magenta by design, which is what
         // that feature is for and has its own test in `stroke.rs`.
         if cfg!(feature = "debug-unfrozen") || i % stride != 0 {

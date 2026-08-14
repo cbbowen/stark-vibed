@@ -34,7 +34,7 @@ impl ColorSpaceId {
     ///
     /// `None` is reachable only for [`ColorSpaceId::Mixbox`] without the `mixbox`
     /// feature. It is deliberately not a fallback to Oklab: the two spaces read the
-    /// same tile bytes as different colours, so opening a pigment document through a
+    /// same tile bytes as different colors, so opening a pigment document through a
     /// colorimetric space would render every pixel wrong while looking like it
     /// worked. Failing is the honest answer, and
     /// [`EngineError::UnsupportedColorSpace`](crate::error::EngineError::UnsupportedColorSpace)
@@ -75,16 +75,16 @@ pub trait ColorSpace {
     /// The tile's **residual** channel format, or `None` for a space that has no
     /// residual (§6.7).
     ///
-    /// A residual is the part of a colour the space's three channels cannot express.
+    /// A residual is the part of a color the space's three channels cannot express.
     /// A colorimetric space has none — Oklab's `(L, a, b)` reproduces every sRGB
-    /// colour exactly — so it allocates no third texture, and the passes that carry
-    /// tile colour are built in a variant without one (`stark_shaders`'s
+    /// color exactly — so it allocates no third texture, and the passes that carry
+    /// tile color are built in a variant without one (`stark_shaders`'s
     /// `RESID_ENTRY_POINTS`). A *pigment* space has one necessarily: four trained
     /// pigments do not span sRGB.
     ///
     /// `Some` costs eight bytes a texel and a third render target through every pass
     /// that writes a tile. `None` is not an optimization but a statement — that this
-    /// space's channels are the whole colour.
+    /// space's channels are the whole color.
     fn resid_format(&self) -> Option<wgpu::TextureFormat> {
         None
     }
@@ -106,7 +106,7 @@ pub trait ColorSpace {
     /// Zero for a space with no [`resid_format`](Self::resid_format), and zero
     /// *exactly*: the default here is not a placeholder for an unimplemented
     /// conversion but the true answer, since such a space's channels already say the
-    /// whole colour. Callers write it unconditionally into a uniform lane, and for
+    /// whole color. Callers write it unconditionally into a uniform lane, and for
     /// Oklab that lane is genuinely zeroes rather than an unread field.
     fn rgb_to_resid(&self, _rgb: [f32; 3]) -> [f32; 3] {
         [0.0; 3]
@@ -131,7 +131,7 @@ pub trait ColorSpace {
     ///
     /// A space needs its own variant for the reason
     /// [`blend_shader`](Self::blend_shader) does, and it is the same reason twice: a
-    /// colour adjustment is a statement about light and about perceived colour,
+    /// color adjustment is a statement about light and about perceived color,
     /// while the targets hold channels, so the pass is bracketed by this space's
     /// conversion out and back. The adjustment between them is shared.
     fn filter_shader(&self) -> &'static str;
@@ -198,7 +198,7 @@ impl ColorSpace for OkLabColorSpace {
     }
 
     /// `resid` is ignored, and is always `[0.0; 3]` for this space: Oklab reproduces
-    /// every sRGB colour, so there is nothing left over to add back.
+    /// every sRGB color, so there is nothing left over to add back.
     fn channels_to_rgb(&self, channels: [f32; 4], _resid: [f32; 3]) -> [f32; 3] {
         let lin = color::oklab_to_linear_srgb([channels[0], channels[1], channels[2]]);
         [
@@ -235,7 +235,7 @@ impl ColorSpace for OkLabColorSpace {
 /// — nor the saturated corners, where it is off by up to 0.39 (mean 0.05 over the
 /// cube). This engine dropped it for as long as a tile held only three concentrations
 /// plus coverage, and no cheaper recovery exists: `rgb → c` is many-to-one, with up
-/// to 70 sRGB colours sharing one quantized triple across 0.38 of the cube, so the
+/// to 70 sRGB colors sharing one quantized triple across 0.38 of the cube, so the
 /// residual is not a function of the channels stored beside it.
 ///
 /// Conversions use the vendored `mixbox` crate (CC BY-NC 4.0; `vendor/mixbox`),
@@ -288,7 +288,7 @@ impl ColorSpace for MixboxColorSpace {
 
     fn channels_to_rgb(&self, channels: [f32; 4], resid: [f32; 3]) -> [f32; 3] {
         // Reassemble the latent and evaluate `poly(c) + r` — Mixbox's own
-        // `latent_to_rgb`, so a colour picked and read back is the colour picked.
+        // `latent_to_rgb`, so a color picked and read back is the color picked.
         let (c0, c1, c2) = (channels[0], channels[1], channels[2]);
         let latent = [
             c0,

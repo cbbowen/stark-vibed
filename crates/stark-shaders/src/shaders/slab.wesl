@@ -31,7 +31,7 @@
 // at most the backdrop's height, which is at most the sum. There is no case left.
 //
 // Deliberately **not** run for a `Normal` merge, which `merge.wesl` settles in tile
-// space directly: that path needs no colour conversion, keeps its exact
+// space directly: that path needs no color conversion, keeps its exact
 // passthrough branches, and is what an ordinary merge-down takes.
 
 import package::lib::paint_common::{COVERAGE_EPS, OPACITY_K, PAINT_EPS};
@@ -48,8 +48,8 @@ struct Slab {
 @group(0) @binding(0) var<uniform> s: Slab;
 @group(0) @binding(1) var in_color: texture_2d<f32>;
 @group(0) @binding(2) var in_aux: texture_2d<f32>;
-// The residual half of the colour (§6.7), carried through both directions on the
-// **colour's** alpha — the residual target's own is a duplicate, kept only because the
+// The residual half of the color (§6.7), carried through both directions on the
+// **color's** alpha — the residual target's own is a duplicate, kept only because the
 // fixed-function "over" that fills these reads each target's own.
 @if(resid) @group(0) @binding(3) var in_resid: texture_2d<f32>;
 
@@ -113,8 +113,8 @@ fn fs_store(@builtin(position) frag: vec4<f32>) -> FsOut {
     var out: FsOut;
     out.color = vec4<f32>(latent * opacity, opacity);
     out.aux = vec4<f32>(height, 0.0, 0.0, 0.0);
-    // The residual un-premultiplies by the **colour's** coverage and rides the same
-    // opacity: it is the rest of the same colour, not a second one (§6.7).
+    // The residual un-premultiplies by the **color's** coverage and rides the same
+    // opacity: it is the rest of the same color, not a second one (§6.7).
     @if(resid) let r = textureLoad(in_resid, p, 0);
     @if(resid) out.resid = vec4<f32>(r.rgb / max(w, COVERAGE_EPS) * opacity, opacity);
     return out;

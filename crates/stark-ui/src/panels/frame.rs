@@ -1,7 +1,7 @@
 //! The frame: its bottom bar, its "add" button, and its on-canvas handles
 //! (§15.7).
 //!
-//! A frame is a **matte layer** — a region filled with a flat colour — so almost
+//! A frame is a **matte layer** — a region filled with a flat color — so almost
 //! everything about it is already the Layers panel's job: visibility, opacity (the
 //! crop scrim), reordering, delete. What is left is the part that is about
 //! *composition*: sizing it to an aspect, fitting it to what you have painted, and
@@ -233,7 +233,7 @@ fn add_background(state: AppState) {
 #[component]
 pub fn FrameBar() -> Element {
     let state = use_context::<AppState>();
-    // Whether the colour pop-out is open. **Before** the early return, because a hook
+    // Whether the color pop-out is open. **Before** the early return, because a hook
     // that runs only when a frame is selected is a hook that runs sometimes.
     let mut show_picker = use_signal(|| false);
     let Some((info, matte)) = selected_frame(state) else {
@@ -358,7 +358,7 @@ pub fn FrameBar() -> Element {
             // them in two places was the duplication this replaced.
             //
             // A well that pops out the app's own Oklab picker, rather than the
-            // browser's colour dialog it used to be, because a mat board is chosen by
+            // browser's color dialog it used to be, because a mat board is chosen by
             // *lightness against the piece*: a shade too close and the frame stops
             // reading as a frame, a shade too far and it shouts over what it
             // surrounds. Oklab puts that search on an axis you can drag along — `L`
@@ -375,13 +375,13 @@ pub fn FrameBar() -> Element {
                 button {
                     class: "swatch frame-swatch",
                     style: "{swatch}",
-                    // Picking a colour on a gradient matte solidifies it — that
+                    // Picking a color on a gradient matte solidifies it — that
                     // is what the control says it does, and undo takes it back.
-                    title: if is_gradient { "Solid colour (replaces the gradient)" } else { "Matte colour" },
+                    title: if is_gradient { "Solid color (replaces the gradient)" } else { "Matte color" },
                     onclick: move |_| show_picker.set(!show_picker()),
                 }
                 // Mounted only while open, so the picker re-seeds from the matte's
-                // current colour each time — and flies *up*, since the bar it hangs
+                // current color each time — and flies *up*, since the bar it hangs
                 // off sits at the bottom of the screen.
                 if show_picker() {
                     div { class: "color-popout",
@@ -390,7 +390,7 @@ pub fn FrameBar() -> Element {
                             // Previewed while the pointer is down, committed once on
                             // release: the fill is document state, so a pick costs one
                             // undo step — and one replicated action — rather than one
-                            // per colour the pointer crossed on the way (§15.7).
+                            // per color the pointer crossed on the way (§15.7).
                             onchange: move |rgb: [f32; 3]| {
                                 dispatch(state, ViewCommand::PreviewMattePaint(
                                     Some((info.id, MattePaint::Solid(rgb))),
@@ -433,7 +433,7 @@ pub fn FrameBar() -> Element {
                 button {
                     class: "chip",
                     title: "Add a background: an opaque ground under the whole painting \u{2014} \
-                            flat or gradient, the underpainting's colour",
+                            flat or gradient, the underpainting's color",
                     onclick: move |_| add_background(state),
                     {icon(icons::BACKGROUND)}
                     {label("Add background")}

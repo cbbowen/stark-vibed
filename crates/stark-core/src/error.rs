@@ -26,7 +26,7 @@ pub enum EngineError {
     #[error("unsupported document version {0}")]
     UnsupportedVersion(u32),
 
-    /// The document names a colour space this build does not carry — today only
+    /// The document names a color space this build does not carry — today only
     /// [`ColorSpaceId::Mixbox`](crate::colorspace::ColorSpaceId::Mixbox) in a build
     /// without the `mixbox` cargo feature.
     ///

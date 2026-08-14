@@ -1,6 +1,6 @@
 // Swept-segment brush rasterization (§6.2).
 //
-// **Colour-space agnostic, and named accordingly.** This was `stamp_oklab.wesl`,
+// **Color-space agnostic, and named accordingly.** This was `stamp_oklab.wesl`,
 // which was never true: `colorspace.rs` hands it to the Mixbox space as well, since
 // the deposit is the same premultiplied "over" whatever the three channels mean —
 // the shader never interprets them. The name read as the surviving half of a
@@ -9,11 +9,11 @@
 // `media_oklab`/`media_mixbox` are genuine pairs; those keep their suffixes.)
 //
 // Shares all geometry/sweep math with both spaces via `stamp_common.wesl`. The footprint deposits into a *cleared scratch* tile, which
-// holds the **parcel this stroke is laying** rather than a tile of paint: colour
+// holds the **parcel this stroke is laying** rather than a tile of paint: color
 // premultiplied by the parcel's visible alpha, and the amounts that alpha was built
 // from (height, optical mass) in the aux. `integrate.wesl` is what turns the one
 // parcel that comes out into paint on the canvas, in the normalized representation
-// (§6.1). Within a stroke the colour target over-blends (premult-consistent) and the
+// (§6.1). Within a stroke the color target over-blends (premult-consistent) and the
 // aux target accumulates additively.
 //
 // Every deposit here is a function of the segment's **swept optical depth** `τ`
@@ -33,12 +33,12 @@
 // **What a segment lays is a parcel of paint, not a coverage** (§6.1). Its
 // amount is `add · τ` of height and its per-unit opacity is the brush's own; the two
 // meet only in the slab law `1 − exp(−K · opacity · height)`, which is what the
-// colour target carries so that `integrate.wesl` can stack the accumulated parcel
+// color target carries so that `integrate.wesl` can stack the accumulated parcel
 // through the shared law in `paint_common.wesl`. Emitting the opacity *alone* there
 // — which is what this did — was the same defect §6.3 fixed in the layer composite,
 // one level down: a fragment whose brush lays almost no paint still arrived at the
 // integrate claiming near-full coverage, so a low-`add` stroke drew as nothing over
-// bare canvas (the media pass caught it, via the height) and replaced the colour
+// bare canvas (the media pass caught it, via the height) and replaced the color
 // outright over paint (nothing caught it at all). It also cost the faint edge of a
 // soft tip a factor of `τ`, since coverage then reached visible alpha through *both*
 // factors of `op · height`; weighing the parcel by its own visible alpha makes that
@@ -118,10 +118,10 @@ fn fs_main(in: VsOut) -> FsOut {
     var out: FsOut;
     // The parcel's **visible alpha**: the slab law `1 − exp(−K·op·height)` that
     // `paint_common.wesl` weighs a parcel by, evaluated per segment. Being of the
-    // form `1 − exp(−k·τ)` it is exactly what the colour target's premultiplied
+    // form `1 − exp(−k·τ)` it is exactly what the color target's premultiplied
     // "over" composes — the complements multiply out to `1 − exp(−K·Σm)`, the whole
     // stroke's parcel, whether the path was cut into one segment or a hundred. The
-    // colour it carries is per-fragment: colour dynamics jitter it across the
+    // color it carries is per-fragment: color dynamics jitter it across the
     // footprint and along the stroke (§6.2), and the "over" keeps that jitter
     // *ordered*, so a stroke crossing itself covers rather than averages.
     let w = 1.0 - exp(-OPACITY_K * m);
@@ -135,18 +135,18 @@ fn fs_main(in: VsOut) -> FsOut {
     //        already saturated, and the integrate needs the total to recover the
     //        merged per-unit opacity `m/h`;
     //   .zw = unused.
-    // Height is the amount of paint; the colour alpha is per-unit opacity only and
+    // Height is the amount of paint; the color alpha is per-unit opacity only and
     // never represents amount (§6.1). Height is also the *only* thing a persistent
     // tile keeps: gloss is a uniform property of paint, not a stored channel, so
     // there is nothing here that a brush could source it from.
     out.aux = vec4<f32>(h, m, 0.0, 0.0);
     // The parcel's residual (§6.7), premultiplied by the same `w` and over-blended by
-    // the same rule as the colour beside it: the pair is one colour, and anything that
+    // the same rule as the color beside it: the pair is one color, and anything that
     // treated them as two quantities to combine differently would take the paint off
-    // the sRGB colour it was picked as.
+    // the sRGB color it was picked as.
     //
-    // **Not jittered**, where the latent above is: colour dynamics perturb the
-    // *pigment mixture*, and the residual is the part of the picked colour no mixture
+    // **Not jittered**, where the latent above is: color dynamics perturb the
+    // *pigment mixture*, and the residual is the part of the picked color no mixture
     // of those pigments reaches. Jittering it would be jittering the correction rather
     // than the paint — and the correction has no direction in pigment space to be
     // jittered along.

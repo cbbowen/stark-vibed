@@ -1,5 +1,5 @@
 //! Layers (§5.1, §15.2, §14, §21). A layer is a sparse, persistent map of painted
-//! tiles, a **matte** — a procedural region filled with a flat colour — or a
+//! tiles, a **matte** — a procedural region filled with a flat color — or a
 //! **filter**, which is a function of what is composited beneath it rather than
 //! content of its own; plus its presentation properties, plus the layers it
 //! **carries**.
@@ -153,7 +153,7 @@ fn mix32(x: u64) -> u32 {
 ///
 /// **The guarantee holds at any coverage**, which took getting right: a layer's
 /// coverage weighs it in the space where its blend function is affine, not in the
-/// working space, because applying a curve to a coverage-averaged colour is not the
+/// working space, because applying a curve to a coverage-averaged color is not the
 /// same as averaging the curve. Stacking order used to matter by up to 20 levels
 /// wherever a stroke was less than solid. See `blend_common.wesl`'s `combined_light`,
 /// and §18.0.4 for what that costs.
@@ -169,9 +169,9 @@ fn mix32(x: u64) -> u32 {
 /// average commutes with it in.
 ///
 /// The combination happens in **CIE XYZ normalized to the display white**, not in
-/// the working colour space and not in RGB: XYZ is linear in light, its components
-/// are non-negative for every real colour (which is what makes the curves
-/// well-defined), and normalizing by the white point puts an in-gamut colour's
+/// the working color space and not in RGB: XYZ is linear in light, its components
+/// are non-negative for every real color (which is what makes the curves
+/// well-defined), and normalizing by the white point puts an in-gamut color's
 /// components in `[0,1]` — so "1" means the same thing on all three axes. Blending
 /// in RGB instead would make the result depend on the display's primaries; blending
 /// in Oklab or in pigment concentrations would be adding things that are not light.
@@ -268,7 +268,7 @@ pub enum BlendMode {
     /// One consequence to know about. The blend sees the layer stack, not the
     /// **substrate** — the paper is composited in pass B, after all blending
     /// (`media_common.wesl`) — so a glaze laid on bare canvas leaves the paper's own
-    /// colour untouched instead of tinting it. On white paper that is exactly right,
+    /// color untouched instead of tinting it. On white paper that is exactly right,
     /// white being multiply's identity, and it is why the mode reads correctly to a
     /// painter by default. On a toned ground it is a divergence from what a real
     /// glaze would do, and the fix is not here: it is for the substrate to become the
@@ -533,7 +533,7 @@ impl MatteRegion {
     }
 }
 
-/// What a matte is filled with (§15.4, §22): one flat colour, or a
+/// What a matte is filled with (§15.4, §22): one flat color, or a
 /// gradient read from canvas position — the same ramp the fill lays (§22.4),
 /// embedded by value the same way.
 ///
@@ -543,12 +543,12 @@ impl MatteRegion {
 /// per-unit opacity where the fill's parcel does.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MattePaint {
-    /// One colour everywhere. Straight sRGB, like [`BrushParams::color`],
+    /// One color everywhere. Straight sRGB, like [`BrushParams::color`],
     /// converted to working-space channels at composite time.
     ///
     /// [`BrushParams::color`]: crate::document::BrushParams::color
     Solid([f32; 3]),
-    /// A colour ramp along an axis (§22.4): interpolated per fragment in the
+    /// A color ramp along an axis (§22.4): interpolated per fragment in the
     /// working space, so an Oklab document's matte matches the library strip
     /// and a Mixbox document's is a pigment ramp — a graded wash, not a screen
     /// gradient.
@@ -559,7 +559,7 @@ pub enum MattePaint {
 }
 
 impl MattePaint {
-    /// The colour a one-swatch summary shows: the solid itself, or the ramp's
+    /// The color a one-swatch summary shows: the solid itself, or the ramp's
     /// start — the stop the axis anchors on.
     pub fn swatch(&self) -> [f32; 3] {
         match self {
@@ -612,7 +612,7 @@ pub enum LayerContent {
     /// Painted tiles. Only populated ones exist — this sparsity is the infinite
     /// canvas.
     Paint(PaintTiles),
-    /// A procedural region filled with a [`MattePaint`] — one flat colour, or a
+    /// A procedural region filled with a [`MattePaint`] — one flat color, or a
     /// gradient ramp (§22.4). The paint converts to working-space
     /// channels at composite time, so the log stays independent of whether the
     /// document is Oklab or Mixbox. A matte has no alpha of its own: its
@@ -623,7 +623,7 @@ pub enum LayerContent {
     /// a constant thickness, so its interior lights flat (zero height gradient —
     /// no weave, and the paint film's uniform sheen reads as an even wash rather
     /// than a glint) while its boundary catches light the same way any stroke edge
-    /// does — a graded wash varies the paint's colour, never its thickness, the
+    /// does — a graded wash varies the paint's color, never its thickness, the
     /// same statement the gradient fill makes (§22.4). See §15.4 for
     /// why it must write the aux target at all, and why its blend there is
     /// `over` rather than additive.

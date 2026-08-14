@@ -24,11 +24,11 @@
 // **The average is taken in light, not in code values.** The media pass ends in
 // `linear_to_srgb`, and the target carries display-encoded sRGB in a non-sRGB format
 // (§6.5), so averaging its texels directly would mix numbers on a curve and drag
-// every edge toward the dark side of it. Decode, average, re-encode. The colour is
+// every edge toward the dark side of it. Decode, average, re-encode. The color is
 // weighted by alpha and the alpha averaged flat, which is what an unpremultiplied
 // downsample is: on the opaque path every alpha is 1 and this is the plain mean, and
 // on a cut-out export (§15.6) a fragment that is nine-tenths nothing contributes a
-// tenth of a colour rather than a full one.
+// tenth of a color rather than a full one.
 
 import package::lib::color::{linear_to_srgb, srgb_to_linear};
 import package::lib::quad::{fullscreen_clip};
@@ -43,7 +43,7 @@ struct Resolve {
 @group(0) @binding(1) var src: texture_2d<f32>;
 
 // The weighted mean's denominator guard: a target block that is entirely
-// transparent has no colour to average, and returns black rather than a quotient of
+// transparent has no color to average, and returns black rather than a quotient of
 // two zeros. Local and named for its own job — it is neither of
 // `paint_common`'s two guards (this alpha is neither a tile's per-unit opacity nor a
 // composited coverage, but the box filter's own accumulated weight), and it was one

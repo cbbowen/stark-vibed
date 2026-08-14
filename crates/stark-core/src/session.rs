@@ -101,7 +101,7 @@ struct ShapeDrag {
     /// the gesture already looks like it is doing.
     action: ShapeAction,
     feather: f32,
-    /// The colour a fill will lay, taken off the brush when the drag began. Unused
+    /// The color a fill will lay, taken off the brush when the drag began. Unused
     /// by a selecting gesture, which has no paint.
     color: [f32; 3],
     /// How strongly this gesture's coverage lands — captured with the rest, so
@@ -497,7 +497,7 @@ impl Session {
             tool,
             action: self.shape_action,
             feather: self.selection_feather,
-            // The colour is the brush's — a fill lays the paint you have in hand.
+            // The color is the brush's — a fill lays the paint you have in hand.
             // Its *alpha* is not: that is the brush's pigment talking, and how
             // strongly this gesture lands is the panel's own question (see
             // [`shape_opacity`](Self::shape_opacity)).

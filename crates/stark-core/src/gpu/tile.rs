@@ -14,7 +14,7 @@
 //! `aux` format — the two never need to match (§6.2).
 //!
 //! Channels (§6.1, normalized representation):
-//! - `color`: `Rgba16Float`, latent colour premultiplied by **opacity**
+//! - `color`: `Rgba16Float`, latent color premultiplied by **opacity**
 //!   (`L·op, a·op, b·op, op`) — opacity, *not* coverage.
 //! - `aux`: `R16Float`, `(height)` — the amount of paint, from which the media pass
 //!   gets impasto thickness (height − surface height) and combines opacity ×
@@ -233,7 +233,7 @@ impl Drop for GpuTex {
 /// to its format's free list when the last handle drops.
 ///
 /// This is the unit the pool deals in. Pairing two of them into a tile is the
-/// *caller's* job, because which two formats make a tile is the colour space's
+/// *caller's* job, because which two formats make a tile is the color space's
 /// business (§6.7) and the pool has no view of that.
 ///
 /// **A handle hands out a view and never the texture**, and that is what keeps a
@@ -294,7 +294,7 @@ impl TexHandle {
 struct TilePair {
     color: TexHandle,
     aux: TexHandle,
-    /// The **residual** channel (§6.7) — present exactly when the document's colour
+    /// The **residual** channel (§6.7) — present exactly when the document's color
     /// space declares a `resid_format`, which is a property of the space and so is
     /// the same for every tile of a document.
     ///
@@ -339,8 +339,8 @@ impl TilePairHandle {
     }
 
     /// Encode the write-back's slice of this tile out of region-sized channel
-    /// textures (§6.2): one `TILE_TEX` block from each at `origin` — the colour, the
-    /// narrowed aux, and the residual where the colour space has one. Copies, so the
+    /// textures (§6.2): one `TILE_TEX` block from each at `origin` — the color, the
+    /// narrowed aux, and the residual where the color space has one. Copies, so the
     /// tile is bit-identical to the region block it was cut from, and every
     /// rewritten tile's apron to its neighbour's interior (§6.4).
     pub fn copy_from_region(
@@ -351,7 +351,7 @@ impl TilePairHandle {
         resid: Option<&wgpu::Texture>,
         origin: wgpu::Origin3d,
     ) {
-        // The pairing is the colour space's, decided once for tile and region alike
+        // The pairing is the color space's, decided once for tile and region alike
         // (§6.7) — a mismatch here means the two were built against different spaces.
         debug_assert_eq!(self.0.resid.is_some(), resid.is_some());
         self.0.color.copy_into(encoder, color, origin);
@@ -528,7 +528,7 @@ const MAX_RELEASE_PER_EPOCH: usize = 256;
 
 /// Recycling allocator for tile textures (§6.1). Hands out one texture at a
 /// time, keyed by format, so `Rgba16Float` textures are shared across every consumer
-/// that needs one (persistent colour, scratch colour, the wide scratch aux).
+/// that needs one (persistent color, scratch color, the wide scratch aux).
 #[derive(Clone)]
 pub struct TilePool {
     ctx: GpuContext,
@@ -536,14 +536,14 @@ pub struct TilePool {
 }
 
 impl TilePool {
-    /// A pool serving `formats` — the colour space's `color` and `aux` (§6.7), which
+    /// A pool serving `formats` — the color space's `color` and `aux` (§6.7), which
     /// are the only formats a caller knows — **plus the two the pool defines itself**.
     ///
     /// [`MASK_FORMAT`] and [`SCRATCH_AUX_FORMAT`] are unioned in here rather than
     /// asked of the caller, because they are this module's constants and a call site
     /// that had to remember them could forget one. That is not hypothetical: the
     /// scratch aux was omitted, and the omission was invisible only because
-    /// `SCRATCH_AUX_FORMAT` happens to equal both colour spaces' `color_format` —
+    /// `SCRATCH_AUX_FORMAT` happens to equal both color spaces' `color_format` —
     /// the very coincidence [`StrokeRenderer::acquire_tile`] warns about one level
     /// down. The first space to choose otherwise would have met `acquire_tex`'s
     /// "unsupported format" panic on its first stroke.
@@ -605,7 +605,7 @@ impl TilePool {
     /// Takes the format rather than assuming one. It used to answer for
     /// `Rgba16Float` alone, on a pool whose whole design is that free lists are
     /// *per format* — so a test asking about the aux or the mask list was quietly
-    /// told about the colour one instead.
+    /// told about the color one instead.
     pub fn free_count(&self, format: wgpu::TextureFormat) -> usize {
         self.format_pools
             .get(&format)

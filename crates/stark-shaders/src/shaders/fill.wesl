@@ -22,7 +22,7 @@
 // ramp interpolates in the working space: Oklab documents blend the way the
 // library's strip previews (§22.1), and Mixbox documents blend the way the
 // *paint* mixes — a pigment ramp, which is the point of having pigments. Height
-// does not vary: the ramp is a transition in colour, not in thickness.
+// does not vary: the ramp is a transition in color, not in thickness.
 
 import package::lib::paint_common::{blend_latent, OPACITY_K, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
@@ -41,16 +41,16 @@ const MAX_GRADIENT_STOPS: u32 = 16;
 const OPAQUE_MASS: f32 = 8.0;
 
 struct Fill {
-    // .xyz = a solid parcel's latent in this space's colour channels (Oklab
+    // .xyz = a solid parcel's latent in this space's color channels (Oklab
     // L,a,b or Mixbox concentrations), read only when `p.y == 0`; .w unused —
-    // a parcel carries colour alone, the strength is `p.x` below.
+    // a parcel carries color alone, the strength is `p.x` below.
     c: vec4<f32>,
     // .x = the fill's **opacity**: the visible alpha it covers with where
     // coverage is full (`FillOp::opacity`); .y = gradient stop count (0 = a
     // solid parcel; a gradient always has ≥ 2, §22.1); .z = the axis kind
     // (0 linear, 1 radial); .w unused.
     p: vec4<f32>,
-    // A solid parcel colour's **residual** (.xyz) — the half of it the space's
+    // A solid parcel color's **residual** (.xyz) — the half of it the space's
     // three channels cannot express (§6.7); .w unused. Zero for every space but
     // Mixbox. Declared unconditionally: a uniform is mirrored into Rust from the
     // unlinked source (§6.10), which has no feature set to evaluate.
@@ -85,7 +85,7 @@ struct Tile {
 @group(0) @binding(3) var region: texture_2d<f32>;
 @group(0) @binding(4) var gate: texture_2d<f32>;
 // The resident paint's residual channel (§6.7), read through the same
-// clamped `load1` — bare canvas binds the 1×1 zero here as it does for the colour.
+// clamped `load1` — bare canvas binds the 1×1 zero here as it does for the color.
 @if(resid) @group(0) @binding(5) var base_resid: texture_2d<f32>;
 
 @vertex
@@ -181,7 +181,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     out.color = vec4<f32>(lat * op, op);
     out.aux = vec4<f32>(h, 0.0, 0.0, 0.0);
     // The residual stacks through the same law on the same two masses — it is the
-    // rest of the same colour (§6.7).
+    // rest of the same color (§6.7).
     @if(resid) let res0 = br.rgb / max(bc.a, PAINT_EPS);
     @if(resid) out.resid = vec4<f32>(blend_latent(res0, m0, parcel_res, m1) * op, op);
     return out;

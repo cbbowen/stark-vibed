@@ -48,7 +48,7 @@ pub enum Prop {
     Opacity,
     Visible,
     Name,
-    /// A matte's region *and* colour — split no finer because no action writes
+    /// A matte's region *and* color — split no finer because no action writes
     /// one without the freedom to write the other.
     Matte,
     /// A filter layer's settings (§21). One resource for the whole filter, for the
@@ -82,7 +82,7 @@ pub enum Resource {
     Selection(ActorId),
     /// The canvas surface (§6.4).
     Surface,
-    /// The substrate colour (§15.5).
+    /// The substrate color (§15.5).
     Background,
 }
 

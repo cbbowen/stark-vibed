@@ -10,7 +10,7 @@ pub use entry_points::{
     ENTRY_POINTS, MIXBOX_ENTRY_POINTS, RESID_ENTRY_POINTS, RESID_FEATURE, entry_point_enabled,
 };
 
-/// One pass's two builds, chosen by whether the document's colour space carries a
+/// One pass's two builds, chosen by whether the document's color space carries a
 /// residual (§6.7).
 ///
 /// Defined twice under a `cfg` rather than written as one `if`, because without the
@@ -41,7 +41,7 @@ macro_rules! resid_variant {
                 "`",
                 $resid,
                 "` is not built without the `mixbox` feature, and no \
-                 colour space in this build declares a `resid_format`",
+                 color space in this build declares a `resid_format`",
             ),
         );
         include_wesl!($plain)
@@ -58,10 +58,10 @@ pub mod mirror {
     include!(concat!(env!("OUT_DIR"), "/mirror.rs"));
 }
 
-/// WGSL swept-segment stamp pass (§6.2). Colour-space agnostic — both spaces use
+/// WGSL swept-segment stamp pass (§6.2). Color-space agnostic — both spaces use
 /// it, since the deposit is the same premultiplied "over" whatever the channels mean.
 ///
-/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// Takes `resid` because this pass carries a tile's color, so it is built in two
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn stamp(resid: bool) -> &'static str {
@@ -70,7 +70,7 @@ pub fn stamp(resid: bool) -> &'static str {
 
 /// WGSL source for the tile compositing pass (§6.3, pass A).
 ///
-/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// Takes `resid` because this pass carries a tile's color, so it is built in two
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn composite(resid: bool) -> &'static str {
@@ -80,7 +80,7 @@ pub fn composite(resid: bool) -> &'static str {
 /// WGSL matte-layer fill, drawn inside pass A at the matte's place in the layer
 /// stack — §15.4.
 ///
-/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// Takes `resid` because this pass carries a tile's color, so it is built in two
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn matte(resid: bool) -> &'static str {
@@ -143,7 +143,7 @@ pub fn filter_mixbox() -> &'static str {
 /// WGSL stroke integrate pass: merge a stroke's scratch slab into the layer over
 /// the base — §6.2/§6.1.
 ///
-/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// Takes `resid` because this pass carries a tile's color, so it is built in two
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn integrate(resid: bool) -> &'static str {
@@ -153,7 +153,7 @@ pub fn integrate(resid: bool) -> &'static str {
 /// WGSL compute shader for the brush-dynamics **sequential stamp loop**
 /// (snapshot / pickup / deposit entry points) — §6.2.
 ///
-/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// Takes `resid` because this pass carries a tile's color, so it is built in two
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn dynamics(resid: bool) -> &'static str {
@@ -162,9 +162,9 @@ pub fn dynamics(resid: bool) -> &'static str {
 
 /// WGSL region-aux narrowing for the stamp loop's write-back — §6.2/§6.4.
 ///
-/// Takes no `resid`: the write-back's colour and residual leave the region as plain
+/// Takes no `resid`: the write-back's color and residual leave the region as plain
 /// texture copies, so the pass under this name touches only the aux, which every
-/// colour space has and neither varies.
+/// color space has and neither varies.
 pub fn slice() -> &'static str {
     include_wesl!("slice")
 }
@@ -172,7 +172,7 @@ pub fn slice() -> &'static str {
 /// WGSL affine-transform passes: the moved parcel, the cut+stack combine, and
 /// the carried selection mask — §16.
 ///
-/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// Takes `resid` because this pass carries a tile's color, so it is built in two
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn transform(resid: bool) -> &'static str {
@@ -182,7 +182,7 @@ pub fn transform(resid: bool) -> &'static str {
 /// WGSL region fill: a parcel of paint laid through a coverage mask, stacked by
 /// the shared parcel law — §18.0.4.
 ///
-/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// Takes `resid` because this pass carries a tile's color, so it is built in two
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn fill(resid: bool) -> &'static str {
@@ -192,7 +192,7 @@ pub fn fill(resid: bool) -> &'static str {
 /// WGSL layer merge-down: two stacked layers' tiles reduced to the one tile that
 /// composites to the same texels — §14.11.
 ///
-/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// Takes `resid` because this pass carries a tile's color, so it is built in two
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn merge(resid: bool) -> &'static str {
@@ -204,7 +204,7 @@ pub fn merge(resid: bool) -> &'static str {
 ///
 /// What lets a blend-mode merge run the *real* blend pass on tile-sized targets
 /// instead of a second copy of its algebra. Takes `resid` because both directions
-/// carry a tile's colour, so it is built in two variants (see [`RESID_ENTRY_POINTS`]).
+/// carry a tile's color, so it is built in two variants (see [`RESID_ENTRY_POINTS`]).
 pub fn slab(resid: bool) -> &'static str {
     resid_variant!(resid, "slab", "slab_resid")
 }

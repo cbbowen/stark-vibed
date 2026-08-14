@@ -4,7 +4,7 @@
 //! at all. It sounds too obvious to test, and it used to be false: pass A weighed a
 //! layer's "over" by its per-unit **opacity** alone, so a film with opacity 1 and no
 //! thickness — which the media pass draws as nothing over bare canvas — replaced the
-//! colour outright over another layer's paint. Every soft brush deposits exactly that
+//! color outright over another layer's paint. Every soft brush deposits exactly that
 //! state across its fringe (`stamp.wesl` saturates opacity as `1 − exp(−op·τ)`
 //! while height stays linear in `τ`), so the symptom was a ghost of the brush's whole
 //! footprint painted over the layer below.
@@ -211,7 +211,7 @@ fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
 
 /// A **kept** [`Offscreen`] renders the same picture a fresh one would, across
 /// everything that changes what it was built against: a new size, a swapped
-/// environment, and a colour-space rebuild — which does not mutate the compositing
+/// environment, and a color-space rebuild — which does not mutate the compositing
 /// pipeline but replaces it (§6.7).
 ///
 /// This is the navigator's arrangement: one slot, reused for the life of the app,
@@ -313,7 +313,7 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
         "after a lighting swap",
     );
 
-    // And a new document in the other colour space, which rebuilds the pipeline the
+    // And a new document in the other color space, which rebuilds the pipeline the
     // slot's attachments belong to. Same surface, so nothing else moves with it.
     //
     // Only where there *is* another one: without the `mixbox` feature Oklab is the
@@ -329,7 +329,7 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
         same(
             &shot(&mut engine, &mut kept, 1.0),
             &shot(&mut engine, &mut Offscreen::default(), 1.0),
-            "after a colour-space rebuild",
+            "after a color-space rebuild",
         );
     }
 }

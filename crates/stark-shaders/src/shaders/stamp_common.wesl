@@ -13,11 +13,11 @@ struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
     // params.z = 2 / TILE_TEX (full interior+apron maps to NDC); params.w unused.
     params: vec4<f32>,
-    // The brush's colour in the color space's channels (.xyz) + its per-unit opacity
-    // (.w). Constant across the stroke — colour dynamics (below) jitter the channels
+    // The brush's color in the color space's channels (.xyz) + its per-unit opacity
+    // (.w). Constant across the stroke — color dynamics (below) jitter the channels
     // per fragment, and `drain` fades the opacity per fragment (see `stroke_drain`).
     color: vec4<f32>,
-    // The brush colour's **residual** (.xyz) — what the space's three channels cannot
+    // The brush color's **residual** (.xyz) — what the space's three channels cannot
     // express (§6.7). Zero for every space but Mixbox, whose pigment
     // polynomial reaches neither black nor the saturated corners on its own; .w unused.
     //
@@ -36,11 +36,11 @@ struct TileXform {
     // does not any more: it is pen-driven (§6.2) and rides the segment instance, like
     // the radius.
     paint: vec4<f32>,
-    // Colour dynamics (§6.2): noise frequency per lookup axis
+    // Color dynamics (§6.2): noise frequency per lookup axis
     // (across the stroke, along it) in .xy with 1/NOISE_TILE_PX pre-folded into
     // .z; .w unused.
     noise_freq: vec4<f32>,
-    // Per colour-channel noise amplitude .xyz (all 0 = jitter off); .w unused.
+    // Per color-channel noise amplitude .xyz (all 0 = jitter off); .w unused.
     noise_amp: vec4<f32>,
     // Per-stroke noise lookup translation .xy (from the stroke seed); .zw unused.
     noise_off: vec4<f32>,
@@ -52,7 +52,7 @@ struct TileXform {
 // rotation-invariant and have a single slice; image stamps carry up to
 // MAX_ORIENTATION_LAYERS. A 2D array (not a 3D texture) so the mask keeps its full size.
 @group(1) @binding(0) var prefix_tex: texture_2d_array<f32>;
-// The colour-dynamics noise field (§6.2): a tileable 2-D tile
+// The color-dynamics noise field (§6.2): a tileable 2-D tile
 // (three signed channels) sampled at (lateral, arc) with a repeat sampler.
 // A 1×1 zero tile is bound when the brush's jitter is off.
 @group(2) @binding(0) var noise_tex: texture_2d<f32>;
@@ -112,9 +112,9 @@ struct VsOut {
 struct FsOut {
     @location(0) color: vec4<f32>,
     @location(1) aux: vec4<f32>,
-    // The parcel's residual, premultiplied by the same visible alpha the colour is
+    // The parcel's residual, premultiplied by the same visible alpha the color is
     // and over-blended by the same rule — a residual is not a separate quantity to
-    // combine but the rest of the same colour (§6.7).
+    // combine but the rest of the same color (§6.7).
     @if(resid) @location(2) resid: vec4<f32>,
 }
 
@@ -332,12 +332,12 @@ fn sweep_of(in: VsOut) -> Sweep {
     return out;
 }
 
-// The brush's colour channels (per the color space) at this fragment: the
-// stroke-constant colour, offset by the colour-dynamics noise field
+// The brush's color channels (per the color space) at this fragment: the
+// stroke-constant color, offset by the color-dynamics noise field
 // (§6.2). The lookup domain is **stroke-local** — (lateral offset from the
 // centreline, arc length along the stroke), both in canvas px — so the pattern
 // belongs to the stroke rather than to the canvas it lands on: the same gesture
-// carries the same colour variation wherever it is drawn. Both coordinates are
+// carries the same color variation wherever it is drawn. Both coordinates are
 // still functions of the fragment's canvas position and the segment, so the
 // deposit remains a pure function of the two and tile aprons stay bit-consistent
 // (§6.4).

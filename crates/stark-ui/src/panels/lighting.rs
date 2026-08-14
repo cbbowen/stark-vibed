@@ -25,7 +25,7 @@ pub const ENV_QWANTANI_DUSK: Asset = asset!("/assets/environment/qwantani_dusk_2
 /// The selectable lighting environments, in display order (§6.3). One row per
 /// environment, its bytes (if any) resolved by
 /// [`environment_asset`]. `Neutral` leads because it is the reference light — the
-/// achromatic one you switch to to judge colour; the HDRs are the room you paint in.
+/// achromatic one you switch to to judge color; the HDRs are the room you paint in.
 pub const ENVIRONMENTS: &[(EnvironmentId, &str)] = &[
     (EnvironmentId::Neutral, "Neutral"),
     (EnvironmentId::Ferndale, "Ferndale studio"),
@@ -35,7 +35,7 @@ pub const ENVIRONMENTS: &[(EnvironmentId, &str)] = &[
 ];
 
 /// What the app lights the canvas with on startup: the achromatic reference light,
-/// which is also what the engine boots on. Paint reads as its own colour under it —
+/// which is also what the engine boots on. Paint reads as its own color under it —
 /// at `Neutral`'s exposure of 1.0 the media pass is an identity (§6.3) — so
 /// what you mix is what you see, and the studio HDR is the deliberate switch into a
 /// room. Kept a named constant because the startup hook in `main.rs` fetches its
@@ -54,7 +54,7 @@ pub fn LightingPanel() -> Element {
     let p = obs.as_ref().map(|o| o.media).unwrap_or_default();
     let surf = obs.as_ref().map(|o| o.surface).unwrap_or_default();
     let env = obs.as_ref().map(|o| o.environment).unwrap_or_default();
-    // The canvas substrate colour (straight sRGB), shown as a swatch that pops out an
+    // The canvas substrate color (straight sRGB), shown as a swatch that pops out an
     // Oklab picker. Read from the engine's projection rather than a local signal:
     // it is document state now (§15.5), so a copy here would go stale
     // the moment an undo or a document load moved it (§4).
@@ -88,7 +88,7 @@ pub fn LightingPanel() -> Element {
                 onclick: move |_| show_bg_picker.set(!show_bg_picker()),
             }
         }
-        // Mounted only while open, so the picker re-seeds from the current colour each
+        // Mounted only while open, so the picker re-seeds from the current color each
         // time, and placed directly under the well that opens it — where in flow it
         // reads as that row opening rather than as something the row below grew.
         //
@@ -101,7 +101,7 @@ pub fn LightingPanel() -> Element {
                 OklabPicker {
                     init: c,
                     // Previewed while the pointer is down, committed once on release:
-                    // the substrate colour is document state, so one drag has to cost
+                    // the substrate color is document state, so one drag has to cost
                     // one undo step (and one replicated action) rather than one per
                     // pointer sample — the same bargain the frame drag makes.
                     onchange: move |rgb: [f32; 3]| preview_background(state, rgb),
@@ -161,14 +161,14 @@ fn update_media(state: AppState, f: impl FnOnce(&mut MediaParams)) {
     dispatch(state, ViewCommand::SetMediaParams(p));
 }
 
-/// Show a substrate colour without logging it — every sample of a picker drag
+/// Show a substrate color without logging it — every sample of a picker drag
 /// (§15.5). The engine renders it and reports it back through
 /// `observe`, so the canvas and the swatch both track the pointer.
 fn preview_background(state: AppState, rgb: [f32; 3]) {
     dispatch(state, ViewCommand::PreviewBackground(Some(rgb)));
 }
 
-/// Commit the canvas substrate colour (straight sRGB) — once, when the pick ends.
+/// Commit the canvas substrate color (straight sRGB) — once, when the pick ends.
 /// A logged document edit, not a view setting: the ground a piece was painted on is
 /// part of what it is, and it is saved with it (§15.5).
 fn update_background(state: AppState, rgb: [f32; 3]) {

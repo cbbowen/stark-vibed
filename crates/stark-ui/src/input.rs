@@ -851,7 +851,7 @@ fn typing_into_a_field(e: &web_sys::KeyboardEvent) -> bool {
     el.is_content_editable()
         || match el.tag_name().as_str() {
             "TEXTAREA" | "SELECT" => true,
-            // Sliders, checkboxes and colour wells are not text entry. They want
+            // Sliders, checkboxes and color wells are not text entry. They want
             // arrows and space from the browser, but Ctrl+Z over one still means
             // the document — there is no text there for it to mean anything else.
             "INPUT" => !matches!(
@@ -987,7 +987,7 @@ fn track_alt(state: AppState, m: Modifiers) {
     }
 }
 
-/// Sample the canvas colour under `pos` and load the brush with it — the eyedropper
+/// Sample the canvas color under `pos` and load the brush with it — the eyedropper
 /// (§18.0.2).
 ///
 /// One sample at a time. A pick is a render plus an asynchronous readback, and
@@ -1036,7 +1036,7 @@ pub fn pick_color(state: AppState, pos: Vec2) {
         // ground, not paint to pick up.
         let Some(rgb) = picked else { return };
         update_brush(state, |br| br.color = [rgb[0], rgb[1], rgb[2], br.color[3]]);
-        // Tell the Color panel the colour moved from outside its own picker, so its
+        // Tell the Color panel the color moved from outside its own picker, so its
         // markers follow (see `AppState::color_epoch`).
         let mut epoch = state.color_epoch;
         let next = *epoch.peek() + 1;

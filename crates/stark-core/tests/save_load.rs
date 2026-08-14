@@ -109,7 +109,7 @@ fn timelapse_yields_one_frame_per_action() {
     );
 }
 
-/// A timelapse replays through the **document's** colour space, not through whichever
+/// A timelapse replays through the **document's** color space, not through whichever
 /// one the engine running it happened to be in.
 ///
 /// The channel layouts differ between spaces (§6.7), so replaying a Mixbox document
@@ -137,7 +137,7 @@ fn a_timelapse_replays_in_the_documents_color_space() {
     loaded.load_document(&file).expect("load");
     assert!(
         images_match(&loaded.render_to_image(), &expected, 0),
-        "loading already matches the document's colour space"
+        "loading already matches the document's color space"
     );
 
     let mut lapsing = engine_or_skip_blue().expect("adapter available");

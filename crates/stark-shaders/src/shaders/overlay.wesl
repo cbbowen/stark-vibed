@@ -50,7 +50,7 @@ fn vs_main(
     @builtin(vertex_index) vi: u32,
     // Per-tile instance: the mask tile interior's top-left in canvas px.
     @location(0) origin: vec2<f32>,
-    // The outline's colour — the marching ants, or a peer's hue (§17.3).
+    // The outline's color — the marching ants, or a peer's hue (§17.3).
     @location(1) tint: vec4<f32>,
     // The mask's peak coverage (`Selection::level`) — what "fully selected" means
     // for this instance's selection, and so twice the contour to trace.
@@ -62,7 +62,7 @@ fn vs_main(
     let m = mat2x2<f32>(view.st.xy, view.st.zw);
     out.clip = vec4<f32>(m * canvas_pos + view.xlate.xy, 0.0, 1.0);
     // Interior sub-rect of the apron'd mask texture, exactly as the compositor maps
-    // a colour tile — so the taps below reach into the apron (the neighbour's real
+    // a color tile — so the taps below reach into the apron (the neighbour's real
     // coverage) at the tile edge rather than clamping.
     out.uv = corner * view.misc.y + view.misc.z;
     out.tint = tint;
@@ -94,14 +94,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if alpha <= 0.0 {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
-    // A peer's selection (tint.a > 0) is a flat line in that peer's colour, so it
+    // A peer's selection (tint.a > 0) is a flat line in that peer's color, so it
     // reads as "someone else's region" at a glance and never as your own
     // (§17.3).
     if in.tint.a > 0.0 {
         return vec4<f32>(in.tint.rgb, alpha * in.tint.a);
     }
     // Your own: alternating black/white along the screen diagonal — legible over
-    // paint of any value, which a single-colour outline is not.
+    // paint of any value, which a single-color outline is not.
     let dash = step(0.5, fract((in.clip.x + in.clip.y) / DASH));
     return vec4<f32>(vec3<f32>(dash), alpha);
 }

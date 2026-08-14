@@ -154,7 +154,7 @@ fn scale_changes_resolution_not_framing() {
 
 /// A transparent export is a cut-out: bare canvas is genuinely absent, painted
 /// texels are not. The substrate composite is skipped rather than the alpha being
-/// tweaked afterwards, so bare canvas must not carry substrate colour either
+/// tweaked afterwards, so bare canvas must not carry substrate color either
 /// (§15.6).
 #[test]
 fn transparent_export_cuts_out_the_paint() {
@@ -204,7 +204,7 @@ fn transparent_export_cuts_out_the_paint() {
         mid[3] > 200,
         "painted texels should stay opaque, got {mid:?}"
     );
-    assert!(red_dominant(mid), "and keep their own colour, got {mid:?}");
+    assert!(red_dominant(mid), "and keep their own color, got {mid:?}");
 
     // The substrate export is opaque everywhere — the two really are different
     // renders, not the same one relabelled.
@@ -547,7 +547,7 @@ fn fitting_a_small_piece_fills_the_box() {
 /// surface is typically `Bgra8Unorm`, and the readback handed those bytes straight
 /// to an RGBA image — so the exported PNG came out with red and blue swapped.
 /// Green, black and white are all fixed points of a R↔B swap, which is exactly why
-/// it read as a colour-space problem rather than a byte-order one.
+/// it read as a color-space problem rather than a byte-order one.
 ///
 /// Painting the same thing on the two formats and demanding identical *bytes* is
 /// the check no single-format test could make.
@@ -561,7 +561,7 @@ fn export_is_rgba_whatever_the_target_format_is() {
     };
 
     for engine in [&mut rgba, &mut bgra] {
-        // A colour with three distinct channels, so a swap cannot hide in it.
+        // A color with three distinct channels, so a swap cannot hide in it.
         paint(engine, [0.9, 0.35, 0.1, 1.0], 30.0, WIDE);
         add_frame(engine);
     }
@@ -589,7 +589,7 @@ fn export_is_rgba_whatever_the_target_format_is() {
     assert_eq!((a.width, a.height), (b.width, b.height));
     assert!(
         images_match(&a, &b, 2),
-        "a BGRA target exported different colours than an RGBA one — the readback \
+        "a BGRA target exported different colors than an RGBA one — the readback \
          is not normalizing channel order. Centre texel: {:?} vs {:?}",
         a.pixel(a.width / 2, a.height / 2),
         b.pixel(b.width / 2, b.height / 2),

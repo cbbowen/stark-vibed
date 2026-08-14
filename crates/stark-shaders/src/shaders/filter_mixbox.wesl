@@ -1,6 +1,6 @@
-// Filter layers for the **Mixbox** pigment colour space (§21, §6.7). Same
+// Filter layers for the **Mixbox** pigment color space (§21, §6.7). Same
 // adjustment as every other space; what differs is that a channel triple here is a
-// mixture of pigments rather than a colour, so the trip out to Oklab is Mixbox's
+// mixture of pigments rather than a color, so the trip out to Oklab is Mixbox's
 // polynomial and the trip back is its LUT — exactly as `blend_mixbox.wesl` reaches
 // light, and for the same reason. The chromatic gather (§21.10) pays the same
 // bracket per *tap*: each band of the dispersed spectrum is decoded `poly(c) + r`
@@ -106,10 +106,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         );
         let out_conc = mixbox_srgb_to_concentrations(srgb);
         // The rest of `mixbox_rgb_to_latent`: what the polynomial cannot say about
-        // the colour the gather arrived at (§6.7).
+        // the color the gather arrived at (§6.7).
         let out_res = srgb - mixbox_eval_polynomial(out_conc);
         // The strength mix on the raw premultiplied lanes — both halves of the
-        // colour, the coverage and the height together, so strength 0 is the
+        // color, the coverage and the height together, so strength 0 is the
         // backdrop bit for bit (§21.4).
         var out: FsOut;
         out.color = mix(cb, vec4<f32>(out_conc * a, a), f.strength);
@@ -118,7 +118,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         return out;
     }
 
-    // Both halves un-premultiply by the *colour's* coverage — the residual target's
+    // Both halves un-premultiply by the *color's* coverage — the residual target's
     // own alpha is the same number, duplicated only because the fixed-function
     // "over" that filled these targets reads each one's alpha.
     let chan = cb.rgb / max(cb.a, COVERAGE_EPS);
@@ -133,7 +133,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     );
     let out_chan = mixbox_srgb_to_concentrations(srgb);
     // The rest of `mixbox_rgb_to_latent`: what the polynomial cannot say about the
-    // colour the filter arrived at. Without it a filter that landed on black would
+    // color the filter arrived at. Without it a filter that landed on black would
     // store a mixture the media pass renders `#383838`, and every filtered texel
     // would be pulled toward the polynomial's reachable set.
     let out_res = srgb - mixbox_eval_polynomial(out_chan);

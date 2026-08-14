@@ -1,4 +1,4 @@
-// Filter layers for the OKLAB colour space (§21). The composited channels are
+// Filter layers for the OKLAB color space (§21). The composited channels are
 // premultiplied Oklab with the stack's *coverage* in alpha (composite.wesl) — the
 // very space `filter_common`'s adjustment is defined in, so the point filters need
 // no space-specific conversion at all: the channels go straight in and come
@@ -10,7 +10,7 @@
 // trip and the result pays the trip back — the same bracket, per tap instead of
 // per texel. Shorter than its Mixbox twin by exactly the residual and the pigment
 // round trip, which is the point: in a colorimetric space the three channels are
-// the whole colour, and they are already Oklab (§6.7).
+// the whole color, and they are already Oklab (§6.7).
 
 import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab};
 import package::lib::quad::{fullscreen_clip};
@@ -62,7 +62,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         }
         let a = cov_acc / y_acc;
         let lab = linear_srgb_to_oklab(lin_acc / w_acc / max(a, COVERAGE_EPS));
-        // The strength mix runs on the raw premultiplied lanes — colour, coverage
+        // The strength mix runs on the raw premultiplied lanes — color, coverage
         // and height together, because this filter moved all three — so strength 0
         // is `cb` itself, bit for bit, the same exactness `weigh` gives the point
         // filters (§21.4).

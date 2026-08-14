@@ -211,7 +211,7 @@ pub(crate) fn clear_to(color: wgpu::Color) -> wgpu::Operations<wgpu::Color> {
     }
 }
 
-/// A colour attachment on `view` with `ops`.
+/// A color attachment on `view` with `ops`.
 pub(crate) fn attach(
     view: &wgpu::TextureView,
     ops: wgpu::Operations<wgpu::Color>,
@@ -315,13 +315,13 @@ pub(crate) const QUAD_STRIP: wgpu::PrimitiveState = wgpu::PrimitiveState {
     conservative: false,
 };
 
-/// A colour target that replaces what it writes — the pass computes the finished
+/// A color target that replaces what it writes — the pass computes the finished
 /// texel, so there is nothing for fixed-function blending to do.
 pub(crate) fn target(format: wgpu::TextureFormat) -> Option<wgpu::ColorTargetState> {
     blended_target(format, None)
 }
 
-/// A colour target with an explicit blend state.
+/// A color target with an explicit blend state.
 pub(crate) fn blended_target(
     format: wgpu::TextureFormat,
     blend: Option<wgpu::BlendState>,
@@ -390,7 +390,7 @@ pub(crate) fn zero_texture(
     constant_texture(ctx, format, &vec![0u8; bytes], label)
 }
 
-/// The colour attachments of a pass that writes a **tile**: colour, aux, and the
+/// The color attachments of a pass that writes a **tile**: color, aux, and the
 /// residual a pigment space adds (§6.7).
 ///
 /// Returned as a fixed array plus how many of it are real, so the caller slices —
@@ -431,7 +431,7 @@ pub(crate) struct Zeroes {
     pub(crate) color: wgpu::TextureView,
     pub(crate) aux: wgpu::TextureView,
     /// The residual channel's stand-in, in a space that has one (§6.7). Bare canvas
-    /// has no residual for the same reason it has no colour, and this is what the
+    /// has no residual for the same reason it has no color, and this is what the
     /// clamped loads read there.
     pub(crate) resid: Option<wgpu::TextureView>,
 }

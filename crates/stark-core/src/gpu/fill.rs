@@ -150,7 +150,7 @@ impl FillRenderer {
             label: Some("stark fill"),
         });
 
-        // Every stop's colour converts to this space's channels **on the CPU, once
+        // Every stop's color converts to this space's channels **on the CPU, once
         // per fill** — the shader then interpolates in the working space, which is
         // what makes an Oklab ramp the library strip's and a Mixbox ramp a pigment
         // mixture (§22.4).
@@ -193,7 +193,7 @@ impl FillRenderer {
                 Some(tile) => (tile.color_view().clone(), tile.aux_view().clone()),
                 None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
             };
-            // Bare canvas reads the 1×1 zero here exactly as it does for the colour.
+            // Bare canvas reads the 1×1 zero here exactly as it does for the color.
             let base_resid = self.zeroes.resid.as_ref().map(|zero| {
                 base.get(coord)
                     .and_then(|t| t.resid_view())

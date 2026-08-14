@@ -13,13 +13,13 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::pigment::PigmentLut;
 
-/// The channel targets pass A hands around: colour, aux, and — in a space that has
+/// The channel targets pass A hands around: color, aux, and — in a space that has
 /// one — the residual (§6.7).
 ///
 /// A struct rather than the tuple this was, because the third is an `Option` and
 /// `target.2` would have said nothing about why. `resid` is `Some` for every target
 /// of a pigment document and `None` for every target of a colorimetric one; it is
-/// decided by the colour space once, never per call site.
+/// decided by the color space once, never per call site.
 #[derive(Copy, Clone)]
 pub(super) struct Targets<'a> {
     pub(super) color: &'a wgpu::TextureView,
@@ -28,7 +28,7 @@ pub(super) struct Targets<'a> {
 }
 
 impl<'a> Targets<'a> {
-    /// The colour attachments in target order, with `resid` at location 2 when the
+    /// The color attachments in target order, with `resid` at location 2 when the
     /// space has one — the order every pass A pipeline declares.
     ///
     /// Returned as an array-plus-length rather than a `Vec`: this is called once per
@@ -206,7 +206,7 @@ impl BlendPass {
         if let Some(f) = resid_format {
             debug_assert_eq!(
                 f, color_format,
-                "the blend pass loads both residual targets with the colour's decode",
+                "the blend pass loads both residual targets with the color's decode",
             );
             entries.push(desc::load_tex(7, frag)); // accumulator residual
             entries.push(desc::load_tex(8, frag)); // isolated layer residual
@@ -243,7 +243,7 @@ impl BlendPass {
         let pigment = {
             debug_assert!(
                 !color_space.needs_pigment_lut(),
-                "no colour space in this build has a pigment LUT to bind",
+                "no color space in this build has a pigment LUT to bind",
             );
             PigmentLut::placeholder(ctx)
         };
@@ -255,7 +255,7 @@ impl BlendPass {
     }
 }
 
-/// One set of channel targets — colour, aux, and (in a space that has one) the
+/// One set of channel targets — color, aux, and (in a space that has one) the
 /// residual — owned rather than borrowed, as [`Targets`] is the borrowed view of.
 struct Trio {
     color: wgpu::TextureView,
@@ -278,8 +278,8 @@ impl Trio {
             aux: make(aux_format, labels.1),
             // A pigment document isolates its residual alongside its concentrations:
             // the blend reads both to work out what light the layer carried
-            // (§6.7), so a level that isolated only the colour would hand the pass
-            // a mixture and none of the correction that makes it a colour.
+            // (§6.7), so a level that isolated only the color would hand the pass
+            // a mixture and none of the correction that makes it a color.
             resid: resid_format.map(|f| make(f, labels.2)),
         }
     }

@@ -169,11 +169,11 @@ pub enum ActionKind {
     /// release, so fifty tweaks are fifty undo steps rather than five thousand.
     /// A no-op on a region with no rect to move ([`MatteRegion::with_rect`]).
     SetMatteRect(LayerId, Vec2, Vec2),
-    /// Repaint a matte — a flat colour or a gradient ramp (§15.4, §22.4).
+    /// Repaint a matte — a flat color or a gradient ramp (§15.4, §22.4).
     SetMattePaint(LayerId, MattePaint),
-    /// Set the canvas substrate colour — the ground the paint sits on, straight
+    /// Set the canvas substrate color — the ground the paint sits on, straight
     /// sRGB (§15.5). Logged because the ground a piece was painted on
-    /// is part of what it is; it was previously a view setting, so the paper colour
+    /// is part of what it is; it was previously a view setting, so the paper color
     /// of a painting was not saved at all.
     SetBackground([f32; 3]),
 
@@ -350,7 +350,7 @@ impl ActionKind {
     /// A `&'static str` and nothing more: a timeline showing a hundred steps needs
     /// them by the hundred, and the point of the caption is to tell a stroke from a
     /// layer change at a glance, not to describe either. Anything richer — which
-    /// layer, what colour — is what the canvas beside it is for.
+    /// layer, what color — is what the canvas beside it is for.
     pub fn label(&self) -> &'static str {
         match self {
             ActionKind::CommitStroke(_) => "Stroke",
@@ -375,7 +375,7 @@ impl ActionKind {
             ActionKind::SetFilter(..) => "Filter",
             ActionKind::SetMatteRect(..) => "Move frame",
             ActionKind::SetMattePaint(..) => "Matte paint",
-            ActionKind::SetBackground(_) => "Canvas colour",
+            ActionKind::SetBackground(_) => "Canvas color",
             ActionKind::SetSurface(_) => "Canvas surface",
             ActionKind::Undo(_) => "Undo",
         }

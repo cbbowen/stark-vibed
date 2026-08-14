@@ -119,10 +119,10 @@ struct Cursors {
 /// meaningless apart: the ground belongs under the stack, the outlines over it, and
 /// `transparent` says whether the ground is drawn at all.
 pub struct CompositeScene<'a> {
-    /// The substrate colour in the document's working channels — the ground under
+    /// The substrate color in the document's working channels — the ground under
     /// the paint (§15.5).
     pub background: [f32; 4],
-    /// The substrate colour's **residual** in `.xyz` (§6.7); `.w` unused. Zero in a
+    /// The substrate color's **residual** in `.xyz` (§6.7); `.w` unused. Zero in a
     /// space that has none — and the reason a *black* ground in a pigment document
     /// finally reads black, since Mixbox's polynomial renders those concentrations
     /// `#383838` on their own.
@@ -178,7 +178,7 @@ pub struct CompositorPipeline {
     color_format: wgpu::TextureFormat,
     aux_format: wgpu::TextureFormat,
     /// The residual channel's format, or `None` in a space that has none (§6.7).
-    /// Decides the third attachment on every pass A target, and it is the colour
+    /// Decides the third attachment on every pass A target, and it is the color
     /// space's answer rather than a per-target choice.
     resid_format: Option<wgpu::TextureFormat>,
     /// What passes B–D write, and therefore what the supersampled target carries.
@@ -198,12 +198,12 @@ pub struct CompositorPipeline {
     /// two states anywhere ever share a value: "same stamp" then implies "same
     /// pipeline, same settings", and a consumer's decision to reuse cannot be wrong.
     ///
-    /// The case that needs that is a colour-space rebuild (§6.7), which does
+    /// The case that needs that is a color-space rebuild (§6.7), which does
     /// not mutate a pipeline but *replaces* it. A per-pipeline counter would start the
     /// replacement back at its initial value — the very value a consumer that had
     /// rendered against the old pipeline is holding — so a kept [`Compositor`] would
     /// see "no change" and keep attachments belonging to the pipeline that is gone.
-    /// Today both colour spaces happen to use the same channel formats, so that would
+    /// Today both color spaces happen to use the same channel formats, so that would
     /// come out *harmless*; but which formats a space wants is a decision the
     /// `ColorSpace` trait deliberately leaves open ([`ColorSpace::color_format`]), and
     /// "correct because two implementations coincide" is not a property to build on.
@@ -427,7 +427,7 @@ impl Compositor {
     ///
     /// Called at the top of every render, so a resized target, a zoom that crossed a
     /// supersampling threshold, a swapped canvas weave, a swapped light and a whole
-    /// rebuilt pipeline (a colour-space change, which changes the channel *formats*)
+    /// rebuilt pipeline (a color-space change, which changes the channel *formats*)
     /// all land without anyone having to be notified — see
     /// [`CompositorPipeline::generation`].
     ///
@@ -986,7 +986,7 @@ impl Compositor {
     /// `color` is the paint's own channels in the document's working space, which is
     /// what a picker has to read: the lit result has been through image-based
     /// lighting, a tonemap and an sRGB encode, so picking *that* would hand back a
-    /// colour the palette never mixed — and in a Mixbox document (§6.7) a
+    /// color the palette never mixed — and in a Mixbox document (§6.7) a
     /// pigment mixture that cannot be picked back up, which is the point of mixing
     /// in pigment space at all.
     ///
@@ -1003,7 +1003,7 @@ impl Compositor {
         color: &wgpu::TextureView,
         aux: &wgpu::TextureView,
         // The residual target, which a pigment document's pass A **requires**: it
-        // writes three attachments, and this is also the half of the colour a caller
+        // writes three attachments, and this is also the half of the color a caller
         // needs to reconstruct an sRGB answer from what lands here (§6.7).
         resid: Option<&wgpu::TextureView>,
         view: ViewTransform,
@@ -1012,14 +1012,14 @@ impl Compositor {
         debug_assert_eq!(
             resid.is_some(),
             p.resid_format.is_some(),
-            "pass A's attachment count is the colour space's, not the caller's",
+            "pass A's attachment count is the color space's, not the caller's",
         );
         let streams = self.prepare_composite(p, view, groups);
         // Its own scratch, thrown away with the call. A pick viewport is `2r+1`
         // square, so this is a few kilobytes; sharing the render path's cache would
         // trade that for reallocating the *window* twice a frame (see
         // [`Self::ensure_scratch`]). Blend modes have to be honoured here or an
-        // eyedropper would report a colour the screen never showed.
+        // eyedropper would report a color the screen never showed.
         let needs = scratch_needs(groups);
         let scratch = (!needs.is_empty()).then(|| {
             ScratchTargets::new(
@@ -1120,7 +1120,7 @@ impl Compositor {
         // Exposure belongs to the light, not to a knob beside it: each environment is
         // shown at the value it was judged at (§6.3). Normalized by the
         // irradiance a *flat* canvas receives, so `1.0` means the same thing in every
-        // environment — an unrelieved patch of paint comes back out its own colour.
+        // environment — an unrelieved patch of paint comes back out its own color.
         let exposure = p.environment.exposure / p.environment.flat_irradiance;
 
         // Media uniform.

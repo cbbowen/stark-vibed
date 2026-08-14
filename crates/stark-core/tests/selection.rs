@@ -739,7 +739,7 @@ fn feathered_edge_fades_the_stroke() {
 // discontinuity there is a real failure mode — §6.4), and the outline overlay, which
 // nothing else renders. One golden per masking site, since they are separate code.
 
-/// A stripe field covering the whole viewport, in alternating colours — the paint the
+/// A stripe field covering the whole viewport, in alternating colors — the paint the
 /// selection stencils. Broad and edge-to-edge on purpose: every band crosses the mask
 /// boundary, and the bands run past the viewport so no stroke cap is mistaken for a
 /// mask edge.

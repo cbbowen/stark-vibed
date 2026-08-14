@@ -1,11 +1,11 @@
-//! The eyedropper: sampling a colour off the canvas (§18.0.2).
+//! The eyedropper: sampling a color off the canvas (§18.0.2).
 //!
 //! A **request** rather than a command — it has to answer — and one that goes
 //! through the *same* draw list rendering does ([`Engine::composite_groups`]), so
 //! what it reports is the paint the screen is drawing rather than a second opinion
 //! about it. What it deliberately does not sample is the media pass's output: that
 //! lights the paint, tonemaps it and encodes sRGB, so picking it up would load the
-//! brush with a colour the palette never mixed.
+//! brush with a color the palette never mixed.
 
 use super::Engine;
 use super::render::visible_tiles;
@@ -15,18 +15,18 @@ use crate::geom::{Extent2, ViewTransform};
 /// Which layers an eyedropper sample is taken from (§18.0.2).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum PickSource {
-    /// Every visible layer, composited — the colour the canvas shows.
+    /// Every visible layer, composited — the color the canvas shows.
     #[default]
     Composite,
     /// Every visible layer *over the substrate* (§15.5): the same stack, with the
-    /// canvas colour standing in wherever the paint does not cover.
+    /// canvas color standing in wherever the paint does not cover.
     ///
     /// The one source that answers on bare canvas, and the only one whose answer can
-    /// be a colour no layer holds — a glaze over the ground is a mixture of the two.
+    /// be a color no layer holds — a glaze over the ground is a mixture of the two.
     /// That is what it is for: matching what the eye sees at a point rather than what
     /// is stored there, which is the question being asked when the paint is thin.
     CompositeOverSubstrate,
-    /// One layer alone: the colour that layer would have if it were the only one in
+    /// One layer alone: the color that layer would have if it were the only one in
     /// the document. What "sample the current layer" has to mean, since a glaze on
     /// top of somebody else's underpainting is not the same paint as the two mixed.
     ///
@@ -35,7 +35,7 @@ pub enum PickSource {
     /// source is asked to ignore: a blend mode and a clip decide how much of the paint
     /// survives its surroundings, and the opacity slider decides how much of the layer
     /// the *document* shows. None of them says what the paint **is**, so turning a
-    /// layer down reports the same colour rather than a paler one — which is the
+    /// layer down reports the same color rather than a paler one — which is the
     /// property a painter needs, since the reason to sample a faded layer is usually
     /// to go on painting with what is already on it.
     ///
@@ -64,7 +64,7 @@ pub struct PickOptions {
 /// back, so an unbounded radius is an unbounded render.
 const MAX_PICK_RADIUS: u32 = 32;
 
-/// Below this summed opacity a sampled patch holds no paint worth calling a colour,
+/// Below this summed opacity a sampled patch holds no paint worth calling a color,
 /// and dividing by it would amplify float noise into an arbitrary hue.
 const PICK_MIN_OPACITY: f32 = 1e-3;
 
@@ -91,7 +91,7 @@ fn sum_texels(texels: &[f32]) -> ([f32; 4], usize) {
 /// The composite is premultiplied by opacity (§6.1), so summing and
 /// dividing by the summed opacity *is* the opacity-weighted mean: a texel carrying
 /// more paint counts for more and a bare one counts for nothing. That is what lets a
-/// radius wider than the stroke still report the stroke's colour rather than a wash
+/// radius wider than the stroke still report the stroke's color rather than a wash
 /// of it fading into empty canvas.
 fn mean_channels(texels: &[f32]) -> Option<[f32; 4]> {
     let (sum, _) = sum_texels(texels);
@@ -102,13 +102,13 @@ fn mean_channels(texels: &[f32]) -> Option<[f32; 4]> {
 }
 
 /// The mean channels of a sampled patch **composited over the substrate** `bg` — the
-/// colour the canvas shows there rather than the paint's own (`PickSource::CompositeOverSubstrate`).
+/// color the canvas shows there rather than the paint's own (`PickSource::CompositeOverSubstrate`).
 ///
 /// The same `over` the media pass runs, in the same latent channels and the same
 /// order (`over_substrate` in `media_common.wesl`): `bg·(1−a) + c`, with the
-/// composite's premultiplied colour standing in for `c·a`. Sharing the operation
+/// composite's premultiplied color standing in for `c·a`. Sharing the operation
 /// rather than restating it is what keeps this mode from becoming a second opinion
-/// about a colour the screen has already decided.
+/// about a color the screen has already decided.
 ///
 /// It is a **plain** mean where [`mean_channels`] is an opacity-weighted one, and
 /// that difference *is* the mode: with the ground behind it every texel is opaque, so
@@ -133,7 +133,7 @@ fn mean_over_substrate(texels: &[f32], bg: [f32; 4]) -> Option<[f32; 4]> {
     ])
 }
 impl Engine {
-    /// Sample the canvas colour at `at` — the eyedropper (§18.0.2).
+    /// Sample the canvas color at `at` — the eyedropper (§18.0.2).
     ///
     /// A **request**, not a command: it has to answer, so it stays a direct method
     /// beside `save_bytes` rather than joining [`InputCommand`](crate::InputCommand),
@@ -142,14 +142,14 @@ impl Engine {
     /// What it samples is the **raw layer channels**, not the composited, *lit*
     /// result the screen shows, and that is the decision the feature turns on. The
     /// media pass lights the paint, tonemaps it and encodes sRGB, so picking its
-    /// output would load the brush with a colour the palette never mixed — and in a
-    /// Mixbox document (§6.7) with a display colour rather than the pigment
+    /// output would load the brush with a color the palette never mixed — and in a
+    /// Mixbox document (§6.7) with a display color rather than the pigment
     /// mixture, which would make picking the mix back up impossible. That is the
     /// entire reason pigment mixing is worth having.
     ///
     /// `None` where the sampled patch holds no paint: the substrate is the ground,
     /// not something a brush picks up, so bare canvas answers "nothing here" rather
-    /// than quietly loading the brush with the paper colour. The one source that
+    /// than quietly loading the brush with the paper color. The one source that
     /// answers anyway is [`PickSource::CompositeOverSubstrate`], where the ground is
     /// what was asked for.
     ///
@@ -166,7 +166,7 @@ impl Engine {
         async move { fut.await.into_iter().next().flatten() }
     }
 
-    /// Sample a gradient off the canvas: colours along a traced path, fitted to
+    /// Sample a gradient off the canvas: colors along a traced path, fitted to
     /// stops — the eyedropper generalized from a point to a line (§22.2).
     ///
     /// The trace is how a gradient is *made* here: the artist draws a line
@@ -224,7 +224,7 @@ impl Engine {
         // Read here rather than in the future, because it is document state and
         // the future deliberately does not borrow the engine. That the other two
         // sources have no ground is why this is a third *source* rather than a
-        // flag on the other two: asking one layer for its own colour and asking
+        // flag on the other two: asking one layer for its own color and asking
         // what the canvas shows are different questions, and only the second one
         // has a substrate in it.
         let ground = matches!(options.source, PickSource::CompositeOverSubstrate).then(|| {
@@ -236,8 +236,8 @@ impl Engine {
         });
 
         let (color_format, aux_format, resid_format) = self.compositor_pipeline.channel_formats();
-        // The readback decodes four halves per texel. Both colour spaces store the
-        // colour channels that way (§6.1); a new one that did not would
+        // The readback decodes four halves per texel. Both color spaces store the
+        // color channels that way (§6.1); a new one that did not would
         // have to say so here rather than silently mis-decoding.
         debug_assert_eq!(color_format, wgpu::TextureFormat::Rgba16Float);
 
@@ -247,7 +247,7 @@ impl Engine {
             // Centred on the canvas *pixel* the point falls in rather than on the point
             // itself: pass A samples tile textures bilinearly, so a fractional offset
             // would blend neighbouring texels and a "point sample" would answer with a
-            // colour that is at neither of them. Snapping puts every fragment on a texel
+            // color that is at neither of them. Snapping puts every fragment on a texel
             // centre, so radius 0 reports exactly the texel under the cursor.
             let view = ViewTransform {
                 center: crate::geom::Vec2::new(at.x.floor() + 0.5, at.y.floor() + 0.5),
@@ -261,7 +261,7 @@ impl Engine {
             };
             // The *presented* document, so a sample agrees with what is on screen —
             // including a collaborator's stroke that has not committed yet, and the
-            // substrate colour mid-drag on the picker that sets it (§15.5).
+            // substrate color mid-drag on the picker that sets it (§15.5).
             let groups = {
                 let doc = self.presented();
                 self.composite_groups(doc, only, visible_tiles(view))
@@ -273,7 +273,7 @@ impl Engine {
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             );
             // Written by pass A and never read: the height it accumulates says how *much*
-            // paint is there, not what colour it is.
+            // paint is there, not what color it is.
             let aux = self.offscreen_target(
                 "stark pick aux",
                 aux_format,
@@ -281,8 +281,8 @@ impl Engine {
                 wgpu::TextureUsages::RENDER_ATTACHMENT,
             );
             // The residual, and unlike the aux it **is** read back: in a pigment space it
-            // is half the colour, so an eyedropper that sampled only the concentrations
-            // would report the polynomial's nearest reachable colour — black as `#383838`
+            // is half the color, so an eyedropper that sampled only the concentrations
+            // would report the polynomial's nearest reachable color — black as `#383838`
             // — which is precisely the defect this channel exists to fix (§6.7).
             let resid = resid_format.map(|f| {
                 self.offscreen_target(
@@ -308,14 +308,14 @@ impl Engine {
         }
 
         // Captured, not read through `self`: the future deliberately does not borrow
-        // the engine (see `export`). The colour space is an `Arc`, so carrying the
+        // the engine (see `export`). The color space is an `Arc`, so carrying the
         // channels→RGB conversion into it costs a refcount bump.
         let gpu = self.gpu.clone();
         let color_space = self.color_space.clone();
         async move {
             let refs: Vec<&wgpu::Texture> = colors.iter().collect();
             let texel_sets = crate::gpu::readback::read_many_rgba16f(&gpu, &refs, size).await;
-            // Whether a residual exists is a colour-space property, so it is
+            // Whether a residual exists is a color-space property, so it is
             // all-or-none across the batch and the two lists stay index-aligned.
             let resid_refs: Vec<&wgpu::Texture> = resids.iter().flatten().collect();
             let resid_sets = if resid_refs.is_empty() {
@@ -333,7 +333,7 @@ impl Engine {
                     };
                     // The residual takes the **same** two means, unchanged. It can,
                     // because the residual target's alpha is a duplicate of the
-                    // colour's: `sum[3]` is the same coverage sum either way, so the
+                    // color's: `sum[3]` is the same coverage sum either way, so the
                     // opacity weighting and the over-substrate blend are already the
                     // right ones for it (§6.7).
                     let mean_resid = resid_sets.as_ref().and_then(|sets| match ground {

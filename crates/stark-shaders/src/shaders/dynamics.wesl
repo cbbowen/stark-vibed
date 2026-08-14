@@ -67,7 +67,7 @@
 // of the tip. All of it is gone.
 //
 // Conservation (§6.1): paint moves by transferring **height** — the one
-// conserved quantity. Colour and per-unit opacity ride as optical-mass
+// conserved quantity. Color and per-unit opacity ride as optical-mass
 // (opacity·height) weighted blends; `add` is the only source term. Both sides of
 // each transfer integrate the same rate over the same footprint, so with
 // `add = 0` total height (canvas + tool) is conserved up to resampling error.
@@ -97,7 +97,7 @@ struct Stamp {
     //    of contact rather than a stretch of travel), λ_lift, λ_deposit —
     //    λ = ln(1 − axis) ≤ 0, clamped away from −∞.
     b: vec4<f32>,
-    // c: the brush's own colour channels .xyz + per-unit opacity .w. **Undrained** —
+    // c: the brush's own color channels .xyz + per-unit opacity .w. **Undrained** —
     //    the falloff is applied per fragment from its own arc length, not baked in
     //    per segment (see `stroke_drain`).
     c: vec4<f32>,
@@ -122,12 +122,12 @@ struct Stamp {
     //    midpoint, where `exchange` used to sample the canvas with one bilinear tap
     //    for the whole segment; that walks the texel's own track through `tip_at` now.
     e: vec4<f32>,
-    // f–h: colour dynamics (§6.2) for the brush's own `add` paint —
+    // f–h: color dynamics (§6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
     // f: noise frequency per lookup axis (across the stroke, along it) .xy,
     //    1/NOISE_TILE_PX in .z; .w unused.
     f: vec4<f32>,
-    // g: per colour-channel noise amplitude .xyz (all 0 = off); arc length at
+    // g: per color-channel noise amplitude .xyz (all 0 = off); arc length at
     //    the segment start (canvas px) in .w.
     g: vec4<f32>,
     // h: per-stroke noise lookup translation .xy; the tooth's **bearing fraction** in
@@ -150,7 +150,7 @@ struct Stamp {
     //    with no relief, which is what makes a `Flat` canvas render exactly what it
     //    always did.
     i: vec4<f32>,
-    // j: the brush colour's **residual** .xyz — the half of it the space's three
+    // j: the brush color's **residual** .xyz — the half of it the space's three
     //    channels cannot express (§6.7); .w unused. Undrained, like `c`.
     //    Zero for every space but Mixbox.
     //
@@ -204,7 +204,7 @@ fn seg_dir() -> vec2<f32> { return st.a.zw; }
 // The frame, not the tip. The two are the same for every brush but a pen-oriented
 // stamp, whose prefix-τ volume is padded so the mask can turn inside it without losing
 // its corners (§6.6): there the volume's `[-1, 1]²` is `frame_scale()` tips wide, and
-// everything read out of a brush-local coordinate — the arc, the colour-noise domain,
+// everything read out of a brush-local coordinate — the arc, the color-noise domain,
 // the reservoir's placement — is in that larger frame.
 fn frame_radius() -> f32 { return st.b.x; }
 fn travel_radii() -> f32 { return st.b.y; }
@@ -232,7 +232,7 @@ fn bleed_rate() -> f32 { return -st.h.w; }
 fn brush_lat() -> vec3<f32> { return st.c.xyz; }
 fn brush_op() -> f32 { return st.c.w; }
 
-// The brush colour's residual (§6.7), undrained like the latent beside it. Zero in
+// The brush color's residual (§6.7), undrained like the latent beside it. Zero in
 // every space that has no residual, and read only by the `@if(resid)` build.
 fn brush_res() -> vec3<f32> { return st.j.xyz; }
 
@@ -257,7 +257,7 @@ fn orientation() -> f32 { return st.d.z; }
 fn drain_rate() -> f32 { return st.d.w; }
 fn arc_at_start() -> f32 { return st.g.w; }
 
-// Colour dynamics (§6.2): the noise field's frequency, per-channel amplitude and
+// Color dynamics (§6.2): the noise field's frequency, per-channel amplitude and
 // per-stroke translation. Amplitude all-zero is jitter off.
 fn noise_freq() -> vec4<f32> { return st.f; }
 fn noise_amp() -> vec3<f32> { return st.g.xyz; }
@@ -276,7 +276,7 @@ fn tooth_bearing() -> f32 { return st.h.z; }
 fn weave_uv_scale() -> f32 { return st.i.y; }
 fn weave_uv_bias() -> vec2<f32> { return st.i.zw; }
 
-// The stroke's canvas region: premultiplied colour (latent·op, op) + wide aux
+// The stroke's canvas region: premultiplied color (latent·op, op) + wide aux
 // (height, _, _, _). Read by `snapshot` (textureLoad) and `exchange` (bilinear).
 @group(0) @binding(1) var region_color: texture_2d<f32>;
 @group(0) @binding(2) var region_aux: texture_2d<f32>;
@@ -289,7 +289,7 @@ fn weave_uv_bias() -> vec2<f32> { return st.i.zw; }
 // reservoir texel's own footprint weight. Read by the **tool** side only
 // (`exchange`); the canvas side uses the prefix-τ exposure instead.
 @group(0) @binding(6) var cov_tex: texture_2d<f32>;
-// The tool reservoir ping-pong: colour = (latent .xyz, per-unit opacity .w),
+// The tool reservoir ping-pong: color = (latent .xyz, per-unit opacity .w),
 // aux = (carried height, _, _, _). `src` is read this dispatch, `dst` written;
 // the host swaps the bind group after each pass that writes it — `exchange`,
 // so a painting segment cycles it once. A bleed or settle slot
@@ -304,7 +304,7 @@ fn weave_uv_bias() -> vec2<f32> { return st.i.zw; }
 // The region, written in place by `deposit`.
 @group(0) @binding(13) var region_color_w: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(14) var region_aux_w: texture_storage_2d<rgba16float, write>;
-// The colour-dynamics noise field + its repeat sampler (deposit only): jitters
+// The color-dynamics noise field + its repeat sampler (deposit only): jitters
 // the brush's own `add` paint exactly like the fast path's stamp (§6.2).
 @group(0) @binding(15) var dyn_noise_tex: texture_2d<f32>;
 @group(0) @binding(16) var dyn_noise_samp: sampler;
@@ -335,14 +335,14 @@ fn weave_uv_bias() -> vec2<f32> { return st.i.zw; }
 
 // ---- The residual channel (§6.7) -------------------------------------------------
 //
-// One texture beside each of the colour textures above, carrying the half of the
-// colour the space's three channels cannot express. A residual is not a second
-// quantity to conserve but the rest of the same colour, so each of these is read,
-// written, swept and blended at exactly the point its colour partner is, on the
+// One texture beside each of the color textures above, carrying the half of the
+// color the space's three channels cannot express. A residual is not a second
+// quantity to conserve but the rest of the same color, so each of these is read,
+// written, swept and blended at exactly the point its color partner is, on the
 // same masses and the same shares — there is no rate, no prefix and no bound here
 // that the latent does not already have.
 //
-// All `@if(resid)`: Oklab reproduces every sRGB colour in three channels, so it
+// All `@if(resid)`: Oklab reproduces every sRGB color in three channels, so it
 // declares none of these and its bind group layout is shorter rather than padded
 // with 1×1 stand-ins.
 //
@@ -387,7 +387,7 @@ fn weave_uv_bias() -> vec2<f32> { return st.i.zw; }
 @group(0) @binding(33) var cell_tool: texture_2d<f32>;
 @group(0) @binding(34) var cell_lat: texture_2d<f32>;
 // The residual's cell mean (§6.7), recovered against the same masses at the same
-// centre — one more channel of the same colour, exactly as everywhere else.
+// centre — one more channel of the same color, exactly as everywhere else.
 @if(resid) @group(0) @binding(35) var cell_res_w: texture_storage_2d<rgba32float, write>;
 @if(resid) @group(0) @binding(36) var cell_res: texture_2d<f32>;
 // (The prefix-τ volume rides at group(1) binding(0) via the stamp_common import.)
@@ -507,7 +507,7 @@ struct Exchange {
 // the load. The reservoir goes negative, and every reciprocal downstream — the
 // tool's own `m / max(h, PAINT_EPS)`, the region's `rc.rgb / rc.a`, the deposit's
 // `latm / max(tool_m, PAINT_EPS)` — is then a quotient by a negative or vanishing
-// denominator, which is the wild colour that prints as a speckle of blown-out texels.
+// denominator, which is the wild color that prints as a speckle of blown-out texels.
 // Reproduced at `lift = 0.002, deposit = 0.95`; clean at `lift = 0`, at `lift = 0.5`
 // and at any small `deposit`, which is the fingerprint of a cancellation and not of
 // the physics (`a_barely_lifting_brush_does_not_mint_on_its_tool`).
@@ -1045,7 +1045,7 @@ fn exchange(
         let rc = textureSampleLevel(region_color, samp, uv, 0.0);
         let ra = textureSampleLevel(region_aux, samp, uv, 0.0);
         // The identical bilinear tap at the identical uv — the residual rides the
-        // colour it belongs to and never its own weights.
+        // color it belongs to and never its own weights.
         @if(resid) let rr = textureSampleLevel(region_resid, samp, uv, 0.0);
 
         // What it keeps of its own load. Exactly the complement of the fraction the
@@ -1064,7 +1064,7 @@ fn exchange(
         h = h * (1.0 - ex.dep);
         m = m * (1.0 - ex.dep);
 
-        // Height moves; colour and per-unit opacity ride as optical-mass-weighted
+        // Height moves; color and per-unit opacity ride as optical-mass-weighted
         // blends (§6.1). Two parcels land on the tool — what it took off the canvas,
         // and the share of the brush's own `add` it lifted back before that paint had
         // settled — each stacked with its own latent, so a tip smearing red through
@@ -1072,12 +1072,12 @@ fn exchange(
         let take_h = ra.x * (1.0 - ex.keep) * sel;
         let take_m = rc.a * take_h;
         h = h + take_h;
-        // Only mix a colour in when there is optical mass to carry it. The region is
+        // Only mix a color in when there is optical mass to carry it. The region is
         // stored premultiplied, so recovering a latent is a division by the opacity —
         // and out in a stroke's faded tail that opacity is a rounding error, so the
         // quotient is enormous. `blend_latent` weights it by its own vanishing mass,
         // but "enormous × almost nothing" is not nothing: it leaves a few tenths of a
-        // wild colour on the tool, which the deposit then combs out along the stroke as
+        // wild color on the tool, which the deposit then combs out along the stroke as
         // thin bright streaks. The single mid-segment tap this replaced could hit that
         // too, but once per segment and at the midpoint; walking the track samples the
         // ends as well, where the canvas is emptiest, and eight times as often.
@@ -1106,7 +1106,7 @@ fn exchange(
         let src_m = brush_op() * drain * src_h;
         lat = blend_latent(lat, m, brush_lat(), src_m);
         // The brush's own residual is **not** jittered, for the reason `stamp.wesl`
-        // gives: colour dynamics perturb the pigment mixture, and the residual is
+        // gives: color dynamics perturb the pigment mixture, and the residual is
         // precisely what no mixture of those pigments reaches.
         @if(resid) res = blend_latent(res, m, brush_res(), src_m);
         h = h + src_h;
@@ -1322,7 +1322,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // denominator instead of appearing twice.
     //
     // Height and mass are non-negative, so a total below zero can only be rounding.
-    // The *latent* is not: these are colour-space channels (Oklab a/b are signed —
+    // The *latent* is not: these are color-space channels (Oklab a/b are signed —
     // green carries a negative a), so its prefix is not monotonic and clamping the
     // difference would shear the chroma off whatever the tool is carrying.
     let inv_pre = 1.0 / dpre;
@@ -1334,7 +1334,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The residual's mean over the same pass, recovered against the same mass and the
     // same measure — unclamped like the latent, and for the same reason: a residual is
     // signed (`rgb − poly(c)` is negative on all three channels at black, §6.7), so
-    // clamping its prefix difference would shear the colour it exists to carry.
+    // clamping its prefix difference would shear the color it exists to carry.
     @if(resid) let d_rlm = bake_at(bake_rlm, xl, yl) - bake_at(bake_rlm, xl - sw.lr, yl);
     @if(resid) let tool_res = d_rlm.xyz * inv_pre / max(tool_m, PAINT_EPS);
 
@@ -1419,8 +1419,8 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
         bled = dh != 0.0 || dm != 0.0 || any(dlm != vec3<f32>(0.0, 0.0, 0.0));
-        // The residual joins the verdict rather than riding on the colour's: a flux
-        // that moved residual and no latent is possible — two colours with equal
+        // The residual joins the verdict rather than riding on the color's: a flux
+        // that moved residual and no latent is possible — two colors with equal
         // concentrations and different residuals is exactly what this channel exists
         // to tell apart — and calling that texel unbled would drop the transfer.
         @if(resid) bled = bled || any(drlm != vec3<f32>(0.0, 0.0, 0.0));
@@ -1439,15 +1439,15 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let canvas_lat = lat0;
     @if(resid) let canvas_res = res0;
 
-    // The brush's own colour at this texel: the stroke colour offset by the
-    // colour-dynamics field, sampled at the same stroke-local (lateral, arc)
+    // The brush's own color at this texel: the stroke color offset by the
+    // color-dynamics field, sampled at the same stroke-local (lateral, arc)
     // domain as the fast path — both in canvas px (the travel frame's y is in
     // radius units, so it scales by the radius).
     // How far along the stroke this texel sits, and what the brush has left to lay
     // there. The same value whichever segment is drawing it — segment `i` starts at
     // `dᵢ` and sees this texel at `(arc − dᵢ)/radius` — so both rates below come out
     // independent of how the path was cut (`stroke_drain`). It is also the domain the
-    // colour-dynamics lookup already ran on, so there is one arc, not two.
+    // color-dynamics lookup already ran on, so there is one arc, not two.
     let arc = arc_at_start() + xl * frame_radius();
     let drain = stroke_drain(arc);
     let own_op = brush_op() * drain;
@@ -1495,7 +1495,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     if par_m > PAINT_EPS {
         par_lat = (tool_lat * (tool_op * dep_h) + own_lat * (own_op * add_h)) / par_m;
         // The same two masses weight the residual's mixture, so the parcel's two
-        // halves are one colour rather than two independently averaged ones.
+        // halves are one color rather than two independently averaged ones.
         @if(resid) par_res =
             (tool_res * (tool_op * dep_h) + brush_res() * (own_op * add_h)) / par_m;
     }
@@ -1516,7 +1516,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(region_color_w, rt, f16_nearest4(mix(uc, vec4<f32>(lat * op, op), sel)));
     textureStore(region_aux_w, rt, f16_nearest4(mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel)));
     // Premultiplied by the same `op` and lerped by the same `sel` — the residual is
-    // stored exactly as the colour beside it is.
+    // stored exactly as the color beside it is.
     @if(resid) textureStore(
         region_resid_w, rt, f16_nearest4(mix(ur, vec4<f32>(res * op, 0.0), sel)),
     );
@@ -1540,7 +1540,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
 // **interpolating** its neighbouring cell centres back into a per-texel value. What
 // stays per-texel is what is per-texel *by model*: the ground's tooth (the canvas's
 // resolution, never the cell's), the selection coverage, the snapshot reads, the
-// colour-dynamics jitter, the arc the drain fades along, and the store with its
+// color-dynamics jitter, the arc the drain fades along, and the store with its
 // re-store guard.
 //
 // **The read is bilinear, and that is not a polish pass.** A nearest read makes every
@@ -1555,7 +1555,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
 // What is interpolated is **premultiplied by the exposure that weights it**, for the
 // same reason compositing interpolates premultiplied alpha: a cell whose centre the
 // sweep never covers carries no mean at all, not a mean of zero, and lerping toward
-// its zero would drag the tool's height and colour down at every rim. So the hoist
+// its zero would drag the tool's height and color down at every rim. So the hoist
 // stores `(e, e·h, e·m)` and the latent as `e·m·lat`, and the deposit recovers the
 // means by the same divides the exact kernel does — an unexposed neighbour then
 // contributes zero *weight* rather than a zero *value*, and a texel whose four
@@ -2069,7 +2069,7 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // The same parcel stacking as the deposit, with the delivery integral as the
     // parcel: no `add` source, because a settle is a break of contact and not a
-    // stretch of travel, and the source is a rate per unit of travel. Colour comes
+    // stretch of travel, and the source is a rate per unit of travel. Color comes
     // back out of the optical-mass weight it was integrated under, so the parcel
     // carries the mixture of the cells that would have served this point, each in
     // proportion to what it would have delivered (§6.1).

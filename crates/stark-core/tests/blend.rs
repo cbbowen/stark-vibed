@@ -70,7 +70,7 @@ const COMBINING: [BlendMode; 3] = [BlendMode::Reinhard, RADIANCE, BlendMode::Mul
 /// The slab law `1 − exp(−K·opacity·height)` never quite reaches 1, so an ordinary
 /// stroke's own interior sits well under full coverage — around 0.45 at the default
 /// flow. That is invisible for most purposes and decisive for two tests here, which
-/// are about the colour algebra and would otherwise be measuring the coverage law
+/// are about the color algebra and would otherwise be measuring the coverage law
 /// instead.
 fn opaque(color: [f32; 4]) -> BrushParams {
     BrushParams {
@@ -104,7 +104,7 @@ fn crossed(engine: &mut Engine) {
 /// here as a difference from a path that does none of it.
 ///
 /// Exact, not approximate: with no backdrop the blend interpolates to the source
-/// channels in the *working* space, so the colour never makes the trip out to light
+/// channels in the *working* space, so the color never makes the trip out to light
 /// and back and there is nothing for a conversion to round off.
 ///
 /// `Multiply` is in here too, and it is the case that shows the claim is about the
@@ -262,7 +262,7 @@ fn blend_only_acts_where_the_layers_meet() {
 /// **Associativity and commutativity.** Three overlapping glow layers give the same
 /// picture whichever order they are stacked in, because the mode is a conjugation of
 /// `+`. This is the property that makes a blend mode safe to build a painting on:
-/// reordering the stack is not supposed to be a colour decision.
+/// reordering the stack is not supposed to be a color decision.
 ///
 /// **Asserted over the whole canvas**, edges included, which it could not be before.
 /// The modes used to weigh coverage in the working space — Porter-Duff's
@@ -382,10 +382,10 @@ fn a_combining_layer_weighs_its_coverage_in_light() {
 }
 
 /// **Black is the identity — the round trip under test.** `f(a, 0) = a` for both
-/// curves, so a light layer over *black paint* must come back out its own colour.
+/// curves, so a light layer over *black paint* must come back out its own color.
 ///
 /// Unlike [`blend_over_nothing_is_normal`], this one does not take the shortcut:
-/// with a backdrop present the colour genuinely makes the trip out to normalized XYZ
+/// with a backdrop present the color genuinely makes the trip out to normalized XYZ
 /// and back, and now out to *emission* and back on top of that. That makes it the
 /// check on the conversions themselves — and in a Mixbox document, on
 /// `mixbox_lut.wesl`, the one place the engine inverts the pigment polynomial on the
@@ -403,18 +403,18 @@ fn a_combining_layer_weighs_its_coverage_in_light() {
 /// assert before.
 #[test]
 fn black_is_the_identity_through_the_round_trip() {
-    // A near-neutral and a saturated colour, because the two spaces cost very
+    // A near-neutral and a saturated color, because the two spaces cost very
     // different amounts on each.
     const MUTED: [f32; 4] = [0.55, 0.52, 0.48, 1.0];
     let cases = [
         // Oklab's round trip is a pair of matrices and a signed cube root: exact to
-        // within the half-float the composite targets carry, whatever the colour.
+        // within the half-float the composite targets carry, whatever the color.
         (ColorSpaceId::Oklab, MUTED, 2u8),
         (ColorSpaceId::Oklab, WARM, 2u8),
         // Mixbox's is the trained polynomial and its inverse table, and it holds to
         // the same bound — which it did **not** before the latent's residual was
         // carried (§6.7). A near-neutral cost 8 levels then and a saturated orange 40,
-        // because three concentrations cannot express either colour exactly and the
+        // because three concentrations cannot express either color exactly and the
         // difference was dropped on both the CPU and the GPU side of the trip. Now
         // `rgb_to_resid` keeps it and `blend_mixbox` restores it, so the round trip
         // out to XYZ and back is faithful in a pigment document too.
@@ -432,7 +432,7 @@ fn black_is_the_identity_through_the_round_trip() {
             let Some(mut engine) = engine_or_skip_with(space) else {
                 return;
             };
-            // A wide black ground with the colour laid over the middle of it, thick
+            // A wide black ground with the color laid over the middle of it, thick
             // enough to reach full coverage — see the note above.
             paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 70.0, H_STROKE);
             engine.process(DocCommand::AddLayer {
@@ -459,7 +459,7 @@ fn black_is_the_identity_through_the_round_trip() {
 }
 
 /// **White is the identity — the same round trip, from the other end.** `f(a, 1) = a`
-/// for multiply, so a layer over *white paint* must come back out its own colour.
+/// for multiply, so a layer over *white paint* must come back out its own color.
 ///
 /// This is [`black_is_the_identity_through_the_round_trip`] dualised, and it is worth
 /// having both because they fail differently. Black is the origin of every space in
@@ -474,7 +474,7 @@ fn black_is_the_identity_through_the_round_trip() {
 #[test]
 fn white_is_the_identity_through_the_round_trip() {
     const MUTED: [f32; 4] = [0.55, 0.52, 0.48, 1.0];
-    // Same colours and the same tolerances as the black case, and the same heavy
+    // Same colors and the same tolerances as the black case, and the same heavy
     // brush for the same reason: the cost under test is the round trip's, and at
     // partial coverage a combining mode's coverage law would be measured instead
     // ([`a_combining_layer_weighs_its_coverage_in_light`]).
@@ -488,7 +488,7 @@ fn white_is_the_identity_through_the_round_trip() {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;
         };
-        // A wide white ground with the colour laid over the middle of it, thick
+        // A wide white ground with the color laid over the middle of it, thick
         // enough to reach full coverage — see the note on the black case.
         paint(&mut engine, [1.0, 1.0, 1.0, 1.0], 70.0, H_STROKE);
         engine.process(DocCommand::AddLayer {
@@ -514,9 +514,9 @@ fn white_is_the_identity_through_the_round_trip() {
 }
 
 /// **Black annihilates.** The other half of multiply's algebra: `f(a, 0) = 0`, so a
-/// layer of *any* colour set to `Multiply` over black paint disappears into it.
+/// layer of *any* color set to `Multiply` over black paint disappears into it.
 ///
-/// Two claims, because either alone is weak. That two very different colours land on
+/// Two claims, because either alone is weak. That two very different colors land on
 /// the *same* pixel is what "annihilates" means and no amount of "it got darker"
 /// would give you — but on its own it would be satisfied by both collapsing to some
 /// arbitrary grey. So each is also measured against what it renders as under
@@ -524,7 +524,7 @@ fn white_is_the_identity_through_the_round_trip() {
 /// thing that changed between the two numbers is the blend.
 #[test]
 fn multiply_over_black_is_black() {
-    // `(under Normal, under Multiply)` for one colour laid over black.
+    // `(under Normal, under Multiply)` for one color laid over black.
     let sample = |color: [f32; 4]| -> Option<([u8; 4], [u8; 4])> {
         let mut engine = engine_or_skip()?;
         // The black laid **thick**: "multiply over black is black" is a claim about
@@ -712,10 +712,10 @@ fn golden_multiply_layer() {
 ///
 /// Mixbox's four trained pigments do not span sRGB, so its polynomial alone renders
 /// pure black's concentrations as `#383838`: a mid-grey, wrong by 56 levels on every
-/// channel, in the one colour a painter is most likely to notice. The engine dropped
+/// channel, in the one color a painter is most likely to notice. The engine dropped
 /// the latent's residual for as long as a tile held only three concentrations plus
 /// coverage, and no cheaper recovery exists — `rgb → c` is many-to-one, with up to 70
-/// sRGB colours sharing a quantized triple, so nothing computed from the channels
+/// sRGB colors sharing a quantized triple, so nothing computed from the channels
 /// stored beside it could have stood in.
 ///
 /// Asserted **against Oklab** rather than against zero, because the media pass has
@@ -777,7 +777,7 @@ const BLACK_BAND: &[Vec2] = &[Vec2::new(-70.0, -60.0), Vec2::new(70.0, -60.0)];
 const CARRY_DRAG: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 40.0)];
 
 /// A brush that lays nothing of its own and moves what it finds: `add = 0` and a fully
-/// transparent colour, so anything it deposits it first picked up (§6.2).
+/// transparent color, so anything it deposits it first picked up (§6.2).
 #[cfg(feature = "mixbox")]
 fn carrying_brush() -> BrushParams {
     let mut b = brush([0.0, 0.0, 0.0, 0.0], 26.0);
@@ -811,7 +811,7 @@ fn carried_onto(space: ColorSpaceId, bg: [f32; 3]) -> Option<[u8; 4]> {
 ///
 /// **Read on a black ground, which is what makes the comparison mean anything.** The
 /// drag delivers a *partial* coverage of black, and a half-covered black is not a
-/// space-independent colour: Mixbox mixing pigment towards a white ground and Oklab
+/// space-independent color: Mixbox mixing pigment towards a white ground and Oklab
 /// interpolating towards it legitimately disagree by far more than the bound here, so
 /// the same reading over white would be measuring the spaces rather than the channel.
 /// Black paint over a black ground is black at *every* coverage in either space, so a

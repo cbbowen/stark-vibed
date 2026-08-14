@@ -1,5 +1,5 @@
 // The **filter layer** pass (§21). One fullscreen draw that reads the accumulator
-// its stack has built so far, rewrites the colour, and writes the result back.
+// its stack has built so far, rewrites the color, and writes the result back.
 //
 // This is the blend pass's shape with one input instead of two: a filter layer has
 // no content of its own, so there is nothing to isolate and nothing to merge — it
@@ -8,22 +8,22 @@
 // what a blended layer costs and reuses the very same scratch (`composite/blend.rs`).
 //
 // Everything here is space-independent: the bindings, the adjustment, and the
-// strength mix. Each colour space supplies only its channels ↔ **Oklab** — the
+// strength mix. Each color space supplies only its channels ↔ **Oklab** — the
 // space the knobs are defined in (§21.5) — and calls `filtered`. That is the split
 // `blend_common.wesl` and `media_common.wesl` already make, and for the same reason:
-// there is one filter model, not one per colour space. Oklab rather than light as
+// there is one filter model, not one per color space. Oklab rather than light as
 // the interface because it is where the adjustment happens anyway: an Oklab
 // document then passes its channels straight in, instead of a trip out to XYZ that
 // the first thing inside would exactly undo.
 //
 //
-// WHY THE ACCUMULATOR IS NOT A COLOUR
+// WHY THE ACCUMULATOR IS NOT A COLOR
 //
-// Pass A's colour target holds the layer stack **premultiplied by coverage**, and
+// Pass A's color target holds the layer stack **premultiplied by coverage**, and
 // its aux holds the *amount of paint* (§6.1). A filter has opinions about the first
 // and none about the second:
 //
-//   · Coverage is not the filter's business. A filter says what colour the paint
+//   · Coverage is not the filter's business. A filter says what color the paint
 //     already there should be, not how much of it there is, so alpha comes out
 //     exactly as it went in — and the adjustment runs on the *un*-premultiplied
 //     channels, so a half-covered texel is adjusted like a full one rather than
@@ -38,7 +38,7 @@
 // WHY THE ADJUSTMENT IS IN OKLAB
 //
 // Because in a perceptual space lightness, chroma and hue are separable, and that
-// separability is the whole promise a colour slider makes. Saturation in sRGB shifts
+// separability is the whole promise a color slider makes. Saturation in sRGB shifts
 // hue; contrast in sRGB shifts saturation; a "greyscale" that is a weighted RGB
 // average moves lightness around. In Oklab a chroma gain is a chroma gain.
 //
@@ -89,10 +89,10 @@ struct Filter {
     params: vec4<f32>,
     // A second lane, on the same terms as the first. For `FILTER_COLOR` (§21.5):
     // `.xy` the **tint**, the offset added to Oklab `(a, b)` after the rotation and
-    // the chroma gain — which is what makes it exactly the colour a grey becomes.
+    // the chroma gain — which is what makes it exactly the color a grey becomes.
     // Zero for every other kind, as `params.zw` already are for the chromatic one.
     //
-    // Four floats rather than the two the colour filter spends, because the struct
+    // Four floats rather than the two the color filter spends, because the struct
     // rounds up to the same 48 bytes either way and a lane the next kind can read as
     // its own is the whole point of the first one.
     params2: vec4<f32>,
@@ -134,9 +134,9 @@ struct FsOut {
 // it changed, which is not what a contrast control is.
 const CONTRAST_PIVOT: f32 = 0.5981;
 
-// The colour adjustment (§21.5), in Oklab.
+// The color adjustment (§21.5), in Oklab.
 //
-// In and out in Oklab so the colour spaces share it — and so the space the knobs
+// In and out in Oklab so the color spaces share it — and so the space the knobs
 // are defined in is the interface, rather than a light interface whose first and
 // last steps here would cancel a caller's own conversions.
 fn adjust_color(lab_in: vec3<f32>, p: vec4<f32>, q: vec4<f32>) -> vec3<f32> {
@@ -145,7 +145,7 @@ fn adjust_color(lab_in: vec3<f32>, p: vec4<f32>, q: vec4<f32>) -> vec3<f32> {
     // matrix between it and XYZ. `max(…, 0)` because the accumulator can hold a
     // Drago overshoot or an out-of-gamut mixture whose linear form dips below zero,
     // and Oklab's signed cube root would happily carry that through into a hue no
-    // colour has.
+    // color has.
     let exposed = max(oklab_to_linear_srgb(lab_in) * exp2(p.x), vec3<f32>(0.0));
     var lab = linear_srgb_to_oklab(exposed);
 
@@ -162,7 +162,7 @@ fn adjust_color(lab_in: vec3<f32>, p: vec4<f32>, q: vec4<f32>) -> vec3<f32> {
     // this plane, so the rotation and the gain carry its rim and the tint carries
     // its centre. Translating first would make the centre the image of the tint
     // rather than the tint, and the number under the pointer would stop being the
-    // number in the log. Last is also what makes the tint exactly *the colour a grey
+    // number in the log. Last is also what makes the tint exactly *the color a grey
     // becomes*: an achromatic texel arrives at `(0, 0)`, and nothing before this
     // moves it.
     let c = cos(p.w);
@@ -174,8 +174,8 @@ fn adjust_color(lab_in: vec3<f32>, p: vec4<f32>, q: vec4<f32>) -> vec3<f32> {
 }
 
 // The gradient map (§21.11): the backdrop's **lightness** indexes the ramp, and
-// the ramp's colour is what the paint becomes — chroma and hue beneath are spent,
-// which is the point: a duotone, a false-colour relief, a palette unification are
+// the ramp's color is what the paint becomes — chroma and hue beneath are spent,
+// which is the point: a duotone, a false-color relief, a palette unification are
 // all this one operation with different ramps.
 //
 // `t` is Oklab `L`, saturated to the ramp's own domain. `L` rather than a
@@ -246,7 +246,7 @@ fn filtered(lab: vec3<f32>) -> vec3<f32> {
 // rounding: at `strength = 0` the result is `was` itself, bit for bit, whatever the
 // filter did with it. A pigment document weighs its residual with the same call, on
 // the same number, for the reason `merge_triple` exists (§6.7) — a residual is not a
-// second colour to fade but the rest of the same one.
+// second color to fade but the rest of the same one.
 fn weigh(was: vec3<f32>, now: vec3<f32>) -> vec3<f32> {
     return mix(was, now, f.strength);
 }
@@ -255,7 +255,7 @@ fn weigh(was: vec3<f32>, now: vec3<f32>) -> vec3<f32> {
 // back untouched.
 //
 // `chan` is un-premultiplied and `cb` is the raw sample, so the premultiply is by
-// `cb.a` — the same coverage that came in, because a filter changes what colour the
+// `cb.a` — the same coverage that came in, because a filter changes what color the
 // paint is and not how much of it there is.
 fn resolve(cb: vec4<f32>, chan: vec3<f32>, out_chan: vec3<f32>, h: f32) -> FsOut {
     var out: FsOut;
@@ -272,7 +272,7 @@ fn resolve(cb: vec4<f32>, chan: vec3<f32>, out_chan: vec3<f32>, h: f32) -> FsOut
 //
 //     out(x) = ∫ w(λ) · image(x − d(λ)) dλ,   d(λ) along `f.disp`.
 //
-// The pieces below say what `d` and `w` are; each colour space's `fs_main` owns the
+// The pieces below say what `d` and `w` are; each color space's `fs_main` owns the
 // gather loop itself, because a tap has to go through that space's own decode to
 // *be* light (§21.10). Three properties are load-bearing:
 //
@@ -329,9 +329,9 @@ fn ca_lobe(x: f32, mu: f32, s1: f32, s2: f32) -> f32 {
 }
 
 // The eye's response to wavelength `ca_lambda(s)`, as linear sRGB: the CIE 1931
-// colour-matching functions (the Wyman–Sloan–Shirley multi-lobe analytic fit),
+// color-matching functions (the Wyman–Sloan–Shirley multi-lobe analytic fit),
 // normalized to the D65 white the light space is stated against and taken through
-// the shared XYZ→sRGB matrix. Clamped at zero — a monochromatic colour sits outside
+// the shared XYZ→sRGB matrix. Clamped at zero — a monochromatic color sits outside
 // the sRGB gamut, and a negative weight would ring where a fringe should glow. The
 // clamp shifts each channel's total, and the per-channel normalization in the
 // gather is what absorbs that without a constant to tune.

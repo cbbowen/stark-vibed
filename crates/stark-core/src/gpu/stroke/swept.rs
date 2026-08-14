@@ -33,7 +33,7 @@ const _: () = assert!(
 
 // The per-tile uniform, generated from `stamp_common.wesl`'s own declaration
 // (§6.7): the tile *texture's* top-left in canvas px + canvas→NDC scale, plus the
-// brush's stroke-constant colour channels.
+// brush's stroke-constant color channels.
 use stark_shaders::mirror::stamp_common::TileXform;
 
 /// One tile's window into the stroke's transform buffer — the `min_binding_size` the
@@ -62,7 +62,7 @@ pub(super) struct SweptKit {
     pub(super) noise_bgl: wgpu::BindGroupLayout,
     /// The integrate (§6.2/§6.1): a fullscreen pass reading the base tile + the
     /// stroke's footprint scratch and writing `new = f(base, scratch)` into a fresh CoW
-    /// tile's colour+aux MRT — the scratch's accumulated parcel stacked on the base
+    /// tile's color+aux MRT — the scratch's accumulated parcel stacked on the base
     /// through the shared law in `paint_common.wesl`, the same one a fill lands through
     /// and the stamp loop's `deposit` uses.
     pub(super) integrate_pipeline: wgpu::RenderPipeline,
@@ -99,7 +99,7 @@ pub(super) fn build_swept_kit(device: &wgpu::Device, color_space: &dyn ColorSpac
         &[desc::load_tex_array(0, frag)],
     );
 
-    // Group 2: the colour-dynamics noise field (a tileable 3-D volume) + its
+    // Group 2: the color-dynamics noise field (a tileable 3-D volume) + its
     // repeat sampler (§6.2), and beside it the canvas surface's ground (height +
     // the rise ahead) + its own repeat sampler — the deposition tooth (§6.4). In
     // this group rather than one of its own because it is the same kind of thing
@@ -139,8 +139,8 @@ pub(super) fn build_swept_kit(device: &wgpu::Device, color_space: &dyn ColorSpac
                 // SCRATCH_AUX_FORMAT — not the compact persistent aux. Additive
                 // blend across overlapping segments.
                 desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
-                // The parcel's residual (§6.7), over-blended by the colour's rule
-                // because it is the rest of the same colour.
+                // The parcel's residual (§6.7), over-blended by the color's rule
+                // because it is the rest of the same color.
                 color_space
                     .resid_format()
                     .and_then(|f| desc::blended_target(f, Some(color_space.color_blend()))),
@@ -212,10 +212,10 @@ impl StrokeRenderer {
             entries: &[desc::tex(0, &prefix_view)],
         });
 
-        // Colour dynamics (§6.2): the noise tile for this brush and
+        // Color dynamics (§6.2): the noise tile for this brush and
         // the stroke's lookup parameters. An inactive brush binds the zero
         // tile with zero amplitudes — the deposit is exactly the constant
-        // colour.
+        // color.
         let noise_view = self.tips.noise_view(&rec.brush.color_dynamics);
         // The canvas ground beside it (§6.4): the deposition tooth's height and the
         // rise ahead of it, in the same group because it is the same kind of thing —
@@ -398,7 +398,7 @@ impl StrokeRenderer {
                 None => (&self.zeroes.color, &self.zeroes.aux),
             };
             // The resident residual, or the 1×1 zero on bare canvas — the same pairing
-            // the colour above makes, since the two are one colour (§6.7).
+            // the color above makes, since the two are one color (§6.7).
             let base_resid = self
                 .zeroes
                 .resid

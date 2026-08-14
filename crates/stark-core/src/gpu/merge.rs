@@ -170,9 +170,9 @@ impl MergeRenderer {
         });
         let mut entries = vec![
             desc::uniform(0, frag),
-            desc::load_tex(1, frag), // the destination's colour
+            desc::load_tex(1, frag), // the destination's color
             desc::load_tex(2, frag), // …and its height
-            desc::load_tex(3, frag), // the source's colour
+            desc::load_tex(3, frag), // the source's color
             desc::load_tex(4, frag), // …and its height
         ];
         if resid {
@@ -483,7 +483,7 @@ impl MergeRenderer {
     }
 
     /// The residual, in a space that has one. Bare canvas reads the 1×1 zero here
-    /// exactly as it does for the colour (§6.8's pattern).
+    /// exactly as it does for the color (§6.8's pattern).
     fn resid_of<'a>(&'a self, tile: Option<&'a TilePairHandle>) -> &'a wgpu::TextureView {
         let zero = self
             .zeroes

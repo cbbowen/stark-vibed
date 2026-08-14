@@ -190,9 +190,9 @@ fn app() -> Element {
 
             // The brush this app start begins on: the library's first preset (an
             // empty library leaves the engine's default brush), and then the
-            // colour the Color panel is already showing — the panel mounted
+            // color the Color panel is already showing — the panel mounted
             // before the engine existed, so it seeded its picker from
-            // `INITIAL_COLOR` alone, and pushing the same colour here is what
+            // `INITIAL_COLOR` alone, and pushing the same color here is what
             // keeps the engine from painting black under a red marker. Both go
             // through `ViewCommand::SetBrush`, which is session state, so
             // neither leaves a step in the undo history. Once per app start, not
@@ -382,7 +382,7 @@ fn Canvas() -> Element {
     // §18.1.9). The canvas's own, unlike `nav`: it moves the brush, and the
     // overlays that navigate have no brush.
     let tune = Tune::use_tune(state);
-    // Whether an Alt+drag is sampling colour off the canvas rather than painting on
+    // Whether an Alt+drag is sampling color off the canvas rather than painting on
     // it (§18.0.2). Shared rather than local, unlike the two above,
     // because the options bar is mounted on *armed but not dragging*.
     let mut picking = state.pick.dragging;
@@ -479,7 +479,7 @@ fn Canvas() -> Element {
                     let tool = current_tool(state);
                     // Alt+press samples the canvas instead of painting on it, and
                     // Alt+drag keeps sampling — the binding Clip Studio Paint and
-                    // Rebelle both use, so a colour is picked up without putting
+                    // Rebelle both use, so a color is picked up without putting
                     // the brush down (§18.0.2). Alt over a selection
                     // tool is left alone: there it already means subtract.
                     // (Space+Alt never reaches here — `nav` took it as a pan.)
@@ -625,7 +625,7 @@ fn Canvas() -> Element {
     }
 }
 
-/// Collaborators' pointers, drawn in each peer's own colour (§17.4).
+/// Collaborators' pointers, drawn in each peer's own color (§17.4).
 ///
 /// DOM rather than a compositor pass, on purpose: a cursor is chrome, not artwork —
 /// it must never reach an export, and a label beside it is a `<div>` the browser

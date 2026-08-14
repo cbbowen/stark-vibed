@@ -3,7 +3,7 @@
 //!
 //! Everything here is configuration a [`StrokeRecord`](super::action::StrokeRecord)
 //! carries — the tip's shape and orientation, the four flux axes that decide how
-//! it meets paint already on the canvas, the colour jitter, the tapers, and the
+//! it meets paint already on the canvas, the color jitter, the tapers, and the
 //! mapping from pen input to all of the above. None of it is an action; it is the
 //! payload one action kind happens to hold, which is why it lives beside
 //! `action.rs` rather than inside it.
@@ -168,20 +168,20 @@ pub enum NoiseKind {
     /// Cellular (Worley F1) noise on a seamlessly tiling jittered grid — mottled
     /// patches with creases where cells meet, like pigment settling in clumps.
     Voronoi,
-    /// The discrete form of [`Self::Voronoi`]: each cell one flat colour offset,
+    /// The discrete form of [`Self::Voronoi`]: each cell one flat color offset,
     /// with a hard edge to its neighbours — crystalline facets rather than a
     /// gradient. All three channels share the same cells, so the facets are
-    /// whole polygons of one colour.
+    /// whole polygons of one color.
     Mosaic,
 }
 
-/// Colour dynamics (colour jitter): lets the applied colour vary **across the
+/// Color dynamics (color jitter): lets the applied color vary **across the
 /// brush and along the stroke** (§6.2). A 3-channel tileable 2-D noise
 /// field is sampled in the stroke's **own** frame — `(lateral offset from the
 /// centreline, arc length)`, both in canvas px — so the variation belongs to the
 /// gesture rather than to the patch of canvas under it: one axis spreads the
-/// colour across the footprint, the other evolves it along the stroke. The three
-/// noise channels offset the three colour channels *of the current colour space*
+/// color across the footprint, the other evolves it along the stroke. The three
+/// noise channels offset the three color channels *of the current color space*
 /// (Oklab `L, a, b`; Mixbox pigment concentrations). The per-stroke `seed`
 /// translates the lookup so each stroke draws a fresh part of the field,
 /// deterministically.
@@ -193,9 +193,9 @@ pub struct ColorDynamics {
     /// noise tile per [`crate::noise::NOISE_TILE_PX`] px; higher = finer
     /// variation along that axis; 0 = constant along that axis.
     pub frequency: [f32; 2],
-    /// Noise amplitude per colour channel, in the colour space's own units
+    /// Noise amplitude per color channel, in the color space's own units
     /// (noise is signed, so a channel wanders ±amplitude). All 0 = off — the
-    /// exact historical constant-colour deposit.
+    /// exact historical constant-color deposit.
     pub amplitude: [f32; 3],
 }
 
@@ -506,9 +506,9 @@ pub struct BrushParams {
     /// documents saved before this field load as the everyday `add`-only brush.
     #[serde(default)]
     pub dynamics: BrushDynamics,
-    /// Colour dynamics (colour jitter) — how the applied colour varies across the
+    /// Color dynamics (color jitter) — how the applied color varies across the
     /// brush and along the stroke (§6.2). Historized (it changes stored
-    /// pixels); the default (amplitude 0) is the historical constant colour.
+    /// pixels); the default (amplitude 0) is the historical constant color.
     #[serde(default)]
     pub color_dynamics: ColorDynamics,
     /// Length of the stroke's **leading taper** — the run over which the tip widens

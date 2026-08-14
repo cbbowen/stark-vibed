@@ -64,7 +64,7 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 ///
 /// **5** — `StrokeRecord` dropped its `tool` field. Removing one is the same
 /// break as inserting one, and worse placed: it sat second, so a version-4 file's
-/// `Tool` byte would be read as the first byte of the brush colour and every
+/// `Tool` byte would be read as the first byte of the brush color and every
 /// number after it would be off by one. The version is what refuses that, and it
 /// is the whole reason a removal is allowed to be this cheap.
 ///
@@ -281,7 +281,7 @@ impl DocumentFile {
         let file: Self =
             postcard::from_bytes(&body).map_err(|e| EngineError::Deserialize(e.to_string()))?;
 
-        // **The one place an untrusted colour space enters.** Checked here rather than
+        // **The one place an untrusted color space enters.** Checked here rather than
         // where the document is adopted, for the reason the magic and the version are:
         // this is the boundary between bytes someone else wrote and a value the engine
         // treats as its own, and a refusal here leaves whatever is open alone.
@@ -346,7 +346,7 @@ mod tests {
     /// Postcard writes no field names and no lengths, so nothing downstream can
     /// notice. Wire 5 is the sharpest case so far — it dropped a field from the
     /// middle of every stroke, so a version-4 file read as a version-5 one would
-    /// take the old `Tool` byte for the first byte of the brush colour and slide
+    /// take the old `Tool` byte for the first byte of the brush color and slide
     /// every number after it along. That decodes; it just is not the painting.
     #[test]
     fn rejects_an_older_schema_rather_than_misreading_it() {

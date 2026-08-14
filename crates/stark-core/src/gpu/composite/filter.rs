@@ -68,7 +68,7 @@ impl FilterPass {
         if let Some(f) = resid_format {
             debug_assert_eq!(
                 f, color_format,
-                "the filter pass loads the residual target with the colour's decode",
+                "the filter pass loads the residual target with the color's decode",
             );
             entries.push(desc::sample_tex(7, frag)); // accumulator residual
         }

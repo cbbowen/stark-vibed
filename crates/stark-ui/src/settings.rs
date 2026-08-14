@@ -2,7 +2,7 @@
 //! (§11).
 //!
 //! What belongs here is the third kind of state the UI carries. The panels hold
-//! what you are painting *with* — a colour, a brush, a selection — and change
+//! what you are painting *with* — a color, a brush, a selection — and change
 //! constantly mid-painting. The document dialogs hold what the drawing *is*. A
 //! setting is neither: it is a standing choice about how Stark behaves for **this
 //! client**, set once and then left alone, and it is never part of the artwork.
@@ -108,7 +108,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                     // Says what it draws *and* what it costs, which is why it is off
                     // by default (§17.3): a second contour over the
                     // artwork is paid for on every frame you look at it.
-                    description: "Outline the regions your collaborators have selected, each in their own colour, alongside your own.",
+                    description: "Outline the regions your collaborators have selected, each in their own color, alongside your own.",
                     // A row that is inert right now explains itself rather than
                     // vanishing — see the module comment.
                     note: if shared { None } else { Some("Takes effect while you're sharing a session.".to_string()) },

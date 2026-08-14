@@ -74,7 +74,7 @@ fn or_skip(built: stark_core::Result<Engine>) -> Option<Engine> {
 /// skipping is permitted (see [`or_skip`]).
 ///
 /// **On the procedural `Neutral` environment** — the reference light (§6.3), whose
-/// exposure is 1.0 and whose whole purpose is to be the identity a colour can be
+/// exposure is 1.0 and whose whole purpose is to be the identity a color can be
 /// judged against. The suite used to install the studio HDR here instead, which meant
 /// every claim it made about a rendered byte was a claim about a *particular decoded
 /// environment map*: a warm tint stood between every test and the paint it was

@@ -91,7 +91,7 @@ pub(super) enum SlotKind {
 /// is the whole of what makes a bleed slot or a settle slot readable against a
 /// painting segment.
 struct SlotCommon<'a> {
-    /// The stroke's own constants: `c` outright, and the colour-dynamics lookup that
+    /// The stroke's own constants: `c` outright, and the color-dynamics lookup that
     /// fills `f`, `g.xyz` and `h.xy`. Borrowed rather than copied out, so a slot and
     /// the swept path's `TileXform` are demonstrably reading one resolution of them.
     k: &'a super::super::StrokeConstants,
@@ -104,7 +104,7 @@ struct SlotCommon<'a> {
 }
 
 impl SlotCommon<'_> {
-    /// The lanes every slot fills the same way — the stroke's colour and the weave
+    /// The lanes every slot fills the same way — the stroke's color and the weave
     /// map — over the neutral value of everything a slot kind may leave alone.
     ///
     /// A slot kind then names only what it actually differs by, which is the whole of
@@ -112,7 +112,7 @@ impl SlotCommon<'_> {
     fn slot(&self) -> Slot {
         Slot {
             channels: self.k.channels,
-            // The other half of the same colour (§6.7) — filled wherever `channels` is,
+            // The other half of the same color (§6.7) — filled wherever `channels` is,
             // and zero in a space whose three channels already say everything.
             resid: self.k.resid,
             weave_scale: self.weave[0],
@@ -121,7 +121,7 @@ impl SlotCommon<'_> {
         }
     }
 
-    /// [`Self::slot`] plus the colour-dynamics jitter, for a slot that lays the
+    /// [`Self::slot`] plus the color-dynamics jitter, for a slot that lays the
     /// brush's own `add` paint: the shared field, this slot's arc length, and the
     /// bearing fraction it books the tool's half of the transfer against.
     ///
@@ -182,9 +182,9 @@ struct Slot {
     /// `λ = ln(1 − axis) ≤ 0`, clamped away from −∞. Zero is "no transfer".
     lambda_lift: f32,
     lambda_deposit: f32,
-    /// The brush's own colour channels + per-unit opacity. **Undrained**.
+    /// The brush's own color channels + per-unit opacity. **Undrained**.
     channels: [f32; 4],
-    /// The same colour's **residual** (§6.7) in `.xyz`; `.w` unused. Undrained like
+    /// The same color's **residual** (§6.7) in `.xyz`; `.w` unused. Undrained like
     /// `channels`, and zero in a space that has no residual to carry.
     resid: [f32; 4],
     /// The dispatch rect's top-left in region texels, integral.
@@ -199,7 +199,7 @@ struct Slot {
     curvature: f32,
     /// The bleed stencil's longest tap in texels — nonzero **only** on a bleed slot.
     bleed_reach: f32,
-    /// The colour-dynamics lookup (§6.2): frequency per axis + 1/NOISE_TILE_PX,
+    /// The color-dynamics lookup (§6.2): frequency per axis + 1/NOISE_TILE_PX,
     /// per-channel amplitude, and the per-stroke translation. All zero = no jitter.
     noise_freq: [f32; 4],
     noise_amp: [f32; 3],
@@ -331,8 +331,8 @@ pub(super) struct PlanCtx<'a> {
     /// is clamped to.
     pub(super) dsize: u32,
     /// Everything both render paths read off the record and the scene
-    /// ([`StrokeConstants`](super::super::StrokeConstants)) — the colour a slot's `c` is, the
-    /// weave map its `i` carries, and the colour-dynamics lookup for `f`–`h`.
+    /// ([`StrokeConstants`](super::super::StrokeConstants)) — the color a slot's `c` is, the
+    /// weave map its `i` carries, and the color-dynamics lookup for `f`–`h`.
     pub(super) consts: &'a super::super::StrokeConstants,
     pub(super) surface: &'a crate::gpu::surface::Surface,
 }
@@ -628,7 +628,7 @@ pub(super) fn dynamics_plan(
         // a quad whose sweep is the firing's travel window, with every vertical rate
         // and the source zeroed — the dispatch is the identity everywhere except the
         // lateral flux. The noise lanes are zeroed too, so the deposit skips its
-        // colour-jitter taps.
+        // color-jitter taps.
         while let Some((_, fire)) = pending.next_if(|(after, _)| *after == si) {
             let p = fire.start - region_origin;
             let (clo, chi) = coverage_bounds(fire);
@@ -649,7 +649,7 @@ pub(super) fn dynamics_plan(
                 // the canvas keeps everything, λ_deposit = 0 so the (uninvolved) tool
                 // lays nothing, no drain because nothing is laid, no `add` because this
                 // is not a stretch of painting, no tooth because there is no `add` for
-                // the ground to gate, and no colour jitter — which is zeroed rather
+                // the ground to gate, and no color jitter — which is zeroed rather
                 // than shared, so the deposit skips its noise taps entirely.
                 slot: Slot {
                     start: p,
@@ -736,7 +736,7 @@ pub(super) fn dynamics_plan(
                 //
                 // The bearing is the neutral 1: the tool is not written back at pen-up,
                 // so nothing reads it — the settle's own gate is per texel, from the
-                // weave. The colour channels are filled consistently with a segment slot
+                // weave. The color channels are filled consistently with a segment slot
                 // rather than left as junk, though the settle lays the tool's *carried*
                 // paint and so reads none of them.
                 ..common.painting(s.dist + s.length, 1.0)
@@ -1085,7 +1085,7 @@ mod tests {
             [5.0, 6.0, 7.0, 8.0],
             "b: frame radius, travel, λ_lift, λ_dep"
         );
-        assert_eq!(packed.c, [9.0, 10.0, 11.0, 12.0], "c: colour + opacity");
+        assert_eq!(packed.c, [9.0, 10.0, 11.0, 12.0], "c: color + opacity");
         assert_eq!(
             packed.d,
             [13.0, 14.0, 15.0, 16.0],
@@ -1115,7 +1115,7 @@ mod tests {
         assert_eq!(
             packed.j,
             [36.0, 37.0, 38.0, 39.0],
-            "j: the colour's residual (§6.7)"
+            "j: the color's residual (§6.7)"
         );
         assert_eq!(
             packed.k,
@@ -1203,7 +1203,7 @@ mod tests {
     /// and its upper neighbours — against a scratch that starts one cell *below* the
     /// rect's first (`cell_base`), and the hoist grid has to cover both ends of that
     /// or the deposit reads whatever the previous segment left in the scratch: not a
-    /// wrong colour but a stale one, from another segment's tip, which is the kind of
+    /// wrong color but a stale one, from another segment's tip, which is the kind of
     /// artifact a golden reports without naming.
     ///
     /// So this replays the shader's own tap arithmetic in f32, for every texel a

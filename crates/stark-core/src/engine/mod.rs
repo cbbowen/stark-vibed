@@ -260,12 +260,12 @@ pub struct ObservableState {
     pub environment: EnvironmentId,
 
     // --- document properties fixed at creation ----------------------------
-    /// The document's colour space. Immutable for the document's life — changing
+    /// The document's color space. Immutable for the document's life — changing
     /// it means starting a new document ([`Engine::new_with_color_space`]).
     pub color_space: ColorSpaceId,
     /// The physical canvas surface (§6.4).
     pub surface: SurfaceId,
-    /// The canvas substrate colour, straight sRGB (§15.5). Document
+    /// The canvas substrate color, straight sRGB (§15.5). Document
     /// state, not a view setting — projected here so the frontend shows what the
     /// document says rather than a copy of its own that goes stale.
     pub background: [f32; 3],
@@ -283,11 +283,11 @@ pub struct Engine {
     /// associated type, so there is nothing to hand it a borrow of; this used to be
     /// rebuilt by cloning all four on *every* commit, undo, redo and remote merge —
     /// tens of `Arc` bumps plus a `HashMap` allocation each time, for a value that
-    /// only changes when the colour space is rebuilt.
+    /// only changes when the color space is rebuilt.
     ///
     /// They live only here: the engine reaches them through `self.apply` too, so
     /// there is one copy rather than the engine's plus the context's.
-    /// `selection` is colour-space independent (a mask is one coverage channel
+    /// `selection` is color-space independent (a mask is one coverage channel
     /// whatever the paint is), so unlike the pool and the stroke renderer it
     /// survives a rebuild.
     apply: ApplyCtx,
@@ -308,7 +308,7 @@ pub struct Engine {
     /// itself a logged change.
     initial_surface: SurfaceId,
     /// The HDR lighting environment (image-based lighting) and its registered
-    /// bytes. A *view* setting — not historized, colour-space-independent — so it
+    /// bytes. A *view* setting — not historized, color-space-independent — so it
     /// survives rebuilds and switching it never touches the document (§6.3).
     environment: Registry<EnvironmentId>,
     timeline: Box<dyn Timeline>,
@@ -732,7 +732,7 @@ impl Engine {
                 }
             }
             DocCommand::SetBackground(rgb) => {
-                // The committed colour supersedes whatever the drag was previewing,
+                // The committed color supersedes whatever the drag was previewing,
                 // for the same reason `SetMatteRect` drops it above.
                 self.preview.set_doc(None);
                 self.commit(ActionKind::SetBackground(rgb));
@@ -977,7 +977,7 @@ impl Engine {
 
     /// [`Engine::replay_stroke`] with an explicit jitter `seed` instead of the
     /// Lamport clock. Replaying the same samples repeatedly advances the clock
-    /// (each replay commits), so the seed — and with it the colour dynamics and
+    /// (each replay commits), so the seed — and with it the color dynamics and
     /// dither — changes on every replay. A caller re-rendering *one* stroke to
     /// show the effect of a brush change (the brush editor's preview) wants the
     /// jitter held fixed, so only the edited parameter moves.
@@ -1024,11 +1024,11 @@ impl Engine {
                 && (draws_content(l) || l.carries.iter().any(contributes))
         }
         let doc = self.timeline.current();
-        // The layers and the substrate colour are read from the *previewed*
+        // The layers and the substrate color are read from the *previewed*
         // document when one is in flight, so the frame's handles track a drag and
-        // the colour swatch tracks the picker (both live in the preview,
+        // the color swatch tracks the picker (both live in the preview,
         // §15.7, §15.5) instead of lagging on the committed value — which
-        // for the colour would leave the panel disagreeing with the canvas it
+        // for the color would leave the panel disagreeing with the canvas it
         // controls, since rendering reads `presented`.
         //
         // Deliberately only those two. `has_selection` must stay committed-only —
@@ -1272,10 +1272,10 @@ impl Engine {
 }
 
 /// Build the GPU subsystems whose layout/shaders depend on the color space.
-/// What the colour-space-dependent GPU subsystems are built from.
+/// What the color-space-dependent GPU subsystems are built from.
 ///
 /// Grouped because they are always supplied together: the pool, stroke renderer and
-/// compositor are torn down and rebuilt as a set whenever the colour space changes
+/// compositor are torn down and rebuilt as a set whenever the color space changes
 /// (§6.7), and `surface` / `environment` / `selection` are precisely the
 /// pieces that *survive* that rebuild and have to be handed back in.
 struct GpuBuild<'a> {
@@ -1308,10 +1308,10 @@ fn build_gpu(
         environment,
         selection,
     } = b;
-    // The colour space's formats — the only ones this call site knows. The pool
+    // The color space's formats — the only ones this call site knows. The pool
     // unions in its own (the selection mask, the wide scratch aux), so none can be
     // forgotten here (`TilePool::new`). The residual's is `Rgba16Float`, which every
-    // space's colour already is, but it is passed rather than assumed for the same
+    // space's color already is, but it is passed rather than assumed for the same
     // reason the aux is: the first space to choose otherwise would meet
     // `acquire_tex`'s "unsupported format" panic on its first stroke.
     let pool = TilePool::new(

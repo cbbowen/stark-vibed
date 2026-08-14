@@ -48,7 +48,7 @@ pub(super) struct TipCache {
     /// through a fresh value per frame, while the noise kinds are a small enum whose
     /// whole domain fits.
     round_tip: Arc<Mutex<Vec<(u32, RoundTip)>>>,
-    /// Colour dynamics (§6.2): the shared wrap/linear sampler, the 1×1×1 zero volume
+    /// Color dynamics (§6.2): the shared wrap/linear sampler, the 1×1×1 zero volume
     /// bound when a brush's jitter is off, and the lazily-baked per-kind fields.
     pub(super) noise_sampler: wgpu::Sampler,
     dummy_noise: wgpu::TextureView,
@@ -156,7 +156,7 @@ impl TipCache {
         }
         tip
     }
-    /// The colour-dynamics noise tile for a brush: the baked field for its
+    /// The color-dynamics noise tile for a brush: the baked field for its
     /// kind (built once, cached — the bake is a fixed pure function, so at most
     /// one texture per [`NoiseKind`] ever exists), or the 1×1 zero tile when
     /// the jitter is off (amplitudes all 0 ⇒ the shader adds exactly nothing).

@@ -16,7 +16,7 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 
 // The inverse of `oklab_to_linear_srgb`, mirroring `color::linear_srgb_to_oklab`.
 // The cube root is taken *signed* — `sign(x)·|x|^(1/3)`, matching Rust's `cbrt` —
-// because a colour that has been through a blend in another space can land slightly
+// because a color that has been through a blend in another space can land slightly
 // outside the sRGB gamut, and `pow` of a negative is NaN. Signed keeps the round
 // trip exact where it is in gamut and merely approximate where it is not, instead
 // of clamping (which shifts hue) or poisoning the frame with NaN.
@@ -41,7 +41,7 @@ fn linear_srgb_to_oklab(rgb: vec3<f32>) -> vec3<f32> {
 //
 // **This is the space light is combined and scaled in** — see `blend_common.wesl`
 // for the argument, which is one paragraph long and worth reading before touching
-// anything here: XYZ is linear in light, non-negative for every real colour, and
+// anything here: XYZ is linear in light, non-negative for every real color, and
 // primary-independent, and the row normalization is what makes "1" mean the same
 // thing on all three axes. Here in `lib` rather than beside that argument because
 // two passes now need the pair — the blend (§18.0.4) and the filter (§21) — and a

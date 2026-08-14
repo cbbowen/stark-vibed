@@ -1,4 +1,4 @@
-// Layer blending for the OKLAB colour space (§18.0.4). The
+// Layer blending for the OKLAB color space (§18.0.4). The
 // composited channels are premultiplied Oklab with the layer's *coverage* in
 // alpha (composite.wesl), so the only space-specific work is Oklab ↔ normalized
 // XYZ; all of the light algebra and the compositing tail live in `blend_common`.
@@ -43,7 +43,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
 
     // Everything else is settled in the mode's own space, where its blend function is
     // affine and Porter-Duff's coverage weighting therefore commutes with it
-    // (`combined_light`). The whole output colour falls out of that one expansion, so
+    // (`combined_light`). The whole output color falls out of that one expansion, so
     // there is no triple left to run here — only the conversion back to Oklab.
     let x = combined_light(
         linear_to_light(oklab_to_linear_srgb(chan_b)),

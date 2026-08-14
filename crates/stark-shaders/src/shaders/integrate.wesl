@@ -20,7 +20,7 @@
 // It used to be a plain premultiplied-"over" weighed by the scratch's alpha, and
 // that alpha was built from the brush's per-unit opacity alone — so the `add` rate
 // (Flow), the thing that decides how much paint the segment actually lays, reached
-// the *height* and never the colour. Over bare canvas the media pass hid it, because
+// the *height* and never the color. Over bare canvas the media pass hid it, because
 // visible alpha is `op · height` there and the height was right; over existing paint
 // nothing did, and a brush at 5% flow repainted the canvas at full strength in one
 // pass. It is the same defect §6.3 names in the layer composite — covering by
@@ -43,7 +43,7 @@ import package::lib::sample::{load1};
 // 1:1 with the destination, apron included — or a 1×1 texture holding the constant
 // coverage outside the mask's tile set; the clamped load below reads both.
 @group(0) @binding(4) var selection: texture_2d<f32>;
-// The residual halves of the two colours above (§6.7) — the layer's resident
+// The residual halves of the two colors above (§6.7) — the layer's resident
 // paint and the stroke's parcel. Bound only by a space that has a residual, and
 // read through the same clamped `load1`/`textureLoad` pair as the latents, so a
 // stroke onto bare canvas reads the 1×1 zero here exactly as it does for `base_color`.
@@ -113,8 +113,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let merged_c = vec4<f32>(blend_latent(lat0, m0, lat1, m1) * op, op);
     let merged_a = vec4<f32>(h, 0.0, 0.0, 0.0);
     // The residual stacks through the *same* law on the *same* masses — it is the
-    // rest of the same colour, so anything that weighted it differently would have
-    // the merged paint reproduce neither of the two colours that made it (§6.7).
+    // rest of the same color, so anything that weighted it differently would have
+    // the merged paint reproduce neither of the two colors that made it (§6.7).
     @if(resid) let res0 = base_r.rgb / max(base_c.a, PAINT_EPS);
     @if(resid) let res1 = s_r.rgb / max(s_c.a, PAINT_EPS);
     @if(resid) let merged_r = vec4<f32>(blend_latent(res0, m0, res1, m1) * op, op);

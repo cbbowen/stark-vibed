@@ -33,10 +33,10 @@
 //!   eraser's Size or Flow with it is another, and eraser-clicking a preset
 //!   assigns that preset to the tail. A key and a hand do the same thing here.
 //!
-//! What the rule deliberately does *not* carry is the painting **colour**, which
+//! What the rule deliberately does *not* carry is the painting **color**, which
 //! is [`presets::wear`]'s rule and is applied in both directions: a slot never
-//! changes the colour you are painting with, and a colour picked during a hold
-//! survives the release. A slot is a tool; colour belongs to the Color panel.
+//! changes the color you are painting with, and a color picked during a hold
+//! survives the release. A slot is a tool; color belongs to the Color panel.
 //!
 //! Like the shape and preset libraries the rack follows this browser rather than
 //! the document (`localStorage`), and degrades to a per-session rack where
@@ -107,9 +107,9 @@ impl Held {
     ///   deliberately or not at all, and an empty slot that filled itself the
     ///   first time it was pressed would be impossible to tell from one the user
     ///   had set.
-    /// - **A colour change is not a change.** Compared through
-    ///   [`presets::matches`], which is exactly "the same brush, colour aside" —
-    ///   the same test the preset rows highlight on. Picking a colour mid-hold
+    /// - **A color change is not a change.** Compared through
+    ///   [`presets::matches`], which is exactly "the same brush, color aside" —
+    ///   the same test the preset rows highlight on. Picking a color mid-hold
     ///   would otherwise write the whole brush into the slot, which is the one
     ///   thing a slot is defined not to carry.
     fn settle(&self, current: BrushParams) -> (Option<BrushParams>, BrushParams) {
@@ -141,7 +141,7 @@ pub fn hold(state: AppState, slot: usize, grip: Grip) {
     if let Some(brush) = assigned {
         presets::wear(state, brush);
     }
-    // Read back rather than assumed: `wear` keeps the live colour and resolves the
+    // Read back rather than assumed: `wear` keeps the live color and resolves the
     // stamp, so what the engine now holds is not what was handed to it — and it is
     // what the release has to compare against.
     let entered = state.obs.peek().as_ref().map(|o| o.brush).unwrap_or(base);
@@ -369,25 +369,25 @@ mod tests {
     }
 
     #[test]
-    fn a_colour_picked_mid_hold_is_not_a_change() {
+    fn a_color_picked_mid_hold_is_not_a_change() {
         // The one edit a slot is defined not to carry (see `presets::wear`).
         let base = BrushParams::default();
         let entered = BrushParams {
             radius: 40.0,
             ..base
         };
-        let recoloured = BrushParams {
+        let recolored = BrushParams {
             color: [0.9, 0.1, 0.2, entered.color[3]],
             ..entered
         };
-        let (kept, _) = held(entered, base).settle(recoloured);
-        assert_eq!(kept, None, "colour is not part of a slot");
+        let (kept, _) = held(entered, base).settle(recolored);
+        assert_eq!(kept, None, "color is not part of a slot");
     }
 
     #[test]
     fn the_brush_opacity_is_part_of_a_slot_though() {
         // `color[3]` is the brush's own opacity — a material property, not the
-        // colour choice (§6.1) — and the preset library carries it for the same
+        // color choice (§6.1) — and the preset library carries it for the same
         // reason. Dragging it under a hold has to reach the number.
         let base = BrushParams::default();
         let entered = base;

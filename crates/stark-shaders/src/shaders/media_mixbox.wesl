@@ -5,14 +5,14 @@
 // pigment polynomial to sRGB, add the residual back, convert to linear, and hand off
 // to the shared lighting/composite tail.
 //
-// **The residual is what makes this reproduce a colour at all.** Four trained
+// **The residual is what makes this reproduce a color at all.** Four trained
 // pigments do not span sRGB, so `mixbox_eval_polynomial` alone reaches neither black
 // — pure black comes out `#383838`, its concentrations being a near-neutral mixture
 // the polynomial can only render as mid-grey — nor the saturated corners, where it is
 // off by as much as 0.39. Mixbox carries that gap in `rgb − poly(c)`, and this engine
 // dropped it for as long as a tile had room for only three concentrations plus
 // coverage. The gap is not recoverable from the concentrations, either: `rgb → c` is
-// many-to-one (70 sRGB colours share one quantized triple, spanning 0.38 of the
+// many-to-one (70 sRGB colors share one quantized triple, spanning 0.38 of the
 // cube), so no function of `c` could ever have stood in for the stored value.
 //
 // `mixbox_eval_polynomial` is generated at build time from the vendored Mixbox
@@ -56,7 +56,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let vis = paint_vis_at(p, dim);            // accumulated coverage, weave-corrected
     let rr = textureLoad(comp_resid, p, 0);     // (residual · coverage, coverage)
     let conc = cc.rgb / max(cc.a, COVERAGE_EPS); // un-premultiply coverage → concentrations
-    // Un-premultiplied by the *colour's* coverage, which is the same number the
+    // Un-premultiplied by the *color's* coverage, which is the same number the
     // residual target carries in its own alpha — that duplicate exists only because
     // the fixed-function "over" reads each target's own alpha.
     let res = rr.rgb / max(cc.a, COVERAGE_EPS);

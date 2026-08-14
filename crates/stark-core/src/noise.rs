@@ -1,4 +1,4 @@
-//! Tileable 2-D noise fields for colour dynamics (§6.2).
+//! Tileable 2-D noise fields for color dynamics (§6.2).
 //!
 //! Each [`crate::document::NoiseKind`] is baked **once, on the CPU,
 //! with fixed constants** into a small `Rgba8Snorm` 2-D texture (three
@@ -64,7 +64,7 @@ const SIMPLEX_PERIOD: i32 = 6;
 /// frequency knobs mean the same thing whichever kind is chosen.
 const VORONOI_PERIOD: i32 = 6;
 /// Nearest-feature distance (in cell units) that the Voronoi field maps to 0 —
-/// roughly its mean, so the field wanders both ways about the brush colour
+/// roughly its mean, so the field wanders both ways about the brush color
 /// instead of only darkening or only lightening it.
 const VORONOI_MEAN: f32 = 0.4;
 /// Value per cell unit of nearest-feature distance: the field peaks at +1 on a
@@ -72,7 +72,7 @@ const VORONOI_MEAN: f32 = 0.4;
 /// cells — inside the radius where the 3×3 search is exact (module docs), so the
 /// clamp can never expose a missed feature.
 const VORONOI_GAIN: f32 = 2.5;
-/// Fixed bake seeds, one per colour channel.
+/// Fixed bake seeds, one per color channel.
 const CHANNEL_SEEDS: [u32; 3] = [0x51ab_1e01, 0x51ab_1e02, 0x51ab_1e03];
 /// Fixed mosaic bake seeds: one places the cell sites, one draws each cell's
 /// value. Both are shared by the three channels on purpose — one set of cells in
@@ -471,7 +471,7 @@ mod tests {
 
     /// The Voronoi shaping constants must keep the field centred and using its
     /// range: a field biased to one side would tint every stroke rather than let
-    /// the colour wander both ways.
+    /// the color wander both ways.
     #[test]
     fn voronoi_is_centred_and_uses_its_range() {
         let n = 64usize;

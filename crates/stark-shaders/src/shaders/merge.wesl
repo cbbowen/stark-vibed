@@ -3,7 +3,7 @@
 //
 // The whole feature rests on one identity, and it is not a new one. Pass A gives a
 // layer the weight `1 − exp(−K·opacity·height)` — its **visible alpha**, the
-// translucent-slab law — and stacks the weighted colours with premultiplied "over"
+// translucent-slab law — and stacks the weighted colors with premultiplied "over"
 // while summing the heights (`composite.wesl`). `paint_common.wesl`'s `blend_latent`
 // stacks a *parcel* onto resident paint by that very law, because a parcel must cover
 // resident paint exactly as much as the viewer sees it cover. The two are the same
@@ -13,7 +13,7 @@
 //     M = m₀ + m₁                       optical masses add, since
 //                                       1 − e^{−M} = 1 − (1−w₀)(1−w₁) is "over"
 //     opacity = M / H                   the height-weighted mean of the two
-//     latent  = blend_latent(…)         "over" on the weighted colours
+//     latent  = blend_latent(…)         "over" on the weighted colors
 //
 // **That the merged opacity is a mean is the reason this is exact rather than close.**
 // A tile stores per-unit opacity and height separately (§6.1), and the pair of them
@@ -56,7 +56,7 @@ struct Merge {
 @group(0) @binding(3) var upper_color: texture_2d<f32>;
 @group(0) @binding(4) var upper_aux: texture_2d<f32>;
 // The residual channels (§6.7), read through the same clamped `load1` — a layer with
-// no tile here binds the 1×1 zero for these exactly as it does for the colour.
+// no tile here binds the 1×1 zero for these exactly as it does for the color.
 @if(resid) @group(0) @binding(5) var lower_resid: texture_2d<f32>;
 @if(resid) @group(0) @binding(6) var upper_resid: texture_2d<f32>;
 
@@ -171,7 +171,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         out.color = vec4<f32>(mix(lat0, lat1, v1) * op, op);
         out.aux = vec4<f32>(h, 0.0, 0.0, 0.0);
         // The residual rides the same lerp on the same weight — it is the rest of the
-        // same colour (§6.7).
+        // same color (§6.7).
         @if(resid) out.resid = vec4<f32>(mix(res0, res1, v1) * op, op);
         return out;
     }

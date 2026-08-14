@@ -300,7 +300,7 @@ impl TransformRenderer {
             desc::sample_tex(2, frag),
         ];
         // 3, the source tile's residual (§6.7): carried under the same map and
-        // sampled at the same uv as the colour it belongs to.
+        // sampled at the same uv as the color it belongs to.
         if resid {
             src_entries.push(desc::sample_tex(3, frag));
         }
@@ -658,7 +658,7 @@ impl TransformRenderer {
             .pool
             .acquire_tex(self.aux_format, AllocSource::TransformScratch);
         // The parcel carries the residual it was cut with: the lift scales height
-        // alone, so the colour — both halves of it — rides through unscaled (§16.2).
+        // alone, so the color — both halves of it — rides through unscaled (§16.2).
         let resid = self
             .resid_format
             .map(|f| from.pool.acquire_tex(f, AllocSource::TransformScratch));
@@ -827,7 +827,7 @@ impl TransformRenderer {
             .pool
             .acquire_tex(self.aux_format, AllocSource::TransformScratch);
         // The parcel carries the residual it was cut with: the lift scales height
-        // alone, so the colour — both halves of it — rides through unscaled (§16.2).
+        // alone, so the color — both halves of it — rides through unscaled (§16.2).
         let resid = self
             .resid_format
             .map(|f| from.pool.acquire_tex(f, AllocSource::TransformScratch));
@@ -915,7 +915,7 @@ impl TransformRenderer {
             None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
         };
         // A virgin destination and a cut-only tile read the 1×1 zero for the residual
-        // exactly as they do for the colour — the combine is one shader whatever
+        // exactly as they do for the color — the combine is one shader whatever
         // exists (§6.8's pattern).
         let (base_resid, parcel_resid) = match &self.zeroes.resid {
             Some(zero) => (

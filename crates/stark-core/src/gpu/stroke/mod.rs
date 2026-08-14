@@ -103,7 +103,7 @@ pub struct StrokeRenderer {
 
     /// What a brush resolves to, and the lazily-baked caches behind it (§6.6) — the
     /// prefix-τ volume both paths integrate against, the coverage mask the reservoir
-    /// weights by, and the colour-dynamics field. **One of the two mutable things
+    /// weights by, and the color-dynamics field. **One of the two mutable things
     /// here** (the other is [`scratch`](Self::scratch)), which is why it is a type of
     /// its own rather than five fields: the sentence above about immutable objects is
     /// then true of everything else without qualification.
@@ -122,7 +122,7 @@ pub struct StrokeRenderer {
     zeroes: Zeroes,
 
     /// Selection masks (§6.8): the per-tile mask bound into the integrate
-    /// pass, and the region gather the stamp loop reads. Colour-space independent, so
+    /// pass, and the region gather the stamp loop reads. Color-space independent, so
     /// it is handed in rather than rebuilt with the rest of this renderer.
     selection: SelectionRenderer,
 }
@@ -288,12 +288,12 @@ impl StrokeRenderer {
         }
     }
 
-    /// Acquire a persistent tile: the colour space's `color` + `aux` formats, paired.
+    /// Acquire a persistent tile: the color space's `color` + `aux` formats, paired.
     ///
     /// The pool hands out textures, not tiles (see [`TexHandle`](crate::gpu::tile::TexHandle)).
-    /// Pairing them here is what keeps the two formats coming from the colour space
+    /// Pairing them here is what keeps the two formats coming from the color space
     /// actually in use rather than from a constant — the pool previously hardcoded
-    /// `R16Float` for aux, which happened to match every colour space but would have
+    /// `R16Float` for aux, which happened to match every color space but would have
     /// panicked on the first one that chose otherwise (§6.7).
     fn acquire_tile(&self, pool: &TilePool, source: AllocSource) -> TilePairHandle {
         TilePairHandle::new(
@@ -305,7 +305,7 @@ impl StrokeRenderer {
         )
     }
 
-    /// Acquire a brush-dynamics *scratch* tile: the same colour channel, but a wider
+    /// Acquire a brush-dynamics *scratch* tile: the same color channel, but a wider
     /// [`SCRATCH_AUX_FORMAT`] aux (an extra channel the deposit/integrate use
     /// internally, §6.2).
     fn acquire_scratch(&self, pool: &TilePool, source: AllocSource) -> TilePairHandle {
@@ -348,7 +348,7 @@ impl StrokeRenderer {
 /// Nothing here is path-specific. The swept sweep puts them in a `TileXform` and the
 /// stamp loop in a `Stamp` slot, but they are the same numbers — and they have to be,
 /// because which path a brush takes is decided by `dynamics_setup` from axes that have
-/// nothing to do with any of this: nudge `deposit` off zero and the same colour, the
+/// nothing to do with any of this: nudge `deposit` off zero and the same color, the
 /// same flow and the same ground must still lay the same paint.
 ///
 /// That is not hypothetical. `tests/dynamics.rs`'s
@@ -358,20 +358,20 @@ impl StrokeRenderer {
 /// one place is what makes the agreement structural rather than a matter of two files
 /// happening to contain the same line.
 struct StrokeConstants {
-    /// The brush's own colour in the working space, plus its per-unit opacity.
+    /// The brush's own color in the working space, plus its per-unit opacity.
     /// **Undrained** — both paths fade it per fragment from the fragment's own arc
     /// length, never per segment.
     channels: [f32; 4],
-    /// The same colour's **residual** (§6.7) in `.xyz`; `.w` unused. Zero in a space
+    /// The same color's **residual** (§6.7) in `.xyz`; `.w` unused. Zero in a space
     /// with no residual, and zero because that space's channels above are already the
-    /// whole colour — both paths write this lane unconditionally, since the uniform it
+    /// whole color — both paths write this lane unconditionally, since the uniform it
     /// lands in is one Rust struct across both shader variants.
     resid: [f32; 4],
     /// Canvas px → surface-tile uv (§6.4). Zero on a ground with no relief — a `Flat`
     /// canvas, or one whose bytes have not arrived — which sends the tooth to exactly
     /// 1 and leaves the deposit bit-for-bit what it was before the tooth existed.
     grain_uv: f32,
-    /// The colour-dynamics lookup (§6.2): per-axis frequency (across the stroke, along
+    /// The color-dynamics lookup (§6.2): per-axis frequency (across the stroke, along
     /// it) + 1/NOISE_TILE_PX, per-channel amplitude, and the per-stroke translation.
     /// Inactive jitter zeroes frequency *and* amplitude, so with the zero volume bound
     /// the shader's early-out keeps the deposit bit-identical.
@@ -380,7 +380,7 @@ struct StrokeConstants {
     noff: [f32; 4],
 }
 
-/// The stroke's colour-dynamics uniform triplet — (per-axis frequency
+/// The stroke's color-dynamics uniform triplet — (per-axis frequency
 /// (across the stroke, along it) + 1/NOISE_TILE_PX,
 /// per-channel amplitude, per-stroke lookup translation) — shared by the sweep's
 /// `TileXform` and the dynamics loop's `Stamp` slots so both paths jitter

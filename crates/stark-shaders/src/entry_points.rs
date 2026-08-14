@@ -62,18 +62,18 @@ pub fn entry_point_enabled(name: &str, mixbox: bool) -> bool {
 }
 
 /// The WESL conditional-compilation feature that turns on a tile's **residual**
-/// channel — the third colour texture a pigment space needs (§6.7).
+/// channel — the third color texture a pigment space needs (§6.7).
 pub const RESID_FEATURE: &str = "resid";
 
 /// The subset of [`ENTRY_POINTS`] that also gets built a *second* time with
 /// [`RESID_FEATURE`] enabled, deposited as `<module>_resid`.
 ///
-/// These are the passes that carry a tile's colour, and a residual goes wherever a
+/// These are the passes that carry a tile's color, and a residual goes wherever a
 /// latent goes — it is the same premultiplied "over" on the same coverage, so every
 /// one of them does to `resid` exactly what it already does to `color` (§6.7).
 ///
 /// A **variant** rather than one shader that always carries the channel, because
-/// Oklab has no residual to carry: its three channels reproduce every sRGB colour
+/// Oklab has no residual to carry: its three channels reproduce every sRGB color
 /// exactly, so a third target there would be eight bytes per texel of zeroes written
 /// on the default space's hot path. `@if(resid)` is what keeps the two laws in one
 /// file instead of a `*_resid.wesl` beside each of these.
@@ -91,9 +91,9 @@ pub const RESID_FEATURE: &str = "resid";
 /// nothing could ever select. `build.rs` skips the pass and `lib.rs` compiles the
 /// `resid`-taking accessors down to their plain arm.
 ///
-/// `slice` is **not** here: since the write-back's colour and residual became plain
+/// `slice` is **not** here: since the write-back's color and residual became plain
 /// texture copies (§6.2), the one pass left under that name narrows the wide region
-/// aux, which every colour space has and neither varies.
+/// aux, which every color space has and neither varies.
 ///
 /// Kept sorted, like [`ENTRY_POINTS`] and for the same reason.
 pub const RESID_ENTRY_POINTS: &[&str] = &[

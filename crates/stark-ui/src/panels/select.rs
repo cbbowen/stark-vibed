@@ -138,12 +138,12 @@ pub fn SelectPanel() -> Element {
                     class: chip(action == a),
                     title: "{hint}",
                     onclick: move |_| dispatch(state, ViewCommand::SetShapeAction(a)),
-                    // Fill's bucket is *full of* the colour it would lay, so the row
+                    // Fill's bucket is *full of* the color it would lay, so the row
                     // says what the gesture will deposit — the one thing that
                     // distinguishes this action from its four neighbours, and the one
                     // thing a word cannot carry. It used to be a separate swatch beside
                     // the word; the bucket already draws a vessel with paint in it, so
-                    // colouring that is one mark doing both jobs instead of two marks
+                    // coloring that is one mark doing both jobs instead of two marks
                     // splitting them, and the row keeps five glyphs on one baseline.
                     if a == ShapeAction::Fill {
                         {icon_tinted(glyph, brush_color)}
@@ -188,7 +188,7 @@ pub fn SelectionBar() -> Element {
     let obs = state.obs.read();
     let active = obs.as_ref().is_some_and(|o| o.has_selection);
     // The bar's Fill lays the same paint the panel's Fill chip does, so it carries the
-    // same loaded bucket: the brush's colour is a property of the *act*, not of the
+    // same loaded bucket: the brush's color is a property of the *act*, not of the
     // panel that happens to host the control.
     let brush_color = obs.as_ref().map_or([0.0; 4], |o| o.brush.color);
     drop(obs);
@@ -284,7 +284,7 @@ pub fn SelectionBar() -> Element {
 /// Fill whatever is selected, on the active layer, with the brush's paint
 /// (§18.0.4).
 ///
-/// The **colour** comes off the brush, which is the choice [`ShapeAction::Fill`]
+/// The **color** comes off the brush, which is the choice [`ShapeAction::Fill`]
 /// makes too: a fill lays the paint you have in hand, so the Color panel is
 /// already its setting. How far it covers is not a question this button asks at
 /// all — it fills the selection, so the selection's own coverage answers it

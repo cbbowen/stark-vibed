@@ -16,7 +16,7 @@
 //!   fill of an unbounded plane is undefined, and here the selection is what bounds
 //!   it. A fill with *neither* a bounded shape nor a bounded selection is refused
 //!   ([`plan`] returns `None`), deterministically, so peers and replays agree.
-//! - **A fill deposits paint, not colour.** The parcel it lands is fully opaque
+//! - **A fill deposits paint, not color.** The parcel it lands is fully opaque
 //!   paint of a real thickness — enough of it to *be* the coverage asked for
 //!   ([`FillOp::opacity`]) — so a filled region takes the light, can be glazed
 //!   over, and a lift brush can scrape it back. It stacks by the shared parcel law
@@ -81,11 +81,11 @@ impl ShapeAction {
 /// untouched.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Parcel {
-    /// One colour everywhere. Straight sRGB, and **colour only**: how strongly a
+    /// One color everywhere. Straight sRGB, and **color only**: how strongly a
     /// fill covers is [`FillOp::opacity`], one number for the whole fill, so a
     /// parcel says *what* paint and never *how much* of it (§6.1).
     Solid([f32; 3]),
-    /// A colour ramp read from canvas position (§22.4).
+    /// A color ramp read from canvas position (§22.4).
     Gradient(GradientParcel),
 }
 
@@ -93,7 +93,7 @@ pub enum Parcel {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GradientParcel {
     /// The ramp — embedded **by value**, the way a stroke embeds its brush
-    /// colour, so the document stays self-contained and replayable with no
+    /// color, so the document stays self-contained and replayable with no
     /// reference into anyone's browser-local library (§22.3).
     pub gradient: Gradient,
     /// Where `t = 0` and `t = 1` sit on the canvas.
@@ -126,7 +126,7 @@ pub struct FillOp {
     /// Edge softness in canvas px, read exactly as a selection op's is: 0 still
     /// antialiases.
     pub feather: f32,
-    /// The paint to lay — one colour, or a ramp read from position (§22.4).
+    /// The paint to lay — one color, or a ramp read from position (§22.4).
     pub paint: Parcel,
     /// How strongly the fill covers where coverage is full: its **visible alpha**,
     /// in `0..=1`. The Select panel's Opacity slider, and the only strength knob a
@@ -145,11 +145,11 @@ pub struct FillOp {
     /// Partial coverage — a feathered edge, or the selection gating the fill —
     /// scales it, and since mass and thickness are the same thing for opaque
     /// paint, a feathered edge is still a *thinning* of the paint rather than a
-    /// fade of its colour.
+    /// fade of its color.
     ///
     /// One opacity for the whole fill, gradient or not: the ramp varies the
-    /// *colour* of the paint, never how much of it there is — a transition in
-    /// thickness would read as a lighting feature, not a colour one (§22.4).
+    /// *color* of the paint, never how much of it there is — a transition in
+    /// thickness would read as a lighting feature, not a color one (§22.4).
     pub opacity: f32,
 }
 

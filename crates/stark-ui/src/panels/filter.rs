@@ -31,12 +31,12 @@
 //! `hue`, `saturation` and `tint` are a rotation, a scale and a translation of one
 //! Oklab `(a, b)` plane, so what they are between them is a single affine map — and
 //! the honest picture of an affine map of a plane is the image of a circle.
-//! [`chroma_dial`] draws exactly that, over the same Oklab slice the colour picker
+//! [`chroma_dial`] draws exactly that, over the same Oklab slice the color picker
 //! shows, and every part of it is a fact rather than a metaphor: the rim is where a
-//! colour of chroma [`DIAL_CHROMA`] ends up, the centre is where a grey ends up, and
+//! color of chroma [`DIAL_CHROMA`] ends up, the centre is where a grey ends up, and
 //! the arm is where red ends up. Three tracks could say the same thing, but only one
 //! at a time, and none of them could say what the picture says at rest — *this is
-//! what the filter will do to a colour*.
+//! what the filter will do to a color*.
 //!
 //! The chromatic filter's `spread` and `angle` are a length and a direction, which is
 //! to say they are **one vector** — the displacement from where the red end of the
@@ -83,7 +83,7 @@ use stark_core::{LayerId, LayerInfo};
 /// The rule that used to keep *all* of these unmarked was about a bar, not about the
 /// set: one marked slider among unmarked ones reads worse than none marked. That
 /// still holds and is still satisfied — each bar draws one kind's table, and the
-/// colour filter's, the only table left, is marked throughout.
+/// color filter's, the only table left, is marked throughout.
 struct Knob<F: 'static> {
     name: &'static str,
     hint: &'static str,
@@ -115,7 +115,7 @@ fn fmt_degrees(v: f32) -> String {
     format!("{}\u{00B0}", v.round() as i32)
 }
 
-/// The colour filter's **lightness** knobs — the two the dial has nothing to say
+/// The color filter's **lightness** knobs — the two the dial has nothing to say
 /// about, because they act on Oklab `L` and the dial is one slice of constant `L`.
 ///
 /// That split is the whole reason the bar is a dial *and* two tracks rather than one
@@ -139,7 +139,7 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
     Knob {
         name: "Contrast",
         hint: "Spread about mid-grey. 1 leaves it alone, 0 flattens the picture to \
-               one tone. It moves lightness only \u{2014} the colours keep their \
+               one tone. It moves lightness only \u{2014} the colors keep their \
                saturation, which is not true of a contrast curve in sRGB.",
         glyph: Some(icons::CONTRAST),
         range: ColorAdjust::CONTRAST,
@@ -363,11 +363,11 @@ fn knob_rows<F: Copy + 'static>(
 /// The dial's field, on screen (px) — square, like the picker's.
 const DIAL_PX: f32 = 116.0;
 
-/// The Oklab chroma the rim stands for: the reference colour whose whole hue circle
-/// the dial tracks, so a point of the drawn ring is *where a colour of this chroma
+/// The Oklab chroma the rim stands for: the reference color whose whole hue circle
+/// the dial tracks, so a point of the drawn ring is *where a color of this chroma
 /// ends up*.
 ///
-/// A moderately saturated colour rather than the gamut's edge, so the ring at rest
+/// A moderately saturated color rather than the gamut's edge, so the ring at rest
 /// sits well inside the plane and has somewhere to grow when saturation is pushed
 /// past 1.
 const DIAL_CHROMA: f32 = 0.12;
@@ -526,20 +526,20 @@ fn drag_dial(
     dispatch(state, ViewCommand::PreviewFilter(Some((id, next))));
 }
 
-/// The colour filter's `hue`, `saturation` and `tint` as the one thing they are: the
+/// The color filter's `hue`, `saturation` and `tint` as the one thing they are: the
 /// image of a circle of the Oklab plane under the map they make (see the module docs).
 ///
-/// Everything drawn is a claim about a colour, and each is checkable by eye against
+/// Everything drawn is a claim about a color, and each is checkable by eye against
 /// the plane it sits on:
 ///
-/// - the **dashed circle** is where the reference colours are — chroma
+/// - the **dashed circle** is where the reference colors are — chroma
 ///   [`DIAL_CHROMA`], every hue — untouched;
 /// - the **solid circle** is where the filter sends them;
 /// - the **arm and its dot** are where it sends red, which is what makes the circle
 ///   *directed* and a rotation visible at all;
 /// - the **centre** is where it sends grey, which is the tint.
 ///
-/// So the picture at rest already answers "what will this do to a colour", which is
+/// So the picture at rest already answers "what will this do to a color", which is
 /// the question three tracks can only answer one number at a time.
 fn chroma_dial(
     state: AppState,
@@ -591,8 +591,8 @@ fn chroma_dial(
                 title: "The Oklab plane at mid-grey, and what this filter does to it. \
                         Drag the dot on the rim to turn the hue and pull the \
                         saturation out; drag anywhere else to tint \u{2014} the centre \
-                        is the colour a grey becomes. Hold Shift for round steps.",
-                // Pointer capture, as the colour picker's field takes: the drag keeps
+                        is the color a grey becomes. Hold Shift for round steps.",
+                // Pointer capture, as the color picker's field takes: the drag keeps
                 // reporting once it leaves the box, and what it reports is clamped by
                 // the sanitizer rather than by the element's edge.
                 onpointerdown: move |e| {
@@ -651,13 +651,13 @@ fn chroma_dial(
                     name: "Tint a",
                     value: format!("{:+.3}", c.tint[0]),
                     hint: "Where the centre sits along green \u{2192} red \u{2014} half \
-                           of the colour a grey becomes.",
+                           of the color a grey becomes.",
                 }
                 DialRow {
                     name: "Tint b",
                     value: format!("{:+.3}", c.tint[1]),
                     hint: "Where the centre sits along blue \u{2192} yellow \u{2014} the \
-                           other half of the colour a grey becomes.",
+                           other half of the color a grey becomes.",
                 }
             }
         }
@@ -749,7 +749,7 @@ fn pad_xy(c: ChromaticAberration) -> (f32, f32) {
     (PAD_MID + r * c.angle.cos(), PAD_MID + r * c.angle.sin())
 }
 
-/// The dispersion spectrum as SVG gradient stops: `(offset, css colour)` from the red
+/// The dispersion spectrum as SVG gradient stops: `(offset, css color)` from the red
 /// end at 0 to the blue end at 1.
 ///
 /// **The pass's own weights, at the pass's own wavelengths** (§21.10) — this is what
@@ -1101,7 +1101,7 @@ pub fn FilterBar() -> Element {
     let neutral = filter.neutral();
 
     // The one place the bar knows the kinds apart: which controls it puts up. A
-    // picture each — the colour filter's plane ahead of the two tracks that move along
+    // picture each — the color filter's plane ahead of the two tracks that move along
     // the axis a plane has nothing to say about, the chromatic filter's vector, which
     // is the whole of it, and the gradient map's ramp, likewise.
     let rows = match filter {

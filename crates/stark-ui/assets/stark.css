@@ -16,10 +16,10 @@
 /* --- the world-axis hues (§20.3): the X/Y/Z semantics every 3D tool taught,
    softened to sit over paint. Named here because they are the app's, not one
    control's — a lock chip, a plane chip and the perspective guide's own lines
-   are all the same three colours, and one of them moving has to move all of
+   are all the same three colors, and one of them moving has to move all of
    them. The Rust side carries the *names* (`AXIS_CSS`) and never the values.
 
-   Stated **in Oklab**, the space the app picks every colour in (§6.5), and at
+   Stated **in Oklab**, the space the app picks every color in (§6.5), and at
    one shared lightness: `L` is fixed at 0.667 for all three and only the hue
    changes, so no axis reads heavier than the others — which matters most where
    the three are laid side by side on the bar, and where two of them are
@@ -400,7 +400,7 @@ hr {
   pointer-events: none;
 }
 
-/* A colour well showing the current value; clicking toggles the pop-out picker. */
+/* A color well showing the current value; clicking toggles the pop-out picker. */
 .swatch {
   display: block;
   width: 100%;
@@ -415,7 +415,7 @@ hr {
   border-color: #ffffff66;
 }
 
-/* The colour selector opened by a `.swatch`, in the two places a swatch lives.
+/* The color selector opened by a `.swatch`, in the two places a swatch lives.
 
    A **panel** grows to hold it: the stack is a scroll container (`overflow-y: auto`,
    `overflow-x: clip`), so anything that flew out beside a panel would be clipped at
@@ -496,7 +496,7 @@ hr {
 }
 
 /* An inline icon (`icons::icon`). The glyph is `fill: currentColor`, so it takes the
-   colour of the control it sits in and needs no state of its own: it goes
+   color of the control it sits in and needs no state of its own: it goes
    white-on-blue with a lit chip and fades with a disabled one, from the same file.
    `flex: none` so it keeps its size while the label takes the slack, and the svg is
    `block` so the box is the glyph rather than the glyph plus a line-box's descender
@@ -630,11 +630,11 @@ hr {
   padding: 4px 8px;
 }
 
-/* A glyph holding a paint colour (`icons::icon_tinted`): the paint laid over an
+/* A glyph holding a paint color (`icons::icon_tinted`): the paint laid over an
    untinted copy of the same path, which is what lets a low-opacity wash read as thin
    rather than as dark — see the doc comment there, which owns this reasoning. Absolute
    over `position: relative` and not a `background`, because the thing being tinted is a
-   glyph and only the glyph's own silhouette may take the colour. */
+   glyph and only the glyph's own silhouette may take the color. */
 .icon.tinted {
   position: relative;
 }
@@ -794,7 +794,7 @@ hr {
 }
 
 /* One preset: the whole row applies it; the ✕ is hover-revealed like a shape
-   card's. `active` marks the preset the live brush still is (colour aside). */
+   card's. `active` marks the preset the live brush still is (color aside). */
 .preset-row {
   display: flex;
   align-items: center;
@@ -937,7 +937,7 @@ hr {
 }
 
 /* A lit chip owns both of its edges: the seams either side of it are already drawn by
-   the colour change, and a groove crossing into the fill would read as a crack in the
+   the color change, and a groove crossing into the fill would read as a crack in the
    thing that is supposed to look like one lit region. */
 .segmented .chip.active,
 .segmented .chip.active + .chip {
@@ -1182,7 +1182,7 @@ hr {
    membership: this layer is carried by the one below it. The *rail* down its left
    edge is clipping: this layer shows only where there is paint under it. A Photoshop
    refugee arrives believing the indent means clipping, so the rail has to be
-   something the indent visibly is not — a coloured edge rather than more space. */
+   something the indent visibly is not — a colored edge rather than more space. */
 .layer-row.clipped {
   border-left: 3px solid #6f8fd0;
   padding-left: 3px;
@@ -1199,7 +1199,7 @@ hr {
 }
 
 /* The frame's dashed border already claims the whole edge, so a clipped matte gets
-   the rail's colour on its existing border rather than a second one beside it. */
+   the rail's color on its existing border rather than a second one beside it. */
 .layer-row.matte.clipped {
   border-left: 3px solid #6f8fd0;
 }
@@ -2345,7 +2345,7 @@ button.layer-remove:hover {
 
 
 
-/* The frame's colour well and what it pops out. Positioned, because it is what the
+/* The frame's color well and what it pops out. Positioned, because it is what the
    pop-out is placed against — see `.color-popout`. */
 .frame-color {
   position: relative;
@@ -2354,7 +2354,7 @@ button.layer-remove:hover {
 
 /* The same `.swatch` well the Lighting panel uses, at a size that sits in a bar
    rather than filling a panel row. Only the dimensions differ, which is the point:
-   the two colour wells in the app are one control, not two that resemble each
+   the two color wells in the app are one control, not two that resemble each
    other. */
 .frame-swatch {
   flex: none;
@@ -2530,8 +2530,8 @@ button.layer-remove:hover {
 /* Interpolated `in oklab`, like the Color panel's L ramp and for the same
    reason: sRGB's straight line between two hues dips through a greyer, darker
    midpoint — badly so between the red and the blue — where Oklab's holds the
-   lightness the two ends share, so the fill reads as one colour becoming
-   another rather than as two colours with a shadow between them. */
+   lightness the two ends share, so the fill reads as one color becoming
+   another rather than as two colors with a shadow between them. */
 .chip.plane-chip.active {
   background: linear-gradient(in oklab 100deg, var(--axis-a), var(--axis-b));
 }
@@ -2734,7 +2734,7 @@ button.layer-remove:hover {
   stroke-width: 1px;
 }
 
-/* Corner and control-point handles, at the north dot's weight and colour so
+/* Corner and control-point handles, at the north dot's weight and color so
    the three families read as one widget vocabulary. */
 .transform-svg .transform-handle {
   fill: #ffffffd9;
@@ -2797,7 +2797,7 @@ button.layer-remove:hover {
 
 /* The filter bar: the selected filter's own numbers, mounted only while a filter
    layer is selected (§21.6). Same surface as the frame bar — they are the same kind
-   of thing, and stack in the same column — but bigger, because the colour filter
+   of thing, and stack in the same column — but bigger, because the color filter
    carries a picture of its own `(a, b)` plane and not only tracks. */
 .filter-bar {
   display: flex;
@@ -2828,7 +2828,7 @@ button.layer-remove:hover {
   width: 132px;
 }
 
-/* The colour filter's two, in a column beside the dial rather than a row after it
+/* The color filter's two, in a column beside the dial rather than a row after it
    (§21.6) — see the call site for why. A gap rather than none: they are two controls,
    and the dial next to them is already one continuous picture. */
 .filter-knob-stack {
@@ -2864,7 +2864,7 @@ button.layer-remove:hover {
   grid-column: 1 / -1;
 }
 
-/* The chroma dial (§21.6): the colour filter's hue, saturation and tint as the one
+/* The chroma dial (§21.6): the color filter's hue, saturation and tint as the one
    affine map of the Oklab plane they are. The plane and its readout side by side. */
 .filter-dial {
   display: flex;
@@ -2902,7 +2902,7 @@ button.layer-remove:hover {
   filter: drop-shadow(0 0 1.5px #000c);
 }
 
-/* Where the reference colours are untouched: the ring's own resting place, so the
+/* Where the reference colors are untouched: the ring's own resting place, so the
    solid circle is read against it rather than against a remembered size. Dashed and
    faint — it is a datum, not a control. */
 .dial-rest {
@@ -3032,7 +3032,7 @@ button.layer-remove:hover {
 
 /* The blue end, and the only thing to grab. Hollow rather than the dial's filled dot,
    so the spectrum it sits on the end of shows through it — the handle is a ring around
-   a colour, not a lid over one. */
+   a color, not a lid over one. */
 .fringe-handle {
   fill: none;
   stroke: #fff;
@@ -3052,7 +3052,7 @@ button.layer-remove:hover {
 }
 
 /* Said once when the filter has nothing composited beneath it in its own stack
-   (§21.2). A statement rather than a warning colour: the filter is not broken, it is
+   (§21.2). A statement rather than a warning color: the filter is not broken, it is
    somewhere it cannot reach, and the fix is to move it. */
 .filter-inert {
   font-size: 12px;
@@ -3098,7 +3098,7 @@ button.layer-remove:hover {
 
 
 /* A selected frame row. It shares `.active` with a selected paint layer, because
-   there is only one kind of selection — the colour means "selected" and nothing
+   there is only one kind of selection — the color means "selected" and nothing
    more. What kind of layer it is is already said by the dashed border and the
    ◱ label. */
 .layer-row.matte.active {
@@ -3157,8 +3157,8 @@ button.layer-remove:hover {
 
 /* --- collaborators (§17.4) --- */
 
-/* A peer's initials on the layer row they are working on. Their colour is the
-   whole point, so the chip is the colour and the text just has to survive on
+/* A peer's initials on the layer row they are working on. Their color is the
+   whole point, so the chip is the color and the text just has to survive on
    top of it — a dark ink reads over every hue the id hash can produce, which a
    light one does not. */
 .peer-chip {
@@ -3228,7 +3228,7 @@ button.layer-remove:hover {
   z-index: 2;
 }
 
-/* Legible on bare canvas and on ink alike, which no single colour is: a dark hairline
+/* Legible on bare canvas and on ink alike, which no single color is: a dark hairline
    with a light one just outside it, so whichever the paint matches, the other one
    reads. `box-shadow` for the second ring rather than a second element — it follows
    the border radius for free and costs no layout. */
@@ -3626,7 +3626,7 @@ button.layer-remove:hover {
    a quieter line. Clicking takes the ramp in hand for the gradient fill
    (§22.4); `active` marks the one the next fill would lay — always
    exactly one while the library has any, since an unset choice falls back to
-   the first entry. The preset rows' colours, because it is the same kind of
+   the first entry. The preset rows' colors, because it is the same kind of
    list answering the same kind of question. */
 .gradient-row {
   display: flex;
@@ -3720,7 +3720,7 @@ button.layer-remove:hover {
 }
 
 /* The rubber line: a dark casing under a dashed light core, so the trace reads
-   over any painting without claiming a colour of its own — its colours are the
+   over any painting without claiming a color of its own — its colors are the
    ones it is crossing. */
 .gradient-trace-svg {
   position: absolute;

@@ -44,7 +44,7 @@ pub(super) struct Segment {
     /// `[-1, 1]²` is `PEN_PAD` tips wide rather than one — and the sweep has to be
     /// unrolled in a frame that much larger for the mask inside it to land at the
     /// radius the brush asked for. Everything the shader derives from brush-local
-    /// coordinates (the swept arc, the colour-noise domain, the reservoir's placement)
+    /// coordinates (the swept arc, the color-noise domain, the reservoir's placement)
     /// is in this frame; nothing the host prices is, which is what keeps a nib's dab
     /// and its bleed the size of the tip instead of the size of the box around it.
     pub(super) frame: f32,
@@ -66,7 +66,7 @@ pub(super) struct Segment {
     /// pick the prefix-τ orientation layer. 0 for follow-stroke (§6.6).
     pub(super) orient: f32,
     /// Arc length from the stroke start to this segment's start (canvas px) — the
-    /// third axis of the colour-dynamics noise lookup (§6.2).
+    /// third axis of the color-dynamics noise lookup (§6.2).
     pub(super) dist: f32,
     /// The brush's paint rates **as the pen asked for them here** (§6.2): the four
     /// axes of [`BrushDynamics`](crate::document::BrushDynamics) scaled by whatever
@@ -547,7 +547,7 @@ pub(super) fn generate_segments_in(
                         curvature: 0.0,
                         length: dwell,
                         // The dwell is *at* the stroke, not before it: it must not run
-                        // the arc-length clock — which `drain` and the colour noise are
+                        // the arc-length clock — which `drain` and the color noise are
                         // measured on — backwards past the stroke's own start.
                         dist: (mid - dwell * 0.5).max(0.0),
                     },
@@ -725,7 +725,7 @@ pub(super) fn affected_tiles(
 /// segment is at most a tip wide.
 ///
 /// The indices come out ascending, because the walk is in segment order — which
-/// matters, since the colour target's blend is `over` and therefore ordered. Each tile
+/// matters, since the color target's blend is `over` and therefore ordered. Each tile
 /// sees the stroke's own order over the subset that reaches it.
 pub(super) fn tiles_with_segments(segments: &[Segment]) -> BTreeMap<TileCoord, Vec<u32>> {
     let mut map: BTreeMap<TileCoord, Vec<u32>> = BTreeMap::new();
@@ -2036,7 +2036,7 @@ mod tests {
 
     /// The per-tile segment lists cover exactly the tiles [`affected_tiles`] names, and
     /// a tile's list holds exactly the segments whose bounds reach it — in stroke
-    /// order, which the `over` blend on the colour target makes load-bearing.
+    /// order, which the `over` blend on the color target makes load-bearing.
     ///
     /// The swept path draws from these lists instead of drawing every segment into
     /// every tile, so an omission here is missing paint and a re-ordering is a

@@ -10,7 +10,7 @@ The soft-mask coverage field every tool acts through, the fifth shape action, an
 A selection restricts where tools may act. The obvious implementation — remember
 the rectangle, clip to it — does not survive contact with the rest of the design:
 it cannot express a lasso combined with a rectangle minus an ellipse, it has no
-answer for a feathered edge, and nothing to say about "select by colour" or
+answer for a feathered edge, and nothing to say about "select by color" or
 painted quick-mask producers. So a selection here is **not a shape**. It is a
 *coverage field* — the same sparse tile map paint lives in, one `R8Unorm`
 channel, `TILE_TEX` per tile, aprons and all.
@@ -96,18 +96,18 @@ case (fill the selection, with nothing selected) is **refused**,
 deterministically, so peers and replays agree; inventing a boundary would be a
 different fill on every client.
 
-**A fill deposits paint, not colour.** It stacks by the shared parcel law
+**A fill deposits paint, not color.** It stacks by the shared parcel law
 (`paint_common.wesl`) — the very law a stroke deposits through. A filled region
 has real thickness: it takes the light, it can be glazed over, and a lift brush
 scrapes it back off (`tests/fill.rs` pins that last one, because it is the whole
 difference from a paint bucket). Coverage scales the *paint*, never the per-unit
 opacity, so a feathered edge is a thinning of the deposit rather than a fade of
-its colour. The drag previews as the *paint* rather than an outline — the same
+its color. The drag previews as the *paint* rather than an outline — the same
 `FillRenderer::apply` the commit makes, over the same base, so
 `preview == committed` holds as it does for a stroke.
 
 **How much it covers is one number, and it is a coverage.** `FillOp::opacity`.
-A fill used to lay the brush's colour alpha at the brush's flow, on the argument
+A fill used to lay the brush's color alpha at the brush's flow, on the argument
 that a fill lays the paint you have in hand. What that actually gave the user was
 a Fill button governed by two sliders in another panel, neither labelled for this
 job, which between them **could not produce an opaque fill**: visible coverage is
@@ -122,7 +122,7 @@ and lays fully opaque paint of exactly that mass, capped at the thickness the
 matte slab calls opaque (§15.4). So 1 covers, ½ covers half, and the feather ramp
 lands on the canvas as precisely the ramp `selection.wesl` rasterized, because the
 coverage asked for is linear in the mask and only the paint that delivers it is
-not. The brush's colour is still the fill's colour; only its *alpha* stopped being
+not. The brush's color is still the fill's color; only its *alpha* stopped being
 consulted, that being a fact about the pigment rather than about how much of the
 picture this covers.
 
@@ -251,10 +251,10 @@ h₀ = h · (1 − m)          // the cut: thickness leaves
 parcel = (latent, op, h·m) // what the transform now holds
 ```
 
-The rejected alternative — scaling the premultiplied colour by `(1 − m)` too —
+The rejected alternative — scaling the premultiplied color by `(1 − m)` too —
 fails the invariant that makes this feature testable (§16.4): cutting and pasting
 back in place must be the identity. Under the lift law the masses recombine
-exactly (`op·h·(1−m) + op·h·m = op·h` at every feather value `m`); under colour
+exactly (`op·h·(1−m) + op·h·m = op·h` at every feather value `m`); under color
 scaling the optical mass recombines as `(1−m)² + m²` of itself and a feathered
 identity transform visibly thins the paint at its own edge.
 
@@ -329,10 +329,10 @@ every stroke — old tiles stay valid in old history versions, new tiles come fr
 the pool:
 
 - **Parcel** — clear a scratch pair to zero, then for each intersecting source
-  quad draw it, sampling source colour / height / mask bilinearly: out =
+  quad draw it, sampling source color / height / mask bilinearly: out =
   `(color_as_is, height·m)`. Disjointness (§16.4) makes draw order irrelevant.
 - **Combine** — fullscreen `textureLoad` pass: cut the base by its own mask
-  (`h₀ = h·(1−m)`), stack the parcel by §16.3, write colour + aux. Base and mask
+  (`h₀ = h·(1−m)`), stack the parcel by §16.3, write color + aux. Base and mask
   bind per-tile textures or the 1×1 constants (§6.8's pattern), so paste onto
   virgin canvas and cut-only tiles are the same shader; a texel neither cut nor
   pasted passes through bit-exactly.

@@ -601,7 +601,7 @@ pub const CASES: &[Case] = &[
                a path that freezes many times. The base case for everything sequential — \
                each segment reads the canvas the previous one left and the tool the \
                previous one loaded, so a cut that dropped the reservoir shows here as a \
-               step in colour trailing back across the stroke.",
+               step in color trailing back across the stroke.",
         view: SIZE,
         prepare: |e| {
             undercoat(e);

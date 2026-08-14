@@ -37,12 +37,12 @@ use super::segments;
 /// `ToolState`, so the drop that returns a lease can only happen after the run's
 /// own submit (see [`Kept`]).
 pub struct ToolState {
-    /// Reservoir colour: per texel, the latent paint (rgb) and its per-unit opacity.
+    /// Reservoir color: per texel, the latent paint (rgb) and its per-unit opacity.
     pub(super) color: Kept,
     /// Reservoir aux: per texel, the carried amount (height).
     pub(super) aux: Kept,
     /// Reservoir residual (§6.7), in a space that has one: the rest of the
-    /// colour above. Carried across ranges for the same reason the colour is — a tip
+    /// color above. Carried across ranges for the same reason the color is — a tip
     /// that picked up black paint has to still be carrying black when the next
     /// pointer move resumes it, and the concentrations alone cannot say so.
     pub(super) resid: Option<Kept>,
@@ -52,7 +52,7 @@ pub struct ToolState {
 pub struct StrokeCarry {
     /// Arc length at the end of the range. Not derivable from the span index — it is
     /// measured along the flattened polyline — and both the `drain` falloff and the
-    /// colour-dynamics noise read it, so restarting it at zero would make the middle
+    /// color-dynamics noise read it, so restarting it at zero would make the middle
     /// of a stroke look like the start of one.
     pub dist: f32,
     /// The brush state to resume with, for a stroke that runs the stamp loop. `None`
@@ -132,7 +132,7 @@ pub(crate) fn safe_frozen(rec: &StrokeRecord, frozen: usize) -> usize {
 ///
 /// `dist` is not derivable from `range` — it is the arc length accumulated along
 /// everything *before* it — so an incremental caller has to carry it forward. It
-/// matters because the `drain` falloff and the colour-dynamics noise are both
+/// matters because the `drain` falloff and the color-dynamics noise are both
 /// parameterized by distance travelled: restarting it at zero would make the tail
 /// of a stroke look like the head of one.
 #[derive(Clone, Debug)]

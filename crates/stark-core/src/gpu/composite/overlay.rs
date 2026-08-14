@@ -2,7 +2,7 @@
 //!
 //! One instanced quad per mask tile, in the same canvas → NDC frame as pass A. The
 //! local actor's selection draws as marching ants; a peer's draws as a flat line in
-//! their own colour, so the two never read as the same thing.
+//! their own color, so the two never read as the same thing.
 
 use wgpu::util::DeviceExt;
 
@@ -24,7 +24,7 @@ pub(super) use stark_shaders::mirror::overlay::OverlayInstance;
 pub struct SelectionOutline<'a> {
     pub selection: &'a Selection,
     /// `None` for the local actor — the marching ants. `Some(rgb)` for a peer's,
-    /// drawn as a flat line in their colour so the two never read as the same thing.
+    /// drawn as a flat line in their color so the two never read as the same thing.
     pub tint: Option<[f32; 3]>,
 }
 

@@ -525,7 +525,7 @@ impl Peers {
     }
 }
 
-/// A peer's display colour, derived from its id so every client agrees with no
+/// A peer's display color, derived from its id so every client agrees with no
 /// negotiation and no allocation protocol.
 ///
 /// The hue is a mixing hash of the id, which *decorrelates* ids that are numerically
@@ -1096,7 +1096,7 @@ mod tests {
 
     #[test]
     fn peer_colors_are_stable_distinct_and_spread() {
-        // Stable: every client derives the same colour for the same peer, which is
+        // Stable: every client derives the same color for the same peer, which is
         // what replaces an allocation protocol.
         assert_eq!(peer_color(ActorId(7)), peer_color(ActorId(7)));
 

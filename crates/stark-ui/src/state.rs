@@ -64,13 +64,13 @@ pub struct AppState {
     /// dialog rendered inside one would be trapped in its box rather than covering
     /// the window.
     pub preset_save_open: Signal<bool>,
-    /// Bumped whenever the brush colour is set from **outside** the colour picker —
+    /// Bumped whenever the brush color is set from **outside** the color picker —
     /// today only by the eyedropper.
     ///
     /// The Color panel's picker holds its own Oklab state (out-of-gamut `a`/`b`
     /// survive there but not in the clamped sRGB it reports), so it is *seeded*
     /// rather than driven, and this is how it is told to re-seed. Deliberately not
-    /// "the colour changed": a pick inside the field would then drag its own marker
+    /// "the color changed": a pick inside the field would then drag its own marker
     /// back onto the gamut boundary under the user's cursor.
     pub color_epoch: Signal<u64>,
     /// The eyedropper (§18.0.2).
@@ -348,7 +348,7 @@ pub enum GradientTarget {
     Fill { layer: LayerId },
     /// Repaint the matte `layer` (§15.4). The ramp rides the target — seeded
     /// from the matte's own paint, so re-composing an old gradient's axis does
-    /// not silently swap its colours for the library's current row; a library
+    /// not silently swap its colors for the library's current row; a library
     /// click replaces it deliberately.
     Matte {
         layer: LayerId,
@@ -1280,7 +1280,7 @@ pub enum PickScope {
     /// Every visible layer — the paint the canvas shows.
     #[default]
     AllLayers,
-    /// Every visible layer over the substrate colour, so bare canvas and thin paint
+    /// Every visible layer over the substrate color, so bare canvas and thin paint
     /// answer with what the eye sees rather than with nothing and with the glaze.
     AllLayersAndCanvas,
     /// The selected layer alone, ignoring anything over or under it.

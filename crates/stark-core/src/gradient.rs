@@ -1,17 +1,17 @@
-//! Gradients: a colour ramp fitted from a line traced through the painting (§22).
+//! Gradients: a color ramp fitted from a line traced through the painting (§22).
 //!
-//! A gradient here is a small list of positioned colour stops, interpolated in
-//! **Oklab** so a ramp between two colours passes through the colours an artist
+//! A gradient here is a small list of positioned color stops, interpolated in
+//! **Oklab** so a ramp between two colors passes through the colors an artist
 //! would mix on the way (§1.6). Stops store straight sRGB — the same convention
-//! as every other colour on a CPU boundary (`BrushParams::color`, §6.5) — and
+//! as every other color on a CPU boundary (`BrushParams::color`, §6.5) — and
 //! convert to Oklab only to interpolate, so a stop round-trips through the
 //! picker and the library unchanged.
 //!
 //! The type exists to be *captured*, not authored point by point: the artist
 //! traces a line through paint they have already mixed, the engine samples
-//! colours along it ([`Engine::pick_gradient`](crate::Engine::pick_gradient),
+//! colors along it ([`Engine::pick_gradient`](crate::Engine::pick_gradient),
 //! §22.2), and [`fit`] reduces those samples to the fewest stops that still
-//! reproduce the ramp within a perceptual tolerance. Placing and colour-picking
+//! reproduce the ramp within a perceptual tolerance. Placing and color-picking
 //! control points by hand remains possible in principle — a `Gradient` is just
 //! stops — but the trace is the front door.
 //!
@@ -24,7 +24,7 @@
 use crate::color::{oklab_to_srgb, srgb_to_oklab};
 use crate::geom::Vec2;
 
-/// One colour stop: a position along the ramp and the colour there.
+/// One color stop: a position along the ramp and the color there.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GradientStop {
     /// Position in `[0,1]` along the ramp.
@@ -35,7 +35,7 @@ pub struct GradientStop {
     pub color: [f32; 3],
 }
 
-/// A colour ramp: at least two stops, positions ascending, endpoints at 0 and 1.
+/// A color ramp: at least two stops, positions ascending, endpoints at 0 and 1.
 ///
 /// The invariants are held by construction — [`Gradient::new`] normalizes and
 /// refuses rather than every consumer re-checking, and deserialization funnels
@@ -75,7 +75,7 @@ impl Gradient {
         &self.stops
     }
 
-    /// The colour at `t` (clamped to `[0,1]`), interpolated **in Oklab** between
+    /// The color at `t` (clamped to `[0,1]`), interpolated **in Oklab** between
     /// the surrounding stops — the same interpolation CSS's `in oklab` performs,
     /// so a frontend strip previews exactly what this returns. Straight sRGB out.
     pub fn sample(&self, t: f32) -> [f32; 3] {
@@ -93,7 +93,7 @@ impl Gradient {
             return a.color;
         }
         let f = (t - a.t) / span;
-        // Standing on a stop returns the stop, bit for bit — a colour must not
+        // Standing on a stop returns the stop, bit for bit — a color must not
         // pick up conversion dust just by being read back off the ramp.
         if f <= 0.0 {
             return a.color;
@@ -154,7 +154,7 @@ fn to_lab(srgb: [f32; 3]) -> [f32; 3] {
 
 fn from_lab(lab: [f32; 3]) -> [f32; 3] {
     let s = oklab_to_srgb([lab[0], lab[1], lab[2], 1.0]);
-    // A lerp between in-gamut colours can leave the sRGB cube (Oklab is wider);
+    // A lerp between in-gamut colors can leave the sRGB cube (Oklab is wider);
     // clamping per channel is what CSS does for the same strip.
     [
         s[0].clamp(0.0, 1.0),
@@ -165,7 +165,7 @@ fn from_lab(lab: [f32; 3]) -> [f32; 3] {
 
 /// How far apart, in canvas px, the capture samples a traced path (§22.2).
 /// Comparable to the 5×5 patch each sample averages, so consecutive patches
-/// overlap and the ramp cannot skip a colour narrower than a patch.
+/// overlap and the ramp cannot skip a color narrower than a patch.
 pub const SAMPLE_SPACING: f32 = 4.0;
 
 /// Most samples one capture may take. A bound on what a trace may cost, the way
@@ -220,7 +220,7 @@ pub fn resample(path: &[Vec2]) -> Vec<(f32, Vec2)> {
     out
 }
 
-/// Fit a gradient to colours sampled along a trace: `(t, straight sRGB)` pairs,
+/// Fit a gradient to colors sampled along a trace: `(t, straight sRGB)` pairs,
 /// `t` ascending. The mechanical half of the capture (§22.2) — the artist
 /// supplies the line, this supplies the control points.
 ///
@@ -248,7 +248,7 @@ pub fn fit(samples: &[(f32, [f32; 3])]) -> Option<Gradient> {
     let n = samples.len();
     let lab: Vec<[f32; 3]> = samples.iter().map(|(_, c)| to_lab(*c)).collect();
 
-    // Median-of-3, endpoints kept verbatim: the ends are the colours the artist
+    // Median-of-3, endpoints kept verbatim: the ends are the colors the artist
     // deliberately started and finished on, not noise to vote away.
     let med: Vec<[f32; 3]> = (0..n)
         .map(|i| {
@@ -374,7 +374,7 @@ mod tests {
         // The invariants survive without the funnel: ascending, endpoints exact.
         assert_eq!(r.stops()[0].t, 0.0);
         assert_eq!(r.stops()[2].t, 1.0);
-        // Stops land bit-exact — a colour must not pick up dust by being turned
+        // Stops land bit-exact — a color must not pick up dust by being turned
         // around — and interior positions mirror.
         assert_eq!(r.stops()[0].color, [0.2, 0.8, 0.6]);
         assert_eq!(r.stops()[2].color, [0.1, 0.2, 0.3]);

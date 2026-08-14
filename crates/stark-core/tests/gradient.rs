@@ -2,8 +2,8 @@
 //!
 //! The promise under test is that every sample of a trace **is** an eyedropper
 //! pick — same sources, same patch mean, same raw-channels rule — so the fitted
-//! gradient's ends are the colours a pick at those points reports, in both
-//! colour spaces. And the refusals: a trace over bare canvas has no gradient in
+//! gradient's ends are the colors a pick at those points reports, in both
+//! color spaces. And the refusals: a trace over bare canvas has no gradient in
 //! it, and a gap of bare canvas crossed mid-trace does not inject the paper.
 
 mod common;
@@ -33,7 +33,7 @@ fn near(a: [f32; 3], b: [f32; 4], tol: f32) -> bool {
 
 /// Two abutting bars, a trace across both: the ramp's ends are the two paints.
 ///
-/// In both colour spaces, because it is a different claim in each — in Mixbox the
+/// In both color spaces, because it is a different claim in each — in Mixbox the
 /// samples are pigment mixtures run back through the polynomial, and a capture
 /// that forgot the residual would hand back a ramp through `#383838` (§6.7).
 #[test]
@@ -161,7 +161,7 @@ fn a_gap_in_the_paint_does_not_join_the_ramp() {
             .sqrt();
         assert!(
             d < 0.08,
-            "a colour {d} off the red–blue line joined the ramp: {:?}",
+            "a color {d} off the red–blue line joined the ramp: {:?}",
             g.sample(i as f32 / 32.0)
         );
     }

@@ -54,13 +54,13 @@ const PREVIEW_CANVAS_ID: &str = "brush-preview-canvas";
 
 /// The test stroke's fixed RGB (straight sRGB): a pleasant blue, so it reads
 /// clearly over the red reference stroke beneath it — the preview is about the
-/// brush's *behaviour*, not its colour. Only RGB is forced; the brush's own
+/// brush's *behaviour*, not its color. Only RGB is forced; the brush's own
 /// alpha (the Opacity slider) still applies.
 const PREVIEW_STROKE_COLOR: [f32; 3] = [0.852, 0.645, 0.125];
 
 /// Fixed jitter seed for the previewed test stroke. Every edit re-strokes, and
 /// a stroke's seed is normally the document clock — which advances with each
-/// replay's commit, re-rolling the colour dynamics and dither each time and
+/// replay's commit, re-rolling the color dynamics and dither each time and
 /// hiding the parameter change behind fresh noise. Pinning it means only the
 /// edited setting moves between renders. Arbitrary value; it just never changes.
 const PREVIEW_STROKE_SEED: u64 = 0x5747_1CED_57A2_4B11;
@@ -260,7 +260,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     let is_round = matches!(brush.shape, BrushShape::Round { .. });
     let d = brush.dynamics;
     let cd = brush.color_dynamics;
-    // The jitter channels are the *colour space's* channels — label them for
+    // The jitter channels are the *color space's* channels — label them for
     // whatever space the document is in.
     let space = state
         .renderer
@@ -408,7 +408,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     }
 
                     Section {
-                        title: "Color dynamics", desc: "The colour wanders across the brush and along the stroke, following a noise field.",
+                        title: "Color dynamics", desc: "The color wanders across the brush and along the stroke, following a noise field.",
                         glyph: icons::COLOR,
                         open: color_open,
                         div { class: "brush-shapes",
@@ -425,7 +425,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                                 onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::Mosaic),
                                 "Mosaic" }
                         }
-                        // How far each colour channel wanders (± in the channel's units).
+                        // How far each color channel wanders (± in the channel's units).
                         for i in 0..3 {
                             Slider { label: ch_labels[i].to_string(), min: 0.0, max: 0.5, value: cd.amplitude[i],
                                 oninput: move |v| edit(state, preview, move |b| b.color_dynamics.amplitude[i] = v) }

@@ -1,4 +1,4 @@
-//! Colour dynamics (colour jitter) — §6.2: the applied colour varies
+//! Color dynamics (color jitter) — §6.2: the applied color varies
 //! across the brush and along the stroke, driven by a tileable 2-D noise field
 //! sampled in the stroke's own (lateral, arc) frame.
 //! These tests pin the three contracts: **off is exactly off** (a zero-amplitude
@@ -45,7 +45,7 @@ fn golden_color_jitter_simplex() {
         return;
     };
     // Smooth organic wander in all three Oklab channels, at a scale that shows a
-    // few colour "clouds" across the stroke and a few more along it.
+    // few color "clouds" across the stroke and a few more along it.
     let b = jitter_brush(NoiseKind::Simplex, [2.0, 0.5], [0.18, 0.14, 0.14]);
     stroke_with(&mut engine, b, &S_CURVE);
     let img = engine.render_to_image();
@@ -69,7 +69,7 @@ fn golden_color_jitter_voronoi() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    // Cellular mottling: patches of colour with creases where cells meet, at a
+    // Cellular mottling: patches of color with creases where cells meet, at a
     // scale that fits a few cells across the footprint.
     let b = jitter_brush(NoiseKind::Voronoi, [2.0, 1.0], [0.18, 0.14, 0.14]);
     stroke_with(&mut engine, b, &S_CURVE);
@@ -82,7 +82,7 @@ fn golden_color_jitter_mosaic() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    // The discrete cousin of the above: flat facets of colour meeting at hard
+    // The discrete cousin of the above: flat facets of color meeting at hard
     // edges, at the same scale so the two goldens are readable side by side.
     let b = jitter_brush(NoiseKind::Mosaic, [2.0, 1.0], [0.18, 0.14, 0.14]);
     stroke_with(&mut engine, b, &S_CURVE);
@@ -90,7 +90,7 @@ fn golden_color_jitter_mosaic() {
     assert_golden("color_jitter_mosaic", &img, 6);
 }
 
-/// Along-stroke-only jitter (`frequency = [0, f]`): the colour drifts along
+/// Along-stroke-only jitter (`frequency = [0, f]`): the color drifts along
 /// the arc but is uniform across the footprint at any point of the stroke.
 #[test]
 fn golden_color_jitter_along_stroke() {
@@ -103,7 +103,7 @@ fn golden_color_jitter_along_stroke() {
     assert_golden("color_jitter_along_stroke", &img, 6);
 }
 
-/// Zero amplitude must be **exactly** the constant-colour deposit — the shader
+/// Zero amplitude must be **exactly** the constant-color deposit — the shader
 /// early-outs and the zero volume is bound, so a brush with dynamics fields set
 /// but amplitude 0 renders bit-identically to the default brush.
 #[test]

@@ -15,7 +15,7 @@
 //! off the library (the Gradients panel's highlighted row), so a click there
 //! re-previews; a **matte** carries its ramp in the target, seeded from the
 //! matte's own paint — re-composing an old gradient's axis must not silently
-//! swap its colours for whatever the library happens to have selected. A
+//! swap its colors for whatever the library happens to have selected. A
 //! library click mid-mode still replaces it, because a click is a choice.
 
 use dioxus::html::input_data::MouseButton;

@@ -5,7 +5,7 @@
 //! rectangle, an ellipse and a freehand lasso are just three ways to produce coverage,
 //! they combine with the running selection through the ordinary boolean set ops, and
 //! the result is a per-texel *fraction* — so feathered and antialiased edges are the
-//! normal case rather than a special one, and any future producer (select-by-colour, a
+//! normal case rather than a special one, and any future producer (select-by-color, a
 //! painted quick-mask, a loaded alpha channel) drops into the same representation.
 //!
 //! Two properties fall out of storing it as tiles:

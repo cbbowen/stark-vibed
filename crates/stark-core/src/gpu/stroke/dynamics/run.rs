@@ -27,7 +27,7 @@ use super::plan::{
     snapshot_size,
 };
 /// Resolution (texels per side) of the stamp loop's tool reservoir
-/// (§6.2). Brush-local, so carried colour detail is ~radius/32 canvas px — plenty
+/// (§6.2). Brush-local, so carried color detail is ~radius/32 canvas px — plenty
 /// for smeared paint, and small enough that the per-stamp reservoir update is
 /// nearly free.
 const BRUSH_RES: u32 = 64;
@@ -188,7 +188,7 @@ struct DynamicsRun<'a> {
     /// Functions of the brush alone, so shared by every piece: the swept-footprint
     /// prefix-τ bind group (group 1 of `bake`/`deposit` — the same texture the swept
     /// fast path samples), the plain coverage mask the reservoir texels weight by,
-    /// and the colour-dynamics field the `add` paint is jittered against.
+    /// and the color-dynamics field the `add` paint is jittered against.
     prefix_bg: wgpu::BindGroup,
     cov: wgpu::TextureView,
     noise: wgpu::TextureView,
@@ -197,8 +197,8 @@ struct DynamicsRun<'a> {
     brush_aux_tex: [wgpu::Texture; 2],
     brush_color: [wgpu::TextureView; 2],
     brush_aux: [wgpu::TextureView; 2],
-    /// The reservoir's **residual** half (§6.7), ping-ponged in step with the colour
-    /// above — the tip carries the rest of the colour it picked up, or a pigment
+    /// The reservoir's **residual** half (§6.7), ping-ponged in step with the color
+    /// above — the tip carries the rest of the color it picked up, or a pigment
     /// space's black would come back off the tool as the grey its concentrations
     /// alone describe. `None` in a space with no residual, which allocates nothing.
     brush_resid_tex: Option<[wgpu::Texture; 2]>,
@@ -237,7 +237,7 @@ impl<'a> DynamicsRun<'a> {
             entries: &[desc::tex(0, &prefix_view)],
         });
         let cov = r.tips.coverage_view(scene.assets, &rec.brush);
-        // Colour dynamics for the brush's own `add` paint — the same field and
+        // Color dynamics for the brush's own `add` paint — the same field and
         // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
         let noise = r.tips.noise_view(&rec.brush.color_dynamics);
 
@@ -309,7 +309,7 @@ impl<'a> DynamicsRun<'a> {
                 );
             }
         } else {
-            // Init: latent = the brush's own colour, per-unit opacity = its alpha;
+            // Init: latent = the brush's own color, per-unit opacity = its alpha;
             // the carried amount starts at the pre-`charge` glob (0 = empty tool).
             let d = rec.brush.dynamics;
             scope
@@ -338,8 +338,8 @@ impl<'a> DynamicsRun<'a> {
                                 a: 0.0,
                             }),
                         )),
-                        // A freshly charged tip holds the brush's own colour, and that
-                        // colour's residual with it — the same clear, off the same
+                        // A freshly charged tip holds the brush's own color, and that
+                        // color's residual with it — the same clear, off the same
                         // constants (§6.7).
                         brush_resid.as_ref().map(|v| {
                             desc::attach(
@@ -472,7 +472,7 @@ impl<'a> DynamicsRun<'a> {
     /// Composited from the base tiles of the affected set plus a one-tile ring, so
     /// rewritten tiles' aprons read real neighbour content (§6.4). Rgba16Float
     /// throughout: it is both filterable and a core storage format, and matches the
-    /// tile colour format of both colour spaces (asserted in `build_dynamics_kit`).
+    /// tile color format of both color spaces (asserted in `build_dynamics_kit`).
     fn composite_region(
         &mut self,
         base: &TileMap,
@@ -501,7 +501,7 @@ impl<'a> DynamicsRun<'a> {
         let (color_tex, color) = region_tex("stark dynamics region color");
         let (_, aux) = region_tex("stark dynamics region aux");
         // The region's residual (§6.7), in the same format for the same reason: it is
-        // the rest of the colour beside it, and the loop reads and writes the two at
+        // the rest of the color beside it, and the loop reads and writes the two at
         // exactly the same points.
         let (resid_tex, resid) = match r
             .color_space
@@ -604,7 +604,7 @@ impl<'a> DynamicsRun<'a> {
         }
 
         // The selection over this region (§6.8), gathered from the same halo tiles the
-        // paint came from, so it is 1:1 with the colour/aux regions. An unrestricted
+        // paint came from, so it is 1:1 with the color/aux regions. An unrestricted
         // selection binds the 1×1 constant instead — the loop's masked reads then
         // return 1 everywhere and the stroke behaves exactly as before.
         let sel_mask = if self.scene.selection.is_universal() {
@@ -793,7 +793,7 @@ impl<'a> DynamicsRun<'a> {
                 desc::tex(b::BRUSH_DST_AUX_W, &self.brush_aux[1 - i]),
                 desc::tex(b::SEL_MASK, &region.sel_mask),
             ];
-            // The residual ping-pongs on the same phase as the colour: read `i`,
+            // The residual ping-pongs on the same phase as the color: read `i`,
             // write `1 - i`, or the tool's two halves would drift apart.
             push_resid(
                 &mut entries,
@@ -839,7 +839,7 @@ impl<'a> DynamicsRun<'a> {
         });
         // The two passes that lay paint read the residual's baked prefix and its
         // snapshot, and write the region's residual back — the same three roles the
-        // colour's 19/11/13 play beside them.
+        // color's 19/11/13 play beside them.
         let resid_write = [
             (b::BAKE_RLM, self.bake_rlm.as_ref()),
             (b::UNDER_RESID, under.resid.as_ref()),
@@ -1074,7 +1074,7 @@ impl<'a> DynamicsRun<'a> {
     /// a fresh CoW tile → aprons stay bit-identical to neighbour interiors (§6.4), and
     /// the wide region aux narrows to the persistent one (height).
     ///
-    /// One region-sized narrow pass, then plain texture copies: the colour and
+    /// One region-sized narrow pass, then plain texture copies: the color and
     /// residual tiles are the region's own formats, so a copy is exact, and the aux
     /// copies out of the narrowed texture the single pass wrote — where this used to
     /// record a render pass per tile, ~30 of them per fold under a wide tip, whose
@@ -1189,7 +1189,7 @@ impl<'a> DynamicsRun<'a> {
         ToolState {
             color: copy_out(&color_src, "stark tool state color"),
             aux: copy_out(&aux_src, "stark tool state aux"),
-            // Carried across ranges with the colour, and for the same reason: a tip
+            // Carried across ranges with the color, and for the same reason: a tip
             // that lifted black paint has to still be carrying black when the next
             // pointer move resumes it (§6.7).
             resid: resid_src
@@ -1211,7 +1211,7 @@ impl<'a> DynamicsRun<'a> {
 /// One piece's canvas region: a 1:1 copy of the canvas under its segments, which the
 /// loop evolves in place before [`DynamicsRun::write_back`] slices it into tiles.
 ///
-/// The colour and residual carry their textures beside the views: the write-back
+/// The color and residual carry their textures beside the views: the write-back
 /// cuts tiles out of them by texture copy, and a copy is addressed by texture where
 /// every pass binding is addressed by view. Both handles are `Arc`-backed clones of
 /// the one piece-scoped allocation.
@@ -1220,7 +1220,7 @@ struct Region {
     color: wgpu::TextureView,
     aux: wgpu::TextureView,
     /// The region's residual (§6.7), in a space that has one — evolved in place by the
-    /// same dispatches that evolve the colour, and sliced back with it.
+    /// same dispatches that evolve the color, and sliced back with it.
     resid_tex: Option<wgpu::Texture>,
     resid: Option<wgpu::TextureView>,
     /// The selection over the region (§6.8) — its own gathered mask, or the 1×1
@@ -1234,7 +1234,7 @@ struct Snapshot {
     size: u32,
     color: wgpu::TextureView,
     aux: wgpu::TextureView,
-    /// The snapshot's residual half, copied on exactly the texels the colour is.
+    /// The snapshot's residual half, copied on exactly the texels the color is.
     resid: Option<wgpu::TextureView>,
 }
 
@@ -1243,7 +1243,7 @@ struct Snapshot {
 /// A tail rather than an interleave: entries are keyed by binding number, so their
 /// order in the slice is free, and keeping the residual out of the plain list is what
 /// leaves that list readable as the thing it still is. Every `Option` handed here is
-/// `Some` exactly when the colour space has a residual, so a group takes its whole
+/// `Some` exactly when the color space has a residual, so a group takes its whole
 /// tail or none of it — the same all-or-nothing the `[..n + k]` layout slices in
 /// [`build_dynamics_kit`](super::kit::build_dynamics_kit) express on the other side.
 fn push_resid<'v>(
@@ -1263,7 +1263,7 @@ fn push_resid<'v>(
 struct Cells {
     tool: wgpu::TextureView,
     lat: wgpu::TextureView,
-    /// The residual's cell mean, allocated exactly when the colour space has one.
+    /// The residual's cell mean, allocated exactly when the color space has one.
     res: Option<wgpu::TextureView>,
 }
 
@@ -1292,7 +1292,7 @@ struct CoarseBindings {
 const LOOP_USAGE: wgpu::TextureUsages =
     wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::STORAGE_BINDING);
 
-/// The reservoir textures' shape — [`BRUSH_RES`]² of the tile colour format, which
+/// The reservoir textures' shape — [`BRUSH_RES`]² of the tile color format, which
 /// is what makes a [`ToolState`] copyable into and out of the loop's ping-pong.
 const RESERVOIR_EXTENT: wgpu::Extent3d = wgpu::Extent3d {
     width: BRUSH_RES,

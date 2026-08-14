@@ -19,13 +19,13 @@ use stark_core::document::{
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
 
-/// A fill's paint is colour alone — how far it covers is `FillOp::opacity`,
+/// A fill's paint is color alone — how far it covers is `FillOp::opacity`,
 /// which the Select panel's slider sets (§18.0.4). These double as brush
-/// colours through [`opaque`], which is where a per-unit opacity still belongs.
+/// colors through [`opaque`], which is where a per-unit opacity still belongs.
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
 const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
 
-/// The same colour as a *brush's*, whose alpha is the pigment's per-unit opacity
+/// The same color as a *brush's*, whose alpha is the pigment's per-unit opacity
 /// (§6.1) rather than anything a fill reads.
 fn opaque([r, g, b]: [f32; 3]) -> [f32; 4] {
     [r, g, b, 1.0]
@@ -89,7 +89,7 @@ fn fill_rect(
     });
 }
 
-/// Arm the Fill action with a red brush. A fill lays *the brush's colour*, so
+/// Arm the Fill action with a red brush. A fill lays *the brush's color*, so
 /// that much still comes off the Color panel; how far it covers is the Select
 /// panel's own opacity, which defaults to a full one.
 fn arm_fill(engine: &mut stark_core::Engine, color: [f32; 3]) {
@@ -276,7 +276,7 @@ fn a_fill_stacks_over_resident_paint_rather_than_replacing_it() {
 /// stopped at 95% and the slider had no top. The shader now inverts that law for
 /// the mass instead of taking a thickness on faith.
 ///
-/// Read as a comparison inside one frame rather than against an absolute colour:
+/// Read as a comparison inside one frame rather than against an absolute color:
 /// the same fill lands over a green stroke on the left and over bare paper on the
 /// right, and "covers" means those two places agree. The residual tolerance is the
 /// lighting, not the paint — the stroke under the left one still has height, so
@@ -334,7 +334,7 @@ fn a_feathered_fill_thins_towards_its_edge() {
     );
     let img = engine.render_to_image();
     // Coverage scales the *paint* — a feathered edge is a thinning of the deposit,
-    // not a fade of its colour — and, because the shader asks the slab law for the
+    // not a fade of its color — and, because the shader asks the slab law for the
     // mass that lands the coverage it was given, what thins on the canvas is the
     // rasterizer's ramp itself. Sampled well inside, near the boundary, and past
     // the ramp.
@@ -509,7 +509,7 @@ fn a_filled_region_can_be_scraped_back_by_a_lift_brush() {
     let filled = engine.render_to_image();
     assert!(is_red(&filled, Vec2::ZERO));
 
-    // The whole argument for a fill depositing *paint* rather than a flat colour:
+    // The whole argument for a fill depositing *paint* rather than a flat color:
     // what it lays has an amount, so the wet-paint loop can pick it up again. A
     // pure scraper (`add = 0`, `lift = 1`) should take it off. Filled at 0.6 rather
     // than opaque because the claim is that the paint is liftable, not that one
@@ -692,7 +692,7 @@ fn a_linear_gradient_fill_ramps_along_its_axis_and_clamps_past_it() {
 }
 
 /// A radial axis rings outward: first stop at the centre, last at and past the
-/// radius, and the same colour at the same distance in every direction.
+/// radius, and the same color at the same distance in every direction.
 #[test]
 fn a_radial_gradient_fill_rings_outward() {
     let Some(mut engine) = engine_or_skip() else {
@@ -803,9 +803,9 @@ fn the_gradient_preview_does_not_accumulate() {
     );
 }
 
-/// The ramp's ends are its stops, in **both** colour spaces — in Mixbox the
+/// The ramp's ends are its stops, in **both** color spaces — in Mixbox the
 /// stops convert to concentrations *and residual*, and an end that forgot the
-/// residual would come back as the polynomial's nearest reachable colour
+/// residual would come back as the polynomial's nearest reachable color
 /// (§6.7). Read back through the eyedropper, which answers in sRGB.
 #[test]
 fn the_ramp_ends_are_the_stops_in_both_spaces() {

@@ -40,7 +40,7 @@ fn paint_stroke(engine: &mut Engine) {
 }
 
 // Lit paint is never a pure primary, so assert channel *dominance* rather than
-// near-saturation (the media pass legitimately shades and desaturates colour). The
+// near-saturation (the media pass legitimately shades and desaturates color). The
 // margin was sized against the warm studio tint these tests used to run under, where
 // even the neutral near-white PAPER read red-dominant by ~33 levels while actual red
 // paint dominated by ~210 (and blue BG by ~180). Under the reference light (§6.3) the
@@ -53,7 +53,7 @@ fn is_red(c: [u8; 4]) -> bool {
 fn is_blue(c: [u8; 4]) -> bool {
     c[2] as i32 > c[0] as i32 + 60 && c[2] as i32 > c[1] as i32 + 60
 }
-// Every test that reads the live preview's *colour* — either directly, or by holding
+// Every test that reads the live preview's *color* — either directly, or by holding
 // it against what commits — is gated off under `debug-unfrozen`, which repaints the
 // live tail magenta by design (see this crate's `Cargo.toml`). The tint has its own
 // test, gated the other way.
@@ -82,7 +82,7 @@ fn live_preview_shows_stroke_before_commit() {
 
 /// The unfrozen-tail tint is a *view* setting: it must change the live preview and
 /// nothing else, so a stroke drawn under `debug-unfrozen` still commits in its real
-/// colour. The only test here that wants the feature on.
+/// color. The only test here that wants the feature on.
 #[cfg(feature = "debug-unfrozen")]
 #[test]
 fn tinting_the_live_tail_does_not_change_what_commits() {
@@ -114,7 +114,7 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
         !images_match(&preview, &committed, 8),
         "tint had no visible effect on the preview"
     );
-    // And what landed is the stroke's own colour: a tint that reached the stroke
+    // And what landed is the stroke's own color: a tint that reached the stroke
     // *record* would repaint the whole stroke magenta in the single commit pass.
     assert!(
         is_red(center(&committed)),
@@ -143,7 +143,7 @@ fn long_band(engine: &mut Engine, points: &[Vec2]) {
 /// Now the stroke is drawn in as many region-sized pieces as it takes.
 ///
 /// The brush here is a pure scrape — it lifts everything and lays nothing back, and
-/// its own colour is fully transparent — so the two paths are unmistakable: the loop
+/// its own color is fully transparent — so the two paths are unmistakable: the loop
 /// takes the undercoat away, while the swept deposit has nothing to lay and leaves it
 /// exactly where it was. The stroke runs well past the window on both sides; only its
 /// bounding box has to be oversized, not the part under test.

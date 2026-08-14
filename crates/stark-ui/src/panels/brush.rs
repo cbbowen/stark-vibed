@@ -113,7 +113,7 @@ fn SlotRack() -> Element {
                 {
                     let assigned = rack[slot];
                     // Lit like a preset row, and on the same test: this is the
-                    // brush in hand, colour aside, until any knob moves off it.
+                    // brush in hand, color aside, until any knob moves off it.
                     // Held wins — it is momentary, and it is the thing the user is
                     // doing right now rather than a state they are in.
                     let mut class = String::from("slot-chip");
@@ -156,7 +156,7 @@ fn SlotRack() -> Element {
 
 /// The preset library (`crate::presets`) at the panel's foot: a header carrying the
 /// Save button, over one row per preset — click applies it, hover reveals a remove ✕.
-/// The row whose snapshot the live brush still *is* (colour aside) is highlighted; it
+/// The row whose snapshot the live brush still *is* (color aside) is highlighted; it
 /// goes out the moment any knob moves.
 ///
 /// The section takes every pixel the panel has left and scrolls its own overflow, so
@@ -304,7 +304,7 @@ pub fn PresetSaveModal(on_close: EventHandler<()>) -> Element {
 
                 div { class: "modal-title", "Save Preset" }
                 div { class: "modal-subtitle",
-                    "Keeps the whole brush — size, shape, dynamics, taper — under a name. Everything but the colour."
+                    "Keeps the whole brush — size, shape, dynamics, taper — under a name. Everything but the color."
                 }
 
                 input {

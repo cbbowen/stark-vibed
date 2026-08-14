@@ -1,6 +1,6 @@
-// Layer blending for the **Mixbox** pigment colour space (§18.0.4,
+// Layer blending for the **Mixbox** pigment color space (§18.0.4,
 // §6.7). Same light algebra as every other space; what differs is that a
-// channel triple here is a mixture of pigments rather than a colour, so the trip out
+// channel triple here is a mixture of pigments rather than a color, so the trip out
 // to light is Mixbox's polynomial and the trip back is its LUT.
 //
 // That round trip is the reason `mixbox_lut.wesl` exists. Combining light is not a
@@ -21,7 +21,7 @@
 // would be cheaper and would mean nothing: `c` is how much of a pigment is present,
 // not how much light gets through, so their product is not a quantity. Two glazes
 // attenuate the light passing through them, which is a statement about light, so it
-// is settled in light and the LUT is asked which mixture ended up that colour.
+// is settled in light and the LUT is asked which mixture ended up that color.
 
 import package::lib::color::{
     srgb_to_linear, linear_to_srgb, linear_to_light, light_to_linear,
@@ -35,7 +35,7 @@ import package::blend_common::{
     combined_light, is_normal, merge, merge_added, merge_triple,
 };
 
-// The residual halves of the two colours (§6.7). **Bindings 7 and 8 of
+// The residual halves of the two colors (§6.7). **Bindings 7 and 8 of
 // group 0** — `blend_common` owns 0–4 and `mixbox_lut` 5–6, and as that file says,
 // nothing but this comment holds the three apart. Unconditional, with no `@if`: this
 // module is reached only by the space that has a residual.
@@ -72,7 +72,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let cs = textureLoad(src_color, p, 0);
     let rb = textureLoad(back_resid, p, 0); // (residual · coverage, coverage)
     let rs = textureLoad(src_resid, p, 0);
-    // Both halves un-premultiply by the *colour's* coverage — the residual target's
+    // Both halves un-premultiply by the *color's* coverage — the residual target's
     // own alpha is the same number, duplicated only because the fixed-function "over"
     // that filled these targets reads each one's alpha.
     let chan_b = cb.rgb / max(cb.a, COVERAGE_EPS);
@@ -89,7 +89,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // which is already exact. **Nothing beneath** — every mode is the source, given
     // back to the bit by `merge`'s `mix(..., ab)` at `ab = 0`. **`Normal`** — it covers
     // rather than combines, so it has no blend function to be affine anywhere and the
-    // working space is where it belongs. Both halves of the colour take the branch.
+    // working space is where it belongs. Both halves of the color take the branch.
     if cb.a <= 0.0 || is_normal() {
         let base = merge(cb, cs, chan_s, hb, hs);
         out.color = base.color;
@@ -102,16 +102,16 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     }
 
     // Everything else is settled in the mode's own space (`combined_light`), and a
-    // pigment document then asks the LUT which mixture ended up that colour. That the
+    // pigment document then asks the LUT which mixture ended up that color. That the
     // residual falls out of the same answer rather than being merged separately is a
-    // simplification the one-expansion law buys: the two halves are one colour, and
+    // simplification the one-expansion law buys: the two halves are one color, and
     // here they are decoded from one.
     //
     // `max(..., 0)` before the sRGB encode: the combination is componentwise in XYZ,
     // which can step just outside the gamut on very saturated pairs, and the LUT is
     // indexed by sRGB. `mixbox_srgb_to_concentrations` clamps the top end itself. The
     // rest of `mixbox_rgb_to_latent` is the residual: what the polynomial could not say
-    // about the colour the light works out to. **The trip back from light is exact** —
+    // about the color the light works out to. **The trip back from light is exact** —
     // it was the LUT's concentrations alone, so a blend that landed on black stored a
     // mixture the media pass would render `#383838`.
     let x = combined_light(

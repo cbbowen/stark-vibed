@@ -391,7 +391,7 @@ pub fn LayerPanel() -> Element {
                 div { class: "slider-label",
                     {icon(icons::OPACITY)}
                     // A filter's opacity is its **strength** (§21.4), and the word is
-                    // worth changing: "50% opacity" on a colour adjustment invites
+                    // worth changing: "50% opacity" on a color adjustment invites
                     // the reading that the filter is half transparent, when what it
                     // is is half applied.
                     {label(match (l.is_group, l.filter.is_some()) {
@@ -409,7 +409,7 @@ pub fn LayerPanel() -> Element {
                     // layer's opacity is document state, so one adjustment must cost
                     // one undo step — and one replicated action — rather than one per
                     // pointer move, which is the bargain the frame drag and the canvas
-                    // colour already make (§14.6). The engine renders the preview and
+                    // color already make (§14.6). The engine renders the preview and
                     // reports it back through `observe`, so the track and the canvas
                     // both follow the pointer.
                     oninput: move |e| {

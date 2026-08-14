@@ -22,9 +22,9 @@ pub struct MatteDraw {
     /// (§15.5).
     pub flags: f32,
     /// Fill color in the document's working color space. Zeros for a gradient
-    /// matte, whose colour comes from `ramp` per fragment.
+    /// matte, whose color comes from `ramp` per fragment.
     pub channels: [f32; 4],
-    /// The same colour's **residual** in `.xyz` (§6.7); `.w` unused. Zero in a space
+    /// The same color's **residual** in `.xyz` (§6.7); `.w` unused. Zero in a space
     /// that has none, which is the true value rather than a stand-in.
     pub resid: [f32; 4],
     /// The layer's opacity.

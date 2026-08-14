@@ -160,7 +160,7 @@ fn a_merge_that_does_not_overlap_is_exact() {
 
 /// The **order** survives: the upper layer's paint stays on top of the lower's.
 ///
-/// Asked by colour rather than by pixel equality, because it is the one thing the two
+/// Asked by color rather than by pixel equality, because it is the one thing the two
 /// images being equal would *not* prove — a merge that stacked the pair the wrong way
 /// round would render differently from the stack, but so would a dozen other bugs, and
 /// this says which.

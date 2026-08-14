@@ -163,8 +163,8 @@ bit-identical to the unclipped output at `m = 1`.
 #### 14.4.2 Clipping must scale the aux, or you get ghost impasto
 
 **Forced by the media pass.** `merge()` sums the height field unconditionally, on
-the grounds that height is *amount of paint* and paint stacks whatever its colour
-does. Clipping breaks the grounds: a clipped layer's colour is suppressed outside
+the grounds that height is *amount of paint* and paint stacks whatever its color
+does. Clipping breaks the grounds: a clipped layer's color is suppressed outside
 the backdrop, and if its height is not, the media pass lights relief where there
 is no paint. So:
 
@@ -340,7 +340,7 @@ reorder.
 Most controls in the panel report a value the hand *chose* — a blend mode, a clip,
 a name — and one of those per interaction. The opacity slider reports one
 per pointer **move**, and so it makes the same bargain the frame drag (§15.7) and
-the canvas colour (§15.5) make, on the same slot: each sample sends
+the canvas color (§15.5) make, on the same slot: each sample sends
 `ViewCommand::PreviewLayerOpacity` (view state, never logged), and the settled
 drag commits a single `DocCommand::SetLayerOpacity`. A drag costs one undo step
 rather than a hundred, and in a shared session one replicated action rather than
@@ -607,7 +607,7 @@ its **optical mass**. Pass A gives a layer the weight
     w = 1 − exp(−K·m)
 ```
 
-— its visible alpha, the translucent-slab law (§6.1) — stacks the weighted colours
+— its visible alpha, the translucent-slab law (§6.1) — stacks the weighted colors
 with premultiplied "over", and sums the heights. Stack two layers and
 
 ```text
@@ -623,7 +623,7 @@ so **masses add exactly as heights do**. The merged texel therefore has
 and its opacity is the *height-weighted mean* of the two. Nothing is fitted and no
 constant is tuned: a tile stores opacity and height as two numbers (§6.1), which is
 exactly the freedom needed to name any (coverage, height) a stack can reach while
-conserving height. The colour follows through `blend_latent` — and that function is
+conserving height. The color follows through `blend_latent` — and that function is
 not written for this, it is `paint_common.wesl`'s existing parcel-stacking law, the
 one the brush deposits through and `fill.wesl` lays a fill with. A merge stacks two
 layers the way a stroke stacks paint on paint, because those are the same act.
@@ -690,7 +690,7 @@ Three rules stand behind that table, and each is one sentence:
 #### 14.11.3 Two laws, and which pairs take which
 
 A `Normal` merge is settled **in tile space directly** (`merge.wesl`), because that is
-the ordinary one and it needs no colour conversion at all:
+the ordinary one and it needs no color conversion at all:
 
 - **Unclipped** — the source stacks: heights add, masses add, opacity is their
   quotient (§14.11.1).
@@ -701,7 +701,7 @@ the ordinary one and it needs no colour conversion at all:
   ```text
       αo = αb                              coverage untouched, so M = m₀
       Co = αb·(αs·Cs + (1−αs)·Cb)          that coverage over a lerp
-      ho = hb + hs·αb                      height suppressed with the colour
+      ho = hb + hs·αb                      height suppressed with the color
   ```
 
   The height term is the half that matters: leaving it behind would light relief over
@@ -841,7 +841,7 @@ opacity, ordering, naming, undo, save and collaboration for nothing (§15.3). A 
 makes the same trade for a different kind of not-paint.
 
 The fill (in `LayerContent::Matte`, §5.1) is a **`MattePaint`**: one flat
-straight-sRGB colour like `BrushParams::color`, or a gradient — a §22.1
+straight-sRGB color like `BrushParams::color`, or a gradient — a §22.1
 `Gradient` along a `GradientAxis`, the very pair the gradient fill lays
 (§22.4), embedded by value the same way and edited through the same gradient
 bar. Either converts to working-space channels at composite time, so the log
@@ -849,8 +849,8 @@ says the same thing whether the document is Oklab or Mixbox; a gradient's stops
 convert once per frame build and interpolate per fragment in the working space,
 so a Mixbox ground is a *pigment* wash. A matte has no alpha of its own in
 either variant — its transparency *is* its layer opacity, which is the whole
-point of it being a layer — and a gradient varies only the colour, never the
-slab's thickness: a graded wash is a transition in colour, not in relief.
+point of it being a layer — and a gradient varies only the color, never the
+slab's thickness: a graded wash is a transition in color, not in relief.
 
 **The region is stored as geometry, not as a rasterized mask.** §6.8's selection
 shader already evaluates shapes analytically from a signed distance at canvas
@@ -891,7 +891,7 @@ those is already solved for layers.
 `media_common.wesl` derives a texel's visible alpha from the translucent-slab
 law, `vis = 1 − exp(−OPACITY_K · color.a · (aux.x − surface_height))`. Visibility
 comes from **per-unit opacity × thickness**, not from composited alpha. A matte
-writing only colour would be perfectly invisible. So a matte writes `color.a = 1`
+writing only color would be perfectly invisible. So a matte writes `color.a = 1`
 and a thickness `MATTE_THICKNESS`, chosen so the slab reads solid: with
 `OPACITY_K = 1.0`, a thickness of 8 gives `vis > 0.999` even after the surface
 height (≤ ~0.6) is subtracted.
@@ -906,7 +906,7 @@ edge does; at the frame border that reads as a crisp bevel, which is wanted.
 
 #### 15.4.2 The matte's aux blend must be *over*, not additive
 
-The colour space's `aux_blend()` is **additive** — correct for paint, where
+The color space's `aux_blend()` is **additive** — correct for paint, where
 thickness accumulates. If a matte blended additively, the height of paint
 *underneath* it would survive, and `height_at` would emboss that paint's impasto
 as ghost ridges through an opaque mat board.
@@ -920,7 +920,7 @@ vec4, which exists regardless of the format's channel count.)
 
 #### 15.4.3 Matte opacity is non-linear, and that is deliberate
 
-Layer opacity `λ` scales *both* inputs to the slab law — premultiplied colour
+Layer opacity `λ` scales *both* inputs to the slab law — premultiplied color
 (so `color.a = λ`) and aux thickness (so `aux.x = λ·H`) — giving
 `vis(λ) = 1 − exp(−K · λ² · H)`, **quadratic in the exponent**. With `H = 8` that
 is pronounced: `λ = 0.5` covers ~86%, not 50%. Measured on a black frame over a
@@ -928,7 +928,7 @@ red stroke, the outside band reads `[222,61,36]` hidden → `[81,10,2]` at half 
 `[20,8,2]` opaque.
 
 This is kept, because it is **exactly** what paint-layer opacity already does:
-pass A scales premultiplied colour and additive aux by `λ` too, so a paint layer
+pass A scales premultiplied color and additive aux by `λ` too, so a paint layer
 is `1 − exp(−K·λ²·op·t)` — the same form. Consistency with paint is the entire
 premise of making a matte a layer, and a compensating curve here would make the
 matte the one layer whose opacity slider means something different.
@@ -968,7 +968,7 @@ the overlay pass's separate `VERTEX_FRAGMENT` layout.
 
 ### 15.5 What a matte is *not*: the substrate
 
-A matte is a slab of opaque paint. The **substrate** — the colour of the canvas
+A matte is a slab of opaque paint. The **substrate** — the color of the canvas
 itself — is a different thing: it is *under* everything, it is lit, and the weave
 shows through it. The media pass handles it as `m.bg`.
 
@@ -1095,7 +1095,7 @@ test here renders to `Rgba8Unorm`; a browser surface is typically `Bgra8Unorm`.
 The first working export therefore came out with red and blue swapped — salmon
 paper as pale blue, orange paint as blue — while green, black and white were
 untouched, because all three are fixed points of an R↔B swap. That is what made a
-byte-order bug read as a colour-space bug. `RgbaImage::from_target_bytes`
+byte-order bug read as a color-space bug. `RgbaImage::from_target_bytes`
 normalizes it, and `export_is_rgba_whatever_the_target_format_is` paints the same
 thing on an RGBA and a BGRA engine and demands identical bytes — the check no
 single-format test could make, which is precisely why the class of bug survived
@@ -1107,7 +1107,7 @@ Three decisions that go with it:
   canvas-space rect only; the export offers 1× / 2× / explicit pixel dimensions.
 - **Transparent background** skips the media pass's substrate composite — a real
   branch, not merely an alpha. Compositing over the substrate and *then* zeroing
-  alpha would leave every bare-canvas texel carrying substrate colour at zero
+  alpha would leave every bare-canvas texel carrying substrate color at zero
   alpha, which fringes the moment the PNG is composited over anything else.
 - **The overlay pass is suppressed.** Selection outlines and composition guides
   are chrome and never reach a file. Keyed on *exporting*, deliberately not on
@@ -1125,7 +1125,7 @@ A frame has **no permanent panel**, and — the sharper form of the same rule �
 **nothing that is an ordinary layer property gets a frame-specific control.**
 Creating one is `+ Frame` in the Layers panel; opacity (which *is* the crop
 scrim) and removal are the Layers panel's single set of controls for whatever is
-selected, applying to a frame and a paint layer alike. Only the fill colour lives
+selected, applying to a frame and a paint layer alike. Only the fill color lives
 in the frame bar, because it is the one thing about the frame rather than about a
 layer. Duplicating opacity and delete into a frame-specific bar would have meant
 two controls for one property. The rest lives in a bar mounted only while a frame
@@ -1195,30 +1195,30 @@ because a frame drag is handle-relative, not sample-driven: there is no
 frontend's business. What it keeps is the shape that matters — build in view
 state, commit once on release.
 
-**The frame's colour makes the same bargain**, through
+**The frame's color makes the same bargain**, through
 `ViewCommand::PreviewMatteColor` and one `DocCommand::SetMatteColor` on release.
 It has to: what is being chosen is how the mat board reads against the piece
-inside it, which is a judgement made *by looking*, so every colour the pointer
+inside it, which is a judgement made *by looking*, so every color the pointer
 crosses has to reach the canvas and only the answer belongs in the log.
 
 It is picked with the app's **Oklab picker**, the same control the substrate
-colour uses (§15.5) — one control asking the same question about a different
+color uses (§15.5) — one control asking the same question about a different
 flat expanse, rather than two that resemble each other. That is not only
 consistency:
 
 - **A mat board is chosen by lightness against the piece.** Too close and the
   frame stops reading as a frame; too far and it shouts over what it surrounds.
   Oklab puts that search on an axis you can drag along — `L` moves lightness with
-  hue and chroma held — where the sRGB triple a native colour input offers moves
+  hue and chroma held — where the sRGB triple a native color input offers moves
   all three at once.
 - **The edges are the app's own.** The preview/commit split rests on
   `pointerup` / `pointercancel` over the picker's tracks, not on what a browser
-  chooses to send when its colour dialog closes. A cancelled pick still commits,
-  for the reason `panels::color::end_pick` gives: every instant of it is a colour
+  chooses to send when its color dialog closes. A cancelled pick still commits,
+  for the reason `panels::color::end_pick` gives: every instant of it is a color
   the user chose and is already looking at, and discarding it would strand the
   preview with no commit to supersede it.
 
-A commit to the colour the matte already holds is refused engine-side (§14.6),
+A commit to the color the matte already holds is refused engine-side (§14.6),
 so a pick that lands back where it started logs nothing while still superseding
 what it was showing. What was given up with the native input is typing a hex code
 and the OS eyedropper; the pop-out is the trade, and the picker is where either

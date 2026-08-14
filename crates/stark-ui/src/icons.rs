@@ -3,7 +3,7 @@
 //! Embedded with `include_str!` and dropped into the DOM **inline**, rather than
 //! fetched as an `asset!` and hung in an `<img>`. Every icon in that directory
 //! paints with `fill="currentColor"`, and inline is the only place that resolves
-//! the way we want: the glyph inherits the colour of the control around it, so one
+//! the way we want: the glyph inherits the color of the control around it, so one
 //! file covers a resting chip, a lit chip's white-on-blue, and a disabled chip's
 //! fade — with nothing to keep in sync. Inside an `<img>`, `currentColor` resolves
 //! against the *image's* own root instead, which on our dark chrome means a black
@@ -15,7 +15,7 @@
 //! "Every icon in that directory" is a claim about files nobody reviews — a Phosphor
 //! download arrives with `fill="#000000"` baked in, and an icon that keeps it looks
 //! *right* in a file browser and paints a black glyph on near-black chrome. Nothing
-//! about the call site would say which happened, so [`tests::every_icon_inherits_its_colour`]
+//! about the call site would say which happened, so [`tests::every_icon_inherits_its_color`]
 //! checks the directory rather than the table: an icon added and not yet wired up is
 //! caught before it is ever drawn, which is when a wrong fill is cheapest to fix.
 
@@ -49,7 +49,7 @@ icons! {
     SELECTION_ISECT => "intersect-square-bold",
     SELECTION_NONE => "selection-slash-bold",
     SELECTION_INVERT => "selection-inverse-bold",
-    // The one solid glyph in the set, and the only one that ever wears a colour of its
+    // The one solid glyph in the set, and the only one that ever wears a color of its
     // own ([`icon_tinted`]): an outline weight has barely any interior to tint, so the
     // bucket is `fill` where its neighbours are `bold`. That break is not an
     // inconsistency — it is the *reason* this chip looks different from the four beside
@@ -97,7 +97,7 @@ icons! {
     // shared between its bar and its row: a layer kind and the bar that tunes it are
     // one subject, so they are one mark.
     FILTER => "funnel-bold",
-    // The colour filter's two lightness knobs (§21.6). Both are drawn as the *quantity*
+    // The color filter's two lightness knobs (§21.6). Both are drawn as the *quantity*
     // rather than as a control for it, which is what lets the words go in minimal mode:
     // a sun is the light an exposure counts stops of, and a disc lit on one side and
     // dark on the other is the spread about mid-grey a contrast gain widens — the
@@ -307,11 +307,11 @@ icons! {
     // The brush editor's parameter groups. Each says what the group is *about* — the
     // footprint the stroke sweeps, the paint the brush carries down, and the canvas
     // paint it lifts and moves — which is the same job the group's sentence does, in
-    // the space beside the chevron. Its fourth group, colour, takes [`COLOR`] below.
+    // the space beside the chevron. Its fourth group, color, takes [`COLOR`] below.
     //
     // `PAINT` is the *outline* twin of [`PAINT_BUCKET`], and that is the reason both
     // files are here: the solid one is the Fill action, the one glyph in the set that
-    // ever carries a colour, and letting a section header wear it would spend that
+    // ever carries a color, and letting a section header wear it would spend that
     // distinction on a heading.
     TIP => "shapes-bold",
     PAINT => "paint-bucket-bold",
@@ -350,7 +350,7 @@ icons! {
     //
     // Three of them are shared rather than duplicated, and the sharing is the claim:
     // `SELECTION` and `PERSPECTIVE_GRID` also head the bars that serve those panels, and
-    // `COLOR` also heads the brush editor's colour-dynamics group. A panel, its bar
+    // `COLOR` also heads the brush editor's color-dynamics group. A panel, its bar
     // and the dialog that expands it are three views of one subject, so they are one
     // mark — the same argument the frame bar's crop marks are the frame's.
     NAVIGATOR => "magnifying-glass-bold",
@@ -362,7 +362,7 @@ icons! {
     LIGHTING => "sphere-bold",
 }
 
-/// One icon, sized and coloured by whatever it sits in (`.icon` in `stark.css`).
+/// One icon, sized and colored by whatever it sits in (`.icon` in `stark.css`).
 ///
 /// `dangerous_inner_html` is what the module doc is about: the markup is ours,
 /// compiled in from a file in this repo, so no untrusted string comes near it.
@@ -414,10 +414,10 @@ pub fn icon_large(svg: &'static str) -> Element {
     rsx! { span { class: "icon icon-lg", dangerous_inner_html: svg } }
 }
 
-/// The same icon holding a paint colour rather than the colour of its control — for
+/// The same icon holding a paint color rather than the color of its control — for
 /// the one glyph that has to say *which* paint the act would lay, not only which act.
 ///
-/// The colour arrives as the brush's RGBA, and its alpha is the paint's opacity
+/// The color arrives as the brush's RGBA, and its alpha is the paint's opacity
 /// (per-unit, as everywhere in Stark), so a thin wash has to *look* thin. That is why
 /// the glyph is drawn twice, the paint over an untinted copy of itself: the copy
 /// underneath is the white base the old swatch had, and it is what a 15% wash tints.
@@ -425,7 +425,7 @@ pub fn icon_large(svg: &'static str) -> Element {
 /// bucket — the paint would read as *dark* rather than as *thin*, which is the one
 /// thing this glyph exists to get right.
 ///
-/// The base takes the control's own colour rather than a hard white, so at zero
+/// The base takes the control's own color rather than a hard white, so at zero
 /// opacity the bucket is exactly its four neighbours, and it fades with a disabled
 /// chip like they do. One path, twice: the layers cannot drift apart.
 pub fn icon_tinted(svg: &'static str, color: [f32; 4]) -> Element {
@@ -452,10 +452,10 @@ mod tests {
     ///
     /// It reads bytes rather than parsing SVG on purpose. A hard fill is the one way
     /// these files go wrong — Phosphor exports `fill="#000000"` — and the check that
-    /// catches it is "no colour literal anywhere in the file", which is stricter than
-    /// "the root fill is right" and cannot be fooled by a colour further down a path.
+    /// catches it is "no color literal anywhere in the file", which is stricter than
+    /// "the root fill is right" and cannot be fooled by a color further down a path.
     #[test]
-    fn every_icon_inherits_its_colour() {
+    fn every_icon_inherits_its_color() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
         let mut checked = 0;
         for entry in std::fs::read_dir(&dir).expect("assets/icons is readable") {
@@ -467,16 +467,16 @@ mod tests {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             assert!(
                 svg.contains(r#"fill="currentColor""#),
-                "{name} does not paint with currentColor, so it will ignore the colour \
+                "{name} does not paint with currentColor, so it will ignore the color \
                  of the control it sits in"
             );
-            // A `#` in one of these files is a hex colour and nothing else — the paths
+            // A `#` in one of these files is a hex color and nothing else — the paths
             // are numbers and letters, and there is no `url(#…)` or gradient in the set.
-            // Whatever it painted would be worn *instead* of the control's colour, which
+            // Whatever it painted would be worn *instead* of the control's color, which
             // on Stark's dark chrome is usually a black mark on a near-black chip.
             assert!(
                 !svg.contains('#'),
-                "{name} carries a hard-coded colour; icons take their colour from the \
+                "{name} carries a hard-coded color; icons take their color from the \
                  control around them"
             );
             checked += 1;

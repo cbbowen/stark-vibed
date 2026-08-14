@@ -339,7 +339,7 @@ Consequences that fall out with no further work:
 **Rendering the outline.** The selection overlay pass (§6.8) takes a short list
 rather than one mask: the local actor's selection in the marching-ants style,
 and — **only if this client asks for it** — the selection of every actor
-*currently present*, drawn as a flat line in that peer's colour so the two never
+*currently present*, drawn as a flat line in that peer's color so the two never
 read as the same thing. `ViewCommand::SetShowPeerSelections` gates the second
 group and it is **off by default**: knowing which region someone else is working
 inside is occasionally useful, but a second contour over the artwork is a cost

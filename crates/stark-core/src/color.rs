@@ -114,11 +114,11 @@ pub fn light_to_linear(c: [f32; 3]) -> [f32; 3] {
 
 // —— the dispersion spectrum (§21.10) ————————————————————————————————————————
 //
-// The chromatic filter's own colour science, on the host: which wavelength lands
+// The chromatic filter's own color science, on the host: which wavelength lands
 // where along a fringe, and what the eye makes of it. The **pass** is the copy that
 // runs (`filter_common.wesl`'s `ca_lambda` / `ca_weight`); this one exists so the
 // frontend can *draw* the fringe it is about to ask for — the spectrum bar in the
-// filter bar's dispersion pad (§21.6) is painted with these very colours, which is
+// filter bar's dispersion pad (§21.6) is painted with these very colors, which is
 // what makes it a statement about the render rather than a rainbow.
 //
 // The two ends and the Cauchy span come through the build-time mirror (§6.10) rather
@@ -148,10 +148,10 @@ fn lobe(x: f32, mu: f32, s1: f32, s2: f32) -> f32 {
 }
 
 /// The eye's response to the wavelength at dispersion parameter `s`, as **linear
-/// sRGB**: the CIE 1931 colour-matching functions (the Wyman–Sloan–Shirley analytic
+/// sRGB**: the CIE 1931 color-matching functions (the Wyman–Sloan–Shirley analytic
 /// fit), normalized to D65 and clamped at zero.
 ///
-/// A *response*, not a colour — its absolute scale means nothing, only its shape
+/// A *response*, not a color — its absolute scale means nothing, only its shape
 /// along `s`. In the pass that is why each channel of the gather divides by its own
 /// summed weight; a caller drawing the spectrum normalizes for the same reason.
 pub fn dispersion_weight(s: f32) -> [f32; 3] {

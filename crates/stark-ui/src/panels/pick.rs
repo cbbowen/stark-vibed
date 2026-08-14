@@ -9,7 +9,7 @@
 //! the options appear beside the cursor you are about to sample with.
 //!
 //! It goes away again the moment the drag starts, because from then on the thing to
-//! look at is the canvas and the colour coming off it.
+//! look at is the canvas and the color coming off it.
 
 use dioxus::prelude::*;
 
@@ -46,13 +46,13 @@ const SOURCES: [(PickScope, &str, &str, &str); 3] = [
         PickScope::AllLayers,
         icons::ALL_LAYERS,
         "All layers",
-        "Sample the colour the canvas shows, through every visible layer",
+        "Sample the color the canvas shows, through every visible layer",
     ),
     (
         PickScope::AllLayersAndCanvas,
         icons::ALL_LAYERS_AND_CANVAS,
         "+ Canvas",
-        "Sample every visible layer over the canvas colour, so bare canvas and thin \
+        "Sample every visible layer over the canvas color, so bare canvas and thin \
          paint answer with what the eye sees rather than nothing",
     ),
 ];

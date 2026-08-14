@@ -35,7 +35,7 @@ pub(super) const TAU_PER_PASS: f32 = 6.9;
 /// transient GPU memory rather than deciding which strokes the loop can draw at all
 /// (§6.2).
 ///
-/// At 2048² that is ~67 MB for a piece: colour and aux are both `Rgba16Float`, so
+/// At 2048² that is ~67 MB for a piece: color and aux are both `Rgba16Float`, so
 /// each is 2048² × 8 B = 32 MiB. And it really is *per piece* rather than per stroke,
 /// because `DynamicsRun::flush` destroys a piece's region as soon as it submits it.
 pub(super) const MAX_REGION_DIM: u32 = 2048;
@@ -285,7 +285,7 @@ pub(super) const MAX_TIP_TURN: f32 = 0.1;
 /// brush-independent — sub-pixel position, a small tangent turn, a small attribute
 /// step — but a segment is swept with *constant* attributes, so any brush quantity
 /// that varies with distance travelled and is applied per segment (rather than
-/// recovered per fragment, as the colour-dynamics arc is) needs a length cap too.
+/// recovered per fragment, as the color-dynamics arc is) needs a length cap too.
 pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
     let mut tol = crate::path::FLATTEN_TOLERANCE;
     // Use a more relaxed tolerance for larger brushes.

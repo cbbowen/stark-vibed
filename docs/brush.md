@@ -10,7 +10,7 @@ Tiles and channels, the fitted-path swept-segment stroke renderer, the wet-mixin
 A tile is a fixed `TILE_SIZE` (256×256) square in canvas space, addressed by
 integer `TileCoord(i32, i32)`. Sparsity gives the infinite canvas: only painted
 tiles allocate. Each tile is **multi-channel**, which is what enables strokes
-that affect more than colour:
+that affect more than color:
 
 ```rust
 pub struct GpuTile {
@@ -19,11 +19,11 @@ pub struct GpuTile {
 }
 ```
 
-The colour texture stores **Oklab** components (or Mixbox concentrations), not
+The color texture stores **Oklab** components (or Mixbox concentrations), not
 sRGB. Linear 16-bit float comfortably holds Oklab's range and the negative `a`/`b`
 chroma axes, and keeps blends perceptually uniform. Alpha is premultiplied.
 
-> **The colour alpha channel is *only* the paint's per-unit-thickness opacity** —
+> **The color alpha channel is *only* the paint's per-unit-thickness opacity** —
 > a material property (how opaque the pigment is per unit of thickness). It says
 > **nothing** about how much paint is on the canvas, nor even whether any is
 > present. **The amount (and presence) of paint is the `height` channel**
@@ -49,7 +49,7 @@ new channel is a descriptor entry plus shader usage, not a structural rewrite.
 `TilePool` recycles GPU textures of each channel format to avoid per-stroke
 allocation churn; `acquire_tex()` returns a cleared tile, and dropping the last
 `Arc<GpuTile>` returns it to the free list. The pool's formats come from the
-colour space in use, never hardcoded.
+color space in use, never hardcoded.
 
 ## 6.2 The brush engine — natural media
 
@@ -247,7 +247,7 @@ multiplicative in `(1−α)`, hence additive in **optical depth** `τ = −ln(1�
   that row — an O(1) lookup.
 - A segment quad lays a **parcel of paint**, not a coverage: `add · τ` of height
   at the brush's own per-unit opacity, the two meeting only in the slab law
-  (§6.1). What the colour target carries is therefore that parcel's *visible
+  (§6.1). What the color target carries is therefore that parcel's *visible
   alpha*, `α_seg = 1 − exp(−K · opacity · add · τ)`. Because the existing
   premultiplied-"over" blend across overlapping segment quads combines as
   `1 − ∏(1−α) = 1 − exp(−K·Σ m)`, it sums the parcels **exactly** — no
@@ -259,16 +259,16 @@ multiplicative in `(1−α)`, hence additive in **optical depth** `τ = −ln(1�
   loop's `deposit` uses, so the two paths cannot drift.
 
   The same argument is made once more on the host side. Which path a brush takes is
-  decided from axes that have nothing to do with colour or flow, so everything the
+  decided from axes that have nothing to do with color or flow, so everything the
   two share — the brush's channels in the working space, the canvas → weave scale,
-  the colour-dynamics lookup — is resolved once into a `StrokeConstants` and read by
+  the color-dynamics lookup — is resolved once into a `StrokeConstants` and read by
   both, rather than derived twice from the same record. Two derivations agreeing is
   a coincidence to maintain; one derivation is a fact.
 
   Weighting by the brush's per-unit **opacity** instead — which the fast path did
   — is the same defect §6.3 names in the layer composite, one level down. `add`
   is the only thing that decides how much paint lands, so leaving it out of the
-  colour meant a 5%-flow glaze drew as nothing over bare canvas (the media pass
+  color meant a 5%-flow glaze drew as nothing over bare canvas (the media pass
   covers for it, since visible alpha is `opacity × height` there and the height
   was right) and repainted at full strength over existing paint, where nothing
   does. `tests/dynamics.rs::a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs`
@@ -278,7 +278,7 @@ multiplicative in `(1−α)`, hence additive in **optical depth** `τ = −ln(1�
 - **Every** channel a segment deposits must be a function of that segment's `τ`
   in one of exactly two shapes: *additive* in `τ` (an amount — the height and the
   optical mass the aux target sums), or `1 − exp(−k·τ)` (a rate — the visible
-  alpha the colour target over-blends). Those are the two that survive re-cutting
+  alpha the color target over-blends). Those are the two that survive re-cutting
   the path, because `τ` is what sums. Any other shape makes the stroke depend on
   the *number* of segments: a per-segment `√`, for instance, deposits
   `Σ√(τ/N) = √(N·τ)`, so the stroke silently gains weight with sampling density.
@@ -323,7 +323,7 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
 
 1. **Region composite.** The base tiles under the stroke (the affected set plus a
    one-tile ring) are composited once into a 1:1 canvas **region** texture
-   (colour + the wide aux). This is the working canvas the stroke evolves.
+   (color + the wide aux). This is the working canvas the stroke evolves.
    Bounded by `MAX_REGION_DIM`, which bounds transient memory rather than the
    stroke: a stroke too big for one region is cut into pieces that fit.
 2. **The loop.** The stroke's flattened segments run *in order* inside a **single
@@ -507,10 +507,10 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
    `apron_makes_dynamics_writeback_seamless_under_zoom` regression guards it).
 
 *Conservation (§6.1).* Paint moves by transferring **height** — the one conserved
-quantity. Colour and per-unit opacity ride as optical-mass (opacity·height)
+quantity. Color and per-unit opacity ride as optical-mass (opacity·height)
 weighted blends, and a parcel's blend weight is its own *visible* alpha
 (`1 − exp(−K·mass)`, the same translucent-slab law as the media pass), so thick
-deposits cover while thin glazes tint. The lift never touches the source's colour
+deposits cover while thin glazes tint. The lift never touches the source's color
 or alpha: the source fades because its **thickness** drops. Both sides of every
 transfer take complementary shares of the same decay, over the same segment and
 from the same pre-state (the canvas side measuring its exposure through the
@@ -867,9 +867,9 @@ what drives it, opening source / floor / curve in place, one row at a time — s
 brush with no mapping looks exactly as it did, and reading a brush does not mean
 holding a separate matrix against the sliders.
 
-### Colour dynamics (colour jitter)
+### Color dynamics (color jitter)
 
-The applied colour can vary **across the brush and along the stroke**:
+The applied color can vary **across the brush and along the stroke**:
 `BrushParams.color_dynamics` (historized — it changes stored pixels) holds a
 noise kind plus two per-axis **frequency** and three per-channel **amplitude**
 factors. A 3-channel, exactly **tileable 2-D noise tile** is baked **once on the
@@ -899,7 +899,7 @@ The lookup domain is **stroke-local**: `(lateral·f₀, arc·f₁)/NOISE_TILE_PX
 a per-stroke translation derived from the stroke `seed`, where `lateral` is the
 signed offset from the centreline and `arc` the length along it, both in canvas
 px (brush-local y is in radius units, so it is scaled by the radius — the pattern
-keeps one scale whatever size the tip is). One axis varies colour across the
+keeps one scale whatever size the tip is). One axis varies color across the
 footprint, the other evolves it along the stroke. Anchoring to the stroke rather
 than the canvas makes the variation belong to the *gesture*, and costs nothing in
 determinism: both coordinates are still functions of the fragment's canvas
@@ -908,12 +908,12 @@ tile aprons stay bit-consistent (§6.4). Clamping arc to each segment's body mak
 it *continuous across overlapping segment quads*.
 
 The sampled signed offsets perturb the brush's **channel triple in the current
-colour space** (Oklab `L,a,b`; Mixbox concentrations), applied per fragment in
+color space** (Oklab `L,a,b`; Mixbox concentrations), applied per fragment in
 the sweep stamp (`brush_color`, `stamp_common.wesl`) and per texel to the `add`
 paint in the exchange loop's `deposit` (`dynamics.wesl`) — both paths share the
 field and parameters, so a brush looks the same whichever path renders it.
 Amplitude 0 (the default) binds a 1×1 zero tile and early-outs — bit-identical to
-the constant-colour deposit.
+the constant-color deposit.
 
 
 ## 6.6 Brush shapes & the asset store

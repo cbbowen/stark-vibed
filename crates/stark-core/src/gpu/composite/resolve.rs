@@ -20,7 +20,7 @@ const MAX_SUPERSAMPLE: u32 = 4;
 /// Most supersampled pixels a render may cover, whatever the zoom asks for.
 ///
 /// The ceiling exists because *every* offscreen attachment scales with it: pass A's
-/// `Rgba16Float` colour and `R16Float` aux, the blend scratch if the document has a
+/// `Rgba16Float` color and `R16Float` aux, the blend scratch if the document has a
 /// mode in it, and the target the resolve reads. At 16 Mpx that is ~210 MB in the
 /// worst case, which is the most a painting canvas may quietly take to stop
 /// sparkling — and it is only taken while the view is actually zoomed out, since

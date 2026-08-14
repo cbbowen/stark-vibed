@@ -9,7 +9,7 @@
 //! ghost ridges through it (§15.4.2).
 //!
 //! The `previews_without_logging` tests are here together rather than split by
-//! subject: the frame drag, the frame's colour and the substrate's are one
+//! subject: the frame drag, the frame's color and the substrate's are one
 //! mechanism — an unlogged stand-in document while the pointer is down, one action
 //! on release — and they are worth reading side by side.
 
@@ -86,7 +86,7 @@ fn frame_covers_outside_and_spares_inside() {
 
 /// §15.4.2 — the ghost-relief regression.
 ///
-/// The aux (height) target's blend for a matte must be `over`, not the colour
+/// The aux (height) target's blend for a matte must be `over`, not the color
 /// space's additive. Additive would keep the height of the paint *underneath*,
 /// and the media pass — which builds its normal from the height field — would
 /// emboss that paint's impasto through an opaque mat board.
@@ -344,13 +344,13 @@ fn dragging_a_frame_previews_without_logging() {
     );
 }
 
-/// A canvas-colour drag previews live but logs once (§15.5) — the
+/// A canvas-color drag previews live but logs once (§15.5) — the
 /// substrate's half of the bargain the test above makes for the frame, and here
-/// beside it because both ride the same preview slot. A colour picker reports a
+/// beside it because both ride the same preview slot. A color picker reports a
 /// value per pointer move, so without this a single drag would bury the history
 /// under a hundred one-shade-apart edits.
 #[test]
-fn dragging_the_canvas_colour_previews_without_logging() {
+fn dragging_the_canvas_color_previews_without_logging() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -366,9 +366,9 @@ fn dragging_the_canvas_colour_previews_without_logging() {
     let dragging = engine.render_to_image();
     assert!(
         !images_match(&painted, &dragging, 4),
-        "the preview should recolour the canvas on screen"
+        "the preview should recolor the canvas on screen"
     );
-    // `observe` reports the previewed colour, so the panel's swatch agrees with the
+    // `observe` reports the previewed color, so the panel's swatch agrees with the
     // canvas it controls instead of trailing a commit behind it.
     assert_eq!(engine.observe().background, [0.1, 0.1, 0.1]);
 
@@ -387,7 +387,7 @@ fn dragging_the_canvas_colour_previews_without_logging() {
     let committed = engine.render_to_image();
     assert!(
         images_match(&dragging, &committed, 2),
-        "the committed colour should match what the drag previewed"
+        "the committed color should match what the drag previewed"
     );
     engine.process(DocCommand::Undo);
     assert_eq!(
@@ -401,14 +401,14 @@ fn dragging_the_canvas_colour_previews_without_logging() {
     );
 }
 
-/// A frame-colour pick previews live but logs once (§15.7) — the frame's own
-/// colour, next to the substrate's above, because the two are the same control
+/// A frame-color pick previews live but logs once (§15.7) — the frame's own
+/// color, next to the substrate's above, because the two are the same control
 /// making the same bargain against different state — the same Oklab picker, even,
-/// asked about a different flat expanse. It reports a colour per pointer move, so
+/// asked about a different flat expanse. It reports a color per pointer move, so
 /// without this, choosing a mat board costs an undo step per shade the pointer
 /// crossed on the way to it.
 #[test]
-fn picking_a_frame_colour_previews_without_logging() {
+fn picking_a_frame_color_previews_without_logging() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -427,9 +427,9 @@ fn picking_a_frame_colour_previews_without_logging() {
     let picking = engine.render_to_image();
     assert!(
         !is_dark(outside(&picking)),
-        "the preview should recolour the frame on screen"
+        "the preview should recolor the frame on screen"
     );
-    // `observe` reports the previewed colour, so the swatch agrees with the canvas
+    // `observe` reports the previewed color, so the swatch agrees with the canvas
     // it controls instead of trailing a commit behind it.
     let previewed = engine.observe().layers.last().and_then(|l| l.matte.clone());
     assert_eq!(
@@ -459,7 +459,7 @@ fn picking_a_frame_colour_previews_without_logging() {
     ));
     assert!(
         images_match(&picking, &engine.render_to_image(), 2),
-        "the committed colour should match what the pick previewed"
+        "the committed color should match what the pick previewed"
     );
     engine.process(DocCommand::Undo);
     assert!(
@@ -468,12 +468,12 @@ fn picking_a_frame_colour_previews_without_logging() {
     );
 }
 
-/// A pick that lands back on the colour it opened on is not an edit — but it still
+/// A pick that lands back on the color it opened on is not an edit — but it still
 /// has to commit, because every release commits (`panels::color::end_pick`) and the
 /// preview it left standing must be superseded by something. The refusal that
 /// reconciles those two lives in the engine, which is what this pins (§15.7).
 #[test]
-fn a_frame_colour_pick_that_changes_nothing_logs_nothing() {
+fn a_frame_color_pick_that_changes_nothing_logs_nothing() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -610,7 +610,7 @@ fn a_gradient_matte_grades_across_the_canvas() {
         right[2] > right[0] + 40,
         "and ends on its blue stop, got {right:?}"
     );
-    // Constant on perpendiculars: same colour up and down a vertical line.
+    // Constant on perpendiculars: same color up and down a vertical line.
     assert_eq!(
         at(&img, w / 4, h / 4),
         at(&img, w / 4, 3 * h / 4),

@@ -603,7 +603,7 @@ const LOWER: [Vec2; 2] = [Vec2::new(20.0, 40.0), Vec2::new(110.0, 40.0)];
 const UPPER: [Vec2; 2] = [Vec2::new(20.0, 80.0), Vec2::new(110.0, 80.0)];
 
 /// Whether the pixel reads as the green of [`stroking`]'s brush, the mirror of
-/// [`is_painted`] for the other actor's colour.
+/// [`is_painted`] for the other actor's color.
 fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
     let half = Vec2::new(img.width as f32, img.height as f32) * 0.5;
     let p = canvas + half;

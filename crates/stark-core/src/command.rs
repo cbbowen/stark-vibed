@@ -266,10 +266,10 @@ pub enum DocCommand {
     SetFilter(LayerId, Filter),
     /// Move a matte's rect — one action per frame drag, committed on release.
     SetMatteRect(LayerId, Vec2, Vec2),
-    /// Repaint a matte — a flat colour or a gradient ramp (§15.4, §22.4). One
+    /// Repaint a matte — a flat color or a gradient ramp (§15.4, §22.4). One
     /// action per pick or per composed axis, committed when the gesture settles.
     SetMattePaint(LayerId, MattePaint),
-    /// Set the canvas substrate colour — the ground under everything, straight
+    /// Set the canvas substrate color — the ground under everything, straight
     /// sRGB (§15.5). A document property, not a view setting: it is
     /// what the piece was painted on, and it is saved.
     SetBackground([f32; 3]),
@@ -414,11 +414,11 @@ pub enum ViewCommand {
     PreviewMatteRect(Option<(LayerId, Vec2, Vec2)>),
 
     /// Show a matte wearing `paint` **without logging it** — the in-flight half
-    /// of a frame-colour pick or a gradient-axis drag (§15.7, §22.4). `None`
+    /// of a frame-color pick or a gradient-axis drag (§15.7, §22.4). `None`
     /// drops the preview.
     ///
     /// The rect's argument, made by the other halves of the same control: a
-    /// colour picker reports a value per pointer move while it is open, and an
+    /// color picker reports a value per pointer move while it is open, and an
     /// axis drag reports one per sample, so the frontend previews those and
     /// commits one [`DocCommand::SetMattePaint`] when the gesture settles. What
     /// is being chosen here is how a matte reads against the piece, which is a
@@ -450,11 +450,11 @@ pub enum ViewCommand {
     /// fill, never a hundred stacked glazes.
     PreviewFill(Option<(LayerId, FillOp)>),
 
-    /// Show a substrate colour **without logging it** — the in-flight half of a
-    /// canvas-colour drag (§15.5). `None` drops the preview.
+    /// Show a substrate color **without logging it** — the in-flight half of a
+    /// canvas-color drag (§15.5). `None` drops the preview.
     ///
     /// The same bargain as [`PreviewMatteRect`](Self::PreviewMatteRect), for the
-    /// same reason: a colour picker reports a value per pointer *move*, so
+    /// same reason: a color picker reports a value per pointer *move*, so
     /// committing each one would spend an undo step — and, in a shared session, a
     /// replicated log entry — on every sample of a single drag. The frontend knows
     /// where the drag ends and commits one [`DocCommand::SetBackground`] there.
@@ -486,7 +486,7 @@ pub enum ViewCommand {
     /// half of a filter-slider drag (§21.6). `None` drops the preview.
     ///
     /// The same bargain as [`PreviewLayerOpacity`](Self::PreviewLayerOpacity), and
-    /// the one this feature could least do without: a colour adjustment is judged
+    /// the one this feature could least do without: a color adjustment is judged
     /// *by looking* — how much saturation is too much is a question about the
     /// painting, not about the number — so every value the pointer crosses has to
     /// reach the canvas, and only the answer belongs in the log.

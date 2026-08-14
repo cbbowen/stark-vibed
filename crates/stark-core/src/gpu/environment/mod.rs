@@ -25,8 +25,8 @@ use hdr::decode_hdr;
 pub enum EnvironmentId {
     /// The procedural **reference** light: achromatic, generated on the fly, no HDR
     /// file. A soft overhead key over an ambient dome — enough directionality that
-    /// impasto relief still reads, but no colour cast, so paint reads as its own
-    /// hue. This is what you switch to when you want to judge colour rather than
+    /// impasto relief still reads, but no color cast, so paint reads as its own
+    /// hue. This is what you switch to when you want to judge color rather than
     /// enjoy the room; it is also the fallback before any HDR's bytes arrive.
     #[default]
     Neutral,
@@ -43,7 +43,7 @@ impl EnvironmentId {
     /// A property of the environment rather than a knob beside it, because there is
     /// no single value that suits every light. Exposure is already normalized by
     /// [`Environment::flat_irradiance`], so `1.0` means "a flat patch of paint comes
-    /// back its own colour" in *any* environment — but that is a statement about the
+    /// back its own color" in *any* environment — but that is a statement about the
     /// diffuse response, not about the peaks. A room with bright windows in it puts
     /// saturated paint over 1.0 and into the clip long before a smooth grey dome
     /// does, and what buys the headroom back is exposure. So each light carries the
@@ -96,7 +96,7 @@ impl Environment {
     /// The procedural reference light (no HDR): a soft overhead key over an ambient
     /// dome, generated here rather than shipped as a file. Deliberately achromatic —
     /// every texel is grey — so it lights the relief without tinting the paint, which
-    /// is what makes it usable as a colour reference next to [`Self::load`]ed HDRs.
+    /// is what makes it usable as a color reference next to [`Self::load`]ed HDRs.
     pub fn neutral(ctx: &GpuContext) -> Self {
         let (px, w, h) = neutral_equirect();
         Self::from_equirect(ctx, &px, w, h, EnvironmentId::Neutral.exposure())
@@ -339,7 +339,7 @@ mod tests {
     use super::*;
 
     /// The whole point of `Neutral` is that it is a *reference*: it may shape the
-    /// light, but it must not tint it. A colour cast here would silently bias every
+    /// light, but it must not tint it. A color cast here would silently bias every
     /// judgement made against it.
     #[test]
     fn neutral_environment_is_achromatic_and_directional() {

@@ -61,7 +61,7 @@ const MAX_HEIGHT: u32 = 176;
 
 /// How long a change has to stop arriving before the miniature is re-rendered.
 /// Long enough to collapse a burst — a held undo, a peer's actions landing, the
-/// several commits a Fill-then-recolour makes — short enough that a single stroke's
+/// several commits a Fill-then-recolor makes — short enough that a single stroke's
 /// overview appears while the artist is still looking at where it landed.
 const SETTLE_MS: i32 = 180;
 

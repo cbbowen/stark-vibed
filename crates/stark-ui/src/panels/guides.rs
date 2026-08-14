@@ -49,7 +49,7 @@ use stark_core::geom::Vec2;
 use stark_core::{Lens, PairTrace, PerspectiveGuide};
 
 /// The axis hues, by **name**: `stark.css` declares `--axis-x/y/z` and this
-/// side never learns what they are. The colours belong to the app rather than
+/// side never learns what they are. The colors belong to the app rather than
 /// to this bar — the guide's own lines are drawn in them too — so they are
 /// stated once, in the stylesheet, in Oklab and at one shared lightness, and
 /// everything that wears one refers to it.
@@ -961,10 +961,10 @@ mod tests {
     }
 
     /// The bar is painted in the guide pass's own axis hues (§20.4) — a lock
-    /// chip, a plane chip and the lines they govern are one colour, or the
+    /// chip, a plane chip and the lines they govern are one color, or the
     /// controls stop looking like they belong to what they control.
     ///
-    /// The two declarations cannot be merged: `guides.wesl` needs its colours as
+    /// The two declarations cannot be merged: `guides.wesl` needs its colors as
     /// shader constants and cannot read a stylesheet, and the mirror carries
     /// scalars only (a `vec3` has no host constant). So they are two statements
     /// of one fact, and this is the thing that notices when they part — which
@@ -975,7 +975,7 @@ mod tests {
     /// these cannot be checked by anyone.
     ///
     /// The tolerance is a **quantization step**, not a fudge: what has to
-    /// survive both roundings is the 8-bit colour the screen shows, and
+    /// survive both roundings is the 8-bit color the screen shows, and
     /// anything inside 1/255 is the same pixel. It is also why the shader's
     /// constants carry four decimals — at two, the conversion of a round Oklab
     /// lightness misses by more than that.
@@ -989,7 +989,7 @@ mod tests {
         ];
         for (i, (lab, want)) in declared_hues().iter().zip(&SHADER).enumerate() {
             // The bar wears the variable rather than a value, so the name has to
-            // be the declared one — a typo'd `var()` is simply no colour.
+            // be the declared one — a typo'd `var()` is simply no color.
             let name = format!("var(--axis-{})", ["x", "y", "z"][i]);
             assert_eq!(AXIS_CSS[i], name, "the bar points at nothing");
 
@@ -1012,7 +1012,7 @@ mod tests {
     /// reads as one control being more emphatic than its neighbours — and as a
     /// gradient with a bright end. Written as hex they had drifted 0.046 of `L`
     /// apart with the green on top, and nothing in the source could show it.
-    /// That is the argument for stating a colour in a space with a lightness
+    /// That is the argument for stating a color in a space with a lightness
     /// axis, and this is the part of it that can be checked.
     ///
     /// Exact equality rather than a tolerance: the claim is about how the three

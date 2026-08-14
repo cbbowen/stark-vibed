@@ -1,19 +1,19 @@
 // Matte layers in compositing pass A (§15.4): a procedural region
-// filled with a flat colour, drawn at its own place in the layer stack.
+// filled with a flat color, drawn at its own place in the layer stack.
 //
 // A matte is physically a flat, opaque *coat of paint*, which is what lets it be
 // an ordinary layer rather than a special presentation mode:
 //
-//   · It writes the aux (thickness) target, not just colour. The media pass
+//   · It writes the aux (thickness) target, not just color. The media pass
 //     derives visible alpha from the translucent-slab law
 //     `1 − exp(−OPACITY_K · color.a · thickness)`, so a matte that wrote only
-//     colour would be perfectly invisible (§15.4.1).
+//     color would be perfectly invisible (§15.4.1).
 //   · Its interior is at *constant* height, so its gradient is zero and it lights
 //     flat — no weave, and the paint film's uniform sheen (media_common.wesl) reads
 //     as an even wash rather than a glint, like a mat board. Its boundary is a
 //     height cliff and catches light the way every stroke edge already does.
 //   · Both targets blend as premultiplied `over` (declared by the pipeline, NOT
-//     the colour space's additive aux blend), so an opaque matte *erases* the
+//     the color space's additive aux blend), so an opaque matte *erases* the
 //     relief beneath it instead of letting underlying impasto emboss ghost ridges
 //     through it (§15.4.2).
 //
@@ -92,10 +92,10 @@ fn vs_main(
     @builtin(vertex_index) vi: u32,
     // Per-matte instance: min.xy, max.xy in canvas px.
     @location(0) rect: vec4<f32>,
-    // The fill, in the working colour space.
+    // The fill, in the working color space.
     @location(1) channels: vec4<f32>,
     @location(2) opacity: f32,
-    // The fill colour's **residual** (.xyz), the half of it the space's three channels
+    // The fill color's **residual** (.xyz), the half of it the space's three channels
     // cannot express (§6.7); .w unused. Zero for every space but Mixbox.
     //
     // An instance attribute declared unconditionally, where the varying and the target
@@ -160,7 +160,7 @@ fn fs_main(in: VsOut) -> FsOut {
     // read from canvas position (§22.4). Interpolated in the working
     // space between stops already converted on the CPU — an Oklab matte grades
     // the way the library strip previews, a Mixbox one the way pigment mixes.
-    // The *thickness* never varies: a graded wash is a transition in colour,
+    // The *thickness* never varies: a graded wash is a transition in color,
     // not in relief, so the slab stays the flat coat §15.4 requires.
     var channels = in.channels.rgb;
     @if(resid) var resd = in.resid.rgb;
@@ -184,7 +184,7 @@ fn fs_main(in: VsOut) -> FsOut {
     }
 
     // Premultiplied, for the `over` blend the pipeline declares on both targets.
-    // Colour alpha is *coverage*, like every element of pass A (composite.wesl):
+    // Color alpha is *coverage*, like every element of pass A (composite.wesl):
     // the matte is fully opaque paint (per-unit opacity 1) of the constant
     // thickness above, so its slab visible alpha is `1 − exp(−K·thickness)`,
     // scaled by how much of the fragment the matte occupies. The aux carries the
@@ -195,7 +195,7 @@ fn fs_main(in: VsOut) -> FsOut {
     out.color = vec4<f32>(channels * w, w);
     out.aux = vec4<f32>(MATTE_THICKNESS * a, 0.0, 0.0, a);
     // The residual rides the same premultiply and the same `over` (§6.7):
-    // a matte is a flat coat of one colour, and a colour is both halves.
+    // a matte is a flat coat of one color, and a color is both halves.
     @if(resid) out.resid = vec4<f32>(resd * w, w);
     return out;
 }

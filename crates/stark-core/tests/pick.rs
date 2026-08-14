@@ -1,11 +1,11 @@
-//! The eyedropper (§18.0.2): sampling colour back off the canvas.
+//! The eyedropper (§18.0.2): sampling color back off the canvas.
 //!
 //! The claim it rests on is that it reads the **raw layer channels** rather than the
-//! composited, lit result — so what comes back is a colour the palette could have
+//! composited, lit result — so what comes back is a color the palette could have
 //! mixed, and in a Mixbox document a pigment mixture that can be picked back up
 //! (§6.7). These check the things that would quietly betray that: that a
-//! painted colour survives the round trip in *both* colour spaces, that bare canvas
-//! answers "nothing" instead of the paper colour, and that the layer and radius
+//! painted color survives the round trip in *both* color spaces, that bare canvas
+//! answers "nothing" instead of the paper color, and that the layer and radius
 //! options select what they say they do.
 //!
 //! The one source that *does* answer on bare canvas is the composite over the
@@ -37,7 +37,7 @@ fn pick_point(engine: &mut Engine, at: Vec2) -> Option<[f32; 3]> {
     pick(engine, at, PickOptions::default())
 }
 
-/// The same stack with the canvas colour behind it.
+/// The same stack with the canvas color behind it.
 fn over_substrate(radius: u32) -> PickOptions {
     PickOptions {
         source: PickSource::CompositeOverSubstrate,
@@ -58,14 +58,14 @@ fn assert_near(got: Option<[f32; 3]>, want: [f32; 4], tol: f32, what: &str) {
     );
 }
 
-/// The headline: paint a colour, pick it back up, get the colour you painted.
+/// The headline: paint a color, pick it back up, get the color you painted.
 ///
-/// It has to hold in both colour spaces and it is a *different* claim in each. Oklab
+/// It has to hold in both color spaces and it is a *different* claim in each. Oklab
 /// stores `(L, a, b)` and Mixbox stores pigment concentrations, so a pick that
-/// forgot to run the channels back through the colour space would come out roughly
+/// forgot to run the channels back through the color space would come out roughly
 /// right in one and wildly wrong in the other.
 #[test]
-fn picks_the_colour_that_was_painted() {
+fn picks_the_color_that_was_painted() {
     for space in ColorSpaceId::all_available() {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;
@@ -109,18 +109,18 @@ fn picks_the_paint_rather_than_the_lit_pixel() {
     ];
     assert!(
         near(picked, RED, 0.03),
-        "the pick should be the paint's own colour, got {picked:?}"
+        "the pick should be the paint's own color, got {picked:?}"
     );
     assert!(
         !near(lit, RED, 0.03),
-        "this test is vacuous unless the studio lighting actually moves the colour; \
+        "this test is vacuous unless the studio lighting actually moves the color; \
          the lit pixel came back {lit:?}"
     );
 }
 
 /// Bare canvas has nothing to pick. The substrate is the ground, not something a
 /// brush picks up, so an empty patch answers `None` rather than loading the brush
-/// with the paper colour.
+/// with the paper color.
 #[test]
 fn bare_canvas_has_nothing_to_pick() {
     let Some(mut engine) = engine_or_skip() else {
@@ -138,11 +138,11 @@ fn bare_canvas_has_nothing_to_pick() {
 }
 
 /// Except over the substrate, where the ground *is* what was asked for: an empty
-/// patch answers with the canvas colour rather than with nothing. And with the
-/// document's colour, read at the moment of the sample — a remembered default would
+/// patch answers with the canvas color rather than with nothing. And with the
+/// document's color, read at the moment of the sample — a remembered default would
 /// pass every test that never repaints the canvas.
 #[test]
-fn over_the_substrate_answers_with_the_canvas_colour() {
+fn over_the_substrate_answers_with_the_canvas_color() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -153,7 +153,7 @@ fn over_the_substrate_answers_with_the_canvas_colour() {
         pick(&mut engine, Vec2::ZERO, over_substrate(0)),
         [GROUND[0], GROUND[1], GROUND[2], 1.0],
         0.02,
-        "bare canvas is the canvas colour",
+        "bare canvas is the canvas color",
     );
     assert_eq!(
         pick_point(&mut engine, Vec2::ZERO),
@@ -216,7 +216,7 @@ fn thin_coverage_mixes_toward_the_canvas() {
     );
 }
 
-/// Sampling one layer is the colour that layer would have *alone* — not the colour
+/// Sampling one layer is the color that layer would have *alone* — not the color
 /// the stack shows at that point. Painting blue over red and asking each question
 /// separately is the only way to tell the two apart.
 #[test]
@@ -272,15 +272,15 @@ fn one_layer_ignores_the_layers_over_it() {
 ///
 /// Turning a layer down does not turn its paint into a paler paint; it says how much
 /// of the layer the *document* shows, which is the question the other two sources
-/// ask. So `Layer` reports the same colour at every setting above zero.
+/// ask. So `Layer` reports the same color at every setting above zero.
 ///
 /// Zero is the exception, and it is a different kind of statement: a layer turned all
 /// the way down contributes nothing, so sampling it answers "nothing here" — the same
 /// answer bare canvas gives — rather than reporting paint that is switched off.
 ///
-/// **What actually changed, stated exactly**: not the colour, but where the pick
+/// **What actually changed, stated exactly**: not the color, but where the pick
 /// answers at all. The pick divides by the coverage it sums, so a layer's opacity
-/// always cancelled out of the *colour* — the ordinary settings below would have
+/// always cancelled out of the *color* — the ordinary settings below would have
 /// passed before the slider was dropped, and they are here as a pin rather than as a
 /// regression. What the opacity did not cancel out of is `PICK_MIN_OPACITY`, the
 /// floor beneath which a patch is called empty: it scaled the coverage towards that

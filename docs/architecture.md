@@ -26,10 +26,10 @@ Principles, crate layout, the command/action boundary, and the history model —
    another.
 5. **Data-driven where it counts.** Channels, tools, actions and blend modes are
    open sets behind small traits/enums, so new capabilities are additive.
-6. **Perceptual colour is the working space.** Colour stores and blends in
+6. **Perceptual color is the working space.** Color stores and blends in
    **Oklab** (or Mixbox pigment latents, §6.7), so mixing, compositing and
    gradients are perceptually uniform; conversion to a display space happens only
-   at the final present. Colour math never touches gamma-encoded sRGB.
+   at the final present. Color math never touches gamma-encoded sRGB.
 7. **Convergence-ready from day one.** Every action carries a globally-unique id
    and the document derives purely from a *deterministically ordered* replay.
    Solo that is a linear timeline; multi-user it is a replicated log all peers
@@ -79,7 +79,7 @@ stark/
 │   │   │   ├── color.rs        # Oklab working space, conversions, mixing (§6.5)
 │   │   │   ├── colorspace.rs   # ColorSpace trait; Oklab + Mixbox impls (§6.7)
 │   │   │   ├── assets.rs       # content-addressed brush/image asset store (§6.6)
-│   │   │   ├── noise.rs        # tileable 2-D noise tiles for colour dynamics (§6.2)
+│   │   │   ├── noise.rs        # tileable 2-D noise tiles for color dynamics (§6.2)
 │   │   │   ├── image.rs        # RgbaImage (readback / export)
 │   │   │   ├── gpu/
 │   │   │   │   ├── context.rs   # device/queue wrapper, capabilities
@@ -300,7 +300,7 @@ sent.
 
 Reads therefore go through `Engine::observe()`, which projects *both* classes of
 state (§7). It deliberately includes the view settings a frontend would otherwise
-read back off the engine — media params, surface, environment, colour space —
+read back off the engine — media params, surface, environment, color space —
 because a frontend that cannot observe them keeps its own copy, and a copy seeded
 from `Default` goes stale the moment anything else changes them.
 
@@ -338,7 +338,7 @@ request/response pairs with a reply channel; until then, keeping them *named* as
 a tier is what stops them drifting back into ad-hoc setters. **A new engine
 method that mutates state and returns nothing is a bug — it should be a command.**
 
-One thing is neither: the **colour space**. Channel layouts differ between
+One thing is neither: the **color space**. Channel layouts differ between
 spaces, so changing it cannot preserve a document — every caller asking to "set"
 it was really asking for a new document. It is fixed at document creation
 (`Engine::new_document(color_space, surface)`) and there is no setter (§6.7).
@@ -373,7 +373,7 @@ pub enum ActionKind {
 pub struct StrokeRecord {
     pub layer: LayerId,
     pub tool: ToolId,
-    pub brush: BrushParams,       // colour in the working space; shape by AssetId
+    pub brush: BrushParams,       // color in the working space; shape by AssetId
     pub path: Vec<ControlPoint>,  // cubic B-spline control points, fitted (§6.2)
     pub seed: u64,                // makes any brush jitter reproducible
 }

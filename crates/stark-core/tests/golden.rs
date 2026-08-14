@@ -5,7 +5,7 @@
 //! the corpus ([`corpus.rs`](corpus.rs)), where it is also held to every invariant the
 //! battery knows about instead of only to its own pixels; the ones that lived here
 //! moved there. What is left is what the corpus's shape cannot express — a *sequence*
-//! of strokes and undos, a colour space, a lighting environment, a stroke drawn five
+//! of strokes and undos, a color space, a lighting environment, a stroke drawn five
 //! times at five lengths — plus the marks that are about the media pass rather than
 //! about the stroke that made them.
 

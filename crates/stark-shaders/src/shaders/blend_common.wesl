@@ -3,10 +3,10 @@
 // accumulator through a non-`Normal` blend mode.
 //
 // Everything here is space-independent: the bindings, the light algebra, and the
-// Porter-Duff tail. Each colour space supplies only `to_light` / `from_light` — its
+// Porter-Duff tail. Each color space supplies only `to_light` / `from_light` — its
 // channels ↔ *normalized CIE XYZ* — and calls `merge`. That split is the same one
 // `media_common.wesl` makes, and for the same reason: there is one blend model, not
-// one per colour space.
+// one per color space.
 //
 //
 // WHY THESE MODES, AND WHY NOT SCREEN
@@ -54,17 +54,17 @@
 //   · **Linear in light.** Oklab's L is a perceptual cube root and Mixbox's channels
 //     are pigment concentrations; adding either is adding something that is not
 //     light, and `T⁻¹` would be undoing a curve that was never applied.
-//   · **Non-negative.** Every real colour has non-negative tristimulus values. Both
+//   · **Non-negative.** Every real color has non-negative tristimulus values. Both
 //     curves need that: Reinhard's denominator and Drago's logarithm are only
 //     defined on light that exists. Linear RGB does not have the property — an
-//     out-of-gamut colour has a negative channel — which is precisely the case that
+//     out-of-gamut color has a negative channel — which is precisely the case that
 //     would produce NaN.
 //   · **White is 1 on all three axes.** The sRGB→XYZ rows sum to the white point, so
-//     dividing each row by its own sum makes an in-gamut colour land in `[0,1]³` and
+//     dividing each row by its own sum makes an in-gamut color land in `[0,1]³` and
 //     makes "1" mean the same thing on X, Y and Z. Without it, Z tops out at 1.089
 //     and Reinhard's `1 − ab` changes sign. Multiply needs it even more directly:
 //     white is its *identity*, and in raw XYZ multiplying by white would scale a
-//     colour by `(0.9505, 1.0, 1.089)` — every glaze over white paper coming back
+//     color by `(0.9505, 1.0, 1.089)` — every glaze over white paper coming back
 //     dimmer and colder than it went in.
 //   · **Primary-independent.** Blending in RGB makes the result a function of the
 //     display's primaries. Two apps with different working primaries would disagree
@@ -157,7 +157,7 @@ const EMISSION_EPS: f32 = 1e-6;
 // `T⁻¹`: the linear emission behind a display-referred light value.
 //
 // Clamped into `[0,1]` first, for `combine`'s reason: the curves are defined on light
-// between black and display white, and a channel outside that came from a colour
+// between black and display white, and a channel outside that came from a color
 // outside the gamut rather than from light that is really there. Drago needs no floor
 // — with the input clamped, `e^{y/k}` tops out at `e^{1/k}`, which for any sane `k`
 // is a small number — so the guard is Reinhard's alone.
@@ -213,11 +213,11 @@ fn merge_alpha(cb_a: f32, cs_a: f32) -> f32 {
 // Compose the blended layer onto the accumulator (the tail every mode shares).
 //
 // `cb` / `cs` are the two premultiplied samples and `cr` is the *un-premultiplied*
-// blended colour the caller derived. This is W3C compositing's source-over with a
+// blended color the caller derived. This is W3C compositing's source-over with a
 // blend function, in the app's own channel semantics: alpha here is the layer's
 // **coverage** — its slab visible alpha, accumulated by pass A (composite.wesl) —
 // which is exactly the weight `Normal` gives a layer, so a mode that changes only
-// the colour changes only the colour.
+// the color changes only the color.
 //
 // `blended` is `B(Cb, Cs)` un-premultiplied — the mode's opinion, before any of it
 // is weighed against how much of the two layers is actually there.
@@ -232,14 +232,14 @@ fn merge_alpha(cb_a: f32, cs_a: f32) -> f32 {
 //
 // The source term is written `cs.rgb` and not `Cs·αs`, which is the same number:
 // `Cs` was only ever `cs.rgb` divided by `αs` so the blend function could see a
-// colour rather than a premultiplied one, and multiplying it back would round-trip a
+// color rather than a premultiplied one, and multiplying it back would round-trip a
 // division for no reason. Spelling it this way is what makes an **empty backdrop**
 // exact: `mix(x, y, 0)` is `x` to the bit, so a mode over an empty stack is
 // bit-for-bit the `Normal` render, which `tests/blend.rs` asserts to the byte. The
 // space shaders route `αb = 0` here for exactly that reason rather than through
 // `added_light`, whose round trip out to light and back could not promise it — and
 // in a Mixbox document that trip is a LUT lookup which drops the latent residual, so
-// it is the difference between "unchanged" and "slightly recoloured for nothing".
+// it is the difference between "unchanged" and "slightly recolored for nothing".
 //
 //
 // CLIPPING (§14.4)
@@ -267,9 +267,9 @@ fn merge_alpha(cb_a: f32, cs_a: f32) -> f32 {
 // reconstructs 1.0 from `(1−αb) + αb` would not survive it.
 //
 // The aux is summed, mode or no mode. Aux is *amount of paint*, and paint stacks
-// whatever its colour does — height conservation is an invariant of the medium, not
+// whatever its color does — height conservation is an invariant of the medium, not
 // of the blend (§6.1). Clipping is the one thing that reaches it: a clipped
-// layer's colour is suppressed outside the backdrop, and height that stayed behind
+// layer's color is suppressed outside the backdrop, and height that stayed behind
 // would light as relief with no paint under it — ghost impasto (§14.4.2). So the source
 // height carries the same weight the source's coverage does.
 //
@@ -283,10 +283,10 @@ fn merge_alpha(cb_a: f32, cs_a: f32) -> f32 {
 // a compositing routine took a texel coordinate at all. Half its inputs came down the
 // parameter list and half were fetched behind the caller's back, at a position the
 // caller had already computed. Now the whole of the algebra below is a function of its
-// arguments and the mode uniform, and the two colour spaces read identically.
+// arguments and the mode uniform, and the two color spaces read identically.
 fn merge(cb: vec4<f32>, cs_raw: vec4<f32>, blended: vec3<f32>, hb: f32, hs: f32) -> FsOut {
     // The group's opacity, applied to its composited result — premultiplied
-    // colour and coverage scale together, which is the same thing
+    // color and coverage scale together, which is the same thing
     // `composite.wesl` does to a leaf layer's tiles one at a time.
     let cs = cs_raw * b.opacity;
     let unclipped = b.clip == 0u;
@@ -302,11 +302,11 @@ fn merge(cb: vec4<f32>, cs_raw: vec4<f32>, blended: vec3<f32>, hb: f32, hs: f32)
     return out;
 }
 
-// [`merge`] for the emissive path, whose colour the caller has already worked out.
+// [`merge`] for the emissive path, whose color the caller has already worked out.
 //
 // The two differ in one line and share the rest, which is the point: coverage and
 // height are facts about how much paint is there, and no blend mode has an opinion
-// about either. What the emissive modes change is the *colour* law, so that is all
+// about either. What the emissive modes change is the *color* law, so that is all
 // this replaces — `chan` arrives un-premultiplied from `added_light`, converted back
 // into the caller's own channels, and is premultiplied here by the very alpha
 // `added_light` divided by.
@@ -320,11 +320,11 @@ fn merge_added(cb: vec4<f32>, cs_raw: vec4<f32>, chan: vec3<f32>, hb: f32, hs: f
     return out;
 }
 
-/// One premultiplied colour triple through the three-term merge above, given the
+/// One premultiplied color triple through the three-term merge above, given the
 /// backdrop's and (opacity-scaled) source's own alphas.
 ///
 /// Split out of [`merge`] because a **pigment** document runs it twice: once on the
-/// concentrations and once on the residual beside them, which is not a second colour
+/// concentrations and once on the residual beside them, which is not a second color
 /// to combine but the rest of the same one (§6.7). The alpha is decided
 /// once, by `merge`, and both triples ride it — so this returns only the triple.
 ///
@@ -346,7 +346,7 @@ fn merge_triple(
 }
 
 
-// **The whole colour algebra of every combining mode**, in one expansion.
+// **The whole color algebra of every combining mode**, in one expansion.
 //
 // This is `merge_triple`'s three-term Porter-Duff expansion — the same one, the same
 // weights — evaluated in **the space where the mode's blend function is affine**, and
@@ -367,7 +367,7 @@ fn merge_triple(
 // **Why the space is the whole question.** Porter-Duff weighs each layer by its
 // coverage, and a weighted average commutes with the blend function only where that
 // function is affine. Run it anywhere else — the working space, say — and `B` gets
-// applied to the accumulator's coverage-*averaged* colour, which is not the average of
+// applied to the accumulator's coverage-*averaged* color, which is not the average of
 // `B`. That is not a rounding difference: it made stacking order matter by 20 levels
 // wherever coverage was partial, and it made two same-mode layers impossible to merge
 // into one (§18.0.4, §14.11).
@@ -390,7 +390,7 @@ fn combined_light(xb: vec3<f32>, cb_a: f32, xs: vec3<f32>, cs_raw_a: f32) -> vec
         return tonemap(merge_triple(lb * cb_a, cb_a, ls * cs_a, cs_a, lb + ls) / a);
     }
     // Clamped into `[0,1]` first: the curves are defined on light between black and
-    // display white, and a channel outside that came from a colour outside the gamut
+    // display white, and a channel outside that came from a color outside the gamut
     // rather than from light that is really there. Multiply wants it for a blunter
     // reason — two negative channels multiply to a *positive* one, so an out-of-gamut
     // pair would come back brighter from the one mode that only ever darkens.

@@ -117,7 +117,7 @@ impl Engine {
     /// - the ground the log starts from, recorded before `reset_document` seeds the
     ///   empty document with it; replayed `SetSurface` actions move it from there
     ///   (§6.4);
-    /// - the document's colour space, since the channel layouts differ between
+    /// - the document's color space, since the channel layouts differ between
     ///   spaces and a stroke replayed through the wrong shaders is a different
     ///   painting (§6.7);
     /// - the brush shapes strokes reference, and the grounds the log names, both
@@ -129,7 +129,7 @@ impl Engine {
     /// The three callers had this written out three times and it had already drifted
     /// three ways — the timelapse was missing the initial ground, so every frame
     /// before the log's first `SetSurface` deposited against the wrong weave; it was
-    /// missing the colour space too, so a Mixbox document replayed through Oklab's
+    /// missing the color space too, so a Mixbox document replayed through Oklab's
     /// shaders; and it swallowed a broken brush asset silently where the other two
     /// said so. A sequence whose *order* is the correctness argument is a sequence to
     /// write once.
@@ -300,7 +300,7 @@ impl Engine {
 
     /// Start a fresh, empty document in `color_space`, on `surface`.
     ///
-    /// The **only** way to choose a colour space, and deliberately so: the channel
+    /// The **only** way to choose a color space, and deliberately so: the channel
     /// layouts differ between spaces, so existing tiles cannot be reinterpreted and
     /// changing it can never preserve a document. Modelling it as a setter hid that
     /// — every caller was really asking for a new document (§6.7).

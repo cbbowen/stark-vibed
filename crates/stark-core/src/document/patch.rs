@@ -59,7 +59,7 @@ enum PatchOp {
     Opacity(LayerId, f32),
     Visible(LayerId, bool),
     Name(LayerId, Option<Arc<str>>),
-    /// A matte's region and colour together — one footprint resource.
+    /// A matte's region and color together — one footprint resource.
     Matte(LayerId, MatteRegion, super::layer::MattePaint),
     /// A filter layer's settings (§21) — one footprint resource, because the action
     /// that writes them carries the filter entire.

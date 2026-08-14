@@ -45,7 +45,7 @@ pub enum Filter {
     /// integral it is, not as three shifted copies (§21.10).
     Chromatic(ChromaticAberration),
     /// The stack beneath repainted by its lightness: Oklab `L` indexes the ramp,
-    /// and the ramp's colour is what the paint becomes (§21.11). `None` — no ramp
+    /// and the ramp's color is what the paint becomes (§21.11). `None` — no ramp
     /// chosen yet — is the neutral, the same shape as a chromatic filter whose
     /// spread has not left zero: a gradient map with *any* ramp is already an
     /// edit, so the only setting a freshly added one may hold is none at all.
@@ -64,7 +64,7 @@ impl Filter {
     /// What this filter is called, in the panel and in the layer row.
     pub fn label(&self) -> &'static str {
         match self {
-            Filter::Color(_) => "Colour",
+            Filter::Color(_) => "Color",
             Filter::Chromatic(_) => "Chromatic aberration",
             Filter::GradientMap(_) => "Gradient map",
         }
@@ -82,7 +82,7 @@ impl Filter {
             // nothing on it.
             Filter::Chromatic(c) => c.spread == 0.0,
             // No ramp, no map. There is no "identity ramp" to compare against —
-            // even black-to-white repaints every colour with its greyscale — so
+            // even black-to-white repaints every color with its greyscale — so
             // the absence is the one neutral this kind has.
             Filter::GradientMap(g) => g.is_none(),
         }
@@ -117,7 +117,7 @@ impl Filter {
             // A `Gradient`'s structural invariants (two stops, ascending, finite)
             // are already held by construction — deserialization funnels through
             // `Gradient::new` — so what is left to hold is the *range*: stop
-            // colours are straight sRGB, and a finite 1e30 would reach every
+            // colors are straight sRGB, and a finite 1e30 would reach every
             // texel just as surely as a NaN saturation. Clamping to the cube and
             // re-funnelling keeps the promise one gate deep; a ramp that somehow
             // degenerates under it falls back to the neutral, the one answer
@@ -137,7 +137,7 @@ impl Filter {
     }
 }
 
-/// A colour adjustment: the knobs that between them cover "make this read warmer /
+/// A color adjustment: the knobs that between them cover "make this read warmer /
 /// flatter / stronger" (§21.5).
 ///
 /// All of them are applied in **Oklab**, which is the whole reason they are these
@@ -191,10 +191,10 @@ pub struct ColorAdjust {
     /// ([`ViewCommand::SetRotation`](crate::command::ViewCommand::SetRotation)); the
     /// frontend offers degrees, which is a way of *presenting* an angle.
     pub hue: f32,
-    /// A colour cast: `(a, b)` added to Oklab **after** the rotation and the chroma
+    /// A color cast: `(a, b)` added to Oklab **after** the rotation and the chroma
     /// gain. `[0, 0]` is the identity.
     ///
-    /// Which makes it exactly **the colour a grey becomes**: an achromatic texel
+    /// Which makes it exactly **the color a grey becomes**: an achromatic texel
     /// arrives at the origin of the `(a, b)` plane and nothing before this moves it,
     /// so the pair is the chroma the whole picture is pushed toward. That is the one
     /// thing the other three cannot do — a gain and a rotation both fix the
@@ -235,7 +235,7 @@ impl ColorAdjust {
     ///
     /// `0.16` is about as far from the achromatic axis as the sRGB gamut itself
     /// reaches at mid-grey, so it is the point at which a cast has stopped being a
-    /// cast and become a colour: past it every texel in the picture is out of gamut
+    /// cast and become a color: past it every texel in the picture is out of gamut
     /// on the same side, and the pass returns a flat wash whatever was underneath.
     /// A square bound rather than a disc for the reason the pair is Cartesian at all
     /// — it is what the shader adds — and the corners it admits are reachable
@@ -466,8 +466,8 @@ mod tests {
     }
 
     /// The gradient map's sanitizer holds the one thing `Gradient::new` does not:
-    /// the **range** of a stop colour. Structure (two stops, ascending, finite) is
-    /// the constructor's promise; a finite colour outside the sRGB cube is still a
+    /// the **range** of a stop color. Structure (two stops, ascending, finite) is
+    /// the constructor's promise; a finite color outside the sRGB cube is still a
     /// value a hostile file can carry, and it reaches every texel of the frame.
     #[test]
     fn sanitizing_a_gradient_map_clamps_its_stops_to_the_cube() {

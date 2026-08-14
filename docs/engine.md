@@ -40,7 +40,7 @@ impl Engine {
 
 `ObservableState` is the cheap, UI-facing projection the frontend renders from —
 `can_undo`, `can_redo`, `active_tool`, `brush`, `view`, `doc_bounds`,
-`is_stroking`, `doc_revision`, the media/surface/environment/colour-space view
+`is_stroking`, `doc_revision`, the media/surface/environment/color-space view
 settings (§4), `selection_hull`, and the layer tree with *previewed* matte rects
 (§15.7). Published over a `watch`/signal so Dioxus re-renders reactively without
 polling pixels. **No pixel data crosses this boundary.**
@@ -71,7 +71,7 @@ The native format is **the serialized action log**:
 pub struct DocumentFile {
     pub format_version: u32,
     pub app_build: BuildId,            // shaders/algorithm version for fidelity notes
-    pub canvas: CanvasMeta,            // tile size, channel set, colour space, surface
+    pub canvas: CanvasMeta,            // tile size, channel set, color space, surface
     pub actions: Vec<Action>,          // the full, replayable log (each id-tagged)
     pub assets: Vec<(AssetId, Bytes)>, // content-addressed brush images (§6.6)
     pub surfaces: Vec<(SurfaceId, Bytes)>, // the canvas grounds it names (§6.4)
@@ -232,11 +232,11 @@ The suite files, roughly by subject: `golden`, `seam`, `stroke`, `dynamics`,
 | A new blend mode | one more `T` — a `BlendMode` variant + a `blend_common.wesl` branch (§6.3) |
 | A new media/lighting model | the media pass shader (§6.3) |
 | A different frontend (native, CLI exporter) | a new consumer of `Engine`; core untouched |
-| Another selection producer (by colour, quick-mask, imported alpha) | a `SelectionShape` variant + an arm in `selection.wesl`; representation, ops, history and masking sites unchanged (§6.8) — and it becomes a *fill* producer in the same move |
+| Another selection producer (by color, quick-mask, imported alpha) | a `SelectionShape` variant + an arm in `selection.wesl`; representation, ops, history and masking sites unchanged (§6.8) — and it becomes a *fill* producer in the same move |
 | Another position-varying fill (noise, pattern) | a `Parcel` variant + an arm in `fill.wesl`'s parcel branch; region, gate, stacking law, action and footprint unchanged — the gradient landed exactly this way (§22.4) |
 | A richer frame / comic gutters | a `MatteRegion` variant + an arm in `matte.wesl`; `LayerContent::Matte` and its compositing unchanged (§15) — the solid ground landed exactly this way (`Everything`, §15.5) |
 | Text | a new `ActionKind` + optionally new channels; transforms landed exactly this way (§16) |
-| A wider-gamut / spectral colour pipeline | `color.rs` + a `CanvasMeta.color_space` variant; storage stays float, present picks the transform |
+| A wider-gamut / spectral color pipeline | `color.rs` + a `CanvasMeta.color_space` variant; storage stays float, present picks the transform |
 | Multi-user collaboration | swap `LinearTimeline` → `ReplicatedTimeline`; add `stark-net`; engine/GPU untouched (§12) |
 
 The action-log + persistent-state core was chosen precisely so these are
@@ -329,7 +329,7 @@ which the engine draws into directly. DOM chrome surrounds it.
   one so a 4× export of a large frame does not park its several-hundred-megabyte
   pair for the session. View settings stay single-owned behind a process-wide
   generation stamp, so a swapped weave or light — or a whole rebuilt pipeline, as
-  a colour-space change makes — reaches every consumer by being *noticed* rather
+  a color-space change makes — reaches every consumer by being *noticed* rather
   than by a notification a new consumer could be left out of.
 - **Settings are one dialog, not a control tucked into whichever panel it came
   from.** Panels hold what you are painting *with* and change constantly

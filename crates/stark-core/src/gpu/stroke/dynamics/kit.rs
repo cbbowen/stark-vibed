@@ -25,7 +25,7 @@ use stark_shaders::mirror::dynamics::binding as b;
 /// lazily-baked brush textures already were.
 #[derive(Clone)]
 pub(in crate::gpu::stroke) struct DynamicsKit {
-    // Region composite: base tiles → one 1:1 canvas region (colour + wide aux).
+    // Region composite: base tiles → one 1:1 canvas region (color + wide aux).
     pub(in crate::gpu::stroke) composite_pipeline: wgpu::RenderPipeline,
     pub(in crate::gpu::stroke) composite_view_bgl: wgpu::BindGroupLayout,
     pub(in crate::gpu::stroke) composite_tile_bgl: wgpu::BindGroupLayout,
@@ -74,7 +74,7 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     pub(in crate::gpu::stroke) prefix_bgl: wgpu::BindGroupLayout,
     /// Bilinear clamp sampler for the region / reservoir / coverage lookups.
     pub(in crate::gpu::stroke) exchange_sampler: wgpu::Sampler,
-    // Region → CoW tile write-back: the aux narrow pass. Colour and residual leave
+    // Region → CoW tile write-back: the aux narrow pass. Color and residual leave
     // the region as plain texture copies (`DynamicsRun::write_back`), so the one
     // pipeline the write-back keeps is the narrowing of the wide region aux to the
     // persistent height channel — once over the whole region, not once per tile.
@@ -89,17 +89,17 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     color_space: &dyn ColorSpace,
 ) -> DynamicsKit {
     // The loop's storage-texture declarations are `rgba16float`; both color
-    // spaces use that tile colour format (§6.7), so the region can hold either.
+    // spaces use that tile color format (§6.7), so the region can hold either.
     debug_assert_eq!(color_space.color_format(), wgpu::TextureFormat::Rgba16Float);
     let frag = wgpu::ShaderStages::FRAGMENT;
     // Whether this space carries a **residual** (§6.7). It selects the `_resid` build
-    // of every shader here that touches a tile's colour, and adds the bindings and
+    // of every shader here that touches a tile's color, and adds the bindings and
     // targets that build declares. Oklab leaves every one of them off, so its layouts
     // are shorter rather than bound to stand-ins.
     let resid = color_space.has_resid();
 
     // ---- Region composite: the `composite` shader over region-sized targets
-    // (colour + the wide aux, so nothing is narrowed until the write-back).
+    // (color + the wide aux, so nothing is narrowed until the write-back).
     let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics composite"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(resid).into()),
@@ -130,7 +130,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         device,
         "stark dynamics composite tile bgl",
         // Binding 2 is the tile's residual (§6.7) — the source tiles are composited
-        // into the region whole, so the channel rides in with the colour it belongs to.
+        // into the region whole, so the channel rides in with the color it belongs to.
         &[
             desc::sample_tex(0, frag),
             desc::sample_tex(1, frag),
@@ -161,8 +161,8 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             targets: &[
                 desc::blended_target(color_space.color_format(), Some(color_space.color_blend())),
                 desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
-                // The region's residual, over-blended by the colour's own rule
-                // because it is the rest of the same colour (§6.7).
+                // The region's residual, over-blended by the color's own rule
+                // because it is the rest of the same color (§6.7).
                 color_space
                     .resid_format()
                     .and_then(|f| desc::blended_target(f, Some(color_space.color_blend()))),
@@ -202,7 +202,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // prefix-τ volume, so f16 would band exactly where the difference is smallest.
     let stor32 = |binding: u32| desc::storage_tex(binding, comp, BAKE_FORMAT);
     let csamp = desc::sampler(b::SAMP, comp);
-    // The residual bindings each sit beside the colour binding they ride with; a
+    // The residual bindings each sit beside the color binding they ride with; a
     // layout that lists one lists the other. See the block at the head of
     // dynamics.wesl for what each carries.
     let snapshot_bgl = desc::bind_group_layout(
@@ -239,7 +239,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             // The selection mask over the region (§6.8) — sampled bilinearly here,
             // since a reservoir texel sits over an arbitrary sub-pixel spot.
             ctex(b::SEL_MASK, true),
-            // The region's residual takes the same bilinear tap the colour does; the
+            // The region's residual takes the same bilinear tap the color does; the
             // snapshot's write rides in this grid.
             ctex(b::REGION_RESID, true),
             stor(b::UNDER_RESID_W),
@@ -287,7 +287,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             stor(b::REGION_RESID_W),
         ][..9 + 3 * usize::from(resid)],
     );
-    // The colour-dynamics noise tile + its repeat sampler (§6.2) — shared by the two
+    // The color-dynamics noise tile + its repeat sampler (§6.2) — shared by the two
     // deposit layouts, which jitter the brush's own `add` paint identically.
     let noise_tex_entry = wgpu::BindGroupLayoutEntry {
         binding: b::DYN_NOISE_TEX,
@@ -450,7 +450,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         ..Default::default()
     });
 
-    // ---- Region → tile write-back: the aux narrow pass. The colour and residual
+    // ---- Region → tile write-back: the aux narrow pass. The color and residual
     // channels are copied out of the region bit-exactly (`DynamicsRun::write_back`),
     // so this draws once over the whole region rather than once per tile, and needs
     // neither a per-tile uniform nor a residual variant.

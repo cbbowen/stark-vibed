@@ -410,7 +410,7 @@ fn every_action_touches_only_what_it_declares() {
     step(
         &mut engine,
         seen,
-        "recolour matte",
+        "recolor matte",
         DocCommand::SetMattePaint(matte, MattePaint::Solid([0.1, 0.1, 0.1])),
     );
     step(
@@ -581,7 +581,7 @@ fn every_action_touches_only_what_it_declares() {
         "Add matte",
         "Move frame",
         "Matte paint",
-        "Canvas colour",
+        "Canvas color",
         "Canvas surface",
     ];
     let missed: Vec<&str> = expected

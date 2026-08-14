@@ -1,4 +1,4 @@
-// The colour-dynamics noise lookup (§6.2).
+// The color-dynamics noise lookup (§6.2).
 //
 // **The GPU does not generate noise, it reads it.** Every field is baked once on
 // the CPU into a small tileable `Rgba8Snorm` texture (`stark-core`'s `noise.rs`),
@@ -16,7 +16,7 @@
 // needs it. The live CPU `pcg4d` in `noise.rs` is untouched — it bakes the
 // textures this samples, and never had a GPU counterpart to agree with.
 
-// Per-channel colour offset at a **stroke-local** position: sample the baked
+// Per-channel color offset at a **stroke-local** position: sample the baked
 // tileable 2-D noise field (signed, ≈[-1,1] per channel) and scale each channel by
 // its amplitude.
 //   local: (lateral offset from the stroke centreline, arc length along the
@@ -26,7 +26,7 @@
 //          deposit stays a pure function of the two and tile aprons remain
 //          bit-consistent (§6.4).
 //   freq:  per-axis frequency .xy, with 1/NOISE_TILE_PX pre-folded into .z.
-//   amp:   per colour-channel amplitude (0 = that channel holds still).
+//   amp:   per color-channel amplitude (0 = that channel holds still).
 //   off:   the per-stroke lookup translation (derived from the stroke seed).
 // The sampler must wrap (repeat) on both axes.
 fn color_jitter(

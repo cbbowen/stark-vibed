@@ -130,13 +130,13 @@ pub struct DocState {
     /// deposits against the ground the log stood on when it was made, on replay and
     /// on a peer alike, and no history rule had to be invented to say so.
     pub surface: SurfaceId,
-    /// The canvas substrate colour — the ground the paint sits on — as straight
+    /// The canvas substrate color — the ground the paint sits on — as straight
     /// sRGB (§15.5).
     ///
     /// Document state on the same argument §6.4 makes for the weave: which ground
     /// a piece was painted on is part of what it *is*, and it must be saved. It
     /// was previously a view setting the frontend owned, which meant the paper
-    /// colour of a painting was simply not stored anywhere.
+    /// color of a painting was simply not stored anywhere.
     ///
     /// Distinct from a matte layer, which is a slab of opaque *paint*: the
     /// substrate sits under everything, is lit, and the canvas weave shows through
@@ -210,7 +210,7 @@ impl DocState {
         }
     }
 
-    /// The same document on a different substrate colour (§15.5).
+    /// The same document on a different substrate color (§15.5).
     pub fn with_background(&self, background: [f32; 3]) -> Self {
         Self {
             background,
@@ -504,7 +504,7 @@ impl DocState {
         })
     }
 
-    /// Set a matte layer's paint — a flat colour or a gradient ramp (§15.4,
+    /// Set a matte layer's paint — a flat color or a gradient ramp (§15.4,
     /// §22.4). A no-op on a paint layer or an absent id.
     pub fn set_matte_paint(&self, id: LayerId, paint: MattePaint) -> Self {
         self.map_layer(id, |l| match &l.content {

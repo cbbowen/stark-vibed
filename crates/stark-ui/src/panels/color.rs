@@ -1,9 +1,9 @@
 //! The floating Color panel: an Oklab picker over an `a`/`b` plane at a chosen `L`.
 //!
-//! The eyedropper writes the same brush colour this picker does, but its *options*
+//! The eyedropper writes the same brush color this picker does, but its *options*
 //! are not here — they live in a bar that comes up on Alt
 //! ([`crate::panels::pick`]), since it is a modifier rather than a tool. What the
-//! panel owes it is `seed`: a pick sets the colour from outside the picker, and the
+//! panel owes it is `seed`: a pick sets the color from outside the picker, and the
 //! markers have to follow.
 
 use dioxus::prelude::*;
@@ -12,23 +12,23 @@ use crate::platform::capture_pointer;
 use crate::state::{AppState, update_brush};
 use stark_core::color::{oklab_to_srgb, srgb_to_oklab};
 
-/// The colour a session starts on. The panel mounts before the engine exists, so
+/// The color a session starts on. The panel mounts before the engine exists, so
 /// this is both the picker's fallback seed *and* what `main`'s startup seeding
 /// pushes into the engine — the two have to agree, or the picker would show a
-/// colour the brush does not have and the first stroke would come out black.
+/// color the brush does not have and the first stroke would come out black.
 pub const INITIAL_COLOR: [f32; 3] = [0.61, 0.04, 0.02];
 
 #[component]
 pub fn ColorPanel() -> Element {
     let state = use_context::<AppState>();
-    // Seed from the brush's current colour (peek → no re-render on every paint).
+    // Seed from the brush's current color (peek → no re-render on every paint).
     let init = state
         .obs
         .peek()
         .as_ref()
         .map(|o| [o.brush.color[0], o.brush.color[1], o.brush.color[2]])
         .unwrap_or(INITIAL_COLOR);
-    // Read reactively, unlike the colour: this is how a pick — which sets the colour
+    // Read reactively, unlike the color: this is how a pick — which sets the color
     // from outside the picker — gets the markers to move (see `AppState::color_epoch`).
     let seed = (state.color_epoch)();
 
@@ -57,23 +57,23 @@ const AB: f32 = 0.32;
 /// while dragging `L`). `N·3` is a multiple of 4, so BMP rows need no padding.
 const FIELD_N: usize = 96;
 
-/// Reusable Oklab colour picker: a vertical `L` slider + a 2D `a`/`b` field. Seeds its
+/// Reusable Oklab color picker: a vertical `L` slider + a 2D `a`/`b` field. Seeds its
 /// Oklab state from `init` (straight sRGB) when mounted and reports every pick through
 /// `onchange` as straight sRGB, gamut-clamped. Signals are `Copy`, so they can be handed
 /// to several event closures and the free helpers below. Used by the Color panel (brush
-/// colour) and the Lighting panel's canvas-colour pop-out.
+/// color) and the Lighting panel's canvas-color pop-out.
 ///
-/// `oncommit` fires once when the pointer is released, with the final colour. The
-/// two exist separately because a drag reports a colour per pointer *move* while
+/// `oncommit` fires once when the pointer is released, with the final color. The
+/// two exist separately because a drag reports a color per pointer *move* while
 /// being one edit: a caller feeding history hangs the unlogged preview off
 /// `onchange` and the single commit off `oncommit`. Omitting it is right for a
-/// caller whose colour is not historized at all — the brush's, which is view state.
+/// caller whose color is not historized at all — the brush's, which is view state.
 ///
 /// `seed` re-seeds the markers from `init`. The picker is *seeded* rather than
 /// driven — it holds Oklab, and `init` comes back through sRGB, which cannot
-/// represent an out-of-gamut `a`/`b` — so a caller that sets the colour some other
+/// represent an out-of-gamut `a`/`b` — so a caller that sets the color some other
 /// way (the eyedropper) has to say so. Keyed on a counter rather than on `init`
-/// itself, and deliberately: reseeding whenever the colour changed would drag a
+/// itself, and deliberately: reseeding whenever the color changed would drag a
 /// marker the user has dragged out of gamut back onto the gamut boundary, under
 /// their own cursor.
 #[component]
@@ -92,7 +92,7 @@ pub fn OklabPicker(
 
     // `init` is a plain prop, so `use_reactive!` is what makes a change in it visible
     // to an effect at all. Both are dependencies, but only a moved `seed` reseeds:
-    // `init` is here so the effect reads the colour of the render it fires on rather
+    // `init` is here so the effect reads the color of the render it fires on rather
     // than the one it was created on.
     let mut seeded = use_signal(|| seed);
     use_effect(use_reactive!(|seed, init| {
@@ -106,7 +106,7 @@ pub fn OklabPicker(
         b.set(lab[2]);
     }));
 
-    // The a/b field is the colour plane at the current `L`; it only depends on `L`, so
+    // The a/b field is the color plane at the current `L`; it only depends on `L`, so
     // memoize it (no rebuild while dragging in the field, which moves only `a`/`b`).
     let field = use_memo(move || ab_field_data_url(l(), AB));
 
@@ -158,13 +158,13 @@ fn apply_color(handler: EventHandler<[f32; 3]>, l: Signal<f32>, a: Signal<f32>, 
     ]);
 }
 
-/// End a drag on `picking`, reporting the settled colour through `oncommit` once —
+/// End a drag on `picking`, reporting the settled color through `oncommit` once —
 /// the caller's cue to turn a run of `onchange` previews into one committed edit.
 /// A no-op when no drag was in progress, so a stray release commits nothing.
 ///
-/// Shared by `onpointerup` and `onpointercancel`: a cancelled colour pick still
+/// Shared by `onpointerup` and `onpointercancel`: a cancelled color pick still
 /// commits, unlike a cancelled geometry drag, because every instant of it is a
-/// colour the user chose and is already looking at — and because discarding it
+/// color the user chose and is already looking at — and because discarding it
 /// would strand the caller's preview with no commit to supersede it.
 fn end_pick(
     oncommit: Option<EventHandler<[f32; 3]>>,
@@ -209,10 +209,10 @@ fn pick_l(
     apply_color(onchange, l, a, b);
 }
 
-/// Render the Oklab `a`/`b` colour plane at lightness `l` as a small 24-bit BMP
+/// Render the Oklab `a`/`b` color plane at lightness `l` as a small 24-bit BMP
 /// `data:` URL (CSS scales it up). `a` runs left→right (−`ab`→+`ab`), `b` runs
-/// top→bottom (+`ab`→−`ab`), so warm colours sit at the top and cool at the bottom.
-/// Out-of-gamut colours clamp to sRGB. Cheap enough to recompute whenever `L` changes.
+/// top→bottom (+`ab`→−`ab`), so warm colors sit at the top and cool at the bottom.
+/// Out-of-gamut colors clamp to sRGB. Cheap enough to recompute whenever `L` changes.
 ///
 /// The half-extent is a parameter rather than [`AB`] because the filter bar's chroma
 /// dial draws the same plane over a different span (`panels::filter`) — one function,
@@ -236,7 +236,7 @@ pub(super) fn ab_field_data_url(l: f32, ab: f32) -> String {
     bmp.extend_from_slice(&(pixels as u32).to_le_bytes());
     bmp.extend_from_slice(&2835i32.to_le_bytes()); // 72 dpi
     bmp.extend_from_slice(&2835i32.to_le_bytes());
-    bmp.extend_from_slice(&0u32.to_le_bytes()); // colours used
+    bmp.extend_from_slice(&0u32.to_le_bytes()); // colors used
     bmp.extend_from_slice(&0u32.to_le_bytes()); // important
     let last = (n - 1) as f32;
     for row in 0..n {

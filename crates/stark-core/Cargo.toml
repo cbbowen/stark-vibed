@@ -30,7 +30,7 @@ mixbox = { path = "../../vendor/mixbox/rust", optional = true }
 
 [features]
 default = ["mixbox"]
-# The Mixbox pigment colour space (§6.7). On by default.
+# The Mixbox pigment color space (§6.7). On by default.
 #
 # Off, the build carries **no CC BY-NC 4.0 code at all**: the vendored crate is not
 # compiled, `stark-shaders` skips transpiling the polynomial out of the submodule and

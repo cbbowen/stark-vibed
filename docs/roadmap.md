@@ -23,7 +23,7 @@ Status lives here and nowhere else.
 | 8 | Cubic stroke interpolation (§6.2) | done — streaming append-only fit, adaptive flattening |
 | 8b | Continuous swept-segment stamping (§6.2) | done — one quad per segment, prefix-τ coverage |
 | 8c | Tile aprons (§6.4) | done — killed the lighting seams the media pass amplified |
-| 9 | Pluggable colour spaces (§6.7) | done — Oklab + Mixbox |
+| 9 | Pluggable color spaces (§6.7) | done — Oklab + Mixbox |
 | 10 | Wet mixing & brush dynamics (§6.2) | done — GPU swept-exchange loop, no CPU readback |
 | — | Surface bump maps (§6.4) | done — relief, and the deposition tooth that gates what the brush lays, on the ground a moving tip is about to meet |
 | 11 | Brush file upload | done — custom shape library, localStorage, mid-session peer replication |
@@ -38,7 +38,7 @@ Status lives here and nowhere else.
 | — | View mirror & rotate (§18.1.2) | done |
 | — | Timeline mode / scrubber (§18.2.4) | done |
 | — | Groups & clipping (§14) | done |
-| — | Filter layers (§21) | done — the architecture and the colour filter; the rest of the kinds (§21.9) remain |
+| — | Filter layers (§21) | done — the architecture and the color filter; the rest of the kinds (§21.9) remain |
 | — | Drag-and-hold drawing assist (§6.9) | done — line + ellipse; the shape-assist half of §18.1.3 |
 | — | Brush parameter mapping (§6.2, §18.1.4) | done — pressure/tilt → size/flow/lift/deposit/bleed; more sources and targets are variants away |
 | — | Modifier drags — scrubby zoom, Size/Flow (§18.1.9) | done — with the size ring; a flow readout is not |
@@ -103,21 +103,21 @@ build first.
 
 #### 18.0.2 Eyedropper — built
 
-Sampling colour off the canvas is the most-used non-brush action in painting, and
+Sampling color off the canvas is the most-used non-brush action in painting, and
 it matters more here than anywhere else: the entire point of Mixbox pigment
 mixing (§6.7) is to pick the mix back up. Without it the mixing engine is a
 rendering feature rather than a working one.
 
 `Engine::pick_color` is a **request**, not a command (§4), and returns a future
 because readback is the one inherently asynchronous GPU operation — the same
-shape as `export`. Alt+drag is the binding, as in CSP and Rebelle, so a colour is
+shape as `export`. Alt+drag is the binding, as in CSP and Rebelle, so a color is
 picked up without putting the brush down.
 
 The decision it turns on: it samples the **raw layer channels**, not the
 composited, lit result. It runs pass A into a small target and stops there, so
-what comes back is the paint's own channels — not a colour that has been through
+what comes back is the paint's own channels — not a color that has been through
 image-based lighting, a tonemap and an sRGB encode, and in a Mixbox document not
-a display colour in place of the pigment mixture. Sharing pass A with rendering
+a display color in place of the pigment mixture. Sharing pass A with rendering
 rather than reimplementing it is what keeps a sample and the screen from drifting
 apart. Bare canvas answers *nothing*: the substrate is the ground, not paint to
 pick up. Sample-layer(s) and sample-radius are `PickOptions`, in a floating bar
@@ -127,10 +127,10 @@ rather than secret.
 
 There are three sources, not two, and the third is the one exception to *bare
 canvas answers nothing*: the composite **over the substrate** (§15.5), which fills
-in the canvas colour wherever the paint does not cover. The other two answer with
-the paint that is stored at a point; this one answers with the colour that is
+in the canvas color wherever the paint does not cover. The other two answer with
+the paint that is stored at a point; this one answers with the color that is
 *seen* there, which is the question being asked when the paint is a glaze — and
-the only source whose answer can be a colour no layer holds. It runs the same
+the only source whose answer can be a color no layer holds. It runs the same
 `over` the media pass runs, in the same latent channels, so it agrees with the
 screen rather than offering a second opinion about it. It is also the one place a
 sample stops being an opacity-weighted mean: with the ground behind it every texel
@@ -142,17 +142,17 @@ blend, clip and opacity (§14.4.3). All three say how the layer meets what is be
 it, which is exactly what this source is asked to ignore: the first two decide how
 much of the paint survives its surroundings, and the slider decides how much of the
 layer the *document* shows. None of them says what the paint **is**, so a layer
-turned down reports the same colour rather than a paler one — which is the property
+turned down reports the same color rather than a paler one — which is the property
 that matters in use, since the reason to sample a faded layer is usually to go on
 painting with what is already on it. Zero is the exception and a different statement
 rather than a fainter one: a layer switched off contributes nothing, so it answers
 `None` like bare canvas.
 
-That the colour was already right is worth saying, because it is why this went
+That the color was already right is worth saying, because it is why this went
 unnoticed: the sample divides by the coverage it sums, so the opacity cancelled. What
 it did not cancel out of was the floor beneath which a patch is called empty, so a
 faded enough layer reported *nothing at all* where the same paint at full strength
-reported its colour.
+reported its color.
 
 #### 18.0.3 Transform — built
 
@@ -181,7 +181,7 @@ with position — `Solid` grew a sibling, the region/gate/stacking law/footprint
 never moved, and the composing mode is the transform's preview-until-Done
 aimed at a fill. The gradient itself came first (§22.1–§22.3): stops fitted
 from a line traced through the painting, kept in a browser-local library, and
-embedded by value in the op the way a stroke embeds its brush colour.
+embedded by value in the op the way a stroke embeds its brush color.
 
 ### 18.1 Tier 1 — the workflow multipliers that define the competitors
 
@@ -311,7 +311,7 @@ it.
 Built as **filter layers** (§21), and the model went one step past what this
 paragraph asked for: an adjustment layer's *scope* is where its row sits, so the
 clipping toggle Photoshop needs beside every adjustment is not a control here at
-all (§21.1). Three kinds ship — the colour filter (exposure / contrast /
+all (§21.1). Three kinds ship — the color filter (exposure / contrast /
 saturation / hue / tint, in Oklab, §21.5), the spectral chromatic aberration
 (§21.10), and the gradient map over the captured ramps of §22 (§21.11) — and
 the rest are a variant and an arm each (§21.9).
@@ -432,11 +432,11 @@ Three things the rule has to get right, each a place a looser design goes wrong:
   on, so holding 5 and drawing does not quietly make 5 whatever was in hand. A
   slot that filled itself on first press would be indistinguishable from one the
   user had set.
-- **Colour is not part of a slot**, in both directions — the same rule the preset
+- **Color is not part of a slot**, in both directions — the same rule the preset
   library already states, now shared as `presets::wear` rather than restated.
-  Swapping never changes the colour you are painting with, a colour picked
+  Swapping never changes the color you are painting with, a color picked
   mid-hold survives the release, and the "was anything changed?" test is
-  `presets::matches`, which is exactly *the same brush, colour aside*. The
+  `presets::matches`, which is exactly *the same brush, color aside*. The
   brush's own opacity (`color[3]`, a material property — §6.1) does travel, as it
   does in a preset.
 - **A hold ends only for whoever made it.** The grip is carried through, so a
@@ -592,7 +592,7 @@ ship without a rewrite.
 
 #### 18.2.1 Post-hoc stroke editing
 
-Change a committed stroke's colour, brush or dynamics and replay. "Every stroke
+Change a committed stroke's color, brush or dynamics and replay. "Every stroke
 stays editable" is a vector-app promise delivered with natural media. It fits the
 CRDT cleanly: an amend is a **new action referencing the target** — exactly the
 `Undo(ActionId)` shape from §5.4 — not a mutation. Grow-only stays grow-only, and
