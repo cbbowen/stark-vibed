@@ -67,9 +67,21 @@ const MIN_SIZE: f32 = 32.0;
 const LINE_RESIDUAL: f32 = 0.035;
 
 /// The same bar for an **ellipse**, as a fraction of its mean radius. Looser than the
-/// line's on purpose: the same hand movement is spread over a radius rather than over
-/// a length, so the same absolute wobble is a larger fraction of it.
-const ELLIPSE_RESIDUAL: f32 = 0.10;
+/// line's on purpose, and by a wide margin.
+///
+/// Two reasons, and they compound. The same hand movement is spread over a radius
+/// rather than over a length, so the same absolute wobble is a larger fraction of it —
+/// and a loop is a *longer* gesture than a drag of the same size, since going round
+/// costs π times the diameter where crossing costs one, with the wrist reversing
+/// direction twice on the way. A worst-sample bar on a signal that long is being asked
+/// about the one moment the hand was least steady.
+///
+/// The bar that discriminates is still not the ellipse's: a shape that is not a loop of
+/// *some* ellipse fails this by tens of percent, not by ones — the cardioid in the tests
+/// misses it several times over — and the shapes near the edge of it are ellipses drawn
+/// shakily. So the cost of the miss (draw it again, steadier) buys less here than it
+/// does on a line, where a bowed stroke sits just the other side of the bar.
+const ELLIPSE_RESIDUAL: f32 = 0.15;
 
 /// How far a recognized line may sit from a **guide axis** and still be read as one of
 /// that axis's lines (§20.6), as a fraction of the line's own length.
@@ -80,10 +92,15 @@ const ELLIPSE_RESIDUAL: f32 = 0.10;
 /// positive replaces a considered curve; this asks *which* line it meant, at a moment
 /// when the artist has already dwelt to ask for an ideal one and has a grid up to
 /// answer with. A hand aiming at a vanishing point a metre off the page is doing well
-/// to be within a few degrees, and a fraction of the length is a fixed cone: 0.1 is
-/// 5.7°, so three axes claim a sixth of the compass and a deliberately diagonal line
-/// is left alone.
-const GUIDE_LINE_RESIDUAL: f32 = 0.1;
+/// to be within a few degrees, and a fraction of the length is a fixed cone: 0.15 is
+/// 8.6°, so three axes claim between a quarter and a third of the compass and a
+/// deliberately diagonal line is still left alone.
+///
+/// The cone has to hold the *aim*, not the wrist. Where a stroke lands is decided at the
+/// moment the hand commits to a direction, before the drag exists to be judged, and a
+/// vanishing point off the page is not somewhere the eye can look while drawing — so the
+/// error being priced is a guess at an angle, and a few degrees is a good guess.
+const GUIDE_LINE_RESIDUAL: f32 = 0.15;
 
 /// The same bar for a **perspective circle** (§20.7), as a fraction of the drawn loop's
 /// mean radius: how far the trace may sit from the circle-on-a-plane that claims it.
@@ -94,14 +111,18 @@ const GUIDE_LINE_RESIDUAL: f32 = 0.1;
 /// on the plane it sits, and both exactly what the eye cannot judge. A bar that only
 /// accepted loops already correct in the two would help nobody.
 ///
-/// Measured, on ellipses a few hundred px across: 0.18 admits a loop about a sixth too
-/// round, or leaning 5° out of the tilt its position calls for, or a lesser mix of the
-/// two — and declines at around a fifth and 8°, so a loop drawn deliberately across the
-/// grid stays the ellipse it is. The cost of the bar being an isotropic fraction of the
+/// Measured, on ellipses a few hundred px across: 0.26 admits a loop about a quarter
+/// too round, or leaning 9° out of the tilt its position calls for, or a lesser mix of
+/// the two — and declines at around a third and 11°, so a loop drawn deliberately across
+/// the grid stays the ellipse it is. Those are the figures for the plane that shows the
+/// tilt most; a plane seen closer to face-on forgives 15° or 40°, and correctly, since a
+/// rounder image has proportionally less tilt to be wrong about.
+///
+/// The cost of the bar being an isotropic fraction of the
 /// mean radius is that it forgives eccentricity more readily than tilt on a strongly
 /// foreshortened circle, which is the right way round: how *open* a near-edge-on
 /// ellipse should be is genuinely hard to see, and which way it leans is not.
-const GUIDE_CIRCLE_RESIDUAL: f32 = 0.18;
+const GUIDE_CIRCLE_RESIDUAL: f32 = 0.26;
 
 /// Residual floor, in input tolerances. Without it the fractional bars above scale to
 /// nothing on a small shape and no short stroke could ever snap, however straight the
@@ -109,9 +130,17 @@ const GUIDE_CIRCLE_RESIDUAL: f32 = 0.18;
 const RESIDUAL_FLOOR: f32 = 4.0;
 
 /// How far apart a trace's ends may be for it to be read as a loop, as a multiple of
-/// the radius its own length implies (`length / 2π`). At 1.2 a stroke that goes seven
-/// eighths of the way round still closes and a three-quarter arc does not.
-const CLOSE_GAP: f32 = 1.2;
+/// the radius its own length implies (`length / 2π`). At 1.5 a stroke that goes four
+/// fifths of the way round still closes and a three-quarter arc does not.
+///
+/// Neither side of that is free. Below it is what a hand actually does — closing a loop
+/// is the last thing it does and the first it gets wrong (see [`weigh`]) — and the gap
+/// costs the fit little, because the wedges the trace never reached are filled from the
+/// estimate rather than guessed at: measured, a fifth-turn gap on a 400px loop still
+/// lands the centre and the major axis within 3%. Above it the closed form starts to
+/// describe an arc instead — a quarter-turn gap walks the centre 5% off — and, more to
+/// the point, an arc is a shape somebody can mean.
+const CLOSE_GAP: f32 = 1.5;
 
 /// Points the ellipse fit works over, resampled uniformly along the trace. Enough to
 /// average out pointer jitter, few enough that four reweighting passes are free.
@@ -1007,8 +1036,8 @@ fn weigh(frame: &Frame, pts: &[Vec2]) -> Vec<(Vec2, f32)> {
     // closed-form they invert assumes a whole turn: an 8% short loop walked the centre
     // 27px off, which was enough to fail the bar at every eccentricity. Filling is
     // sound because the truth is still a fixed point — an estimate that is already
-    // right puts its synthetic points on the true ellipse — and the wedge is at most an
-    // eighth of the circle ([`CLOSE_GAP`]), so what was drawn always outvotes it.
+    // right puts its synthetic points on the true ellipse — and the gap is at most a
+    // fifth of the circle ([`CLOSE_GAP`]), so what was drawn always outvotes it.
     out.extend(
         occupants
             .iter()
@@ -1187,9 +1216,35 @@ mod tests {
     /// Both used to. Overshoot double-counted the re-traversed wedge and walked the
     /// centre 78px off a 400px ellipse; undershoot left the closed-form inversion
     /// describing an arc while assuming a whole turn. See [`weigh`].
+    /// A loop is a longer gesture than a drag of the same size and the wrist reverses
+    /// twice on the way round it, so the hand that draws one is not the hand that draws
+    /// a line — see [`ELLIPSE_RESIDUAL`]. A tenth of the radius of wobble is a shaky
+    /// hand, not a considered shape, and it has to come back as the ellipse it was aimed
+    /// at.
+    #[test]
+    fn a_shaky_loop_is_still_an_ellipse() {
+        let radii = Vec2::new(300.0, 150.0);
+        let wobble = 0.10 * 0.5 * (radii.x + radii.y);
+        let shape = free(&ellipse_trace(Vec2::ZERO, radii, 0.4, wobble)).expect("an ellipse");
+        let AssistShape::Ellipse {
+            center, radii: r, ..
+        } = shape
+        else {
+            panic!("recognized {shape:?}, not an ellipse");
+        };
+        assert!(center.length() < 0.1 * radii.x, "centre moved to {center}");
+        assert!(
+            (r.x / r.y - 2.0).abs() < 0.3,
+            "axis ratio {} (radii {r})",
+            r.x / r.y
+        );
+    }
+
     #[test]
     fn a_loop_that_misses_its_own_start_still_snaps() {
-        for turns in [-0.10f32, -0.04, 0.0, 0.04, 0.10] {
+        // A fifth of a turn short is what [`CLOSE_GAP`] allows and what the fill in
+        // [`weigh`] can carry; three quarters of a turn is an arc and is refused.
+        for turns in [-0.18f32, -0.10, -0.04, 0.0, 0.04, 0.10, 0.18] {
             for ratio in [1.0f32, 4.0] {
                 let radii = Vec2::new(400.0, 400.0 / ratio);
                 let trace = loop_trace(Vec2::ZERO, radii, 0.6, 4.0, turns);
@@ -1211,6 +1266,21 @@ mod tests {
                     r.x
                 );
             }
+        }
+    }
+
+    /// The other side of that: an **arc** is a shape somebody can mean, and closing it
+    /// for them would be the expensive kind of mistake. A quarter of a turn missing is
+    /// not a hand that fumbled the join.
+    #[test]
+    fn a_three_quarter_arc_is_not_a_loop() {
+        for ratio in [1.0f32, 2.0] {
+            let radii = Vec2::new(400.0, 400.0 / ratio);
+            let trace = loop_trace(Vec2::ZERO, radii, 0.6, 2.0, -0.25);
+            assert!(
+                !matches!(free(&trace), Some(AssistShape::Ellipse { .. })),
+                "{ratio}:1 three-quarter arc was closed into an ellipse"
+            );
         }
     }
 
@@ -1457,6 +1527,12 @@ mod tests {
             let near = aimed(&g, 2, start, len, 0.04, 0.0);
             let (_, _, on) = as_line(recognize(&near, TOL, &up).expect("a line"));
             assert!(on, "{len}px missed an axis 2.3° away");
+            // …out to the edge of it, which is the width the *aim* needs rather than
+            // the width the wrist needs: a vanishing point off the page is not
+            // somewhere the eye can look while drawing toward it.
+            let wide = aimed(&g, 2, start, len, 0.12, 0.0);
+            let (_, _, on) = as_line(recognize(&wide, TOL, &up).expect("a line"));
+            assert!(on, "{len}px missed an axis 6.9° away");
             // …and outside it at every length.
             let far = aimed(&g, 2, start, len, 0.25, 0.0);
             let (_, _, on) = as_line(recognize(&far, TOL, &up).expect("a line"));
@@ -1696,6 +1772,30 @@ mod tests {
         g.pairs = [true; 3];
         g.visible = false;
         assert!(!claimed(&g), "a plane survived the guide's eye");
+    }
+
+    /// The width of the window is the feature, not an implementation detail: a hand
+    /// that has to draw the circle accurately to be given the circle has been given
+    /// nothing. A loop a fifth too round and leaning 6° out of its plane's tilt — well
+    /// past what an eye can judge, and past what [`GUIDE_CIRCLE_RESIDUAL`] used to
+    /// admit — is still that plane's circle.
+    #[test]
+    fn a_loop_only_roughly_in_perspective_still_snaps() {
+        let g = guide();
+        let up = Scaffold::of(std::slice::from_ref(&g));
+        for k in 0..3 {
+            let (plane, _, _) = perspective_circle(&g, k);
+            for (wrong, tilt) in [(1.2f32, 0.0f32), (1.0, 0.105), (1.12, 0.06)] {
+                let trace = perspective_loop(&g, k, wrong, tilt);
+                let (.., on) = as_ellipse(recognize(&trace, TOL, &up).expect("an ellipse"));
+                assert_eq!(
+                    on,
+                    Some(plane),
+                    "plane {k}: {wrong:.2} round, {:.1}° off was not claimed",
+                    tilt.to_degrees()
+                );
+            }
+        }
     }
 
     /// Steering a perspective circle sizes it *in its plane* and leaves it there, so

@@ -436,7 +436,10 @@ the pencil is equally a line of the grid.
 **How near is near enough is an angle, spelled as a residual.** The trace is
 re-scored against the pencil's line by exactly the measure that just accepted
 it as a line — worst perpendicular distance, as a fraction of its own length —
-against a bar (`GUIDE_RESIDUAL`, 0.1 ≈ 5.7°) wider than the recognizer's own.
+against a bar (`GUIDE_LINE_RESIDUAL`, 0.15 ≈ 8.6°) wider than the recognizer's
+own — wide enough to hold the *aim* rather than the wrist, since where a stroke
+lands is decided at the moment the hand commits to a direction, and a vanishing
+point off the page is not somewhere the eye can look while drawing toward it.
 The two bars are asking different questions and are deliberately not
 interchangeable: `LINE_RESIDUAL` asks *whether the hand drew a line*, where a
 false positive replaces a considered curve; this one asks *which line it
@@ -536,11 +539,14 @@ circle is **not centred on the image of its centre** — the classical fact, and
 unit test. Eccentricity and tilt then keep following the grid for the rest of the
 drag, which is the whole reason the plane is carried at all.
 
-**The bar** (`GUIDE_CIRCLE_RESIDUAL`, 0.18 of the drawn loop's mean radius) is
+**The bar** (`GUIDE_CIRCLE_RESIDUAL`, 0.26 of the drawn loop's mean radius) is
 wider again than the free ellipse's, for §20.6's reason: it is not asking
 whether a loop was drawn but which circle it meant. Measured, on ellipses a few
-hundred px across, it admits a loop about a sixth too round or leaning 5° out of
-true, and declines at around a fifth and 8°. Being an isotropic fraction of the
+hundred px across, it admits a loop about a quarter too round or leaning 9° out
+of true, and declines at around a third and 11° — figures for the plane that
+shows the tilt most, since a plane seen closer to face-on forgives 15° or 40°,
+and correctly, a rounder image having proportionally less tilt to be wrong
+about. Being an isotropic fraction of the
 mean radius, it forgives eccentricity more readily than tilt on a strongly
 foreshortened circle — which is the right way round, since how open a
 near-edge-on ellipse should be is genuinely hard to see and which way it leans

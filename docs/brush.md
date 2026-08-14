@@ -1114,8 +1114,11 @@ a real hand draws a loop and each broke recognition outright.**
   closed-form inversion that assumes a whole turn then describes an arc — an 8%
   short loop was enough to fail the bar at every eccentricity. Empty wedges are
   therefore **filled from the estimate itself**, one point per wedge, which is
-  sound because the truth stays a fixed point and the gap is at most an eighth of
-  the circle, so what was drawn always outvotes it.
+  sound because the truth stays a fixed point and the gap is at most a fifth of
+  the circle (`CLOSE_GAP`), so what was drawn always outvotes it. That bar sits
+  where the fill stops paying: a fifth-turn gap on a 400px loop still lands the
+  centre and the major axis within 3%, a quarter-turn gap walks the centre 5% off
+  — and a three-quarter arc is a shape somebody can mean, so it is refused.
 
 **Everything is barred on the worst sample, not the RMS.** This is the whole
 difference between a bar that discriminates and one that does not: a hand's wobble
@@ -1125,6 +1128,16 @@ systematically, and averaging is exactly the operation that hides the second. A
 line — and as 9% at its worst, which is not close to anything. Every threshold is
 denominated in the gesture's **input tolerance** (§6.2), because "close enough to a
 line" fixed in canvas px would mean two different things at two zoom levels.
+
+**The ellipse's bar is much the looser of the two** — 15% of the mean radius against
+the line's 3.5% of the length (`ELLIPSE_RESIDUAL`, `LINE_RESIDUAL`). Two reasons that
+compound: the same hand movement is spread over a radius rather than over a length, and
+a loop is a *longer* gesture than a drag of the same size, since going round costs π
+times the diameter where crossing costs one and the wrist reverses twice on the way. A
+worst-sample bar on a signal that long is asking about the one moment the hand was
+least steady. It costs less discrimination than the line's would, too: a shape that is
+not a loop of *some* ellipse misses by tens of percent rather than by ones, where a
+bowed stroke sits just the other side of the line's bar.
 
 Declining is a normal outcome. Dwelling at the end of a stroke that is neither a
 line nor an ellipse leaves it exactly as drawn and the gesture carries on through
