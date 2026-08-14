@@ -1,6 +1,6 @@
 # The brush engine
 
-Tiles and channels, the fitted-path swept-segment stroke renderer, the wet-mixing dynamics loop, and brush shape assets — §6.1, §6.2, §6.6.
+Tiles and channels, the fitted-path swept-segment stroke renderer, the wet-mixing dynamics loop, brush shape assets, the drag-and-hold shape assist, and stroke smoothing — §6.1, §6.2, §6.6, §6.9, §6.11.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
@@ -1231,3 +1231,180 @@ circle or to 15° increments while adjusting (a modifier read at the same seam),
 carrying the recognized shape into the action log so a committed stroke stays
 editable as a shape — which is a wire-format change and belongs with §18.2.1, not
 before it.
+
+
+## 6.11 Stroke smoothing — the towed tip
+
+Every brush carries a **smoothing** amount. At zero the stroke is the hand,
+verbatim — today's behaviour, bit for bit. Turned up, the mark is drawn by a
+**tip towed behind the pointer on a string**: the inking pen turns a shaky drag
+into one confident line, the lettering brush's sweeps come out swept — while the
+sketching pencil beside them on the rack keeps every tremor, because tremor is
+what a pencil is for. The amount is part of what a brush *is* — set in the brush
+editor, saved with the preset — not a mode the app is in. That is the difference
+between this and the app-wide stabilizers of the prior art (§18): nobody should
+have to visit a settings page because they switched from inking to hatching.
+
+### The model is a tow, not a signal filter
+
+The tip trails the pointer on a string of length `L`. While the pointer wanders
+within `L` of the tip, the string is slack and the tip is **parked**. The moment
+it comes taut, the tip is dragged along, and a dragged tip traces the classical
+pursuit curve — the **tractrix**, the path of a thing pulled by a string, which
+is also what a pinstriper's sword brush or a long-handled rigger does behind a
+moving hand. Smoothing is thus a physical model of a real painting tool rather
+than a low-pass filter with a cutoff to tune, and three feel properties fall out
+of the geometry that the filters it replaces have to approximate:
+
+- **A dead zone.** Jitter, hesitation and the pixel staircase are smaller than
+  the string, so they never move the tip at all. The hand can stop, breathe and
+  pivot mid-stroke and the mark holds still — which also composes with §6.9's
+  dwell: holding for a snap does not creep the trace being recognized, where an
+  averaging filter keeps easing the tip in for as long as the hand hovers.
+- **Bounded lag.** However fast the hand, the tip is never more than `L` behind.
+  A moving average's window and a time-constant filter both let the gap grow
+  with speed; the string cannot.
+- **Corner rounding at the string's own radius.** A corner sharper than `L`
+  comes out as a tractrix arc of about that size. That is the honest price of
+  smoothing — at the scale of the string, a corner the hand meant cannot be told
+  from a wobble it didn't — and it is paid visibly, at a radius the artist chose,
+  per brush.
+
+**The tow is integrated exactly, per pointer-polyline segment, not stepped per
+report.** For a target running along a straight segment the taut tow has a closed
+form — the angle `θ` between string and travel obeys `tan(θ/2) =
+tan(θ₀/2)·exp(−s/L)` — and the slack→taut crossing within a segment is a
+quadratic. Two things are bought by taking it rather than iterating the obvious
+`tip += (pointer − tip)·k` update. The towed path becomes a function of the
+pointer's *path* rather than of its report clock — a 240 Hz pen and a 60 Hz
+mouse towing the same trace produce the same tip — which is §6.2's
+partition-independence discipline applied to input: cutting a target segment in
+two composes exactly, because the exponential is exponential in arc. And the
+update never overshoots or oscillates at any cadence, because it is not an
+integrator with a step size, it is the trajectory itself.
+
+Transcendentals are fine here, and stating why draws a useful boundary: the tow
+runs **once, on the originating client, upstream of the record**. What lands in
+`StrokeRecord::path` is the towed, fitted control points; peers, replay and
+goldens re-run none of it. It is the same class of computation as the fitter's
+own least-squares solve — pre-record, single-machine — so §12.1's bit-agreement
+rules (the reason `taper_profile` is a polynomial and the modulation curve is
+rational) do not reach it.
+
+### Attributes ride the pen, not the arc
+
+The towed sample carries the **current** report's pressure and tilt, not
+attributes delayed to match the tip's arc-length lag. The artist steers by the
+tip they are watching — pressure included: they press where they see the mark
+forming, so delivering that pressure anywhere else breaks the loop they are
+actually in. Delayed attributes read as *pressure lag*, and unlike position lag
+there is nothing on screen that explains it. (`time` is a stamp on the report
+either way, §6.2.) A parked tip emits nothing at all, attribute changes
+included — which is not a loss the tow introduces but the fitter's own standing
+answer to a stationary hand: a report that did not move carries no geometry,
+and its attributes apply to a zero-length piece of path (§6.2).
+
+### The pen-up is a winch
+
+At lift the tip is up to `L` short of where the hand stopped. The stroke
+finishes by **winching**: `L` runs to zero and the tip travels straight up the
+string to the lift point — which is the tow's own continuation for a stationary
+target, not a spliced-on line, so the exit leaves at the direction the curve was
+already heading. The mark ends where the hand did, the principle §6.2 already
+holds geometry to; the trailing taper lands on the winched run, which is what
+gives a lettering brush its exit; and a flick shorter than the string — a hatch
+tick — becomes the one straight stroke it was meant as, drawn whole at lift.
+The winch also makes the release drift of §6.2 moot twice over: sub-pixel nib
+wander at lift is deep inside the dead zone, so it never steers the tip at all.
+
+### The string is visible
+
+While a smoothing brush tows, the overlay draws **the string itself**: a hairline
+from tip to pointer that sags while slack and straightens as it pulls taut. The
+one thing that makes deliberate lag feel like latency is being unexplained; the
+string makes the mechanism legible — the sag *is* the dead-zone state, readable
+at a glance — and it is what makes heavy settings feel like towing a real tool
+rather than fighting a broken one. Frontend-only, in the same screen-space
+overlay class as the presence cursors; the engine renders pixels, not rigging.
+
+### Where it attaches, and where the knob lives
+
+The tow is an input transform: it sits between the raw `InputSample` stream and
+`PathFitter::push`, inside the session's stroke builder — one stage *upstream*
+of the fitter-to-renderer seam that §6.9 attaches at, with the same consequence
+stated one level earlier. Nothing downstream of the fitter learns that smoothing
+exists: the record, the renderer, the save format, replay, goldens, undo and the
+CRDT all see an ordinary stroke whose path happens to be calm.
+
+That is also why the amount is **not** a `BrushParams` field. The stored path
+already embodies the smoothing, so a field there would be one that replay reads
+and ignores — inert in the document domain, which is the class this codebase
+deletes — and postcard makes appending it a wire-version bump (§8), a price
+worth paying only for fields that decide pixels. Instead:
+
+- **The engine is told the string length per gesture.** `GestureCommand::Start`
+  gains a `rope: f32` alongside `tolerance` — in canvas px, `0` = no tow is
+  constructed at all, today's path bit for bit. Like the tolerance, it is fixed
+  for the gesture.
+- **The frontend owns the feel mapping**, exactly as it owns the tolerance and
+  §6.9's dwell: the per-brush amount `0..1` maps to a string length in **screen
+  px** (quadratic, so the low end is fine-grained), converted through the view
+  at gesture start. Screen px because wobble is a fact about the *hand* — the
+  same tremor spans 64× more canvas zoomed out than in — with the elegant
+  consequence that zooming in shrinks the dead zone in canvas terms: the escape
+  hatch from heavy smoothing is the one artists already reach for to do fine
+  work.
+- **The amount is stored with the preset, UI-side** — a field of the preset
+  library and the quick-brush rack snapshots (`stark-ui`, localStorage; the
+  versioned format migrates, absent = 0), never of the action log.
+
+The name collision is deliberate avoided: `path.rs` already has a private
+`SMOOTHING` — the fit's curvature ridge, numerical conditioning, not a feel knob
+— so in code this feature is the **tow** (`stark-core::tow`, unit-testable
+headless), and "smoothing" is its user-facing name.
+
+### Interactions
+
+- **The fitter.** The live end now pins to the towed tip rather than the pointer
+  — the preview ends at the tip, and the string explains the gap to the cursor.
+  A towed trace is smoother than the device grain, so the fit's error rule
+  simply buys fewer control points; `tolerance` still declares the device's
+  grain, unchanged, because it states what position *differences* mean, which
+  the tow does not alter.
+- **Shape assist (§6.9).** Recognition works on `PathFitter::trace`, which is
+  now the towed trace — a rough loop drawn through a smoothing brush arrives
+  *cleaner*, so an inking brush snaps more readily, which is coherent: the brush
+  that promises confident lines is the one quickest to believe you meant one.
+  The dwell watcher stays on the raw pointer (stillness is a fact about the
+  hand), and post-snap steering consumes the raw pointer — the tow feeds **the
+  fitter only**, so adjusting a snapped shape is never towed. One stitch joins
+  the two: at the snap the raw pointer sits up to a rope beyond the towed trace
+  the shape was recognized from, so the session records the string's standing
+  offset and every steer applies the pointer *shifted by it* — the hand's
+  deltas land 1:1 and the first move does not jump, the same bargain the grip
+  strikes for the fit residual.
+- **Selection gestures.** Untouched — smoothing is a brush property, and a
+  marquee or lasso fits no curve. The eraser is a brush preset and gets its own
+  amount like any other.
+- **The brush editor's preview.** Its test stroke is a *recorded hand* — the
+  user's own drag on the preview canvas — so the replay that re-renders it on
+  every edit runs through the tow at the live amount, and the Smoothing slider
+  shows its work on the stroke beside it. Drawing on the preview tows live for
+  the same reason. The one replay that stays raw is the fixed red reference
+  stroke, which is a generated straight line and not a hand at all.
+
+### Testable properties
+
+Each of these pins a claim above: cutting a target segment anywhere yields the
+same towed path (partition independence, exact); a straight tow settles to a
+trail of exactly `L`; `rope = 0` is the identity on every corpus stroke
+(goldens untouched by construction); the winch ends exactly at the lift point;
+a staircase inside the dead zone parks the tip; the fitted knot count on a
+towed jitter trace drops against the raw fit.
+
+**Not built, and deliberately:** prediction (a negative-lag mode that
+extrapolates the pointer — a latency lever, §13's ledger owns that trade);
+a soft-rope *pursuit* variant that creeps inside the dead zone, kept in reserve
+in case feel-testing wants continuous response at low amounts more than it wants
+the parked-tip stability; a mid-stroke modifier to change the amount; smoothing
+for the lasso. Each is local to the tow and its Start parameter.

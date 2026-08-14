@@ -225,6 +225,7 @@ fn live(c: &mut Criterion) {
                             tool: Tool::Brush,
                             sample: *it.next().expect("samples"),
                             tolerance: DEFAULT_TOLERANCE,
+                            rope: 0.0,
                         });
                         for s in it {
                             engine.process(GestureCommand::To { sample: *s });

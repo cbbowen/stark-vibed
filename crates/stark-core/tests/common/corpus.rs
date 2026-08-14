@@ -132,6 +132,7 @@ impl Case {
             tool: Tool::Brush,
             sample: *first,
             tolerance,
+            rope: 0.0,
         });
         for s in rest {
             engine.process(GestureCommand::To { sample: *s });

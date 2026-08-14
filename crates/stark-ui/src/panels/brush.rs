@@ -97,12 +97,17 @@ fn SlotRack() -> Element {
     let state = use_context::<AppState>();
     let rack = (state.slots.brushes)();
     let held = (state.slots.held)().map(|h| h.slot);
-    let brush = state
-        .obs
-        .read()
-        .as_ref()
-        .map(|o| o.brush)
-        .unwrap_or_default();
+    // The whole tool, feel included (§6.11) — subscribing reads, so the chip
+    // lights track a smoothing drag exactly as they track a radius one.
+    let brush = presets::Wearable {
+        params: state
+            .obs
+            .read()
+            .as_ref()
+            .map(|o| o.brush)
+            .unwrap_or_default(),
+        smoothing: (state.smoothing)(),
+    };
 
     rsx! {
         div { class: "slot-rack",
@@ -172,12 +177,17 @@ fn SlotRack() -> Element {
 fn PresetSection() -> Element {
     let state = use_context::<AppState>();
     let entries = (state.presets)();
-    let brush = state
-        .obs
-        .read()
-        .as_ref()
-        .map(|o| o.brush)
-        .unwrap_or_default();
+    // The whole tool, feel included (§6.11), so a row goes out when the
+    // smoothing moves off its snapshot like it does for any other knob.
+    let brush = presets::Wearable {
+        params: state
+            .obs
+            .read()
+            .as_ref()
+            .map(|o| o.brush)
+            .unwrap_or_default(),
+        smoothing: (state.smoothing)(),
+    };
 
     rsx! {
         // `panel-grow`: the part of the panel that takes its spare height (and gives

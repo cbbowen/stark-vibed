@@ -144,6 +144,7 @@ fn golden_bristle_stroke() {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-90.0, 0.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(90.0, 0.0)),
@@ -183,6 +184,7 @@ fn golden_canvas_surface() {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-95.0, 0.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(95.0, 0.0)),

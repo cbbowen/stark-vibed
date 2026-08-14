@@ -105,6 +105,7 @@ fn drag_fill(engine: &mut stark_core::Engine, min: Vec2, max: Vec2) {
         tool: Tool::SelectRect,
         sample: InputSample::at(min),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(max),
@@ -389,6 +390,7 @@ fn a_selecting_gesture_still_disarms_the_tool() {
         tool: Tool::SelectRect,
         sample: InputSample::at(Vec2::new(-30.0, -30.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(30.0, 30.0)),
@@ -409,6 +411,7 @@ fn the_drag_previews_the_paint_it_will_commit() {
         tool: Tool::SelectRect,
         sample: InputSample::at(Vec2::new(-40.0, -40.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(40.0, 40.0)),
@@ -441,6 +444,7 @@ fn the_preview_does_not_accumulate_as_the_drag_grows() {
         tool: Tool::SelectRect,
         sample: InputSample::at(Vec2::new(-40.0, -40.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     // Fifty moves over the same box. Each rebuilds the preview from the committed
     // base rather than glazing over the last one, so the fiftieth must read the

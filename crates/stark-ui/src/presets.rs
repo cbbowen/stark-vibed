@@ -49,6 +49,36 @@ use crate::state::{AppState, update_brush};
 /// change can migrate rather than mis-parse.
 const KEY_PRESETS: &str = "stark.presets.v1";
 
+/// A brush as the frontend carries it: the engine's own parameters plus the
+/// **feel** the frontend owns — today just the stroke-smoothing amount
+/// (§6.11).
+///
+/// One type rather than a field beside a field, so a whole-brush snapshot that
+/// lost its feel is unrepresentable: the preset library, the quick-brush rack
+/// (`crate::slots`) and a hold's swap all traffic in this. The feel is not on
+/// [`BrushParams`] because the stored path already embodies the smoothing — a
+/// field there would be one that replay reads and ignores, and postcard makes
+/// appending it a wire-version bump (§8).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Wearable {
+    pub params: BrushParams,
+    /// Stroke smoothing, 0..=1 (§6.11) — the knob, not the rope. The rope is
+    /// derived at gesture start (`input::rope`), because the knob is
+    /// denominated in the hand's own screen px and only a live view converts
+    /// it.
+    pub smoothing: f32,
+}
+
+/// The live brush as a [`Wearable`]: the engine's parameters beside the feel
+/// this frontend holds. `None` before the engine exists.
+pub fn worn(state: AppState) -> Option<Wearable> {
+    let params = state.obs.peek().as_ref().map(|o| o.brush)?;
+    Some(Wearable {
+        params,
+        smoothing: *state.smoothing.peek(),
+    })
+}
+
 /// One named preset in the library.
 #[derive(Clone, PartialEq)]
 pub struct PresetEntry {
@@ -56,7 +86,7 @@ pub struct PresetEntry {
     /// overwrites, and a name the app has already taken is refused).
     pub name: String,
     /// The snapshot applied by clicking the preset.
-    pub brush: BrushParams,
+    pub brush: Wearable,
     /// The digit this preset **ships on**, if any — how a fresh quick-brush rack
     /// is filled (§18.1.8; `slots::seed_defaults`).
     ///
@@ -105,17 +135,24 @@ fn default_presets(state: AppState) -> Vec<PresetEntry> {
 fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
     // One constructor for the lot, so "everything the app ships is a built-in and
     // sits on a digit" is a property of the list rather than five copies of two
-    // fields that could drift apart.
-    let shipped = |name: &str, slot: Option<usize>, brush: BrushParams| PresetEntry {
-        name: name.to_string(),
-        brush,
-        slot,
-        builtin: true,
-    };
+    // fields that could drift apart. `smoothing` is the §6.11 amount, part of
+    // what a tool *is*: the inker leans on the string, the pencil keeps every
+    // tremor because tremor is what a pencil is for.
+    let shipped =
+        |name: &str, slot: Option<usize>, smoothing: f32, brush: BrushParams| PresetEntry {
+            name: name.to_string(),
+            brush: Wearable {
+                params: brush,
+                smoothing,
+            },
+            slot,
+            builtin: true,
+        };
     vec![
         shipped(
             "Hard Round",
             Some(1),
+            0.15,
             BrushParams {
                 radius: 100.0,
                 drain: 0.001,
@@ -150,6 +187,7 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
         shipped(
             "Pen",
             Some(2),
+            0.5,
             BrushParams {
                 radius: 18.0,
                 shape: BrushShape::Round { hardness: 0.95 },
@@ -176,6 +214,7 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
         shipped(
             "Pencil",
             Some(3),
+            0.0,
             BrushParams {
                 radius: 18.0,
                 shape: pencil,
@@ -207,6 +246,7 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
         shipped(
             "Airbrush",
             Some(4),
+            0.1,
             BrushParams {
                 radius: 500.0,
                 shape: BrushShape::Round { hardness: 0.5 },
@@ -235,6 +275,7 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
         shipped(
             "Soft Eraser",
             Some(slots::ERASER),
+            0.0,
             BrushParams {
                 radius: 80.0,
                 shape: BrushShape::Round { hardness: 0.25 },
@@ -259,6 +300,7 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
         shipped(
             "Hard Eraser",
             None,
+            0.0,
             BrushParams {
                 radius: 40.0,
                 shape: BrushShape::Round { hardness: 0.95 },
@@ -369,14 +411,22 @@ pub fn apply(state: AppState, name: &str) {
 /// A stamp shape whose bytes are no longer anywhere (removed from the shape
 /// library, unseen by this document) falls back to the round tip rather than
 /// pointing at an asset the engine would silently substitute.
-pub fn wear(state: AppState, brush: BrushParams) {
-    let mut brush = brush;
+pub fn wear(state: AppState, wearable: Wearable) {
+    let Wearable {
+        params: mut brush,
+        smoothing,
+    } = wearable;
     brush.shape = match brush.shape {
         BrushShape::Stamp(id) => crate::shapes::ensure(state, id)
             .map(BrushShape::Stamp)
             .unwrap_or_default(),
         round @ BrushShape::Round { .. } => round,
     };
+    // The feel rides the same swap as the parameters (§6.11): it is part of
+    // what the tool *is*, so a slot or a preset that changed it hands it over
+    // and a release hands it back.
+    let mut amount = state.smoothing;
+    amount.set(smoothing.clamp(0.0, 1.0));
     update_brush(state, move |b| {
         let rgb = [b.color[0], b.color[1], b.color[2]];
         *b = brush;
@@ -408,7 +458,7 @@ pub fn apply_first(state: AppState) {
 /// Refusing here as well as in the dialog because this is the function that
 /// would have to be right if a second caller ever appeared.
 pub fn save_current(state: AppState, name: String) {
-    let brush = state.obs.read().as_ref().map(|o| o.brush);
+    let brush = worn(state);
     let Some(brush) = brush else { return };
     // Its own statement, not inline in the `if`: a `peek` guard in a condition
     // stays borrowed through the body, and the body of the next one writes the
@@ -458,22 +508,27 @@ pub fn next_name(entries: &[PresetEntry]) -> String {
 
 /// Whether the live brush *is* this preset — everything but the painting color
 /// (RGB), which [`apply`] deliberately leaves alone. Exact equality on purpose:
-/// the row highlights until any knob moves off the preset, then goes out.
-pub fn matches(current: &BrushParams, preset: &BrushParams) -> bool {
+/// the row highlights until any knob moves off the preset, then goes out. The
+/// smoothing amount is one of the knobs (§6.11): a preset worn and then
+/// smoothed differently is no longer that preset.
+pub fn matches(current: &Wearable, preset: &Wearable) -> bool {
     let mut p = *preset;
-    p.color[..3].copy_from_slice(&current.color[..3]);
+    p.params.color[..3].copy_from_slice(&current.params.color[..3]);
     p == *current
 }
 
 // --- persistence ----------------------------------------------------------
 //
 // One storage key holding one line per **user** preset:
-// `b64(name)|b64(json(brush))`. Line-oriented and field-delimited like the shape
-// library, so a single damaged entry is skipped rather than poisoning the whole
-// library. The brush itself is JSON rather than the save file's postcard because
-// localStorage outlives app versions: JSON is self-describing, so a
-// `BrushParams` field added later (with `#[serde(default)]`) still reads every
-// stored preset instead of dropping the lot.
+// `b64(name)|b64(json(brush))|b64(json(feel))`. Line-oriented and
+// field-delimited like the shape library, so a single damaged entry is skipped
+// rather than poisoning the whole library. The brush itself is JSON rather than
+// the save file's postcard because localStorage outlives app versions: JSON is
+// self-describing, so a `BrushParams` field added later (with
+// `#[serde(default)]`) still reads every stored preset instead of dropping the
+// lot. The feel (§6.11) is its own trailing field for the same reason
+// run the other way: a line saved before it exists simply has two fields, and
+// absent means zero.
 //
 // The app's own presets are filtered out on the way in and out, which is what
 // makes them updatable at all: there is one copy of a built-in, in
@@ -482,17 +537,53 @@ pub fn matches(current: &BrushParams, preset: &BrushParams) -> bool {
 // definition and `builtin` is provenance, and a stored copy of either would be
 // a second opinion about a question the code already answers.
 
+/// The feel half of a stored line (§6.11) — its own JSON object rather than a
+/// bare number, so a future feel field reads old lines through
+/// `#[serde(default)]` exactly as `BrushParams` does.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct StoredFeel {
+    #[serde(default)]
+    pub(crate) smoothing: f32,
+}
+
+/// The two brush fields of a stored line, shared with the rack's persistence
+/// (`crate::slots`): the same wire shape, so the two libraries cannot come to
+/// disagree about what a stored brush is.
+pub(crate) fn encode_wearable(w: &Wearable) -> Option<String> {
+    let brush = serde_json::to_string(&w.params).ok()?;
+    let feel = serde_json::to_string(&StoredFeel {
+        smoothing: w.smoothing,
+    })
+    .ok()?;
+    Some(format!(
+        "{}|{}",
+        base64_encode(brush.as_bytes()),
+        base64_encode(feel.as_bytes())
+    ))
+}
+
+/// Read a [`Wearable`] back off a line's remaining fields. The feel field is
+/// optional — a line saved before §6.11 has none, and absent means zero.
+pub(crate) fn decode_wearable<'a>(fields: &mut impl Iterator<Item = &'a str>) -> Option<Wearable> {
+    let params = serde_json::from_slice(&base64_decode(fields.next()?).ok()?).ok()?;
+    let smoothing = fields
+        .next()
+        .and_then(|f| base64_decode(f).ok())
+        .and_then(|b| serde_json::from_slice::<StoredFeel>(&b).ok())
+        .map_or(0.0, |f| f.smoothing.clamp(0.0, 1.0));
+    Some(Wearable { params, smoothing })
+}
+
 fn persist(entries: &[PresetEntry]) {
     let Some(store) = storage() else { return };
     let text: Vec<String> = entries
         .iter()
         .filter(|e| !e.builtin)
         .filter_map(|e| {
-            let json = serde_json::to_string(&e.brush).ok()?;
             Some(format!(
                 "{}|{}",
                 base64_encode(e.name.as_bytes()),
-                base64_encode(json.as_bytes())
+                encode_wearable(&e.brush)?
             ))
         })
         .collect();
@@ -516,7 +607,7 @@ fn read_storage() -> Option<Vec<PresetEntry>> {
 fn parse_entry(line: &str) -> Option<PresetEntry> {
     let mut fields = line.split('|');
     let name = String::from_utf8(base64_decode(fields.next()?).ok()?).ok()?;
-    let brush = serde_json::from_slice(&base64_decode(fields.next()?).ok()?).ok()?;
+    let brush = decode_wearable(&mut fields)?;
     Some(PresetEntry {
         name,
         brush,
@@ -585,12 +676,12 @@ mod tests {
             .find(|e| e.slot == Some(slots::ERASER))
             .expect("an eraser ships on the pen's own slot");
         assert_eq!(
-            e.brush.dynamics.add, 0.0,
+            e.brush.params.dynamics.add, 0.0,
             "an eraser lays no paint of its own"
         );
-        assert!(e.brush.dynamics.lift > 0.0, "an eraser lifts");
+        assert!(e.brush.params.dynamics.lift > 0.0, "an eraser lifts");
         assert_eq!(
-            e.brush.dynamics.deposit, 0.0,
+            e.brush.params.dynamics.deposit, 0.0,
             "and never lays back what it lifted"
         );
     }

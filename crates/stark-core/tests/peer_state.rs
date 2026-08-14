@@ -351,6 +351,7 @@ fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
         tool: Tool::Brush,
         sample: InputSample::at(CROSSING[0]),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     let mut now = 0.0;
     let pump = |a: &mut Engine, b: &mut Engine, now: &mut f64| {
@@ -408,6 +409,7 @@ fn a_slow_receiver_pump_keeps_a_live_stroke_alive() {
         tool: Tool::Brush,
         sample: InputSample::at(CROSSING[0]),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
 
     // One long stroke, drawn well past B's pump gap. Wavy, so the fitter keeps
@@ -559,6 +561,7 @@ fn a_settled_head_does_not_outlive_its_gesture() {
         tool: Tool::Brush,
         sample: InputSample::at(CROSSING[0]),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(0.0, 40.0)),
@@ -623,6 +626,7 @@ fn start_live_stroke(engine: &mut Engine, color: [f32; 4], points: [Vec2; 2]) {
         tool: Tool::Brush,
         sample: InputSample::at(points[0]),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for i in 1..=8 {
         let t = i as f32 / 8.0;
@@ -843,6 +847,7 @@ fn presence_due_never_hides_a_frame() {
         tool: Tool::Brush,
         sample: InputSample::at(CROSSING[0]),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for i in 0..10 {
         engine.process(GestureCommand::To {

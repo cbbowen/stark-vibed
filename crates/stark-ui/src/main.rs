@@ -50,8 +50,9 @@ use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, Men
 use credits::CreditsModal;
 use icons::{icon, icon_large};
 use input::{
-    Nav, Tune, abandon_gesture, bind_pen, bind_shortcuts, elem_xy, end_interaction,
-    input_tolerance, pick_color, pointer_moved, sample, samples, watch_for_hold,
+    Nav, Tune, abandon_gesture, bind_context_menu, bind_pen, bind_shortcuts, elem_xy,
+    end_interaction, input_rope, input_tolerance, pick_color, pointer_moved, refresh_tow, sample,
+    samples, watch_for_hold,
 };
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, resize_end, resize_move};
 use panels::brush::PresetSaveModal;
@@ -112,6 +113,10 @@ fn app() -> Element {
     // And the pen's other end, on the window for the same reason: it is a hold
     // like a number key's, so it belongs to no one surface (§18.1.8).
     use_hook(|| bind_pen(state));
+    // And the browser's context menu, refused on the same grounds: a pen held
+    // still is this app's own gesture (§6.9), and Windows reads the same hold as
+    // a right-click.
+    use_hook(bind_context_menu);
 
     // The shape library follows the browser, not the document — load it before
     // the renderer exists so the gallery is populated on first open. The brush
@@ -299,6 +304,10 @@ fn app() -> Element {
             // The brush-tuning drag's size ring, in the same layer and mounted for
             // the same reason (§18.1.9). Empty and free unless one is in flight.
             BrushSizeRing {}
+
+            // The tow string while a smoothing brush draws (§6.11), same layer
+            // again. Empty and free unless a rope is in flight.
+            TowStringOverlay {}
 
             // Left command rail: rarely-used document commands, tucked away.
             CommandRail {}
@@ -534,8 +543,19 @@ fn Canvas() -> Element {
                             // What this device and this zoom level actually
                             // resolve to, which is what the fit prices against.
                             tolerance,
+                            // The brush's smoothing as a canvas-px string
+                            // (§6.11); zero for the selection tools, which
+                            // fit no curve.
+                            rope: if tool.is_selection() {
+                                0.0
+                            } else {
+                                input_rope(state)
+                            },
                         });
                         drawing.set(true);
+                        // Seed the string overlay; a ropeless gesture leaves it
+                        // `None` and the per-move refresh below stays gated off.
+                        refresh_tow(state);
                         // Watch for the pen being held still, which snaps the
                         // stroke to the shape it resembles (§6.9). Painting
                         // only: a marquee is already an exact shape, so there
@@ -614,6 +634,13 @@ fn Canvas() -> Element {
                         // a render.
                         for s in samples(state, &e).unwrap_or_default() {
                             dispatch_sample(state, GestureCommand::To { sample: s });
+                        }
+                        // The string overlay tracks the tow (§6.11). Gated on
+                        // its own signal so a plain brush pays nothing here:
+                        // only a gesture that started with a rope ever reads
+                        // the engine or dirties the overlay's scope per move.
+                        if state.tow.peek().is_some() {
+                            refresh_tow(state);
                         }
                     }
                     // Where collaborators see this client's pointer
@@ -726,6 +753,42 @@ fn BrushSizeRing() -> Element {
             // The old size first, so the one being asked for draws over it.
             {circle("brush-ring-circle was", ring.was)}
             {circle("brush-ring-circle", ring.now)}
+        }
+    }
+}
+
+/// The tow string while a smoothing brush draws (§6.11): a hairline from the
+/// towed tip — where paint is landing — to the pointer, with a dot under the
+/// hand. It **sags while slack and straightens as it tows**, so the state of
+/// the mechanism is legible at a glance: the one thing that makes deliberate
+/// lag feel like latency is being unexplained, and the sag is the explanation.
+///
+/// DOM (an SVG overlay) rather than a compositor pass, for [`PeerCursors`]'s
+/// reason: it is chrome, and it must never reach an export. Pure layout, too —
+/// the gesture converts to screen px on its way in (`input::refresh_tow`,
+/// `state::TowUi`), so this reads no view and re-renders on nothing but the
+/// string itself.
+#[component]
+fn TowStringOverlay() -> Element {
+    let state = use_context::<AppState>();
+    let Some(t) = (state.tow)() else {
+        return rsx! {};
+    };
+    let slack = (t.rope - (t.target - t.tip).length()).max(0.0);
+    // The sag is the slack made visible: a quadratic dip whose depth is a share
+    // of the string the tow is not using — capped, so a fresh stroke's fully
+    // slack string drapes rather than plunges. Screen-down whatever the canvas
+    // rotation, because the string hangs from the hand, not from the painting.
+    let sag = (slack * 0.4).min(t.rope * 0.2);
+    let mid = (t.tip + t.target) * 0.5 + stark_core::Vec2::new(0.0, sag);
+    let d = format!(
+        "M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}",
+        t.tip.x, t.tip.y, mid.x, mid.y, t.target.x, t.target.y
+    );
+    rsx! {
+        svg { class: "tow-string",
+            path { d }
+            circle { cx: "{t.target.x}", cy: "{t.target.y}", r: "2.5" }
         }
     }
 }

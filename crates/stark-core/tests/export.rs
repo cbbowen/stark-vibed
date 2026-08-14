@@ -293,6 +293,7 @@ fn export_omits_the_selection_outline() {
         tool: Tool::SelectRect,
         sample: InputSample::at(Vec2::new(-30.0, -20.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(30.0, 20.0)),
@@ -669,6 +670,7 @@ fn committed_renders_omit_the_in_flight_stroke() {
         tool: Tool::Brush,
         sample: InputSample::at(WIDE[0]),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(WIDE[1]),
@@ -740,6 +742,7 @@ fn doc_revision_tracks_commits_and_not_gestures() {
         tool: Tool::Brush,
         sample: InputSample::at(WIDE[0]),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for i in 1..8 {
         engine.process(GestureCommand::To {

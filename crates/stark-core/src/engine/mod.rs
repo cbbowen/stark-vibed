@@ -478,14 +478,17 @@ impl Engine {
                 tool,
                 sample,
                 tolerance,
+                rope,
             } => {
                 if tool.is_selection() {
                     // A marquee or lasso fits no curve, so it has no use for the
-                    // tolerance; its own decimation is a mask-cost knob (§6.8).
+                    // tolerance (or the rope); its own decimation is a mask-cost
+                    // knob (§6.8).
                     self.session.start_selection(tool, sample.pos);
                 } else {
                     let seed = self.clock;
-                    self.session.start_stroke(tool, sample, seed, tolerance);
+                    self.session
+                        .start_stroke(tool, sample, seed, tolerance, rope);
                     // Gated like the `To` arm below, which it was not: the capture is
                     // a diagnostic, so a shipping build must not keep a sample it has
                     // no path to ever print.
@@ -972,7 +975,7 @@ impl Engine {
     /// in between. This renders the stroke exactly once, at commit. Used by the
     /// brush editor's test-stroke replay.
     pub fn replay_stroke(&mut self, tool: Tool, samples: &[crate::command::InputSample]) {
-        self.replay_stroke_seeded(tool, samples, self.clock);
+        self.replay_stroke_seeded(tool, samples, self.clock, 0.0);
     }
 
     /// [`Engine::replay_stroke`] with an explicit jitter `seed` instead of the
@@ -981,18 +984,23 @@ impl Engine {
     /// dither — changes on every replay. A caller re-rendering *one* stroke to
     /// show the effect of a brush change (the brush editor's preview) wants the
     /// jitter held fixed, so only the edited parameter moves.
+    /// `rope` is the §6.11 smoothing string, and it is a parameter here — where
+    /// [`Engine::replay_stroke`] pins it to zero — because the brush editor's
+    /// preview replays a *recorded hand* (the user's own test stroke) and has to
+    /// show what the smoothing slider beside it would do to that hand.
     pub fn replay_stroke_seeded(
         &mut self,
         tool: Tool,
         samples: &[crate::command::InputSample],
         seed: u64,
+        rope: f32,
     ) {
         let mut it = samples.iter();
         let Some(first) = it.next() else { return };
         // Replayed samples are already in canvas space and came from a fit or from a
         // generator, not from a device, so there is no device grain to declare.
         self.session
-            .start_stroke(tool, *first, seed, crate::path::DEFAULT_TOLERANCE);
+            .start_stroke(tool, *first, seed, crate::path::DEFAULT_TOLERANCE, rope);
         for s in it {
             self.session.stroke_to(*s);
         }
@@ -1000,6 +1008,14 @@ impl Engine {
             self.commit(ActionKind::CommitStroke(rec));
         }
         self.mark_live_stale();
+    }
+
+    /// The in-flight tow, for the frontend's string overlay (§6.11) — a named
+    /// read like [`view`](Self::view), at pointer rate while a smoothing brush
+    /// draws. `None` whenever there is no string to show (no stroke, no rope,
+    /// or the gesture has snapped to a shape).
+    pub fn tow_string(&self) -> Option<crate::tow::TowString> {
+        self.session.tow_string()
     }
 
     /// A snapshot of UI-facing state (§7).

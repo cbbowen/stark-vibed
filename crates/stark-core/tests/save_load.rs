@@ -167,6 +167,7 @@ fn brush_assets_survive_save_load() {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-70.0, 0.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     original.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(70.0, 0.0)),

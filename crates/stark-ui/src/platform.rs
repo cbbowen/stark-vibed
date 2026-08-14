@@ -120,6 +120,38 @@ pub fn on_window_key(kind: &str, handler: impl FnMut(web_sys::KeyboardEvent) + '
 #[cfg(not(target_arch = "wasm32"))]
 pub fn on_window_key(_kind: &str, _handler: impl FnMut(web_sys::KeyboardEvent) + 'static) {}
 
+/// Route the window's `kind` events to `handler` in the **capture** phase, as the
+/// base [`web_sys::Event`].
+///
+/// Untyped on purpose, unlike its two neighbours: `contextmenu` is a `MouseEvent`
+/// in some engines and a `PointerEvent` in the ones that have adopted the newer
+/// spec, and everything a refusal needs — `target` and `prevent_default` — is on
+/// the base interface. Casting to the wrong subclass to reach nothing extra would
+/// be a way to fail on one browser for no gain.
+///
+/// Capture for [`on_window_pointer`]'s reason: the browser decides what to do
+/// once the event has finished propagating, so a listener the tree could silence
+/// with `stopPropagation` is one that stops working the day something downstream
+/// does.
+#[cfg(target_arch = "wasm32")]
+pub fn on_window_event(kind: &str, handler: impl FnMut(web_sys::Event) + 'static) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let cb = Closure::<dyn FnMut(web_sys::Event)>::new(handler);
+    let _ = window.add_event_listener_with_callback_and_bool(
+        kind,
+        cb.as_ref().unchecked_ref(),
+        true, // useCapture
+    );
+    cb.forget();
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn on_window_event(_kind: &str, _handler: impl FnMut(web_sys::Event) + 'static) {}
+
 /// Route the window's `kind` pointer events ("pointerdown", "pointerup", …) to
 /// `handler`, in the **capture** phase.
 ///

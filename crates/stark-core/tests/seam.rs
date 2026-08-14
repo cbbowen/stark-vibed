@@ -53,6 +53,7 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(shift + Vec2::new(50.0, 50.0)),
@@ -117,6 +118,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(-60.0, -60.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(shift + Vec2::new(60.0, 60.0)),
@@ -136,6 +138,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(shift + Vec2::new(50.0, 50.0)),

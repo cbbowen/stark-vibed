@@ -27,7 +27,13 @@ fn session() -> Session {
 
 /// Drag a stroke out through `f`, sampled `n` times, without ending it.
 fn drag(session: &mut Session, n: usize, f: impl Fn(f32) -> Vec2) {
-    session.start_stroke(Tool::Brush, InputSample::at(f(0.0)), 1, DEFAULT_TOLERANCE);
+    session.start_stroke(
+        Tool::Brush,
+        InputSample::at(f(0.0)),
+        1,
+        DEFAULT_TOLERANCE,
+        0.0,
+    );
     for i in 1..n {
         session.stroke_to(InputSample::at(f(i as f32 / (n - 1) as f32)));
     }

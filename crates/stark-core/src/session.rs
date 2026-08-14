@@ -19,6 +19,7 @@ use crate::peer::{
     GestureView, HEARTBEAT, Identity, LiveGesture, PeerFrame, StrokeHead, default_name,
 };
 use crate::presence::{GestureSource, GestureTx};
+use crate::tow::{Tow, TowString};
 
 /// Minimum spacing (canvas px) between lasso vertices. The mask shader costs one
 /// segment test per texel per vertex, and pointer samples arrive far denser than a
@@ -44,6 +45,11 @@ struct StrokeBuilder {
     /// Set once the gesture has been **held** and snapped to a shape (§6.9). From
     /// there the fitter stops being fed and this decides the path.
     assist: Option<Assist>,
+    /// The towed tip (§6.11) — `Some` when the gesture started with a rope.
+    /// Feeds **the fitter only**: it sits between the raw samples and
+    /// [`PathFitter::push`], and a snapped gesture's steering reads the raw
+    /// pointer (through [`Assist::shift`]) rather than a towed one.
+    tow: Option<Tow>,
 }
 
 /// A stroke that has snapped to an ideal shape, and is now being steered rather than
@@ -64,12 +70,19 @@ struct Assist {
     /// so the profile above has somewhere to live.
     knots: usize,
     path: Vec<ControlPoint>,
+    /// The string's standing offset at the snap, tip − pointer (§6.11) — zero
+    /// for an untowed gesture. A towed stroke snaps to a shape recognized from
+    /// the *towed* trace while the raw pointer sits up to a rope beyond it, so
+    /// steering with the raw position would apply that gap as a jump on the
+    /// first move. Added to every steer instead: the hand's deltas land 1:1 and
+    /// nothing jumps, the same bargain the grip strikes for the fit residual.
+    shift: Vec2,
 }
 
 impl Assist {
     /// Re-derive the shape and its path for a pointer at `pos`.
     fn steer(&mut self, pos: Vec2) {
-        let shape = self.base.adjust(self.grip, pos);
+        let shape = self.base.adjust(self.grip, pos + self.shift);
         if shape == self.shape {
             return;
         }
@@ -551,7 +564,19 @@ impl Session {
     /// deterministically (§6.2). `tolerance` is what the frontend says its
     /// input resolves to, in canvas px ([`PathFitter::with_tolerance`]). Replaces any
     /// abandoned in-flight one.
-    pub fn start_stroke(&mut self, tool: Tool, sample: InputSample, seed: u64, tolerance: f32) {
+    /// `rope` is the stroke-smoothing string length in canvas px (§6.11), also
+    /// the frontend's to state — it derives it from the brush's own smoothing
+    /// amount, in screen px, because wobble is a fact about the hand. `0` (or
+    /// anything unusable) constructs no tow at all: the fitter is fed the raw
+    /// samples, bit-identically to the pre-§6.11 path.
+    pub fn start_stroke(
+        &mut self,
+        tool: Tool,
+        sample: InputSample,
+        seed: u64,
+        tolerance: f32,
+        rope: f32,
+    ) {
         self.tool = tool;
         self.selecting = None;
         self.gesture_ordinal += 1;
@@ -564,6 +589,7 @@ impl Session {
             fitter,
             tolerance,
             assist: None,
+            tow: (rope.is_finite() && rope > 0.0).then(|| Tow::new(rope, sample)),
         });
     }
 
@@ -575,9 +601,21 @@ impl Session {
     /// mirrored on that side. What the drag means changed; how it arrives did not.
     pub fn stroke_to(&mut self, sample: InputSample) {
         if let Some(b) = self.in_flight.as_mut() {
-            match b.assist.as_mut() {
+            let StrokeBuilder {
+                assist,
+                tow,
+                fitter,
+                ..
+            } = b;
+            match assist.as_mut() {
                 Some(assist) => assist.steer(sample.pos),
-                None => b.fitter.push(sample),
+                // The towed tip (§6.11) sits between the raw stream and the
+                // fitter — and only there, which is why the steer above reads
+                // the raw position.
+                None => match tow.as_mut() {
+                    Some(tow) => tow.to(sample, &mut |s| fitter.push(s)),
+                    None => fitter.push(sample),
+                },
             }
         }
     }
@@ -623,6 +661,13 @@ impl Session {
             path: base.to_path(&pen, knots),
             pen,
             knots,
+            // A towed gesture snapped from its towed trace; the raw pointer is
+            // up to a rope beyond it, and this is what keeps the first steer
+            // from applying that gap as a jump (§6.11).
+            shift: b.tow.as_ref().map_or(Vec2::ZERO, |t| {
+                let s = t.string();
+                s.tip - s.target
+            }),
         });
         self.gesture_ordinal += 1;
         true
@@ -687,10 +732,29 @@ impl Session {
             // A snapped stroke's path is the shape's, not the fit's — there is nothing
             // left for a last solve to settle.
             if b.assist.is_none() {
+                // The winch (§6.11): the towed tip runs straight up the string
+                // to the lift point before the fit closes, so the mark ends
+                // where the hand did.
+                if let Some(tow) = b.tow.as_mut() {
+                    let fitter = &mut b.fitter;
+                    tow.finish(&mut |s| fitter.push(s));
+                }
                 b.fitter.finish();
             }
             b.to_record()
         })
+    }
+
+    /// The in-flight tow, for the frontend's string overlay (§6.11): `None`
+    /// when no stroke is active, the gesture carries no rope, or it has
+    /// snapped to a shape (a steered shape is driven by the raw pointer, so
+    /// there is no string to show).
+    pub fn tow_string(&self) -> Option<TowString> {
+        self.in_flight
+            .as_ref()
+            .filter(|b| b.assist.is_none())
+            .and_then(|b| b.tow.as_ref())
+            .map(Tow::string)
     }
 
     /// Discard the in-flight stroke without committing.

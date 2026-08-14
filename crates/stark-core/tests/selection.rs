@@ -383,6 +383,7 @@ fn a_selection_gesture_commits_the_same_op_it_previewed() {
         tool: Tool::SelectRect,
         sample: InputSample::at(BOX_MIN),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(-20.0, 0.0)),
@@ -410,6 +411,7 @@ fn a_click_with_a_marquee_selects_nothing() {
         tool: Tool::SelectRect,
         sample: InputSample::at(Vec2::ZERO),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::End);
     assert!(
@@ -436,6 +438,7 @@ fn drawing_a_selection_disarms_the_tool() {
             tool,
             sample: InputSample::at(BOX_MIN),
             tolerance: DEFAULT_TOLERANCE,
+            rope: 0.0,
         });
         // A marquee spans the drag's two corners; a lasso needs a traced interior.
         let path: &[Vec2] = if tool == Tool::SelectLasso {
@@ -479,6 +482,7 @@ fn a_stroke_after_a_selection_paints_rather_than_reselecting() {
         tool: Tool::SelectRect,
         sample: InputSample::at(BOX_MIN),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(BOX_MAX),
@@ -493,6 +497,7 @@ fn a_stroke_after_a_selection_paints_rather_than_reselecting() {
         tool,
         sample: InputSample::at(Vec2::new(-30.0, 0.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(30.0, 0.0)),

@@ -90,6 +90,7 @@ fn a_capped_shape_paints_and_survives_save_load() {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-70.0, 0.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     original.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(70.0, 0.0)),
@@ -161,6 +162,7 @@ fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
             tool: Tool::Brush,
             sample: InputSample::at(Vec2::new(-70.0, 0.0)),
             tolerance: DEFAULT_TOLERANCE,
+            rope: 0.0,
         });
         engine.process(GestureCommand::To {
             sample: InputSample::at(Vec2::new(70.0, 0.0)),

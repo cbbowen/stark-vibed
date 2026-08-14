@@ -68,6 +68,7 @@ fn bench_live(engine: &mut stark_core::Engine, brush: BrushParams, n: usize) -> 
         tool: Tool::Brush,
         sample: *it.next().unwrap(),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     wait_idle(engine);
     let mut per_move = Vec::with_capacity(n);

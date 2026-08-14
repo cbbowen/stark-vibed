@@ -153,8 +153,14 @@ impl Renderer {
     /// Replay a full stroke with a caller-chosen jitter seed, so repeated
     /// replays of the same samples keep the same color dynamics and dither
     /// (see `Engine::replay_stroke_seeded`).
-    pub fn replay_stroke_seeded(&mut self, tool: Tool, samples: &[InputSample], seed: u64) {
-        self.engine.replay_stroke_seeded(tool, samples, seed);
+    pub fn replay_stroke_seeded(
+        &mut self,
+        tool: Tool,
+        samples: &[InputSample],
+        seed: u64,
+        rope: f32,
+    ) {
+        self.engine.replay_stroke_seeded(tool, samples, seed, rope);
     }
 
     pub fn observe(&self) -> ObservableState {
@@ -163,6 +169,11 @@ impl Renderer {
 
     pub fn view(&self) -> ViewTransform {
         self.engine.view()
+    }
+
+    /// The in-flight tow, for the string overlay (§6.11).
+    pub fn tow_string(&self) -> Option<stark_core::tow::TowString> {
+        self.engine.tow_string()
     }
 
     /// The document's current color space (§6.7).

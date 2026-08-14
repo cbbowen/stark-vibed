@@ -705,6 +705,7 @@ fn a_toothed_live_preview_matches_the_commit() {
         tool: stark_core::document::Tool::Brush,
         sample: stark_core::command::InputSample::at(*it.next().unwrap()),
         tolerance: stark_core::path::DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for &p in it {
         engine.process(stark_core::command::GestureCommand::To {
@@ -769,6 +770,7 @@ fn a_toothed_smear_previews_as_it_commits() {
         tool: stark_core::document::Tool::Brush,
         sample: stark_core::command::InputSample::at(*it.next().unwrap()),
         tolerance: stark_core::path::DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for &p in it {
         engine.process(stark_core::command::GestureCommand::To {

@@ -70,6 +70,7 @@ fn live_preview_shows_stroke_before_commit() {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-30.0, 0.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(30.0, 0.0)),
@@ -98,6 +99,7 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for &p in it {
         engine.process(GestureCommand::To {
@@ -314,6 +316,7 @@ fn a_tapered_brush_still_dots() {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::ZERO),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::End);
 
@@ -365,6 +368,7 @@ fn a_click_dabs_where_it_was_pressed_and_a_nudge_keeps_it() {
             tool: Tool::Brush,
             sample: InputSample::at(Vec2::ZERO),
             tolerance: DEFAULT_TOLERANCE,
+            rope: 0.0,
         });
         if nudge > 0.0 {
             engine.process(GestureCommand::To {
@@ -497,6 +501,7 @@ fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     let (mut early, mut late) = (0.0f64, 0.0f64);
     let (mut ne, mut nl) = (0u32, 0u32);

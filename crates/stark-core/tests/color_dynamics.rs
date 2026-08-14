@@ -212,6 +212,7 @@ fn jittered_live_preview_matches_commit() {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for &p in it {
         live.process(GestureCommand::To {

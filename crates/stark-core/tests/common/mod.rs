@@ -172,6 +172,7 @@ pub fn stroke_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
         tool: Tool::Brush,
         sample: InputSample::at(first),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for &p in it {
         engine.process(GestureCommand::To {

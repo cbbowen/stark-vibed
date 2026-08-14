@@ -3249,6 +3249,39 @@ button.layer-remove:hover {
   box-shadow: none;
 }
 
+/* The tow string (§6.11): a hairline from the towed tip to the pointer while a
+   smoothing brush draws — sagging while slack, straight while towing. Same layer
+   as the ring and the peer cursors, and pointer-events: none for the same
+   reason: the pen drawing the stroke is directly under it. */
+.tow-string {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* The ring's own legibility trick, drawn the SVG way: the light halo is a wider
+   stroke *under* the dark hairline (painted first), so whichever the paint
+   matches, the other reads. */
+.tow-string path {
+  fill: none;
+  stroke: #000000a6;
+  stroke-width: 1.2px;
+  stroke-linecap: round;
+  paint-order: stroke;
+  filter: drop-shadow(0 0 1px #ffffff8c);
+}
+
+/* The hand's end of the string: a small knot under the pointer, so the gap
+   between cursor and mark reads as "tied here", not "lagging behind". */
+.tow-string circle {
+  fill: #000000a6;
+  stroke: #ffffff8c;
+  stroke-width: 1px;
+}
+
 /* --- settings dialog (settings.rs) --- */
 
 /* One setting: the box, then a stacked label / description / note beside it.

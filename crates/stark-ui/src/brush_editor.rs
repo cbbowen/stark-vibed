@@ -257,6 +257,9 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         .as_ref()
         .map(|o| o.brush)
         .unwrap_or_default();
+    // The feel half of the tool (§6.11) — a subscribing read, so the slider
+    // tracks a preset click like every brush-driven row does.
+    let smoothing = (state.smoothing)();
     let is_round = matches!(brush.shape, BrushShape::Round { .. });
     let d = brush.dynamics;
     let cd = brush.color_dynamics;
@@ -314,7 +317,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         onpointerdown: move |e| {
                             if e.trigger_button() == Some(MouseButton::Primary) {
                                 capture_pointer(&e);
-                                start_preview_stroke(preview, &e);
+                                start_preview_stroke(state, preview, &e);
                             }
                         },
                         onpointermove: move |e| {
@@ -370,6 +373,20 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                             oninput: move |v| edit(state, preview, move |b| b.start_taper_length = v) }
                         Slider { label: "End taper (radii)", min: 0.0, max: MAX_TAPER, value: brush.end_taper_length,
                             oninput: move |v| edit(state, preview, move |b| b.end_taper_length = v) }
+                        // Stroke smoothing (§6.11): the towed tip. The one
+                        // slider here that edits no `BrushParams` field — the
+                        // stored path already embodies it, so the amount lives
+                        // with the frontend (`state.smoothing`) and rides
+                        // presets and the rack through `presets::Wearable`.
+                        // The signal is set at input rate (it is one float);
+                        // the identity `edit` is the restroke, on the same
+                        // throttle every other slider re-strokes through.
+                        Slider { label: "Smoothing", min: 0.0, max: 1.0, value: smoothing,
+                            oninput: move |v| {
+                                let mut s = state.smoothing;
+                                s.set(v);
+                                edit(state, preview, |_| {});
+                            } }
                     }
 
                     Section {
@@ -981,7 +998,11 @@ fn restroke(state: AppState, mut preview: Preview) {
         r.process(DocCommand::Undo);
     }
     r.process(ViewCommand::SetBrush(brush));
-    r.replay_stroke_seeded(Tool::Brush, &samples, PREVIEW_STROKE_SEED);
+    // The §6.11 rope the smoothing slider means *on this canvas*: the recorded
+    // test stroke is a hand, and replaying it through the tow is what lets the
+    // slider show its work on the stroke beside it.
+    let rope = crate::input::rope_in(r.view(), *state.smoothing.peek());
+    r.replay_stroke_seeded(Tool::Brush, &samples, PREVIEW_STROKE_SEED, rope);
     r.paint();
     drop(guard);
     preview.committed.set(true);
@@ -1079,7 +1100,7 @@ fn preview_sample(r: &Renderer, e: &Event<PointerData>) -> InputSample {
 }
 
 /// Begin a user test stroke: clear the committed one and start recording.
-fn start_preview_stroke(mut preview: Preview, e: &Event<PointerData>) {
+fn start_preview_stroke(state: AppState, mut preview: Preview, e: &Event<PointerData>) {
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();
     let Some(r) = guard.as_mut() else { return };
@@ -1092,6 +1113,10 @@ fn start_preview_stroke(mut preview: Preview, e: &Event<PointerData>) {
         tool: Tool::Brush,
         sample: s,
         tolerance: crate::input::input_tolerance_in(r.view(), e),
+        // Towed like the main canvas (§6.11): the preview is where the brush
+        // is felt out, so drawing on it under smoothing has to feel like the
+        // brush, not like the brush with its string cut.
+        rope: crate::input::rope_in(r.view(), *state.smoothing.peek()),
     });
     r.paint();
     drop(guard);

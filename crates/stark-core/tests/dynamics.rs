@@ -471,6 +471,7 @@ fn golden_self_smear() {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-40.0, -70.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for &(x, y) in &[(-40.0, 60.0), (20.0, 70.0), (40.0, 0.0), (-70.0, 10.0)] {
         engine.process(GestureCommand::To {
@@ -648,6 +649,7 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-70.0, 0.0)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for i in 1..=240 {
         let t = i as f32;
@@ -1468,6 +1470,7 @@ fn a_bleeding_stroke_previews_as_it_commits() {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().expect("a first sample")),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for &p in it {
         engine.process(GestureCommand::To {
@@ -1856,6 +1859,7 @@ fn a_bleeding_strokes_preview_is_its_commit() {
         tool: Tool::Brush,
         sample: *first,
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for s in rest {
         engine.process(GestureCommand::To { sample: *s });

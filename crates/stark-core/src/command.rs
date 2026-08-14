@@ -110,6 +110,16 @@ pub enum GestureCommand {
         /// this gesture but fit no curve, ignore it, and so does the flattening that
         /// turns a fitted path into segments.
         tolerance: f32,
+        /// The stroke-smoothing string length in canvas px (§6.11): the mark is
+        /// drawn by a tip towed this far behind the pointer. `0` is no tow at
+        /// all — the raw samples reach the fitter bit-identically to before.
+        ///
+        /// The frontend's to state, like `tolerance` and for the same reason:
+        /// the brush's smoothing amount is denominated in **screen** px,
+        /// because wobble is a fact about the hand, and only the frontend
+        /// holds the view that converts it. Fixed for the gesture. Ignored by
+        /// the selection tools, which fit no curve.
+        rope: f32,
     },
     To {
         sample: InputSample,

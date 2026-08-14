@@ -348,8 +348,8 @@ pub fn NavigatorPanel() -> Element {
                 onpointercancel: move |_| dragging.set(None),
                 // The right button is a tool here, so the browser's menu would be in
                 // the way of it — and would arrive mid-drag, which is worse than
-                // useless.
-                oncontextmenu: move |e| e.prevent_default(),
+                // useless. Refused for the whole page now (`input::bind_context_menu`),
+                // this being the surface that made the case first.
 
                 canvas {
                     class: "nav-thumb",

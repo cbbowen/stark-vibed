@@ -417,6 +417,7 @@ mod tests {
                     InputSample::at(Vec2::new(0.0, f32::from(gesture as u16) * 10.0)),
                     seedling,
                     DEFAULT_TOLERANCE,
+                    0.0,
                 );
                 for step in 1..40u32 {
                     let t = f32::from(step as u16);

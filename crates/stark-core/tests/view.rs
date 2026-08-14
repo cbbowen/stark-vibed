@@ -178,6 +178,7 @@ fn a_stroke_lands_under_the_pen_on_a_turned_canvas() {
         tool: Tool::Brush,
         sample: InputSample::at(view.screen_to_canvas(a)),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(view.screen_to_canvas(b)),

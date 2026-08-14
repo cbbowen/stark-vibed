@@ -83,6 +83,17 @@ pub struct AppState {
     /// `<div>` cannot be drawn from inside a `<canvas>`'s handler without somewhere
     /// for both to read.
     pub brush_ring: Signal<Option<BrushRing>>,
+    /// The live brush's stroke-smoothing amount, 0..=1 (§6.11). Frontend state
+    /// beside the engine's own `BrushParams`, never inside them: the stored
+    /// path already embodies the smoothing, so a field there would be one that
+    /// replay reads and ignores. It travels with every whole-brush snapshot
+    /// through [`presets::Wearable`](crate::presets::Wearable).
+    pub smoothing: Signal<f32>,
+    /// The tow string on screen while a smoothing brush draws (§6.11), in the
+    /// canvas element's own px — `None` when there is nothing to show. Its own
+    /// signal for the reason [`brush_ring`](Self::brush_ring) is: only the
+    /// little overlay re-renders at pointer rate, never the chrome.
+    pub tow: Signal<Option<TowUi>>,
     /// The drag-and-hold drawing assist (§6.9; `crate::input`).
     pub assist: AssistState,
     /// Minimal mode: the chrome over the canvas drops its words and keeps its marks
@@ -237,6 +248,25 @@ pub struct BrushRing {
     pub now: f32,
 }
 
+/// The tow string as the overlay draws it (§6.11): the towed tip, the pointer,
+/// and the rope, all in the canvas element's own px.
+///
+/// **Screen px, not canvas px**, on [`BrushRing`]'s own argument: a drawing
+/// instruction rather than a statement about the stroke. The conversion happens
+/// where the engine is read, against the one view the gesture holds — a stroke
+/// cannot outlive its view, since a pinch cancels it — and the overlay stays
+/// pure layout.
+#[derive(Copy, Clone, PartialEq)]
+pub struct TowUi {
+    /// Where the mark is being laid — the towed tip.
+    pub tip: Vec2,
+    /// Where the hand is — the pointer the string runs to.
+    pub target: Vec2,
+    /// The string's length. `|target − tip|` short of it is slack, and the
+    /// overlay shows the difference as sag.
+    pub rope: f32,
+}
+
 /// The custom brush-shape library's signals (`crate::shapes`). Root-owned:
 /// imports are started from the brush editor's modal scope but must survive
 /// its close.
@@ -268,6 +298,8 @@ impl AppState {
                 dragging: root_signal(|| false),
             },
             brush_ring: root_signal(|| None),
+            smoothing: root_signal(|| 0.0),
+            tow: root_signal(|| None),
             assist: AssistState {
                 enabled: root_signal(|| Prefs::default().assist),
                 dwell: root_signal(|| None),

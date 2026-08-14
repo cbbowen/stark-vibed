@@ -50,6 +50,7 @@ fn stroke_pen(engine: &mut stark_core::Engine, b: BrushParams, points: &[Vec2], 
         tool: Tool::Brush,
         sample: sample(first),
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
     for &p in it {
         engine.process(GestureCommand::To { sample: sample(p) });

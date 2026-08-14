@@ -13,10 +13,10 @@ use dioxus::prelude::*;
 use crate::collab::now_seconds;
 use crate::panels::brush::{MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use crate::platform::{
-    capture_pointer, on_window_blur, on_window_key, on_window_pointer, sleep_ms,
+    capture_pointer, on_window_blur, on_window_event, on_window_key, on_window_pointer, sleep_ms,
 };
 use crate::slots::{self, Grip};
-use crate::state::{AppState, BrushRing, Dwell, PickScope, dispatch, update_brush};
+use crate::state::{AppState, BrushRing, Dwell, PickScope, TowUi, dispatch, update_brush};
 use stark_core::InputSample;
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_core::document::SelectionOp;
@@ -821,6 +821,33 @@ pub fn bind_pen(state: AppState) {
     }
 }
 
+/// Refuse the browser's context menu, once, for the life of the page.
+///
+/// A pen held still is a **gesture** here, not a request for a menu: the drawing
+/// assist snaps a stroke to the shape it resembles after 0.45s of dwell (§6.9,
+/// [`DWELL`]), which is inside the half-second Windows spends deciding that a
+/// held stylus meant a right-click. So the menu arrives on top of the assist,
+/// over the canvas, mid-stroke. The same hold ends the same way on a slider
+/// being dragged, a preset row, a layer being reordered, a transform handle —
+/// every drag long enough to be deliberate.
+///
+/// Bound at the window rather than per surface, [`bind_pen`]'s argument exactly:
+/// the surfaces where this is unwanted are all of them, and a handler per surface
+/// would work on the ones somebody remembered. The right button is a tool in the
+/// navigator's miniature and means nothing anywhere else, so there is no reading
+/// of a press this takes away.
+///
+/// The one exception is a text field, where the browser's menu is the only cut,
+/// copy and paste the app offers — the same carve-out the shortcuts make for the
+/// same reason ([`typing_into_a_field`]).
+pub fn bind_context_menu() {
+    on_window_event("contextmenu", |e| {
+        if !e.target().is_some_and(|t| is_text_entry(&t)) {
+            e.prevent_default();
+        }
+    });
+}
+
 /// Whether `e` was typed into a control that owns its own keystrokes — a text
 /// field, a `<select>`, a contenteditable region.
 ///
@@ -840,12 +867,20 @@ pub fn bind_pen(state: AppState) {
 /// event, so propagation is halted inside the virtual tree only and the real event
 /// reaches the window regardless.
 fn typing_into_a_field(e: &web_sys::KeyboardEvent) -> bool {
+    e.target().is_some_and(|t| is_text_entry(&t))
+}
+
+/// Whether `target` is a control that owns its own keystrokes — a text field, a
+/// `<select>`, a contenteditable region.
+///
+/// Split out from [`typing_into_a_field`] because the *menu* asks the same
+/// question of a different event ([`bind_context_menu`]): the one place the
+/// browser's own editing bindings are wanted is the one place its own menu is,
+/// and two lists of which elements those are would be one list too many.
+fn is_text_entry(target: &web_sys::EventTarget) -> bool {
     use wasm_bindgen::JsCast;
 
-    let Some(el) = e
-        .target()
-        .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
-    else {
+    let Some(el) = target.dyn_ref::<web_sys::HtmlElement>() else {
         return false;
     };
     el.is_content_editable()
@@ -1232,6 +1267,55 @@ pub fn input_tolerance(state: AppState, e: &Event<PointerData>) -> Option<f32> {
     Some(input_tolerance_in(view_of(state)?, e))
 }
 
+/// The longest smoothing string a brush can ask for, in **screen px** — what
+/// `smoothing = 1` means. Screen px because wobble is a fact about the hand:
+/// the same tremor spans 64× more canvas zoomed out than in.
+const ROPE_MAX_SCREEN_PX: f32 = 160.0;
+
+/// The §6.11 rope a smoothing amount means against `view`, in canvas px: the
+/// 0..=1 knob mapped **quadratically** to a screen-px string — so the low end
+/// is fine-grained while the top is a real lettering tow — then carried
+/// through the view like the tolerance above. Zooming in therefore shrinks the
+/// dead zone in canvas terms: the escape hatch from heavy smoothing is the one
+/// artists already reach for to do fine work.
+///
+/// Stated once against an explicit view because two canvases ask: the main
+/// canvas below, and the brush editor's preview against its own.
+pub fn rope_in(view: ViewTransform, amount: f32) -> f32 {
+    let a = amount.clamp(0.0, 1.0);
+    a * a * ROPE_MAX_SCREEN_PX / view.zoom
+}
+
+/// [`rope_in`] for the live brush against the main canvas's view. Zero (no tow
+/// at all) when the amount is zero or there is no view yet.
+pub fn input_rope(state: AppState) -> f32 {
+    match view_of(state) {
+        Some(view) => rope_in(view, *state.smoothing.peek()),
+        None => 0.0,
+    }
+}
+
+/// Refresh the on-screen tow string from the engine (§6.11), converting to the
+/// canvas element's own px against the view the stroke holds — a pinch cancels
+/// the stroke it interrupts, so a live string never straddles two views. Sets
+/// `None` when there is nothing to show, and leaves the signal untouched when
+/// nothing changed, so an idle call dirties no scope.
+pub fn refresh_tow(state: AppState) {
+    let mut tow = state.tow;
+    let ui = state.renderer.peek().as_ref().and_then(|r| {
+        let t = r.tow_string()?;
+        let view = r.view();
+        Some(TowUi {
+            tip: view.canvas_to_screen(t.tip),
+            target: view.canvas_to_screen(t.target),
+            rope: t.rope * view.zoom,
+        })
+    });
+    if ui != *tow.peek() {
+        tow.set(ui);
+    }
+}
+
 /// Map an element-relative pointer position to a canvas-space input sample; `None`
 /// before the engine exists, since there is no view to map through yet.
 pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {
@@ -1333,6 +1417,8 @@ pub fn end_interaction(
     }
     restore_action(state, action_restore);
     stop_watching(state);
+    // The stroke the string belonged to is over, however it ended (§6.11).
+    refresh_tow(state);
     nav.stop();
     tune.stop();
     // Not a parameter like the two above because the eyedropper's drag flag is shared
@@ -1368,6 +1454,8 @@ pub fn abandon_gesture(
     }
     restore_action(state, action_restore);
     stop_watching(state);
+    // The cancelled stroke takes its string with it (§6.11).
+    refresh_tow(state);
 }
 
 /// Put back the shape action a gesture's modifier keys overrode (§6.8).

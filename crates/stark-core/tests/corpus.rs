@@ -148,6 +148,7 @@ fn check_the_stroke_as_it_is_drawn(
         tool: Tool::Brush,
         sample: *first,
         tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
     });
 
     let stride = rest.len().div_ceil(CHECKPOINTS).max(1);
