@@ -74,6 +74,14 @@ impl AssetNeed {
 /// The single definition of "what does this action need", so a new action kind
 /// that references content cannot be taught to the loader and forgotten by the
 /// transport.
+///
+/// **Exhaustive, with no `_` arm.** That is what makes the sentence above true of
+/// the *future* and not only of today: a wildcard answers "nothing" for every
+/// variant that does not exist yet, so an action added later carrying an id would
+/// save a document that silently fails to bundle it — and an unresolved ground
+/// bakes a smooth deposit into tiles no later arrival un-bakes. Adding a variant
+/// stops this function compiling instead, which is the device `minted_layers` and
+/// `tests/footprint.rs`'s `slot` already use.
 pub fn action_content(action: &Action) -> Option<AssetNeed> {
     match &action.kind {
         ActionKind::CommitStroke(rec) => match rec.brush.shape {
@@ -81,7 +89,29 @@ pub fn action_content(action: &Action) -> Option<AssetNeed> {
             BrushShape::Round { .. } => None,
         },
         ActionKind::SetSurface(id) => AssetNeed::ground(*id),
-        _ => None,
+        ActionKind::AddLayer { .. }
+        | ActionKind::AddMatte { .. }
+        | ActionKind::AddFilter { .. }
+        | ActionKind::DuplicateLayer { .. }
+        | ActionKind::RemoveLayer(_)
+        | ActionKind::MergeLayerDown { .. }
+        | ActionKind::MoveLayer { .. }
+        | ActionKind::SetLayerBlend(..)
+        | ActionKind::SetLayerClip(..)
+        | ActionKind::SetLayerOpacity(..)
+        | ActionKind::SetLayerVisible(..)
+        | ActionKind::SetLayerName(..)
+        | ActionKind::SetFilter(..)
+        | ActionKind::SetMatteRect(..)
+        | ActionKind::SetMattePaint(..)
+        | ActionKind::SetBackground(_)
+        | ActionKind::Select(_)
+        | ActionKind::InvertSelection
+        | ActionKind::Transform { .. }
+        | ActionKind::TransformPerspective { .. }
+        | ActionKind::TransformWarp { .. }
+        | ActionKind::Fill { .. }
+        | ActionKind::Undo(_) => None,
     }
 }
 

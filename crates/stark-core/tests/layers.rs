@@ -204,6 +204,43 @@ fn a_duplicates_ids_are_not_reused_after_a_reload() {
     );
 }
 
+/// **Undo can remove a layer too**, so the brush has to be repointed after one the
+/// same way it is after a `RemoveLayer` (§17.9). `AddLayer` arms the layer it added;
+/// undoing it withdraws exactly that layer, which leaves the most ordinary two-step
+/// sequence in the app — add a layer, change your mind — pointing the brush at a
+/// layer that no longer exists. `apply` then refuses every stroke silently, with
+/// nothing on screen to say why.
+#[test]
+fn undoing_an_add_leaves_the_brush_somewhere_it_can_paint() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    assert_eq!(
+        engine.observe().active_layer,
+        TOP,
+        "the add armed its layer"
+    );
+
+    engine.process(DocCommand::Undo);
+    let obs = engine.observe();
+    assert!(
+        obs.layers.iter().any(|l| l.id == obs.active_layer),
+        "the active layer must exist; got {:?} of {:?}",
+        obs.active_layer,
+        obs.layers.iter().map(|l| l.id).collect::<Vec<_>>(),
+    );
+    // And it can actually take paint, which is the property the repoint is for.
+    paint(&mut engine, RED, 40.0, H_STROKE);
+    assert!(
+        engine.document().bounds().tile_range().is_some(),
+        "the stroke after the undo landed nowhere",
+    );
+}
+
 /// What `id` is called right now, or `None` if it has never been named.
 fn name_of(engine: &Engine, id: LayerId) -> Option<String> {
     engine

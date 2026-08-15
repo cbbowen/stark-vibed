@@ -887,6 +887,43 @@ fn a_filter_survives_save_and_load() {
     assert_eq!(back, filters(&engine));
 }
 
+/// **A filter's id is a minted id**, so the counter a load resumes has to count it
+/// (§17.9). The sibling of `layers.rs`'s `a_duplicates_ids_are_not_reused_after_a_
+/// reload`, and here for the reason that one exists: two layers sharing an id is
+/// not a wrong picture but a wrong *document* — every lookup finds whichever comes
+/// first, so painting, renaming and deleting all reach a row nobody pointed at.
+///
+/// The id space is partitioned by author, so a solo document's ordinals *are* its
+/// ids; a filter added last therefore leaves the highest one, which is exactly the
+/// case a resync that does not know `AddFilter` mints gets wrong.
+#[test]
+fn a_filters_id_is_not_reused_after_a_reload() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    add_filter(&mut engine, None, NEUTRAL);
+    let bytes = engine.save_bytes().expect("serialize");
+
+    let mut loaded = engine_or_skip().expect("adapter available (original built)");
+    loaded.load_bytes(&bytes).expect("deserialize + replay");
+    let existing: Vec<LayerId> = loaded.observe().layers.iter().map(|l| l.id).collect();
+    assert_eq!(existing.len(), 2, "the filter came back with the log");
+
+    loaded.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    let after: Vec<LayerId> = loaded.observe().layers.iter().map(|l| l.id).collect();
+    let mut unique = after.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        after.len(),
+        "two layers share one id: {after:?}",
+    );
+}
+
 /// **The gradient map's index is Oklab `L`, and its lerp is `Gradient::sample`'s**
 /// (§21.11) — both pinned at once by the one ramp with a closed-form answer: the
 /// black→white ramp maps every color to `(L, 0, 0)`, which is exactly what the

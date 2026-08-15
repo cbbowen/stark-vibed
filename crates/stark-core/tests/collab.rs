@@ -6,7 +6,7 @@
 mod common;
 
 use common::{engine_or_skip, images_match, paint};
-use stark_core::command::DocCommand;
+use stark_core::command::{DocCommand, PeerCommand};
 use stark_core::document::ActorId;
 use stark_core::geom::Vec2;
 use stark_core::{Engine, RgbaImage};
@@ -312,4 +312,61 @@ fn a_shared_timeline_reports_no_scrub_range() {
     let before = snap(&mut a);
     a.process(DocCommand::Seek(0));
     assert!(images_match(&before, &snap(&mut a), 0));
+}
+
+/// **A peer's merge-down removes a layer too**, so it has to repoint the brush the
+/// same way a peer's `RemoveLayer` does (§17.9).
+///
+/// The defect §17.9 records as fixed was reintroduced by a feature added after it:
+/// `merge_apply` ends in `remove_layer(source)`, but the repoint was keyed on the
+/// `RemoveLayer` *variant* rather than on the fact of a layer going away. B is left
+/// pointing at a layer that no longer exists, after which `apply` refuses every
+/// stroke silently — the failure has no pixels of its own, which is why it is asked
+/// here rather than left to a render comparison.
+#[test]
+fn a_remote_merge_down_does_not_strand_the_active_layer() {
+    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+        return;
+    };
+    a.start_collaboration(ActorId(1));
+    paint(
+        &mut a,
+        RED,
+        12.0,
+        &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
+    );
+    a.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    let top = a.observe().active_layer;
+    paint(
+        &mut a,
+        GREEN,
+        12.0,
+        &[Vec2::new(40.0, 100.0), Vec2::new(216.0, 100.0)],
+    );
+
+    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.process(PeerCommand::SetActiveLayer(top));
+    assert_eq!(
+        b.observe().active_layer,
+        top,
+        "B is working on the top layer"
+    );
+
+    a.process(DocCommand::MergeLayerDown(top));
+    assert!(
+        a.document().layer(top).is_none(),
+        "the merge folded the source away on A",
+    );
+    sync_into(&mut a, &mut b);
+    assert!(b.document().layer(top).is_none(), "B received the merge");
+
+    let obs = b.observe();
+    assert!(
+        obs.layers.iter().any(|l| l.id == obs.active_layer),
+        "B's active layer {:?} no longer exists, so every stroke is silently refused",
+        obs.active_layer,
+    );
 }

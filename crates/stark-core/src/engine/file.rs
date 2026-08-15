@@ -11,16 +11,13 @@
 //! and a rendering input second, and its identity is derived from its bytes rather
 //! than asserted alongside them, so a wrong binding cannot be expressed.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::{Engine, GpuBuild, ROOT_LAYER, build_gpu};
 use crate::assets::AssetId;
 use crate::colorspace::{ColorSpace, ColorSpaceId};
 use crate::content::AssetNeed;
-use crate::document::{
-    Action, ActionKind, ActorId, BrushShape, DocState, LayerId, LinearTimeline, effective_actions,
-};
+use crate::document::{Action, ActorId, DocState, LinearTimeline, effective_actions};
 use crate::gpu::{EnvironmentId, SurfaceId};
 use crate::io::DocumentFile;
 use crate::{EngineError, Result};
@@ -29,53 +26,43 @@ impl Engine {
     /// Snapshot the document as a saveable [`DocumentFile`] (§8), bundling the
     /// brush-shape assets that strokes actually reference (§6.6) and the canvas
     /// grounds the log names (§6.4).
+    ///
+    /// **What the log names is asked of [`DocumentFile::required_content`]**, which
+    /// is the crate's one answer to that question (`content.rs`) and already what
+    /// the loader, the joiner and the transport ask. This scanned the log itself
+    /// until it didn't: two scans of one log, in two modules, is two things to teach
+    /// about a new action that carries an id — and the one that is *not* taught
+    /// writes a file that silently fails to bundle it.
+    ///
+    /// Every ground the log names travels, not just the one it ends on: the tooth
+    /// reads whichever was in force when a stroke was made, so a document that
+    /// switched part-way through needs both to replay to the same pixels. `Flat` is
+    /// skipped — procedural, no bytes — as is anything whose image never arrived,
+    /// which cannot be bundled because it was never held.
     pub fn document_file(&self) -> DocumentFile {
-        let actions = self.timeline.clone_actions();
-        let mut referenced = std::collections::HashSet::new();
-        for action in &actions {
-            if let ActionKind::CommitStroke(rec) = &action.kind
-                && let BrushShape::Stamp(id) = rec.brush.shape
-            {
-                referenced.insert(id);
-            }
-        }
-        let assets = self
-            .apply
-            .assets
-            .all_bytes()
-            .into_iter()
-            .filter(|(id, _)| referenced.contains(id))
-            .collect();
-        let mut file = DocumentFile::new(actions);
+        let mut file = DocumentFile::new(self.timeline.clone_actions());
         file.canvas.color_space = self.color_space.id();
+        // Before the scan below, which reads it: the ground the log *starts* on is
+        // named by the container rather than by any action, and is otherwise the one
+        // piece of content nothing asks for.
         file.canvas.surface = self.initial_surface;
-        file.assets = assets;
-        file.surfaces = self.referenced_surfaces(&file);
-        file
-    }
-
-    /// The canvas grounds a file's log names, with their height maps — the ground it
-    /// starts on plus every one it switches to (§6.4).
-    ///
-    /// *Every* one, not just the ground it ends on: the tooth reads whichever was in
-    /// force when a stroke was made, so a document that switched part-way through
-    /// needs both to replay to the same pixels. Bundling only the last one is the
-    /// shape of bug this whole change is about, one scope smaller.
-    ///
-    /// `Flat` is skipped — it is procedural and has no bytes — as is any ground whose
-    /// image never arrived, which cannot be bundled because it was never held.
-    fn referenced_surfaces(&self, file: &DocumentFile) -> Vec<(SurfaceId, Vec<u8>)> {
-        let mut named: BTreeSet<SurfaceId> = BTreeSet::new();
-        named.insert(file.canvas.surface);
-        for action in &file.actions {
-            if let ActionKind::SetSurface(id) = &action.kind {
-                named.insert(*id);
+        for need in file.required_content() {
+            match need {
+                AssetNeed::Brush(id) => {
+                    if let Some(bytes) = self.asset_bytes(id) {
+                        file.assets.push((id, bytes));
+                    }
+                }
+                AssetNeed::Ground(_) => {
+                    if let Some(id) = need.surface()
+                        && let Some(bytes) = self.surface_bytes(id)
+                    {
+                        file.surfaces.push((id, bytes));
+                    }
+                }
             }
         }
-        named
-            .into_iter()
-            .filter_map(|id| Some((id, self.surface_bytes(id)?)))
-            .collect()
+        file
     }
 
     /// Serialize the document to the compact on-disk container, bundling
@@ -535,20 +522,15 @@ impl Engine {
         let mut max_ordinal = 0u64;
         for a in actions {
             max_lamport = Some(max_lamport.map_or(a.id.lamport, |m: u64| m.max(a.id.lamport)));
-            let mut note = |id: LayerId| {
+            // Which actions mint an id is asked of [`ActionKind::minted_layers`],
+            // beside the variants, rather than answered by a list kept here. The
+            // list kept here is how `AddFilter` came to be missed: it is not the
+            // same set as the actions that *name* an id, so nothing about a wrong
+            // answer shows up until two layers share one.
+            for id in a.kind.minted_layers() {
                 if id.minted_by(self.actor) {
                     max_ordinal = max_ordinal.max(id.ordinal());
                 }
-            };
-            // Every action that *mints* an id, which is not the same set as the
-            // ones that name one: a duplicate mints one per layer it copied, and
-            // missing them would hand the next add an ordinal already in the log.
-            match &a.kind {
-                ActionKind::AddLayer { id, .. } | ActionKind::AddMatte { id, .. } => note(*id),
-                ActionKind::DuplicateLayer { ids } => {
-                    ids.iter().for_each(|(_, copy)| note(*copy));
-                }
-                _ => {}
             }
         }
         self.clock = max_lamport.map_or(0, |m| m + 1);

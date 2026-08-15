@@ -672,15 +672,12 @@ impl Engine {
             DocCommand::Seek(to) => {
                 self.preview.set_doc(None);
                 if self.timeline.seek(to, &mut self.apply) {
+                    // A scrub crosses layer additions wholesale — dragging to the
+                    // start of the log withdraws every one of them — so the selected
+                    // layer routinely stops existing here. `committed_changed`
+                    // repoints the brush for every such cause at once (§17.9).
                     self.committed_changed();
                     self.apply_document_surface();
-                    // A scrub crosses layer additions wholesale — dragging to the
-                    // start of the log withdraws every one of them — so the
-                    // selected layer routinely stops existing here, where an undo
-                    // has to be aimed at exactly the right step to manage it. A
-                    // playhead left somewhere the brush has nowhere to go is a
-                    // canvas that silently swallows the next stroke.
-                    self.repoint_active_layer();
                 }
             }
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
@@ -849,10 +846,7 @@ impl Engine {
                     }
                 }
             }
-            DocCommand::RemoveLayer(id) => {
-                self.commit(ActionKind::RemoveLayer(id));
-                self.repoint_active_layer();
-            }
+            DocCommand::RemoveLayer(id) => self.commit(ActionKind::RemoveLayer(id)),
             DocCommand::MergeLayerDown(id) => {
                 // Asked here rather than only inside `apply`, so a merge that cannot
                 // preserve the document's appearance never reaches the log at all —
@@ -860,15 +854,20 @@ impl Engine {
                 // asks again anyway, because a peer's action arrives without passing
                 // through here (§14.11).
                 if let Some(plan) = crate::document::merge::plan(self.document(), id) {
+                    // Read **before** the commit, which is what makes it answerable:
+                    // the commit repoints the brush off the layer it is about to fold
+                    // away (§17.9), so afterwards there is nothing left to compare.
+                    let follow = self.session.active_layer == id;
                     self.commit(ActionKind::MergeLayerDown {
                         source: plan.source,
                         dest: plan.dest,
                     });
                     // The merged layer is where the work now is, so the brush follows
-                    // it — and the layer that was selected may be the one that has just
-                    // stopped existing, which `repoint_active_layer` alone would answer
-                    // by picking whatever is nearest rather than by picking the paint.
-                    if self.session.active_layer == id
+                    // it. The repoint has already put it somewhere that exists; this
+                    // says *which* somewhere, because picking the nearest paintable
+                    // layer is not the same as picking the paint that just absorbed
+                    // what you were working on.
+                    if follow
                         && self
                             .document()
                             .layer(plan.dest)
@@ -876,7 +875,6 @@ impl Engine {
                     {
                         self.session.active_layer = plan.dest;
                     }
-                    self.repoint_active_layer();
                 }
             }
             DocCommand::SetLayerBlend(id, blend) => {
@@ -1321,9 +1319,20 @@ impl Engine {
     /// preview path deliberately does *not* come through here: it moves what is
     /// drawn without changing the document (see
     /// [`ObservableState::doc_revision`]).
+    ///
+    /// **Repointing the brush belongs here too**, for the same argument one scope
+    /// up: a document that has been replaced may no longer hold the layer this
+    /// client had selected, and where that was asked *per cause* it was asked
+    /// wrongly three times over (§17.9). The rule is not "a `RemoveLayer` removes a
+    /// layer" — an undo of an `AddLayer` withdraws one, a merge folds one away, a
+    /// peer's merge arrives having done the same, and a seek crosses additions
+    /// wholesale. All of them come through here, and none of them has to know it:
+    /// [`repoint_active_layer`](Self::repoint_active_layer) returns on its first
+    /// line when the layer still exists, which is every ordinary commit.
     fn committed_changed(&mut self) {
         self.preview.invalidate();
         self.doc_revision += 1;
+        self.repoint_active_layer();
     }
 
     /// Move the history playhead one step, the way [`DocCommand::Undo`] and

@@ -344,6 +344,62 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
+    /// Every layer id this action **mints** — the ids a client's counter has to
+    /// resume past when it picks a log back up (§17.9).
+    ///
+    /// Lives here, beside the variants, because it is a fact about *them*: minting
+    /// is what an `Add…` action does, and an engine that keeps its own list of which
+    /// ones do has a list that a new variant does not appear in.
+    /// The engine's `resync_counters` kept exactly such a list, `AddFilter` was
+    /// added after it, and a document whose highest id came from a filter reloaded
+    /// with a counter that would mint that id a second time — two layers with one
+    /// id, which is the convergence failure §17.9 says per-client identity rules
+    /// out.
+    ///
+    /// **Exhaustive, with no `_` arm, and that is the whole point of it.** A variant
+    /// added to the enum stops this function compiling, three lines from the doc
+    /// comment that says why — the device `slot` in `tests/footprint.rs` already
+    /// uses, for the same reason and after the same variant escaped it.
+    ///
+    /// Note it reports what the action *names as minted*, not what applying it
+    /// lands: a rejected `AddLayer` (unknown carrier) inserts nothing, and its
+    /// ordinal is still spent — which is the answer the counter wants, since
+    /// re-minting it would collide with a peer who accepted the same action.
+    pub fn minted_layers(&self) -> impl Iterator<Item = LayerId> + '_ {
+        // One id, or a map of them — the two shapes minting comes in. Named as a
+        // pair so the match below decides nothing else.
+        let (one, copies): (Option<LayerId>, &[(LayerId, LayerId)]) = match self {
+            ActionKind::AddLayer { id, .. }
+            | ActionKind::AddMatte { id, .. }
+            | ActionKind::AddFilter { id, .. } => (Some(*id), &[]),
+            // A duplicate mints one per layer of the subtree it copied, which is
+            // why the map travels in the action (§14.8).
+            ActionKind::DuplicateLayer { ids } => (None, ids),
+            ActionKind::CommitStroke(_)
+            | ActionKind::RemoveLayer(_)
+            | ActionKind::SetLayerBlend(..)
+            | ActionKind::SetLayerClip(..)
+            | ActionKind::SetLayerOpacity(..)
+            | ActionKind::SetLayerVisible(..)
+            | ActionKind::SetLayerName(..)
+            | ActionKind::MoveLayer { .. }
+            | ActionKind::MergeLayerDown { .. }
+            | ActionKind::Undo(_)
+            | ActionKind::SetSurface(_)
+            | ActionKind::Select(_)
+            | ActionKind::InvertSelection
+            | ActionKind::SetMatteRect(..)
+            | ActionKind::SetMattePaint(..)
+            | ActionKind::SetFilter(..)
+            | ActionKind::SetBackground(_)
+            | ActionKind::Transform { .. }
+            | ActionKind::TransformPerspective { .. }
+            | ActionKind::TransformWarp { .. }
+            | ActionKind::Fill { .. } => (None, &[]),
+        };
+        one.into_iter().chain(copies.iter().map(|&(_, copy)| copy))
+    }
+
     /// What this action *is*, in two or three words — the caption a history
     /// scrubber puts on the step it is about to cross (§18.2.4).
     ///

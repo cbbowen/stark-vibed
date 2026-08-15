@@ -12,7 +12,7 @@
 //! these hooks, and `stark-net` owns the wire.
 
 use super::{Engine, ROOT_LAYER};
-use crate::document::{Action, ActionKind, ActorId, DocState, ReplicatedTimeline, TimelineStats};
+use crate::document::{Action, ActorId, DocState, ReplicatedTimeline, TimelineStats};
 use crate::io::DocumentFile;
 use crate::peer::{Identity, Peer, PeerFrame};
 
@@ -129,26 +129,21 @@ impl Engine {
     pub fn merge_remote(&mut self, action: Action) -> bool {
         self.clock = self.clock.max(action.id.lamport + 1);
         let author = action.id.actor;
-        let removed = match &action.kind {
-            ActionKind::RemoveLayer(id) => Some(*id),
-            _ => None,
-        };
         let ctx = &mut self.apply;
         let merged = self.timeline.merge(action, ctx);
         if merged {
-            // Replaces the document every frozen head was composited onto.
+            // Replaces the document every frozen head was composited onto — and
+            // repoints the brush if the arriving action took the layer this client
+            // was painting on. Asked of the document rather than of the action's
+            // *variant*, which is how a peer's `MergeLayerDown` came to strand it:
+            // `merge_apply` ends in `remove_layer(source)`, so keying on
+            // `RemoveLayer` answered a question about deletion by naming one of the
+            // two actions that delete (§17.9).
             self.committed_changed();
             // A gesture is a thing that becomes an action, so the action's arrival is
             // the end-of-gesture signal — no id to correlate, and no window in which
             // both the live copy and the committed one are drawn.
             self.peers.clear_gesture(author);
-            if removed.is_some_and(|id| self.session.active_layer == id) {
-                // A peer deleting the layer this client is painting on must not leave
-                // it pointed at a layer that no longer exists: `apply` would then
-                // refuse every stroke silently, with nothing on screen to explain it
-                // (§17.9).
-                self.repoint_active_layer();
-            }
             self.mark_live_stale();
         }
         // A peer may have switched the surface (§6.4).
