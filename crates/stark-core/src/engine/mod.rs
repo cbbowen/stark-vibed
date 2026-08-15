@@ -48,8 +48,8 @@ use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::desc::Zeroes;
 use crate::gpu::{
     BlendPass, Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer,
-    GpuContext, MergeRenderer, Registry, SelectionRenderer, StrokeRenderer, Surface, SurfaceId,
-    TilePool, TransformRenderer,
+    FilterPass, GpuContext, MergeRenderer, Registry, SelectionRenderer, StrokeRenderer, Surface,
+    SurfaceId, TilePool, TransformRenderer,
 };
 use crate::peer::Peers;
 use crate::session::ShapeResult;
@@ -1427,6 +1427,14 @@ fn build_gpu(
         cs.color_format(),
         cs.aux_format(),
     ));
+    // The same bargain for the filter pass, which `gpu::merge` runs on tile-sized
+    // targets to merge a filter layer into the paint beneath it (§14.11.7).
+    let filter = Arc::new(FilterPass::new(
+        gpu,
+        cs.as_ref(),
+        cs.color_format(),
+        cs.aux_format(),
+    ));
     let compositor_pipeline = CompositorPipeline::new(
         gpu,
         target_format,
@@ -1434,11 +1442,12 @@ fn build_gpu(
         surface.clone(),
         environment.clone(),
         blend.clone(),
+        filter.clone(),
     );
     let compositor = Compositor::new(&compositor_pipeline, viewport);
     let transform = TransformRenderer::new(gpu, cs.as_ref(), selection.clone(), zeroes.clone());
     let fill = FillRenderer::new(gpu, cs.clone(), selection.clone(), zeroes.clone());
-    let merge = MergeRenderer::new(gpu, cs.as_ref(), zeroes, blend);
+    let merge = MergeRenderer::new(gpu, cs.as_ref(), zeroes, blend, filter);
     (
         pool,
         stroke,

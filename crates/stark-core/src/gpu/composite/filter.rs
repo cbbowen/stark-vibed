@@ -17,21 +17,41 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 
 // Generated from `filter_common.wesl`'s own declaration (§6.10).
-pub(super) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
+pub(crate) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
 
 /// The filter pass: one fullscreen draw rewriting the accumulator.
-pub(super) struct FilterPass {
-    pub(super) pipeline: wgpu::RenderPipeline,
-    pub(super) bgl: wgpu::BindGroupLayout,
+///
+/// `pub(crate)` and shared behind an `Arc` for [`BlendPass`]'s reason: `gpu::merge`
+/// runs this very module's other entry point on tile-sized targets to merge a filter
+/// layer into the paint beneath it (§14.11.7), and a second copy would decode the
+/// Mixbox LUT twice.
+///
+/// [`BlendPass`]: super::blend::BlendPass
+pub(crate) struct FilterPass {
+    pub(crate) pipeline: wgpu::RenderPipeline,
+    /// The **tile-space** entry point of the same module, on the same bind group
+    /// layout: `fs_tile` reads a tile's stored channels where `fs_main` reads the
+    /// accumulator's, and writes them back adjusted (§14.11.7).
+    ///
+    /// One layout for both because they bind the same shapes in the same slots — a
+    /// tile's three channel textures answer to `back_color` / `back_aux` /
+    /// `back_resid` exactly as the accumulator's do, and the pigment LUT is the same
+    /// LUT. What differs is what the alpha lane *means* (per-unit opacity rather than
+    /// coverage), which is a fact about the caller rather than about the binding.
+    pub(crate) tile: wgpu::RenderPipeline,
+    pub(crate) bgl: wgpu::BindGroupLayout,
     /// How the chromatic gather (§21.10) reads the accumulator *between* texels:
     /// bilinear, clamped to the edge — a tap displaced past the viewport reads the
     /// rim rather than wrapping the far side of the picture into a fringe. The
     /// point filters keep their exact `textureLoad`s and never touch it.
-    pub(super) sampler: wgpu::Sampler,
+    ///
+    /// Bound by the tile pass too, which never reads it: a bind group has to satisfy
+    /// the whole layout, and one layout for two pipelines is the trade that buys.
+    pub(crate) sampler: wgpu::Sampler,
 }
 
 impl FilterPass {
-    pub(super) fn new(
+    pub(crate) fn new(
         ctx: &GpuContext,
         color_space: &dyn ColorSpace,
         color_format: wgpu::TextureFormat,
@@ -89,6 +109,17 @@ impl FilterPass {
             ("vs_main", "fs_main"),
             &targets,
         );
+        // The same module, the same layout, the same targets — a tile's channel
+        // textures carry the color space's own formats, which is what makes the merge
+        // able to borrow this pass rather than restate its algebra (§14.11.7).
+        let tile = desc::fullscreen_pipeline(
+            device,
+            "stark filter tile pipeline",
+            &layout,
+            &shader,
+            ("vs_main", "fs_tile"),
+            &targets,
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("stark filter sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -99,6 +130,7 @@ impl FilterPass {
         });
         Self {
             pipeline,
+            tile,
             bgl,
             sampler,
         }

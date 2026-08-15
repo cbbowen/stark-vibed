@@ -866,7 +866,14 @@ pub fn LayerRow(
     // which the panel draws *under* the indent rather than directly beneath. Chosen
     // out here rather than inside the attribute so the branch is a plain `if` in
     // ordinary code, which is where a reader looks for one.
-    let merge_title = if merge_down.is_some() && merge_down == info.carrier {
+    //
+    // A **filter** row says something else again, because what the click does there is
+    // not to move paint but to bake an adjustment into the paint it was adjusting
+    // (§14.11.7) — "merge this layer down" would describe a layer with nothing in it.
+    let merge_title = if filter {
+        "Bake this filter into the paint it is filtering \u{2014} the picture stays \
+         the same, and the row goes"
+    } else if merge_down.is_some() && merge_down == info.carrier {
         "Merge this layer into the one carrying it \u{2014} the picture stays the same"
     } else {
         "Merge this layer down into the one below \u{2014} the picture stays the same"

@@ -147,6 +147,7 @@ promise, coverage and height included (§21.4.1).
 | `opacity` | the filter's **strength** | a mix from the untouched backdrop to the filtered result — which is what fading a layer already means |
 | `visible` | on/off | as everywhere |
 | `name`, position, removal, duplication | as everywhere | it is a layer |
+| merging down | **offered**, for a point filter whose backdrop is the layer beneath it | baking the adjustment into that paint is the same picture, so it is a merge like any other (§14.11.7). A filter that *resamples* is refused: a tile pass has to be a pure function of canvas position (§6.4) and a gather is not |
 | `blend` | **refused** | a mode describes how a *source* meets a backdrop; a filter has no source, it *is* the backdrop — and it can never be a group's base (§21.2), so no outward-pointing merge exists either. State declines to store one, like paint on a matte, rather than holding a value nothing can ever read |
 | `clip` | the bound on **where its result may land** | §14.4's sentence read for a layer with no source of its own: the filter's result exists only where the backdrop it read had coverage. So a clipped filter hands coverage and height back exactly as it found them — see below, and §21.4.1 for why that is inert on a point filter and live on a gather |
 | carried layers | **refused** | a filter never carries — see §21.2; the state declines the attachment itself |
@@ -545,6 +546,16 @@ nothing on screen to say where it came from.
   is the obvious source, and §15.9's P4 region algebra is the obvious representation.
 - **Filters on export.** They composite in pass A, so an export already carries them;
   nothing to do, recorded because it is the question everyone asks.
+- **Merging a filter that resamples.** Refused today, and by §6.4 rather than by
+  taste (§14.11.7): a gather is not a function of canvas position, so it cannot be a
+  tile pass, and a tile's apron is one texel against a reach the document sets. The
+  shape an answer would take is the *transform*'s rather than the merge's — composite
+  the destination into a region-wide scratch, gather there, split back into tiles,
+  bounded by a tile cap and declined deterministically past it (§16). It would also
+  commit the fringe to canvas resolution, where the screen computes it in the
+  supersampled accumulator, so the picture would soften when merged from a zoomed-in
+  view; whether that is a merge or a different edit is the open question, not the
+  machinery.
 
 ### 21.10 The chromatic aberration filter
 

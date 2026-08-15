@@ -72,6 +72,28 @@ impl Filter {
         }
     }
 
+    /// Whether this filter reads **neighbouring** texels rather than only the one it
+    /// writes — the point/resampling split §21.3.1 draws, as a value rather than as
+    /// prose.
+    ///
+    /// It is asked by the merge (§14.11.7), and what it decides there is not a
+    /// preference but a law: every pass that writes tiles must be a pure function of
+    /// canvas position (§6.4), because that is what makes a tile's apron
+    /// bit-identical to its neighbour's interior without a copy pass. A point filter
+    /// is such a function; a gather over tiles is not, at any apron width, since its
+    /// reach is the document's to set. So a filter that resamples cannot be baked
+    /// into the paint beneath it, and this is where that is said once.
+    ///
+    /// An exhaustive match rather than a default, so a new kind has to answer the
+    /// question — a resampling kind that inherited "no" would merge to a seam at
+    /// every tile boundary, which is the one failure the apron exists to rule out.
+    pub fn resamples(&self) -> bool {
+        match self {
+            Filter::Color(_) | Filter::GradientMap(_) => false,
+            Filter::Chromatic(_) => true,
+        }
+    }
+
     /// Whether this filter changes anything at all. A neutral filter still costs its
     /// pass — the compositor cannot know that `1.0` is the identity of a gain — so
     /// this is what lets the draw list leave it out (§21.3).

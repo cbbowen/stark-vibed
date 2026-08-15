@@ -35,6 +35,26 @@
 //!   sits second from the bottom of the **root** stack, whose accumulator starts
 //!   cleared.
 //!
+//! # Two kinds of source
+//!
+//! Everything above is about a source made of **paint**, which is stacked into the
+//! destination. A **filter layer** is the other kind, and it merges by a different
+//! sentence (§14.11.7): it has nothing to stack, being a function of what it sits on,
+//! so the merge *rewrites* the destination's channels and leaves every other thing
+//! about that layer alone — its blend, its clip, its opacity, its place.
+//!
+//! Only the second question above binds it, and it binds absolutely: a filter rewrites
+//! the accumulator beneath it, so baking it into `D` is the same picture exactly when
+//! that accumulator is `D` alone. The first question is vacuous — nothing arrives, so
+//! there is no "over" to associate and no mode to agree about.
+//!
+//! What it costs is one refusal of its own. The merged tiles are written by a pass
+//! that must be a pure function of canvas position (§6.4) — the rule that keeps a
+//! tile's apron bit-identical to its neighbour's interior — and a filter that reads
+//! *neighbouring* texels (§21.10) is not one, at any apron width, since its reach is
+//! the document's to set. So [`Filter::resamples`](super::filter::Filter::resamples)
+//! is asked, and a gather is declined.
+//!
 //! # What is deliberately refused
 //!
 //! **Two layers sharing a blend mode — for now, and no longer on principle.** This
@@ -59,7 +79,17 @@
 //!
 //! **Groups.** A source that carries layers would have to flatten a whole subtree, and
 //! a destination that carries layers is not what sits beneath the source — its whole
-//! group is. Both are refused rather than partially handled.
+//! group is. Both are refused rather than partially handled. (A **carrier** as the
+//! destination is not this case and is offered: there the source is the bottom member
+//! of the stack that carrier opens, so what sits beneath it *is* the carrier's own
+//! content, §14.1.)
+//!
+//! **A filter as the destination, and a matte as either.** Neither holds tiles, so
+//! there is nothing to rewrite and nothing to rewrite into. A solid matte is the one
+//! case with an obvious answer — its composited color is its fill, so a filter merged
+//! into one would be that matte with a filtered fill — and it is left out on purpose
+//! rather than overlooked: a *gradient* matte has no such answer, because the
+//! adjustment is nonlinear and filtering the stops is not filtering the ramp.
 
 use super::layer::{CompositeParams, Layer, LayerContent, LayerId};
 use super::state::DocState;
@@ -74,26 +104,75 @@ use super::state::DocState;
 /// honest against a tree that has moved under it.
 ///
 /// [`Footprint`]: super::footprint::Footprint
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MergePlan {
     pub source: LayerId,
     pub dest: LayerId,
-    /// How the source's paint meets the destination's — **the source layer's own**
-    /// params, always. A merge folds the upper layer into the lower through exactly
-    /// the merge the compositor would have run between the two, which is the whole of
-    /// why the result is the same picture.
+    /// Which of the two merges this is, and everything that one of them needs.
+    pub kind: MergeKind,
+}
+
+/// The two things a merge can be, which are two because a source can be two things.
+///
+/// A layer of paint is **stacked into** the destination — two slabs become one, and
+/// every number in [`Stack`](Self::Stack) is about reconciling two layers' params
+/// into the one set that speaks for both afterwards. A **filter** is not stacked into
+/// anything; it is a function of what it sits on, so merging it **rewrites** the
+/// destination's channels and leaves everything else about that layer alone. Nothing
+/// is reconciled, because nothing arrives.
+///
+/// One enum rather than one struct with fields that go quiet: `dest_opacity` and
+/// `keeps` have no meaning for a filter merge, and a field that cannot change a pixel
+/// is a field somebody eventually reads anyway.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MergeKind {
+    /// The source's paint stacked into the destination's, through the source's own
+    /// params (§14.11.3).
+    Stack {
+        /// How the source's paint meets the destination's — **the source layer's own**
+        /// params, always. A merge folds the upper layer into the lower through exactly
+        /// the merge the compositor would have run between the two, which is the whole of
+        /// why the result is the same picture.
+        ///
+        /// Its `opacity` is the source's own, and it is folded into the merged tiles.
+        source_params: CompositeParams,
+        /// What the destination's tiles are worth on their own: its own opacity when the
+        /// two are siblings, and **1.0 when the destination is the carrier** — a group's
+        /// base composites at [`CompositeParams::IDENTITY`] inside the isolation, its
+        /// slider belonging to the group as a whole (§14.7).
+        dest_opacity: f32,
+        /// What the surviving layer's params become. The destination's own, untouched,
+        /// when it is a carrier; otherwise the pair's shared mode at full opacity, both
+        /// sliders having been folded into the tiles.
+        keeps: CompositeParams,
+    },
+    /// The source is a **filter layer**, and the merge runs it over the destination's
+    /// stored channels (§14.11.7).
     ///
-    /// Its `opacity` is the source's own, and it is folded into the merged tiles.
-    pub source_params: CompositeParams,
-    /// What the destination's tiles are worth on their own: its own opacity when the
-    /// two are siblings, and **1.0 when the destination is the carrier** — a group's
-    /// base composites at [`CompositeParams::IDENTITY`] inside the isolation, its
-    /// slider belonging to the group as a whole (§14.7).
-    pub dest_opacity: f32,
-    /// What the surviving layer's params become. The destination's own, untouched,
-    /// when it is a carrier; otherwise the pair's shared mode at full opacity, both
-    /// sliders having been folded into the tiles.
-    pub keeps: CompositeParams,
+    /// The filter travels rather than being re-read on the far side, on
+    /// `source_params`' argument: the plan is the whole description of the operation,
+    /// and the applying side should not have to go back to the tree for half of it.
+    ///
+    /// **No `dest_opacity` and no `keeps`**, and their absence is the content of this
+    /// variant. The destination keeps every one of its params — a filter merge does
+    /// not stack anything onto it, so there is nothing for its sliders to have to
+    /// absorb — and its opacity never enters the arithmetic at all: pass A's slab law
+    /// scales coverage and height and leaves the color alone, so the un-premultiplied
+    /// color the filter is defined on is the same whatever the slider says.
+    Filter {
+        filter: super::filter::Filter,
+        /// The filter layer's own params, which is what the **compositor** reads of
+        /// one (§21.4): the opacity is the filter's strength and has to be baked in,
+        /// or a half-applied grade would merge to a fully applied one.
+        ///
+        /// Carried whole rather than as that one number, so the merge builds its draw
+        /// through the same `FilterDraw::new` the draw list does. The clip rides along
+        /// having nothing to do — it is the identity for every filter that may come
+        /// this way (§21.4.1) — and dropping it here would mean this path and the
+        /// screen's read the layer differently, which is the divergence the shared
+        /// constructor exists to rule out.
+        source_params: CompositeParams,
+    },
 }
 
 /// The merge of `source` into the layer beneath it, or `None` when there is none that
@@ -106,10 +185,11 @@ pub struct MergePlan {
 pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
     let site = state.site_of(source)?;
     let s = state.layer(source)?;
-    // Both sides have to be paint that carries nothing — the source because a subtree
-    // cannot travel as one tile, the destination because what sits beneath the source
-    // would then be a whole group rather than that layer's content.
-    if !is_plain_paint(s) {
+    // A source is one of two things, and which one decides the whole shape of the
+    // merge (see [`MergeKind`]): paint that carries nothing — a subtree cannot travel
+    // as one tile — or a **filter**, which carries nothing by construction (§21.2).
+    let filter = s.filter();
+    if filter.is_none() && !is_plain_paint(s) {
         return None;
     }
 
@@ -143,6 +223,48 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
     if s.visible != d.visible {
         return None;
     }
+
+    // A **filter** source, which is the whole of the second kind of merge (§14.11.7).
+    //
+    // It asks §14.11.2's second question and nothing else, because for a filter that
+    // question *is* the operation: a filter rewrites the accumulator beneath it, so
+    // baking it into the destination is the same picture exactly when the accumulator
+    // beneath it is that destination alone. Which is `backdrop_is_dest` — the same
+    // predicate a clipped layer answers, asked of a layer that is nothing but its
+    // backdrop, rewritten.
+    //
+    // The first question — does the source reach the accumulator by plain "over"? —
+    // has no bearing here. Nothing arrives to be stacked, so there is no
+    // associativity to lean on and no mode to agree about; the filter's own blend is
+    // refused by state (§21.4) and its clip is absorbed, being the identity for every
+    // filter that may come this way.
+    if let Some(f) = filter {
+        // A filter that **resamples** is refused, and by a law rather than a
+        // preference: the merged tiles are written by a pass that must be a pure
+        // function of canvas position (§6.4), and a gather is not one at any apron
+        // width. `Filter::resamples` is where that is decided, once.
+        //
+        // The destination must be **paint**, and — unless it is the carrier, which by
+        // definition carries this filter — must carry nothing itself: what a group's
+        // base composites to is not what the group composites to, so rewriting the
+        // base would not be rewriting what the filter read.
+        if !backdrop_is_dest || f.resamples() {
+            return None;
+        }
+        let dest_is_carrier = site.carrier == Some(dest);
+        if !d.content_is_paint() || (!dest_is_carrier && d.is_group()) {
+            return None;
+        }
+        return Some(MergePlan {
+            source,
+            dest,
+            kind: MergeKind::Filter {
+                filter: f,
+                source_params: s.composite,
+            },
+        });
+    }
+
     // A clip is stated against the backdrop, so it can only be folded into a layer
     // that **is** the backdrop.
     if s.composite.clip && !backdrop_is_dest {
@@ -209,15 +331,17 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
     Some(MergePlan {
         source,
         dest,
-        source_params: s.composite,
-        // A carrier's own content composites at full strength inside the isolation;
-        // a sibling's rides its own slider (§14.7).
-        dest_opacity: if site.index == 0 && site.carrier.is_some() {
-            1.0
-        } else {
-            d.composite.opacity
+        kind: MergeKind::Stack {
+            source_params: s.composite,
+            // A carrier's own content composites at full strength inside the
+            // isolation; a sibling's rides its own slider (§14.7).
+            dest_opacity: if site.index == 0 && site.carrier.is_some() {
+                1.0
+            } else {
+                d.composite.opacity
+            },
+            keeps,
         },
-        keeps,
     })
 }
 
@@ -227,8 +351,9 @@ fn is_plain_paint(l: &Layer) -> bool {
 }
 
 impl Layer {
-    /// Whether this layer's own content is painted tiles — a matte and a filter are
-    /// neither merged nor merged into (§14.11).
+    /// Whether this layer's own content is painted tiles — a **matte** is neither
+    /// merged nor merged into (§14.11), and a filter is merged but never merged into
+    /// (§14.11.7), having no tiles to rewrite.
     fn content_is_paint(&self) -> bool {
         matches!(self.content, LayerContent::Paint(_))
     }
@@ -237,11 +362,12 @@ impl Layer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{BlendMode, DRAGO_K, Place};
+    use crate::document::{BlendMode, ChromaticAberration, ColorAdjust, DRAGO_K, Filter, Place};
 
     const A: LayerId = LayerId(0);
     const B: LayerId = LayerId(1);
     const C: LayerId = LayerId(2);
+    const D: LayerId = LayerId(3);
 
     const MODES: [BlendMode; 3] = [
         BlendMode::Reinhard,
@@ -263,8 +389,28 @@ mod tests {
 
     /// What each side is worth and what the survivor keeps — the whole plan bar the
     /// two ids, which `dest` covers.
+    ///
+    /// `None` for a **filter** merge as well as for no merge at all, and that is the
+    /// right shape rather than a lossy one: none of these three exists there (see
+    /// [`MergeKind`]), and the filter merge has [`merged_filter`] to ask instead.
     fn terms(state: &DocState, source: LayerId) -> Option<(CompositeParams, f32, CompositeParams)> {
-        plan(state, source).map(|p| (p.source_params, p.dest_opacity, p.keeps))
+        match plan(state, source)?.kind {
+            MergeKind::Stack {
+                source_params,
+                dest_opacity,
+                keeps,
+            } => Some((source_params, dest_opacity, keeps)),
+            MergeKind::Filter { .. } => None,
+        }
+    }
+
+    /// The filter a merge of `source` would run over its destination, if that is the
+    /// merge on offer.
+    fn merged_filter(state: &DocState, source: LayerId) -> Option<Filter> {
+        match plan(state, source)?.kind {
+            MergeKind::Filter { filter, .. } => Some(filter),
+            MergeKind::Stack { .. } => None,
+        }
     }
 
     fn faded(opacity: f32) -> CompositeParams {
@@ -466,11 +612,14 @@ mod tests {
         );
     }
 
-    /// Neither a matte nor a filter has a tile map, so neither is merged nor merged
-    /// into (§15.2, §21) — the same refusal a stroke aimed at one gets.
+    /// A **matte** has no tile map, so it is neither merged nor merged into (§15.2) —
+    /// the same refusal a stroke aimed at one gets — and neither is a **filter**
+    /// merged *into*, for the same reason read the other way: there are no channels
+    /// there to rewrite. (A filter as the *source* is the second kind of merge, and
+    /// the tests below are its.)
     #[test]
-    fn only_paint_merges() {
-        use crate::document::{ColorAdjust, Filter, MatteRegion};
+    fn only_paint_is_merged_into() {
+        use crate::document::MatteRegion;
         use crate::geom::Vec2;
 
         let region = MatteRegion::OutsideRect {
@@ -489,10 +638,107 @@ mod tests {
         assert_eq!(dest(&over_matte, C), None, "a matte destination");
         assert_eq!(dest(&over_matte, B), None, "a matte source");
 
-        let with_filter = DocState::with_layer(A)
-            .insert_filter(B, None, Some(A), Filter::Color(ColorAdjust::NEUTRAL))
+        let over_filter = DocState::with_layer(A)
+            .insert_filter(B, None, Some(A), GREY)
             .insert_layer(C, None, Some(B));
-        assert_eq!(dest(&with_filter, C), None, "a filter destination");
-        assert_eq!(dest(&with_filter, B), None, "a filter source");
+        assert_eq!(dest(&over_filter, C), None, "a filter destination");
+    }
+
+    /// A point filter, dialled — the merge has to be offered for a filter that does
+    /// something, since a neutral one is dropped from the draw list entirely (§21.3).
+    const GREY: Filter = Filter::Color(ColorAdjust {
+        saturation: 0.0,
+        ..ColorAdjust::NEUTRAL
+    });
+
+    /// A filter that reads its neighbours (§21.10).
+    const FRINGE: Filter = Filter::Chromatic(ChromaticAberration {
+        spread: 8.0,
+        angle: 0.0,
+    });
+
+    /// **A filter merges exactly where its backdrop is the destination alone**
+    /// (§14.11.7) — the same predicate §14.11.2 asks of every source, and for a
+    /// filter the only one that binds.
+    ///
+    /// Both positions, because they are two different sentences that happen to agree:
+    /// carried onto a layer, the base composites at the bottom of the group it opens
+    /// (§14.1); second from the foot of the root, the accumulator starts cleared.
+    #[test]
+    fn a_filter_merges_where_its_backdrop_is_its_destination() {
+        let carried = DocState::with_layer(A).insert_filter(B, Some(A), None, GREY);
+        assert_eq!(dest(&carried, B), Some(A), "carried onto a painted layer");
+        assert_eq!(merged_filter(&carried, B), Some(GREY));
+
+        let foot = DocState::with_layer(A).insert_filter(B, None, Some(A), GREY);
+        assert_eq!(dest(&foot, B), Some(A), "second from the foot of the root");
+        assert_eq!(merged_filter(&foot, B), Some(GREY));
+    }
+
+    /// Anywhere else it is filtering more than the destination, and baking it into
+    /// that one layer would change the picture — the merge law itself (§14.11).
+    #[test]
+    fn a_filter_above_more_than_its_destination_does_not_merge() {
+        // Root [A, B, F]: the filter reads A composited with B, not B alone.
+        let state = flat().insert_filter(D, None, Some(C), GREY);
+        assert_eq!(dest(&state, D), None, "third from the foot of the root");
+
+        // Root [A, G[X], F]: the destination is a group, so what the filter read is
+        // the group's composite and rewriting the base is not rewriting that.
+        let over_group = DocState::with_layer(A)
+            .insert_layer(C, Some(A), None)
+            .insert_filter(B, None, Some(A), GREY);
+        assert_eq!(dest(&over_group, B), None, "a group as the destination");
+    }
+
+    /// **A resampling filter never merges**, in either position — the refusal
+    /// `Filter::resamples` exists to make (§14.11.7, §6.4). Not a judgement about the
+    /// picture but about the pass: a gather is not a function of canvas position, and
+    /// a tile's apron is only as wide as one.
+    #[test]
+    fn a_resampling_filter_never_merges() {
+        let carried = DocState::with_layer(A).insert_filter(B, Some(A), None, FRINGE);
+        assert_eq!(dest(&carried, B), None, "carried onto a painted layer");
+
+        let foot = DocState::with_layer(A).insert_filter(B, None, Some(A), FRINGE);
+        assert_eq!(dest(&foot, B), None, "second from the foot of the root");
+    }
+
+    /// **The destination keeps everything**, and the filter's own strength travels.
+    ///
+    /// Two halves of one claim, which is why they are one test. A filter merge
+    /// rewrites channels and stacks nothing, so there is no reconciling to do and
+    /// [`terms`] has nothing to report — while the *strength* is exactly what a merge
+    /// that dropped it would get silently wrong, turning a half-applied grade into a
+    /// fully applied one with the layer that said so already gone.
+    #[test]
+    fn a_filter_merge_bakes_its_strength_and_reconciles_nothing() {
+        let state = DocState::with_layer(A)
+            .insert_filter(B, Some(A), None, GREY)
+            .set_layer_opacity(B, 0.4)
+            .set_layer_opacity(A, 0.25)
+            .set_layer_blend(A, BlendMode::Multiply);
+        assert_eq!(
+            terms(&state, B),
+            None,
+            "a filter merge reconciles no params"
+        );
+        let MergeKind::Filter {
+            filter,
+            source_params,
+        } = plan(&state, B).expect("the merge is offered").kind
+        else {
+            unreachable!("a filter source plans a filter merge")
+        };
+        assert_eq!(filter, GREY);
+        assert_eq!(
+            source_params.opacity, 0.4,
+            "the strength has to be baked in"
+        );
+        // The destination's own params are not in the plan at all, which is the
+        // structural half: there is no field here that could carry them wrongly.
+        let after = state.layer(A).expect("the destination");
+        assert_eq!(after.composite.opacity, 0.25);
+        assert_eq!(after.composite.blend, BlendMode::Multiply);
     }
 }

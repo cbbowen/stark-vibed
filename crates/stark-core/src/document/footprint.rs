@@ -332,8 +332,11 @@ pub fn footprint(action: &Action) -> Footprint {
             writes: vec![Resource::Paint(*layer, fill_rect(op))],
         },
         // A merge is a function of **everything about both layers**, because that is
-        // what its plan reads: the tiles it stacks, and the blend, clip, opacity and
-        // visibility that decide whether the merge is offered at all (§14.11). It is
+        // what its plan reads: the tiles it stacks, the blend, clip, opacity and
+        // visibility that decide whether the merge is offered at all (§14.11), and the
+        // **filter**, which for a filter source is both half the offer (a resampling
+        // kind is declined, §14.11.7) and the thing the merge writes into the
+        // destination's texels. It is
         // also a function of the tree's shape, which decides what "down" means — and
         // `StackOrder` is written here, so the write covers that read.
         //
@@ -354,6 +357,11 @@ pub fn footprint(action: &Action) -> Footprint {
                         // read; only the destination's is *written* (below), the
                         // source having ceased to exist.
                         Resource::Prop(id, Prop::Opacity),
+                        // Claimed on both ids like everything else here, though only a
+                        // source can carry one: a merge that commuted with a `SetFilter`
+                        // would bake a filter the log says was replaced, and the pixels
+                        // could not say which one had run.
+                        Resource::Prop(id, Prop::Filter),
                     ]
                 })
                 .chain([Resource::Paint(*source, TileRect::ALL)])

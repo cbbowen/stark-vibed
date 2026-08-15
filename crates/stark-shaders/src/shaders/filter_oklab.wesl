@@ -14,7 +14,7 @@
 
 import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab};
 import package::lib::quad::{fullscreen_clip};
-import package::lib::paint_common::{COVERAGE_EPS};
+import package::lib::paint_common::{COVERAGE_EPS, PAINT_EPS};
 import package::filter_common::{
     FsOut, f, FILTER_CHROMATIC, back_color, back_aux, back_samp, filtered, resolve,
     is_clipped, ca_taps, ca_s, ca_uv, ca_weight, ca_lum,
@@ -83,4 +83,36 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let chan = cb.rgb / max(cb.a, COVERAGE_EPS);
     let out_chan = filtered(chan);
     return resolve(cb, chan, out_chan, h);
+}
+
+// —— the merge (§14.11.7) ————————————————————————————————————————————————————
+//
+// One **tile's** worth of a point filter: what a filter layer merged into the paint
+// beneath it does to that paint's stored channels.
+//
+// It is the fragment above with one substitution, and the substitution is the whole
+// argument for merging a filter at all. A tile carries a *per-unit opacity* where the
+// accumulator carries *coverage* (§6.1), and both carry the channels premultiplied by
+// their own — but the filter is defined on the **un-premultiplied** channels, and for
+// a layer composited alone those are the same three numbers either way: pass A's slab
+// law scales coverage and height and leaves the color where it found it. So the merge
+// needs no trip out through `slab.wesl` and back; it un-premultiplies by the tile's own
+// alpha (`PAINT_EPS`, the tile-space guard) and tails through the very `resolve` the
+// screen takes.
+//
+// **Why only a point filter may come here.** Every pass that writes tiles must be a
+// pure function of canvas position (§6.4) — that is what keeps a tile's apron
+// bit-identical to its neighbour's interior without a copy pass, and `tests/seam.rs`
+// guards it. This one is: the texel's own channels in, its own channels out, so the
+// apron texel and the neighbour's interior are the same input and come out the same
+// number. A **gather** is not, and no width of apron would make it so at an arbitrary
+// spread — which is why the merge rule refuses one (§14.11.7) rather than this file
+// growing a branch for it.
+@fragment
+fn fs_tile(@builtin(position) frag: vec4<f32>) -> FsOut {
+    let p = vec2<i32>(floor(frag.xy));
+    let c = textureLoad(back_color, p, 0); // (Oklab · opacity, per-unit opacity)
+    let h = textureLoad(back_aux, p, 0).x;
+    let chan = c.rgb / max(c.a, PAINT_EPS);
+    return resolve(c, chan, filtered(chan), h);
 }

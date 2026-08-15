@@ -28,7 +28,7 @@ pub(crate) mod surface;
 pub(crate) mod tile;
 pub(crate) mod transform;
 
-pub(crate) use composite::BlendPass;
+pub(crate) use composite::{BlendPass, FilterPass};
 pub use composite::{
     CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, FilterDraw,
     GroupContent, MatteDraw, MediaParams, Offscreen, SelectionOutline,

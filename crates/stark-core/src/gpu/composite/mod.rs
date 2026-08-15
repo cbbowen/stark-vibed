@@ -56,7 +56,7 @@ use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
 
 pub(crate) use blend::{BlendPass, BlendUniform, UNIFORM_SLOT, blend_code};
 use blend::{ScratchLevel, ScratchTargets, Targets, UniformSlots};
-use filter::{FilterPass, FilterUniform};
+pub(crate) use filter::{FilterPass, FilterUniform};
 use group::scratch_needs;
 // The free items are imported by name rather than qualified, because `render`'s own
 // `guides` binding (the scene's list) would otherwise shadow the module in a reader's
@@ -170,7 +170,11 @@ pub struct CompositorPasses {
     blend: Arc<BlendPass>,
     /// Filter layers (§21) — the blend pass with the isolated source removed, so
     /// close to it that the two share the scratch and the pigment LUT.
-    filter: FilterPass,
+    ///
+    /// Shared with `gpu::merge` on the same terms as `blend` above: merging a filter
+    /// layer into the paint beneath it runs this module's tile-space entry point
+    /// (§14.11.7), so the merged tile comes out of the shader the screen runs.
+    filter: Arc<FilterPass>,
     overlay: OverlayPass,
     guides: GuidePass,
     media: MediaPass,
@@ -340,6 +344,7 @@ impl CompositorPipeline {
         surface: Surface,
         environment: Environment,
         blend: Arc<BlendPass>,
+        filter: Arc<FilterPass>,
     ) -> Self {
         let device = &ctx.device;
         let color_format = color_space.color_format();
@@ -352,7 +357,7 @@ impl CompositorPipeline {
         let passes = CompositorPasses {
             tiles: TilePass::new(device, &view, color_space, color_format, aux_format),
             blend,
-            filter: FilterPass::new(ctx, color_space, color_format, aux_format),
+            filter,
             overlay: OverlayPass::new(device, &view, target_format),
             guides: GuidePass::new(device, target_format),
             media: MediaPass::new(device, color_space, &screen),

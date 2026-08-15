@@ -25,7 +25,9 @@ use std::sync::Arc;
 
 use crate::colorspace::ColorSpace;
 use crate::document::BlendMode;
-use crate::gpu::composite::{BlendPass, BlendUniform, UNIFORM_SLOT, blend_code};
+use crate::gpu::composite::{
+    BlendPass, BlendUniform, FilterDraw, FilterPass, FilterUniform, UNIFORM_SLOT, blend_code,
+};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::tile::{AllocSource, TexHandle, TileMap, TilePairHandle, TilePool};
@@ -139,6 +141,11 @@ pub struct MergeRenderer {
     /// from the stack it replaced, which no amount of care in a second implementation
     /// could promise.
     blend: Arc<BlendPass>,
+    /// **The compositor's filter pass, shared** — on `blend`'s argument exactly, and
+    /// for the entry point beside the one the screen runs: `fs_tile` adjusts a tile's
+    /// stored channels in place, which is the whole of merging a filter layer into
+    /// the paint beneath it (§14.11.7).
+    filter: Arc<FilterPass>,
     /// Bound for whichever side has no tile at a coordinate the other does — the
     /// §6.8 pattern, so a one-sided tile runs the same shader as a two-sided one.
     zeroes: Zeroes,
@@ -150,6 +157,7 @@ impl MergeRenderer {
         color_space: &dyn ColorSpace,
         zeroes: Zeroes,
         blend: Arc<BlendPass>,
+        filter: Arc<FilterPass>,
     ) -> Self {
         let device = &ctx.device;
         let color_format = color_space.color_format();
@@ -227,6 +235,7 @@ impl MergeRenderer {
             store: slab("stark slab store", "fs_store"),
             slab_bgl,
             blend,
+            filter,
             zeroes,
         }
     }
@@ -305,6 +314,109 @@ impl MergeRenderer {
 
         rec.submit(&self.ctx.queue);
         tiles
+    }
+
+    /// The tiles of `dest` with `draw`'s filter run over each — what a **filter
+    /// layer** merged into the paint beneath it leaves behind (§14.11.7).
+    ///
+    /// A different shape from [`apply`](Self::apply) beside it, and the difference is
+    /// the operation's: nothing is stacked, so there is no second tile map, no
+    /// coverage arithmetic and no slab conversion. One pass per tile rewrites the
+    /// channels and copies everything else, which is what a filter does to what it
+    /// sits on — see the tile entry point in `filter_oklab.wesl` for why a tile needs
+    /// no trip out to composite space to be filtered.
+    ///
+    /// **Every tile is rewritten**, with no passthrough-by-handle: a filter has an
+    /// opinion about every texel it can reach, so there is no counterpart to the
+    /// lopsided-merge shortcut above. The one tile that costs nothing is the one that
+    /// does not exist — an empty destination merges to an empty destination.
+    pub fn apply_filter(&self, pool: &TilePool, dest: &TileMap, draw: &FilterDraw) -> TileMap {
+        debug_assert!(
+            draw.kind != stark_shaders::mirror::filter_common::FILTER_CHROMATIC,
+            "a resampling filter cannot be merged (§14.11.7) — `merge::plan` declines              it, because no apron makes a gather a function of canvas position (§6.4)",
+        );
+        let uniform = self.filter_uniform(draw);
+        let mut rec = Recording::new(&self.ctx.device);
+        let mut tiles = dest.clone();
+        for (coord, handle) in dest.iter() {
+            let out = self.acquire(pool, AllocSource::MergeDestination);
+            self.encode_filter(&mut rec, &uniform, Some(handle), &out);
+            rec.drawn = true;
+            tiles = tiles.insert(*coord, TilePairHandle::new(out.0, out.1, out.2));
+        }
+        rec.submit(&self.ctx.queue);
+        tiles
+    }
+
+    /// One tile's channels through the compositor's own filter shader, tile-space
+    /// entry point (§14.11.7).
+    ///
+    /// The bind group is [`Compositor::encode_filter`]'s, slot for slot, because it is
+    /// the same layout: the tile's three channel textures stand where the
+    /// accumulator's do, and the pigment LUT is the blend pass's, as it is on screen.
+    /// The sampler at 3 is bound and never read — `fs_tile` takes no taps — because a
+    /// bind group answers to the whole layout.
+    ///
+    /// [`Compositor::encode_filter`]: crate::gpu::composite
+    fn encode_filter(
+        &self,
+        rec: &mut Recording,
+        uniform: &wgpu::Buffer,
+        tile: Option<&TilePairHandle>,
+        out: &Trio,
+    ) {
+        let mut entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: uniform,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(std::mem::size_of::<FilterUniform>() as u64),
+                }),
+            },
+            desc::tex(1, self.color_of(tile)),
+            desc::tex(2, self.aux_of(tile)),
+            desc::samp(3, &self.filter.sampler),
+            desc::tex(5, &self.blend.pigment.view),
+            desc::samp(6, &self.blend.pigment.sampler),
+        ];
+        if self.resid_format.is_some() {
+            entries.push(desc::tex(7, self.resid_of(tile)));
+        }
+        let bg = self.bind("stark merge filter bg", &self.filter.bgl, &entries);
+        self.pass(rec, "stark merge filter", &self.filter.tile, &bg, &[0], out);
+    }
+
+    /// The filter pass's uniform, in a buffer wide enough for its dynamic-offset slot.
+    ///
+    /// [`blend_uniform`](Self::blend_uniform)'s twin, and it differs in one number:
+    /// this uniform is wider than a slot (it carries the gradient map's ramp), so the
+    /// buffer is sized to the struct rather than to `UNIFORM_SLOT`. The `disp` lane is
+    /// zero and stays zero — it is the *view's* number, and the only kind that reads
+    /// it is the one this merge refuses.
+    fn filter_uniform(&self, draw: &FilterDraw) -> wgpu::Buffer {
+        let size = std::mem::size_of::<FilterUniform>() as u64;
+        let buf = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stark merge filter uniform"),
+            size: size.max(UNIFORM_SLOT),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.ctx.queue.write_buffer(
+            &buf,
+            0,
+            bytemuck::bytes_of(&FilterUniform {
+                kind: draw.kind,
+                strength: draw.strength,
+                clip: u32::from(draw.clip),
+                disp: [0.0; 2],
+                params: draw.params,
+                params2: draw.params2,
+                stops: draw.stops.as_deref().copied().unwrap_or([[0.0; 4]; 16]),
+                ..Default::default()
+            }),
+        );
+        buf
     }
 
     /// The direct tile-space law: one pass, `merge.wesl` (§14.11).

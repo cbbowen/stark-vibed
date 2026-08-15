@@ -669,8 +669,9 @@ must go on showing it as `merge_D(B, D ⊕ S)`, for every `B`. Two independent q
   composite over its base, §14.1), or `S` sits second from the bottom of the **root**
   stack, whose accumulator starts cleared.
 
-Which gives the offered set. Both sides must be paint that carries nothing, both must
-be equally visible (hiding a layer hides what it carries, §14.3, so a merge across a
+Which gives the offered set — for a source made of **paint**; a filter source answers
+only the second question and is §14.11.7. Both sides must be paint that carries nothing,
+both must be equally visible (hiding a layer hides what it carries, §14.3, so a merge across a
 difference would reveal or conceal paint), and:
 
 | Where `S` sits | `S` may be | `D` may be |
@@ -742,10 +743,17 @@ construction; see §14.11.1.
 both, and there is no third mode that means "glow here and multiply there". This is the
 one refusal that is permanent rather than pending.
 
-**Mattes, filters and groups.** A matte and a filter have no tile map, so neither is
-merged nor merged into — the same refusal a stroke aimed at one gets (§15.7, §21.4). A
-group as the source would have to flatten a subtree; a group as the *destination* is not
-what sits beneath the source, its whole group is.
+**Mattes, groups, and a filter as the destination.** A matte has no tile map, so it is
+neither merged nor merged into — the same refusal a stroke aimed at one gets (§15.7) —
+and a filter is never merged *into*, for that reason read the other way: there are no
+channels there to rewrite. A group as the source would have to flatten a subtree; a
+group as the *destination* is not what sits beneath the source, its whole group is. (A
+**carrier** as the destination is not that case and is offered: the source is then the
+bottom member of the stack that carrier opens, so what sits beneath it is the carrier's
+own content.)
+
+A filter as the *source* used to be refused here too, and is not: it is the second kind
+of merge, §14.11.7.
 
 Everything else that was once refused now merges. The history is worth keeping because
 it was a wrong *reason* rather than a missing feature: same-mode siblings were called
@@ -765,13 +773,74 @@ merge treating its slider as a sibling's.
   names a different destination, which is what a concurrent reorder or a blend mode
   set since looks like from here — so every peer and every replay declines together.
 - **The footprint claims both layers whole**: their tiles, and the blend, clip,
-  opacity and visibility the plan reads. A merge that commuted with a blend-mode
-  change on either layer would silently change its own answer.
+  opacity, visibility and **filter** the plan reads. A merge that commuted with a
+  blend-mode change on either layer would silently change its own answer — and one
+  that commuted with a `SetFilter` would bake a grade the log says was replaced, with
+  nothing in the pixels able to say which had run.
 - **Cost is the overlap, not the document.** A tile only one side has passes through
   by handle, and within a shared tile the shader has an exact passthrough branch on
   each side — so merging a small stroke layer onto a canvas-spanning background
   rewrites the tiles the stroke covers and leaves the rest bit-identical, which
   `tests/merge.rs` asserts to the byte rather than to a tolerance.
+
+#### 14.11.7 Merging a filter layer
+
+Numbered after §14.11.6 for §14.11's own reason — the sections above are cited from the
+source and are not renumbered — though it belongs by subject beside §14.11.2.
+
+> A filter merge **rewrites** the destination's channels. It does not stack anything
+> into them.
+
+That is the whole difference, and everything below follows from it. A layer of paint
+arrives with a coverage, a height and params that have to be reconciled with the
+destination's; a filter arrives with none of those, because it never had any content —
+it is a function of what it sits on (§21). So the merged tile is
+
+```text
+    channels ← filtered(channels)          opacity, height: untouched
+```
+
+and the destination keeps **every** one of its own params: its blend, its clip, its
+opacity, its place. Nothing is folded into anything, because nothing arrived.
+
+**Why the channels alone.** A tile stores its channels premultiplied by a *per-unit
+opacity* while the accumulator carries them premultiplied by *coverage* (§6.1), and a
+filter is defined on the un-premultiplied channels. For a layer composited alone those
+are the same three numbers: pass A's slab law scales coverage and height and leaves the
+color where it found it. So the filter's own numbers do not depend on the destination's
+opacity slider at all, which is why there is no `dest_opacity` here and no slab
+conversion — the merge runs the compositor's own filter shader on a second entry point
+that reads a tile instead of the accumulator (`filter_oklab.wesl`).
+
+**What has to hold** is §14.11.2's second question, and only that one. A filter rewrites
+the accumulator beneath it, so baking it into `D` is the same picture exactly when that
+accumulator *is* `D` — the same two positions any source has to sit in:
+
+| Where the filter sits | Merges into |
+|---|---|
+| Bottom of its carrier's stack | the carrier's base — the "filter just this layer" gesture (§21.1), collapsed |
+| Second from the foot of the root stack | the foot |
+
+The first question — does the source reach the accumulator by plain "over"? — is
+vacuous: nothing arrives, so there is no associativity to lean on and no mode to agree
+about. The filter's own blend is refused by state (§21.4) and its clip is absorbed,
+being the identity for every filter that may come this way (§21.4.1).
+
+**One refusal of its own, and it is a law rather than a preference.** Every pass that
+writes tiles must be a pure function of canvas position (§6.4) — that is what makes a
+tile's apron bit-identical to its neighbour's interior without a copy pass, and
+`tests/seam.rs` guards it. A point filter is such a function: the texel's own channels
+in, its own channels out, so the apron texel and the neighbour's interior are the same
+input and come out the same number. A **gather** (§21.10) is not, and no width of apron
+would make it one — its reach is the document's to set, while the apron is one texel.
+So `Filter::resamples` is asked, and a chromatic aberration is declined. It is refused
+at the rule rather than approximated at the pass, which is the difference between a
+merge that is not offered and a merge that leaves a seam at every tile boundary.
+
+A **neutral** filter merges by doing nothing at all: the draw list already leaves one
+out (§21.3), so it contributes nothing to the picture, and the tiles are handed across
+by handle rather than run through a pass that would land the identity plus one round
+trip's rounding.
 
 #### 14.11.6 Invariants worth a test (`tests/merge.rs`)
 
@@ -792,6 +861,15 @@ agreement with the compositor, and the compositor is what a render runs.
    would not have told you *which* bug had been avoided.
 4. A merge the rule does not offer is a silent no-op that logs nothing, so the
    panel's rule and the engine's are one rule.
+5. A **filter** merged into its carrier, and one merged into the foot of the root,
+   leave the composite unchanged within a bit (§14.11.7) — while a **neutral** one is
+   exact to the byte, which is the structural half: the tiles are handed across, so a
+   merge that ran the identity through the pass anyway would fail it. A half-applied
+   filter under a faded, `Multiply` carrier covers the rest of the sentence: the
+   strength lands inside the tiles and the destination's own params do not move.
+6. A filter that **resamples** is never offered one, and the same row with a point
+   filter on it is — so the refusal is pinned to `Filter::resamples` rather than to
+   anything about the arrangement.
 5. Undo restores both layers — record, place, and the destination's own opacity,
    which the fold had set to 1 — by handle, so it is exact; redo reproduces the
    merge exactly.

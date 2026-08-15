@@ -593,6 +593,49 @@ impl history::Action for Action {
                     tracing::warn!("merge down no longer names this destination; ignored");
                     return Ok(state);
                 }
+                // A **filter** source is the other kind of merge (§14.11.7): nothing
+                // is stacked, so the destination's channels are rewritten where they
+                // stand and every other thing about that layer — its blend, its clip,
+                // its opacity, its place — is left exactly as it was.
+                if let super::merge::MergeKind::Filter {
+                    filter,
+                    source_params,
+                } = &plan.kind
+                {
+                    let Some(tiles) = paint_base(&state, *dest) else {
+                        return Ok(state);
+                    };
+                    // A **neutral** filter is not run at all, and that is the honest
+                    // answer rather than a shortcut: the draw list already leaves one
+                    // out (§21.3), so what it contributes to the picture is nothing,
+                    // and the merge that must not change the picture therefore has
+                    // nothing to write. Rewriting the tiles anyway would spend a pass
+                    // per tile to land the identity *plus* one round trip's rounding.
+                    let merged = if filter.is_neutral() {
+                        tiles
+                    } else {
+                        ctx.merge.apply_filter(
+                            &ctx.pool,
+                            &tiles,
+                            // Built through the very constructor the draw list goes
+                            // through, off the very params the compositor reads
+                            // (§21.4) — so the merged tile is what the screen was
+                            // showing, not a second reading of the same layer.
+                            &crate::gpu::composite::FilterDraw::new(filter.clone(), *source_params),
+                        )
+                    };
+                    return Ok(state
+                        .map_layer(*dest, |l| l.with_tiles(merged.clone()))
+                        .remove_layer(*source));
+                }
+                let super::merge::MergeKind::Stack {
+                    source_params,
+                    dest_opacity,
+                    keeps,
+                } = plan.kind
+                else {
+                    unreachable!("the filter kind returned above")
+                };
                 // Both sides are paint that carries nothing — `plan` said so — so the
                 // tile maps are there to be read. Cloned out before the rewrite for
                 // the reason `paint_base` clones: a handful of `Arc` bumps, and it is
@@ -614,19 +657,19 @@ impl history::Action for Action {
                     crate::gpu::merge::MergeScene {
                         lower: crate::gpu::merge::MergeSide {
                             tiles: &lower,
-                            opacity: plan.dest_opacity,
+                            opacity: dest_opacity,
                         },
                         upper: crate::gpu::merge::MergeSide {
                             tiles: &upper,
-                            opacity: plan.source_params.opacity,
+                            opacity: source_params.opacity,
                         },
-                        blend: plan.source_params.blend,
-                        clip: plan.source_params.clip,
+                        blend: source_params.blend,
+                        clip: source_params.clip,
                     },
                 );
                 state
                     .map_layer(*dest, |l| Layer {
-                        composite: plan.keeps,
+                        composite: keeps,
                         ..l.with_tiles(tiles)
                     })
                     .remove_layer(*source)

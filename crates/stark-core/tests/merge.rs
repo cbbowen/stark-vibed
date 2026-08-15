@@ -25,7 +25,9 @@ mod common;
 
 use common::*;
 use stark_core::command::{DocCommand, PeerCommand};
-use stark_core::document::{BlendMode, DRAGO_K, LayerId, Place};
+use stark_core::document::{
+    BlendMode, ChromaticAberration, ColorAdjust, DRAGO_K, Filter, LayerId, Place,
+};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, LayerInfo, RgbaImage};
 
@@ -599,4 +601,191 @@ fn a_clipped_member_merges_into_a_faded_carrier() {
 
     let (before, after, _) = merged(&mut engine, carried);
     unchanged(&before, &after, 2, "a clipped member under a faded base");
+}
+
+// ---------------------------------------------------------------------------
+// The second kind of merge: a filter layer, run into the paint beneath it (§14.11.7).
+// ---------------------------------------------------------------------------
+
+/// Add a filter into `carrier`'s stack (the document's own when `None`) and hand back
+/// its id — `tests/filter.rs`'s helper, on its argument: the engine mints the id, so
+/// the new filter is the layer the projection *gained*.
+fn add_filter(engine: &mut Engine, carrier: Option<LayerId>, filter: Filter) -> LayerId {
+    let before: Vec<LayerId> = engine.observe().layers.iter().map(|l| l.id).collect();
+    engine.process(DocCommand::AddFilter {
+        carrier,
+        above: None,
+        filter,
+    });
+    engine
+        .observe()
+        .layers
+        .iter()
+        .find(|l| l.filter.is_some() && !before.contains(&l.id))
+        .map(|l| l.id)
+        .expect("the filter landed")
+}
+
+/// Every color drained away — the sharpest filter to test a merge with, for
+/// `tests/filter.rs`'s reason: it is visible on any painting and its correct answer
+/// differs from the naive one, so a merge that took a shortcut through the wrong
+/// space would not merely round differently, it would land a different grey.
+const GREY: Filter = Filter::Color(ColorAdjust {
+    saturation: 0.0,
+    ..ColorAdjust::NEUTRAL
+});
+
+/// **A filter carried onto a layer, merged into it** — the gesture §21.1 spells
+/// "filter just this one", collapsed to the one layer it was always describing.
+///
+/// The tolerance is the file's usual one bit, and it is worth saying where it comes
+/// from here because the path is not the stacking law's. Both renders run the same
+/// adjustment on the same channels; what differs is *when* the result meets f16
+/// storage — the stack filters the accumulator in f32 and the merge stores the
+/// filtered channels into a tile first. One quantization, one bit.
+#[test]
+fn merging_a_filter_into_its_carrier_leaves_the_picture_alone() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    paint(&mut engine, WARM, 44.0, H_STROKE);
+    let filter = add_filter(&mut engine, Some(ROOT), GREY);
+
+    let (before, after, dest) = merged(&mut engine, filter);
+    assert_eq!(
+        dest, ROOT,
+        "a carried filter merges into its carrier's base"
+    );
+    unchanged(&before, &after, 1, "a filter merged into its carrier");
+    assert_eq!(
+        engine.observe().layers.len(),
+        1,
+        "the group should have collapsed to the one layer that was its base",
+    );
+}
+
+/// The other position the rule offers (§14.11.7): a filter second from the foot of
+/// the root stack, whose backdrop is the foot alone because the accumulator starts
+/// cleared.
+#[test]
+fn merging_a_filter_at_the_foot_of_the_root_leaves_the_picture_alone() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    paint(&mut engine, WARM, 44.0, H_STROKE);
+    let filter = add_filter(&mut engine, None, GREY);
+
+    let (before, after, dest) = merged(&mut engine, filter);
+    assert_eq!(dest, ROOT);
+    unchanged(&before, &after, 1, "a filter above the foot of the root");
+}
+
+/// **The destination keeps its own params, and the filter's strength is baked.**
+///
+/// Both at once, because together they are the whole of what makes a filter merge
+/// different from a stacking one: nothing arrives to be reconciled, so the survivor's
+/// blend, clip and opacity are untouched — while the *strength*, which belongs to the
+/// layer that is about to stop existing, has to end up inside the tiles. A merge that
+/// dropped it would turn a half-applied grade into a fully applied one, and the row
+/// that said "half" would be gone.
+#[test]
+fn a_filter_merge_keeps_the_destinations_params_and_bakes_its_strength() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    paint(&mut engine, PALE, 60.0, H_STROKE);
+    let base = add_layer(&mut engine);
+    paint(&mut engine, WARM, 44.0, V_STROKE);
+    let filter = add_filter(&mut engine, Some(base), GREY);
+    engine.process(DocCommand::SetLayerOpacity(filter, 0.4));
+    engine.process(DocCommand::SetLayerOpacity(base, 0.7));
+    engine.process(DocCommand::SetLayerBlend(base, BlendMode::Multiply));
+
+    let (before, after, dest) = merged(&mut engine, filter);
+    unchanged(
+        &before,
+        &after,
+        2,
+        "a half-applied filter under a faded carrier",
+    );
+
+    let kept = info(&engine, dest).expect("the survivor");
+    assert_eq!(kept.opacity, 0.7, "the destination's slider must not move");
+    assert_eq!(kept.blend, BlendMode::Multiply, "nor its mode");
+}
+
+/// A **neutral** filter merges to the byte, and the exactness is the claim.
+///
+/// The draw list already leaves a neutral filter out (§21.3), so it contributes
+/// nothing to the picture and the merge that must not change the picture has nothing
+/// to write. That is a stronger statement than "it rounds well": the tiles are handed
+/// across untouched, so a merge which ran the identity through the pass anyway — one
+/// un-premultiply and one re-multiply, in f16 — would fail here at a bit.
+#[test]
+fn merging_a_neutral_filter_is_exact() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    paint(&mut engine, WARM, 44.0, H_STROKE);
+    let filter = add_filter(&mut engine, Some(ROOT), Filter::Color(ColorAdjust::NEUTRAL));
+
+    let (before, after, _) = merged(&mut engine, filter);
+    unchanged(&before, &after, 0, "a neutral filter");
+}
+
+/// **A filter that resamples is never offered** (§14.11.7) — the refusal, seen from
+/// the panel, which is where it has to be visible: a control that is absent is the
+/// engine's rule and the frontend's agreeing (§14.11.4).
+///
+/// Beside it, the same filter's *kind* changed to a point one turns the offer back
+/// on, so this pins the refusal to `Filter::resamples` rather than to something about
+/// the arrangement — which is otherwise identical.
+#[test]
+fn a_resampling_filter_is_never_offered_a_merge() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    paint(&mut engine, WARM, 44.0, H_STROKE);
+    let filter = add_filter(
+        &mut engine,
+        Some(ROOT),
+        Filter::Chromatic(ChromaticAberration {
+            spread: 8.0,
+            angle: 0.0,
+        }),
+    );
+    assert_eq!(
+        offered(&engine, filter),
+        None,
+        "a gather cannot be baked into tiles (§6.4)",
+    );
+
+    engine.process(DocCommand::SetFilter(filter, GREY));
+    assert_eq!(
+        offered(&engine, filter),
+        Some(ROOT),
+        "the same row, with a point filter on it, merges",
+    );
+}
+
+/// The filter merge in a **pigment** document (§6.7) — the arm no test above reaches.
+///
+/// Worth its own case for the reason `tests/filter.rs` gives the chromatic filter's
+/// pigment twin, and this file learned the hard way: a color space's filter shader is
+/// compiled when a document in that space first renders, so a mistake in the pigment
+/// tile pass is invisible to `cargo check`, to clippy, and to every Oklab test here.
+/// What it covers beyond the shader compiling is the residual leg (§6.7): the merged
+/// tile has to carry both halves of the color, or a filtered black would come back
+/// `#383838` the moment it was baked.
+#[cfg(feature = "mixbox")]
+#[test]
+fn a_filter_merges_in_a_pigment_document() {
+    let Some(mut engine) = engine_or_skip_with(stark_core::colorspace::ColorSpaceId::Mixbox) else {
+        return;
+    };
+    paint(&mut engine, WARM, 44.0, H_STROKE);
+    let filter = add_filter(&mut engine, Some(ROOT), GREY);
+
+    let (before, after, _) = merged(&mut engine, filter);
+    unchanged(&before, &after, 2, "a filter merged in pigment");
 }

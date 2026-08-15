@@ -19,7 +19,7 @@ import package::lib::color::{
 import package::gen::mixbox_poly::{mixbox_eval_polynomial};
 import package::mixbox_lut::{mixbox_srgb_to_concentrations};
 import package::lib::quad::{fullscreen_clip};
-import package::lib::paint_common::{COVERAGE_EPS};
+import package::lib::paint_common::{COVERAGE_EPS, PAINT_EPS};
 import package::filter_common::{
     f, FILTER_CHROMATIC, back_color, back_aux, back_samp, filtered, resolve, weigh,
     is_clipped, ca_taps, ca_s, ca_uv, ca_weight, ca_lum,
@@ -47,6 +47,39 @@ struct FsOut {
 fn latent_to_lab(conc: vec3<f32>, res: vec3<f32>) -> vec3<f32> {
     let srgb = clamp(mixbox_eval_polynomial(conc) + res, vec3<f32>(0.0), vec3<f32>(1.0));
     return linear_srgb_to_oklab(srgb_to_linear(srgb));
+}
+
+// The two halves of a pigment color (§6.7), as one value — what `latent_to_lab`
+// undoes, and what every arm here has to produce before it can write a target.
+struct Latent {
+    conc: vec3<f32>,
+    res: vec3<f32>,
+}
+
+// Linear light → a latent: `mixbox_rgb_to_latent`, spelled out. The LUT is indexed
+// by sRGB on `[0,1]`, so the clamp precedes it — `max(…, 0)` because an adjustment
+// can step outside the gamut and a summed spectrum can dip below zero. The residual
+// is then what the polynomial cannot say about the color that arrived (§6.7);
+// without that second half a filter landing on black would store a mixture the media
+// pass renders `#383838`, and every filtered texel would be pulled toward the
+// polynomial's reachable set.
+//
+// **Light** rather than Oklab is the interface because the gather arrives in light
+// and the point filters arrive in Oklab, and only one of those trips is free to be
+// undone. One definition, three callers — the point path, the gather and the merge.
+fn linear_to_latent(lin: vec3<f32>) -> Latent {
+    let srgb = clamp(
+        linear_to_srgb(max(lin, vec3<f32>(0.0))),
+        vec3<f32>(0.0), vec3<f32>(1.0),
+    );
+    let conc = mixbox_srgb_to_concentrations(srgb);
+    return Latent(conc, srgb - mixbox_eval_polynomial(conc));
+}
+
+// [`linear_to_latent`] for a color that arrives in the space the point filters work
+// in — `latent_to_lab`'s inverse, and the leg the merge takes too.
+fn lab_to_latent(lab: vec3<f32>) -> Latent {
+    return linear_to_latent(oklab_to_linear_srgb(lab));
 }
 
 // A latent (concentrations + residual) → **linear light**, the space the chromatic
@@ -119,16 +152,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
             y_acc += y;
         }
         let a = cov_acc / y_acc;
-        // Out of light and back into pigment, once, for the summed spectrum: the
-        // LUT is indexed by sRGB on `[0,1]`, so the clamp precedes it.
-        let srgb = clamp(
-            linear_to_srgb(max(lin_acc / w_acc / max(a, COVERAGE_EPS), vec3<f32>(0.0))),
-            vec3<f32>(0.0), vec3<f32>(1.0),
-        );
-        let out_conc = mixbox_srgb_to_concentrations(srgb);
-        // The rest of `mixbox_rgb_to_latent`: what the polynomial cannot say about
-        // the color the gather arrived at (§6.7).
-        let out_res = srgb - mixbox_eval_polynomial(out_conc);
+        // Out of light and back into pigment, once, for the summed spectrum.
+        let gathered = linear_to_latent(lin_acc / w_acc / max(a, COVERAGE_EPS));
+        let out_conc = gathered.conc;
+        let out_res = gathered.res;
         // **Clipped**: the fringe's color lands, its displaced coverage does not
         // (§21.4) — `filter_oklab.wesl`'s branch, with the residual carried through
         // the same tail the point path takes.
@@ -152,19 +179,30 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let chan = cb.rgb / max(cb.a, COVERAGE_EPS);
     let res = rb.rgb / max(cb.a, COVERAGE_EPS);
 
-    let lab = filtered(latent_to_lab(chan, res));
-    // `max(…, 0)` before the sRGB encode, then a clamp: the adjustment can step
-    // outside the gamut, and the LUT is indexed by sRGB.
-    let srgb = clamp(
-        linear_to_srgb(max(oklab_to_linear_srgb(lab), vec3<f32>(0.0))),
-        vec3<f32>(0.0), vec3<f32>(1.0),
-    );
-    let out_chan = mixbox_srgb_to_concentrations(srgb);
-    // The rest of `mixbox_rgb_to_latent`: what the polynomial cannot say about the
-    // color the filter arrived at. Without it a filter that landed on black would
-    // store a mixture the media pass renders `#383838`, and every filtered texel
-    // would be pulled toward the polynomial's reachable set.
-    let out_res = srgb - mixbox_eval_polynomial(out_chan);
+    let adjusted = lab_to_latent(filtered(latent_to_lab(chan, res)));
 
-    return resolve_latent(cb, chan, res, out_chan, out_res, h);
+    return resolve_latent(cb, chan, res, adjusted.conc, adjusted.res, h);
+}
+
+// —— the merge (§14.11.7) ——————————————————————————————————————————————————————
+//
+// `filter_oklab.wesl`'s `fs_tile`, in pigment: one tile's stored latent adjusted in
+// place, for a filter layer merged into the paint beneath it. That file's header
+// carries the argument — why a tile needs no trip through `slab.wesl`, and why only a
+// **point** filter may come here (§6.4's seam rule, which a gather cannot keep).
+//
+// The one thing this adds is the one thing pigment always adds: the color has two
+// halves, so both un-premultiply by the tile's own opacity and both come back through
+// `resolve_latent` (§6.7).
+@fragment
+fn fs_tile(@builtin(position) frag: vec4<f32>) -> FsOut {
+    let p = vec2<i32>(floor(frag.xy));
+    let c = textureLoad(back_color, p, 0); // (concentrations · opacity, opacity)
+    let r = textureLoad(back_resid, p, 0); // (residual · opacity, opacity)
+    let h = textureLoad(back_aux, p, 0).x;
+    let opacity = max(c.a, PAINT_EPS);
+    let chan = c.rgb / opacity;
+    let res = r.rgb / opacity;
+    let adjusted = lab_to_latent(filtered(latent_to_lab(chan, res)));
+    return resolve_latent(c, chan, res, adjusted.conc, adjusted.res, h);
 }
