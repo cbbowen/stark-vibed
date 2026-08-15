@@ -10,7 +10,7 @@
 use super::Engine;
 use super::render::visible_tiles;
 use crate::document::LayerId;
-use crate::geom::{Extent2, ViewTransform};
+use crate::geom::{Extent2, TileRect, ViewTransform};
 use crate::gpu::channels::Targets;
 
 /// Which layers an eyedropper sample is taken from (§18.0.2).
@@ -133,6 +133,49 @@ fn mean_over_substrate(texels: &[f32], bg: [f32; 4]) -> Option<[f32; 4]> {
         1.0,
     ])
 }
+
+/// The view one sampled patch is rendered through: `size` canvas px, upright,
+/// centred on the canvas **pixel** `at` falls in.
+///
+/// Snapped to the pixel rather than centred on the point itself: pass A samples
+/// tile textures bilinearly, so a fractional offset would blend neighbouring texels
+/// and a "point sample" would answer with a color that is at neither of them.
+/// Snapping puts every fragment on a texel centre, so radius 0 reports exactly the
+/// texel under the cursor.
+///
+/// Axis-aligned with the *canvas*, and unrotated: the sampled square is a patch of
+/// the painting, so which way the easel is turned cannot change which texels fall
+/// in it.
+fn patch_view(at: crate::geom::Vec2, size: Extent2) -> ViewTransform {
+    ViewTransform {
+        center: crate::geom::Vec2::new(at.x.floor() + 0.5, at.y.floor() + 0.5),
+        zoom: 1.0,
+        rotation: 0.0,
+        flip_h: false,
+        viewport: size,
+    }
+}
+
+/// The tiles every patch of a trace can reach between them — one cull for the whole
+/// batch, so the draw list is built once instead of per point.
+///
+/// `None` — cull nothing — the moment any single patch is unmeasurable, which is
+/// [`visible_tiles`]'s own contract carried across the batch rather than re-derived:
+/// an optimization that cannot see one of its inputs has to do nothing about all of
+/// them. Folding the *bounds* instead would have let a non-finite point vanish into
+/// a `min`/`max` and quietly shrink the answer.
+fn patch_cull(points: &[crate::geom::Vec2], size: Extent2) -> Option<TileRect> {
+    let mut union: Option<TileRect> = None;
+    for &at in points {
+        let rect = visible_tiles(patch_view(at, size))?;
+        union = Some(match union {
+            Some(u) => u.union(rect),
+            None => rect,
+        });
+    }
+    union
+}
+
 impl Engine {
     /// Sample the canvas color at `at` — the eyedropper (§18.0.2).
     ///
@@ -242,31 +285,31 @@ impl Engine {
         // have to say so here rather than silently mis-decoding.
         debug_assert_eq!(formats.color, wgpu::TextureFormat::Rgba16Float);
 
+        // **One draw list for the whole trace**, culled to the union of every patch
+        // rather than to each in turn (§6.3).
+        //
+        // A gradient capture samples up to `gradient::MAX_SAMPLES` points, and the
+        // list is the same list every time: `composite_groups` walks the entire layer
+        // tree, and the only thing the point changed was the cull. So this was a tree
+        // walk per sample to build a hundred-odd copies of one answer. The union is a
+        // *wider* cull than any single patch's, which is sound in the only direction
+        // that matters — a cull may name tiles a pass then draws nothing for, never
+        // omit one it needed (see [`visible_tiles`]) — and the trace is bounded, so
+        // the extra tiles are the ones between the samples, which the trace crosses
+        // anyway.
+        //
+        // The *presented* document, so a sample agrees with what is on screen —
+        // including a collaborator's stroke that has not committed yet, and the
+        // substrate color mid-drag on the picker that sets it (§15.5).
+        let groups = {
+            let doc = self.presented();
+            self.composite_groups(doc, only, patch_cull(points, size))
+        };
+
         let mut colors = Vec::with_capacity(points.len());
         let mut resids = Vec::with_capacity(points.len());
         for &at in points {
-            // Centred on the canvas *pixel* the point falls in rather than on the point
-            // itself: pass A samples tile textures bilinearly, so a fractional offset
-            // would blend neighbouring texels and a "point sample" would answer with a
-            // color that is at neither of them. Snapping puts every fragment on a texel
-            // centre, so radius 0 reports exactly the texel under the cursor.
-            let view = ViewTransform {
-                center: crate::geom::Vec2::new(at.x.floor() + 0.5, at.y.floor() + 0.5),
-                zoom: 1.0,
-                // Axis-aligned with the *canvas*: the sampled square is a patch of the
-                // painting, so which way the easel is turned cannot change which texels
-                // fall in it.
-                rotation: 0.0,
-                flip_h: false,
-                viewport: size,
-            };
-            // The *presented* document, so a sample agrees with what is on screen —
-            // including a collaborator's stroke that has not committed yet, and the
-            // substrate color mid-drag on the picker that sets it (§15.5).
-            let groups = {
-                let doc = self.presented();
-                self.composite_groups(doc, only, visible_tiles(view))
-            };
+            let view = patch_view(at, size);
             let color = self.offscreen_target(
                 "stark pick color",
                 formats.color,

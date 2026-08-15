@@ -154,6 +154,27 @@ impl TileRect {
         self.min.0 <= c.x && c.x <= self.max.0 && self.min.1 <= c.y && c.y <= self.max.1
     }
 
+    /// The smallest rect holding both — what a batch of draws culls against when it
+    /// wants one draw list rather than one per member (the eyedropper's trace,
+    /// §18.0.2).
+    ///
+    /// Widening is the safe direction: a cull may name tiles a pass then draws
+    /// nothing for, and may never omit one it needed. [`EMPTY`](Self::EMPTY) is
+    /// inverted (`min > max`) so that it is the identity here rather than a corner
+    /// the union has to stretch to reach.
+    pub fn union(self, other: TileRect) -> TileRect {
+        if self.min.0 > self.max.0 || self.min.1 > self.max.1 {
+            return other;
+        }
+        if other.min.0 > other.max.0 || other.min.1 > other.max.1 {
+            return self;
+        }
+        TileRect {
+            min: (self.min.0.min(other.min.0), self.min.1.min(other.min.1)),
+            max: (self.max.0.max(other.max.0), self.max.1.max(other.max.1)),
+        }
+    }
+
     /// The tiles the canvas box `[lo, hi]` reaches, grown by `ring` tiles on
     /// every side.
     ///
@@ -496,6 +517,28 @@ mod tests {
         // left of the origin is -1, and a `as i32` cast would have said 0.
         let left = TileRect::covering(Vec2::splat(-1.0), Vec2::splat(-1.0), 0).unwrap();
         assert_eq!((left.min, left.max), ((-1, -1), (-1, -1)));
+    }
+
+    /// A union may only ever **widen**: it is what a batch of draws culls against,
+    /// and a cull that named fewer tiles than one of its members needed would drop
+    /// paint from that member's pass.
+    #[test]
+    fn a_union_holds_everything_both_rects_did() {
+        let a = TileRect::covering(Vec2::splat(0.0), Vec2::splat(1.0), 0).unwrap();
+        let b = TileRect::covering(Vec2::splat(-300.0), Vec2::splat(-299.0), 0).unwrap();
+        let u = a.union(b);
+        for r in [a, b] {
+            for c in r.coords() {
+                assert!(u.contains(c), "{c:?} was in a member and not in the union");
+            }
+        }
+        assert_eq!(u, b.union(a), "the union does not depend on the order");
+
+        // `EMPTY` is inverted rather than a corner, so it is the identity here — a
+        // rect that reaches nothing must not stretch a union to the origin.
+        assert_eq!(TileRect::EMPTY.union(a), a);
+        assert_eq!(a.union(TileRect::EMPTY), a);
+        assert_eq!(TileRect::EMPTY.union(TileRect::EMPTY), TileRect::EMPTY);
     }
 
     /// The two answers that must be refused rather than given silently and wrongly:
