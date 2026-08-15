@@ -184,6 +184,9 @@ impl std::fmt::Debug for Census {
 struct Pooled {
     tex: wgpu::Texture,
     view: wgpu::TextureView,
+    /// The pool stamp this slot was handed back on — what the trim's quarantine
+    /// orders it against ([`PoolInner::epoch_start`]).
+    returned: u64,
 }
 
 /// One pooled GPU texture (`TILE_TEX` square) checked out of the pool.
@@ -219,11 +222,14 @@ impl Drop for GpuTex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(tex) = self.tex.take() else { return };
+        inner.stamp += 1;
+        let returned = inner.stamp;
         // The view rides back with its texture, so the next acquire of this slot
         // needs no `create_view` (see [`Pooled`]). Cloning it is an `Arc` bump.
         inner.free.push(Pooled {
             tex,
             view: self.view.clone(),
+            returned,
         });
         inner.sources.remove(self.source);
     }
@@ -477,6 +483,12 @@ struct PoolInner {
     countdown: u32,
     /// Who is holding this pool's textures right now.
     sources: Census,
+    /// Monotonic count of returns, stamped onto each [`Pooled`] as it comes back.
+    stamp: u64,
+    /// The [`Self::stamp`] the current epoch opened at. A slot returned at or after
+    /// it came back during *this* epoch and is too young to destroy — see
+    /// [`Self::tick`].
+    epoch_start: u64,
 }
 
 impl Default for PoolInner {
@@ -490,6 +502,8 @@ impl Default for PoolInner {
             peak: 0,
             countdown: TRIM_INTERVAL,
             sources: Census::default(),
+            stamp: 0,
+            epoch_start: 0,
         }
     }
 }
@@ -519,21 +533,46 @@ impl PoolInner {
     /// between epochs — a transform, then a stroke, then a transform — would otherwise
     /// hand every texture back and build it again. Halving converges within a few
     /// epochs and costs one epoch's patience.
+    ///
+    /// # The quarantine
+    ///
+    /// **Only slots returned before this epoch opened may be destroyed**, which is a
+    /// second rule on top of the policy above and guards something else entirely.
+    ///
+    /// "No live handle" is not "no pending GPU work". A texture whose last handle
+    /// drops while an unsubmitted encoder still names its view reaches this free list
+    /// early — and reuse alone makes that wrong pixels, which is bad but recoverable
+    /// and is what the consumers' submit scopes exist to prevent
+    /// ([`TileScope`](crate::gpu::submit::TileScope)). `destroy()` makes the same
+    /// mistake a *dangling view*, handed to the next bind group: a device error, from
+    /// a pool that cannot see which of its consumers was careful.
+    ///
+    /// So the irreversible half waits. An epoch is [`TRIM_INTERVAL`] acquires and an
+    /// encoder spans one operation, so a slot that has survived a whole epoch on the
+    /// free list is long past any encoder that could still name it. Reuse is
+    /// unaffected and stays immediate: this delays only the `destroy`, and costs a
+    /// burst one extra epoch before its surplus starts to drain.
     fn tick(&mut self, format: wgpu::TextureFormat) {
         self.peak = self.peak.max(self.in_use());
         self.countdown = self.countdown.saturating_sub(1);
         if self.countdown > 0 {
             return;
         }
-        let drop = surplus_to_release(self.capacity, self.peak, self.free.len());
+        let returns: Vec<u64> = self.free.iter().map(|slot| slot.returned).collect();
+        let eligible = quarantine_passed(&returns, self.epoch_start);
+        let drop = surplus_to_release(self.capacity, self.peak, eligible.len());
         if drop > 0 {
-            // Explicitly, not merely by dropping the handle. On the web a dropped
-            // texture only releases its JS object and waits for GC, which is the
-            // opposite of what a trim is for; `destroy()` hands the memory back as
-            // soon as the in-flight work referencing it retires. The view beside it
-            // goes with it and is never read again ([`Pooled`]).
-            for slot in self.free.drain(self.free.len() - drop..) {
-                slot.tex.destroy();
+            // Removed by descending index, so each `swap_remove` cannot move a slot
+            // this loop has yet to take.
+            let mut taken: Vec<usize> = eligible[..drop].to_vec();
+            taken.sort_unstable_by(|a, b| b.cmp(a));
+            for i in taken {
+                // Explicitly, not merely by dropping the handle. On the web a dropped
+                // texture only releases its JS object and waits for GC, which is the
+                // opposite of what a trim is for; `destroy()` hands the memory back as
+                // soon as the in-flight work referencing it retires. The view beside it
+                // goes with it and is never read again ([`Pooled`]).
+                self.free.swap_remove(i).tex.destroy();
             }
             self.capacity -= drop;
             tracing::debug!(
@@ -546,6 +585,9 @@ impl PoolInner {
         }
         self.peak = self.in_use();
         self.countdown = TRIM_INTERVAL;
+        // Everything on the list from here on has survived a full epoch by the time
+        // the next boundary asks.
+        self.epoch_start = self.stamp;
     }
 }
 
@@ -555,10 +597,33 @@ impl PoolInner {
 /// `capacity − peak` is what the pool owns beyond anything the epoch ever needed at
 /// once. Half of that goes back, and never more than is actually idle.
 ///
+/// `free` is the count the trim may actually take: idle **and** past the quarantine
+/// ([`PoolInner::tick`]). Passing the eligible count rather than the whole free list
+/// is what keeps this function the only place the arithmetic lives — a young slot is
+/// simply not offered, rather than being subtracted somewhere else afterwards.
+///
 /// The `min` is not defensive padding: `free = capacity − in_use` and `in_use ≤ peak`
-/// together already prove `free ≥ surplus`, so the clamp is unreachable today. It is
-/// there because the alternative to it being unreachable is truncating a `Vec` past
-/// its length, and the proof lives in two other functions.
+/// together already prove `free ≥ surplus`, so the clamp is unreachable for the whole
+/// list. With the quarantine it is genuinely reachable — a pool whose surplus all
+/// came back this epoch offers nothing — and it is what turns that into "release
+/// nothing yet" instead of truncating a `Vec` past its length.
+/// Which free-list slots have served the trim's quarantine, oldest first: those
+/// returned before the current epoch opened ([`PoolInner::tick`]).
+///
+/// Oldest first so a repeated trim drains the quarantine in the order slots entered
+/// it, rather than stranding the same young ones at every boundary.
+///
+/// Taken as the slots' return stamps rather than the slots, so the rule is decidable
+/// without a GPU — the whole of it is an ordering on `u64`s, and a texture would only
+/// stop it being tested.
+fn quarantine_passed(returns: &[u64], epoch_start: u64) -> Vec<usize> {
+    let mut passed: Vec<usize> = (0..returns.len())
+        .filter(|&i| returns[i] < epoch_start)
+        .collect();
+    passed.sort_unstable_by_key(|&i| returns[i]);
+    passed
+}
+
 fn surplus_to_release(capacity: usize, peak: usize, free: usize) -> usize {
     let surplus = capacity.saturating_sub(peak);
     (surplus / 2).min(free).min(MAX_RELEASE_PER_EPOCH)
@@ -631,7 +696,7 @@ impl TilePool {
     /// Panics if `format` was not among those the pool was built with.
     pub fn acquire_tex(&self, format: wgpu::TextureFormat, source: AllocSource) -> TexHandle {
         let pool = self.format_pools.get(&format).expect("unsupported format");
-        let Pooled { tex, view } = {
+        let Pooled { tex, view, .. } = {
             let mut pool = pool.lock().expect("tile pool poisoned");
             pool.sources.add(source);
             let slot = match pool.free.pop() {
@@ -691,7 +756,13 @@ impl TilePool {
             view_formats: &[],
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-        Pooled { tex, view }
+        // Stamped when it is handed *back*; a texture on its way out has not
+        // served any quarantine and never will be asked to (see `Drop for GpuTex`).
+        Pooled {
+            tex,
+            view,
+            returned: 0,
+        }
     }
 }
 
@@ -777,6 +848,58 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// **A slot returned during this epoch is never destroyed at its end**, however
+    /// large the surplus looks — the quarantine ([`PoolInner::tick`]).
+    ///
+    /// The stake is the difference between a wrong pixel and a dangling view: a
+    /// texture handed back while an unsubmitted encoder still names it survives being
+    /// *reused*, but not being `destroy()`ed.
+    #[test]
+    fn a_trim_never_destroys_a_slot_returned_this_epoch() {
+        // Twenty slots the pool owns and is sitting on, all returned just now — the
+        // shape a burst leaves behind. The epoch has not turned over since, so none
+        // of them has served its quarantine.
+        let capacity = 20;
+        let returns: Vec<u64> = (1..=20).collect();
+        let eligible = quarantine_passed(&returns, 0);
+        assert!(
+            eligible.is_empty(),
+            "a slot returned this epoch is not eligible",
+        );
+        assert_eq!(
+            surplus_to_release(capacity, 0, eligible.len()),
+            0,
+            "with nothing eligible the trim must release nothing",
+        );
+
+        // One boundary later the same slots are old enough, and the ordinary policy
+        // takes over: half the surplus.
+        let eligible = quarantine_passed(&returns, 21);
+        assert_eq!(
+            eligible.len(),
+            20,
+            "after an epoch the whole burst is eligible"
+        );
+        assert_eq!(surplus_to_release(capacity, 0, eligible.len()), 10);
+    }
+
+    /// The quarantine splits a mixed list rather than shifting the whole thing:
+    /// slots from before the boundary are taken, this epoch's are held back — and the
+    /// old ones come out **oldest first**, so a repeated trim drains them in order
+    /// instead of stranding the same slots at every boundary.
+    #[test]
+    fn the_quarantine_takes_the_old_slots_oldest_first() {
+        // Interleaved on purpose: the free list is a stack, so age and position are
+        // not the same order and the rule must not assume they are.
+        let returns = [7u64, 2, 9, 1, 5];
+        let eligible = quarantine_passed(&returns, 6);
+        assert_eq!(
+            eligible,
+            vec![3, 1, 4],
+            "expected the pre-boundary slots (1, 2, 5) by age",
+        );
     }
 
     /// A pool that is not holding more than it needed releases nothing — the case
