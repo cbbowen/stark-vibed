@@ -312,7 +312,7 @@ pub enum ActionKind {
     /// Carries the **whole** filter rather than one parameter, so a filter that
     /// grows a knob — or a new kind of filter entirely — needs no new action and no
     /// wire-format break. A no-op on a layer that is not a filter, like
-    /// [`SetMatteColor`](Self::SetMatteColor) on a paint layer.
+    /// [`SetMattePaint`](Self::SetMattePaint) on a paint layer.
     SetFilter(LayerId, Filter),
 
     /// Merge `source` **down** onto `dest`, the layer directly beneath it: `dest`

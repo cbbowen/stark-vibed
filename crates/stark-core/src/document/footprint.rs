@@ -370,8 +370,21 @@ pub fn footprint(action: &Action) -> Footprint {
                 Resource::Existence(*source),
                 Resource::Existence(*dest),
                 Resource::Paint(*dest, TileRect::ALL),
-                // The surviving layer is left at full opacity, both sliders having
-                // been folded into its tiles.
+                // **All three of the survivor's composite params**, because that is
+                // what `apply` assigns: the plan's `keeps` is a whole
+                // `CompositeParams` and it is written as one.
+                //
+                // Two of the three are the identity today — `merge::plan` refuses a
+                // clipped destination and takes `keeps.blend` from the destination's
+                // own — so claiming them costs a false conflict and nothing else,
+                // which is the direction §12.6 says to err in. Claiming only the
+                // opacity would be resting the footprint's honesty on refusals made
+                // in *another file*, and on the two merges `merge`'s own header says
+                // it means to build next, both of which touch `keeps`.
+                Resource::Prop(*dest, Prop::Blend),
+                Resource::Prop(*dest, Prop::Clip),
+                // The survivor is left at full opacity, both sliders having been
+                // folded into its tiles.
                 Resource::Prop(*dest, Prop::Opacity),
                 Resource::StackOrder,
             ],

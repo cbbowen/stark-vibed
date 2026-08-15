@@ -32,9 +32,10 @@ use stark_core::Engine;
 use stark_core::assets::AssetId;
 use stark_core::command::{DocCommand, InputCommand};
 use stark_core::document::{
-    ActionKind, ActorId, BlendMode, DocState, FillOp, Layer, LayerContent, LayerId, MattePaint,
-    MatteRegion, PerspectiveMap, Place, Prop, Resource, Selection, SelectionMode, SelectionOp,
-    SelectionShape, TransformMap, WarpMap, footprint, rect_corners,
+    ActionId, ActionKind, ActorId, BlendMode, ColorAdjust, DocState, FillOp, Filter, Layer,
+    LayerContent, LayerId, MattePaint, MatteRegion, PerspectiveMap, Place, Prop, Resource,
+    Selection, SelectionMode, SelectionOp, SelectionShape, TransformMap, WarpMap, footprint,
+    rect_corners,
 };
 use stark_core::geom::{Affine2, TileCoord, Vec2};
 use stark_core::gpu::SurfaceId;
@@ -198,14 +199,90 @@ fn covered(diff: &Diff, writes: &[Resource]) -> bool {
 // ---------------------------------------------------------------------------
 // The driver
 
-/// The action kinds a run actually reached, by `ActionKind::label` — which is a
-/// faithful discriminant, every kind having its own caption.
+/// The slot of every action kind, in the order `ActionKind` declares them —
+/// which is also the order postcard encodes them in (§8), so a slot is a fact
+/// about the wire form rather than a number invented here.
+///
+/// **Exhaustive, with no `_` arm, and that is the whole point of it.** What this
+/// replaces was a hand-written list of captions the run had to reach, which could
+/// not fail when a *new* kind appeared: an action added to the enum silenced its
+/// own coverage rather than failing, which is exactly how `MergeLayerDown`,
+/// `AddFilter` and `SetFilter` came to be unchecked here. Adding a variant now
+/// stops this file compiling, at this match, three lines from the run that has to
+/// drive it — the device `Modulations::all`'s `..`-free destructure already uses
+/// for a struct's fields.
+fn slot(kind: &ActionKind) -> usize {
+    match kind {
+        ActionKind::CommitStroke(_) => 0,
+        ActionKind::AddLayer { .. } => 1,
+        ActionKind::RemoveLayer(_) => 2,
+        ActionKind::SetLayerBlend(..) => 3,
+        ActionKind::SetLayerOpacity(..) => 4,
+        ActionKind::SetLayerVisible(..) => 5,
+        ActionKind::MoveLayer { .. } => 6,
+        ActionKind::Undo(_) => 7,
+        ActionKind::SetSurface(_) => 8,
+        ActionKind::Select(_) => 9,
+        ActionKind::InvertSelection => 10,
+        ActionKind::AddMatte { .. } => 11,
+        ActionKind::SetMatteRect(..) => 12,
+        ActionKind::SetMattePaint(..) => 13,
+        ActionKind::SetBackground(_) => 14,
+        ActionKind::Transform { .. } => 15,
+        ActionKind::SetLayerName(..) => 16,
+        ActionKind::Fill { .. } => 17,
+        ActionKind::SetLayerClip(..) => 18,
+        ActionKind::TransformPerspective { .. } => 19,
+        ActionKind::TransformWarp { .. } => 20,
+        ActionKind::DuplicateLayer { .. } => 21,
+        ActionKind::AddFilter { .. } => 22,
+        ActionKind::SetFilter(..) => 23,
+        ActionKind::MergeLayerDown { .. } => 24,
+    }
+}
+
+/// How many kinds there are — `slot`'s range, bumped with its last arm. [`NAMES`]
+/// is indexed by slot and its length is held to this by the type, so a slot added
+/// without a name is a compile error rather than a worse failure message.
+const KINDS: usize = 25;
+
+/// What to call each slot when the run has missed one. `ActionKind::label`'s own
+/// captions, which is what a reader of the failure will go looking for.
+const NAMES: [&str; KINDS] = [
+    "Stroke",
+    "Add layer",
+    "Remove layer",
+    "Blend mode",
+    "Layer opacity",
+    "Layer visibility",
+    "Reorder layer",
+    "Undo",
+    "Canvas surface",
+    "Select",
+    "Invert selection",
+    "Add matte",
+    "Move frame",
+    "Matte paint",
+    "Canvas color",
+    "Transform",
+    "Rename layer",
+    "Fill",
+    "Clip layer",
+    "Perspective",
+    "Warp",
+    "Duplicate layer",
+    "Add filter",
+    "Filter",
+    "Merge down",
+];
+
+/// The action kinds a run actually reached, by [`slot`].
 ///
 /// Collected because a step that logs nothing passes the check trivially, so
 /// without this the whole test could rot into vacuity — a command quietly
 /// becoming a no-op would *silence* its coverage rather than fail. The run
 /// asserts its own reach at the end.
-type Seen = BTreeSet<&'static str>;
+type Seen = BTreeSet<usize>;
 
 /// Run `command` and hold whatever it committed to its own footprint.
 ///
@@ -233,7 +310,7 @@ fn check(engine: &mut Engine, seen: &mut Seen, what: &str, before: &DocState) {
         );
         return;
     };
-    seen.insert(action.kind.label());
+    seen.insert(slot(&action.kind));
     if matches!(action.kind, ActionKind::Undo(_)) {
         return; // Resolved by the timeline, never applied — see the module note.
     }
@@ -556,43 +633,88 @@ fn every_action_touches_only_what_it_declares() {
         DocCommand::RemoveLayer(second),
     );
 
+    // Filters. A fresh one is neutral by construction, so `AddFilter` has to be
+    // followed by a `SetFilter` that dials it: a neutral filter is dropped from
+    // the draw list entirely (§21.3), and a step whose action changes no pixel
+    // would hold its footprint to a diff of nothing.
+    step(
+        &mut engine,
+        seen,
+        "add a filter",
+        DocCommand::AddFilter {
+            carrier: None,
+            above: Some(root),
+            filter: Filter::Color(ColorAdjust::NEUTRAL),
+        },
+    );
+    let filter = engine
+        .observe()
+        .layers
+        .last()
+        .expect("the filter is on top")
+        .id;
+    step(
+        &mut engine,
+        seen,
+        "dial the filter",
+        DocCommand::SetFilter(
+            filter,
+            Filter::Color(ColorAdjust {
+                saturation: 0.0,
+                ..ColorAdjust::NEUTRAL
+            }),
+        ),
+    );
+
+    // …and the merge, which is the largest footprint in the enum: it rewrites the
+    // destination's tiles, folds both opacities in, and takes the source layer out
+    // of the tree. A fresh painted layer directly over `root`, which is the
+    // second-from-the-foot position where the destination *is* the whole backdrop
+    // (§14.11.2) — the filter added above sits outside the pair and does not bear
+    // on the plan.
+    step(
+        &mut engine,
+        seen,
+        "a layer to merge down",
+        DocCommand::AddLayer {
+            carrier: None,
+            above: Some(root),
+        },
+    );
+    let upper = engine.observe().active_layer;
+    stroke(
+        &mut engine,
+        seen,
+        "stroke on the layer to be merged",
+        &[Vec2::new(50.0, 100.0), Vec2::new(170.0, 120.0)],
+    );
+    step(
+        &mut engine,
+        seen,
+        "merge down",
+        DocCommand::MergeLayerDown(upper),
+    );
+
     // What the run actually reached. Without this the test could rot into
     // vacuity one command at a time: a step that stops committing *silences* its
     // own coverage rather than failing, because `step` waves through an action
-    // that was never logged. Every kind the engine can commit is named here
-    // except `Undo`, which this test excludes by construction (module note).
-    let expected = [
-        "Stroke",
-        "Fill",
-        "Transform",
-        "Perspective",
-        "Warp",
-        "Select",
-        "Invert selection",
-        "Add layer",
-        "Duplicate layer",
-        "Remove layer",
-        "Reorder layer",
-        "Blend mode",
-        "Clip layer",
-        "Layer opacity",
-        "Layer visibility",
-        "Rename layer",
-        "Add matte",
-        "Move frame",
-        "Matte paint",
-        "Canvas color",
-        "Canvas surface",
-    ];
-    let missed: Vec<&str> = expected
-        .iter()
-        .copied()
-        .filter(|k| !seen.contains(k))
+    // that was never logged.
+    //
+    // Every slot has to be reached except `Undo`'s, which this test excludes by
+    // construction (module note) — and that one is *asked for* rather than
+    // written down, so it stays right if the enum is ever reordered.
+    let exempt = slot(&ActionKind::Undo(ActionId {
+        lamport: 0,
+        actor: ActorId(0),
+    }));
+    let missed: Vec<&str> = (0..KINDS)
+        .filter(|s| *s != exempt && !seen.contains(s))
+        .map(|s| NAMES[s])
         .collect();
     assert!(
         missed.is_empty(),
         "these action kinds were never committed, so nothing about them was \
-         checked: {missed:?}\n(seen: {seen:?})"
+         checked: {missed:?}"
     );
 }
 

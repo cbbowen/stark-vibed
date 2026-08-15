@@ -537,7 +537,18 @@ pub(crate) fn tiles_covering(
     ring: i32,
     budget: usize,
 ) -> Option<Vec<TileCoord>> {
-    let rect = tile_box(lo, hi, ring)?;
+    tiles_of(tile_box(lo, hi, ring)?, budget)
+}
+
+/// The coordinates of an **already-quantized** rect, `None` when there would be
+/// more than `budget` of them — [`tiles_covering`]'s second half, for the caller
+/// that has its own reason to hold the `TileRect`.
+///
+/// The fill is that caller: its written tile set and its footprint have to be the
+/// same tiles (§12.6), so the rect is derived once by
+/// [`fill_bounds`](super::fill::fill_bounds) and quantized once, and only *then*
+/// walked. Counted before it is walked for [`tiles_covering`]'s own reason.
+pub(crate) fn tiles_of(rect: TileRect, budget: usize) -> Option<Vec<TileCoord>> {
     let count = rect.count();
     if count > budget as u64 {
         return None;
