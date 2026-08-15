@@ -388,9 +388,10 @@ which the engine draws into directly. DOM chrome surrounds it.
   nothing fetched and nothing decoded, and the thumbnails' engine
   (`Renderer::shared_engine`, `thumbs.rs`) deliberately pins the opposite look —
   flat ground, neutral light — so a thumbnail is the *brush's* identity card and
-  its cache key is the brush snapshot alone. Each preset row's stroke is two
-  replays and one small `Engine::export_view` readback on that one kept engine,
-  generated in the background and cached per session.
+  its cache key is the brush snapshot alone. Each preset row's picture is two
+  half-canvas fills (the ground is all paint, so smearing and lifting read), one
+  replayed stroke and one small `Engine::export_view` readback on that one kept
+  engine, generated in the background and cached per session.
 - **Settings are one dialog, not a control tucked into whichever panel it came
   from.** Panels hold what you are painting *with* and change constantly
   mid-stroke; document dialogs hold what the drawing *is*. A standing per-client

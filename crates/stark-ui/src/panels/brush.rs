@@ -226,22 +226,26 @@ fn PresetSection() -> Element {
                         let apply_name = entry.name.clone();
                         let remove_name = entry.name.clone();
                         let active = presets::matches(&brush, &entry.brush);
-                        let thumb = crate::thumbs::url(state, &entry.brush);
+                        // The brush as a stroke (`crate::thumbs`), filling the whole
+                        // row as its background: the preview is the star, and the
+                        // name floats over it (shadowed in the stylesheet) to tell
+                        // apart what the marks cannot. `none` is written out rather
+                        // than the property omitted — an edited preset re-keys its
+                        // thumbnail, and a stale declaration on this reused node
+                        // would keep showing the old brush while the new one
+                        // renders (inline style merges per property).
+                        let bg = match crate::thumbs::url(state, &entry.brush) {
+                            Some(url) if !url.is_empty() => {
+                                format!("background-image: url({url});")
+                            }
+                            _ => "background-image: none;".to_string(),
+                        };
                         rsx! {
                             div {
                                 key: "{entry.name}",
                                 class: if active { "preset-row active" } else { "preset-row" },
+                                style: "{bg}",
                                 onclick: move |_| presets::apply(state, &apply_name),
-                                // The brush as a stroke (`crate::thumbs`), before its
-                                // name: what a preset *is* reads faster as a mark than
-                                // as a word, and the words stay for telling apart what
-                                // the marks cannot. An empty div until its render
-                                // lands — the box keeps the row from reflowing.
-                                if let Some(url) = thumb.filter(|u| !u.is_empty()) {
-                                    div { class: "preset-thumb", style: "background-image: url({url});" }
-                                } else {
-                                    div { class: "preset-thumb" }
-                                }
                                 span { class: "preset-row-name", title: "{entry.name}", "{entry.name}" }
                                 if entry.builtin {
                                     // The app's own, and the row says so where the

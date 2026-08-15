@@ -1,12 +1,19 @@
 //! Rendered thumbnails for brush presets: a miniature test stroke per preset,
 //! generated offscreen and cached (§11).
 //!
-//! Each thumbnail is the brush editor's preview scene in miniature — a red
-//! reference band with the preset's own stroke laid across it — rendered by a
-//! **shared** engine (`Renderer::shared_engine`), so it costs no pipeline
-//! compiles, no fetches and no decodes: one engine is built lazily on first use
-//! and kept, and each thumbnail is two replayed strokes, one small offscreen
-//! render, and a readback.
+//! Each thumbnail is a red stroke drawn across a canvas laid **entirely in
+//! paint** — a light-gray slab on the left half, a dark-gray slab on the right —
+//! rendered by a **shared** engine (`Renderer::shared_engine`), so it costs no
+//! pipeline compiles, no fetches and no decodes: one engine is built lazily on
+//! first use and kept, and each thumbnail is two fills, one replayed stroke, one
+//! small offscreen render, and a readback.
+//!
+//! Paint under the whole stroke, not bare substrate, because the ground half of
+//! what a brush *is* here is what it does to the paint already down (§6.2):
+//! a smudge drags gray into its wake, an eraser bites a gap, a wet brush's lift
+//! muddies its own red — none of which bare canvas can show. Two grays rather
+//! than one so the stroke's opacity and its pickup each read against a ground
+//! that contrasts with them somewhere along the run.
 //!
 //! # The look is pinned, deliberately
 //!
@@ -33,7 +40,7 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use stark_core::command::{DocCommand, ViewCommand};
-use stark_core::document::{BrushParams, BrushShape, Tool};
+use stark_core::document::{BrushParams, FillOp, SelectionShape, Tool};
 use stark_core::geom::{Extent2, Vec2};
 use stark_core::{
     Background, Engine, EnvironmentId, InputSample, MediaParams, Offscreen, Rendered, SurfaceId,
@@ -44,22 +51,25 @@ use crate::platform::base64_encode;
 use crate::presets::Wearable;
 use crate::state::AppState;
 
-/// Thumbnail pixel size: 2.5× the CSS box the preset rows display it in
-/// (`.preset-thumb`, 60 × 24), same aspect exactly, so it stays crisp on a
-/// dense display and `cover` never crops it.
-const THUMB_W: u32 = 150;
-const THUMB_H: u32 = 60;
+/// Thumbnail pixel size: 2× the box a preset row shows it in (a full-bleed row,
+/// `.preset-row` — 36 px tall in a 300 px panel), so it stays crisp on a dense
+/// display. `cover` centres whatever width the row actually has.
+const THUMB_W: u32 = 520;
+const THUMB_H: u32 = 72;
 
 /// Fixed jitter seed, for the reason the brush editor pins one: the thumbnail of
 /// an unchanged preset must be byte-stable, or the cache key would be a lie.
 const THUMB_SEED: u64 = 0x7B1D_EA0F_57A2;
 
-/// The test stroke's fixed color — the brush editor's preview gold, so the two
-/// places a brush is shown as a stroke show it the same way.
-const STROKE_COLOR: [f32; 3] = [0.852, 0.645, 0.125];
+/// The test stroke's fixed red — the one saturated thing in the picture, over
+/// the two grays it is judged against.
+const STROKE_COLOR: [f32; 3] = [0.82, 0.15, 0.12];
 
-/// The reference band's fixed red — likewise the editor's.
-const BAND_COLOR: [f32; 4] = [0.82, 0.15, 0.12, 1.0];
+/// The two paint slabs the stroke crosses: light on the left, dark on the
+/// right. Both sit away from the white substrate beneath them, so an eraser's
+/// bite reads on either half.
+const LIGHT_PAINT: [f32; 3] = [0.80, 0.80, 0.80];
+const DARK_PAINT: [f32; 3] = [0.28, 0.28, 0.28];
 
 /// The thumbnail machinery's signals. All root-owned (`state::root_signal`):
 /// generation runs in `spawn_forever` tasks that outlive whichever panel asked.
@@ -155,9 +165,11 @@ async fn generate(state: AppState, w: Wearable) -> bool {
             };
             let mut engine = main.shared_engine(Extent2::new(THUMB_W, THUMB_H));
             // Pin the look the module doc promises: flat ground, neutral light,
-            // default media. The document opened on the donor's ground
-            // (`Engine::new_sharing`), so the surface is set back explicitly.
+            // default media, white substrate (what an eraser's bite reveals).
+            // The document opened on the donor's ground (`Engine::new_sharing`),
+            // so the surface is set back explicitly.
             engine.process(DocCommand::SetSurface(SurfaceId::default()));
+            engine.process(DocCommand::SetBackground([1.0, 1.0, 1.0]));
             engine.process(ViewCommand::SetEnvironment(EnvironmentId::default()));
             engine.process(ViewCommand::SetMediaParams(MediaParams::default()));
             *guard = Some(Rig {
@@ -167,12 +179,30 @@ async fn generate(state: AppState, w: Wearable) -> bool {
         }
         let rig = guard.as_mut().expect("just built");
         let view = thumb_view(&w.params);
-        // The scene, in stack order: the band the stroke has to cross — what
-        // makes an eraser or a smudge legible at all — then the stroke itself,
-        // towed through the preset's own smoothing.
-        rig.engine.process(ViewCommand::SetBrush(band_brush(&view)));
-        rig.engine
-            .replay_stroke_seeded(Tool::Brush, &band_stroke(&view), THUMB_SEED, 0.0);
+        // The scene, in stack order: the two paint slabs the stroke acts on —
+        // the whole ground is paint, so smearing, lifting and bleeding read
+        // everywhere along the run — then the stroke itself, towed through the
+        // preset's own smoothing. A fill carries its own region (§18.0.4), so
+        // no selection is involved and the stroke is gated by nothing.
+        let layer = rig.engine.observe().active_layer;
+        let h = half_extent(&view);
+        // Overhang every outer edge so no sliver of substrate survives the
+        // rounding of the view's edges; the halves meet exactly at x = 0.
+        let (over_x, over_y) = (h.x * 1.05, h.y * 1.05);
+        for (min_x, max_x, color) in [(-over_x, 0.0, LIGHT_PAINT), (0.0, over_x, DARK_PAINT)] {
+            rig.engine.process(DocCommand::Fill {
+                layer,
+                op: FillOp::new(
+                    SelectionShape::rect_from_corners(
+                        Vec2::new(min_x, -over_y),
+                        Vec2::new(max_x, over_y),
+                    ),
+                    0.0,
+                    color,
+                    1.0,
+                ),
+            });
+        }
         let mut brush = w.params;
         brush.color[..3].copy_from_slice(&STROKE_COLOR);
         rig.engine.process(ViewCommand::SetBrush(brush));
@@ -185,10 +215,12 @@ async fn generate(state: AppState, w: Wearable) -> bool {
             Background::Substrate,
             Rendered::Committed,
         );
-        // The render is already submitted; put the document back before the
-        // await so the rig is clean whoever borrows it next.
-        rig.engine.process(DocCommand::Undo);
-        rig.engine.process(DocCommand::Undo);
+        // The render is already submitted; put the document back — one undo per
+        // action above — before the await, so the rig is clean whoever borrows
+        // it next.
+        for _ in 0..3 {
+            rig.engine.process(DocCommand::Undo);
+        }
         readback
     };
     let url = match readback {
@@ -209,13 +241,14 @@ async fn generate(state: AppState, w: Wearable) -> bool {
 }
 
 /// The view a preset's thumbnail renders through, scaled to the brush: the test
-/// stroke runs ~10 radii, so the same view shows a pen as a line and an airbrush
+/// stroke runs ~18 radii, so the same view shows a pen as a line and an airbrush
 /// as the soft mass it is, each filling the thumbnail rather than being drawn at
 /// some one zoom that suits neither.
 fn thumb_view(b: &BrushParams) -> ViewTransform {
     let r = b.radius.max(1.0);
-    // Canvas-space width shown: the stroke's run plus a radius of margin each side.
-    let span = 12.0 * r;
+    // Canvas-space width shown; the wide row's aspect leaves the height ~3
+    // radii, which is what bounds the S's swing in `test_stroke`.
+    let span = 22.0 * r;
     let size = Extent2::new(THUMB_W, THUMB_H);
     ViewTransform {
         center: Vec2::ZERO,
@@ -233,36 +266,6 @@ fn half_extent(view: &ViewTransform) -> Vec2 {
     )
 }
 
-/// The vertical reference band, crossing the (horizontal) test stroke at its
-/// middle and running off both edges — the editor's red band, in miniature and
-/// turned to fit the wide frame. Scaled with the view so it reads the same
-/// thickness in every thumbnail.
-fn band_brush(view: &ViewTransform) -> BrushParams {
-    let h = half_extent(view);
-    BrushParams {
-        color: BAND_COLOR,
-        radius: h.y * 0.42,
-        shape: BrushShape::Round { hardness: 0.9 },
-        drain: 0.0,
-        ..BrushParams::default()
-    }
-}
-
-fn band_stroke(view: &ViewTransform) -> Vec<InputSample> {
-    let h = half_extent(view);
-    const N: usize = 8;
-    (0..N)
-        .map(|i| {
-            let t = i as f32 / (N - 1) as f32;
-            InputSample {
-                pos: Vec2::new(0.0, -1.5 * h.y + t * 3.0 * h.y),
-                pressure: 1.0,
-                ..Default::default()
-            }
-        })
-        .collect()
-}
-
 /// The test stroke: an S-curve **across** the thumbnail with a pressure bell and
 /// a ramping forward tilt — the brush editor's seeded stroke, laid along the
 /// wide axis. Same shape for every preset, so the thumbnails read as one family
@@ -270,8 +273,9 @@ fn band_stroke(view: &ViewTransform) -> Vec<InputSample> {
 fn test_stroke(view: &ViewTransform) -> Vec<InputSample> {
     let h = half_extent(view);
     let run = h.x * 0.84;
-    // The S's swing: as much of the height as the full-pressure tip leaves free.
-    let swing = (h.y * 0.9 - h.x / 6.0).max(0.0);
+    // The S's swing: as much of the height as the full-pressure tip (radius =
+    // span/22, from `thumb_view`) leaves free.
+    let swing = (h.y * 0.9 - h.x / 11.0).max(0.0);
     const N: usize = 48;
     (0..N)
         .map(|i| {
