@@ -1,5 +1,8 @@
-//! Rendered thumbnails for brush presets: a miniature test stroke per preset,
-//! generated offscreen and cached (§11).
+//! Rendered thumbnails for brushes: a miniature test stroke per brush, generated
+//! offscreen and cached (§11). Two viewers share the one cache — the preset
+//! library's rows, and the quick-brush rack the number keys draw (§18.1.8) —
+//! and they share it exactly because the key is the brush itself, so a brush
+//! that is in both places is rendered once.
 //!
 //! Each thumbnail is a red stroke drawn across a canvas laid **entirely in
 //! paint** — a light-gray slab on the left half, a dark-gray slab on the right —
@@ -110,12 +113,12 @@ pub fn url(state: AppState, w: &Wearable) -> Option<String> {
     state.thumbs.cache.read().get(&key(w)).cloned()
 }
 
-/// Make sure every preset in the library has a thumbnail, generating the missing
-/// ones in the background. Idempotent and cheap when nothing is missing; safe to
-/// call from a render effect.
+/// Make sure every brush that has a picture to show has a thumbnail, generating
+/// the missing ones in the background. Idempotent and cheap when nothing is
+/// missing; safe to call from a render effect.
 ///
-/// One generator at a time: the task re-scans the library after each thumbnail,
-/// so presets saved while it runs are picked up by the running task rather than
+/// One generator at a time: the task re-scans after each thumbnail, so a brush
+/// that appears while it runs is picked up by the running task rather than
 /// needing a second one.
 pub fn refresh(state: AppState) {
     if *state.thumbs.busy.peek() || next_missing(state).is_none() {
@@ -136,14 +139,24 @@ pub fn refresh(state: AppState) {
     });
 }
 
-/// The first library entry with no thumbnail yet, oldest first.
+/// The first brush with no thumbnail yet: the library in order, then the
+/// quick-brush rack (§18.1.8), whose overlay shows the same picture per slot.
+///
+/// The rack is scanned as well as the library rather than instead of being
+/// assumed to be a subset of it, because it is not one: a slot tuned under a
+/// hold keeps a brush no preset holds (`slots::release`), and that is exactly the
+/// slot whose row would otherwise be the only blank one in the column. Presets
+/// first, so the list a user is looking at fills in before the rack they have to
+/// hold a key to see — and a slot that *did* come from a preset costs nothing
+/// here, since the two hash to one key.
 fn next_missing(state: AppState) -> Option<Wearable> {
     let cache = state.thumbs.cache.peek();
-    state
-        .presets
-        .peek()
+    let presets = state.presets.peek();
+    let rack = state.slots.brushes.peek();
+    presets
         .iter()
         .map(|e| e.brush)
+        .chain(rack.iter().flatten().copied())
         .find(|w| !cache.contains_key(&key(w)))
 }
 

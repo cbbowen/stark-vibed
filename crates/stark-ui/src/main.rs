@@ -67,6 +67,7 @@ use panels::{
 use platform::capture_pointer;
 use render::CANVAS_ID;
 use settings::SettingsModal;
+use slots::SlotOverlay;
 use stark_core::ColorSpaceId;
 use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
 use stark_core::document::{SelectionOp, ShapeAction};
@@ -136,6 +137,21 @@ fn app() -> Element {
     // the app in — the engine-owned half of them waits for the renderer below
     // (`crate::prefs`).
     use_hook(|| prefs::load(state));
+
+    // Every brush with a picture to show wants a rendered stroke (`crate::thumbs`,
+    // §11): the preset library's rows and the quick-brush rack's overlay
+    // (§18.1.8). In the **root** rather than in either viewer, because neither is
+    // always mounted — the Brush panel closes, and the rack's overlay exists only
+    // while a key is held, which is far too late to start rendering the thing it
+    // is there to show. Generation needs the main renderer, so this watches the
+    // renderer signal alongside the two libraries: whichever lands last kicks it
+    // off, and a slot tuned under a hold re-runs it on the release that stores it.
+    use_effect(move || {
+        let _ = state.presets.read().len();
+        let _ = state.slots.brushes.read().len();
+        let _ = state.renderer.read().is_some();
+        thumbs::refresh(state);
+    });
 
     use_hook(|| {
         spawn(async move {
@@ -310,6 +326,12 @@ fn app() -> Element {
 
             // Left command rail: rarely-used document commands, tucked away.
             CommandRail {}
+
+            // The quick-brush rack, down the left under the rail, while a number
+            // key is held (§18.1.8). Empty and free — and reading nothing — the
+            // rest of the time. It takes no pointer events, because the gesture
+            // it belongs to is hold-*and-draw*.
+            SlotOverlay {}
 
             // Floating tool panels, stacked top-right — order + visibility are data-driven.
             PanelStack {}

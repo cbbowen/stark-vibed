@@ -221,8 +221,9 @@ pub struct SlotState {
     /// `localStorage` at startup like the shape and preset libraries.
     pub brushes: Signal<crate::slots::Rack>,
     /// The hold in flight — `Some` for exactly as long as a number key is down
-    /// or the pen's eraser end is on the glass. The panel lights the held chip
-    /// off this, and the release reads the brushes it has to restore from it.
+    /// or the pen's eraser end is on the glass. The rack's overlay is mounted on
+    /// this (`slots::SlotOverlay`), and the release reads the brushes it has to
+    /// restore from it.
     pub held: Signal<Option<crate::slots::Held>>,
 }
 

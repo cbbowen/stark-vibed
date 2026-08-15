@@ -290,8 +290,9 @@ a brush **library** worth shipping, which is the thing users actually shop for.
 (The library's skeleton exists: named per-user presets persist in `localStorage`
 and apply from the Brush panel, `stark-ui/src/presets.rs`, where the shipped
 Pencil now maps tilt → size and pressure → flow; shape import/persistence is
-done, §6.6; and §18.1.8 puts ten of them under the number keys. Preset previews
-and preset import/export do not.)
+done, §6.6; §18.1.8 puts ten of them under the number keys; and every preset
+shows the stroke it makes, rendered offscreen by a shared engine, §11. Preset
+import/export does not.)
 
 #### 18.1.5 A mixing palette
 
@@ -451,13 +452,52 @@ The rack is read off the **physical** key (`code`, not `key`): on a French layou
 the digit row types `&é"'` unshifted, and a rack reachable only through Shift
 would be no rack.
 
-A row of chips at the head of the Brush panel draws the binding — which numbers
-are filled, which one the live brush is (lit on the same test the preset rows
-are), and which is held right now. Clicking a chip applies that slot for good,
-which is the mouse-only way in; tapping the *key* deliberately does not, because
-a tap and a hold are one keystroke told apart by how long it lasted, and binding
-them to different outcomes would make every hold a race against the user's own
-reflexes.
+**Holding a number draws the rack** (`slots::SlotOverlay`): a column down the
+left of the window of the brushes the digits carry, each shown as the rendered
+test stroke the preset library shows it by (§11) and named where the slot still
+*is* one of the presets. The held row is ringed; an empty digit appears when it
+is the one being held, since holding an empty number is not a mistake but how it
+gets its first brush.
+
+It replaced a permanent row of ten chips at the head of the Brush panel, and the
+trade is the point. The chips spent the scarcest space in the app — panel height
+— every second of every session to say a digit and three lit states, and the
+digit is the one thing about a quick brush nobody needs told: what a rack of ten
+unlabelled numbers actually raises is *what is on 4*. Being momentary is what
+pays for the answer. On screen only while a finger is on the key that summons it,
+the overlay can afford the width of a real preview and costs the panel nothing —
+and the previews were already there to be shown, one cache keyed by the brush
+itself, so a slot that came from a preset is rendered once for both viewers.
+
+Two things it deliberately does not do. **It never takes the pointer**: the
+gesture it belongs to is hold-*and-draw*, and the hand is very often painting
+directly under it. **It reads no live brush**: the held row *is* the live brush by
+construction, so there is nothing to compare against and nothing to re-render per
+sample of the stroke underneath.
+
+It does fade with the rest of the floating chrome, which goes to nothing while a
+canvas gesture is in flight — it stands over the painting like the panels and the
+bars, and while a stroke is being laid the screen goes back to being the
+painting. What makes that safe on a thing this momentary is that **the hold
+outlives the stroke**: the key is still down when the pen lifts, so the rack
+returns and the answer is there whenever the hand wants it, not only before the
+first mark. Appearing, though, is instant — the transition fires on the dim and
+the return, not on the insert, which is the right way round for something
+summoned by a finger that is already down.
+
+What went with the chips is the click that applied a slot for good — the
+mouse-only way in. A row that swallowed the stroke being drawn beneath it would
+be a worse control than the preset list, which reaches any brush with a mouse
+already; the rack is the *keyboard's* index of that library, not a second one.
+Tapping the key deliberately does not apply a slot either, because a tap and a
+hold are one keystroke told apart by how long it lasted, and binding them to
+different outcomes would make every hold a race against the user's own reflexes.
+
+The overlay is mounted on a **key** hold alone, which is the one place the two
+grips are told apart rather than being the same hold. The pen's tail holds slot 0
+for as long as it is on the glass — that is every erase stroke — and a rack
+flying in and out of the corner of the eye on each one is noise answering a
+question nobody asked. Holding `0` shows the same row.
 
 A browser that has never set a slot is seeded from the preset library: each
 shipped preset declares the digit it **ships on** (`PresetEntry::slot`), and the
@@ -490,9 +530,10 @@ than offered as a replace: the work would not survive the next start, and a
 second row of that name would make "the preset called Pen" two brushes to every
 lookup by name.
 
-**Not built**: a second row (Shift+digit) for twenty, dragging a preset onto a
-chip to assign it without the keyboard, and clearing a slot back to empty — a
-slot is overwritten today, which is the only operation the rack has needed.
+**Not built**: a second row (Shift+digit) for twenty, any way to assign or apply
+a slot without the keyboard (dragging a preset onto one, say), and clearing a
+slot back to empty — a slot is overwritten today, which is the only operation the
+rack has needed.
 
 #### 18.1.9 Modifier drags — zoom, size and flow under the hand — built
 

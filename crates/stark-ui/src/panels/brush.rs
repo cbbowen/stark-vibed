@@ -6,7 +6,6 @@ use dioxus::prelude::*;
 use crate::icons::{self, icon, label};
 use crate::platform::select_all;
 use crate::presets;
-use crate::slots;
 use crate::state::{AppState, update_brush};
 use crate::widgets::Slider;
 use stark_core::document::{BrushShape, OrientationSource};
@@ -47,12 +46,13 @@ pub fn BrushPanel() -> Element {
         .unwrap_or_default();
 
     rsx! {
-        // First, because it says *which* brush the two sliders under it are the
-        // knobs of: while a number is held they are that number's.
-        SlotRack {}
-
         // The panel's two sliders are the two knobs a hand reaches for without looking
         // away from the canvas, which is what earns them their marks (`icons::SIZE`).
+        //
+        // They are the *live* brush's, which while a number is held is that
+        // number's (§18.1.8) — the panel needs no line of code that knows about
+        // slots, and the rack draws itself over the canvas while the key is down
+        // (`slots::SlotOverlay`) rather than keeping a row of chips here.
         Slider { label: "Size", glyph: icons::SIZE, min: MIN_RADIUS, max: MAX_RADIUS, value: brush.radius,
             oninput: move |v| update_brush(state, move |b| b.radius = v) }
         Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: MAX_FLOW, value: brush.dynamics.add,
@@ -75,90 +75,6 @@ pub fn BrushPanel() -> Element {
     }
 }
 
-/// The quick-brush rack (§18.1.8): the ten brushes the number keys hold, as a row
-/// of chips at the head of the Brush panel.
-///
-/// It is a *picture of a binding*, and that is most of its job — the numbers work
-/// whether or not this row is on screen, and nothing here is the state of
-/// anything. What it shows is which of them have brushes in, which one the live
-/// brush currently is, and (while a key is down) which one is being held, so the
-/// swap the hand just made has somewhere to be seen.
-///
-/// The chips are clickable as well, applying the slot for good, because a rack
-/// reachable only through the number row would be no rack at all for the hand
-/// this feature is for: a pen in one hand and a tablet under it leaves no spare
-/// finger for the keyboard. A click is deliberately not what a *tap* on the key
-/// does — see [`slots::pick`].
-///
-/// Safe as a child component: nothing here spawns, so there is no task to die
-/// with a re-render (the same note `PresetSection` carries).
-#[component]
-fn SlotRack() -> Element {
-    let state = use_context::<AppState>();
-    let rack = (state.slots.brushes)();
-    let held = (state.slots.held)().map(|h| h.slot);
-    // The whole tool, feel included (§6.11) — subscribing reads, so the chip
-    // lights track a smoothing drag exactly as they track a radius one.
-    let brush = presets::Wearable {
-        params: state
-            .obs
-            .read()
-            .as_ref()
-            .map(|o| o.brush)
-            .unwrap_or_default(),
-        smoothing: (state.smoothing)(),
-    };
-
-    rsx! {
-        div { class: "slot-rack",
-            // The digits in the order they sit on the keyboard, with the eraser's
-            // own slot last — where the `0` key is, and where a tenth of anything
-            // goes (`slots::ERASER`).
-            for slot in (1..slots::COUNT).chain(std::iter::once(slots::ERASER)) {
-                {
-                    let assigned = rack[slot];
-                    // Lit like a preset row, and on the same test: this is the
-                    // brush in hand, color aside, until any knob moves off it.
-                    // Held wins — it is momentary, and it is the thing the user is
-                    // doing right now rather than a state they are in.
-                    let mut class = String::from("slot-chip");
-                    if assigned.is_none() {
-                        class.push_str(" empty");
-                    } else if assigned.is_some_and(|b| presets::matches(&brush, &b)) {
-                        class.push_str(" active");
-                    }
-                    if held == Some(slot) {
-                        class.push_str(" held");
-                    }
-                    let title = match (slot, assigned.is_some()) {
-                        // The eraser's chip says the binding a glyph cannot: that
-                        // the pen already in the hand reaches it. It does not claim
-                        // the slot *is* an eraser — that is only what it ships
-                        // with, and it is overwritten like any other.
-                        (slots::ERASER, true) => "Hold 0, or flip the pen over".to_string(),
-                        (slots::ERASER, false) => "Empty. Hold 0 (or the pen's eraser end) and click a preset".to_string(),
-                        (n, true) => format!("Hold {n} to paint with this brush"),
-                        (n, false) => format!("Empty. Hold {n} and click a preset to fill it"),
-                    };
-                    rsx! {
-                        button {
-                            key: "{slot}",
-                            class,
-                            title,
-                            onclick: move |_| slots::pick(state, slot),
-                            if slot == slots::ERASER {
-                                {icon(icons::ERASER)}
-                            } else {
-                                "{slot}"
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// The preset library (`crate::presets`) at the panel's foot: a header carrying the
 /// Save button, over one row per preset — click applies it, hover reveals a remove ✕.
 /// The row whose snapshot the live brush still *is* (color aside) is highlighted; it
@@ -171,22 +87,15 @@ fn SlotRack() -> Element {
 /// at the moment of saving does not earn a permanent row, and the dialog can say what
 /// the field could not — that a familiar name will replace what is already there.
 ///
-/// Safe as a child component: nothing here spawns **into this scope** — the
-/// thumbnail generator is `spawn_forever` over root-owned signals
-/// (`crate::thumbs`), so there is no task to die with a re-render (unlike the
-/// editor's slider rows — see `brush_editor::edit`).
+/// Safe as a child component: nothing here spawns at all. The thumbnails the
+/// rows are drawn with are generated by a task the **root** starts over
+/// root-owned signals (`crate::thumbs`, `main::app`), so there is none to die
+/// with a re-render (unlike the editor's slider rows — see `brush_editor::edit`)
+/// and none that stops when this panel is closed.
 #[component]
 fn PresetSection() -> Element {
     let state = use_context::<AppState>();
     let entries = (state.presets)();
-    // Every row wants a rendered stroke beside its name. Generation needs the
-    // main renderer, so this effect watches both the library and the renderer
-    // signal: whichever lands last is the one that kicks it off.
-    use_effect(move || {
-        let _ = state.presets.read().len();
-        let _ = state.renderer.read().is_some();
-        crate::thumbs::refresh(state);
-    });
     // The whole tool, feel included (§6.11), so a row goes out when the
     // smoothing moves off its snapshot like it does for any other knob.
     let brush = presets::Wearable {

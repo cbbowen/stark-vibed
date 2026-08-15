@@ -41,9 +41,15 @@
 //! Like the shape and preset libraries the rack follows this browser rather than
 //! the document (`localStorage`), and degrades to a per-session rack where
 //! storage is unavailable.
+//!
+//! The rack draws itself only while a number is held ([`SlotOverlay`]) — a
+//! column of the brushes the digits carry, each as the rendered stroke the
+//! preset library shows.
 
 use dioxus::prelude::*;
 
+use crate::icons::{self, icon};
+use crate::layout::chrome_class;
 use crate::presets::{self, Wearable};
 use crate::state::AppState;
 
@@ -93,6 +99,13 @@ pub struct Held {
 }
 
 impl Held {
+    /// Whether a **key** is what is holding the slot down, rather than the pen's
+    /// tail. What [`SlotOverlay`] is mounted on — see there for why the two
+    /// grips are told apart for showing when they are alike for everything else.
+    pub fn by_key(&self) -> bool {
+        matches!(self.grip, Grip::Key)
+    }
+
     /// What the release does: the brush to keep in the slot (`None` when nothing
     /// was changed), and the brush to put back.
     ///
@@ -190,18 +203,118 @@ pub fn release_all(state: AppState) {
     }
 }
 
-/// Make `slot`'s brush the live one for good — what clicking a chip in the rack
-/// does, and the mouse-only way to reach a slot at all (a hand on a tablet has no
-/// spare finger for the number row).
+/// The rack, drawn while a number is held (§18.1.8): a column down the left of
+/// the window of the brushes the digits carry, each shown as the rendered test
+/// stroke the preset library shows it by (`crate::thumbs`).
 ///
-/// Deliberately *not* what tapping the number key does. A tap and a hold are the
-/// same keystroke told apart only by how long it lasted, so binding them to
-/// different outcomes would make every hold a race against the user's own
-/// reflexes. A click is its own gesture and says what it means.
-pub fn pick(state: AppState, slot: usize) {
-    let brush = state.slots.brushes.peek().get(slot).copied().flatten();
-    if let Some(brush) = brush {
-        presets::wear(state, brush);
+/// It replaced a permanent row of ten chips at the head of the Brush panel, and
+/// the trade is the point. The chips spent the scarcest space in the app — panel
+/// height — every second of every session to say a digit and three lit states,
+/// and the digit is the one thing about a quick brush nobody needs told: the
+/// question a rack of ten unlabelled numbers actually raises is *what is on 4*.
+/// Being momentary is what pays for the answer — on screen only while a finger
+/// is on the key that summons it, this can afford the width of a real preview
+/// and costs the panel nothing.
+///
+/// Three things it deliberately does not do:
+///
+/// - **It never takes the pointer** (`pointer-events: none` in the stylesheet).
+///   The gesture it belongs to is hold-*and-draw*, and the hand is very often
+///   painting under it. That is also where the chips' click went: applying a slot
+///   for good was the mouse-only way in, and a row that swallowed the stroke
+///   being drawn beneath it would be a worse control than the preset list, which
+///   reaches any brush with a mouse already.
+/// - **It fades with the rest of the floating chrome** (`layout::chrome_class`),
+///   which goes to nothing while a canvas gesture is in flight: it stands over
+///   the painting like the panels and the bars, and while a stroke is being laid
+///   the screen goes back to being the painting. What makes the fade safe here,
+///   where a momentary thing might not survive one, is that **the hold outlives
+///   the stroke** — the key is still down when the pen lifts, so the rack comes
+///   straight back and the answer is there whenever the hand wants it rather
+///   than only before the first mark.
+/// - **It reads no live brush.** The held row *is* the live brush by
+///   construction — that is what a hold is — so there is nothing to compare it
+///   against, and a component that read the observable would re-render on every
+///   sample of the stroke being drawn under it.
+///
+/// Mounted on a **key** hold alone, which is the one place the two grips are
+/// told apart rather than being the same hold. The pen's tail holds [`ERASER`]
+/// for as long as it is on the glass (`input::bind_pen`) — that is every erase
+/// stroke — and a rack flying in and out of the corner of the eye on each one is
+/// noise answering a question nobody asked. Holding `0` shows the same row.
+#[component]
+pub fn SlotOverlay() -> Element {
+    let state = use_context::<AppState>();
+    // Nothing held: read nothing else at all, so a rack or a library that changes
+    // during a stroke cannot re-render anything.
+    let Some(held) = (state.slots.held)().filter(Held::by_key) else {
+        return rsx! {};
+    };
+    let rack = (state.slots.brushes)();
+    // The rows are resolved against the library up front, so no read guard is
+    // alive while the rows below read the thumbnail cache one by one.
+    let rows: Vec<(usize, Option<Wearable>, String)> = {
+        let library = state.presets.read();
+        // The digits in the order they sit on the keyboard, with the eraser's own
+        // slot last — where the `0` key is, and where a tenth of anything goes.
+        (1..COUNT)
+            .chain(std::iter::once(ERASER))
+            // The filled numbers, and the held one whether or not it is filled:
+            // holding an empty digit is how it gets its first brush, and a hold
+            // whose own row was missing would look like a rack that had lost it.
+            .filter(|&slot| rack[slot].is_some() || slot == held.slot)
+            .map(|slot| {
+                let brush = rack[slot];
+                // The library's name for it, where the slot still *is* one of the
+                // presets (color aside). A slot tuned away from the preset it came
+                // from has no name to give and carries none — the preview is what
+                // it is now, which is the honest answer.
+                let label = match brush.map(|b| presets::name_of(&library, &b)) {
+                    Some(Some(name)) => name,
+                    Some(None) => String::new(),
+                    None => "Empty \u{2014} click a preset to fill it".to_string(),
+                };
+                (slot, brush, label)
+            })
+            .collect()
+    };
+
+    rsx! {
+        div { class: chrome_class(state, "slot-overlay"),
+            for (slot, brush, label) in rows {
+                {
+                    // The brush as a stroke, filling the row as its background —
+                    // the preset row's own recipe (`panels::brush`), down to
+                    // writing `none` out rather than omitting the property: these
+                    // nodes are reused as the rack changes under them, and a
+                    // stranded declaration would leave one slot showing another's
+                    // brush (inline style merges per property).
+                    let bg = match brush.and_then(|b| crate::thumbs::url(state, &b)) {
+                        Some(url) if !url.is_empty() => format!("background-image: url({url});"),
+                        _ => "background-image: none;".to_string(),
+                    };
+                    let mut class = String::from("slot-row");
+                    if brush.is_none() {
+                        class.push_str(" empty");
+                    }
+                    if slot == held.slot {
+                        class.push_str(" held");
+                    }
+                    rsx! {
+                        div { key: "{slot}", class, style: "{bg}",
+                            span { class: "slot-row-digit",
+                                if slot == ERASER {
+                                    {icon(icons::ERASER)}
+                                } else {
+                                    "{slot}"
+                                }
+                            }
+                            span { class: "slot-row-name", "{label}" }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

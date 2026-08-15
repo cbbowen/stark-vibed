@@ -506,6 +506,20 @@ pub fn next_name(entries: &[PresetEntry]) -> String {
         .unwrap()
 }
 
+/// The library's name for `brush`, where some preset still *is* it — what the
+/// quick-brush rack labels a slot by (`slots::SlotOverlay`), since a slot holds
+/// a snapshot rather than a reference back to the preset it came from.
+///
+/// [`matches`] is the test, so this answers on exactly the terms the preset rows
+/// light on: a slot tuned away from what it was given gets no name back, which is
+/// the truth — it is not that preset any more.
+pub fn name_of(entries: &[PresetEntry], brush: &Wearable) -> Option<String> {
+    entries
+        .iter()
+        .find(|e| matches(brush, &e.brush))
+        .map(|e| e.name.clone())
+}
+
 /// Whether the live brush *is* this preset — everything but the painting color
 /// (RGB), which [`apply`] deliberately leaves alone. Exact equality on purpose:
 /// the row highlights until any knob moves off the preset, then goes out. The

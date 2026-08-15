@@ -388,10 +388,17 @@ which the engine draws into directly. DOM chrome surrounds it.
   nothing fetched and nothing decoded, and the thumbnails' engine
   (`Renderer::shared_engine`, `thumbs.rs`) deliberately pins the opposite look —
   flat ground, neutral light — so a thumbnail is the *brush's* identity card and
-  its cache key is the brush snapshot alone. Each preset row's picture is two
+  its cache key is the brush snapshot alone. Each row's picture is two
   half-canvas fills (the ground is all paint, so smearing and lifting read), one
   replayed stroke and one small `Engine::export_view` readback on that one kept
-  engine, generated in the background and cached per session.
+  engine, generated in the background and cached per session. The key being the
+  brush is what lets the cache have two viewers for the price of one: the preset
+  library's rows and the quick-brush rack the number keys draw (§18.1.8) show the
+  same picture of the same brush, and a slot that came from a preset is never
+  rendered twice. The generator therefore belongs to the app **root**, not to
+  either viewer — the Brush panel closes, and the rack's overlay exists only
+  while a key is held, which is far too late to start rendering what it is there
+  to show.
 - **Settings are one dialog, not a control tucked into whichever panel it came
   from.** Panels hold what you are painting *with* and change constantly
   mid-stroke; document dialogs hold what the drawing *is*. A standing per-client
