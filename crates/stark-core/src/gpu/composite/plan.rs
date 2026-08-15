@@ -88,9 +88,34 @@ pub(super) enum Step {
         src: Slot,
         out: Slot,
         slot: u32,
+        phase: Phase,
     },
     /// Rewrite the accumulator `back` into `out` through a filter layer (§21.3).
-    Filter { back: Slot, out: Slot, slot: u32 },
+    Filter {
+        back: Slot,
+        out: Slot,
+        slot: u32,
+        phase: Phase,
+    },
+}
+
+/// Which way round a bouncing pass found the ping-pong, and at which level.
+///
+/// Recorded because it is exactly the identity of the bind group the pass reads
+/// through: a merge at level `l` binds either that level's `swap` or the stack's own
+/// target as its backdrop, and always that level's `iso` as its source. Two phases per
+/// level, so a document with fifty merges still needs two bind groups per level rather
+/// than one per merge per frame (`ScratchLevel::blend_bg`).
+///
+/// Derived here rather than recovered in the encoder because the plan is where the
+/// ping-pong is decided — recovering it from `back` alone would mean asking which of
+/// two slots a name refers to, which is the class of question this module exists to
+/// stop being asked.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(super) struct Phase {
+    pub(super) level: usize,
+    /// Whether the backdrop is this level's `swap`, as against the stack's target.
+    pub(super) back_is_swap: bool,
 }
 
 impl Step {
@@ -231,6 +256,10 @@ impl<'a> Plan<'a> {
                     back: cur,
                     out: alt,
                     slot,
+                    phase: Phase {
+                        level,
+                        back_is_swap: cur == swap,
+                    },
                 });
                 std::mem::swap(&mut cur, &mut alt);
                 continue;
@@ -257,6 +286,10 @@ impl<'a> Plan<'a> {
                 src: iso,
                 out: alt,
                 slot,
+                phase: Phase {
+                    level,
+                    back_is_swap: cur == swap,
+                },
             });
             // `alt` now holds the merged stack and becomes the accumulator; what was
             // `cur` is stale, and the next bounce overwrites all of it.

@@ -65,7 +65,7 @@ pub(crate) use filter::{FilterPass, FilterUniform};
 use guides::{GuidePass, GuideUniform, pack_guides};
 use media::{MediaPass, MediaUniform};
 use overlay::{OverlayInstance, OverlayPass, PEER_OUTLINE_ALPHA};
-use plan::{Draw, Plan, Slot, Step};
+use plan::{Draw, Phase, Plan, Slot, Step};
 use resolve::{ResolvePass, ResolveUniform, supersample};
 use tiles::{Instance, MatteInstance, Ramp, TilePass};
 use view::{View, ViewBindings};
@@ -85,6 +85,26 @@ struct Encode<'a> {
     /// The per-item bind groups [`Compositor::upload`] gathered, in the flat order
     /// the plan's [`Draw`]s index.
     streams: &'a PreparedStreams<'a>,
+}
+
+/// One **bouncing** pass: what a merge and a filter both need beyond the pipeline
+/// kit (§18.0.4, §21.3).
+///
+/// The two are the same shape — read the accumulator, write the other half of the
+/// ping-pong, off a uniform slot of their own — and differ only in that a merge also
+/// binds an isolated source. Grouped because five parameters that always travel
+/// together read worse spelled out at two call sites, the shape `Encode` and
+/// `CompositeScene` already use.
+struct Bounce<'a> {
+    /// The accumulator this pass reads.
+    back: Targets<'a>,
+    /// The other half of the ping-pong, which it wholly replaces.
+    out: Targets<'a>,
+    /// Which dynamic-offset slot holds this pass's uniform.
+    slot: u32,
+    /// The level it bounces at, which owns the bind groups it reads through.
+    here: &'a ScratchLevel,
+    phase: Phase,
 }
 
 /// What [`Compositor::upload`] hands the encoder: the per-tile bind groups, and the
@@ -709,6 +729,18 @@ impl Compositor {
                 .expect("an isolation at an unallocated level (Plan::scratch)")
                 .iso(),
         };
+        // One bouncing pass, resolved. The `expect` rests on the same invariant `at`
+        // does, and the plan's tests pin it: a step that bounces named a level the
+        // scratch was told to allocate.
+        let bounce = |back, out, slot, phase: Phase| Bounce {
+            back: at(back),
+            out: at(out),
+            slot,
+            here: levels
+                .get(phase.level)
+                .expect("a bounce at an unallocated level (Plan::scratch)"),
+            phase,
+        };
         let e = Encode { p, streams };
         for step in &plan.steps {
             match step {
@@ -721,10 +753,14 @@ impl Compositor {
                     src,
                     out,
                     slot,
-                } => self.encode_blend(&e, encoder, at(*back), at(*src), at(*out), *slot),
-                Step::Filter { back, out, slot } => {
-                    self.encode_filter(&e, encoder, at(*back), at(*out), *slot)
-                }
+                    phase,
+                } => self.encode_blend(&e, encoder, bounce(*back, *out, *slot, *phase), at(*src)),
+                Step::Filter {
+                    back,
+                    out,
+                    slot,
+                    phase,
+                } => self.encode_filter(&e, encoder, bounce(*back, *out, *slot, *phase)),
             }
         }
     }
@@ -794,34 +830,44 @@ impl Compositor {
         &self,
         e: &Encode<'_>,
         encoder: &mut wgpu::CommandEncoder,
-        back: Targets<'_>,
+        b: Bounce<'_>,
         src: Targets<'_>,
-        out: Targets<'_>,
-        slot: u32,
     ) {
-        let mut entries = vec![
-            self.blend_uniforms.binding(0),
-            desc::tex(1, back.color),
-            desc::tex(2, back.aux),
-            desc::tex(3, src.color),
-            desc::tex(4, src.aux),
-            desc::tex(5, &e.p.blend.pigment.view),
-            desc::samp(6, &e.p.blend.pigment.sampler),
-        ];
-        // Both residuals or neither: `back`, `src` and `out` are all targets of the
-        // same document, so the space that gave one a residual gave all three one.
-        if let (Some(b), Some(s)) = (back.resid, src.resid) {
-            entries.push(desc::tex(7, b));
-            entries.push(desc::tex(8, s));
-        }
-        let bg =
+        let Bounce {
+            back,
+            out,
+            slot,
+            here,
+            phase,
+        } = b;
+        // Two per level rather than one per merge per frame: the views this names are
+        // fixed by the phase, and the whole scratch is dropped when they change
+        // (see [`ScratchLevel::blend_bg`]).
+        let bg = here.blend_bg(phase.back_is_swap, || {
+            let mut entries = vec![
+                self.blend_uniforms.binding(0),
+                desc::tex(1, back.color),
+                desc::tex(2, back.aux),
+                desc::tex(3, src.color),
+                desc::tex(4, src.aux),
+                desc::tex(5, &e.p.blend.pigment.view),
+                desc::samp(6, &e.p.blend.pigment.sampler),
+            ];
+            // Both residuals or neither: `back`, `src` and `out` are all targets of
+            // the same document, so the space that gave one a residual gave all three
+            // one.
+            if let (Some(b), Some(s)) = (back.resid, src.resid) {
+                entries.push(desc::tex(7, b));
+                entries.push(desc::tex(8, s));
+            }
             e.p.ctx
                 .device
                 .create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("stark blend bg"),
                     layout: &e.p.blend.bgl,
                     entries: &entries,
-                });
+                })
+        });
         let attachments = out.attachments(desc::CLEAR);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark blend pass"),
@@ -835,7 +881,7 @@ impl Compositor {
             multiview_mask: None,
         });
         pass.set_pipeline(&e.p.blend.pipeline);
-        pass.set_bind_group(0, &bg, &[UniformSlots::<BlendUniform>::offset(slot)]);
+        pass.set_bind_group(0, bg, &[UniformSlots::<BlendUniform>::offset(slot)]);
         pass.draw(0..3, 0..1);
     }
 
@@ -850,33 +896,34 @@ impl Compositor {
     /// the blend pass's — both passes ask it the same question, and an Oklab
     /// document binds the same 1×1 stand-in so there is one layout per space
     /// rather than one per pass.
-    fn encode_filter(
-        &self,
-        e: &Encode<'_>,
-        encoder: &mut wgpu::CommandEncoder,
-        back: Targets<'_>,
-        out: Targets<'_>,
-        slot: u32,
-    ) {
-        let mut entries = vec![
-            self.filter_uniforms.binding(0),
-            desc::tex(1, back.color),
-            desc::tex(2, back.aux),
-            desc::samp(3, &e.p.filter.sampler),
-            desc::tex(5, &e.p.blend.pigment.view),
-            desc::samp(6, &e.p.blend.pigment.sampler),
-        ];
-        if let Some(r) = back.resid {
-            entries.push(desc::tex(7, r));
-        }
-        let bg =
+    fn encode_filter(&self, e: &Encode<'_>, encoder: &mut wgpu::CommandEncoder, b: Bounce<'_>) {
+        let Bounce {
+            back,
+            out,
+            slot,
+            here,
+            phase,
+        } = b;
+        let bg = here.filter_bg(phase.back_is_swap, || {
+            let mut entries = vec![
+                self.filter_uniforms.binding(0),
+                desc::tex(1, back.color),
+                desc::tex(2, back.aux),
+                desc::samp(3, &e.p.filter.sampler),
+                desc::tex(5, &e.p.blend.pigment.view),
+                desc::samp(6, &e.p.blend.pigment.sampler),
+            ];
+            if let Some(r) = back.resid {
+                entries.push(desc::tex(7, r));
+            }
             e.p.ctx
                 .device
                 .create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("stark filter bg"),
                     layout: &e.p.filter.bgl,
                     entries: &entries,
-                });
+                })
+        });
         let attachments = out.attachments(desc::CLEAR);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark filter pass"),
@@ -890,7 +937,7 @@ impl Compositor {
             multiview_mask: None,
         });
         pass.set_pipeline(&e.p.filter.pipeline);
-        pass.set_bind_group(0, &bg, &[UniformSlots::<FilterUniform>::offset(slot)]);
+        pass.set_bind_group(0, bg, &[UniformSlots::<FilterUniform>::offset(slot)]);
         pass.draw(0..3, 0..1);
     }
 

@@ -6,6 +6,8 @@
 //! the accumulator and writes the result, and a texture cannot be both, the
 //! accumulator ping-pongs between the caller's pair and this module's `swap`.
 
+use std::sync::OnceLock;
+
 use crate::colorspace::ColorSpace;
 use crate::document::BlendMode;
 use crate::geom::Extent2;
@@ -175,6 +177,23 @@ impl Trio {
 pub(super) struct ScratchLevel {
     swap: Trio,
     iso: Option<Trio>,
+    /// The blend and filter bind groups this level's passes read through, one per
+    /// **phase** of its ping-pong.
+    ///
+    /// A bind group over an accumulator is fully determined by which way round the
+    /// ping-pong currently is: a pass at level `l` reads either this level's `swap` or
+    /// the stack's own target (the caller's at level 0, level `l−1`'s `iso` below
+    /// that), and a merge's source is always this level's `iso`. Two phases, so two of
+    /// each — however many merges the document has, and however many frames it is
+    /// drawn for.
+    ///
+    /// Filled on first use and kept, `TilePairHandle::composite_bg`'s bargain with a
+    /// shorter life: everything named here is either this level's own or the
+    /// accumulator, and `ensure_targets` drops the whole scratch whenever the
+    /// accumulator is rebuilt — so the lifetime is exactly the views'. That is what
+    /// makes it a `OnceLock` rather than a cache with a key and an eviction policy.
+    blend_bg: [OnceLock<wgpu::BindGroup>; 2],
+    filter_bg: [OnceLock<wgpu::BindGroup>; 2],
 }
 
 impl ScratchLevel {
@@ -193,7 +212,29 @@ impl ScratchLevel {
                     "stark blend iso resid",
                 ))
             }),
+            blend_bg: Default::default(),
+            filter_bg: Default::default(),
         }
+    }
+
+    /// The blend bind group for the phase in which the backdrop is (or is not) this
+    /// level's `swap`, built on first use.
+    pub(super) fn blend_bg(
+        &self,
+        back_is_swap: bool,
+        make: impl FnOnce() -> wgpu::BindGroup,
+    ) -> &wgpu::BindGroup {
+        self.blend_bg[usize::from(back_is_swap)].get_or_init(make)
+    }
+
+    /// [`Self::blend_bg`] for the filter pass, which reads the same accumulator
+    /// through a layout of its own (§21.3).
+    pub(super) fn filter_bg(
+        &self,
+        back_is_swap: bool,
+        make: impl FnOnce() -> wgpu::BindGroup,
+    ) -> &wgpu::BindGroup {
+        self.filter_bg[usize::from(back_is_swap)].get_or_init(make)
     }
 
     pub(super) fn swap(&self) -> Targets<'_> {
