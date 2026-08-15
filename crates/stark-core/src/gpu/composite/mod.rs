@@ -1,7 +1,7 @@
 //! Compositing and the media/lighting pass (§6.3, §6.4).
 //!
-//! Five passes, one per module, each owning its uniform, its pipeline and the
-//! constants only it reads:
+//! Five passes, one per module, each owning its pipeline, the constants only it
+//! reads, **and its own encoding**:
 //!
 //! | Pass | Module | What it does |
 //! |---|---|---|
@@ -13,8 +13,14 @@
 //! | D | [`guides`] | the perspective grid over everything (§20.4) |
 //! | E | [`resolve`] | the supersampled render boxed down to the target (§6.4) |
 //!
-//! What is left here is the part no single pass owns: the two structs the passes
-//! hang off, and the walk that orders them.
+//! Beside them, [`plan`] decides what pass A *does* — one walk of the group tree
+//! producing a flat list of steps — so that no part of this file walks it again.
+//!
+//! What is left here is the part no single pass owns: the two structs the passes hang
+//! off, and the order the passes run in. That "and its own encoding" was for a long
+//! time false, and the cost showed: the filter pass binds the **blend** pass's pigment
+//! LUT, a real and deliberate coupling that was invisible from `filter.rs` while both
+//! passes were encoded here. It is a parameter of `FilterPass::encode` now.
 //!
 //! # Two types, split along one line: does it depend on the target?
 //!
@@ -53,21 +59,18 @@ use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::environment::Environment;
-use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
-
+use crate::gpu::surface::Surface;
 use crate::gpu::uniforms::{InstanceStream, UniformSlots};
+
 pub(crate) use blend::{BlendPass, BlendUniform, blend_code};
-use blend::{ScratchLevel, ScratchTargets};
+use blend::{Bounce, ScratchLevel, ScratchTargets};
 pub(crate) use filter::{FilterPass, FilterUniform};
-// `pack_guides` is imported by name rather than qualified, because `render`'s own
-// `guides` binding (the scene's list) would otherwise shadow the module in a reader's
-// eye — `guides::pack_guides(scene, view)` resolves fine and reads badly.
-use guides::{GuidePass, GuideUniform, pack_guides};
-use media::{MediaPass, MediaUniform};
-use overlay::{OverlayInstance, OverlayPass, PEER_OUTLINE_ALPHA};
-use plan::{Draw, Phase, Plan, Slot, Step};
-use resolve::{ResolvePass, ResolveUniform, supersample};
-use tiles::{Instance, MatteInstance, Ramp, TilePass};
+use guides::{GuidePass, GuideUniform};
+use media::MediaPass;
+use overlay::{OverlayInstance, OverlayPass};
+use plan::{Phase, Plan, Slot, Step};
+use resolve::{ResolvePass, Supersampled, supersample};
+use tiles::{Instance, MatteInstance, Ramp, TilePass, TileStreams};
 use view::{View, ViewBindings};
 
 pub use group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent, MatteDraw};
@@ -75,41 +78,9 @@ pub use media::MediaParams;
 pub use overlay::SelectionOutline;
 pub(crate) use view::view_uniform;
 
-/// What stays the same for every step of pass A, as against what the step varies.
-///
-/// A step changes the targets and the slot; these two do not, so they travel as one
-/// parameter rather than two repeated at every call — the shape `CompositeScene` and
-/// `stroke::StrokeScene` already use.
-struct Encode<'a> {
-    p: &'a CompositorPipeline,
-    /// The per-item bind groups [`Compositor::upload`] gathered, in the flat order
-    /// the plan's [`Draw`]s index.
-    streams: &'a PreparedStreams<'a>,
-}
-
-/// One **bouncing** pass: what a merge and a filter both need beyond the pipeline
-/// kit (§18.0.4, §21.3).
-///
-/// The two are the same shape — read the accumulator, write the other half of the
-/// ping-pong, off a uniform slot of their own — and differ only in that a merge also
-/// binds an isolated source. Grouped because five parameters that always travel
-/// together read worse spelled out at two call sites, the shape `Encode` and
-/// `CompositeScene` already use.
-struct Bounce<'a> {
-    /// The accumulator this pass reads.
-    back: Targets<'a>,
-    /// The other half of the ping-pong, which it wholly replaces.
-    out: Targets<'a>,
-    /// Which dynamic-offset slot holds this pass's uniform.
-    slot: u32,
-    /// The level it bounces at, which owns the bind groups it reads through.
-    here: &'a ScratchLevel,
-    phase: Phase,
-}
-
 /// What [`Compositor::upload`] hands the encoder: the per-tile bind groups, and the
 /// per-matte ramp bind group beside them. One value because they are one
-/// preparation, gathered from one plan and indexed by its [`Draw`]s.
+/// preparation, gathered from one plan and indexed by its `Draw`s.
 ///
 /// The tile groups are **borrowed from the tiles themselves** — each is built once
 /// and kept for that tile's life ([`TilePairHandle::composite_bg`]) — so what this
@@ -174,7 +145,8 @@ pub struct CompositeScene<'a> {
 /// stopped a caller straddling a write and its submit with another render. Each of
 /// the three holds per-target state anyway — what this render is looking at, how it
 /// is lit, how many samples it took — so they belong to the [`Compositor`] and now
-/// live there ([`ViewBindings`], [`Compositor::media_buf`], [`Supersampled::buf`]).
+/// live there ([`ViewBindings`], [`Compositor::media_buf`], and inside
+/// [`Supersampled`]).
 ///
 /// [`Engine::new_sharing`]: crate::Engine::new_sharing
 pub struct CompositorPasses {
@@ -333,20 +305,6 @@ pub struct Compositor {
     /// the two above, which this pass spent a hand-written stride and a hand-rolled
     /// grow loop reimplementing.
     guide_uniforms: UniformSlots<GuideUniform>,
-}
-
-/// Where passes B–D write when the view is zoomed out, and what pass E reads it back
-/// through (§6.4).
-///
-/// One value rather than three because they are built and dropped together and none
-/// of them means anything without the others: the bind group names the view, and the
-/// uniform holds the very `ss` that decided the view's size.
-struct Supersampled {
-    view: wgpu::TextureView,
-    bg: wgpu::BindGroup,
-    /// `n`, the sample count pass E box-averages over. This consumer's, because `ss`
-    /// is a function of *this* target's zoom.
-    buf: wgpu::Buffer,
 }
 
 /// Somewhere for a render that is **not** the surface's to keep its attachments
@@ -583,17 +541,8 @@ impl Compositor {
             self.accum = Some(p.offscreen(self.size, &self.media_buf));
             // Allocated only where it is written into. A 1:1 view drops it here, which
             // is what returns the memory the moment the artist zooms back in to paint.
-            self.ss_target = (ss > 1).then(|| {
-                let device = &p.ctx.device;
-                let view = offscreen_view(device, size, p.target_format, "stark supersampled");
-                let buf = resolve::uniform_buffer(device);
-                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark resolve bg"),
-                    layout: &p.resolve.bgl,
-                    entries: &[desc::uniform_entry(0, &buf), desc::tex(1, &view)],
-                });
-                Supersampled { view, bg, buf }
-            });
+            self.ss_target = (ss > 1)
+                .then(|| Supersampled::new(&p.ctx.device, size, p.target_format, &p.resolve));
         }
         self.accum
             .as_ref()
@@ -741,12 +690,22 @@ impl Compositor {
                 .expect("a bounce at an unallocated level (Plan::scratch)"),
             phase,
         };
-        let e = Encode { p, streams };
+        let tiles = TileStreams {
+            view_bg: &self.view.tiles,
+            instances: &self.instances,
+            mattes: &self.matte_instances,
+            tile_bgs: &streams.tile_bgs,
+            ramp_bg: streams.matte_ramp_bg.as_ref(),
+        };
         for step in &plan.steps {
             match step {
-                Step::Draw { into, draws, clear } => {
-                    self.encode_items(&e, encoder, at(*into), &plan.draws[draws.clone()], *clear)
-                }
+                Step::Draw { into, draws, clear } => p.tiles.encode(
+                    encoder,
+                    at(*into),
+                    &plan.draws[draws.clone()],
+                    *clear,
+                    &tiles,
+                ),
                 Step::Clear { into } => blend::clear_targets(encoder, at(*into)),
                 Step::Blend {
                     back,
@@ -754,191 +713,29 @@ impl Compositor {
                     out,
                     slot,
                     phase,
-                } => self.encode_blend(&e, encoder, bounce(*back, *out, *slot, *phase), at(*src)),
+                } => p.blend.encode(
+                    &p.ctx,
+                    encoder,
+                    bounce(*back, *out, *slot, *phase),
+                    at(*src),
+                    &self.blend_uniforms,
+                ),
+                // The pigment LUT is the blend pass's, and both passes ask it the same
+                // question — see `FilterPass::encode`.
                 Step::Filter {
                     back,
                     out,
                     slot,
                     phase,
-                } => self.encode_filter(&e, encoder, bounce(*back, *out, *slot, *phase)),
+                } => p.filter.encode(
+                    &p.ctx,
+                    encoder,
+                    bounce(*back, *out, *slot, *phase),
+                    &self.filter_uniforms,
+                    &p.blend.pigment,
+                ),
             }
         }
-    }
-
-    /// Draw one run's items into `into`, in stack order, switching pipelines where
-    /// a matte sits between runs of tiles. Both pipelines share group 0 (the view
-    /// uniform), so only the vertex buffer and pipeline change.
-    ///
-    /// Each [`Draw`] carries its own index into the flat streams, which is what the
-    /// walking cursors used to reconstruct.
-    fn encode_items(
-        &self,
-        e: &Encode<'_>,
-        encoder: &mut wgpu::CommandEncoder,
-        into: Targets<'_>,
-        draws: &[Draw],
-        clear: bool,
-    ) {
-        let ops = if clear { desc::CLEAR } else { desc::LOAD };
-        let attachments = into.attachments(ops);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark composite pass"),
-            color_attachments: &attachments[..into.count()],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_bind_group(0, &self.view.tiles, &[]);
-        let mut pipeline_is_matte = None;
-        for draw in draws {
-            match *draw {
-                Draw::Tile(i) => {
-                    if pipeline_is_matte != Some(false) {
-                        pass.set_pipeline(&e.p.tiles.pipeline);
-                        pass.set_vertex_buffer(0, self.instances.slice());
-                        pipeline_is_matte = Some(false);
-                    }
-                    pass.set_bind_group(1, e.streams.tile_bgs[i as usize], &[]);
-                    pass.draw(0..4, i..i + 1);
-                }
-                Draw::Matte(i) => {
-                    if pipeline_is_matte != Some(true) {
-                        pass.set_pipeline(&e.p.tiles.matte_pipeline);
-                        pass.set_vertex_buffer(0, self.matte_instances.slice());
-                        pipeline_is_matte = Some(true);
-                    }
-                    // Group 1 is the ramp, at this matte's own slot (§22.4).
-                    // Re-set per matte either way: the offset changes, and a
-                    // pipeline switch has already invalidated whatever was
-                    // bound, the two pipelines' group-1 layouts differing.
-                    let ramp = e
-                        .streams
-                        .matte_ramp_bg
-                        .as_ref()
-                        .expect("a matte draw without its ramp slots");
-                    pass.set_bind_group(1, ramp, &[UniformSlots::<Ramp>::offset(i)]);
-                    pass.draw(0..4, i..i + 1);
-                }
-            }
-        }
-    }
-
-    /// Merge the isolated layer `src` into the accumulator `back` through blend slot
-    /// `slot`, writing the result to `out` (§18.0.4).
-    fn encode_blend(
-        &self,
-        e: &Encode<'_>,
-        encoder: &mut wgpu::CommandEncoder,
-        b: Bounce<'_>,
-        src: Targets<'_>,
-    ) {
-        let Bounce {
-            back,
-            out,
-            slot,
-            here,
-            phase,
-        } = b;
-        // Two per level rather than one per merge per frame: the views this names are
-        // fixed by the phase, and the whole scratch is dropped when they change
-        // (see [`ScratchLevel::blend_bg`]).
-        let bg = here.blend_bg(phase.back_is_swap, || {
-            let mut entries = vec![
-                self.blend_uniforms.binding(0),
-                desc::tex(1, back.color),
-                desc::tex(2, back.aux),
-                desc::tex(3, src.color),
-                desc::tex(4, src.aux),
-                desc::tex(5, &e.p.blend.pigment.view),
-                desc::samp(6, &e.p.blend.pigment.sampler),
-            ];
-            // Both residuals or neither: `back`, `src` and `out` are all targets of
-            // the same document, so the space that gave one a residual gave all three
-            // one.
-            if let (Some(b), Some(s)) = (back.resid, src.resid) {
-                entries.push(desc::tex(7, b));
-                entries.push(desc::tex(8, s));
-            }
-            e.p.ctx
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark blend bg"),
-                    layout: &e.p.blend.bgl,
-                    entries: &entries,
-                })
-        });
-        let attachments = out.attachments(desc::CLEAR);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark blend pass"),
-            // The pass covers every texel and reads nothing from `out`, so the load
-            // is a don't-care; clearing states that rather than implying the previous
-            // contents matter.
-            color_attachments: &attachments[..out.count()],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&e.p.blend.pipeline);
-        pass.set_bind_group(0, bg, &[UniformSlots::<BlendUniform>::offset(slot)]);
-        pass.draw(0..3, 0..1);
-    }
-
-    /// Run filter slot `slot` over the accumulator `back`, writing the adjusted
-    /// result to `out` (§21.3).
-    ///
-    /// [`Self::encode_blend`] with the source dropped, down to the bind group's
-    /// numbering: `filter_common.wesl` declares 0–3 where `blend_common.wesl`
-    /// declares 0–4 (3 is the chromatic gather's sampler, in one of the slots the
-    /// missing source vacates), and the pigment LUT keeps 5–6 because
-    /// `mixbox_lut.wesl` hard-codes them for whoever imports it. The LUT itself is
-    /// the blend pass's — both passes ask it the same question, and an Oklab
-    /// document binds the same 1×1 stand-in so there is one layout per space
-    /// rather than one per pass.
-    fn encode_filter(&self, e: &Encode<'_>, encoder: &mut wgpu::CommandEncoder, b: Bounce<'_>) {
-        let Bounce {
-            back,
-            out,
-            slot,
-            here,
-            phase,
-        } = b;
-        let bg = here.filter_bg(phase.back_is_swap, || {
-            let mut entries = vec![
-                self.filter_uniforms.binding(0),
-                desc::tex(1, back.color),
-                desc::tex(2, back.aux),
-                desc::samp(3, &e.p.filter.sampler),
-                desc::tex(5, &e.p.blend.pigment.view),
-                desc::samp(6, &e.p.blend.pigment.sampler),
-            ];
-            if let Some(r) = back.resid {
-                entries.push(desc::tex(7, r));
-            }
-            e.p.ctx
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark filter bg"),
-                    layout: &e.p.filter.bgl,
-                    entries: &entries,
-                })
-        });
-        let attachments = out.attachments(desc::CLEAR);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark filter pass"),
-            // Covers every texel and reads nothing from `out` — including the aux,
-            // which it copies across from `back` rather than leaving to a load op,
-            // since `out` is the other half of a ping-pong and holds a stale bounce.
-            color_attachments: &attachments[..out.count()],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&e.p.filter.pipeline);
-        pass.set_bind_group(0, bg, &[UniformSlots::<FilterUniform>::offset(slot)]);
-        pass.draw(0..3, 0..1);
     }
 
     /// Make sure the cached scratch targets match `size`, if `groups` needs any, and
@@ -1097,7 +894,6 @@ impl Compositor {
         let streams = self.upload(p, view, &plan);
         let want_scratch = self.ensure_scratch(p, self.size, plan.scratch.clone());
         // Bound after everything that needs `&mut self`.
-        let device = &p.ctx.device;
         let scratch = if want_scratch {
             self.scratch.as_ref()
         } else {
@@ -1114,198 +910,65 @@ impl Compositor {
         // one-sample-per-pixel line draws at any angle but the axes.
         let draw_target = self.ss_target.as_ref().map_or(target, |s| &s.view);
 
-        // Screen→canvas mapping for sampling the surface bump in canvas space, so the
-        // weave stays attached to the canvas as it pans, zooms, turns and mirrors
-        // (§6.4, §18.1.2).
-        let inv_zoom = 1.0 / view.zoom;
-        let inv_linear = view.inverse_linear();
-        let canvas_origin = view.screen_to_canvas(crate::geom::Vec2::ZERO);
+        let mut encoder = p
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("stark composite encoder"),
+            });
 
-        // Diffuse samples a heavily-blurred high mip ≈ hemispherical irradiance; the
-        // level is the environment's own, so the CPU-side normalization below is
-        // reading exactly the texels the shader will. The Cook–Torrance specular picks
-        // its own mip from roughness, spanning the whole chain (roughness 0 → mip 0
-        // sharp; roughness 1 → the diffuse level, the hemispherical average).
-        let diffuse_lod = p.environment.diffuse_lod as f32;
-        // Exposure belongs to the light, not to a knob beside it: each environment is
-        // shown at the value it was judged at (§6.3). Normalized by the
-        // irradiance a *flat* canvas receives, so `1.0` means the same thing in every
-        // environment — an unrelieved patch of paint comes back out its own color.
-        let exposure = p.environment.exposure / p.environment.flat_irradiance;
-
-        // Media uniform.
-        let m = p.media_params;
-        p.ctx.queue.write_buffer(
-            &self.media_buf,
-            0,
-            bytemuck::bytes_of(&MediaUniform {
-                bg: bg_channels,
-                bg_resid,
-                shade: [exposure, diffuse_lod, m.specular, m.height_strength],
-                surf_a: [
-                    canvas_origin.x,
-                    canvas_origin.y,
-                    inv_zoom,
-                    1.0 / SURFACE_TILE_PX,
-                ],
-                surf_b: [
-                    m.surface_strength,
-                    // Transparent export: the media pass skips the substrate and
-                    // carries the paint's visible alpha out (§15.6).
-                    if transparent { 1.0 } else { 0.0 },
-                    0.0,
-                    0.0,
-                ],
-                surf_m: inv_linear.to_cols_array(),
-            }),
-        );
-
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("stark composite encoder"),
-        });
-
-        // Pass A: composite tiles into offscreen color + aux. The parity trick in
-        // `encode_composite` guarantees the result lands in these two views however
-        // many blend passes ran, so the media bind group never has to be rebuilt.
+        // Pass A: every step of the plan into the offscreen channels. Its parity
+        // guarantees the result lands in these very views however many bounces ran,
+        // so the media bind group below never has to be rebuilt.
         self.encode_plan(p, &mut encoder, accum.targets(), &plan, &streams, scratch);
 
-        // Pass B: media/lighting → target.
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark media pass"),
-                // The media pass covers every texel, so the clear only matters for
-                // what alpha an untouched texel would keep — transparent, on an
-                // export that wants a cut-out.
-                color_attachments: &[Some(desc::attach(
-                    draw_target,
-                    desc::clear_to(if transparent {
-                        wgpu::Color::TRANSPARENT
-                    } else {
-                        wgpu::Color::BLACK
-                    }),
-                ))],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&p.media_pass.pipeline);
-            pass.set_bind_group(0, &accum.bg, &[]);
-            pass.draw(0..3, 0..1);
-        }
+        // Pass B: normals off the height field, lit, tonemapped, over the substrate.
+        p.media_pass.encode(
+            &p.ctx,
+            &mut encoder,
+            &self.media_buf,
+            &accum.bg,
+            draw_target,
+            media::MediaScene {
+                params: p.media_params,
+                environment: &p.environment,
+                view,
+                background: bg_channels,
+                background_resid: bg_resid,
+                transparent,
+            },
+        );
 
-        // Pass C: the selection outlines, over the lit image — the local actor's and
-        // every present peer's, one instanced quad per mask tile of each
-        // (§17.3). Flattened into one instance stream so N collaborators
-        // still cost one pass.
-        let mut overlay_instances: Vec<OverlayInstance> = Vec::new();
-        let mut mask_tiles: Vec<&wgpu::BindGroup> = Vec::new();
-        for outline in outlines {
-            if outline.selection.is_universal() {
-                continue;
-            }
-            let tint = match outline.tint {
-                Some([r, g, b]) => [r, g, b, PEER_OUTLINE_ALPHA],
-                None => [0.0; 4],
-            };
-            // Each selection's own level, so the ants trace *its* half-contour: a
-            // partial selection has no 0.5 in it at all (§6.8), and every peer's
-            // may differ from yours.
-            let level = outline.selection.level();
-            for (coord, handle) in outline.selection.tiles() {
-                overlay_instances.push(OverlayInstance {
-                    origin: coord.origin().to_array(),
-                    tint,
-                    level,
-                });
-                // Kept on the mask tile, like pass A's on the paint tile: the ants
-                // redraw every frame a selection is live, and the mask is immutable.
-                mask_tiles.push(handle.overlay_bg(|| {
-                    device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("stark overlay tile bg"),
-                        layout: &p.overlay.tile_bgl,
-                        entries: &[desc::tex(0, handle.view())],
-                    })
-                }));
-            }
-        }
-        if !mask_tiles.is_empty() {
-            self.overlay_instances
-                .write(device, &p.ctx.queue, &overlay_instances);
+        // Pass C: the selection outlines, over the lit image (§17.3).
+        p.overlay.encode(
+            &p.ctx,
+            &mut encoder,
+            &mut self.overlay_instances,
+            overlay::OverlayScene {
+                outlines,
+                view_bg: &self.view.overlay,
+                target: draw_target,
+            },
+        );
 
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark selection overlay pass"),
-                color_attachments: &[Some(desc::attach(draw_target, desc::LOAD))],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&p.overlay.pipeline);
-            pass.set_bind_group(0, &self.view.overlay, &[]);
-            pass.set_vertex_buffer(0, self.overlay_instances.slice());
-            for (i, bg) in mask_tiles.iter().enumerate() {
-                let idx = i as u32;
-                pass.set_bind_group(1, *bg, &[]);
-                pass.draw(0..4, idx..idx + 1);
-            }
-        }
+        // Pass D: the drawing guides, over the lit image and the outlines — the
+        // perspective grid is chrome the whole canvas is read *through*, so it is the
+        // topmost thing drawn (§20.4).
+        p.guides.encode(
+            &p.ctx,
+            &mut encoder,
+            &mut self.guide_uniforms,
+            guides,
+            view,
+            draw_target,
+        );
 
-        // Pass D: the drawing guides, over the lit image and the outlines —
-        // the perspective grid is chrome the whole canvas is read *through*,
-        // so it is the topmost thing drawn (§20.4). One render pass; one
-        // fullscreen triangle per visible guide, each off its own uniform
-        // slot (see [`UniformSlots`] for why they cannot share one).
-        if !guides.is_empty() {
-            let packed: Vec<GuideUniform> = guides.iter().map(|s| pack_guides(s, view)).collect();
-            self.guide_uniforms.write(device, &p.ctx.queue, &packed);
-            // Per render rather than kept, like the blend bind group: it has
-            // to follow the buffer through reallocation, and a bind group over
-            // one small uniform is cheap beside everything else in the frame.
-            let guide_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark guides bg"),
-                layout: &p.guides.bgl,
-                entries: &[self.guide_uniforms.binding(0)],
-            });
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark guides pass"),
-                color_attachments: &[Some(desc::attach(draw_target, desc::LOAD))],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&p.guides.pipeline);
-            for i in 0..guides.len() as u32 {
-                pass.set_bind_group(0, &guide_bg, &[UniformSlots::<GuideUniform>::offset(i)]);
-                pass.draw(0..3, 0..1);
-            }
-        }
-
-        // Pass E: the resolve — everything above, box-averaged in light down to the
-        // caller's target (§6.4). Absent at 1:1, where `draw_target` *is* the
-        // caller's target and the picture is already the size it was asked for.
+        // Pass E: everything above, box-averaged in light down to the caller's target
+        // (§6.4). Absent at 1:1, where `draw_target` *is* the caller's target and the
+        // picture is already the size it was asked for.
         if let Some(ss_target) = &self.ss_target {
-            p.ctx.queue.write_buffer(
-                &ss_target.buf,
-                0,
-                bytemuck::bytes_of(&ResolveUniform {
-                    n: [ss as f32, 0.0, 0.0, 0.0],
-                }),
-            );
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark resolve pass"),
-                // Covers every texel and reads nothing back, so the load is a
-                // don't-care; clearing says so rather than implying otherwise.
-                color_attachments: &[Some(desc::attach(target, desc::CLEAR))],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&p.resolve.pipeline);
-            pass.set_bind_group(0, &ss_target.bg, &[]);
-            pass.draw(0..3, 0..1);
+            p.resolve
+                .encode(&p.ctx, &mut encoder, ss_target, ss, target);
         }
 
         p.ctx.queue.submit([encoder.finish()]);

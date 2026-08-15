@@ -6,9 +6,11 @@
 //! changes only the pipeline and the vertex buffer.
 
 use crate::colorspace::ColorSpace;
-use crate::gpu::channels::ChannelFormats;
+use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::desc::{self, RenderPipe};
-use crate::gpu::uniforms::UniformSlots;
+use crate::gpu::uniforms::{InstanceStream, UniformSlots};
+
+use super::plan::Draw;
 
 // The two per-instance records pass A draws with, generated from the `@location`
 // parameters of the vertex entry points that read them (§6.10) — the struct, the
@@ -151,4 +153,73 @@ impl TilePass {
             ramp_bgl,
         }
     }
+
+    /// Encode one run of pass A: `draws` into `into`, in stack order, switching
+    /// pipelines where a matte sits between runs of tiles.
+    ///
+    /// Both pipelines share group 0 (the view uniform), so only the pipeline and the
+    /// vertex buffer change at the boundary. Each [`Draw`] carries its own index into
+    /// the flat streams — the cursors the encoder used to walk with are the plan's
+    /// job now (`composite::plan`).
+    pub(super) fn encode(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        into: Targets<'_>,
+        draws: &[Draw],
+        clear: bool,
+        s: &TileStreams<'_>,
+    ) {
+        let ops = if clear { desc::CLEAR } else { desc::LOAD };
+        let attachments = into.attachments(ops);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("stark composite pass"),
+            color_attachments: &attachments[..into.count()],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_bind_group(0, s.view_bg, &[]);
+        let mut pipeline_is_matte = None;
+        for draw in draws {
+            match *draw {
+                Draw::Tile(i) => {
+                    if pipeline_is_matte != Some(false) {
+                        pass.set_pipeline(&self.pipeline);
+                        pass.set_vertex_buffer(0, s.instances.slice());
+                        pipeline_is_matte = Some(false);
+                    }
+                    pass.set_bind_group(1, s.tile_bgs[i as usize], &[]);
+                    pass.draw(0..4, i..i + 1);
+                }
+                Draw::Matte(i) => {
+                    if pipeline_is_matte != Some(true) {
+                        pass.set_pipeline(&self.matte_pipeline);
+                        pass.set_vertex_buffer(0, s.mattes.slice());
+                        pipeline_is_matte = Some(true);
+                    }
+                    // Group 1 is the ramp, at this matte's own slot (§22.4). Re-set
+                    // per matte either way: the offset changes, and a pipeline switch
+                    // has already invalidated whatever was bound, the two pipelines'
+                    // group-1 layouts differing.
+                    let ramp = s.ramp_bg.expect("a matte draw without its ramp slots");
+                    pass.set_bind_group(1, ramp, &[UniformSlots::<Ramp>::offset(i)]);
+                    pass.draw(0..4, i..i + 1);
+                }
+            }
+        }
+    }
+}
+
+/// The buffers and bind groups one run of pass A draws through — everything the
+/// renderer prepared, as against what the step itself says.
+pub(super) struct TileStreams<'a> {
+    /// Group 0: the canvas → NDC mapping, vertex-only here.
+    pub(super) view_bg: &'a wgpu::BindGroup,
+    pub(super) instances: &'a InstanceStream<Instance>,
+    pub(super) mattes: &'a InstanceStream<MatteInstance>,
+    /// One per tile instance, at the same index — each borrowed from the tile itself.
+    pub(super) tile_bgs: &'a [&'a wgpu::BindGroup],
+    /// The slotted ramp buffer's bind group, `None` when the frame has no matte.
+    pub(super) ramp_bg: Option<&'a wgpu::BindGroup>,
 }

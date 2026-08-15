@@ -6,6 +6,7 @@
 //! variants, so an absent element is a zeroed slot rather than a second pipeline.
 
 use crate::geom::ViewTransform;
+use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::uniforms::UniformSlots;
 
@@ -20,7 +21,7 @@ pub(super) use stark_shaders::mirror::guides::Guide as GuideUniform;
 /// A free function rather than the `GuideUniform::pack` it replaced: the type is
 /// generated into `stark-shaders` now, and an inherent impl on another crate's type
 /// is not allowed.
-pub(super) fn pack_guides(scene: &crate::guides::GuideScene, view: ViewTransform) -> GuideUniform {
+fn pack_guides(scene: &crate::guides::GuideScene, view: ViewTransform) -> GuideUniform {
     use crate::guides::{Lens, PairTrace};
     let inv = view.inverse_linear();
     let org = view.screen_to_canvas(crate::geom::Vec2::ZERO);
@@ -117,5 +118,47 @@ impl GuidePass {
             )],
         );
         Self { pipeline, bgl }
+    }
+
+    /// Encode pass D: one fullscreen triangle per visible guide, over everything
+    /// (§20.4). No pass at all when nothing is visible.
+    ///
+    /// Each guide draws off its own dynamic-offset slot — see [`UniformSlots`] for
+    /// why they cannot share one rewritten buffer.
+    pub(super) fn encode(
+        &self,
+        ctx: &GpuContext,
+        encoder: &mut wgpu::CommandEncoder,
+        slots: &mut UniformSlots<GuideUniform>,
+        scenes: &[crate::guides::GuideScene],
+        view: ViewTransform,
+        target: &wgpu::TextureView,
+    ) {
+        if scenes.is_empty() {
+            return;
+        }
+        let packed: Vec<GuideUniform> = scenes.iter().map(|s| pack_guides(s, view)).collect();
+        slots.write(&ctx.device, &ctx.queue, &packed);
+        // Per render rather than kept: it has to follow the buffer through
+        // reallocation, and a bind group over one small uniform is cheap beside
+        // everything else in the frame.
+        let bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark guides bg"),
+            layout: &self.bgl,
+            entries: &[slots.binding(0)],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("stark guides pass"),
+            color_attachments: &[Some(desc::attach(target, desc::LOAD))],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        for i in 0..scenes.len() as u32 {
+            pass.set_bind_group(0, &bg, &[UniformSlots::<GuideUniform>::offset(i)]);
+            pass.draw(0..3, 0..1);
+        }
     }
 }

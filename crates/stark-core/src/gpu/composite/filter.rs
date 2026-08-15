@@ -17,6 +17,8 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::uniforms::UniformSlots;
 
+use super::blend::Bounce;
+
 // Generated from `filter_common.wesl`'s own declaration (§6.10).
 pub(crate) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
 
@@ -132,5 +134,43 @@ impl FilterPass {
             bgl,
             sampler,
         }
+    }
+
+    /// Encode one filter layer: the accumulator `b.back` read and written back
+    /// adjusted into `b.out`, through filter slot `b.slot` (§21.3).
+    ///
+    /// `pigment` is the **blend pass's** LUT, passed in rather than owned. Both passes
+    /// ask it the same question and an Oklab document binds the same 1×1 stand-in, so
+    /// there is one table per space rather than one per pass — a coupling that now
+    /// shows in this signature instead of only in a comment.
+    pub(super) fn encode(
+        &self,
+        ctx: &GpuContext,
+        encoder: &mut wgpu::CommandEncoder,
+        b: Bounce<'_>,
+        slots: &UniformSlots<FilterUniform>,
+        pigment: &crate::gpu::pigment::PigmentLut,
+    ) {
+        let bg = b.here.filter_bg(b.phase.back_is_swap, || {
+            let mut entries = vec![
+                slots.binding(0),
+                desc::tex(1, b.back.color),
+                desc::tex(2, b.back.aux),
+                desc::samp(3, &self.sampler),
+                desc::tex(5, &pigment.view),
+                desc::samp(6, &pigment.sampler),
+            ];
+            if let Some(r) = b.back.resid {
+                entries.push(desc::tex(7, r));
+            }
+            desc::bind_group(&ctx.device, "stark filter bg", &self.bgl, &entries)
+        });
+        b.pass(
+            encoder,
+            "stark filter pass",
+            &self.pipeline,
+            bg,
+            UniformSlots::<FilterUniform>::offset(b.slot),
+        );
     }
 }

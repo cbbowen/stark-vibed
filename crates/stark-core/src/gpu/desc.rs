@@ -179,6 +179,22 @@ pub(crate) fn uniform_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGr
     }
 }
 
+/// A bind group over `entries`, satisfying `layout`. The mirror of
+/// [`bind_group_layout`], and the same saving: a descriptor whose four fields are the
+/// same four every time.
+pub(crate) fn bind_group(
+    device: &wgpu::Device,
+    label: &str,
+    layout: &wgpu::BindGroupLayout,
+    entries: &[wgpu::BindGroupEntry<'_>],
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries,
+    })
+}
+
 /// A sampler binding.
 pub(crate) fn samp(binding: u32, sampler: &wgpu::Sampler) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry {

@@ -5,7 +5,9 @@
 //! their own color, so the two never read as the same thing.
 
 use crate::document::selection::Selection;
+use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, RenderPipe};
+use crate::gpu::uniforms::InstanceStream;
 
 /// Per-mask-tile instance of the outline pass: where the tile is, and how to draw
 /// its contour. `tint.a == 0` selects the local actor's black/white marching ants;
@@ -93,4 +95,81 @@ impl OverlayPass {
             tile_bgl,
         }
     }
+
+    /// Encode pass C: every selection's contour over the lit image, one instanced
+    /// quad per mask tile (§6.8, §17.3).
+    ///
+    /// The local actor's and every present peer's are flattened into **one** instance
+    /// stream, so N collaborators still cost one render pass. A universal selection
+    /// draws nothing, so an unmasked document costs one skipped iteration; a frame
+    /// with no outlined tile at all encodes no pass.
+    pub(super) fn encode(
+        &self,
+        ctx: &GpuContext,
+        encoder: &mut wgpu::CommandEncoder,
+        instances: &mut InstanceStream<OverlayInstance>,
+        scene: OverlayScene<'_>,
+    ) {
+        let mut records: Vec<OverlayInstance> = Vec::new();
+        let mut mask_tiles: Vec<&wgpu::BindGroup> = Vec::new();
+        for outline in scene.outlines {
+            if outline.selection.is_universal() {
+                continue;
+            }
+            let tint = match outline.tint {
+                Some([r, g, b]) => [r, g, b, PEER_OUTLINE_ALPHA],
+                None => [0.0; 4],
+            };
+            // Each selection's own level, so the ants trace *its* half-contour: a
+            // partial selection has no 0.5 in it at all (§6.8), and every peer's
+            // may differ from yours.
+            let level = outline.selection.level();
+            for (coord, handle) in outline.selection.tiles() {
+                records.push(OverlayInstance {
+                    origin: coord.origin().to_array(),
+                    tint,
+                    level,
+                });
+                // Kept on the mask tile, like pass A's on the paint tile: the ants
+                // redraw every frame a selection is live, and the mask is immutable.
+                mask_tiles.push(handle.overlay_bg(|| {
+                    ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("stark overlay tile bg"),
+                        layout: &self.tile_bgl,
+                        entries: &[desc::tex(0, handle.view())],
+                    })
+                }));
+            }
+        }
+        if mask_tiles.is_empty() {
+            return;
+        }
+        instances.write(&ctx.device, &ctx.queue, &records);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("stark selection overlay pass"),
+            color_attachments: &[Some(desc::attach(scene.target, desc::LOAD))],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, scene.view_bg, &[]);
+        pass.set_vertex_buffer(0, instances.slice());
+        for i in 0..mask_tiles.len() as u32 {
+            pass.set_bind_group(1, mask_tiles[i as usize], &[]);
+            pass.draw(0..4, i..i + 1);
+        }
+    }
+}
+
+/// What pass C draws, and where.
+pub(super) struct OverlayScene<'a> {
+    pub(super) outlines: &'a [SelectionOutline<'a>],
+    /// The renderer's group 0 — the canvas → NDC mapping, bound to both stages here
+    /// (§6.8).
+    pub(super) view_bg: &'a wgpu::BindGroup,
+    /// The lit image to draw over: the supersampled target when there is one, so the
+    /// ants go through the same resolve as the paint and come out antialiased.
+    pub(super) target: &'a wgpu::TextureView,
 }

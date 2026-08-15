@@ -6,7 +6,8 @@
 //! over the substrate into the target. This is the "old masters" payoff.
 
 use crate::colorspace::ColorSpace;
-use crate::geom::Extent2;
+use crate::geom::{Extent2, ViewTransform};
+use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::environment::Environment;
 use crate::gpu::surface::Surface;
@@ -99,6 +100,100 @@ impl MediaPass {
             target,
         );
         Self { pipeline, bgl }
+    }
+
+    /// Encode pass B: normals off the composited height field, lit by the
+    /// environment, tonemapped, over the substrate and into `target` (§6.3).
+    ///
+    /// Writes the consumer's own uniform first — `buf`, whose bind group is the
+    /// accumulator's `bg` — so the values a render reads are the ones it wrote.
+    pub(super) fn encode(
+        &self,
+        ctx: &GpuContext,
+        encoder: &mut wgpu::CommandEncoder,
+        buf: &wgpu::Buffer,
+        accum_bg: &wgpu::BindGroup,
+        target: &wgpu::TextureView,
+        scene: MediaScene<'_>,
+    ) {
+        ctx.queue
+            .write_buffer(buf, 0, bytemuck::bytes_of(&scene.uniform()));
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("stark media pass"),
+            // The pass covers every texel, so the clear only matters for what alpha an
+            // untouched texel would keep — transparent, on an export that wants a
+            // cut-out.
+            color_attachments: &[Some(desc::attach(
+                target,
+                desc::clear_to(if scene.transparent {
+                    wgpu::Color::TRANSPARENT
+                } else {
+                    wgpu::Color::BLACK
+                }),
+            ))],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, accum_bg, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
+/// What pass B needs beyond the accumulator: how the frame is lit, what is under the
+/// paint, and where the canvas is (§6.3).
+pub(super) struct MediaScene<'a> {
+    pub(super) params: MediaParams,
+    pub(super) environment: &'a Environment,
+    /// The **supersampled** view, so the weave and the relief are measured in the
+    /// texels this pass is actually shading (§6.4).
+    pub(super) view: ViewTransform,
+    pub(super) background: [f32; 4],
+    pub(super) background_resid: [f32; 4],
+    /// Skip the substrate and carry the paint's visible alpha out, for a cut-out
+    /// export (§15.6).
+    pub(super) transparent: bool,
+}
+
+impl MediaScene<'_> {
+    /// The scene as the shader reads it — the one place these numbers become an ABI.
+    fn uniform(&self) -> MediaUniform {
+        let m = self.params;
+        // Screen→canvas mapping for sampling the surface bump in canvas space, so the
+        // weave stays attached to the canvas as it pans, zooms, turns and mirrors
+        // (§6.4, §18.1.2).
+        let canvas_origin = self.view.screen_to_canvas(crate::geom::Vec2::ZERO);
+        // Diffuse samples a heavily-blurred high mip ≈ hemispherical irradiance; the
+        // level is the environment's own, so this CPU-side normalization is reading
+        // exactly the texels the shader will. The Cook–Torrance specular picks its own
+        // mip from roughness, spanning the whole chain (roughness 0 → mip 0 sharp;
+        // roughness 1 → the diffuse level, the hemispherical average).
+        let diffuse_lod = self.environment.diffuse_lod as f32;
+        // Exposure belongs to the light, not to a knob beside it: each environment is
+        // shown at the value it was judged at (§6.3). Normalized by the irradiance a
+        // *flat* canvas receives, so `1.0` means the same thing in every environment —
+        // an unrelieved patch of paint comes back out its own color.
+        let exposure = self.environment.exposure / self.environment.flat_irradiance;
+        MediaUniform {
+            bg: self.background,
+            bg_resid: self.background_resid,
+            shade: [exposure, diffuse_lod, m.specular, m.height_strength],
+            surf_a: [
+                canvas_origin.x,
+                canvas_origin.y,
+                1.0 / self.view.zoom,
+                1.0 / crate::gpu::surface::SURFACE_TILE_PX,
+            ],
+            surf_b: [
+                m.surface_strength,
+                if self.transparent { 1.0 } else { 0.0 },
+                0.0,
+                0.0,
+            ],
+            surf_m: self.view.inverse_linear().to_cols_array(),
+        }
     }
 }
 

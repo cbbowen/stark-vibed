@@ -17,6 +17,8 @@ use crate::gpu::desc;
 use crate::gpu::pigment::PigmentLut;
 use crate::gpu::uniforms::UniformSlots;
 
+use super::plan::Phase;
+
 // Generated from `blend_common.wesl`'s own declaration (§6.7).
 pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
 
@@ -126,6 +128,101 @@ impl BlendPass {
             bgl,
             pigment,
         }
+    }
+
+    /// Encode one merge: the isolated layer `src` into the accumulator `b.back`,
+    /// through blend slot `b.slot`, writing `b.out` (§18.0.4).
+    pub(super) fn encode(
+        &self,
+        ctx: &GpuContext,
+        encoder: &mut wgpu::CommandEncoder,
+        b: Bounce<'_>,
+        src: Targets<'_>,
+        slots: &UniformSlots<BlendUniform>,
+    ) {
+        // Two per level rather than one per merge per frame: the views this names are
+        // fixed by the phase, and the whole scratch is dropped when they change (see
+        // [`ScratchLevel::blend_bg`]).
+        let bg = b.here.blend_bg(b.phase.back_is_swap, || {
+            let mut entries = vec![
+                slots.binding(0),
+                desc::tex(1, b.back.color),
+                desc::tex(2, b.back.aux),
+                desc::tex(3, src.color),
+                desc::tex(4, src.aux),
+                desc::tex(5, &self.pigment.view),
+                desc::samp(6, &self.pigment.sampler),
+            ];
+            // Both residuals or neither: `back`, `src` and `out` are all targets of
+            // the same document, so the space that gave one a residual gave all three
+            // one.
+            if let (Some(back), Some(src)) = (b.back.resid, src.resid) {
+                entries.push(desc::tex(7, back));
+                entries.push(desc::tex(8, src));
+            }
+            desc::bind_group(&ctx.device, "stark blend bg", &self.bgl, &entries)
+        });
+        b.pass(
+            encoder,
+            "stark blend pass",
+            &self.pipeline,
+            bg,
+            UniformSlots::<BlendUniform>::offset(b.slot),
+        );
+    }
+}
+
+/// One **bouncing** pass: what a merge and a filter both need beyond the pipeline kit
+/// (§18.0.4, §21.3).
+///
+/// The two are the same shape — read the accumulator, write the other half of the
+/// ping-pong, off a uniform slot of their own — and differ only in that a merge also
+/// binds an isolated source. Here rather than in `filter.rs` because the level it
+/// names is this module's, which is also why the filter pass borrows the scratch:
+/// they bounce through the same one.
+pub(super) struct Bounce<'a> {
+    /// The accumulator this pass reads.
+    pub(super) back: Targets<'a>,
+    /// The other half of the ping-pong, which it wholly replaces.
+    pub(super) out: Targets<'a>,
+    /// Which dynamic-offset slot holds this pass's uniform.
+    pub(super) slot: u32,
+    /// The level it bounces at, which owns the bind groups it reads through.
+    pub(super) here: &'a ScratchLevel,
+    pub(super) phase: Phase,
+}
+
+impl Bounce<'_> {
+    /// The render pass both bouncing passes encode: one fullscreen triangle that
+    /// replaces every texel of `out`. Shared with [`FilterPass::encode`], which is
+    /// this pass with the source removed (§21.3).
+    ///
+    /// [`FilterPass::encode`]: super::filter::FilterPass::encode
+    pub(super) fn pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        label: &str,
+        pipeline: &wgpu::RenderPipeline,
+        bg: &wgpu::BindGroup,
+        offset: u32,
+    ) {
+        let attachments = self.out.attachments(desc::CLEAR);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(label),
+            // Covers every texel and reads nothing from `out` — including the aux,
+            // which a filter copies across from `back` rather than leaving to a load
+            // op, since `out` is the other half of a ping-pong and holds a stale
+            // bounce. So the load is a don't-care, and clearing states that rather
+            // than implying the previous contents matter.
+            color_attachments: &attachments[..self.out.count()],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bg, &[offset]);
+        pass.draw(0..3, 0..1);
     }
 }
 

@@ -6,6 +6,7 @@
 //! is bit-identical to before supersampling existed.
 
 use crate::geom::Extent2;
+use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 
 // Generated from `resolve.wesl`'s own declaration (§6.7).
@@ -114,13 +115,13 @@ pub(super) fn attachment_bytes(
 }
 
 /// The resolve pass — the pipeline and its layout. The uniform it reads (`n`, the
-/// sample count) is the *rendering* consumer's: `ss` is a function of that target's
+/// sample count) is the *rendering* consumer's: `n` is a function of that target's
 /// zoom, so the surface and a miniature beside it disagree about it by construction.
-/// It rides in the [`Supersampled`](super::Supersampled) set, which is exactly the
-/// state that exists only while a view is zoomed out.
+/// It rides in the [`Supersampled`] set, which is exactly the state that exists only
+/// while a view is zoomed out.
 pub(super) struct ResolvePass {
-    pub(super) pipeline: wgpu::RenderPipeline,
-    pub(super) bgl: wgpu::BindGroupLayout,
+    pipeline: wgpu::RenderPipeline,
+    bgl: wgpu::BindGroupLayout,
 }
 
 impl ResolvePass {
@@ -153,17 +154,80 @@ impl ResolvePass {
         );
         Self { pipeline, bgl }
     }
+
+    /// Encode pass E: everything the passes above drew, box-averaged in light down to
+    /// the caller's `target` (§6.4).
+    ///
+    /// The caller has already skipped this at 1:1, where there is no [`Supersampled`]
+    /// set at all and the passes above wrote `target` directly.
+    pub(super) fn encode(
+        &self,
+        ctx: &GpuContext,
+        encoder: &mut wgpu::CommandEncoder,
+        ss: &Supersampled,
+        n: u32,
+        target: &wgpu::TextureView,
+    ) {
+        ctx.queue.write_buffer(
+            &ss.buf,
+            0,
+            bytemuck::bytes_of(&ResolveUniform {
+                n: [n as f32, 0.0, 0.0, 0.0],
+            }),
+        );
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("stark resolve pass"),
+            // Covers every texel and reads nothing back, so the load is a don't-care;
+            // clearing says so rather than implying otherwise.
+            color_attachments: &[Some(desc::attach(target, desc::CLEAR))],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &ss.bg, &[]);
+        pass.draw(0..3, 0..1);
+    }
 }
 
-/// The uniform buffer one supersampled render writes its sample count into — see
-/// [`ResolvePass`] for why it is not the pass's.
-pub(super) fn uniform_buffer(device: &wgpu::Device) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("stark resolve uniform"),
-        size: std::mem::size_of::<ResolveUniform>() as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
+/// Where passes B–D write when the view is zoomed out, and what pass E reads it back
+/// through (§6.4).
+///
+/// One value rather than three because they are built and dropped together and none
+/// of them means anything without the others: the bind group names the view, and the
+/// uniform holds the very `n` that decided the view's size. Absent entirely at 1:1,
+/// which is what returns the memory the moment the artist zooms back in to paint.
+pub(super) struct Supersampled {
+    /// What passes B–D draw into, `n` times the caller's target on each axis.
+    pub(super) view: wgpu::TextureView,
+    bg: wgpu::BindGroup,
+    /// `n` itself. This consumer's, because the sample count is a function of *this*
+    /// target's zoom — see [`ResolvePass`].
+    buf: wgpu::Buffer,
+}
+
+impl Supersampled {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        size: Extent2,
+        format: wgpu::TextureFormat,
+        pass: &ResolvePass,
+    ) -> Self {
+        let view = super::offscreen_view(device, size, format, "stark supersampled");
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stark resolve uniform"),
+            size: std::mem::size_of::<ResolveUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark resolve bg"),
+            layout: &pass.bgl,
+            entries: &[desc::uniform_entry(0, &buf), desc::tex(1, &view)],
+        });
+        Self { view, bg, buf }
+    }
 }
 
 #[cfg(test)]
