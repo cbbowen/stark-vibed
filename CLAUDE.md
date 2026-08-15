@@ -137,6 +137,14 @@ The workspace is on **nightly** for exactly one reason: `history`'s
 - **Postcard encodes struct fields in order and enums by index** (§8). Appending
   a variant is safe; inserting a field into an existing variant is a wire-format
   break.
+- **Never transcribe onto the host what a `.wesl` file already states** (§6.10).
+  Uniform lanes, constants, vertex formats, binding indices and binding *types*
+  are all generated from the shader's own declaration —`MIRRORS`, `CONSTS`,
+  `VERTEX` and `BINDINGS` in `stark-shaders/build.rs`. Every one of those lists
+  exists because a hand-written second copy drifted, and the drift was invisible
+  until it was a picture. What is genuinely the host's — a name, a step mode,
+  whether *this* pass samples *that* texture — is worth writing by hand for the
+  same reason: the shader does not say it.
 - **A new engine method that mutates state and returns nothing is a bug** — it
   should be a command (§4). Operations that must *answer* are a named request
   tier, so they stay countable when the engine moves behind a channel.

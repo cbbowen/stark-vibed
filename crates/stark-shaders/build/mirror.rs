@@ -40,7 +40,9 @@ use std::path::Path;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use wesl::eval::{Context, Convert, Eval, Instance, LiteralInstance, Type, ty_eval_ty};
-use wesl::syntax::{Attribute, GlobalDeclaration, Struct, TranslationUnit};
+use wesl::syntax::{
+    AddressSpace, Attribute, DeclarationKind, GlobalDeclaration, Struct, TranslationUnit,
+};
 
 /// Generate mirrors for `wanted` into `dest`.
 ///
@@ -345,6 +347,7 @@ fn emit_bindings(tu: &TranslationUnit, src: &str, module: &str) -> TokenStream {
     let mut ctx = Context::new(tu);
     let mut names: Vec<String> = Vec::new();
     let mut consts = Vec::new();
+    let mut table = Vec::new();
     for d in &tu.global_declarations {
         let GlobalDeclaration::Declaration(decl) = &**d else {
             continue;
@@ -373,26 +376,145 @@ fn emit_bindings(tu: &TranslationUnit, src: &str, module: &str) -> TokenStream {
         names.push(name.clone());
         let docs = doc_lines(&src[..d.span().range().start]);
         let ident = format_ident!("{name}");
-        let index = lit(index);
+        let index_lit = lit(index);
         consts.push(quote! {
             #(#[doc = #docs])*
-            pub const #ident: u32 = #index;
+            pub const #ident: u32 = #index_lit;
+        });
+
+        // The rest of what the declaration decides: what kind of thing occupies the
+        // slot, and whether it exists at all in a build without the residual.
+        let kind = bind_kind(decl, module, &member, tu);
+        // `@if(resid)` — the gate that used to be transcribed as a per-layout element
+        // count (`[..12 + 4 * usize::from(resid)]`, seven of them).
+        let resid = decl.attributes.iter().any(|a| match &**a {
+            Attribute::If(e) => src[e.span().range()].trim() == "resid",
+            _ => false,
+        });
+        // No doc comment here: an element of an array expression is not an item, so a
+        // `///` on one is inert (and a warning). The prose lives on the `binding::`
+        // constant above, which is the name a reader looks the slot up by anyway.
+        table.push(quote! {
+            Binding {
+                index: #index_lit,
+                name: #name,
+                kind: #kind,
+                resid: #resid,
+            }
         });
     }
     assert!(
         !consts.is_empty(),
         "`{module}.wesl` declares no `@binding`s, so there is nothing to mirror"
     );
-    let doc = format!(
+    let index_doc = format!(
         " The `@binding` indices `{module}.wesl` declares, named for their WESL\n \
          variables — the shader's declarations are the only ones.",
     );
+    let table_doc = format!(
+        " Every `@binding` `{module}.wesl` declares, in declaration order: its index,\n \
+         what kind of thing occupies it, and whether it is `@if(resid)`-gated.\n\n \
+         The host builds both its bind-group **layouts** and its bind **groups** from\n \
+         this, so the two cannot disagree about a slot's type, its storage format, or\n \
+         whether the residual build has it. Look up a slot with [`binding_of`].",
+    );
     quote! {
-        #[doc = #doc]
+        // The descriptor types are hand-written in `lib.rs` — they are the host's
+        // vocabulary, not the shader's — and this generated module sits two levels
+        // below the crate root, so it names them absolutely.
+        use crate::{BindKind, Binding};
+
+        #[doc = #index_doc]
         pub mod binding {
             #(#consts)*
         }
+
+        #[doc = #table_doc]
+        pub const BINDINGS: &[Binding] = &[#(#table),*];
+
+        /// The declaration at `index`, or `None` if this module declares no such
+        /// binding — which for a host naming its own layout is a typo, and worth a
+        /// loud one.
+        pub fn binding_of(index: u32) -> Option<&'static Binding> {
+            BINDINGS.iter().find(|b| b.index == index)
+        }
     }
+}
+
+/// What kind of thing a `@binding` declaration puts in its slot, as a `BindKind`
+/// expression.
+///
+/// Read off the declared type, which is where the answer already is: a
+/// `texture_storage_2d<rgba32float, write>` is a storage texture of that format, and
+/// the host had been choosing between `stor` and `stor32` by hand at every layout that
+/// named one.
+fn bind_kind(
+    decl: &wesl::syntax::Declaration,
+    module: &str,
+    member: &str,
+    tu: &TranslationUnit,
+) -> TokenStream {
+    let ty = decl
+        .ty
+        .as_ref()
+        .unwrap_or_else(|| panic!("`{module}.wesl`'s `{member}` has a `@binding` but no type"));
+    let name = ty.ident.name();
+    let name = name.as_str();
+    // `var<uniform> x: T` — the size is `T`'s, by the same WGSL layout rules the
+    // struct mirrors are laid out under, so `min_binding_size` cannot drift from the
+    // struct it guards.
+    if matches!(
+        &decl.kind,
+        DeclarationKind::Var(Some((AddressSpace::Uniform, _)))
+    ) {
+        let size = uniform_size(ty, module, member, tu);
+        let size = proc_macro2::Literal::u64_unsuffixed(size);
+        return quote!(BindKind::Uniform { min_size: #size });
+    }
+    if name == "sampler" {
+        return quote!(BindKind::Sampler);
+    }
+    if let Some(dim) = name.strip_prefix("texture_storage_") {
+        // `<format, access>`; only the format reaches the host's descriptor, the
+        // access mode being implied by the layout entry the host builds.
+        let args = ty
+            .template_args
+            .as_ref()
+            .unwrap_or_else(|| panic!("`{module}.wesl`'s `{member}` has no storage format"));
+        let format = expr_ident(&args[0].expression).unwrap_or_else(|| {
+            panic!("`{module}.wesl`'s `{member}` has a storage format that is not a name")
+        });
+        return quote!(BindKind::Storage { dim: #dim, format: #format });
+    }
+    if let Some(dim) = name.strip_prefix("texture_") {
+        return quote!(BindKind::Texture { dim: #dim });
+    }
+    panic!("`{module}.wesl`'s `{member}` has type `{name}`, which is not a binding kind");
+}
+
+/// The identifier a template argument names, e.g. `rgba16float`.
+fn expr_ident(expr: &wesl::syntax::ExpressionNode) -> Option<String> {
+    match &**expr {
+        wesl::syntax::Expression::TypeOrIdentifier(t) => Some(t.ident.name().to_string()),
+        _ => None,
+    }
+}
+
+/// The WGSL size of a uniform binding's declared type — its `min_binding_size`.
+fn uniform_size(
+    ty: &wesl::syntax::TypeExpression,
+    module: &str,
+    member: &str,
+    tu: &TranslationUnit,
+) -> u64 {
+    let mut ctx = Context::new(tu);
+    let resolved = ty_eval_ty(ty, &mut ctx).unwrap_or_else(|e| {
+        panic!("`{module}.wesl`'s `{member}` has an unresolvable uniform type: {e}")
+    });
+    resolved
+        .size_of()
+        .unwrap_or_else(|| panic!("`{module}.wesl`'s `{member}` has an unsized uniform type"))
+        as u64
 }
 
 /// The `wgpu::VertexFormat` for `ty`, and the bytes it occupies.

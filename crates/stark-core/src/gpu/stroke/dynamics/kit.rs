@@ -9,12 +9,7 @@ use crate::colorspace::ColorSpace;
 use crate::gpu::desc;
 use crate::gpu::tile::SCRATCH_AUX_FORMAT;
 
-use super::BAKE_FORMAT;
-use super::plan::SLOT;
-// The `@binding` indices, generated from `dynamics.wesl`'s own declarations (§6.10)
-// — the shader's numbering is the only one, and the layouts here and the bind
-// groups in [`run`](super::run) both name it.
-use stark_shaders::mirror::dynamics::binding as b;
+use super::slots;
 /// GPU objects for the brush-dynamics stamp loop (§6.2), built once.
 /// All handles are `Arc`-backed, so the kit is cheap to clone with its renderer.
 ///
@@ -178,196 +173,38 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
 
     // ---- The stamp loop: one module, seven entry points — `snapshot`, `exchange`,
     // `bake`, `deposit`, `cell_hoist`, `deposit_coarse`, `settle` — over seven bind
-    // group layouts.
-    // Every layout includes the dynamic-offset stamp uniform at binding 0; the binding
-    // numbers partition the module's group(0) — see dynamics.wesl.
+    // group layouts, each built from the slot list in [`slots`](super::slots).
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics loop"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::dynamics(resid).into()),
     });
     // Every layout below is compute-visible and opens with the dynamic-offset stamp
-    // slot; the binding numbers partition the module's group(0), so a layout lists
-    // only the bindings its own entry point reads.
-    let comp = wgpu::ShaderStages::COMPUTE;
-    let params_entry = desc::uniform_slot(b::ST, comp, SLOT as u64);
-    let ctex = |binding: u32, filterable: bool| {
-        if filterable {
-            desc::sample_tex(binding, comp)
-        } else {
-            desc::load_tex(binding, comp)
-        }
+    // slot; the binding numbers partition the module's group(0), so a layout lists only
+    // the bindings its own entry point reads.
+    //
+    // **The list is all the host says.** What kind of thing each slot holds — a uniform
+    // and how wide, a sampler, a texture, a storage texture of a particular format —
+    // and whether it exists at all without the residual, come from the generated
+    // `BINDINGS` table (§6.10). The `resid` counts that used to close every array here
+    // (`[..12 + 4 * usize::from(resid)]`, seven of them, recounted by hand on every
+    // edit) are the `@if(resid)` on the declaration itself.
+    let bgl = |label: &str, list: &[desc::Slot]| {
+        desc::layout_for(
+            device,
+            label,
+            list,
+            wgpu::ShaderStages::COMPUTE,
+            stark_shaders::mirror::dynamics::BINDINGS,
+            resid,
+        )
     };
-    let stor = |binding: u32| desc::storage_tex(binding, comp, wgpu::TextureFormat::Rgba16Float);
-    // The baked swept prefix is fp32 — it is differenced per fragment, like the
-    // prefix-τ volume, so f16 would band exactly where the difference is smallest.
-    let stor32 = |binding: u32| desc::storage_tex(binding, comp, BAKE_FORMAT);
-    let csamp = desc::sampler(b::SAMP, comp);
-    // The residual bindings each sit beside the color binding they ride with; a
-    // layout that lists one lists the other. See the block at the head of
-    // dynamics.wesl for what each carries.
-    let snapshot_bgl = desc::bind_group_layout(
-        device,
-        "stark dynamics snapshot bgl",
-        &[
-            params_entry,
-            ctex(b::REGION_COLOR, false),
-            ctex(b::REGION_AUX, false),
-            stor(b::UNDER_COLOR_W),
-            stor(b::UNDER_AUX_W),
-            ctex(b::REGION_RESID, false),
-            stor(b::UNDER_RESID_W),
-        ][..5 + 2 * usize::from(resid)],
-    );
-    let exchange_bgl = desc::bind_group_layout(
-        device,
-        "stark dynamics exchange bgl",
-        &[
-            params_entry,
-            ctex(b::REGION_COLOR, true),
-            ctex(b::REGION_AUX, true),
-            // The footprint snapshot's targets: the segment's `snapshot` runs from the
-            // tail of the `exchange` grid rather than from a dispatch of its own
-            // (`dynamics.wesl::exchange`), so its writes belong to this layout.
-            stor(b::UNDER_COLOR_W),
-            stor(b::UNDER_AUX_W),
-            csamp,
-            ctex(b::COV_TEX, true),
-            ctex(b::BRUSH_SRC_COLOR, false),
-            ctex(b::BRUSH_SRC_AUX, false),
-            stor(b::BRUSH_DST_COLOR_W),
-            stor(b::BRUSH_DST_AUX_W),
-            // The selection mask over the region (§6.8) — sampled bilinearly here,
-            // since a reservoir texel sits over an arbitrary sub-pixel spot.
-            ctex(b::SEL_MASK, true),
-            // The region's residual takes the same bilinear tap the color does; the
-            // snapshot's write rides in this grid.
-            ctex(b::REGION_RESID, true),
-            stor(b::UNDER_RESID_W),
-            ctex(b::BRUSH_SRC_RESID, true),
-            stor(b::BRUSH_DST_RESID_W),
-        ][..12 + 4 * usize::from(resid)],
-    );
-    // `bake` integrates the reservoir along the travel axis for one segment; the
-    // deposit then reads the result instead of point-sampling the reservoir.
-    let bake_bgl = desc::bind_group_layout(
-        device,
-        "stark dynamics bake bgl",
-        &[
-            params_entry,
-            csamp,
-            ctex(b::BRUSH_SRC_COLOR, true),
-            ctex(b::BRUSH_SRC_AUX, true),
-            stor32(b::BAKE_LOAD_W),
-            stor32(b::BAKE_LATM_W),
-            ctex(b::BRUSH_SRC_RESID, true),
-            // fp32, differenced like the two beside it.
-            stor32(b::BAKE_RLM_W),
-        ][..6 + 2 * usize::from(resid)],
-    );
-    // The pen-up settle: the deposit's targets and snapshot, and the deposit's *baked*
-    // reservoir reads too — its parcel is the delivery integral of the remaining pass,
-    // which the settle slot's own `bake` dispatch stores (`dynamics.wesl::settle`),
-    // not the cell that happens to sit overhead.
-    let settle_bgl = desc::bind_group_layout(
-        device,
-        "stark dynamics settle bgl",
-        &[
-            params_entry,
-            ctex(b::BAKE_LOAD, false),
-            ctex(b::BAKE_LATM, false),
-            ctex(b::UNDER_COLOR, false),
-            ctex(b::UNDER_AUX, false),
-            stor(b::REGION_COLOR_W),
-            stor(b::REGION_AUX_W),
-            ctex(b::SEL_MASK, false),
-            // The ground (§6.4): the settle lays paint, so it reads the tooth too.
-            ctex(b::SURFACE_TEX, false),
-            ctex(b::BAKE_RLM, false),
-            ctex(b::UNDER_RESID, false),
-            stor(b::REGION_RESID_W),
-        ][..9 + 3 * usize::from(resid)],
-    );
-    // The color-dynamics noise tile + its repeat sampler (§6.2) — shared by the two
-    // deposit layouts, which jitter the brush's own `add` paint identically.
-    let noise_tex_entry = wgpu::BindGroupLayoutEntry {
-        binding: b::DYN_NOISE_TEX,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            view_dimension: wgpu::TextureViewDimension::D2,
-            multisampled: false,
-        },
-        count: None,
-    };
-    let noise_samp_entry = wgpu::BindGroupLayoutEntry {
-        binding: b::DYN_NOISE_SAMP,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-        count: None,
-    };
-    let deposit_bgl = desc::bind_group_layout(
-        device,
-        "stark dynamics deposit bgl",
-        &[
-            params_entry,
-            csamp,
-            ctex(b::BAKE_LOAD, false),
-            ctex(b::BAKE_LATM, false),
-            ctex(b::UNDER_COLOR, false),
-            ctex(b::UNDER_AUX, false),
-            stor(b::REGION_COLOR_W),
-            stor(b::REGION_AUX_W),
-            noise_tex_entry,
-            noise_samp_entry,
-            // The selection mask over the region (§6.8) — read 1:1 with the region
-            // here, so `textureLoad` suffices.
-            ctex(b::SEL_MASK, false),
-            // The canvas surface's height map — the deposition tooth (§6.4). Read
-            // nearest, so it needs no sampler and is not filterable.
-            ctex(b::SURFACE_TEX, false),
-            ctex(b::BAKE_RLM, false),
-            ctex(b::UNDER_RESID, false),
-            stor(b::REGION_RESID_W),
-        ][..12 + 3 * usize::from(resid)],
-    );
-    // The coarse pair (§6.2). `cell_hoist` is the exact deposit's front half — the
-    // baked prefixes in, the per-cell means out — plus the prefix-τ volume at group 1.
-    let hoist_bgl = desc::bind_group_layout(
-        device,
-        "stark dynamics cell hoist bgl",
-        &[
-            params_entry,
-            ctex(b::BAKE_LOAD, false),
-            ctex(b::BAKE_LATM, false),
-            stor32(b::CELL_TOOL_W),
-            stor32(b::CELL_LAT_W),
-            ctex(b::BAKE_RLM, false),
-            stor32(b::CELL_RES_W),
-        ][..5 + 2 * usize::from(resid)],
-    );
-    // `deposit_coarse` is the deposit layout with the baked prefixes swapped for the
-    // cell means — it takes no prefix-τ tap and no bake tap of its own, which is the
-    // whole point, so neither binding (nor group 1) appears here.
-    let deposit_coarse_bgl = desc::bind_group_layout(
-        device,
-        "stark dynamics deposit coarse bgl",
-        &[
-            params_entry,
-            ctex(b::UNDER_COLOR, false),
-            ctex(b::UNDER_AUX, false),
-            stor(b::REGION_COLOR_W),
-            stor(b::REGION_AUX_W),
-            noise_tex_entry,
-            noise_samp_entry,
-            ctex(b::SEL_MASK, false),
-            ctex(b::SURFACE_TEX, false),
-            ctex(b::CELL_TOOL, false),
-            ctex(b::CELL_LAT, false),
-            ctex(b::UNDER_RESID, false),
-            stor(b::REGION_RESID_W),
-            ctex(b::CELL_RES, false),
-        ][..11 + 3 * usize::from(resid)],
-    );
+    let snapshot_bgl = bgl("stark dynamics snapshot bgl", slots::SNAPSHOT);
+    let exchange_bgl = bgl("stark dynamics exchange bgl", slots::EXCHANGE);
+    let bake_bgl = bgl("stark dynamics bake bgl", slots::BAKE);
+    let settle_bgl = bgl("stark dynamics settle bgl", slots::SETTLE);
+    let deposit_bgl = bgl("stark dynamics deposit bgl", slots::DEPOSIT);
+    let hoist_bgl = bgl("stark dynamics cell hoist bgl", slots::HOIST);
+    let deposit_coarse_bgl = bgl("stark dynamics deposit coarse bgl", slots::DEPOSIT_COARSE);
     // The deposit's prefix-τ volume (group 1) — same shape as the fast path's
     // prefix binding, but compute-visible.
     let prefix_bgl = desc::bind_group_layout(

@@ -26,6 +26,7 @@ use super::BAKE_FORMAT;
 use super::plan::{
     LoopDispatch, PlanCtx, SLOT, SlotKind, bleed_fires, cell_scratch_size, dynamics_plan,
 };
+use super::slots;
 /// Resolution (texels per side) of the stamp loop's tool reservoir
 /// (§6.2). Brush-local, so carried color detail is ~radius/32 canvas px — plenty
 /// for smeared paint, and small enough that the per-stamp reservoir update is
@@ -751,207 +752,204 @@ impl<'a> DynamicsRun<'a> {
 
     /// Every bind group the loop switches between while recording one piece.
     ///
-    /// `params` binds a single slot-sized window of `stamp_buf` whose dynamic offset
+    /// Each is built from the very slot list its layout was ([`slots`](super::slots)),
+    /// so a group and its layout cannot disagree about which bindings are present or in
+    /// what order — where this used to be two hand-kept arrays per entry point, here
+    /// and in [`kit`](super::kit), aligned by nothing but the order they were written
+    /// in and a per-layout element count.
+    ///
+    /// What each arm below supplies is therefore only the **resources**: given a slot,
+    /// which view or buffer goes in it. A slot the residual gate excludes is never
+    /// asked for, which is what retired `push_resid` and the `Option` juggling around
+    /// it — a group takes its whole residual tail or none of it because the shader's
+    /// `@if(resid)` says so, not because the host counted correctly.
+    ///
+    /// `ST` binds a single slot-sized window of `stamp_buf` whose dynamic offset
     /// selects the dispatch, so all of these are built once per piece and the loop
     /// varies only the offset.
-    fn bind_piece(
-        &self,
-        region: &Region,
-        under: &Snapshot,
-        stamp_buf: &wgpu::Buffer,
-        cells: Option<&Cells>,
+    fn bind_piece<'p>(
+        &'p self,
+        region: &'p Region,
+        under: &'p Snapshot,
+        stamp_buf: &'p wgpu::Buffer,
+        cells: Option<&'p Cells>,
     ) -> PieceBindings {
         let r = self.r;
         let kit = &r.dynamics;
         let device = &r.ctx.device;
-        let params = || wgpu::BindGroupEntry {
-            binding: b::ST,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: stamp_buf,
-                offset: 0,
-                size: wgpu::BufferSize::new(SLOT as u64),
-            }),
-        };
-        let samp = || desc::samp(b::SAMP, &kit.exchange_sampler);
-        let mut snapshot_entries = vec![
-            params(),
-            desc::tex(b::REGION_COLOR, &region.color),
-            desc::tex(b::REGION_AUX, &region.aux),
-            desc::tex(b::UNDER_COLOR_W, &under.color),
-            desc::tex(b::UNDER_AUX_W, &under.aux),
-        ];
-        push_resid(
-            &mut snapshot_entries,
-            &[
-                (b::REGION_RESID, region.resid.as_ref()),
-                (b::UNDER_RESID_W, under.resid.as_ref()),
-            ],
-        );
-        let snapshot = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark dynamics snapshot bg"),
-            layout: &kit.snapshot_bgl,
-            entries: &snapshot_entries,
+        let resid = r.color_space.has_resid();
+        let table = stark_shaders::mirror::dynamics::BINDINGS;
+
+        let params = wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: stamp_buf,
+            offset: 0,
+            size: wgpu::BufferSize::new(SLOT as u64),
         });
-        // `exchange` comes in two flavours for the reservoir ping-pong: each reads one
-        // half and writes the other.
-        let exchange = std::array::from_fn(|i| {
-            let mut entries = vec![
-                params(),
-                desc::tex(b::REGION_COLOR, &region.color),
-                desc::tex(b::REGION_AUX, &region.aux),
-                desc::tex(b::UNDER_COLOR_W, &under.color),
-                desc::tex(b::UNDER_AUX_W, &under.aux),
-                samp(),
-                desc::tex(b::COV_TEX, &self.cov),
-                desc::tex(b::BRUSH_SRC_COLOR, &self.brush_color[i]),
-                desc::tex(b::BRUSH_SRC_AUX, &self.brush_aux[i]),
-                desc::tex(b::BRUSH_DST_COLOR_W, &self.brush_color[1 - i]),
-                desc::tex(b::BRUSH_DST_AUX_W, &self.brush_aux[1 - i]),
-                desc::tex(b::SEL_MASK, &region.sel_mask),
-            ];
-            // The residual ping-pongs on the same phase as the color: read `i`,
-            // write `1 - i`, or the tool's two halves would drift apart.
-            push_resid(
-                &mut entries,
-                &[
-                    (b::REGION_RESID, region.resid.as_ref()),
-                    (b::UNDER_RESID_W, under.resid.as_ref()),
-                    (b::BRUSH_SRC_RESID, self.brush_resid.as_ref().map(|v| &v[i])),
-                    (
-                        b::BRUSH_DST_RESID_W,
-                        self.brush_resid.as_ref().map(|v| &v[1 - i]),
-                    ),
-                ],
-            );
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark dynamics exchange bg"),
-                layout: &kit.exchange_bgl,
-                entries: &entries,
+        let view = |v: &'p wgpu::TextureView| wgpu::BindingResource::TextureView(v);
+        let samp = |s: &'p wgpu::Sampler| wgpu::BindingResource::Sampler(s);
+        // A residual view is `Some` exactly when the color space has one, and the
+        // resolvers below are only ever asked for a residual slot in that case — the
+        // shader's own `@if(resid)` gate, applied by `bind_group_for`. So this states
+        // that gate rather than guarding a case the host can reach.
+        let opt = |v: Option<&'p wgpu::TextureView>, what: &'static str| {
+            wgpu::BindingResource::TextureView(
+                v.unwrap_or_else(|| panic!("a residual build must have a {what} residual")),
+            )
+        };
+        // The slots the two paint-laying entry points share, plus the ones every arm
+        // reads. Returns `None` for anything outside that common set, so each arm's
+        // `match` states only what makes it different from its neighbours.
+        let common = |s: u32| -> Option<wgpu::BindingResource<'p>> {
+            Some(match s {
+                b::ST => params.clone(),
+                b::BAKE_LOAD => view(&self.bake_load),
+                b::BAKE_LATM => view(&self.bake_latm),
+                b::BAKE_RLM => opt(self.bake_rlm.as_ref(), "bake"),
+                b::UNDER_COLOR => view(&under.color),
+                b::UNDER_AUX => view(&under.aux),
+                b::UNDER_RESID => opt(under.resid.as_ref(), "snapshot"),
+                b::REGION_COLOR_W => view(&region.color),
+                b::REGION_AUX_W => view(&region.aux),
+                b::REGION_RESID_W => opt(region.resid.as_ref(), "region"),
+                b::SEL_MASK => view(&region.sel_mask),
+                b::SURFACE_TEX => view(&self.scene.surface.view),
+                b::DYN_NOISE_TEX => view(&self.noise),
+                b::DYN_NOISE_SAMP => samp(&r.tips.noise_sampler),
+                _ => return None,
             })
+        };
+
+        let snapshot = desc::bind_group_for(
+            device,
+            "stark dynamics snapshot bg",
+            &kit.snapshot_bgl,
+            slots::SNAPSHOT,
+            table,
+            resid,
+            |s| match s {
+                b::REGION_COLOR => view(&region.color),
+                b::REGION_AUX => view(&region.aux),
+                b::REGION_RESID => opt(region.resid.as_ref(), "region"),
+                b::UNDER_COLOR_W => view(&under.color),
+                b::UNDER_AUX_W => view(&under.aux),
+                b::UNDER_RESID_W => opt(under.resid.as_ref(), "snapshot"),
+                other => common(other).expect("snapshot lists no other binding"),
+            },
+        );
+        // `exchange` comes in two flavours for the reservoir ping-pong: each reads one
+        // half and writes the other. The residual ping-pongs on the same phase as the
+        // color — read `i`, write `1 - i` — or the tool's two halves would drift apart.
+        let exchange = std::array::from_fn(|i| {
+            desc::bind_group_for(
+                device,
+                "stark dynamics exchange bg",
+                &kit.exchange_bgl,
+                slots::EXCHANGE,
+                table,
+                resid,
+                |s| match s {
+                    b::REGION_COLOR => view(&region.color),
+                    b::REGION_AUX => view(&region.aux),
+                    b::REGION_RESID => opt(region.resid.as_ref(), "region"),
+                    b::UNDER_COLOR_W => view(&under.color),
+                    b::UNDER_AUX_W => view(&under.aux),
+                    b::UNDER_RESID_W => opt(under.resid.as_ref(), "snapshot"),
+                    b::SAMP => samp(&kit.exchange_sampler),
+                    b::COV_TEX => view(&self.cov),
+                    b::BRUSH_SRC_COLOR => view(&self.brush_color[i]),
+                    b::BRUSH_SRC_AUX => view(&self.brush_aux[i]),
+                    b::BRUSH_SRC_RESID => {
+                        opt(self.brush_resid.as_ref().map(|v| &v[i]), "reservoir")
+                    }
+                    b::BRUSH_DST_COLOR_W => view(&self.brush_color[1 - i]),
+                    b::BRUSH_DST_AUX_W => view(&self.brush_aux[1 - i]),
+                    b::BRUSH_DST_RESID_W => {
+                        opt(self.brush_resid.as_ref().map(|v| &v[1 - i]), "reservoir")
+                    }
+                    other => common(other).expect("exchange lists no other binding"),
+                },
+            )
         });
         // One bake bind group per reservoir phase; the deposit reads only the baked
         // result, so it no longer needs the ping-pong at all.
         let bake = std::array::from_fn(|i| {
-            let mut entries = vec![
-                params(),
-                samp(),
-                desc::tex(b::BRUSH_SRC_COLOR, &self.brush_color[i]),
-                desc::tex(b::BRUSH_SRC_AUX, &self.brush_aux[i]),
-                desc::tex(b::BAKE_LOAD_W, &self.bake_load),
-                desc::tex(b::BAKE_LATM_W, &self.bake_latm),
-            ];
-            push_resid(
-                &mut entries,
-                &[
-                    (b::BRUSH_SRC_RESID, self.brush_resid.as_ref().map(|v| &v[i])),
-                    (b::BAKE_RLM_W, self.bake_rlm.as_ref()),
-                ],
-            );
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark dynamics bake bg"),
-                layout: &kit.bake_bgl,
-                entries: &entries,
-            })
+            desc::bind_group_for(
+                device,
+                "stark dynamics bake bg",
+                &kit.bake_bgl,
+                slots::BAKE,
+                table,
+                resid,
+                |s| match s {
+                    b::SAMP => samp(&kit.exchange_sampler),
+                    b::BRUSH_SRC_COLOR => view(&self.brush_color[i]),
+                    b::BRUSH_SRC_AUX => view(&self.brush_aux[i]),
+                    b::BRUSH_SRC_RESID => {
+                        opt(self.brush_resid.as_ref().map(|v| &v[i]), "reservoir")
+                    }
+                    b::BAKE_LOAD_W => view(&self.bake_load),
+                    b::BAKE_LATM_W => view(&self.bake_latm),
+                    b::BAKE_RLM_W => opt(self.bake_rlm.as_ref(), "bake"),
+                    other => common(other).expect("bake lists no other binding"),
+                },
+            )
         });
-        // The two passes that lay paint read the residual's baked prefix and its
-        // snapshot, and write the region's residual back — the same three roles the
-        // color's 19/11/13 play beside them.
-        let resid_write = [
-            (b::BAKE_RLM, self.bake_rlm.as_ref()),
-            (b::UNDER_RESID, under.resid.as_ref()),
-            (b::REGION_RESID_W, region.resid.as_ref()),
-        ];
-        let mut deposit_entries = vec![
-            params(),
-            samp(),
-            desc::tex(b::BAKE_LOAD, &self.bake_load),
-            desc::tex(b::BAKE_LATM, &self.bake_latm),
-            desc::tex(b::UNDER_COLOR, &under.color),
-            desc::tex(b::UNDER_AUX, &under.aux),
-            desc::tex(b::REGION_COLOR_W, &region.color),
-            desc::tex(b::REGION_AUX_W, &region.aux),
-            desc::tex(b::DYN_NOISE_TEX, &self.noise),
-            desc::samp(b::DYN_NOISE_SAMP, &r.tips.noise_sampler),
-            desc::tex(b::SEL_MASK, &region.sel_mask),
-            desc::tex(b::SURFACE_TEX, &self.scene.surface.view),
-        ];
-        push_resid(&mut deposit_entries, &resid_write);
-        let deposit = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark dynamics deposit bg"),
-            layout: &kit.deposit_bgl,
-            entries: &deposit_entries,
-        });
+        let deposit = desc::bind_group_for(
+            device,
+            "stark dynamics deposit bg",
+            &kit.deposit_bgl,
+            slots::DEPOSIT,
+            table,
+            resid,
+            |s| match s {
+                b::SAMP => samp(&kit.exchange_sampler),
+                other => common(other).expect("deposit lists no other binding"),
+            },
+        );
         // The pen-up, which reads the reservoir only through its own `bake` — so unlike
         // `exchange` it needs no bind group per ping-pong half; the bake's does that.
-        let mut settle_entries = vec![
-            params(),
-            desc::tex(b::BAKE_LOAD, &self.bake_load),
-            desc::tex(b::BAKE_LATM, &self.bake_latm),
-            desc::tex(b::UNDER_COLOR, &under.color),
-            desc::tex(b::UNDER_AUX, &under.aux),
-            desc::tex(b::REGION_COLOR_W, &region.color),
-            desc::tex(b::REGION_AUX_W, &region.aux),
-            desc::tex(b::SEL_MASK, &region.sel_mask),
-            // The ground: the pen-up delivery is a deposit like any other, and is
-            // gated by the same tooth (§6.4).
-            desc::tex(b::SURFACE_TEX, &self.scene.surface.view),
-        ];
-        push_resid(&mut settle_entries, &resid_write);
-        let settle = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark dynamics settle bg"),
-            layout: &kit.settle_bgl,
-            entries: &settle_entries,
-        });
+        let settle = desc::bind_group_for(
+            device,
+            "stark dynamics settle bg",
+            &kit.settle_bgl,
+            slots::SETTLE,
+            table,
+            resid,
+            |s| common(s).expect("settle lists no other binding"),
+        );
         // The coarse pair's groups (§6.2), only for a piece whose plan hoists at all.
         // The hoist reads the same baked prefixes the exact deposit's front half did;
         // the coarse deposit swaps those two bindings for the cell means and keeps
         // everything else the exact one binds.
         let coarse = cells.map(|cl| {
-            let mut hoist_entries = vec![
-                params(),
-                desc::tex(b::BAKE_LOAD, &self.bake_load),
-                desc::tex(b::BAKE_LATM, &self.bake_latm),
-                desc::tex(b::CELL_TOOL_W, &cl.tool),
-                desc::tex(b::CELL_LAT_W, &cl.lat),
-            ];
-            push_resid(
-                &mut hoist_entries,
-                &[
-                    (b::BAKE_RLM, self.bake_rlm.as_ref()),
-                    (b::CELL_RES_W, cl.res.as_ref()),
-                ],
+            let hoist = desc::bind_group_for(
+                device,
+                "stark dynamics cell hoist bg",
+                &kit.hoist_bgl,
+                slots::HOIST,
+                table,
+                resid,
+                |s| match s {
+                    b::CELL_TOOL_W => view(&cl.tool),
+                    b::CELL_LAT_W => view(&cl.lat),
+                    b::CELL_RES_W => opt(cl.res.as_ref(), "cell"),
+                    other => common(other).expect("cell hoist lists no other binding"),
+                },
             );
-            let hoist = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark dynamics cell hoist bg"),
-                layout: &kit.hoist_bgl,
-                entries: &hoist_entries,
-            });
-            let mut coarse_entries = vec![
-                params(),
-                desc::tex(b::UNDER_COLOR, &under.color),
-                desc::tex(b::UNDER_AUX, &under.aux),
-                desc::tex(b::REGION_COLOR_W, &region.color),
-                desc::tex(b::REGION_AUX_W, &region.aux),
-                desc::tex(b::DYN_NOISE_TEX, &self.noise),
-                desc::samp(b::DYN_NOISE_SAMP, &r.tips.noise_sampler),
-                desc::tex(b::SEL_MASK, &region.sel_mask),
-                desc::tex(b::SURFACE_TEX, &self.scene.surface.view),
-                desc::tex(b::CELL_TOOL, &cl.tool),
-                desc::tex(b::CELL_LAT, &cl.lat),
-            ];
-            push_resid(
-                &mut coarse_entries,
-                &[
-                    (b::UNDER_RESID, under.resid.as_ref()),
-                    (b::REGION_RESID_W, region.resid.as_ref()),
-                    (b::CELL_RES, cl.res.as_ref()),
-                ],
+            let deposit = desc::bind_group_for(
+                device,
+                "stark dynamics deposit coarse bg",
+                &kit.deposit_coarse_bgl,
+                slots::DEPOSIT_COARSE,
+                table,
+                resid,
+                |s| match s {
+                    b::CELL_TOOL => view(&cl.tool),
+                    b::CELL_LAT => view(&cl.lat),
+                    b::CELL_RES => opt(cl.res.as_ref(), "cell"),
+                    other => common(other).expect("deposit_coarse lists no other binding"),
+                },
             );
-            let deposit = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark dynamics deposit coarse bg"),
-                layout: &kit.deposit_coarse_bgl,
-                entries: &coarse_entries,
-            });
             CoarseBindings { hoist, deposit }
         });
         PieceBindings {
@@ -1255,25 +1253,6 @@ struct Snapshot {
     aux: wgpu::TextureView,
     /// The snapshot's residual half, copied on exactly the texels the color is.
     resid: Option<wgpu::TextureView>,
-}
-
-/// Append the residual bindings a layout declares (§6.7) to a bind group's entries.
-///
-/// A tail rather than an interleave: entries are keyed by binding number, so their
-/// order in the slice is free, and keeping the residual out of the plain list is what
-/// leaves that list readable as the thing it still is. Every `Option` handed here is
-/// `Some` exactly when the color space has a residual, so a group takes its whole
-/// tail or none of it — the same all-or-nothing the `[..n + k]` layout slices in
-/// [`build_dynamics_kit`](super::kit::build_dynamics_kit) express on the other side.
-fn push_resid<'v>(
-    entries: &mut Vec<wgpu::BindGroupEntry<'v>>,
-    want: &[(u32, Option<&'v wgpu::TextureView>)],
-) {
-    for (binding, view) in want {
-        if let Some(v) = view {
-            entries.push(desc::tex(*binding, v));
-        }
-    }
 }
 
 /// The footprint-cell scratch (§6.2): the coarse deposit's per-cell means, sized by

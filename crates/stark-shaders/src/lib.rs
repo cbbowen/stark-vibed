@@ -48,6 +48,79 @@ macro_rules! resid_variant {
     }};
 }
 
+/// What one `@binding` declaration **is**, as the WESL says it (§6.10).
+///
+/// The host's bind-group layout has to name a `wgpu::BindingType` for every slot, and
+/// that type is almost entirely decided by the shader: `texture_storage_2d<rgba32float,
+/// write>` is a storage texture of that exact format, `sampler` is a sampler,
+/// `var<uniform>` is a uniform buffer of the declared struct's size. All of that used
+/// to be transcribed by hand into `desc::` calls — `stor` versus `stor32` chosen per
+/// entry, the uniform's `min_binding_size` written out again — with nothing checking
+/// either.
+///
+/// `wgpu` is deliberately not a dependency of this crate, so the kind is spelled
+/// structurally here and turned into a `BindingType` by the one consumer that has
+/// `wgpu` in scope (`stark_core::gpu::desc`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindKind {
+    /// `var<uniform> x: T` — carries `T`'s WGSL size, which is the layout's
+    /// `min_binding_size`.
+    Uniform { min_size: u64 },
+    /// `sampler`. Whether it is *filtering* is a property of how an entry point uses
+    /// it rather than of the declaration, so it is not here — see [`Binding`].
+    Sampler,
+    /// `texture_2d<f32>` and friends: `dim` is the WGSL type's suffix (`2d`,
+    /// `2d_array`, `3d`).
+    Texture { dim: &'static str },
+    /// `texture_storage_2d<format, access>` — `format` is the WGSL storage format
+    /// name, e.g. `"rgba16float"`.
+    Storage {
+        dim: &'static str,
+        format: &'static str,
+    },
+}
+
+/// One `@binding` declaration, generated from the WESL (§6.10).
+///
+/// **What is here is what the declaration decides.** What is *not* here is
+/// filterability, and its absence is a statement rather than an omission: the same
+/// texture is `textureLoad`ed by one entry point of `dynamics.wesl` and
+/// `textureSample`d by another (`region_color`, between `snapshot` and `exchange`), so
+/// it is a property of the pair and not of the slot. The host says it, once, in the
+/// list that names the entry point's bindings.
+#[derive(Clone, Copy, Debug)]
+pub struct Binding {
+    /// The `@binding` index.
+    pub index: u32,
+    /// The WESL variable's name, uppercased — the same spelling as the `binding::`
+    /// constant, so a diagnostic can name the slot the shader names.
+    pub name: &'static str,
+    pub kind: BindKind,
+    /// Whether the declaration is `@if(resid)`-gated, i.e. exists only in the
+    /// residual build of the shader (§6.7).
+    ///
+    /// This is what retired the `[..12 + 4 * usize::from(resid)]` slices: a layout
+    /// listed its residual entries at the end of an array and then counted them by
+    /// hand, per entry point, seven times over. The gate is in the declaration; now it
+    /// is in the table.
+    pub resid: bool,
+}
+
+impl Binding {
+    /// The declaration at `index` in `table`.
+    ///
+    /// Panics rather than returning an `Option`, because every caller is a host layout
+    /// naming a slot of the very module the table came from: an index that is not there
+    /// is a typo in that list, at build-configuration time, and a loud one is what a
+    /// caller would write anyway.
+    pub fn lookup(table: &'static [Binding], index: u32) -> &'static Binding {
+        table
+            .iter()
+            .find(|b| b.index == index)
+            .unwrap_or_else(|| panic!("no `@binding({index})` in this shader module"))
+    }
+}
+
 /// Rust mirrors of the WESL structs the host fills in, generated from the shader
 /// sources at build time (`build/mirror.rs`).
 ///

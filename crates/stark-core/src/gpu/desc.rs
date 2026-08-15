@@ -65,25 +65,6 @@ fn tex_entry(
     }
 }
 
-/// A write-only storage texture — how the stamp loop's compute passes write the
-/// region they are evolving (§6.2).
-pub(crate) fn storage_tex(
-    binding: u32,
-    vis: wgpu::ShaderStages,
-    format: wgpu::TextureFormat,
-) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: vis,
-        ty: wgpu::BindingType::StorageTexture {
-            access: wgpu::StorageTextureAccess::WriteOnly,
-            format,
-            view_dimension: wgpu::TextureViewDimension::D2,
-        },
-        count: None,
-    }
-}
-
 /// A filtering sampler.
 pub(crate) fn sampler(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -140,6 +121,170 @@ pub(crate) fn bind_group_layout(
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some(label),
         entries,
+    })
+}
+
+// ---- shader-declared binding lists (§6.10) --------------------------------------
+
+/// One binding an entry point reads, as the **host** has to name it: the slot, plus
+/// the one thing the shader's declaration cannot decide.
+///
+/// Everything else about a slot — whether it is a uniform and how wide, a sampler, a
+/// texture, or a storage texture of a particular format, and whether it exists at all
+/// in a build without the residual — is read out of the generated
+/// [`Binding`](stark_shaders::Binding) table. What is left here is **filterability**,
+/// which is genuinely a property of the (entry point, binding) pair rather than of the
+/// declaration: `dynamics.wesl`'s `region_color` is `textureLoad`ed by `snapshot` and
+/// `textureSample`d by `exchange`, so the same slot is non-filterable in one layout and
+/// filterable in the next.
+#[derive(Clone, Copy)]
+pub(crate) struct Slot {
+    binding: u32,
+    /// Whether this entry point reads the slot through a sampler.
+    filtering: bool,
+}
+
+impl Slot {
+    /// A slot this entry point reads with `textureLoad` — or that has no filterability
+    /// to speak of (a uniform, a storage texture).
+    pub(crate) const fn at(binding: u32) -> Self {
+        Self {
+            binding,
+            filtering: false,
+        }
+    }
+
+    /// A slot this entry point reads **through a sampler**, which makes its texture
+    /// required to be filterable and its sampler a filtering one.
+    pub(crate) const fn sampled(binding: u32) -> Self {
+        Self {
+            binding,
+            filtering: true,
+        }
+    }
+
+    /// The slot's `@binding` index.
+    pub(crate) const fn binding(&self) -> u32 {
+        self.binding
+    }
+}
+
+/// The layout entry for one slot, resolved against the shader's own declaration.
+///
+/// Returns `None` for a slot the shader declares `@if(resid)` when this build has no
+/// residual — which is what retired the `[..12 + 4 * usize::from(resid)]` element
+/// counts that every layout used to carry.
+fn slot_entry(
+    slot: Slot,
+    vis: wgpu::ShaderStages,
+    table: &'static [stark_shaders::Binding],
+    resid: bool,
+) -> Option<wgpu::BindGroupLayoutEntry> {
+    let decl = stark_shaders::Binding::lookup(table, slot.binding());
+    if decl.resid && !resid {
+        return None;
+    }
+    Some(match decl.kind {
+        stark_shaders::BindKind::Uniform { min_size } => uniform_slot(decl.index, vis, min_size),
+        stark_shaders::BindKind::Sampler => sampler(decl.index, vis),
+        stark_shaders::BindKind::Texture { dim } => tex_entry(
+            decl.index,
+            vis,
+            slot.filtering,
+            view_dimension(dim, decl.name),
+        ),
+        stark_shaders::BindKind::Storage { dim, format } => wgpu::BindGroupLayoutEntry {
+            binding: decl.index,
+            visibility: vis,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                format: storage_format(format, decl.name),
+                view_dimension: view_dimension(dim, decl.name),
+            },
+            count: None,
+        },
+    })
+}
+
+/// The WGSL storage format name as a `wgpu::TextureFormat`.
+///
+/// Only the formats the shader tree actually declares. A new one is a deliberate
+/// addition here rather than a silent mismatch — which is the point of reading the
+/// format off the declaration at all: the host used to choose between two helpers
+/// (`stor` and `stor32`) at every layout that named a storage slot.
+fn storage_format(wgsl: &str, name: &str) -> wgpu::TextureFormat {
+    match wgsl {
+        "rgba16float" => wgpu::TextureFormat::Rgba16Float,
+        "rgba32float" => wgpu::TextureFormat::Rgba32Float,
+        "r16float" => wgpu::TextureFormat::R16Float,
+        "r32float" => wgpu::TextureFormat::R32Float,
+        other => panic!(
+            "binding `{name}` declares storage format `{other}`, which the host has no mapping for"
+        ),
+    }
+}
+
+/// The WGSL texture type's dimension suffix as a `wgpu::TextureViewDimension`.
+fn view_dimension(wgsl: &str, name: &str) -> wgpu::TextureViewDimension {
+    match wgsl {
+        "2d" => wgpu::TextureViewDimension::D2,
+        "2d_array" => wgpu::TextureViewDimension::D2Array,
+        "3d" => wgpu::TextureViewDimension::D3,
+        other => {
+            panic!("binding `{name}` is a `texture_{other}`, which the host has no mapping for")
+        }
+    }
+}
+
+/// A bind group layout for the `slots` one entry point reads, typed from the shader's
+/// own declarations (§6.10).
+///
+/// The list of slots is the *only* thing written on the host, and it is written once:
+/// [`bind_group_for`] builds the matching group from the same list, so a layout and its
+/// group cannot disagree about which bindings are present, in what order, or of what
+/// type. What this replaced was two hand-kept arrays per entry point — seven pairs of
+/// them for `dynamics.wesl` alone — joined by a magic element count.
+pub(crate) fn layout_for(
+    device: &wgpu::Device,
+    label: &str,
+    slots: &[Slot],
+    vis: wgpu::ShaderStages,
+    table: &'static [stark_shaders::Binding],
+    resid: bool,
+) -> wgpu::BindGroupLayout {
+    let entries: Vec<_> = slots
+        .iter()
+        .filter_map(|s| slot_entry(*s, vis, table, resid))
+        .collect();
+    bind_group_layout(device, label, &entries)
+}
+
+/// The bind group for the same `slots` [`layout_for`] built a layout from, with
+/// `resource` asked for each one that is present in this build.
+///
+/// `resource` is never asked about a slot the residual gate excluded, so a caller has
+/// nothing to say about the residual beyond supplying the views when it has them.
+pub(crate) fn bind_group_for<'a>(
+    device: &wgpu::Device,
+    label: &str,
+    layout: &wgpu::BindGroupLayout,
+    slots: &[Slot],
+    table: &'static [stark_shaders::Binding],
+    resid: bool,
+    mut resource: impl FnMut(u32) -> wgpu::BindingResource<'a>,
+) -> wgpu::BindGroup {
+    let entries: Vec<_> = slots
+        .iter()
+        .filter(|s| resid || !stark_shaders::Binding::lookup(table, s.binding()).resid)
+        .map(|s| wgpu::BindGroupEntry {
+            binding: s.binding(),
+            resource: resource(s.binding()),
+        })
+        .collect();
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &entries,
     })
 }
 

@@ -22,6 +22,7 @@ use super::segments::segment_fits_region;
 mod kit;
 mod plan;
 mod run;
+mod slots;
 
 pub(super) use kit::{DynamicsKit, build_dynamics_kit};
 

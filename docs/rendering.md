@@ -914,19 +914,88 @@ a shader, so it belongs to the crate that owns the shaders, and the types it nee
 (`VertexAttribute`, `VertexFormat`, `VertexBufferLayout`) are plain data — no
 device, no runtime.
 
+### Adding a binding table
+
+Add the WESL module to `BINDINGS` in `stark-shaders/build.rs`. Two things are
+generated from every `@binding` declaration in it:
+
+- `mirror::<module>::binding::<NAME>` — the index, uppercased from the WESL
+  variable. This is what a host layout and a host bind group name a slot by.
+- `mirror::<module>::BINDINGS` — a `&[Binding]` carrying, per slot, its **kind**
+  (uniform and how wide, sampler, texture, storage texture *and its format*) and
+  whether it is `@if(resid)`-gated.
+
+The host then writes **one list per entry point** naming the slots it reads, and
+builds both sides from it:
+
+```rust
+const DEPOSIT: &[Slot] = &[Slot::at(b::ST), Slot::sampled(b::DYN_NOISE_TEX), …];
+
+let bgl   = desc::layout_for(device, label, DEPOSIT, vis, BINDINGS, resid);
+let group = desc::bind_group_for(device, label, &bgl, DEPOSIT, BINDINGS, resid,
+                                 |slot| /* the view or buffer for that slot */);
+```
+
+`crates/stark-core/src/gpu/stroke/dynamics/slots.rs` is the worked example.
+
+**A list is a membership statement and nothing more.** What kind of thing occupies
+a slot, what format a storage texture is, how wide a uniform is, and whether the
+build has it at all are read off the declaration — so the host cannot choose
+`stor` where the shader said `rgba32float`, and cannot miscount a residual tail.
+Because the layout and the group come from the same list, they cannot disagree
+about which slots are present or in what order.
+
+The **one** thing a list still says for itself is filterability: `Slot::at` for a
+slot this entry point reads with `textureLoad`, `Slot::sampled` for one it reads
+through a sampler. That is not an omission in the generator — it is genuinely a
+property of the *(entry point, binding)* pair. `dynamics.wesl`'s `region_color` is
+loaded by `snapshot` and sampled by `exchange`, so the same slot is non-filterable
+in one layout and filterable in the next.
+
+Two unit tests stand behind the hand-written half (`slots::tests`): every list
+names bindings the shader declares, and names none twice; and a list takes a
+residual slot exactly when it takes the plain slot that rides with it — checked
+against the generated `resid` flags, so the shader gaining an `@if(resid)`
+declaration that nothing pairs is a failure rather than a gap.
+
 ### What this does and does not cover
 
-A bind group layout that disagrees with its shader is a **loud** failure — wgpu
-reflects the module at `create_*_pipeline` and names the offending binding — so
-those stay hand-written in `gpu/desc.rs`, where the call sites are more legible
-than generated ones. The same goes for entry-point names. Generation is aimed at
-the **silent** half of the boundary, and that half is now covered: uniforms,
-constants, and vertex instance records.
+Generation was first aimed at the **silent** half of the boundary — uniforms,
+constants and vertex instance records — on the argument that a bind group layout
+disagreeing with its shader is a *loud* failure: wgpu reflects the module at
+`create_*_pipeline` and names the offending binding.
+
+That argument was right about the failure and wrong about the cost. Loud is not
+the same as cheap: a validation error arrives at run time, on a machine with an
+adapter, which is the half of the suite CI does not exercise against real pixels —
+and the seven layouts of `dynamics.wesl` were seven pairs of hand-kept arrays
+joined by magic element counts (`[..12 + 4 * usize::from(resid)]`), recounted by
+hand on every edit. So the slots are generated now too, and what is left on the
+host is the shortest thing that is genuinely the host's: which bindings an entry
+point reads, and how it reads them.
+
+Entry-point names stay hand-written. So do the layouts outside the stamp loop,
+which are short enough that a list would be longer than the entries.
 
 `gpu/wesl.rs` is gone entirely, both of its halves with it. `mirrors_wesl!` pinned
 a hand-written struct's size against a number written beside it; `wesl_const`
 scraped a decimal literal out of the linked artifact, carrying four documented
 limits — stripping, reachability, `f64` widening, and name mangling. Neither was
 improved, because there is no second declaration left for either to check.
+
+### The rule this generalizes
+
+Every one of these started the same way: a fact the shader states, transcribed on
+the host so the two could be kept in step by attention. The lane map, the constant,
+the vertex format, the binding index, the binding's type. In each case the
+transcription drifted, and in each case the drift was invisible until it was a
+picture.
+
+So before adding a host-side declaration of anything a `.wesl` file already says,
+check whether it belongs in `MIRRORS`, `CONSTS`, `VERTEX` or `BINDINGS`. The
+generator has an AST of every shader in the tree; if the shader states it, the host
+should be reading it rather than repeating it. What is left over — a name, a step
+mode, whether *this* pass samples *that* texture — is worth writing by hand
+precisely because the shader does not say it.
 
 
