@@ -212,6 +212,22 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
                 },
             });
         }
+        // The coarse claim expands into the fine ones it stands for, so a footprint
+        // that *writes* a whole layer restores a whole layer.
+        //
+        // No action writes one today — `Resource::Layer` is how `DuplicateLayer` and
+        // `MergeLayerDown` state what they **read** — so this arm is unreached. It is
+        // written out rather than left to an `unreachable!` because a patch that
+        // answered "nothing" for a declared write is the §12.6 hazard read backwards,
+        // and an `unreachable!` is exactly how that would arrive: as a panic in the
+        // undo path, on the day someone finds a use for the coarse resource.
+        Resource::Layer(id) => {
+            capture_resource(&Resource::Existence(*id), to, from, ops);
+            capture_resource(&Resource::Paint(*id, TileRect::ALL), to, from, ops);
+            for prop in Prop::ALL {
+                capture_resource(&Resource::Prop(*id, prop), to, from, ops);
+            }
+        }
         Resource::StackOrder => ops.push(PatchOp::Structure(structure(to))),
         Resource::Selection(actor) => ops.push(PatchOp::Selection(*actor, to.selection_of(*actor))),
         Resource::Surface => ops.push(PatchOp::Surface(to.surface)),

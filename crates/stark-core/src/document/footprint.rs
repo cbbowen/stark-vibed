@@ -57,6 +57,26 @@ pub enum Prop {
     Filter,
 }
 
+impl Prop {
+    /// Every property, which is what [`Resource::Layer`] stands for the paint and the
+    /// existence of.
+    ///
+    /// Hand-written, and held honest by `every_prop_is_named_in_all` below: Rust
+    /// cannot enumerate an enum's variants, so what is available is a match that
+    /// stops compiling until a new variant is *visited* — the device
+    /// `Modulations::all` uses for a struct's fields. A `Prop` missing here would
+    /// make a coarse claim quietly finer than it says it is.
+    pub const ALL: [Prop; 7] = [
+        Prop::Blend,
+        Prop::Clip,
+        Prop::Opacity,
+        Prop::Visible,
+        Prop::Name,
+        Prop::Matte,
+        Prop::Filter,
+    ];
+}
+
 /// One addressable piece of document state.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Resource {
@@ -78,6 +98,23 @@ pub enum Resource {
     /// halves of a cycle conflict here, so the log's total order serializes them
     /// and the second one to apply sees the first's result and declines.
     StackOrder,
+    /// **Everything about one layer**: its existence, all of its paint, and every
+    /// one of its properties.
+    ///
+    /// The coarse resource [`StackOrder`](Self::StackOrder) is for the tree, and it
+    /// earns its place the same way: two actions genuinely read a whole layer, and
+    /// spelling that out finely is nine resources that always travel together.
+    /// `DuplicateLayer` copies every tile and every property of every layer in a
+    /// subtree, and `MergeLayerDown` is a function of everything about both sides —
+    /// both said so already, at nine and five entries a layer, which made
+    /// [`Footprint::conflicts`] (a nested scan) quadratic in a number that had no
+    /// business being large: a twenty-layer duplicate claimed 180 read resources.
+    ///
+    /// It says the same thing. A coarse claim is *more* conservative than the fine
+    /// ones it replaces, never less, and §12.6 permits a footprint to claim too much
+    /// — a false conflict costs the commutation fast path, where a missed one
+    /// silently diverges peers.
+    Layer(LayerId),
     /// An actor's selection mask (§17.3).
     Selection(ActorId),
     /// The canvas surface (§6.4).
@@ -90,7 +127,28 @@ impl Resource {
     fn overlaps(&self, other: &Resource) -> bool {
         match (self, other) {
             (Resource::Paint(a, ra), Resource::Paint(b, rb)) => a == b && ra.intersects(rb),
+            // The coarse claim meets every finer claim on the same layer — and, on
+            // both sides at once, itself. A `Paint` rect is not consulted: `Layer`
+            // claims all of it, so there is no box to miss.
+            (Resource::Layer(id), other) | (other, Resource::Layer(id)) => {
+                other.layer() == Some(*id)
+            }
             _ => self == other,
+        }
+    }
+
+    /// The layer this resource is about, or `None` for the ones that are about the
+    /// document — the tree's shape, a mask, the canvas.
+    fn layer(&self) -> Option<LayerId> {
+        match self {
+            Resource::Paint(id, _)
+            | Resource::Existence(id)
+            | Resource::Prop(id, _)
+            | Resource::Layer(id) => Some(*id),
+            Resource::StackOrder
+            | Resource::Selection(_)
+            | Resource::Surface
+            | Resource::Background => None,
         }
     }
 }
@@ -229,22 +287,7 @@ pub fn footprint(action: &Action) -> Footprint {
         // copy lands beside its source; `StackOrder` is written here, and a write
         // covers the read.
         ActionKind::DuplicateLayer { ids } => Footprint {
-            reads: ids
-                .iter()
-                .flat_map(|(src, _)| {
-                    [
-                        Resource::Existence(*src),
-                        Resource::Paint(*src, TileRect::ALL),
-                        Resource::Prop(*src, Prop::Blend),
-                        Resource::Prop(*src, Prop::Clip),
-                        Resource::Prop(*src, Prop::Opacity),
-                        Resource::Prop(*src, Prop::Visible),
-                        Resource::Prop(*src, Prop::Name),
-                        Resource::Prop(*src, Prop::Matte),
-                        Resource::Prop(*src, Prop::Filter),
-                    ]
-                })
-                .collect(),
+            reads: ids.iter().map(|(src, _)| Resource::Layer(*src)).collect(),
             writes: ids
                 .iter()
                 .map(|(_, copy)| Resource::Existence(*copy))
@@ -346,26 +389,14 @@ pub fn footprint(action: &Action) -> Footprint {
         // concurrent blend-mode change from commuting with a merge that the mode would
         // have refused.
         ActionKind::MergeLayerDown { source, dest } => Footprint {
-            reads: [*source, *dest]
-                .into_iter()
-                .flat_map(|id| {
-                    [
-                        Resource::Prop(id, Prop::Blend),
-                        Resource::Prop(id, Prop::Clip),
-                        Resource::Prop(id, Prop::Visible),
-                        // Both sliders are folded into the merged tiles, so both are
-                        // read; only the destination's is *written* (below), the
-                        // source having ceased to exist.
-                        Resource::Prop(id, Prop::Opacity),
-                        // Claimed on both ids like everything else here, though only a
-                        // source can carry one: a merge that commuted with a `SetFilter`
-                        // would bake a filter the log says was replaced, and the pixels
-                        // could not say which one had run.
-                        Resource::Prop(id, Prop::Filter),
-                    ]
-                })
-                .chain([Resource::Paint(*source, TileRect::ALL)])
-                .collect(),
+            // Everything about both layers, in the one resource that says so. The
+            // blend, the clip and the visibility decide whether the merge is offered
+            // at all (§14.11); both opacities are folded into the merged tiles; the
+            // **filter** is claimed on both ids though only a source can carry one,
+            // since a merge that commuted with a `SetFilter` would bake a filter the
+            // log says was replaced, and the pixels could not say which had run. The
+            // source's paint is stacked and the destination's is rewritten.
+            reads: [*source, *dest].into_iter().map(Resource::Layer).collect(),
             writes: vec![
                 Resource::Existence(*source),
                 Resource::Existence(*dest),
@@ -461,6 +492,109 @@ mod tests {
 
     fn commutes(a: &Action, b: &Action) -> bool {
         !footprint(a).conflicts(&footprint(b))
+    }
+
+    /// [`Prop::ALL`] is what [`Resource::Layer`] expands to, so a property missing
+    /// from it would make the coarse claim quietly finer than it says it is — and
+    /// finer is the direction §12.6 cannot survive.
+    ///
+    /// The match is the guard: it is exhaustive with no `_` arm, so a new `Prop` does
+    /// not compile until it is named here, next to the assertion that `ALL` has grown
+    /// with it. It forces a visit rather than proving the correspondence, which is as
+    /// far as Rust goes without a derive — the same bargain `tests/footprint.rs`'s
+    /// `slot` makes for `ActionKind`.
+    #[test]
+    fn every_prop_is_named_in_all() {
+        for prop in Prop::ALL {
+            match prop {
+                Prop::Blend
+                | Prop::Clip
+                | Prop::Opacity
+                | Prop::Visible
+                | Prop::Name
+                | Prop::Matte
+                | Prop::Filter => {}
+            }
+        }
+        assert_eq!(Prop::ALL.len(), 7, "a new Prop needs a place in ALL");
+    }
+
+    /// The coarse resource claims **everything** about its layer, and claims it
+    /// symmetrically: whichever side it appears on, it meets every finer resource of
+    /// that layer and nothing of any other.
+    #[test]
+    fn a_whole_layer_claim_meets_every_finer_claim_on_it() {
+        let (a, b) = (LayerId(4), LayerId(9));
+        let whole = Resource::Layer(a);
+        let finer = [
+            Resource::Existence(a),
+            Resource::Paint(a, TileRect::ALL),
+            Resource::Paint(
+                a,
+                TileRect::covering(Vec2::ZERO, Vec2::splat(9.0), 0).unwrap(),
+            ),
+            Resource::Layer(a),
+        ]
+        .into_iter()
+        .chain(Prop::ALL.map(|p| Resource::Prop(a, p)));
+        for r in finer {
+            assert!(whole.overlaps(&r), "{whole:?} must meet {r:?}");
+            assert!(r.overlaps(&whole), "…and from the other side");
+        }
+        // A different layer, and the resources that are about the document rather
+        // than about any layer, are untouched by it.
+        for r in [
+            Resource::Layer(b),
+            Resource::Existence(b),
+            Resource::Paint(b, TileRect::ALL),
+            Resource::Prop(b, Prop::Name),
+            Resource::StackOrder,
+            Resource::Selection(ActorId(1)),
+            Resource::Surface,
+            Resource::Background,
+        ] {
+            assert!(!whole.overlaps(&r), "{whole:?} must not meet {r:?}");
+            assert!(!r.overlaps(&whole), "…and from the other side");
+        }
+    }
+
+    /// A duplicate reads *everything* about every layer it copies (§14.8), which is
+    /// what keeps it from commuting with a stroke or a rename inside the group. Said
+    /// in one resource a layer now rather than nine, so this pins the claim rather
+    /// than the spelling: what must hold is that each of the nine still conflicts.
+    #[test]
+    fn a_duplicate_conflicts_with_every_edit_inside_what_it_copies() {
+        let inner = LayerId(3);
+        let dup = act(
+            1,
+            ActionKind::DuplicateLayer {
+                ids: vec![(LayerId(2), LayerId(20)), (inner, LayerId(30))],
+            },
+        );
+        let edits = [
+            ActionKind::SetLayerName(inner, Some("wash".into())),
+            ActionKind::SetLayerBlend(inner, crate::document::BlendMode::Multiply),
+            ActionKind::SetLayerClip(inner, true),
+            ActionKind::SetLayerOpacity(inner, 0.5),
+            ActionKind::SetLayerVisible(inner, false),
+            ActionKind::SetMattePaint(inner, crate::document::MattePaint::Solid([0.0; 3])),
+            ActionKind::RemoveLayer(inner),
+        ];
+        for kind in edits {
+            let other = act(2, kind);
+            assert!(
+                !commutes(&dup, &other),
+                "a duplicate must not commute with {:?}",
+                other.kind,
+            );
+        }
+        // A stroke inside the copied subtree, too — the case the finer spelling
+        // existed for.
+        let paint = stroke(2, inner, Vec2::ZERO, Vec2::splat(40.0), 8.0);
+        assert!(!commutes(&dup, &paint));
+        // …and a layer it does not copy is still free.
+        let elsewhere = stroke(2, LayerId(99), Vec2::ZERO, Vec2::splat(40.0), 8.0);
+        assert!(commutes(&dup, &elsewhere));
     }
 
     #[test]
