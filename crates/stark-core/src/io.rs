@@ -162,7 +162,22 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// settings about which mode it is. Everything that carries a `BlendMode` — the
 /// action, the footprint, the patch, the merge's agreement rule, the shader
 /// uniform — took it without moving.
-const WIRE_VERSION: u32 = 11;
+/// **12** — `BrushParams` gained a `stretch` and `Modulations` a lane to drive it
+/// (§6.6): how far the tip's footprint is drawn out along the axis the brush already
+/// faces. Both are *appended*, and both break for version 2's reason rather than
+/// version 5's — postcard writes no field names and no length, so a version-11 reader
+/// runs off the end of the brush and takes the next action's bytes as the rest of it.
+/// The modulation lane is the worse of the two: it is an `Option`, so the byte that
+/// follows a version-11 brush decides whether four more are eaten.
+///
+/// It is one number and not two because the stretch axis is the orientation's. A tip
+/// elongates along the way it faces, so `OrientationSource` — which a round tip
+/// carried inertly until now — is what aims it, and pointing a `Tilt` modulation at
+/// the knob is the pencil: lean the pen and the contact patch draws out along the
+/// lean. Nothing else on the wire moved, and no shape asset had to: a swept integral
+/// of a stretched footprint is the unstretched one read at another slice of the same
+/// prefix-τ volume, so the brush reads the volume it always bound.
+const WIRE_VERSION: u32 = 12;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (§8). Replay is bit-exact within a build; shader/algorithm changes

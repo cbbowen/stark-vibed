@@ -89,6 +89,7 @@ type BrushEdit = Box<dyn FnOnce(&mut BrushParams)>;
 enum ModRow {
     Size,
     Flow,
+    Stretch,
     Tooth,
     Lift,
     Deposit,
@@ -102,6 +103,7 @@ impl ModRow {
         match self {
             Self::Size => "Size",
             Self::Flow => "Flow",
+            Self::Stretch => "Stretch",
             Self::Tooth => "Tooth",
             Self::Lift => "Lift",
             Self::Deposit => "Deposit",
@@ -115,6 +117,10 @@ impl ModRow {
         match self {
             Self::Size => (MIN_RADIUS, MAX_RADIUS),
             Self::Flow => (0.0, MAX_FLOW),
+            // The knob is `1 − 1/s`, so its own top is an infinitely long tip; the
+            // stop is where `BrushParams::elongation` saturates and the slider stops
+            // meaning anything (§6.6).
+            Self::Stretch => (0.0, 1.0 - 1.0 / BrushParams::MAX_ELONGATION),
             Self::Tooth => (0.0, 1.0),
             Self::Lift | Self::Deposit | Self::Bleed => (0.0, 0.95),
         }
@@ -124,6 +130,7 @@ impl ModRow {
         match self {
             Self::Size => b.radius,
             Self::Flow => b.dynamics.add,
+            Self::Stretch => b.stretch,
             Self::Tooth => b.tooth,
             Self::Lift => b.dynamics.lift,
             Self::Deposit => b.dynamics.deposit,
@@ -135,6 +142,7 @@ impl ModRow {
         match self {
             Self::Size => b.radius = v,
             Self::Flow => b.dynamics.add = v,
+            Self::Stretch => b.stretch = v,
             Self::Tooth => b.tooth = v,
             Self::Lift => b.dynamics.lift = v,
             Self::Deposit => b.dynamics.deposit = v,
@@ -146,6 +154,7 @@ impl ModRow {
         match self {
             Self::Size => &mut m.size,
             Self::Flow => &mut m.flow,
+            Self::Stretch => &mut m.stretch,
             Self::Tooth => &mut m.tooth,
             Self::Lift => &mut m.lift,
             Self::Deposit => &mut m.deposit,
@@ -157,6 +166,7 @@ impl ModRow {
         match self {
             Self::Size => m.size,
             Self::Flow => m.flow,
+            Self::Stretch => m.stretch,
             Self::Tooth => m.tooth,
             Self::Lift => m.lift,
             Self::Deposit => m.deposit,
@@ -351,10 +361,14 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         glyph: icons::TIP,
                         open: tip_open,
                         ShapeGallery {}
-                        // Orientation only matters for non-round tips (per-orientation
-                        // footprint slices, §6.6); hardness only for the
-                        // procedural round tip.
-                        if !is_round {
+                        // Orientation is what aims the footprint (§6.6), and there
+                        // are two ways for that to matter: a non-round tip has a
+                        // silhouette to turn, and **any** tip that stretches has an
+                        // axis to draw out along. A round tip that does neither is the
+                        // one case where the chips would decide nothing, so it is the
+                        // one case that does not show them. Hardness stays the
+                        // procedural tip's alone.
+                        if !is_round || brush.stretch > 0.0 {
                             div { class: "brush-shapes",
                                 button { class: chip(brush.orientation == OrientationSource::FollowStroke),
                                     onclick: move |_| { set_orientation(state, OrientationSource::FollowStroke); restroke(state, preview); },
@@ -365,6 +379,21 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                             }
                         }
                         {mod_slider(state, preview, mod_open, ModRow::Size, brush)}
+                        // How far the footprint is drawn out along the axis above
+                        // (§6.6). Pointed at Tilt with "Pen angle" this is the pencil:
+                        // lean the pen and the contact patch elongates along the lean,
+                        // the way a real conical tip's does. Held at a value with no
+                        // mapping it is a chisel nib, off a plain round tip.
+                        {mod_slider(state, preview, mod_open, ModRow::Stretch, brush)}
+                        // Stretching along the *tangent* is a coherent thing to ask
+                        // for — the tip lays more paint per unit travel — but it is not
+                        // the one people reach for this slider wanting, and the
+                        // difference is invisible until the pen is leaned. So say
+                        // which axis is in force rather than second-guess the setting.
+                        if brush.stretch > 0.0 && brush.orientation == OrientationSource::FollowStroke {
+                            div { class: "be-note",
+                                "Stretching along the stroke, so the mark gets heavier rather                                  than wider. Switch to Pen angle for a tip that broadens as                                  the pen leans." }
+                        }
                         if let BrushShape::Round { hardness } = brush.shape {
                             Slider { label: "Hardness", min: 0.0, max: 1.0, value: hardness,
                                 oninput: move |v| edit(state, preview, move |b| {

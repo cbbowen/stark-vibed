@@ -206,28 +206,38 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
         //
         // The one preset that maps the pen somewhere other than the default
         // (§6.2), because a pencil is the tool where the two axes visibly do
-        // different jobs: **tilt widens it** — laying a pencil over is how you get
-        // a shading stroke out of the same point — and **pressure darkens it**,
-        // which is the graphite the lead gives up rather than the width of the
-        // contact patch. Size off tilt rather than pressure is the whole reason
-        // `size` is a mapping and not a rule.
+        // different jobs: **tilt draws the tip out** — laying a pencil over is how
+        // you get a shading stroke out of the same point — and **pressure darkens
+        // it**, which is the graphite the lead gives up rather than the shape of
+        // the contact patch.
+        //
+        // Tilt drives `stretch` and not `size`, and the difference is the whole
+        // point of the axis (§6.6). A leaned cone does not contact a bigger
+        // circle, it contacts a longer *ellipse* — drawn out along the lean and
+        // no wider across it — so a size mapping made a leaned pencil a fat round
+        // marker, broadening the mark just as much whichever way the hand went.
+        // Stretched, the same lean broadens a stroke dragged across the lean and
+        // merely darkens one dragged along it, which is what the hand expects
+        // from the pencil it is imitating and what it could not ask for before.
         shipped(
             "Pencil",
             Some(3),
             0.0,
             BrushParams {
-                radius: 18.0,
+                // The sharpened point itself now, where the radius used to stand
+                // for the *widest* mark the tilt mapping would scale back from.
+                radius: 7.0,
                 shape: pencil,
+                // Which aims the stretch, as well as turning the stamp: the axis a
+                // tip is drawn out along is the axis it faces (§6.6).
                 orientation: OrientationSource::Pen,
+                // Laid flat the contact patch runs four points long. Linear from a
+                // zero floor, so a mouse — which reports no tilt at all — gets the
+                // sharpened point and nothing else, which is the honest reading of
+                // "the pen is upright" rather than a case to floor away.
+                stretch: 0.75,
                 modulation: Modulations {
-                    // Upright is a point but not a hairline; flat is the full
-                    // radius. The floor is what keeps it drawable with a mouse,
-                    // which reports no tilt at all.
-                    size: Some(Modulation {
-                        source: ModSource::Tilt,
-                        floor: 0.25,
-                        curve: 0.0,
-                    }),
+                    stretch: Some(Modulation::linear(ModSource::Tilt)),
                     flow: Some(Modulation::linear(ModSource::Pressure)),
                     ..Modulations::default()
                 },

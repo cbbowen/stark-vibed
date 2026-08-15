@@ -391,6 +391,11 @@ pub struct Modulations {
     /// weave (§6.4). Mapped to pressure this is the charcoal behaviour: bear down and
     /// the tip flattens into the valleys, so the grain fills in.
     pub tooth: Option<Modulation>,
+    /// Scales [`BrushParams::stretch`] — how far the footprint elongates along the
+    /// brush's facing axis (§6.6). Mapped to [`ModSource::Tilt`] with
+    /// [`OrientationSource::Pen`] this is the pencil behaviour: lean the pen over and
+    /// the contact patch draws out along the lean, exactly as a real tip's does.
+    pub stretch: Option<Modulation>,
 }
 
 impl Modulations {
@@ -408,6 +413,7 @@ impl Modulations {
         deposit: None,
         bleed: None,
         tooth: None,
+        stretch: None,
     };
 
     /// [`Self::PRESSURE_SIZE`] as a function, for `#[serde(default = "…")]` — which
@@ -439,6 +445,9 @@ impl Modulations {
     pub fn tooth(&self, pen: PenState) -> f32 {
         Self::factor(self.tooth, pen)
     }
+    pub fn stretch(&self, pen: PenState) -> f32 {
+        Self::factor(self.stretch, pen)
+    }
 
     /// Every target at once, in the order they are declared above.
     ///
@@ -448,7 +457,7 @@ impl Modulations {
     /// field accesses, a new target would simply be missing from
     /// [`max_slope`](Self::max_slope) — and an under-estimated slope is not an
     /// error anywhere, it is a modulated ramp quietly drawn as a staircase.
-    fn all(&self) -> [Option<Modulation>; 6] {
+    fn all(&self) -> [Option<Modulation>; 7] {
         let Self {
             size,
             flow,
@@ -456,8 +465,9 @@ impl Modulations {
             deposit,
             bleed,
             tooth,
+            stretch,
         } = *self;
-        [size, flow, lift, deposit, bleed, tooth]
+        [size, flow, lift, deposit, bleed, tooth, stretch]
     }
 
     /// Whether any target is mapped.
@@ -552,6 +562,30 @@ pub struct BrushParams {
     /// same way the media pass's weave already is.
     #[serde(default)]
     pub tooth: f32,
+    /// How far the footprint **elongates along the brush's facing axis** (§6.6), in
+    /// `[0, 1)`: the tip is stretched by [`elongation`](Self::elongation)
+    /// `s = 1/(1 − stretch)` along that axis and left alone across it, so 0 is the
+    /// footprint the shape draws and 0.5 is one twice as long as it is wide.
+    ///
+    /// **The axis is [`orientation`](Self::orientation)'s**, not a second direction to
+    /// set. That is the whole of why this is one number: the brush already says which
+    /// way it faces, and a tip elongates along the way it faces. With
+    /// [`OrientationSource::Pen`] the axis is the pen's tilt azimuth, so a
+    /// [`ModSource::Tilt`] mapping onto this is the pencil — lean the pen and the
+    /// contact patch draws out along the lean, exactly as a real conical tip's does,
+    /// which is also why the mapping is a reciprocal (a cone leaning at `θ` contacts
+    /// over `1/cos θ`) rather than a straight ramp. Held there it is a chisel nib, off
+    /// a round tip and with no stamp asset at all.
+    ///
+    /// The renderer never stretches the *mask*: a swept integral of a stretched
+    /// footprint is the unstretched one read at another angle, over another travel,
+    /// with a factor on the result (§6.6), so the prefix-τ volume the brush already
+    /// binds is the volume this reads. What it does cost is footprint area — the tip
+    /// reaches `s` times as far along its axis, so the tiles a segment touches, and
+    /// the dynamics loop's dispatch over them, grow with it. That is what
+    /// [`MAX_ELONGATION`](Self::MAX_ELONGATION) bounds.
+    #[serde(default)]
+    pub stretch: f32,
 }
 
 impl Default for BrushParams {
@@ -568,6 +602,7 @@ impl Default for BrushParams {
             end_taper_length: 0.0,
             modulation: Modulations::PRESSURE_SIZE,
             tooth: 0.0,
+            stretch: 0.0,
         }
     }
 }
@@ -590,6 +625,47 @@ impl BrushParams {
     pub fn tapers(&self) -> bool {
         let (start, end) = self.taper_px();
         start > 0.0 || end > 0.0
+    }
+
+    /// The furthest the footprint may be drawn out along its facing axis — what
+    /// [`elongation`](Self::elongation) saturates at, and so the factor by which the
+    /// worst-case tip outgrows its own radius.
+    ///
+    /// A bound on *area*, which is why there is one at all: every tile the stretched
+    /// tip reaches is a tile the stroke is rasterized into and the dynamics loop
+    /// dispatches over, so `s` prices the stroke roughly linearly. Eight is already a
+    /// pen laid almost flat; past it the mark stops reading as a wider stroke and
+    /// starts reading as a smear the length of the tip.
+    pub const MAX_ELONGATION: f32 = 8.0;
+
+    /// [`stretch`](Self::stretch) as the factor the footprint is drawn out by along
+    /// the facing axis: `s = 1/(1 − stretch)`, clamped to
+    /// [`MAX_ELONGATION`](Self::MAX_ELONGATION).
+    ///
+    /// **Exactly 1 at `stretch = 0`**, which is the whole reason the knob is quoted as
+    /// the reciprocal's argument rather than as `s` itself: a brush that never heard of
+    /// stretch — and one whose modulation is sitting at a zero floor because the pen is
+    /// upright or there is no pen — takes the renderer's identity path bit for bit.
+    ///
+    /// Takes the modulated knob rather than reading [`stretch`](Self::stretch), because
+    /// what a [`Modulation`] scales is the knob and not the factor: scaling `s` towards
+    /// 0 would *shrink* the tip across its axis at a low tilt, where scaling the knob
+    /// walks `s` back to 1 and leaves the shape alone.
+    ///
+    /// `min`-then-`max` rather than `clamp`, for [`clamp01`]'s reason and with more
+    /// riding on it: `clamp` returns the NaN where these return the other operand, and
+    /// the NaN would reach a lane the shaders divide by.
+    #[allow(clippy::manual_clamp)]
+    pub fn elongation(stretch: f32) -> f32 {
+        // Bounded before the divide rather than clamped after it, so a knob past 1 —
+        // or a negative one, which is not a squash but no stretch at all — lands on a
+        // real factor instead of on an infinity or an inside-out tip.
+        //
+        // `min` first and `max` second, and that order is the NaN policy: `f32::min`
+        // and `f32::max` return the non-NaN operand (the argument at
+        // [`clamp01`]), so this way a NaN knob falls out as the *identity* and the
+        // other way it would fall out as the widest footprint the brush can ask for.
+        1.0 / (1.0 - stretch).min(1.0).max(1.0 / Self::MAX_ELONGATION)
     }
 }
 

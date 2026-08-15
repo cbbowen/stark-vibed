@@ -314,7 +314,14 @@ pub(super) fn segment_fits_region(b: &BrushParams, tol: crate::path::FlattenTole
     // The tip's reach rather than its radius, for [`coverage_bounds`]' reason: a
     // stamp that fills its mask's corners occupies a `√2`-wider box, and this is the
     // bound that decides whether the loop may draw the brush at all.
-    let extent = length + 2.0 * (radius * tip_reach(&b.shape) + TILE_APRON as f32);
+    //
+    // Drawn out along its facing axis by the brush's **own** elongation and not by any
+    // one segment's (§6.6). A modulation can only scale the knob down
+    // ([`Modulation`](crate::document::Modulation)), so the brush's value bounds every
+    // segment's — which is what this whole function is: a bound taken against
+    // `rec.brush` that has to stay a bound however the pen drives it.
+    let stretch = BrushParams::elongation(b.stretch);
+    let extent = length + 2.0 * (radius * tip_reach(&b.shape) * stretch + TILE_APRON as f32);
     let worst = (extent / TILE_SIZE as f32).ceil().max(0.0) as u32 * TILE_SIZE + TILE_TEX;
     worst <= MAX_REGION_DIM
 }
@@ -399,7 +406,7 @@ pub(super) struct RegionRect {
 #[cfg(test)]
 mod tests {
     use super::super::budget::flatten_tolerance;
-    use super::super::segments::Paint;
+    use super::super::segments::{Paint, Stretch};
     use super::*;
 
     // --- region measurement ----------------------------------------------
@@ -430,6 +437,9 @@ mod tests {
             reach: radius,
             length,
             orient: 0.0,
+            // An unstretched tip, for the reason the ramp is zero: a footprint drawn
+            // out along an axis is a second variable in every box these combine.
+            stretch: Stretch::NONE,
             dist: 0.0,
         }
     }

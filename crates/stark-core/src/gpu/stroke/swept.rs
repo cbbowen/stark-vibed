@@ -273,6 +273,14 @@ impl StrokeRenderer {
                     geom: [sweep.frame, sweep.length, sweep.ramp],
                     extra: [sweep.orient, sweep.dist, sweep.curvature, paint.add],
                     tooth: paint.tooth,
+                    // The solved stretch map (§6.6). Unscaled by the frame for the
+                    // ramp's reason: it acts on brush-local coordinates, which are
+                    // already in the frame's units whatever the frame is.
+                    stretch: [
+                        sweep.stretch.travel,
+                        sweep.stretch.shear,
+                        sweep.stretch.lateral,
+                    ],
                 }
             }));
             runs.push(from..instances.len() as u32);

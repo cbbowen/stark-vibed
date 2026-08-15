@@ -117,7 +117,16 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // The tightest arc this tip may be swept along (§6.2). Both the
     // flattener and the segment generator get it from here, so an edge too tight to
     // sweep as an arc is priced as a chord as well as drawn as one.
-    tol.max_arc_curvature = MAX_TIP_TURN / b.radius.max(0.5);
+    //
+    // Against the tip's **stretched** reach, not its radius (§6.6). Every reason the
+    // cap exists is about the footprint rather than about the number that names it: the
+    // swept sector stays a simple polygon only while the inner rim clears the centre of
+    // curvature, and the reservoir's crescent seams are a misplacement measured across
+    // the tip. A footprint drawn out `s` times reaches `s` times as far, so it may bend
+    // `s` times less. The brush's own elongation and not a segment's, for the reason
+    // every bound here is stated against `b`: a modulation only ever scales the knob
+    // down, so this one bounds them all.
+    tol.max_arc_curvature = MAX_TIP_TURN / (b.radius * BrushParams::elongation(b.stretch)).max(0.5);
     // **`drain` is deliberately not bought here.** A `0.02 / drain` px cap per segment
     // dominates everything else (at `drain = 0.02`, one segment per pixel), and it buys
     // nothing: the falloff is not a per-segment constant, since both paths evaluate it

@@ -80,8 +80,18 @@ fn vs_main(
     // attribute rather than a lane of `extra`, because `extra` is full and a
     // five-float vector would be three unused lanes to carry one number.
     @location(4) tooth: f32,
+    // The tip drawn out along its facing axis (§6.6): the travel scale, the shear and
+    // the lateral scale that carry a point of the reference travel frame into the
+    // frame the prefix-τ volume is read in (`stamp_common::stretch_look`).
+    // `(1, 0, 1)` — the identity, and exactly so — on every brush that does not stretch.
+    //
+    // Three lanes and not one knob, because what the fragment needs is the *solved*
+    // map: the angle and the elongation cost a `sin_cos`, a normalize and an `atan2`
+    // to turn into it, and this is per segment where that would be per texel in the
+    // dynamics loop beside it. The host solves it once (`segments::Stretch::solve`).
+    @location(5) stretch: vec3<f32>,
 ) -> VsOut {
-    return sweep_vertex(vi, start, dir, geom, extra, tooth);
+    return sweep_vertex(vi, start, dir, geom, extra, tooth, stretch);
 }
 
 @fragment

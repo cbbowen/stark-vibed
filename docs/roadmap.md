@@ -41,7 +41,7 @@ Status lives here and nowhere else.
 | — | Filter layers (§21) | done — the architecture and the color filter; the rest of the kinds (§21.9) remain |
 | — | Drag-and-hold drawing assist (§6.9) | done — line + ellipse; the shape-assist half of §18.1.3 |
 | — | Stroke smoothing — the towed tip (§6.11) | done — the tow, the per-brush amount, the string overlay; the pursuit-mode soft rope stays in reserve |
-| — | Brush parameter mapping (§6.2, §18.1.4) | done — pressure/tilt → size/flow/lift/deposit/bleed; more sources and targets are variants away |
+| — | Brush parameter mapping (§6.2, §18.1.4) | done — pressure/tilt → size/flow/stretch/lift/deposit/bleed; more sources and targets are variants away |
 | — | Modifier drags — scrubby zoom, Size/Flow (§18.1.9) | done — with the size ring; a flow readout is not |
 | 14 | Mutable medium — horizontal flux (§14 open / §6.2) | **not started** |
 
@@ -289,7 +289,8 @@ It is what makes a brush feel *authored* rather than configured — and what mak
 a brush **library** worth shipping, which is the thing users actually shop for.
 (The library's skeleton exists: named per-user presets persist in `localStorage`
 and apply from the Brush panel, `stark-ui/src/presets.rs`, where the shipped
-Pencil now maps tilt → size and pressure → flow; shape import/persistence is
+Pencil now maps tilt → stretch and pressure → flow — leaning the pen draws the
+tip out along the lean rather than scaling it up, §6.6; shape import/persistence is
 done, §6.6; §18.1.8 puts ten of them under the number keys; and every preset
 shows the stroke it makes, rendered offscreen by a shared engine, §11. Preset
 import/export does not.)

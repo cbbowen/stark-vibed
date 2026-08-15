@@ -299,10 +299,16 @@ fn test_stroke(view: &ViewTransform) -> Vec<InputSample> {
                     (t * std::f32::consts::TAU).sin() * swing,
                 ),
                 pressure: (t * std::f32::consts::PI).sin().clamp(0.08, 1.0),
-                // Lean along the travel, growing over the stroke, so
-                // tilt-driven settings read (the pencil widens, the knife lays
-                // on more and more).
-                tilt: Vec2::new(0.65 * t, 0.0),
+                // Lean **across** the run, growing over the stroke, so tilt-driven
+                // settings read. Across and not along, because the axis a lean
+                // aims is now anisotropic (§6.6): a pen leaned along its own
+                // travel draws its tip out *forwards*, which lays more paint
+                // without widening the mark and would show a pencil doing
+                // nothing visible. Held at one azimuth while the S turns under
+                // it, so one preview shows both readings — broad where the
+                // stroke runs across the lean, dark and fine where it runs
+                // along it, which is the whole of what the axis does.
+                tilt: Vec2::new(0.0, 0.65 * t),
                 time: (t * 0.7) as f64,
             }
         })

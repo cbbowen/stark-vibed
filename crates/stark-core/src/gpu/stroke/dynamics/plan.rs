@@ -22,7 +22,7 @@ use crate::geom::Vec2;
 
 use super::super::budget::{footprint_cell, lambda};
 use super::super::region::{coverage_bounds, segment_end};
-use super::super::segments::{BleedFire, Segment, Sweep};
+use super::super::segments::{BleedFire, Segment, Stretch, Sweep};
 use super::bleed::{BLEED_TRAVEL_QUANTUM, MAX_BLEED_FIRES_PER_SEGMENT, bleed_stencil};
 // The `Stamp` uniform, generated from `dynamics.wesl`'s own declaration at build
 // time (`stark-shaders/build/mirror.rs`) — lanes, offsets, and the documentation of
@@ -232,6 +232,17 @@ struct Slot {
     /// [`Default`]'s value, so a slot kind that has never heard of ramps cannot
     /// accidentally acquire one.
     ramp: f32,
+    /// The tip drawn out along its facing axis (§6.6), solved into the map that
+    /// carries a point of the reference travel frame into the frame the prefix-τ
+    /// volume and the bake rows are indexed in
+    /// ([`Stretch`](super::super::segments::Stretch)).
+    ///
+    /// The identity `(1, 0, 1)` for every brush that does not stretch — and, like
+    /// [`frame_scale`](Self::frame_scale), that is a triple of *scales* and not of
+    /// zeroes: a zeroed lane is not "no stretch" but a tip of no width and infinite
+    /// gain. [`Stretch::NONE`](super::super::segments::Stretch::NONE) states it, so
+    /// neither this default nor the shader's neutral value is written twice.
+    stretch: Stretch,
 }
 
 impl Default for Slot {
@@ -271,6 +282,7 @@ impl Default for Slot {
             cell: 1.0,
             cell_anchor: Vec2::ZERO,
             ramp: 0.0,
+            stretch: Stretch::NONE,
         }
     }
 }
@@ -316,6 +328,12 @@ impl Slot {
             ],
             j: self.resid,
             k: [self.cell, self.cell_anchor.x, self.cell_anchor.y, self.ramp],
+            l: [
+                self.stretch.travel,
+                self.stretch.shear,
+                self.stretch.lateral,
+                0.0,
+            ],
         }
     }
 }
@@ -679,6 +697,7 @@ pub(super) fn dynamics_plan(
                         lambda_deposit: lambda(paint.deposit),
                         rect_origin: rect.origin,
                         orient: sw.orient,
+                        stretch: sw.stretch,
                         drain: b.drain,
                         // The `add` source rate is passed through **unscaled**, exactly
                         // as `stamp.wesl` takes it. A gain here would make the same
@@ -747,6 +766,7 @@ pub(super) fn dynamics_plan(
                         frame_scale: w.frame / w.radius,
                         rect_origin: rect.origin,
                         orient: w.orient,
+                        stretch: w.stretch,
                         // The window's own curvature, so the relaxed band follows the
                         // paint rather than cutting the corner off it (`bleed_fires`).
                         curvature: w.curvature,
@@ -795,6 +815,7 @@ pub(super) fn dynamics_plan(
                         lambda_deposit: lambda(paint.deposit),
                         rect_origin: rect.origin,
                         orient: sw.orient,
+                        stretch: sw.stretch,
                         drain: b.drain,
                         // The last segment's tooth: the settle delivers what the pass
                         // still owed, and it owes it through the same ground the pass
@@ -971,6 +992,11 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<BleedFire> {
                     // travel in — and what `bleed_stencil` is calibrated against.
                     length: bq,
                     orient: s.orient,
+                    // The window is that segment's footprint relaxing, so it is the
+                    // same footprint — drawn out along the same axis by the same
+                    // amount, which is already folded into the `orient` beside it
+                    // (§6.6). The reach it inherits above was measured with it.
+                    stretch: s.stretch,
                     dist: s.dist + s.length - back,
                 },
             });
@@ -1085,8 +1111,8 @@ mod tests {
     use crate::geom::Vec2;
     use crate::gpu::stroke::StrokeSpans;
     use crate::gpu::stroke::budget::flatten_tolerance;
-    use crate::gpu::stroke::segments::Paint;
     use crate::gpu::stroke::segments::generate_segments_in;
+    use crate::gpu::stroke::segments::{Paint, Stretch};
 
     /// A straight sweep of `length` from `start` along `dir`, at arc length `dist`.
     fn sweep(start: Vec2, dir: Vec2, length: f32, radius: f32, dist: f32) -> Sweep {
@@ -1104,6 +1130,8 @@ mod tests {
             reach: radius,
             length,
             orient: 0.0,
+            // An unstretched tip — the plan builders are being measured here.
+            stretch: Stretch::NONE,
             dist,
         }
     }
@@ -1171,6 +1199,12 @@ mod tests {
             cell: 40.0,
             cell_anchor: Vec2::new(41.0, 42.0),
             ramp: 44.0,
+            stretch: Stretch {
+                travel: 45.0,
+                shear: 46.0,
+                lateral: 47.0,
+                turns: 0.0,
+            },
         }
         .pack();
 
@@ -1217,16 +1251,22 @@ mod tests {
             [40.0, 41.0, 42.0, 44.0],
             "k: the footprint cell + its canvas anchor, and the radius ramp (§6.2)"
         );
+        assert_eq!(
+            packed.l,
+            [45.0, 46.0, 47.0, 0.0],
+            "l: the tip's stretch along its facing axis (§6.6)"
+        );
     }
 
-    /// The neutral slot is neutral *in the shader's terms*, which for three fields is
+    /// The neutral slot is neutral *in the shader's terms*, which for five fields is
     /// not zero. Each of them is a **scale**, and a zeroed scale does not say "none of
     /// this" but "none of the thing it multiplies": a `bearing` of 0 books the tool's
     /// half of every transfer against no ground at all — infinite tooth, not absent
     /// tooth; a `cell` of 0 is no deposit grid rather than the exact one; a
-    /// `frame_scale` of 0 is a tip of no width rather than an unpadded volume. A
-    /// derived `Default` would make every slot kind that leaves one alone quietly
-    /// wrong, and this is the list that says which they are.
+    /// `frame_scale` of 0 is a tip of no width rather than an unpadded volume; and a
+    /// zeroed stretch is a tip of no width whose every prefix difference is divided by
+    /// it (§6.6). A derived `Default` would make every slot kind that leaves one alone
+    /// quietly wrong, and this is the list that says which they are.
     #[test]
     fn the_default_slot_is_neutral_rather_than_zeroed() {
         let d = Slot::default().pack();
@@ -1258,6 +1298,11 @@ mod tests {
             "lane h beyond the bearing"
         );
         assert_eq!([d.k[1], d.k[2], d.k[3]], [0.0; 3], "lane k beyond the cell");
+        assert_eq!(
+            d.l,
+            [1.0, 0.0, 1.0, 0.0],
+            "the default stretch must be the identity map, not zeroes"
+        );
     }
 
     /// **The cell grid is anchored to the canvas, not to the region** (§6.4). Where a

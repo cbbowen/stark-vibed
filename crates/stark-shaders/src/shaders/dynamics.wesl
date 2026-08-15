@@ -75,7 +75,10 @@
 // is fixed CPU-side per stroke; every dispatch is a pure function of what it reads.
 // Replay and live == committed hold.
 
-import package::stamp_common::{prefix_at, ramp_apply, Sweep, sweep_at, sweep_tangent};
+import package::stamp_common::{
+    prefix_at, ramp_apply, stretch_gain, stretch_look, stretch_unlook, Sweep, sweep_at,
+    sweep_tangent,
+};
 import package::lib::noise::{color_jitter};
 import package::lib::paint_common::{blend_latent, ground_at, rise_ahead, tooth_gate, PAINT_EPS};
 import package::lib::sample::{load1, bilerp_taps, bilerp_mix};
@@ -180,6 +183,21 @@ struct Stamp {
     //    lane is a tip that holds still, which is what a bleed window and a settle
     //    both are, and what every untapered stroke at constant pressure is.
     k: vec4<f32>,
+    // l: the tip **drawn out along its facing axis** (§6.6), solved into the map that
+    //    carries a point of the reference travel frame into the frame the prefix-τ
+    //    volume and the bake rows are indexed in: the travel scale .x, the shear .y,
+    //    and the lateral scale .z (`stamp_common::stretch_look`). `.w` unused.
+    //
+    //    `(1, 0, 1)` — the identity, and exactly so in floats — on every brush that
+    //    does not stretch, which is what keeps this whole loop bit-for-bit what it was.
+    //    Its neutral value is that triple and not zeroes, like `e.w` and `k.x` beside
+    //    it: a zeroed lane is not "no stretch" but a tip of no width and infinite gain.
+    //
+    //    A lane of its own rather than the three floats scattered into `f.w`, `j.w`
+    //    and a third home. They are one solved map and a reader needs all three or
+    //    none of them, where a lane spent to say so costs 16 bytes on a uniform the
+    //    host writes once per slot.
+    l: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> st: Stamp;
@@ -266,6 +284,16 @@ fn bleed_reach() -> i32 { return i32(st.e.z); }
 // rotation `bake` and `exchange` take out of the travel frame.
 fn under_origin() -> vec2<i32> { return vec2<i32>(st.d.xy); }
 fn orientation() -> f32 { return st.d.z; }
+
+// The tip's stretch along its facing axis (see `Stamp::l`). `vec3(1, 0, 1)` — the
+// identity — for every brush that does not ask for one.
+//
+// The rotation it implies is **not** here, and that is the point of the whole
+// arrangement: a stretch changes the direction the sweep is integrated along, and
+// `orientation()` above already carries the change, because the volume is indexed by
+// exactly that angle. So a stretched tip is another slice of the same volume, and
+// nothing in this file has a second texture to bind or a second angle to turn by.
+fn stretch() -> vec3<f32> { return st.l.xyz; }
 
 // The `drain` falloff per canvas px, and the arc length the segment starts at.
 fn drain_rate() -> f32 { return st.d.w; }
@@ -815,6 +843,40 @@ fn segment_frame(rt: vec2<i32>) -> Sweep {
     return ramp_apply(sw, radius_ramp());
 }
 
+// Where that frame lands in the one the prefix-τ volume and the bake rows are indexed
+// in, once the tip is drawn out along its facing axis (§6.6, `stretch_look`): the
+// travel coordinate at the slot's end .x, at its start .y, and the lateral offset .z.
+//
+// **The frame above stays the tip's own and this is layered on top**, for the reason
+// the fast path's `swept_depth` gives: everything else read out of a frame here — the
+// arc a texel sits at, its lateral offset for the color noise, the tip in force, the
+// canvas position a reservoir texel is dragged to — is a property of where the *tip*
+// went, and only the lookup into the mask is re-coordinated.
+fn segment_look(sw: Sweep) -> vec3<f32> {
+    return stretch_look(sw, stretch());
+}
+
+// This texel's swept exposure over the slot, **in the lookup frame's measure** — the
+// prefix-τ difference across its own stretch of travel, clamped at zero because a
+// difference of two nearly equal prefixes is rounding out past the footprint.
+//
+// One function because four callers want exactly this number and would each have had
+// to apply the stretch: `deposit`, its coarse hoist, the bleed flux's neighbour tap,
+// and `snapshot` by way of `outside_sweep`. A stretch applied in three places out of
+// four is a footprint whose flux is antisymmetric with itself and not with its
+// neighbour — the one property the bleed pair's conservation rests on.
+//
+// `stretch_gain` is deliberately *not* folded in: this measure is the one the bake was
+// integrated in, so the ratios `deposit` takes against it cancel rather than square.
+// Its callers apply the gain where they want the tip's own measure instead.
+fn swept_pre(sw: Sweep) -> f32 {
+    let l = segment_look(sw);
+    return max(
+        prefix_at(l.x, l.z, orientation()) - prefix_at(l.y, l.z, orientation()),
+        0.0,
+    );
+}
+
 // Whether a region texel is provably outside the segment's sweep — the span
 // x ∈ (-1, lr+1), |y| < 1 in the travel frame — so its exposure is exactly 0 and
 // `deposit` leaves it untouched. The dispatch rect is the sweep's AABB, so at a
@@ -829,7 +891,12 @@ fn outside_sweep(sw: Sweep) -> bool {
     // way the difference is exactly 0. The lateral test comes first because it is
     // also what rejects a texel near a tight arc's centre of curvature, where the
     // travel coordinate has no meaning to test.
-    return abs(sw.local.y) >= 1.0 || sw.local.x <= -1.0 || sw.local.x - sw.lr >= 1.0;
+    //
+    // Tested in the **lookup** frame, which is where those rims are: a stretched tip
+    // paints out past the rim its own radius names, and a rejection keyed on the
+    // reference frame would cut the mark off along a straight line exactly there.
+    let l = segment_look(sw);
+    return abs(l.z) >= 1.0 || l.x <= -1.0 || l.y >= 1.0;
 }
 
 // One footprint texel's copy. Factored out because the segment loop runs this from the
@@ -1042,23 +1109,40 @@ fn exchange(
     // the *representation* has to be consistent — the day anything reads the reservoir
     // by something other than the mask's own τ, a tool a third too wide stops being
     // invisible, and nothing about that day would point back here.
+    //
+    // **And by the tip's stretch** (§6.6), which is the third thing in the same
+    // sentence: a mask texel on a tip drawn out along its facing axis stands over more
+    // canvas, so the track it crosses is that many fewer of its *own* widths. The
+    // factor is `travel` and not `1/travel` for the reason the canvas side's is the
+    // reciprocal — the two are opposite sides of one substitution, and it is what makes
+    // the books balance: a stretch multiplies the canvas's total exposure by `s` and
+    // the area each reservoir texel answers for by the same `s`.
     let e_step = tau_of(coverage_at(local * frame_scale()))
-        * travel_radii() * frame_scale() * tooth_bearing() / f32(EXCHANGE_STEPS);
+        * travel_radii() * stretch().x * frame_scale() * tooth_bearing()
+        / f32(EXCHANGE_STEPS);
     let ex = exchange_at(e_step);
     let rdim = vec2<f32>(textureDimensions(region_color));
-    // The tool's shape frame is the travel frame turned by the shape's orientation
-    // (§6.6) — the same rotation `bake` applies to read the reservoir.
+    // Where this reservoir texel rides, in the tip's own reference frame — the two
+    // steps `bake` takes to get here, run backwards. The reservoir is stored in the
+    // **shape** frame, so turn it by the orientation into the frame the sweep is looked
+    // up in (`bake`'s own rotation, inverted), then take the stretch back out of that
+    // (`stretch_unlook`) to land in the frame the travel tangent below spans. Both are
+    // per-texel constants, so they are lifted out of the sub-step loop that used to
+    // turn the tangent instead.
     let theta = orientation() * TAU;
     let cs = cos(theta);
     let sn = sin(theta);
+    let seat = stretch_unlook(
+        vec2<f32>(local.x * cs - local.y * sn, local.x * sn + local.y * cs),
+        stretch(),
+    );
 
     for (var i = 0u; i < EXCHANGE_STEPS; i = i + 1u) {
         // Midpoint of this sub-step's stretch of the track.
         let f = (f32(i) + 0.5) / f32(EXCHANGE_STEPS);
         let tip = tip_at(f);
         let dir = tip.zw;
-        let rot = vec2<f32>(dir.x * cs - dir.y * sn, dir.x * sn + dir.y * cs);
-        let world = tip.xy + (local.x * rot + local.y * vec2<f32>(-rot.y, rot.x)) * frame_radius();
+        let world = tip.xy + (seat.x * dir + seat.y * vec2<f32>(-dir.y, dir.x)) * frame_radius();
         let uv = world / rdim;
 
         // Outside the selection the canvas gives nothing up and the source mints
@@ -1295,6 +1379,10 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let xl = sw.local.x;
     let yl = sw.local.y;
+    // Where those land in the frame the prefix and the bake rows are indexed in, once
+    // the tip's stretch is taken into account (§6.6). The pair above stays the tip's
+    // own — the arc and the noise domain below are measured off it.
+    let lk = segment_look(sw);
 
     // The swept exposure — the brush's coverage integrated as it travels this
     // segment, as a difference of prefix sums (identical to the plain deposit's
@@ -1302,14 +1390,12 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // exponential rates below compose exactly across the whole stroke.
     //
     // `dpre` is that difference in *this texel's own* measure of travel and `e` is it
-    // in the tip's, which on a curved segment differ by `sw.warp` (see `sweep_at`).
-    // Both are needed: every exchange rate below is per unit tip travel, but the bake
-    // was integrated against the same prefix and its ratios must be taken in the
-    // measure it was integrated in — where the factor cancels rather than squaring.
-    let dpre = max(
-        prefix_at(xl, yl, orientation()) - prefix_at(xl - sw.lr, yl, orientation()),
-        0.0,
-    );
+    // in the tip's, which differ by `sw.warp` on a curved segment (see `sweep_at`) and
+    // by `stretch_gain` on a stretched tip. Both are needed: every exchange rate below
+    // is per unit tip travel, but the bake was integrated against the same prefix and
+    // its ratios must be taken in the measure it was integrated in — where the factors
+    // cancel rather than squaring.
+    let dpre = swept_pre(sw);
     if dpre <= 0.0 {
         return; // outside the swept footprint: the region keeps its value
     }
@@ -1318,7 +1404,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // exact complements of one exposure, so the canvas takes precisely what the tool
     // gives up, and each stays in the form that composes across segment cuts. Scaling
     // the finished shares instead would do neither.
-    let e = dpre * sw.warp * surface_tooth(rt, sw.turn);
+    let e = dpre * sw.warp * stretch_gain(stretch()) * surface_tooth(rt, sw.turn);
     // The selection's coverage here (§6.8). Fully deselected texels are exactly the
     // "keeps its value" case, so they cost nothing.
     let sel = load1(sel_mask, rt).r;
@@ -1337,8 +1423,8 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // exposure-weighted integral of the reservoir over the whole pass, so dividing
     // by the exposure recovers the mean load that pass delivered. Exact for any
     // segment length — no mid-pass sample, no length-dependent error.
-    let d_load = bake_at(bake_load, xl, yl) - bake_at(bake_load, xl - sw.lr, yl);
-    let d_latm = bake_at(bake_latm, xl, yl) - bake_at(bake_latm, xl - sw.lr, yl);
+    let d_load = bake_at(bake_load, lk.x, lk.z) - bake_at(bake_load, lk.y, lk.z);
+    let d_latm = bake_at(bake_latm, lk.x, lk.z) - bake_at(bake_latm, lk.y, lk.z);
     // Divided by the prefix difference in the *same* measure the bake integrated
     // against, not by the tip-travel exposure: these three are means of the load the
     // pass delivered, so the curved sweep's warp cancels between numerator and
@@ -1358,7 +1444,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // same measure — unclamped like the latent, and for the same reason: a residual is
     // signed (`rgb − poly(c)` is negative on all three channels at black, §6.7), so
     // clamping its prefix difference would shear the color it exists to carry.
-    @if(resid) let d_rlm = bake_at(bake_rlm, xl, yl) - bake_at(bake_rlm, xl - sw.lr, yl);
+    @if(resid) let d_rlm = bake_at(bake_rlm, lk.x, lk.z) - bake_at(bake_rlm, lk.y, lk.z);
     @if(resid) let tool_res = d_rlm.xyz * inv_pre / max(tool_m, PAINT_EPS);
 
     // The canvas as this segment found it — or, when the brush bleeds, that state
@@ -1420,12 +1506,10 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let swn = segment_frame(rtn);
                 var w_n = 0.0;
                 if !outside_sweep(swn) {
-                    let dpn = max(
-                        prefix_at(swn.local.x, swn.local.y, orientation())
-                            - prefix_at(swn.local.x - swn.lr, swn.local.y, orientation()),
-                        0.0,
-                    );
-                    w_n = 1.0 - exp(-kb * dpn * swn.warp);
+                    // The same exposure its own thread computes, through the same
+                    // function — including the stretch, without which a pair would
+                    // disagree about its own flux (`swept_pre`).
+                    w_n = 1.0 - exp(-kb * swept_pre(swn) * swn.warp * stretch_gain(stretch()));
                 }
                 let seln = load1(sel_mask, rtn).r;
                 let c = share * min(w_t, w_n) * seln;
@@ -1647,28 +1731,31 @@ fn cell_hoist(@builtin(global_invocation_id) gid: vec3<u32>) {
     var lat = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     @if(resid) var res = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     if !outside_sweep(sw) {
-        let xl = sw.local.x;
-        let yl = sw.local.y;
+        let lk = segment_look(sw);
         // The swept exposure and the baked reservoir means, exactly as `deposit`
         // takes them — same taps, same measure, same clamps — at one position.
-        let dpre = max(
-            prefix_at(xl, yl, orientation()) - prefix_at(xl - sw.lr, yl, orientation()),
-            0.0,
-        );
+        let dpre = swept_pre(sw);
         if dpre > 0.0 {
-            let d_load = bake_at(bake_load, xl, yl) - bake_at(bake_load, xl - sw.lr, yl);
-            let d_latm = bake_at(bake_latm, xl, yl) - bake_at(bake_latm, xl - sw.lr, yl);
+            let d_load = bake_at(bake_load, lk.x, lk.z) - bake_at(bake_load, lk.y, lk.z);
+            let d_latm = bake_at(bake_latm, lk.x, lk.z) - bake_at(bake_latm, lk.y, lk.z);
+            // The two measure conversions `deposit` applies to the exposure and to
+            // nothing else, taken together — the warp of a curved sweep and the gain of
+            // a stretched tip. **Applied to the loads as well as to `e`**, which is
+            // what keeps the ratio `deposit_coarse` takes the same ratio `deposit`
+            // takes: there the loads are divided by a bare `dpre` that carries
+            // neither factor, so here they must carry both and cancel.
+            let wg = sw.warp * stretch_gain(stretch());
             // Everything below the exposure is stored **premultiplied by it** — the
             // weight the interpolation has to carry, so an unexposed neighbour costs
             // a lerp weight and not a value. `deposit_coarse` divides them back out
             // with the exact kernel's own expressions, so a texel at a cell centre
             // recovers precisely what `deposit` would have computed there.
-            let e = dpre * sw.warp;
-            let load = sw.warp * max(d_load.xy, vec2<f32>(0.0, 0.0));
+            let e = dpre * wg;
+            let load = wg * max(d_load.xy, vec2<f32>(0.0, 0.0));
             tool = vec4<f32>(e, load.x, load.y, 0.0);
-            lat = vec4<f32>(d_latm.xyz * sw.warp, 0.0);
-            @if(resid) let d_rlm = bake_at(bake_rlm, xl, yl) - bake_at(bake_rlm, xl - sw.lr, yl);
-            @if(resid) res = vec4<f32>(d_rlm.xyz * sw.warp, 0.0);
+            lat = vec4<f32>(d_latm.xyz * wg, 0.0);
+            @if(resid) let d_rlm = bake_at(bake_rlm, lk.x, lk.z) - bake_at(bake_rlm, lk.y, lk.z);
+            @if(resid) res = vec4<f32>(d_rlm.xyz * wg, 0.0);
         }
     }
     textureStore(cell_tool_w, ci, tool);
@@ -1934,8 +2021,13 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     if outside_sweep(sw) {
         return;
     }
-    let xl = sw.local.x;
-    let yl = sw.local.y;
+    // The settle's whole geometry is the footprint's, so unlike the deposit it works
+    // in the lookup frame throughout: the row it walks is a bake row, and the point it
+    // walks to is where the stretch put it (§6.6). The slot carries no travel, so the
+    // range's two ends coincide and `.x` is the point.
+    let lk = segment_look(sw);
+    let xl = lk.x;
+    let yl = lk.z;
 
     let total = prefix_at(1.0, yl, orientation());
     let owed = prefix_at(xl, yl, orientation());
@@ -1948,7 +2040,13 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The soft `min` of the two bounds (see above), taken as `lo·(1 + (lo/hi)ᵖ)^(−1/p)`
     // rather than as `(owed⁻ᵖ + received⁻ᵖ)^(−1/p)`: the same value, with the reciprocal
     // of the *small* bound — which vanishes at both rims of the footprint — never formed.
-    let e = lo * pow(1.0 + pow(lo / hi, SETTLE_BOUND_SHARPNESS), -1.0 / SETTLE_BOUND_SHARPNESS);
+    //
+    // Into the tip's own measure by the same gain the deposit applies, because
+    // `exchange_at` below meets it with the raw rates: `owed` and `received` are both
+    // readings of a prefix in the lookup frame, and the soft `min` is homogeneous of
+    // degree one in the pair, so one factor on the result is the whole conversion.
+    let e = lo * pow(1.0 + pow(lo / hi, SETTLE_BOUND_SHARPNESS), -1.0 / SETTLE_BOUND_SHARPNESS)
+        * stretch_gain(stretch());
     let sel = load1(sel_mask, rt).r;
     if sel <= 0.0 {
         return;
@@ -2007,8 +2105,17 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     // cell to the point it serves, so no single baked integral carries it. The
     // settle runs once per stroke, which is what makes O(BAKE_RES) taps per texel
     // the right trade here where the per-segment deposit could never afford it.
-    let kd = deposit_rate();
-    let kl = lift_rate();
+    //
+    // **The rates carry the stretch here, where `e` above carried it** — and it is the
+    // same conversion said the other way round. Everything the walk meets them with
+    // (`owed`, the column exposures `d_e`, the running prefix `pr`, the loads `d_h`)
+    // is a reading of the bake in the *lookup* frame, so rather than gaining half a
+    // dozen quantities one by one, gain the two rates that multiply all of them. That
+    // also keeps `share` below a ratio of two shares in one measure. Exactly the
+    // unstretched rates when there is no stretch.
+    let g = stretch_gain(stretch());
+    let kd = deposit_rate() * g;
+    let kl = lift_rate() * g;
     let bdimf = vec2<f32>(textureDimensions(bake_load));
     // The bake row pair this texel sits between — `bake_at`'s own addressing, kept
     // linear through the differencing below (a difference of blends is a blend of

@@ -109,6 +109,9 @@ struct VsOut {
     // .x, the measure conversion a curved sweep needs .y (`Sweep::warp`), and how far
     // the tip's heading has turned to reach it .z (`Sweep::turn`).
     @location(7) frame: vec3<f32>,
+    // The tip's stretch along its facing axis, forwarded verbatim (`stretch_look`).
+    // Flat: a per-segment constant, like the instance lanes above.
+    @location(8) @interpolate(flat) stretch: vec3<f32>,
 }
 
 struct FsOut {
@@ -165,6 +168,84 @@ struct Sweep {
     // travel axis does *not* convert through this one — `local.x` is in reference
     // units and pairs with the reference radius (`stroke_arc`).
     radius: f32,
+}
+
+// ---- the stretched tip (§6.6) ----------------------------------------------------
+//
+// A brush may draw its footprint **out along the axis it faces** — what makes a leaned
+// pencil lay a broad mark and an upright one a fine line. Stretching by `s` along a
+// canvas axis `û` is the linear map `A = R_û·diag(s, 1)·R_ûᵀ` on the footprint, and
+// substituting `q = A⁻¹p` into the swept integral turns it into an integral of the
+// **unstretched** footprint: along `v̂ = normalize(A⁻¹t̂)` rather than the travel `t̂`,
+// over a travel `m = |A⁻¹t̂|` times as long, with `1/m` on the result.
+//
+// Every one of those the existing prefix-τ volume already answers, which is why there
+// is no second texture here and no rotation in these functions. The *direction* is a
+// slice of the volume's own orientation axis, and the host has already folded the
+// difference into the orientation it sends (`segments::Stretch`); what is left is a
+// change of coordinates on the way into the lookup, and it is upper triangular, so
+// three numbers state it:
+//
+//   .x  `m`      — the travel scale, and the divisor a depth read in the lookup frame
+//                  is worth in the tip's own
+//   .y  shear    — how much of the point's lateral offset the lookup's travel
+//                  coordinate picks up. Zero unless the facing axis is oblique to the
+//                  travel, and it is what makes an obliquely stretched tip's leading
+//                  edge lean rather than stay square
+//   .z  lateral  — what the point's lateral offset is scaled by. **Below 1 for a real
+//                  stretch**, so the mask's `|y| ≤ 1` stands for a wider band of
+//                  canvas — which is the stroke getting fatter
+//
+// `vec3(1, 0, 1)` is the tip as its own mask draws it, and every expression below is
+// an identity in floats there rather than merely close to one: a brush that never
+// heard of stretch renders bit for bit what it always did.
+
+// Where a point of the tip's reference travel frame lands in the frame the prefix-τ
+// volume is read in: the travel coordinate where the segment **ends** .x, where it
+// **starts** .y, and the lateral offset .z. A prefix difference across `.xy` at `.z`
+// is this point's swept depth, in that frame's measure.
+fn stretch_look(sw: Sweep, st: vec3<f32>) -> vec3<f32> {
+    let x1 = st.x * sw.local.x + st.y * sw.local.y;
+    return vec3<f32>(x1, x1 - st.x * sw.lr, st.z * sw.local.y);
+}
+
+// The same map run backwards: from a point of the lookup frame to where it rides in
+// the tip's reference travel frame. What the dynamics loop's `exchange` needs, because
+// it walks the other way — from a reservoir texel, which lives in the mask's own grid,
+// out to the canvas the tip is dragging it over.
+//
+// The inverse of an upper triangular map is upper triangular, so this is three
+// reciprocals and no solve, and it is the identity on `vec3(1, 0, 1)` like everything
+// else here.
+fn stretch_unlook(look: vec2<f32>, st: vec3<f32>) -> vec2<f32> {
+    let y = look.y / st.z;
+    return vec2<f32>((look.x - st.y * y) / st.x, y);
+}
+
+// What a unit of depth read in that frame is worth in the tip's own — the Jacobian
+// `1/m` the substitution leaves behind. It is the whole of why an elongated tip lays
+// more paint: over a full pass the prefix saturates at the row total whatever the
+// travel was scaled to, so the deposit comes out `s` times what the unstretched tip
+// would lay, which is exactly the extra mask the stretch dragged over the point.
+fn stretch_gain(st: vec3<f32>) -> f32 {
+    return 1.0 / st.x;
+}
+
+// The box in the reference travel frame that holds everything the mask can paint, as a
+// multiple of the frame radius: travel .x, lateral .y.
+//
+// A point takes paint only where the map above lands it inside the mask's own
+// `|x| ≤ 1, |y| ≤ 1`, so `|y| ≤ 1/lateral` across and `|x| ≤ (1 + |shear|/lateral)/m`
+// along. What needs it is the geometry drawn *for* the footprint — the sweep strip
+// below, and the dynamics loop's rim test — because a stretched tip paints outside the
+// strip an unstretched one would have been given, and a fragment never rasterized is a
+// stroke cut off along a straight line. `segments::Stretch::hull` is this same
+// function on the host, where it bounds the tiles the segment is drawn into.
+//
+// `vec2(1, 1)` exactly when there is no stretch.
+fn stretch_hull(st: vec3<f32>) -> vec2<f32> {
+    let across = 1.0 / st.z;
+    return vec2<f32>((1.0 + abs(st.y) * across) / st.x, across);
 }
 
 // The tip in force a fraction `u` of the way through a ramping segment, as a multiple
@@ -309,6 +390,7 @@ fn sweep_vertex(
     geom: vec3<f32>,  // reference radius, arc length, radius ramp
     extra: vec4<f32>, // orientation (turns ∈ [0,1)), arc length at start, curvature, `add`
     tooth: f32,       // how deep this tip bites into the weave (§6.4)
+    stretch: vec3<f32>, // the tip drawn out along its facing axis (§6.6)
 ) -> VsOut {
     let radius = geom.x;
     let len = geom.y;
@@ -323,6 +405,16 @@ fn sweep_vertex(
     // existing stroke pays a fragment for this.
     let hull = radius * (1.0 + 0.5 * abs(geom.z));
 
+    // ...and at its **stretched** reach on each axis (`stretch_hull`). A tip drawn out
+    // along its facing axis paints outside the strip its radius alone would have been
+    // given, and a fragment that is never rasterized is a stroke cut off along a
+    // straight line — the same failure a shape reaching its own corners caused before
+    // `tip_reach` existed (§6.6). Both factors are exactly 1 with no stretch, so no
+    // existing stroke's strip moves by an ulp.
+    let hf = stretch_hull(stretch);
+    let ha = hull * hf.x; // the travel margin at each end
+    let hl = hull * hf.y; // the lateral rim
+
     let u = f32(vi >> 1u) / f32(SWEEP_SLICES); // 0..1 along the travel
     let side = select(-1.0, 1.0, (vi & 1u) != 0u); // the two lateral rims
 
@@ -332,8 +424,8 @@ fn sweep_vertex(
         // The travel margin is a radius of the *widest* tip at each end, for the
         // same reason the lateral rim is.
         let lr = len / hull;
-        let cx = -1.0 + u * (lr + 2.0);
-        canvas = start + dir * (cx * hull) + perp * (side * hull);
+        let cx = -hf.x + u * (lr + 2.0 * hf.x);
+        canvas = start + dir * (cx * hull) + perp * (side * hl);
     } else {
         let ak = abs(kappa);
         let sk = sign(kappa);
@@ -345,7 +437,10 @@ fn sweep_vertex(
         // denominator should a hull ever reach the centre of curvature — `MAX_TIP_TURN`
         // caps `radius·|curvature|` at a tenth, so this has an order of magnitude in
         // hand even at the largest ramp a segment can carry.
-        let margin = hull / max(abs_r - hull, 1e-6);
+        // Measured with the stretched reaches for the same reason the straight branch
+        // is: the travel margin has to carry the cap past each end, and the angle it
+        // subtends is largest at the inner rim, which the lateral reach sets.
+        let margin = ha / max(abs_r - hl, 1e-6);
         let span = len * ak + 2.0 * margin;
         let delta = -margin + u * span;
         // Circumscribe: a chord of the outer rim would cut inside the true arc and
@@ -353,7 +448,7 @@ fn sweep_vertex(
         // gets the same factor the other way, which only over-covers.
         let half = 0.5 * span / f32(SWEEP_SLICES);
         let c = cos(half);
-        var rho = abs_r - sk * side * hull;
+        var rho = abs_r - sk * side * hl;
         rho = select(rho * c, rho / c, sk * side < 0.0);
         // The same frame `sweep_at` unrolls, run forwards: `ρ sin δ` along the start
         // tangent and `sign(κ)(|R| − ρ cos δ)` across it.
@@ -383,6 +478,7 @@ fn sweep_vertex(
     out.tooth = tooth;
     out.range = vec2<f32>(sw.local.x - sw.lr, sw.local.x);
     out.frame = vec3<f32>(sw.local.y, sw.warp, sw.turn);
+    out.stretch = stretch;
     return out;
 }
 
@@ -583,6 +679,14 @@ fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
 // back to the tip's (see `sweep_at`), and is 1 on a straight sweep.
 fn swept_depth(in: VsOut, sw: Sweep) -> f32 {
     let w = in.extra.x;
-    let depth = prefix_at(sw.local.x, sw.local.y, w) - prefix_at(sw.local.x - sw.lr, sw.local.y, w);
-    return max(depth, 0.0) * sw.warp;
+    // The one place the tip's stretch is applied on this path (§6.6), and deliberately
+    // the last thing done. Everything else the fragment reads out of its frame — the
+    // arc it sits at, the color-noise domain, the tip in force, the ground it is gated
+    // by — is a property of where the *tip* went, and the stretch is a property of the
+    // footprint the tip carries. So the frame stays the tip's own the whole way down
+    // and only the lookup into the mask is re-coordinated, which is also what keeps
+    // `stroke_arc` measuring canvas px rather than the lookup frame's own units.
+    let l = stretch_look(sw, in.stretch);
+    let depth = prefix_at(l.x, l.z, w) - prefix_at(l.y, l.z, w);
+    return max(depth, 0.0) * sw.warp * stretch_gain(in.stretch);
 }

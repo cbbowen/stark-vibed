@@ -203,8 +203,17 @@ impl<'a> history::Centralizer<'a, Action> for Footprint {
 /// scaled by √2 for a square stamp swept at an angle (1.5 covers it), and the
 /// renderer refreshes a `TILE_APRON` of duplicated neighbor pixels past its
 /// marks (the +4 covers that with slack).
+///
+/// **Times the elongation** (§6.6), because a tip drawn out along its facing axis
+/// reaches that much further and the `√2` alone does not cover it. This is a footprint,
+/// so under-reporting it is not a clipped stroke but a §12.6 break — two peers deciding
+/// a pair of strokes commute when the paint says otherwise, and pixels cannot show
+/// which order ran. The brush's own knob rather than any segment's, since a modulation
+/// only ever scales it down; and `elongation` is bounded and NaN-safe, so a malformed
+/// one lands on a real factor here rather than on the infinity that would quietly widen
+/// this to `ALL`.
 fn stroke_pad(brush: &BrushParams) -> f32 {
-    brush.radius * 1.5 + 4.0
+    brush.radius * 1.5 * BrushParams::elongation(brush.stretch) + 4.0
 }
 
 /// The tile-aligned reach of a stroke: everything its render may read or write.
@@ -675,6 +684,66 @@ mod tests {
         assert!(commutes(&clip, &blend));
         assert!(commutes(&clip, &elsewhere));
         assert!(!commutes(&clip, &unclip));
+    }
+
+    /// **A stretched tip's footprint has to grow with it** (§6.6, §12.6).
+    ///
+    /// A brush drawn out along its facing axis reaches `elongation` times as far as its
+    /// radius names, and this is the bound the *renderer* is held to
+    /// (`gpu::stroke::segments::Sweep::reach`, the tip's reach times the same factor).
+    /// Left at the `√2` that covered a square stamp alone, a leaned pencil paints past
+    /// the tiles its action claimed — and unlike a clipped stroke that is not a visible
+    /// bug but a §12.6 one: two peers commute a pair of strokes the paint says overlap,
+    /// and no pixel can show which order ran.
+    ///
+    /// Checked as the inequality rather than against a copy of the expression, so the
+    /// two sides stay free to differ by slack and not by kind.
+    #[test]
+    fn a_stretched_stroke_claims_the_tiles_its_drawn_out_tip_can_reach() {
+        for stretch in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let brush = BrushParams {
+                radius: 40.0,
+                stretch,
+                ..BrushParams::default()
+            };
+            // What the renderer will draw into: the tip's own reach — a stamp may fill
+            // its mask's corners — times how far the stretch draws it out.
+            let painted =
+                brush.radius * std::f32::consts::SQRT_2 * BrushParams::elongation(stretch);
+            assert!(
+                stroke_pad(&brush) >= painted,
+                "stretch {stretch}: the footprint pads {} where the tip paints {painted}",
+                stroke_pad(&brush),
+            );
+        }
+
+        // And the claim actually widens on the log, rather than the pad growing inside
+        // a box that was already tile-aligned to the same rect.
+        let rect = |stretch: f32| {
+            let point = |pos| ControlPoint {
+                pos,
+                pressure: 1.0,
+                tilt: Vec2::ZERO,
+                time: 0.0,
+            };
+            stroke_rect(&StrokeRecord {
+                layer: LayerId(0),
+                brush: BrushParams {
+                    radius: 40.0,
+                    stretch,
+                    ..BrushParams::default()
+                },
+                path: vec![point(Vec2::splat(600.0)), point(Vec2::splat(700.0))],
+                seed: 0,
+            })
+        };
+        let (plain, drawn_out) = (rect(0.0), rect(0.875));
+        assert_ne!(plain, drawn_out, "a stretched tip claimed no more tiles");
+        assert_eq!(
+            plain.union(drawn_out),
+            drawn_out,
+            "the stretched claim must contain the plain one, not merely differ",
+        );
     }
 
     /// A stroke whose box cannot be quantized claims the **whole layer**, never a

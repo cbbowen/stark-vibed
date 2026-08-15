@@ -1041,6 +1041,87 @@ lands in the padding, and the deposit reads the reservoir back through a
 levels either way. It is written correctly because the representation has to be
 consistent, not because a pixel currently depends on it.
 
+**A tip is drawn out along the axis it faces.** Tilting a real pencil does not press a
+bigger circle onto the paper — it rolls the cone over, and the patch in contact
+*elongates along the lean*, growing along one axis and not the other. `stretch` is that
+axis: `BrushParams::stretch` in `[0, 1)` names the elongation `s = 1/(1 − stretch)`, the
+footprint is scaled by `s` along the brush's facing direction and left alone across it,
+and `Modulations::stretch` lets the pen drive it. Pointed at `Tilt` with
+`OrientationSource::Pen` that *is* the pencil — and the same knob held at a value with
+no mapping is a chisel nib, off a plain round tip with no shape asset at all.
+
+The axis is `orientation`'s, not a second direction to set, and that is what makes the
+whole of it free. Stretching by `s` along a canvas axis `û` is the linear map
+`A = R_û·diag(s, 1)·R_ûᵀ` on the footprint, so the deposit is that map's image dragged
+along the travel `t̂`. Substituting `q = A⁻¹p` turns the integral into one of the
+**unstretched** footprint:
+
+```text
+τ(p) = (1/m) · ∫ mask, along v̂ = normalize(A⁻¹t̂), over a travel of m·L
+       where m = |A⁻¹t̂|
+```
+
+— a different direction, a different travel, and a constant. And the prefix-τ volume is
+*indexed by* the direction it is integrated along, so a different direction is a
+different **slice** rather than a different bake. Because `û` is the facing axis, the
+slice always lands somewhere the brush already has:
+
+- `FollowStroke` faces along the tangent, so `û = t̂` and hence `v̂ = t̂`: the relative
+  angle stays 0 and the single unpadded identity layer still serves.
+- A round tip is rotation-invariant — one slice answers every angle.
+- `Pen` on a stamp already reads the padded stack of *every* angle, so a shifted index
+  costs nothing.
+
+An axis independent of the facing one breaks all three at once (a follow-stroke stamp
+would need the padded rotatable bake it never builds), which is why there is no second
+direction to set — the one-number parametrization is the reason the feature is free,
+not a simplification of it.
+
+`Stretch::solve` does the trigonometry once per segment, and what reaches the shaders is
+the solved map. It is **upper triangular** by construction — `M = R(v̂ → x̂)·A⁻¹` sends
+`x̂` to `(m, 0)` — so three floats state it: the travel scale `m`, a **shear** (an
+obliquely stretched tip's leading edge leans rather than staying square to its travel),
+and a lateral scale, whose product with `m` is `det A⁻¹ = 1/s` at every angle. The
+identity `(1, 0, 1)` is exact in floats, so every brush that never heard of stretch
+renders bit for bit what it did before.
+
+It is applied **last and only into the lookup** (`stretch_look` in `stamp_common.wesl`,
+shared by both paths). Everything else a fragment reads out of its frame — the arc it
+sits at, the color-noise domain, the tip in force, the ground it is gated by, the canvas
+position a reservoir texel is dragged to — is a property of where the *tip* went, and
+the stretch is a property of the footprint the tip carries. Keeping the frame the tip's
+own the whole way down is what leaves `stroke_arc` measuring canvas px rather than the
+lookup frame's units, and the radius ramp applying to the tip that is actually there.
+
+Three things do have to grow with it, and each is the same bug in a different place — a
+footprint drawn outside the geometry drawn for it, cut off along a straight line:
+
+- **The sweep strip** and the dynamics loop's rim test, which work in the reference
+  travel frame: `stretch_hull` reads the box `|y| ≤ 1/lateral`, `|x| ≤ (1 +
+  |shear|/lateral)/m` straight off the map.
+- **`Segment::reach`**, the canvas box the segment is rasterized and dispatched into.
+  One factor and not two, because it grows an axis-aligned box in every direction at
+  once, and `‖A‖ = s` bounds every angle at once.
+- **The arc cap.** `MAX_TIP_TURN` exists to keep the swept sector a simple polygon and
+  the reservoir's crescent seams away, both of which are about the footprint rather than
+  the number naming it — so a tip reaching `s` times as far may bend `s` times less.
+  Charged against the *brush's* elongation, like every other bound here, since a
+  modulation only ever scales the knob down.
+
+On the tool side of the dynamics loop the gain runs the other way: a mask texel on a
+drawn-out tip stands over more canvas, so the track it crosses is that many fewer of its
+own widths and `exchange` books `travel_radii · m`. That is what keeps the books
+balanced — a stretch multiplies the canvas's total exposure by `s` and the area each
+reservoir texel answers for by the same `s`. The reservoir itself does not stretch, for
+the reason it does not ramp: it is the tool's own grid, and `bake`'s rotation out of the
+travel frame is already the rotation out of the *lookup* frame, since the slice index it
+reads carries the difference.
+
+`MAX_ELONGATION` (8) bounds the knob, and what it bounds is **area**: every tile the
+drawn-out tip reaches is a tile the stroke is rasterized into and the dynamics loop
+dispatches over, so `s` prices the stroke roughly linearly. Past eight the mark stops
+reading as a wider stroke and starts reading as a smear the length of the tip.
+
 Content-addressing is the load-bearing choice:
 
 - **The action log stays tiny.** `StrokeRecord` carries a 32-byte `AssetId`, not
