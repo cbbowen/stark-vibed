@@ -23,7 +23,7 @@
 //!   stores per texel.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::geom::TILE_TEX;
 use crate::gpu::context::GpuContext;
@@ -302,6 +302,9 @@ struct TilePair {
     /// and giving it one would be eight bytes a texel of zeroes on the default
     /// space's tiles, plus a third attachment through every pass that writes one.
     resid: Option<TexHandle>,
+    /// Pass A's bind group over the three channels above, built on first composite
+    /// and kept for the rest of this tile's life ([`TilePairHandle::composite_bg`]).
+    composite_bg: OnceLock<wgpu::BindGroup>,
 }
 
 /// A layer's painted tiles: sparse, so only populated ones exist, and persistent,
@@ -323,8 +326,46 @@ pub struct TilePairHandle(Arc<TilePair>);
 
 impl TilePairHandle {
     pub fn new(color: TexHandle, aux: TexHandle, resid: Option<TexHandle>) -> Self {
-        TilePairHandle(Arc::new(TilePair { color, aux, resid }))
+        TilePairHandle(Arc::new(TilePair {
+            color,
+            aux,
+            resid,
+            composite_bg: OnceLock::new(),
+        }))
     }
+
+    /// Pass A's bind group over this tile's channels, built by `make` the first
+    /// time it is asked for and kept thereafter.
+    ///
+    /// **The cache is sound because a tile is immutable.** Its texels are never
+    /// rewritten once a commit lands — copy-on-write hands out a fresh tile instead
+    /// (§5.2), which is the same property [`Self::same`] rests on — so a bind group
+    /// naming this tile's three views describes it correctly for as long as it
+    /// exists. It is dropped with the tile, so the pool reclaims the textures and
+    /// the group naming them together, and no eviction policy is needed.
+    ///
+    /// **And the layout cannot change under it.** A bind group answers to one
+    /// `BindGroupLayout`, which here is the compositor's `tile_bgl` — a function of
+    /// the color space alone (§6.7). Every consumer that composites a given tile
+    /// shares one `CompositorPasses`: a sibling engine is handed the very same `Arc`
+    /// ([`Engine::new_sharing`]), and the one thing that builds a *different* one is
+    /// a color-space rebuild, which replaces the tile pool and requires an empty
+    /// document (`rebuild_gpu_for`) — so no tile survives it to be asked twice.
+    ///
+    /// What this replaces is a bind group per tile, per layer, **per frame**. The
+    /// visible tile count scales as 1/zoom², so a zoomed-out multi-layer document
+    /// was creating ~10⁵ of them a frame — on the web, a JS object apiece, which is
+    /// the allocation *rate* `ScopedResources` and the pool's own [`Pooled`] exist
+    /// to keep down (§6.2). Now only a newly painted or newly loaded tile pays.
+    ///
+    /// [`Engine::new_sharing`]: crate::Engine::new_sharing
+    pub(crate) fn composite_bg(
+        &self,
+        make: impl FnOnce() -> wgpu::BindGroup,
+    ) -> &wgpu::BindGroup {
+        self.0.composite_bg.get_or_init(make)
+    }
+
     pub fn color_view(&self) -> &wgpu::TextureView {
         self.0.color.view()
     }
@@ -374,11 +415,25 @@ impl TilePairHandle {
 /// `Arc` bump, so a `Selection` snapshot is as cheap as a `DocState` one — and the
 /// texture returns to the pool when the last history version referencing it drops.
 #[derive(Clone)]
-pub struct MaskHandle(TexHandle);
+pub struct MaskHandle(TexHandle, Arc<OnceLock<wgpu::BindGroup>>);
 
 impl MaskHandle {
     pub fn view(&self) -> &wgpu::TextureView {
         self.0.view()
+    }
+
+    /// Pass C's bind group over this mask tile, built by `make` on first use and
+    /// kept for the tile's life — [`TilePairHandle::composite_bg`] for masks, sound
+    /// for the same reason: a mask tile is rasterized afresh rather than rewritten,
+    /// so identity doubles as "unchanged" ([`Self::same`]).
+    ///
+    /// **Named for its one consumer**, unlike the paint tile's, because a mask is
+    /// bound through three different layouts — the overlay's here, the transform's
+    /// `mask_src_bgl`, the stamp loop's `region_tile_bgl` — and one cache slot can
+    /// only answer for one of them. The other two are per *action* rather than per
+    /// frame, so they have nothing to gain and no slot here to take by mistake.
+    pub(crate) fn overlay_bg(&self, make: impl FnOnce() -> wgpu::BindGroup) -> &wgpu::BindGroup {
+        self.1.get_or_init(make)
     }
 
     /// Whether two handles are the same allocation — [`TilePairHandle::same`]
@@ -562,7 +617,10 @@ impl TilePool {
     /// undefined until rasterized; the selection renderer always writes the whole
     /// target, aprons included.
     pub fn acquire_mask(&self, source: AllocSource) -> MaskHandle {
-        MaskHandle(self.acquire_tex(MASK_FORMAT, source))
+        MaskHandle(
+            self.acquire_tex(MASK_FORMAT, source),
+            Arc::new(OnceLock::new()),
+        )
     }
 
     /// Acquire one pooled texture of `format`, reusing a recycled one when available.

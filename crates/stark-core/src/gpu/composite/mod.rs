@@ -80,9 +80,9 @@ pub(crate) use view::view_uniform;
 /// every hop — the shape `CompositeScene` and `stroke::StrokeScene` already use.
 struct Encode<'a> {
     p: &'a CompositorPipeline,
-    /// The per-item bind groups `prepare_composite` built, in the flat order the
+    /// The per-item bind groups `prepare_composite` gathered, in the flat order the
     /// cursors consume them.
-    streams: &'a PreparedStreams,
+    streams: &'a PreparedStreams<'a>,
     /// One per level of group nesting the document reaches; empty when nothing needs
     /// isolating, which is the common document.
     levels: &'a [ScratchLevel],
@@ -92,8 +92,13 @@ struct Encode<'a> {
 /// per-matte ramp bind groups beside them (`None` = solid, draw with the shared
 /// zeroed ramp; §22.4). One value because they are one preparation —
 /// built by the same walk, consumed by the same cursors.
-struct PreparedStreams {
-    tile_bgs: Vec<wgpu::BindGroup>,
+///
+/// The tile groups are **borrowed from the tiles themselves** — each is built once
+/// and kept for that tile's life ([`TilePairHandle::composite_bg`]) — so what this
+/// collects per frame is a list of references rather than a list of new wgpu
+/// objects. The lifetime is the draw list's, which outlives the render.
+struct PreparedStreams<'a> {
+    tile_bgs: Vec<&'a wgpu::BindGroup>,
     matte_ramp_bgs: Vec<Option<wgpu::BindGroup>>,
 }
 
@@ -554,12 +559,12 @@ impl Compositor {
     /// pass A rather than a second copy of it: what the eyedropper reports and what
     /// the screen shows then cannot drift, which is the whole reason for sampling
     /// through the compositor at all.
-    fn prepare_composite(
+    fn prepare_composite<'a>(
         &mut self,
         p: &CompositorPipeline,
         view: ViewTransform,
-        groups: &[CompositeGroup],
-    ) -> PreparedStreams {
+        groups: &'a [CompositeGroup],
+    ) -> PreparedStreams<'a> {
         let device = &p.ctx.device;
         p.view.write(&p.ctx.queue, view);
 
@@ -570,7 +575,7 @@ impl Compositor {
         // groups, not these. The streams are flat across every group, so a blend
         // group costs no extra buffer and the instance index keeps running.
         let mut instances: Vec<Instance> = Vec::new();
-        let mut tile_bgs: Vec<wgpu::BindGroup> = Vec::new();
+        let mut tile_bgs: Vec<&wgpu::BindGroup> = Vec::new();
         let mut mattes: Vec<MatteInstance> = Vec::new();
         let mut matte_ramp_bgs: Vec<Option<wgpu::BindGroup>> = Vec::new();
         for item in groups.iter().flat_map(CompositeGroup::items) {
@@ -584,20 +589,25 @@ impl Compositor {
                         origin: coord.origin().to_array(),
                         opacity: *opacity,
                     });
-                    let mut entries = vec![
-                        desc::tex(0, handle.color_view()),
-                        desc::tex(1, handle.aux_view()),
-                    ];
-                    // The layout carries slot 2 exactly when the space has a residual
-                    // (§6.7), and every tile of such a document has one — the space
-                    // decides once, at `acquire_tile`.
-                    if let Some(view) = handle.resid_view() {
-                        entries.push(desc::tex(2, view));
-                    }
-                    tile_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("stark composite tile bg"),
-                        layout: &p.tiles.tile_bgl,
-                        entries: &entries,
+                    // Built once per tile and kept on it, not once per tile per
+                    // frame — see [`TilePairHandle::composite_bg`] for why a tile's
+                    // immutability makes that sound, and what it was costing.
+                    tile_bgs.push(handle.composite_bg(|| {
+                        let mut entries = vec![
+                            desc::tex(0, handle.color_view()),
+                            desc::tex(1, handle.aux_view()),
+                        ];
+                        // The layout carries slot 2 exactly when the space has a
+                        // residual (§6.7), and every tile of such a document has
+                        // one — the space decides once, at `acquire_tile`.
+                        if let Some(view) = handle.resid_view() {
+                            entries.push(desc::tex(2, view));
+                        }
+                        device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("stark composite tile bg"),
+                            layout: &p.tiles.tile_bgl,
+                            entries: &entries,
+                        })
                     }));
                 }
                 CompositeItem::Matte(m) => {
@@ -729,7 +739,7 @@ impl Compositor {
         encoder: &mut wgpu::CommandEncoder,
         target: Targets<'_>,
         groups: &[CompositeGroup],
-        streams: &PreparedStreams,
+        streams: &PreparedStreams<'_>,
         scratch: Option<&ScratchTargets>,
     ) {
         let e = Encode {
@@ -864,7 +874,7 @@ impl Compositor {
                         pass.set_vertex_buffer(0, self.instances.slice(..));
                         pipeline_is_matte = Some(false);
                     }
-                    pass.set_bind_group(1, &e.streams.tile_bgs[*tile_i as usize], &[]);
+                    pass.set_bind_group(1, e.streams.tile_bgs[*tile_i as usize], &[]);
                     pass.draw(0..4, *tile_i..*tile_i + 1);
                     *tile_i += 1;
                 }
@@ -1280,7 +1290,7 @@ impl Compositor {
         // (§17.3). Flattened into one instance stream so N collaborators
         // still cost one pass.
         let mut overlay_instances: Vec<OverlayInstance> = Vec::new();
-        let mut mask_tiles: Vec<wgpu::BindGroup> = Vec::new();
+        let mut mask_tiles: Vec<&wgpu::BindGroup> = Vec::new();
         for outline in outlines {
             if outline.selection.is_universal() {
                 continue;
@@ -1299,10 +1309,14 @@ impl Compositor {
                     tint,
                     level,
                 });
-                mask_tiles.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark overlay tile bg"),
-                    layout: &p.overlay.tile_bgl,
-                    entries: &[desc::tex(0, handle.view())],
+                // Kept on the mask tile, like pass A's on the paint tile: the ants
+                // redraw every frame a selection is live, and the mask is immutable.
+                mask_tiles.push(handle.overlay_bg(|| {
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("stark overlay tile bg"),
+                        layout: &p.overlay.tile_bgl,
+                        entries: &[desc::tex(0, handle.view())],
+                    })
                 }));
             }
         }
@@ -1330,7 +1344,7 @@ impl Compositor {
             pass.set_vertex_buffer(0, self.overlay_instances.slice(..));
             for (i, bg) in mask_tiles.iter().enumerate() {
                 let idx = i as u32;
-                pass.set_bind_group(1, bg, &[]);
+                pass.set_bind_group(1, *bg, &[]);
                 pass.draw(0..4, idx..idx + 1);
             }
         }
