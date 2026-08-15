@@ -385,22 +385,22 @@ impl CompositeGroup {
         self.params.is_free()
     }
 
-    /// Every drawable in this group, in composite order — the flat streams pass A
-    /// uploads (the draw loop walks the tree, but the instance buffers do not
-    /// need to).
-    pub(super) fn items(&self) -> Vec<&CompositeItem> {
-        let mut out = Vec::new();
-        fn walk<'a>(g: &'a CompositeGroup, out: &mut Vec<&'a CompositeItem>) {
-            match &g.content {
-                GroupContent::Run(items) => out.extend(items.iter()),
-                GroupContent::Stack(members) => members.iter().for_each(|m| walk(m, out)),
-                // Nothing to instance: a filter draws one fullscreen triangle off
-                // its uniform slot, with no per-item stream behind it.
-                GroupContent::Filter(_) => {}
-            }
+    /// Append every drawable in this group to `out`, in composite order — the flat
+    /// streams pass A uploads (the draw loop walks the tree, but the instance buffers
+    /// do not need to).
+    ///
+    /// Appends rather than returning a `Vec`, because the caller is
+    /// `prepare_composite` and it walks *every* group of *every* frame: a `Vec` each
+    /// was one allocation per group per render, on the same path the per-tile bind
+    /// groups were removed from (§1).
+    pub(super) fn items_into<'a>(&'a self, out: &mut Vec<&'a CompositeItem>) {
+        match &self.content {
+            GroupContent::Run(items) => out.extend(items.iter()),
+            GroupContent::Stack(members) => members.iter().for_each(|m| m.items_into(out)),
+            // Nothing to instance: a filter draws one fullscreen triangle off its
+            // uniform slot, with no per-item stream behind it.
+            GroupContent::Filter(_) => {}
         }
-        walk(self, &mut out);
-        out
     }
 }
 
@@ -465,8 +465,9 @@ mod tests {
 
     /// The opacity of every drawable in a group, in order.
     fn opacities(group: &CompositeGroup) -> Vec<f32> {
-        group
-            .items()
+        let mut items = Vec::new();
+        group.items_into(&mut items);
+        items
             .iter()
             .map(|i| match i {
                 CompositeItem::Matte(m) => m.opacity,

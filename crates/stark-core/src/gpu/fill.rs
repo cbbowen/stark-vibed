@@ -246,22 +246,14 @@ impl FillRenderer {
                 layout: &self.bgl,
                 entries: &entries,
             });
-            let dst_targets = dst.targets();
-            let attachments = dst_targets.attachments(desc::CLEAR);
-            let mut pass = scope
-                .encoder()
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stark fill tile"),
-                    color_attachments: &attachments[..dst_targets.count()],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bg, &[UniformSlots::<TileUniform>::offset(i as u32)]);
-            pass.draw(0..3, 0..1);
-            drop(pass);
+            scope.fullscreen_pass(
+                "stark fill tile",
+                &self.pipeline,
+                &bg,
+                &[UniformSlots::<TileUniform>::offset(i as u32)],
+                dst.targets(),
+                desc::CLEAR,
+            );
             tiles = tiles.insert(*coord, dst.into_tile());
             scope.tile_done();
         }

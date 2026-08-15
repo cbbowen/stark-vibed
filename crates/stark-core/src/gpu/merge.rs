@@ -334,7 +334,7 @@ impl MergeRenderer {
             entries.push(desc::tex(7, self.resid_of(tile)));
         }
         let bg = self.bind("stark merge filter bg", &self.filter.bgl, &entries);
-        self.pass(
+        pass(
             scope,
             "stark merge filter",
             &self.filter.tile,
@@ -397,7 +397,7 @@ impl MergeRenderer {
             entries.push(desc::tex(6, self.resid_of(src)));
         }
         let bg = self.bind("stark merge bg", &self.direct_bgl, &entries);
-        self.pass(scope, "stark merge tile", &self.direct, &bg, &[], out);
+        pass(scope, "stark merge tile", &self.direct, &bg, &[], out);
     }
 
     /// The general law: expand both sides into what they composite to, run the
@@ -448,7 +448,7 @@ impl MergeRenderer {
             entries.push(desc::tex(3, r));
         }
         let bg = self.bind("stark slab bg", &self.slab_bgl, &entries);
-        self.pass(scope, "stark slab tile", pipeline, &bg, &[], out);
+        pass(scope, "stark slab tile", pipeline, &bg, &[], out);
     }
 
     /// The compositor's blend pass, on tile-sized targets.
@@ -486,7 +486,7 @@ impl MergeRenderer {
             entries.push(desc::tex(8, s.view()));
         }
         let bg = self.bind("stark merge blend bg", &self.blend.bgl, &entries);
-        self.pass(
+        pass(
             scope,
             "stark merge blend",
             &self.blend.pipeline,
@@ -494,33 +494,6 @@ impl MergeRenderer {
             &[0],
             out,
         );
-    }
-
-    /// One fullscreen pass over a tile's three channel targets.
-    fn pass(
-        &self,
-        scope: &mut TileScope,
-        label: &str,
-        pipeline: &wgpu::RenderPipeline,
-        bg: &wgpu::BindGroup,
-        offsets: &[u32],
-        out: &Channels,
-    ) {
-        let targets = out.targets();
-        let attachments = targets.attachments(desc::CLEAR);
-        let mut pass = scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some(label),
-                color_attachments: &attachments[..targets.count()],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, bg, offsets);
-        pass.draw(0..3, 0..1);
     }
 
     /// A tile's three channel textures, or the 1×1 zeroes where the layer has none.
@@ -644,6 +617,22 @@ impl MergeRenderer {
         out.sort_unstable_by_key(|c| (c.y, c.x));
         out
     }
+}
+
+/// One fullscreen pass over a tile's three channel targets.
+///
+/// A thin call now: [`TileScope::fullscreen_pass`] carries the attachment count,
+/// which is the residual's `Option` (§6.7) and used to be decided here as well as at
+/// the transform and the fill.
+fn pass(
+    scope: &mut TileScope,
+    label: &str,
+    pipeline: &wgpu::RenderPipeline,
+    bg: &wgpu::BindGroup,
+    offsets: &[u32],
+    out: &Channels,
+) {
+    scope.fullscreen_pass(label, pipeline, bg, offsets, out.targets(), desc::CLEAR);
 }
 
 /// The four uniform slots one blended merge binds, so `encode_blended` takes one

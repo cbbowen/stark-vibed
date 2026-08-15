@@ -577,7 +577,11 @@ impl Compositor {
         let mut tile_bgs: Vec<&wgpu::BindGroup> = Vec::new();
         let mut mattes: Vec<MatteInstance> = Vec::new();
         let mut ramps: Vec<Ramp> = Vec::new();
-        for item in groups.iter().flat_map(CompositeGroup::items) {
+        let mut items: Vec<&CompositeItem> = Vec::new();
+        for group in groups {
+            group.items_into(&mut items);
+        }
+        for item in items {
             match item {
                 CompositeItem::Tile {
                     coord,

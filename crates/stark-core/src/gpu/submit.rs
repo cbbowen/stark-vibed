@@ -27,6 +27,7 @@
 
 use std::any::Any;
 
+use crate::gpu::channels::Targets;
 use crate::gpu::context::GpuContext;
 
 /// GPU resources scoped to one recording: sized per call, so — unlike the
@@ -159,6 +160,43 @@ impl TileScope {
     /// whose drop *is* its release to a pool.
     pub(crate) fn hold(&mut self, thing: impl Any) {
         self.held.push(Box::new(thing));
+    }
+
+    /// Record one **fullscreen pass over a tile's channels**: the shape every
+    /// renderer here writes a destination tile with.
+    ///
+    /// The merge's four passes, the fill's one and the transform's combine were each
+    /// spelling out the same fifteen lines — a render pass over two-or-three
+    /// attachments, a pipeline, a bind group, `draw(0..3, 0..1)` — and the attachment
+    /// count was the residual's `Option` decided a fourth and fifth time (§6.7). With
+    /// [`Targets`] carrying that, what is left is one call.
+    ///
+    /// `ops` because the callers do differ there, if only just: everything writes
+    /// every texel and clears, but a pass that reads its own target would not, and a
+    /// helper that hid the choice would be the wrong kind of shared.
+    pub(crate) fn fullscreen_pass(
+        &mut self,
+        label: &str,
+        pipeline: &wgpu::RenderPipeline,
+        bg: &wgpu::BindGroup,
+        offsets: &[u32],
+        into: Targets<'_>,
+        ops: wgpu::Operations<wgpu::Color>,
+    ) {
+        let attachments = into.attachments(ops);
+        let mut pass = self
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(label),
+                color_attachments: &attachments[..into.count()],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bg, offsets);
+        pass.draw(0..3, 0..1);
     }
 
     /// Note that one tile has been recorded, submitting and releasing if that

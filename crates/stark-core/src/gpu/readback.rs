@@ -77,8 +77,15 @@ fn begin_read(
 }
 
 /// Strip the row padding a texture→buffer copy required, leaving tightly-packed
-/// bytes. Consumes the mapping and unmaps the buffer.
-fn take_rows(buffer: &wgpu::Buffer, size: Extent2, unpadded: u32, padded: u32) -> Vec<u8> {
+/// bytes. Consumes the buffer: unmaps it, then **destroys** it.
+///
+/// Destroyed rather than dropped, for `ScopedResources`' reason (§6.2): on the web a
+/// dropped buffer only releases its JS handle and waits for GC. A readback buffer is
+/// the largest single allocation in the subsystem — an 8192² export is 268 MB — and
+/// leaving that to a collector is how the tab OOMs. Safe here for the same reason it
+/// is there: the copy that filled it has already been submitted *and* waited on, so
+/// nothing is in flight against it.
+fn take_rows(buffer: wgpu::Buffer, size: Extent2, unpadded: u32, padded: u32) -> Vec<u8> {
     let data = buffer
         .slice(..)
         .get_mapped_range()
@@ -90,6 +97,7 @@ fn take_rows(buffer: &wgpu::Buffer, size: Extent2, unpadded: u32, padded: u32) -
     }
     drop(data);
     buffer.unmap();
+    buffer.destroy();
     out
 }
 
@@ -123,7 +131,7 @@ async fn read_texture_bytes(ctx: &GpuContext, texture: &wgpu::Texture, size: Ext
         .expect("readback callback dropped")
         .expect("map readback buffer");
 
-    take_rows(&buffer, size, unpadded, padded)
+    take_rows(buffer, size, unpadded, padded)
 }
 
 /// Read an 8-bit, 4-channel (e.g. `Rgba8Unorm`) texture back to tightly-packed
@@ -147,7 +155,7 @@ pub fn read_rgba8_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Exte
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll device");
-    take_rows(&buffer, size, unpadded, padded)
+    take_rows(buffer, size, unpadded, padded)
 }
 
 fn decode_rgba16f(bytes: &[u8]) -> Vec<f32> {
@@ -238,5 +246,8 @@ pub async fn read_many_rgba16f(
         .collect();
     drop(data);
     buffer.unmap();
+    // The same argument as `take_rows`: a gradient trace's staging buffer is
+    // MAX_SAMPLES patches wide and has already been waited on.
+    buffer.destroy();
     out
 }

@@ -890,21 +890,14 @@ impl TransformRenderer {
             layout: &self.combine_bgl,
             entries: &entries,
         });
-        let dst_targets = dst.targets();
-        let dst_att = dst_targets.attachments(desc::CLEAR);
-        let mut pass = scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark transform combine"),
-                color_attachments: &dst_att[..dst_targets.count()],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        pass.set_pipeline(&self.combine_pipeline);
-        pass.set_bind_group(0, &bg, &[]);
-        pass.draw(0..3, 0..1);
+        scope.fullscreen_pass(
+            "stark transform combine",
+            &self.combine_pipeline,
+            &bg,
+            &[],
+            dst.targets(),
+            desc::CLEAR,
+        );
     }
 
     /// One destination mask tile: cleared to the coverage that reigns outside the
