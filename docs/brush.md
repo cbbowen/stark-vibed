@@ -177,8 +177,16 @@ Two places the obvious implementation is wrong:
 
 - The taper varies radius *with distance travelled* while a segment sweeps at a
   constant one. Paid for by cutting segments finer, but **locally**: only edges
-  actually inside a taper are subdivided, so a long stroke pays ~75 extra
-  segments at each end instead of flattening its whole length at the taper's step.
+  actually inside a taper are subdivided. The step the cut holds the radius to is
+  denominated in **canvas px**, not in the radius — a sub-pixel floor (the
+  outline granted the same positional budget as the centreline, since a segment
+  boundary puts the edge off the true cone by half the step), relaxed to a
+  quarter of the tip's shoulder where the falloff blurs the join anyway, the same
+  resolvable-feature bound the footprint cell coarsens against. Denominated in
+  the radius *factor* (2%), as it first was, the step was invisible on a 20 px
+  brush and drew a radius-500 taper as ~5 px sawteeth, coarsest right at the
+  point; denominated in px, a fat soft brush pays logarithmically few extra
+  segments and a hard one pays for exactly the edge it shows.
 - A taper is measured from the ends of the **whole** stroke, and while the
   pointer is down the far end has not happened yet. So freezing is held back: a
   span is settled only once it is a trailing taper's length clear of the live end

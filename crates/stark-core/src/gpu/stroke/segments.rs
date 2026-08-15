@@ -219,19 +219,43 @@ const TAPER_MAX_SLOPE: f32 = 1.5;
 /// own footprint by less than a third.
 pub(super) const DAB_TRAVEL: f32 = 0.6;
 
-/// Max change in the taper's radius factor across one swept segment.
+/// Max change in the taper's radius across one swept segment, in **canvas px**, at
+/// the sub-pixel floor — where the tip is too hard (or too thin) for its shoulder to
+/// hide anything.
 ///
-/// The same 2% step [`crate::path::FLATTEN_TOLERANCE`] holds a *pen attribute* to,
-/// and for exactly the same reason: pressure and the taper both scale the radius,
-/// and a segment sweeps at a constant one, so a coarser step draws a taper as a
-/// staircase of shrinking dabs rather than a smooth point.
-const TAPER_STEP: f32 = 0.02;
+/// A segment sweeps at one radius, sampled at its midpoint, so a taper drawn as
+/// segments puts the stroke's *outline* off the true cone by half the step at each
+/// boundary. `2 ×` [`crate::path::FLATTEN_TOLERANCE`]`.position` grants the outline
+/// exactly the sub-pixel budget the centreline gets — the taper's edge is as much
+/// drawn geometry as the path is.
+///
+/// This used to be a step in the radius *factor* (2%, `TAPER_STEP`), which is a px
+/// bound that scales with the brush: invisible at radius 20 (0.4 px), a staircase at
+/// radius 500 — segments jumping ~5 px of width at a time, a sawtooth far coarser
+/// than the pixel grid, worst at the tip where the radius is small and the edge
+/// sharp (2026-08-14, the repro capture).
+const TAPER_STEP_PX: f32 = 2.0 * crate::path::FLATTEN_TOLERANCE.position;
 
-/// Cap on the pieces one flattened edge is cut into for the taper. Well above what
-/// the step above ever asks for (a whole taper costs ~`TAPER_MAX_SLOPE / TAPER_STEP`
-/// = 75 pieces, however long it is), so this is a backstop on a pathological brush
-/// rather than a quality knob.
-const TAPER_MAX_PIECES: usize = 128;
+/// Where the tip's own falloff is wider than the floor, the step may grow with it: a
+/// quarter of the shoulder ([`shoulder_per_radius`]), the same resolvable-feature
+/// bound [`footprint_cell`](super::budget::footprint_cell) coarsens against — a
+/// radius step the coverage blurs over more than this cannot print as a scallop.
+/// This is what keeps the px floor from charging a fat *soft* brush hundreds of
+/// segments for smoothness its edge cannot show.
+const TAPER_SHOULDER_STEP: f32 = 0.25;
+
+/// Cap on the pieces one flattened edge is cut into for the taper — a backstop on a
+/// pathological brush rather than a quality knob.
+///
+/// The px step makes a whole taper's cost radius-dependent: a shoulderless tip pays
+/// up to `TAPER_MAX_SLOPE · radius / TAPER_STEP_PX` pieces (~1000 at the 500 px
+/// radius cap), spread over every edge in the zone, and a soft tip logarithmically
+/// less. One *edge* only ever needs a fraction of that (the flattener and the
+/// exchange cadence bound edge length well under a zone), so the cap binds on
+/// nothing real — but a degenerate brush (a taper shorter than the tip is wide, cut
+/// from a knot-starved polyline) is clamped here rather than allowed to name its own
+/// segment count.
+const TAPER_MAX_PIECES: usize = 512;
 
 /// A stroke's taper, resolved for one span range (§6.2).
 ///
@@ -250,6 +274,15 @@ pub(super) struct Taper {
     /// Arc length of the whole stroke, for measuring back from its end. Only read
     /// when `end > 0`.
     total: f32,
+    /// The brush's nominal radius (canvas px) — what a factor step scales by to
+    /// become the px step the subdivision is actually bounding. Nominal rather than
+    /// modulated is conservative: pressure only ever scales the tip *down*
+    /// ([`Modulation`](crate::document::Modulation)), and the real step with it.
+    radius: f32,
+    /// The tip's shoulder width per unit radius
+    /// ([`shoulder_per_radius`](super::budget::shoulder_per_radius)) — what lets the
+    /// step relax where the falloff blurs the join anyway.
+    shoulder: f32,
 }
 
 impl Taper {
@@ -264,6 +297,8 @@ impl Taper {
     /// commit, which sees the whole stroke, computes the same 1 for it.
     fn resolve(b: &BrushParams, total: Option<f32>) -> Self {
         let (start, end) = b.taper_px();
+        let radius = b.radius.max(0.5);
+        let shoulder = super::budget::shoulder_per_radius(&b.shape);
         match total {
             Some(total) if start + end > total => {
                 // Scaled in proportion, so the two zones meet at one point.
@@ -272,13 +307,23 @@ impl Taper {
                     start: start * k,
                     end: end * k,
                     total,
+                    radius,
+                    shoulder,
                 }
             }
-            Some(total) => Self { start, end, total },
+            Some(total) => Self {
+                start,
+                end,
+                total,
+                radius,
+                shoulder,
+            },
             None => Self {
                 start,
                 end: 0.0,
                 total: f32::INFINITY,
+                radius,
+                shoulder,
             },
         }
     }
@@ -313,16 +358,29 @@ impl Taper {
     }
 
     /// How many swept segments a flattened edge of length `len` starting at `dist`
-    /// has to be cut into to keep the radius stepping smoothly (see [`TAPER_STEP`]).
-    /// 1 — no cut at all — wherever the taper is flat, which is everywhere on an
-    /// untapered brush, so this path is bit-identical to having no taper code.
+    /// has to be cut into to keep the radius stepping smoothly (see
+    /// [`TAPER_STEP_PX`]). 1 — no cut at all — wherever the taper is flat, which is
+    /// everywhere on an untapered brush, so this path is bit-identical to having no
+    /// taper code.
     fn pieces(&self, dist: f32, len: f32) -> usize {
         let slope = self.slope_bound(dist, len);
         if slope <= 0.0 {
             return 1;
         }
+        // The radius travel this edge can cover, in canvas px — the quantity the
+        // step is denominated in, which is what keeps a big brush's taper as smooth
+        // as a small one's instead of `radius`-times coarser.
+        let dr = slope * len * self.radius;
+        // The step the edge is allowed: the sub-pixel floor, relaxed to a quarter of
+        // the shoulder where the falloff is wider than that. The shoulder is taken
+        // at the *narrowest* radius on the edge — `factor` is a product of one
+        // rising and one falling profile over zones that never overlap, so its
+        // minimum over an interval is at an end — because that is where a given
+        // step is most visible.
+        let r_lo = self.radius * self.factor(dist).min(self.factor(dist + len));
+        let step = TAPER_STEP_PX.max(TAPER_SHOULDER_STEP * self.shoulder * r_lo);
         // Float → int casts saturate in Rust, so a nonsense length cannot wrap here.
-        ((slope * len / TAPER_STEP).ceil() as usize).clamp(1, TAPER_MAX_PIECES)
+        ((dr / step).ceil() as usize).clamp(1, TAPER_MAX_PIECES)
     }
 }
 
@@ -1065,15 +1123,51 @@ mod tests {
             (widest - radius).abs() < 1e-3,
             "the body should reach full radius, got {widest}"
         );
-        // Every consecutive pair steps by at most the tolerance the subdivision is
-        // sized for (with slack for the pressure/flattening interaction).
+        // Every consecutive pair steps by at most the px the subdivision is sized
+        // for at the narrower of the two tips (with slack for the
+        // pressure/flattening interaction).
+        assert_steps_smoothly(&segs, &rec.brush);
+    }
+
+    /// Every consecutive segment pair's radius step stays within the law the
+    /// subdivision is sized for: the sub-pixel floor, or a quarter of the shoulder at
+    /// the narrower of the two tips, whichever is larger — with 2× slack for the
+    /// midpoint sampling and the flattening interaction.
+    fn assert_steps_smoothly(segs: &[Segment], b: &BrushParams) {
+        let shoulder = super::super::budget::shoulder_per_radius(&b.shape);
         for w in segs.windows(2) {
             let step = (w[1].radius - w[0].radius).abs();
+            let r_lo = w[0].radius.min(w[1].radius);
+            let allowed = TAPER_STEP_PX.max(TAPER_SHOULDER_STEP * shoulder * r_lo);
             assert!(
-                step <= TAPER_STEP * radius * 2.0,
-                "radius jumps {step} between segments — the taper is a staircase"
+                step <= allowed * 2.0,
+                "radius jumps {step}px between segments (allowed {allowed}px at \
+                 radius {r_lo}) — the taper is a staircase"
             );
         }
+    }
+
+    /// The step law is denominated in **canvas px**, not in the radius — the
+    /// 2026-08-14 defect, pinned at the size that showed it. A radius-500 brush with
+    /// long tapers (the repro capture's shape: hardness 0.95, so the shoulder is
+    /// slim and the floor rules near the tips) drew its taper as ~5 px sawteeth —
+    /// segments 64 px long jumping 4.6 px of radius at a time, coarsest right at the
+    /// point, where the factor-denominated step was largest relative to the tip.
+    #[test]
+    fn a_huge_brushs_taper_steps_in_pixels_not_in_radii() {
+        let mut rec = tapered_record(500.0, 5.0, 11.0, 7600.0);
+        rec.brush.shape = BrushShape::Round { hardness: 0.95 };
+        let segs = whole(&rec);
+        assert_steps_smoothly(&segs, &rec.brush);
+        // And the smoothness is bought where it is needed rather than everywhere:
+        // the whole stroke stays within the budget the constants promise (~2.1·R
+        // per shoulderless zone is the worst case; the 0.95 shoulder relaxes most
+        // of it).
+        assert!(
+            segs.len() < 1200,
+            "{} segments — the px step is overpaying",
+            segs.len()
+        );
     }
 
     /// A stroke shorter than its own two tapers still reaches full width, at one
@@ -1893,13 +1987,18 @@ mod tests {
                     &straight,
                 ),
             ),
-            // TAPER_STEP, and by a wide margin the most expensive row in the table: a
-            // taper costs ~`TAPER_MAX_SLOPE / TAPER_STEP` ≈ 75 pieces however long it
-            // is, and this brush has two of them. Nothing about the curve is driving
-            // this one — it is the same straight line as the 3-segment row above.
+            // TAPER_STEP_PX, and by a wide margin the most expensive row in the
+            // table: a taper's pieces pay for its radius travel in px — the floor
+            // near the point, a quarter-shoulder past it, so a zone costs
+            // ~`TAPER_MAX_SLOPE · (r* + ln(radius/r*)/(TAPER_SHOULDER_STEP ·
+            // shoulder))` pieces, and this brush has two of them. (It was 211 under
+            // the factor-denominated step, which overpaid this soft 20 px tip and
+            // still drew a radius-500 taper as sawteeth.) Nothing about the curve is
+            // driving this one — it is the same straight line as the 3-segment row
+            // above.
             (
                 "straight, tapered tip",
-                211,
+                121,
                 record(
                     BrushParams {
                         radius: 20.0,

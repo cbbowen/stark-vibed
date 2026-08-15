@@ -451,16 +451,34 @@ const FOOTPRINT_CELL_MAX: f32 = 16.0;
 /// because below that the hoist pass costs more than the ~4× it saves — which also
 /// means the whole bench sweep at radius ≤ 100 (where `0.02·r ≤ 2`) stays on the
 /// exact kernel, dispatch for dispatch.
+///
+/// The **shoulder** — the width of the tip's coverage falloff per unit radius — is
+/// [`shoulder_per_radius`], shared with the taper's subdivision, which leans on the
+/// same fact from the other side: a feature narrower than a quarter of the shoulder
+/// is one the coverage cannot show.
 pub(super) fn footprint_cell(shape: &BrushShape, radius: f32) -> u32 {
-    let shoulder = match shape {
-        BrushShape::Round { hardness } => 3.0 * (1.0 - hardness.clamp(0.0, 1.0)) * radius,
-        BrushShape::Stamp(_) => 0.0,
-    };
+    let shoulder = shoulder_per_radius(shape) * radius;
     let cell = (0.02 * radius).min(0.25 * shoulder);
     if cell <= 2.0 {
         1
     } else {
         cell.min(FOOTPRINT_CELL_MAX) as u32
+    }
+}
+
+/// The width of the tip's coverage falloff — its **shoulder** — per unit radius:
+/// `3·(1−hardness)` for the round tip's `1 − |y|^h` profile family, and 0 for a
+/// `Stamp`, which may be arbitrarily hard and is treated as the sharpest case.
+///
+/// The one definition, used from both sides of the same fact: features narrower than
+/// a fraction of the shoulder are ones the coverage cannot carry. [`footprint_cell`]
+/// spends that as *coarsening* (the cell the coarse deposit may evaluate at), the
+/// taper's subdivision as *smoothness* (the radius step a segment boundary may take
+/// without printing, `segments::Taper`).
+pub(super) fn shoulder_per_radius(shape: &BrushShape) -> f32 {
+    match shape {
+        BrushShape::Round { hardness } => 3.0 * (1.0 - hardness.clamp(0.0, 1.0)),
+        BrushShape::Stamp(_) => 0.0,
     }
 }
 
