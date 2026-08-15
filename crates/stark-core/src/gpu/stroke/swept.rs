@@ -11,7 +11,8 @@ use crate::geom::{TILE_APRON, TILE_TEX, TileCoord};
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 
-use super::segments::{Segment, SegmentInstance, generate_segments_in, tiles_with_segments};
+use super::region::tiles_with_segments;
+use super::segments::{Segment, SegmentInstance, generate_segments_in};
 use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, UNIFORM_STRIDE};
 
 // Vertices in one segment's swept geometry: a triangle strip of two rims across

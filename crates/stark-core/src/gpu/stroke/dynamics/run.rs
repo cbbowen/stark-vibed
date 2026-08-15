@@ -15,10 +15,9 @@ use crate::gpu::composite::view_uniform;
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TileMap};
 
+use super::super::region::{RegionRect, chunk_segments, cover};
 use super::super::scratch::{Key, SubmitScope};
-use super::super::segments::{
-    BleedFire, RegionRect, Segment, chunk_segments, cover, generate_segments_in,
-};
+use super::super::segments::{BleedFire, Segment, generate_segments_in};
 use super::super::{
     StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState, UNIFORM_STRIDE,
 };

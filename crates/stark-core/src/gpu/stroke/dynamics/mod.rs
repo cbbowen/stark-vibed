@@ -17,13 +17,15 @@
 use crate::document::StrokeRecord;
 
 use super::budget::flatten_tolerance;
-use super::segments::segment_fits_region;
+use super::region::segment_fits_region;
 
+mod bleed;
 mod kit;
 mod plan;
 mod run;
 mod slots;
 
+pub(in crate::gpu::stroke) use bleed::BLEED_TRAVEL_QUANTUM;
 pub(super) use kit::{DynamicsKit, build_dynamics_kit};
 
 /// fp32, for the same reason the prefix-τ volume is: every fragment reads the baked

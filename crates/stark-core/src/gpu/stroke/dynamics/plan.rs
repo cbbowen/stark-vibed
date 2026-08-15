@@ -20,10 +20,10 @@
 use crate::document::StrokeRecord;
 use crate::geom::Vec2;
 
-use super::super::budget::{
-    BLEED_TRAVEL_QUANTUM, MAX_BLEED_FIRES_PER_SEGMENT, bleed_stencil, footprint_cell, lambda,
-};
-use super::super::segments::{BleedFire, Segment, Sweep, coverage_bounds, segment_end};
+use super::super::budget::{footprint_cell, lambda};
+use super::super::region::{coverage_bounds, segment_end};
+use super::super::segments::{BleedFire, Segment, Sweep};
+use super::bleed::{BLEED_TRAVEL_QUANTUM, MAX_BLEED_FIRES_PER_SEGMENT, bleed_stencil};
 // The `Stamp` uniform, generated from `dynamics.wesl`'s own declaration at build
 // time (`stark-shaders/build/mirror.rs`) — lanes, offsets, and the documentation of
 // what each lane holds, which is now on the generated fields.
