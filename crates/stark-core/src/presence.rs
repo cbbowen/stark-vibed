@@ -393,9 +393,9 @@ mod tests {
     /// 3. once a resync frame is delivered, the receiver's path matches the sender's
     ///    entirely — the protocol's whole promise, that loss costs latency and not
     ///    correctness;
-    /// 4. within one gesture the watermark never walks back — the module-level rule
-    ///    a resync frame used to violate by resetting the assembly's frozen count,
-    ///    which discarded the renderer's cached head and redrew the whole stroke
+    /// 4. within one gesture the watermark never walks back — the module-level rule a
+    ///    resync frame is most likely to break, by resetting the assembly's frozen
+    ///    count: that discards the renderer's cached head and redraws the whole stroke
     ///    from scratch once a second.
     #[test]
     fn round_trip_survives_a_lossy_channel() {
@@ -512,9 +512,9 @@ mod tests {
     ///
     /// Driven through the two halves directly rather than through [`Session::publish`],
     /// which decides *when* to resync by consulting [`GESTURE_RESYNC`]. That constant
-    /// is currently `None`, and this test used to wrap its entire body in
-    /// `if let Some(interval) = GESTURE_RESYNC` — so it checked nothing at all and
-    /// reported `ok`, which is the failure mode CLAUDE.md names for a skipped GPU test.
+    /// is currently `None`, so a body wrapped in `if let Some(interval) =
+    /// GESTURE_RESYNC` would check nothing at all and report `ok` — the failure mode
+    /// CLAUDE.md names for a skipped GPU test.
     ///
     /// The cadence and the mechanism are separate questions, and only the cadence is
     /// deferred: `encode` already takes `resync` as a parameter, so the repair can be

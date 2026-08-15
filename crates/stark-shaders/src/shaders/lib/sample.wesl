@@ -18,9 +18,9 @@
 // fully-masked one are then the same program, which is one fewer way for the two
 // to disagree.
 //
-// It was written out nine times before this — `load1` in `fill` and `integrate`,
-// open-coded in `transform` (five times), `dynamics` (twice) and `selection` —
-// with four separate comments calling it "§6.8's pattern". This is that pattern.
+// This is the one spelling of it. `fill`, `integrate`, `transform`, `dynamics` and
+// `selection` all import from here rather than open-coding the clamp, so "§6.8's
+// pattern" names a function and not a habit.
 //
 // A no-op for a real tile bound 1:1 with its destination, where `c` is always in
 // range; the clamp exists for the 1×1 case and costs a `min`.

@@ -272,8 +272,8 @@ pub fn LayerPanel() -> Element {
     // handlers here want, and it still copies.
     let selected_id = selected.as_ref().map(|l| l.id);
     // Whether the two relational controls have anything to say about the selected
-    // layer. **They part on a filter**, which is the one row where the shared
-    // condition they used to take was wrong (§21.4): a mode describes how a *source*
+    // layer. **They part on a filter**, which is the one row where a shared condition
+    // for the two would be wrong (§21.4): a mode describes how a *source*
     // meets a backdrop and a filter has no source, while a clip says where the layer
     // may land — a question a filter still answers, by being confined to the coverage
     // it read. Both go inert with nothing beneath them (§14.4.3), which is the half
@@ -744,12 +744,11 @@ fn clip_hint(layer: &LayerInfo) -> &'static str {
 /// name (see [`LayerInfo::name`]). A layer the author has named shows that name,
 /// frame or not.
 ///
-/// The word alone, with no mark in it. The `\u{25F1}` that used to lead an unnamed
-/// frame's label was the last character in either roster standing in for a glyph the
-/// set has (`icons::FRAME`, which the frame bar already wears), and putting it in the
-/// *string* had a second cost: this label is also the rename field's placeholder, so
-/// opening the field on a frame showed a corner mark inside a text box. The row draws
-/// the glyph now, which leaves the placeholder a name.
+/// The word alone, with no mark in it. A `\u{25F1}` leading an unnamed frame's label
+/// would stand in for a glyph the set already has (`icons::FRAME`, which the frame bar
+/// wears), and putting it in the *string* costs twice over: this label is also the
+/// rename field's placeholder, so opening the field on a frame would show a corner mark
+/// inside a text box. The row draws the glyph, which leaves the placeholder a name.
 fn layer_label(info: &LayerInfo) -> String {
     match (&info.name, info.matte.as_ref(), info.filter.as_ref()) {
         (Some(name), ..) => name.to_string(),
@@ -939,9 +938,9 @@ pub fn LayerRow(
                 // edge, aimed at what it carries — which this panel draws *above* the
                 // base (§14.6). Which way the caret points therefore says nothing; what
                 // the two states differ by is a lid (see `icons::FOLD_OPEN`). It is out
-                // of the line rather than in it because the line is now full: the slot a
-                // triangle used to hold at the head of the row is where Carry goes, and
-                // a mark about the rows above belongs on the edge it shares with them.
+                // of the line rather than in it because the line is full: the slot at
+                // the head of the row is where Carry goes, and a mark about the rows
+                // above belongs on the edge it shares with them.
                 if is_group {
                     button {
                         class: "layer-fold",

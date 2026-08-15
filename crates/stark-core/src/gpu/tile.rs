@@ -215,8 +215,8 @@ impl Drop for GpuTex {
         // A poisoned lock means some other thread panicked holding it; the state it
         // guards is a free list and a counter, and neither can be left saying
         // something a return would violate. Taking `Err`'s inner guard hands the
-        // texture back; the `if let Ok(..)` this replaced dropped it on the floor —
-        // never recycled, and `capacity` never told, so the pool quietly grew a
+        // texture back; an `if let Ok(..)` would drop it on the floor — never
+        // recycled, and `capacity` never told, so the pool would quietly grow a
         // replacement for a texture it still owned.
         let mut inner = pool
             .lock()
@@ -722,10 +722,9 @@ impl TilePool {
     /// How many recycled textures of `format` are idle — what the pool would serve
     /// the next acquires from without touching the device.
     ///
-    /// Takes the format rather than assuming one. It used to answer for
-    /// `Rgba16Float` alone, on a pool whose whole design is that free lists are
-    /// *per format* — so a test asking about the aux or the mask list was quietly
-    /// told about the color one instead.
+    /// Takes the format rather than assuming one: the pool's whole design is that free
+    /// lists are *per format*, so an answer that assumed `Rgba16Float` would quietly
+    /// tell a caller asking about the aux or the mask list about the color one.
     pub fn free_count(&self, format: wgpu::TextureFormat) -> usize {
         self.format_pools
             .get(&format)

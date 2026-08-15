@@ -21,10 +21,10 @@ use crate::gpu::half::f16_to_f32;
 
 /// A texel of `texture`, in bytes.
 ///
-/// Asked of the texture rather than of the caller. It used to be a parameter, which
-/// made every reader responsible for restating a fact the texture already carries —
-/// and a mismatch would not fail, it would hand back rows shifted by the difference,
-/// which reads as a picture skewing progressively sideways rather than as an error.
+/// Asked of the texture rather than of the caller. As a parameter it would make every
+/// reader restate a fact the texture already carries — and a mismatch would not fail,
+/// it would hand back rows shifted by the difference, which reads as a picture skewing
+/// progressively sideways rather than as an error.
 fn bytes_per_texel(texture: &wgpu::Texture) -> u32 {
     texture
         .format()

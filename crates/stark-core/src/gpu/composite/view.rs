@@ -16,9 +16,9 @@ use crate::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, ViewTransform}
 //
 // **The one definition of that struct on this side of the boundary.** The
 // brush-dynamics loop composites its 1:1 canvas region through the very same
-// `composite.wesl`, and used to declare a second, identical `ViewUniform` of its own
-// with a doc comment asking that the two match exactly — which is a job for the
-// compiler, not for a sentence. It builds one of these through [`view_uniform`].
+// `composite.wesl`, and builds one of these through [`view_uniform`] rather than
+// declaring a second, identical `ViewUniform` of its own — keeping two structs in step
+// is a job for the compiler, not for a doc comment asking.
 pub(crate) use stark_shaders::mirror::composite::View as ViewUniform;
 
 /// The canvas px → NDC map `st` (column-major) with translation `xlate`, at `zoom`.

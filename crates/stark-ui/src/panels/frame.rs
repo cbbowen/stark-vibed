@@ -355,11 +355,11 @@ pub fn FrameBar() -> Element {
             // Only the fill lives here — it is the one thing that is *about the
             // frame* rather than about a layer. Opacity (the crop scrim) and
             // removal are ordinary layer properties, so they belong to the Layers
-            // panel's single set of controls for whatever is selected, and having
-            // them in two places was the duplication this replaced.
+            // panel's single set of controls for whatever is selected, and offering
+            // them in both places would be one control with two homes.
             //
-            // A well that pops out the app's own Oklab picker, rather than the
-            // browser's color dialog it used to be, because a mat board is chosen by
+            // A well that pops out the app's own Oklab picker rather than the
+            // browser's color dialog, because a mat board is chosen by
             // *lightness against the piece*: a shade too close and the frame stops
             // reading as a frame, a shade too far and it shouts over what it
             // surrounds. Oklab puts that search on an axis you can drag along — `L`
@@ -422,8 +422,8 @@ pub fn FrameBar() -> Element {
             }
 
             // Making the ground (§15.5) rides this bar rather than a button of
-            // its own in the Layers panel's header, where it used to sit beside
-            // "+ Frame". It is done once per painting at most, and a permanent
+            // its own in the Layers panel's header beside "+ Frame". It is done
+            // once per painting at most, and a permanent
             // button is the wrong price for that: here it is one chip in the bar
             // that is *already* about composing a matte, and it stands down the
             // moment the ground exists — the same "absent rather than greyed

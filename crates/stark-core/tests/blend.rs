@@ -264,22 +264,21 @@ fn blend_only_acts_where_the_layers_meet() {
 /// `+`. This is the property that makes a blend mode safe to build a painting on:
 /// reordering the stack is not supposed to be a color decision.
 ///
-/// **Asserted over the whole canvas**, edges included, which it could not be before.
-/// The modes used to weigh coverage in the working space — Porter-Duff's
-/// `(1 − αb)·Cs` term — and averaging does not commute with a curve, so which layer
-/// was on top made a real difference wherever coverage was partial: this same
-/// comparison ran to **20 levels** across the canvas while passing comfortably inside
-/// a 25-px box of solid paint.
+/// **Asserted over the whole canvas**, edges included, and that is the demanding part.
+/// Weigh coverage in the working space — Porter-Duff's `(1 − αb)·Cs` term — and
+/// averaging does not commute with a curve, so which layer is on top makes a real
+/// difference wherever coverage is partial: this same comparison runs to **20 levels**
+/// across the canvas while passing comfortably inside a 25-px box of solid paint.
 ///
-/// The comment here used to say that was Porter-Duff rather than the blend mode, and
-/// that no derivation could remove it. That is true of `Normal`, where order is
-/// occlusion and genuinely matters. It was not true of these two: light adds whatever
-/// is in front of what, and they now weigh coverage in emission
-/// (`blend_common::added_light`), where the sum is order-independent by construction.
+/// It is tempting to call that Porter-Duff rather than the blend mode, and beyond a
+/// derivation's reach. True of `Normal`, where order is occlusion and genuinely
+/// matters; not true of these two. Light adds whatever is in front of what, so they
+/// weigh coverage in emission (`blend_common::added_light`), where the sum is
+/// order-independent by construction.
 ///
-/// So the bound stays 2 for the ordinary reason — associativity is exact in ℝ and
-/// merely very close in the half-float the composite targets carry between passes —
-/// and it now covers every texel rather than the ones that happened to be opaque.
+/// So the bound is 2 for the ordinary reason — associativity is exact in ℝ and merely
+/// very close in the half-float the composite targets carry between passes — and it
+/// covers every texel rather than only the opaque ones.
 #[test]
 fn glow_stacking_is_order_independent() {
     for mode in COMBINING {

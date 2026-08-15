@@ -22,12 +22,11 @@
 // segments*. `τ` itself sums exactly across overlapping quads (that is the whole
 // point of the prefix-τ construction), so an amount linear in it sums to the true
 // path integral, and a rate exponential in it multiplies out to `exp(−k·Στ)`. Any
-// other shape — notably a `√`, which is what the opacity/thickness split used to
-// apply per segment — makes the result depend on the *number* of segments: N pieces
-// of the same travel deposit `Σ√(τ/N) = √(Nτ)`, so the stroke silently gains weight
-// with sampling density. That is fine only while sampling is uniform; it is why
-// adaptive flattening (`path::flatten`) needs this form, and it makes the fast path
-// agree with the stamp loop's `add` axis, which was always linear in exposure
+// other shape — a `√`, say — makes the result depend on the *number* of segments: N
+// pieces of the same travel deposit `Σ√(τ/N) = √(Nτ)`, so the stroke silently gains
+// weight with sampling density. That is fine only while sampling is uniform; it is
+// why adaptive flattening (`path::flatten`) needs this form, and it is what makes the
+// fast path agree with the stamp loop's `add` axis, which is linear in exposure
 // (`dynamics.wesl::deposit`).
 //
 // **What a segment lays is a parcel of paint, not a coverage** (§6.1). Its
@@ -35,14 +34,14 @@
 // meet only in the slab law `1 − exp(−K · opacity · height)`, which is what the
 // color target carries so that `integrate.wesl` can stack the accumulated parcel
 // through the shared law in `paint_common.wesl`. Emitting the opacity *alone* there
-// — which is what this did — was the same defect §6.3 fixed in the layer composite,
-// one level down: a fragment whose brush lays almost no paint still arrived at the
-// integrate claiming near-full coverage, so a low-`add` stroke drew as nothing over
-// bare canvas (the media pass caught it, via the height) and replaced the color
-// outright over paint (nothing caught it at all). It also cost the faint edge of a
-// soft tip a factor of `τ`, since coverage then reached visible alpha through *both*
-// factors of `op · height`; weighing the parcel by its own visible alpha makes that
-// linear in `τ` again, which is what it always should have been.
+// would be the defect §6.3 names in the layer composite, one level down: a fragment
+// whose brush lays almost no paint would arrive at the integrate claiming near-full
+// coverage, so a low-`add` stroke would draw as nothing over bare canvas (the media
+// pass catches that, via the height) and replace the color outright over paint
+// (nothing catches that at all). It would also cost the faint edge of a soft tip a
+// factor of `τ`, coverage reaching visible alpha through *both* factors of
+// `op · height`; weighing the parcel by its own visible alpha is what keeps it linear
+// in `τ`.
 //   target 0: color (Rgba16Float) — the parcel's visible alpha in `.a`, with the
 //             Oklab (L,a,b) latent premultiplied by it; over-blended, so the latent
 //             a stroke crossing itself carries is ordered rather than averaged

@@ -69,8 +69,8 @@ const SETTLE_MS: i32 = 180;
 ///
 /// All the panel keeps: the picture itself lives on the GPU, in the surface bound to
 /// the panel's canvas. `Copy`, and four numbers wide, so the component that
-/// re-renders on every engine write can read it freely — where the old readback path
-/// kept a ~150 KB pixel buffer here and had to be careful never to clone it.
+/// re-renders on every engine write can read it freely — where a readback path would
+/// keep a ~150 KB pixel buffer here and have to be careful never to clone it.
 #[derive(Clone, Copy, PartialEq)]
 struct Overview {
     /// The canvas-space rect the miniature covers.
@@ -112,16 +112,16 @@ fn overview_frame(o: &ObservableState) -> Option<LayerId> {
 /// which [`export_plan`](stark_core::Engine::export_plan) refuses; the panel then
 /// keeps showing whatever it last drew rather than blinking.
 ///
-/// **One plan, asked for what is actually wanted.** This used to ask for a 1× plan
-/// first, purely to learn the rect's size, and work the fitting scale out here. That
-/// put a whole extra question in the way of the answer — and one with a stricter
-/// precondition than the render it was standing in for, since a 1× plan of a piece
-/// past the device's texture limit is refused as a texture it could not allocate.
-/// Past that much painting or frame the first call therefore failed, `draw_overview` returned
-/// `None`, and the panel silently went on showing a stale miniature at exactly the
-/// size where an overview earns its place. [`ExportScale::Fit`] asks the engine the
-/// question the panel has — "the largest that fits this box" — and nothing about the
-/// size the picture *isn't* being rendered at can refuse it.
+/// **One plan, asked for what is actually wanted.** Asking for a 1× plan first, purely
+/// to learn the rect's size, and working the fitting scale out here puts a whole extra
+/// question in the way of the answer — one with a stricter precondition than the render
+/// it stands in for, since a 1× plan of a piece past the device's texture limit is
+/// refused as a texture it could not allocate. Past that much painting or frame the
+/// first call fails, `draw_overview` returns `None`, and the panel silently goes on
+/// showing a stale miniature at exactly the size where an overview earns its place.
+/// [`ExportScale::Fit`] asks the engine the question the panel has — "the largest that
+/// fits this box" — and nothing about the size the picture *isn't* being rendered at
+/// can refuse it.
 ///
 /// Synchronous throughout: there is no readback, so nothing here awaits and nothing
 /// has to survive an await.

@@ -97,8 +97,8 @@ pub struct BrushDynamics {
     ///
     /// **It means the same amount of paint whatever the other three are doing.** The
     /// axes below decide whether the stroke goes through the swept fast path or the
-    /// sequential stamp loop (§6.2), and the loop used to scale this by a gain
-    /// of 2 — so nudging [`deposit`](Self::deposit) off zero doubled the flow of a
+    /// sequential stamp loop (§6.2), so a gain applied on one path and not the other
+    /// would make nudging [`deposit`](Self::deposit) off zero change the flow of a
     /// slider that has nothing to do with it.
     pub add: f32,
     /// Canvas paint **lifted** onto the tool per step, as a fraction of the paint present,
@@ -395,8 +395,8 @@ pub struct Modulations {
 
 impl Modulations {
     /// The everyday brush: **size follows pressure**, linearly, all the way to
-    /// nothing — the one mapping that used to be wired into the segment generator,
-    /// now stated where every other one is.
+    /// nothing. Stated here rather than wired into the segment generator, which is
+    /// what lets it be turned off or pointed somewhere else like any other mapping.
     ///
     /// Not [`Default`], which is "no mapping at all". Both are wanted:
     /// [`BrushParams::default`] takes this, while a preset that means to hold its
@@ -532,9 +532,8 @@ pub struct BrushParams {
     #[serde(default)]
     pub end_taper_length: f32,
     /// What the pen drives, and how (§6.2) — the mapping from pen input to brush
-    /// parameter. [`Modulations::PRESSURE_SIZE`] by default, which is the pressure →
-    /// radius scaling that was previously wired into the segment generator with no
-    /// way to turn it off or point it anywhere else.
+    /// parameter. [`Modulations::PRESSURE_SIZE`] by default: the pressure → radius
+    /// scaling, held here as data so a preset can drop it or aim it elsewhere.
     #[serde(default = "Modulations::pressure_size")]
     pub modulation: Modulations,
     /// How deeply this tool bites into the **canvas surface's tooth** (§6.4), in

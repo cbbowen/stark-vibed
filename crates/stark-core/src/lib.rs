@@ -36,8 +36,7 @@
 //!   flattened adaptively into the segments the brush sweeps along (§6.2).
 //! - [`io`] — the save format, which *is* the action log (§8).
 //!
-//! Build status lives in §13, not here: it used to be duplicated as a
-//! checklist in this comment, and the two drifted.
+//! Build status lives in §13, not here — one checklist, so there is nothing to drift.
 
 pub mod assets;
 pub mod assist;

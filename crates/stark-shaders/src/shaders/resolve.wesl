@@ -46,8 +46,8 @@ struct Resolve {
 // transparent has no color to average, and returns black rather than a quotient of
 // two zeros. Local and named for its own job — it is neither of
 // `paint_common`'s two guards (this alpha is neither a tile's per-unit opacity nor a
-// composited coverage, but the box filter's own accumulated weight), and it was one
-// of the five modules that used to call its guard `EPS`.
+// composited coverage, but the box filter's own accumulated weight), and a bare `EPS`
+// would not say which of the three a reader is looking at.
 const WEIGHT_EPS: f32 = 1e-5;
 
 @vertex

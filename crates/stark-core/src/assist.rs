@@ -1213,9 +1213,10 @@ mod tests {
     /// **Where a loop closes is where a hand is least accurate**, so neither running
     /// past the start nor stopping short of it may cost the shape.
     ///
-    /// Both used to. Overshoot double-counted the re-traversed wedge and walked the
-    /// centre 78px off a 400px ellipse; undershoot left the closed-form inversion
-    /// describing an arc while assuming a whole turn. See [`weigh`].
+    /// Both are easy to get wrong: unweighted, an overshoot double-counts the
+    /// re-traversed wedge and walks the centre 78px off a 400px ellipse, while an
+    /// undershoot leaves the closed-form inversion describing an arc while assuming a
+    /// whole turn. See [`weigh`].
     /// A loop is a longer gesture than a drag of the same size and the wrist reverses
     /// twice on the way round it, so the hand that draws one is not the hand that draws
     /// a line — see [`ELLIPSE_RESIDUAL`]. A tenth of the radius of wobble is a shaky
@@ -1777,8 +1778,8 @@ mod tests {
     /// The width of the window is the feature, not an implementation detail: a hand
     /// that has to draw the circle accurately to be given the circle has been given
     /// nothing. A loop a fifth too round and leaning 6° out of its plane's tilt — well
-    /// past what an eye can judge, and past what [`GUIDE_CIRCLE_RESIDUAL`] used to
-    /// admit — is still that plane's circle.
+    /// past what an eye can judge — is still that plane's circle, and
+    /// [`GUIDE_CIRCLE_RESIDUAL`] is set wide enough to say so.
     #[test]
     fn a_loop_only_roughly_in_perspective_still_snaps() {
         let g = guide();

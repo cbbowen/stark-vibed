@@ -357,10 +357,10 @@ impl CompositeGroup {
     /// path, and everything else is a merge.
     ///
     /// **Returning the run is what deletes the invariant rather than checking it.**
-    /// Three call sites used to ask a `bool` `is_direct` and then re-match the
-    /// content: two behind an `unreachable!`, and one (the stack builder in
-    /// `Engine`) behind an `if let` whose failure branch silently dropped the merge.
-    /// Three places that could disagree about what "direct" implies, and the third
+    /// A `bool` `is_direct` leaves every call site to re-match the content: behind an
+    /// `unreachable!`, or — as in the stack builder in `Engine` — behind an `if let`
+    /// whose failure branch silently drops the merge. Three places that can disagree
+    /// about what "direct" implies, and the third
     /// would not even have said so.
     pub fn as_direct_run(&self) -> Option<&[CompositeItem]> {
         match &self.content {
@@ -407,10 +407,10 @@ mod tests {
 
     /// The opacity of every drawable in a group, in composite order.
     ///
-    /// A test-local walk. It used to be an `items_into` on [`CompositeGroup`] that
-    /// the render path also called — one of the four traversals of this tree that had
-    /// to agree with each other, and the only one that survives here now is the
-    /// plan's (`composite::plan`).
+    /// A test-local walk, deliberately not a method on [`CompositeGroup`] the render
+    /// path could also call: the plan's traversal (`composite::plan`) is the only one
+    /// of this tree, and a second one shared with the tests is a second one to agree
+    /// with.
     fn opacities(group: &CompositeGroup) -> Vec<f32> {
         match &group.content {
             GroupContent::Run(items) => items

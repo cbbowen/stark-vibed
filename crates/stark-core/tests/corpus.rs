@@ -2,10 +2,10 @@
 //!
 //! The corpus and the battery are separate on purpose. A case there says *what to
 //! draw* and what it is the only cover for; a check here says *what must be true*, and
-//! is immediately asked of every stroke already in the list. The suite used to fuse
-//! the two — a stroke was written for one bug and checked the one property that bug
-//! broke — and the cost of that was a set of blind spots shaped exactly like the
-//! combinations nobody had drawn (see the corpus's own header).
+//! is immediately asked of every stroke already in the list. Fuse the two — a stroke
+//! written for one bug, checking the one property that bug broke — and the blind spots
+//! come out shaped exactly like the combinations nobody happened to draw (see the
+//! corpus's own header).
 //!
 //! Each case gets one `#[test]`, so a failure names the stroke, and the checks inside
 //! it **accumulate**: a run reports every invariant the case broke rather than the

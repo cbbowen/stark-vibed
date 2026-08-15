@@ -1,10 +1,10 @@
 //! The **channel trio** — color, aux, and the residual a pigment space adds — as
 //! one thing rather than as three parallel values (§6.1, §6.7).
 //!
-//! Every renderer here writes a tile's channels, and each of them used to spell the
-//! trio its own way: `merge::Trio`, `transform::Parcel`, `blend::Trio`, plus the
-//! bare `(TexHandle, TexHandle, Option<TexHandle>)` tuples the fill and the stroke
-//! passed around. Four spellings of one shape, four sets of accessors, and — the
+//! Every renderer here writes a tile's channels, and each is free to spell the trio
+//! its own way: a `Trio` in the merge, a `Parcel` in the transform, another `Trio` in
+//! the blend, plus bare `(TexHandle, TexHandle, Option<TexHandle>)` tuples in the fill
+//! and the stroke. Four spellings of one shape, four sets of accessors, and — the
 //! part that actually cost something — the residual's `Option` threaded by hand at
 //! about a dozen sites:
 //!
@@ -115,10 +115,11 @@ pub(crate) struct Channels {
 impl Channels {
     /// Check a trio out of the pool.
     ///
-    /// The one place the residual's `Option` decides an acquire, where it used to be
-    /// four copies of `self.resid_format.map(|f| pool.acquire_tex(f, source))` — one
-    /// per renderer, each of which had to remember that the third texture is
-    /// conditional and that it takes the same [`AllocSource`] as the other two.
+    /// **The one place the residual's `Option` decides an acquire.** Spelled out per
+    /// renderer instead, it is four copies of
+    /// `self.resid_format.map(|f| pool.acquire_tex(f, source))`, each having to
+    /// remember that the third texture is conditional and that it takes the same
+    /// [`AllocSource`] as the other two.
     pub(crate) fn acquire(pool: &TilePool, formats: ChannelFormats, source: AllocSource) -> Self {
         Self {
             color: pool.acquire_tex(formats.color, source),

@@ -102,9 +102,9 @@ fn tooth_gate(d: f32, tooth: f32) -> f32 {
 /// `255·L/128 − L` the shader spells, so the CPU's rows bin the numbers the GPU will
 /// actually project.
 ///
-/// Both sides used to fold [`RISE_LIMIT`] away into the literals `255/512` and `0.25`
-/// — exact, since the constants are dyadic, but it put the shared number beyond the
-/// reach of any check. Spelling it out on both sides is what lets
+/// Neither side folds [`RISE_LIMIT`] away into the literals `255/512` and `0.25`.
+/// Folding is exact, since the constants are dyadic, but it puts the shared number
+/// beyond the reach of any check; spelling it out on both sides is what lets
 /// `the_host_and_the_shader_agree_on_the_tooths_constants` cover this decode.
 fn decode_rise(e: u8) -> f32 {
     (e as f32 / 255.0) * (255.0 * RISE_LIMIT / 128.0) - RISE_LIMIT
@@ -298,8 +298,8 @@ fn tabulate_bearing(ground: &[u8]) -> [[f32; 256]; BEARING_DIRS] {
 ///
 /// Rows are binned on the **decoded 8-bit** rise the shader itself reads, so the
 /// two sides draw from one distribution texel for texel — the same reason the
-/// shaders tap the map with nearest and not bilinear. What is no longer exact is
-/// the direction: the row grid quantizes it (interpolated between neighbours) and
+/// shaders tap the map with nearest and not bilinear. The direction is the one
+/// inexact part: the row grid quantizes it (interpolated between neighbours) and
 /// the bins quantize the projection. Both residuals are far under the mean-field
 /// freeze either side of the kernel already carries.
 ///

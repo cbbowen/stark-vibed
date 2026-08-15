@@ -352,16 +352,16 @@ async fn custom_shapes_replicate_mid_session() {
 
 /// **A peer that has never seen a ground still paints on it** (§6.4, §12.4).
 ///
-/// The regression this whole design answers. A canvas ground used to be a *name*,
-/// and a name is only as good as the table the reader holds: the host switched to
-/// one the peer had never fetched, the peer's registry silently fell back to the
-/// flat stand-in, and from then on every stroke it merged deposited with no
-/// deposition tooth. The canvases diverged, and nothing on either screen said why —
-/// the peer's pixels were a perfectly plausible painting, just not the same one.
+/// What content-addressing the ground buys. Name a ground instead, and the name is
+/// only as good as the table the reader holds: the host switches to one the peer has
+/// never fetched, the peer's registry silently falls back to the flat stand-in, and
+/// from then on every stroke it merges deposits with no deposition tooth. The canvases
+/// diverge with nothing on either screen to say why — the peer's pixels are a
+/// perfectly plausible painting, just not the same one.
 ///
 /// It has to be a *toothed* brush on an irregular ground, because that is the only
 /// thing the fallback changes: with `tooth: 0.0` the gate is 1.0 everywhere and a
-/// missing ground is invisible, which is exactly how this survived the suite.
+/// missing ground is invisible.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_peer_paints_on_a_ground_it_has_never_seen() {
     let (Some(mut host), Some(mut peer)) = (engine_or_skip(), engine_or_skip()) else {
@@ -702,10 +702,10 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
 
 /// **Mid-session, a promised ground is asked of the frontend rather than a peer.**
 ///
-/// The join negotiation covers the snapshot; this is the rest of the session. A
-/// collaborator switching to a ground that ships with the app used to cost every
-/// other client a transfer of the canonical weave. Now the transport asks the
-/// frontend first, and only dials if the answer does not come.
+/// The join negotiation covers the snapshot; this is the rest of the session. The
+/// transport asks the frontend first and only dials if the answer does not come, so a
+/// collaborator switching to a ground that ships with the app costs every other client
+/// a read from disk rather than a transfer of the canonical weave.
 ///
 /// The peer here plays the frontend by hand: it promises the ground, waits to be
 /// asked, and supplies the bytes from its own copy — which is exactly what

@@ -85,10 +85,9 @@ use stark_core::{LayerId, LayerInfo};
 /// would be an anonymous track. Reading the two off one field is what makes the wrong
 /// pair unrepresentable rather than merely unlikely.
 ///
-/// The rule that used to keep *all* of these unmarked was about a bar, not about the
-/// set: one marked slider among unmarked ones reads worse than none marked. That
-/// still holds and is still satisfied — each bar draws one kind's table, and the
-/// color filter's, the only table left, is marked throughout.
+/// The rule is about a bar, not about the set: one marked slider among unmarked ones
+/// reads worse than none marked. It is satisfied here — each bar draws one kind's
+/// table, and the color filter's, the only table with marks, is marked throughout.
 struct Knob<F: 'static> {
     name: &'static str,
     hint: &'static str,

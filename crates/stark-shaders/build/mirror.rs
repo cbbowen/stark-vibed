@@ -6,23 +6,21 @@
 //! point's `@location` parameters describe ([`emit_vertex`]).
 //!
 //! Every uniform on this boundary is one half of a pair the compiler cannot see
-//! across, and the two halves used to be written out separately: nine `vec4` lanes
-//! in `dynamics.wesl` and nine `[f32; 4]` fields in `dynamics.rs`, each with its own
-//! copy of what the lanes mean. Nothing checked the correspondence, so what the two
-//! copies actually did was drift — `Stamp::e`'s Rust doc still described `.zw` as
-//! "the midpoint `exchange` samples the canvas at" long after the shader had stopped
-//! reading the lane at all.
+//! across. A hand-written Rust half is a second declaration of the same lanes with
+//! its own copy of what they mean, and nothing checks the correspondence: the two
+//! drift, and a lane the shader has stopped reading goes on being documented as
+//! though it were live.
 //!
-//! So the shader-side declaration becomes the only one. This walks the WESL AST that
+//! So the shader-side declaration is the only one. This walks the WESL AST that
 //! `build.rs` already holds and emits the Rust struct from it — fields, padding, and
-//! the lane documentation, which now lives exactly once.
+//! the lane documentation, which lives exactly once.
 //!
 //! **The layout is the whole point, and it is not the layout `#[repr(C)]` would give.**
 //! WGSL aligns a `vec3<f32>` to 16 bytes and sizes it 12; it rounds a struct up to
 //! its own alignment; it pads an array's elements and a matrix's columns out to a
 //! stride. A Rust struct of the obvious field types agrees with none of that in
-//! general — it only happens to agree when every member is a `vec4`, which is why the
-//! hand-written mirrors have survived so far.
+//! general — it agrees only when every member is a `vec4`, which is a coincidence to
+//! be generated past, not relied on.
 //!
 //! None of those rules are implemented here. `wesl` resolves a type expression
 //! ([`ty_eval_ty`]) and `wgsl-types` gives that type its WGSL [`Type::size_of`] and
@@ -385,8 +383,9 @@ fn emit_bindings(tu: &TranslationUnit, src: &str, module: &str) -> TokenStream {
         // The rest of what the declaration decides: what kind of thing occupies the
         // slot, and whether it exists at all in a build without the residual.
         let kind = bind_kind(decl, module, &member, tu);
-        // `@if(resid)` — the gate that used to be transcribed as a per-layout element
-        // count (`[..12 + 4 * usize::from(resid)]`, seven of them).
+        // `@if(resid)` — the shader's own gate on the slot, carried through so a
+        // layout never has to restate it as an element count (`[..12 + 4 *
+        // usize::from(resid)]`).
         let resid = decl.attributes.iter().any(|a| match &**a {
             Attribute::If(e) => src[e.span().range()].trim() == "resid",
             _ => false,

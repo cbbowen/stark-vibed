@@ -111,9 +111,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // which can step just outside the gamut on very saturated pairs, and the LUT is
     // indexed by sRGB. `mixbox_srgb_to_concentrations` clamps the top end itself. The
     // rest of `mixbox_rgb_to_latent` is the residual: what the polynomial could not say
-    // about the color the light works out to. **The trip back from light is exact** —
-    // it was the LUT's concentrations alone, so a blend that landed on black stored a
-    // mixture the media pass would render `#383838`.
+    // about the color the light works out to. **The residual is what makes the trip
+    // back from light exact** — the LUT's concentrations alone cannot reach every
+    // color, and a blend landing on black would store a mixture the media pass renders
+    // `#383838`.
     let x = combined_light(
         latent_to_light(chan_b, res_b),
         cb.a,

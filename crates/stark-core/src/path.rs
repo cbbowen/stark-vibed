@@ -1537,9 +1537,9 @@ mod tests {
     /// A fast pen reports tens of pixels apart, and a density policy that reads the
     /// input's curvature will happily ask for detail the data cannot support;
     /// granting it leaves the polygon under-determined and the curve wanders between
-    /// the samples it passes through. It used to take an explicit cap. It is now
-    /// structural: a control point is only taken on if it *measurably* reduces the
-    /// error, and one the data cannot see does not.
+    /// the samples it passes through. The bound is structural rather than an explicit
+    /// cap: a control point is only taken on if it *measurably* reduces the error, and
+    /// one the data cannot see does not.
     #[test]
     fn the_fit_never_outruns_its_data() {
         for step in [4.0f32, 20.0, 50.0] {

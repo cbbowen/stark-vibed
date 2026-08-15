@@ -53,12 +53,12 @@ icons! {
     // own ([`icon_tinted`]): an outline weight has barely any interior to tint, so the
     // bucket is `fill` where its neighbours are `bold`. That break is not an
     // inconsistency — it is the *reason* this chip looks different from the four beside
-    // it, which is the same job the Fill chip's swatch used to do.
+    // it, and it does the job a separate swatch beside the word would otherwise take.
     PAINT_BUCKET => "paint-bucket-fill",
     // The Layers panel's header. A frame is a layer, so the two "add" buttons sit side
-    // by side and the glyphs have to carry the difference the words used to: a stack
-    // gains a member, versus a single bordered region coming into being — which is what
-    // a frame is (§15.7), and why it is a square rather than a stack.
+    // by side and the glyphs alone have to carry the difference: a stack gains a
+    // member, versus a single bordered region coming into being — which is what a frame
+    // is (§15.7), and why it is a square rather than a stack.
     ADD_LAYER => "stack-plus-bold",
     ADD_FRAME => "plus-square-bold",
     // The fourth "add" in that header, and the whole-plane matte's own mark
@@ -428,8 +428,8 @@ pub fn icon_large(svg: &'static str) -> Element {
 /// The color arrives as the brush's RGBA, and its alpha is the paint's opacity
 /// (per-unit, as everywhere in Stark), so a thin wash has to *look* thin. That is why
 /// the glyph is drawn twice, the paint over an untinted copy of itself: the copy
-/// underneath is the white base the old swatch had, and it is what a 15% wash tints.
-/// Laid straight onto the chip's dark ground the same wash would come out a dim grey
+/// underneath is the light base a 15% wash tints, the same job a swatch's white
+/// backing does. Laid straight onto the chip's dark ground the same wash comes out a dim grey
 /// bucket — the paint would read as *dark* rather than as *thin*, which is the one
 /// thing this glyph exists to get right.
 ///

@@ -133,10 +133,10 @@ pub struct DocState {
     /// The canvas substrate color — the ground the paint sits on — as straight
     /// sRGB (§15.5).
     ///
-    /// Document state on the same argument §6.4 makes for the weave: which ground
-    /// a piece was painted on is part of what it *is*, and it must be saved. It
-    /// was previously a view setting the frontend owned, which meant the paper
-    /// color of a painting was simply not stored anywhere.
+    /// Document state on the same argument §6.4 makes for the weave: which ground a
+    /// piece was painted on is part of what it *is*, and it must be saved. A view
+    /// setting the frontend owned would leave the paper color of a painting stored
+    /// nowhere at all.
     ///
     /// Distinct from a matte layer, which is a slab of opaque *paint*: the
     /// substrate sits under everything, is lit, and the canvas weave shows through
@@ -153,13 +153,11 @@ pub const DEFAULT_BACKGROUND: [f32; 3] = [0.85, 0.85, 0.85];
 /// The canvas a document starts on when nobody says otherwise (§6.4): `Flat`, the
 /// one ground that is procedural.
 ///
-/// It used to be linen, and that could not survive grounds being content-addressed
-/// (§6.4): a `SurfaceId` now *is* a height map, and the engine embeds no image
-/// bytes, so core naming linen would be core naming an image it cannot produce. The
-/// old constant papered over exactly that — a fresh document claimed to be on linen
-/// while the registry rendered the flat stand-in until the frontend's fetch landed,
-/// which is the same "named ground, absent bytes" gap the peer divergence came
-/// through.
+/// **Core cannot name a woven ground here.** Grounds are content-addressed (§6.4) — a
+/// `SurfaceId` *is* a height map — and the engine embeds no image bytes, so a default
+/// of linen would be core naming an image it cannot produce. A fresh document would
+/// claim to be on linen while the registry rendered the flat stand-in until the
+/// frontend's fetch landed: the "named ground, absent bytes" gap that diverges peers.
 ///
 /// So the choice of opening ground belongs to whoever holds the bytes: the frontend
 /// imports linen at startup and opens the document on it

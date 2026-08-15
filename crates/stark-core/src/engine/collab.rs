@@ -143,10 +143,10 @@ impl Engine {
             // both the live copy and the committed one are drawn.
             self.peers.clear_gesture(author);
             if removed.is_some_and(|id| self.session.active_layer == id) {
-                // A peer deleting the layer this client is painting on used to leave
-                // it pointed at a layer that no longer exists, after which every
-                // stroke was silently refused by `apply` with nothing on screen to
-                // explain it (§17.9).
+                // A peer deleting the layer this client is painting on must not leave
+                // it pointed at a layer that no longer exists: `apply` would then
+                // refuse every stroke silently, with nothing on screen to explain it
+                // (§17.9).
                 self.repoint_active_layer();
             }
             self.mark_live_stale();
@@ -269,13 +269,12 @@ impl Engine {
     ///
     /// Dated by `now`, the **caller's** clock — the same one it hands
     /// [`take_presence`](Self::take_presence) — folded into [`Self::now`] so the
-    /// engine's clock stays monotonic. It used to be dated by `self.now` alone, on
-    /// the assumption the pump advanced it every tick; but the pump skips
-    /// `take_presence` on a tick with nothing to publish, so on a client that was
-    /// only *watching* the clock advanced per [`HEARTBEAT`](crate::peer::HEARTBEAT)
-    /// — and every frame merged in between aged a whole heartbeat at once when the
-    /// expiry finally ran, which took down live gestures whose frames were arriving
-    /// thirty times a second.
+    /// engine's clock stays monotonic. Dating by `self.now` alone would assume the
+    /// pump advances it every tick, and the pump skips `take_presence` on a tick with
+    /// nothing to publish: on a client that is only *watching*, the clock would
+    /// advance per [`HEARTBEAT`](crate::peer::HEARTBEAT), and every frame merged in
+    /// between would age a whole heartbeat at once when the expiry finally ran —
+    /// taking down live gestures whose frames arrive thirty times a second.
     pub fn merge_presence(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> bool {
         self.now = now.max(self.now);
         let now = self.now;

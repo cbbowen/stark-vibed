@@ -26,9 +26,9 @@
 // transfer, and a transfer is a statement about a *single* pre-state: both dispatches
 // evaluate the same kernel (`exchange_at`) from the same segment-entry canvas and the
 // same segment-entry reservoir, and hand back complementary fractions of it. Reading
-// the region as the deposit had already left it — which is what the tool used to do —
-// makes the tool lift from a canvas that has, from its point of view, not happened yet,
-// and the halves stop adding up (see `exchange_at`).
+// the region as the deposit has already left it would make the tool lift from a canvas
+// that has, from its point of view, not happened yet, and the halves would stop adding
+// up (see `exchange_at`).
 //
 // **The canvas-side exchange is swept, not stamped** — the same definite-integral
 // formulation as the plain deposit: a texel's *exposure* to the segment is the
@@ -46,25 +46,24 @@
 //
 // **The tool exchanges once per segment, at the same cadence as everything else.**
 // The canvas side of the transfer is swept per segment (above), so the tool side has
-// to be too, or the tool gains what the canvas gave up only some segments later. That
-// lag used to be real: a separate `pickup` pass — retired, and the only mention of
-// that name left in the tree — ran on its own coarse cadence, every `spacing·radius`
-// of travel, and a stroke that stopped mid-interval left its last footprint stripped
-// by a `deposit` whose paint the tool had not yet been credited with — a tip-shaped
-// patch of missing paint, worst exactly where `lift` is high.
+// to be too, or the tool gains what the canvas gave up only some segments later. On a
+// coarser cadence of its own — a reload every `spacing·radius` of travel, say — a
+// stroke stopping mid-interval leaves its last footprint stripped by a `deposit` whose
+// paint the tool has not yet been credited with: a tip-shaped patch of missing paint,
+// worst exactly where `lift` is high.
 //
 // So `exchange` does the whole of the tool's side in one dispatch, per segment,
 // against the very same segment the `deposit` accounts for. Nothing is deferred, so
 // nothing is left owing at the end of a stroke.
 //
-// This also retires a good deal of machinery. The old cadence had to hide its own
-// discreteness — a whole interval's reload landing between two segments is a large
-// fraction of the load at high lift × deposit, and consecutive segments served
-// visibly different tools — which took a separate **gain parcel**, a linear ramp
-// serving it in across the interval, and two extra baked prefixes to evaluate that
-// ramp per fragment. A per-segment exchange has no step to hide: the segment length
-// *is* the reload step, and `stroke::budget::flatten_tolerance` already caps it at a fraction
-// of the tip. All of it is gone.
+// Matching the cadences is also what keeps this loop small. A coarser reload has to
+// hide its own discreteness — a whole interval's load landing between two segments is
+// a large fraction of it at high lift × deposit, and consecutive segments would be
+// served visibly different tools — which takes a **gain parcel**, a linear ramp
+// serving the load in across the interval, and two extra baked prefixes to evaluate
+// that ramp per fragment. A per-segment exchange has no step to hide: the segment
+// length *is* the reload step, and `stroke::budget::flatten_tolerance` already caps it
+// at a fraction of the tip.
 //
 // Conservation (§6.1): paint moves by transferring **height** — the one
 // conserved quantity. Color and per-unit opacity ride as optical-mass
@@ -118,9 +117,9 @@ struct Stamp {
     //    stamp. Its neutral value is 1 rather than 0, like `h.z` and `k.x`, because
     //    the lane is a *scale* and a zeroed one is not "no padding" but "no tip".
     //
-    //    It took over the last component of the lane that carried the segment's
-    //    midpoint, where `exchange` used to sample the canvas with one bilinear tap
-    //    for the whole segment; that walks the texel's own track through `tip_at` now.
+    //    There is no segment midpoint in this lane: `exchange` samples the canvas
+    //    along the texel's own track through `tip_at` rather than with one bilinear
+    //    tap for the whole segment.
     e: vec4<f32>,
     // f–h: color dynamics (§6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
@@ -424,18 +423,18 @@ const TAU: f32 = 6.283185307179586;
 // **Both halves of the loop evaluate this one solution**, over the same exposure and
 // from the same segment-entry state, and take complementary shares of it — which is
 // what makes the whole exchange **independent of how the path was cut into segments**,
-// the property adaptive flattening (`path::flatten`) depends on and uniform 2px
-// sampling used to hide. The system is linear and autonomous in `e`, so running it
+// the property adaptive flattening (`path::flatten`) depends on and which uniform 2px
+// sampling would only ever hide. The system is linear and autonomous in `e`, so running it
 // over `e₁` and then `e₂` is running it over `e₁+e₂`; exposures add across the
 // overlapping quads of consecutive segments, so the whole stroke applies the
 // continuous path integral whatever the spacing.
 //
-// Getting this wrong is not subtle. What was here before solved only *half* the pair —
-// the canvas relaxing towards a tool that never took anything back, `1 − exp(λ_lift·e)`
-// lifted off and `k_dep(exp(λ_dep·e) − exp(λ_lift·e))/(λ_dep − λ_lift)` laid on — and
-// then let the tool lift from the region as the `deposit` had already left it. The two
-// sides therefore disagreed about how much had changed hands by `O(lift²)` per
-// segment, and paint that goes nowhere has to show:
+// Getting this wrong is not subtle. Solving only *half* the pair — the canvas relaxing
+// towards a tool that never takes anything back, `1 − exp(λ_lift·e)` lifted off and
+// `k_dep(exp(λ_dep·e) − exp(λ_lift·e))/(λ_dep − λ_lift)` laid on — and then letting the
+// tool lift from the region as the `deposit` has already left it makes the two sides
+// disagree about how much changed hands by `O(lift²)` per segment. Paint that goes
+// nowhere has to show:
 //
 //   * at `lift = deposit = 0.95` and a segment of half a radius, 39% of the total
 //     `canvas + tool` height vanished at *every* segment boundary. What survives is
@@ -485,10 +484,10 @@ const TAU: f32 = 6.283185307179586;
 // The one thing to be careful of: the two sides evaluate their exponentials at
 // *different* quadratures of the same exposure (the canvas differences the prefix-τ,
 // the tool takes `τ(u)·lr`), and an exponential that saturates harder turns the same
-// small quadrature disagreement into a larger height disagreement than the pair's
-// gentler `1 − k·w(e)` did. That is the real content of the old note that the sliding
-// kernel "gives up column-stochasticity" — the shares still sum to one exactly; it is
-// the exposures underneath them that only agree approximately.
+// small quadrature disagreement into a larger height disagreement than the pair
+// kernel's gentler `1 − k·w(e)` would. This is *not* a loss of column-stochasticity:
+// the shares sum to one exactly, and it is the exposures underneath them that only
+// agree approximately.
 
 // How one segment's exposure `e` splits the two boxes. Every field is a fraction of an
 // entering quantity, and the tool's share is the complement of each — so the canvas
@@ -583,8 +582,8 @@ fn exchange_at(e: f32) -> Exchange {
 // is what keeps the paint laid independent of how the path was cut — the same property
 // the exposure integral has, and for the same reason it matters. The falloff is linear
 // in arc length, so sampling it where the paint actually lands is exact, not merely
-// closer; it used to be baked in at the segment midpoint and bought back with a
-// `0.02 / drain` cap on segment length (`gpu::stroke::budget::flatten_tolerance`).
+// closer — which is why `gpu::stroke::budget::flatten_tolerance` need not buy accuracy
+// for it with a `0.02 / drain` cap on segment length.
 //
 // **Bounded at a full load, not only at an empty one.** A texel is measured at its own
 // arc, and the texels behind the stroke's *start* sit at a negative one — the tip's
@@ -687,9 +686,9 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
 //     ∫₀^lr R(xl − s, yl) · τ(xl − s, yl) ds
 //
 // a convolution along travel between the reservoir `R` and the footprint's
-// optical-depth density. Sampling `R` once mid-pass (what this used to do) is a
-// one-tap midpoint rule for that integral: first order, with error growing in
-// segment length, which is why it could only ever be traded against step size.
+// optical-depth density. Sampling `R` once mid-pass would be a one-tap midpoint rule
+// for that integral: first order, with error growing in segment length, and so
+// tradeable only against step size.
 //
 // The integral has the same shape as the exposure itself, so it yields to the same
 // trick: **`prefix_at` is this integral with `R ≡ 1`**. Accumulate `R·dτ` along the
@@ -701,12 +700,11 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
 //
 // One **workgroup per row**, one thread per column, with the running integral
 // built by a shared-memory inclusive scan (Hillis–Steele, log₂(BAKE_RES) steps).
-// The loop this replaced — one thread walking its whole row — put 128 threads on
-// the device per dispatch and a 128-iteration serial chain of texture reads on
-// each, and since the bake runs once per segment inside the sequential stamp
-// loop, that near-idle dispatch dominated the whole dynamics path. The scan
-// computes the same prefix sums (up to float re-association) with every lane of
-// a full-width dispatch busy.
+// One thread walking its whole row instead puts 128 threads on the device per
+// dispatch and a 128-iteration serial chain of texture reads on each — and since
+// the bake runs once per segment inside the sequential stamp loop, that near-idle
+// dispatch dominates the whole dynamics path. The scan computes the same prefix
+// sums (up to float re-association) with every lane of a full-width dispatch busy.
 
 // Must equal the host's BAKE_RES (the bake textures' side).
 const BAKE_RES: u32 = 128u;
@@ -873,21 +871,19 @@ fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
 // canvas under it is an arbitrary evolving field — so it is a quadrature, and this is
 // how fine.
 //
-// **Pinned at 1, and for a different reason than it used to be.** Under the closed-pair
-// kernel raising it was outright *wrong* — over each sub-step the tool lifted its share
-// of a canvas held fixed, N times over, while the `deposit` gave up a single share of
-// the whole exposure, so the two halves stopped being complements of one solution and
-// the transfer stopped balancing (N = 8 landed 12 levels rms from where N = 1 converged,
-// even at a segment length four times finer than the loop runs at).
+// **Pinned at 1, and free to raise.** The sliding kernel puts no obstacle in the way:
+// each direction is a plain exponential in exposure, and `exp(−k·e/N)^N = exp(−k·e)`
+// exactly, so splitting the exposure changes the tool's own arithmetic not at all.
+// (A closed-pair kernel would forbid it outright — over each sub-step the tool lifts
+// its share of a canvas held fixed, N times over, while the `deposit` gives up a
+// single share of the whole exposure, so the two halves stop being complements of one
+// solution and the transfer stops balancing.)
 //
-// The sliding kernel has no such objection: each direction is a plain exponential in
-// exposure, and `exp(−k·e/N)^N = exp(−k·e)` exactly, so splitting the exposure changes
-// the tool's own arithmetic not at all. All N > 1 buys is sampling the canvas at
-// several points along the texel's track instead of one — and that was measured, both
-// as sub-steps and as an average over the track, and moves the result by less than the
-// 8-bit noise floor. The midpoint tap is simply not where the error is; see
-// `RESERVOIR_EXCHANGE_STEP`, which is. So it stays at 1 because the taps are not worth
-// paying for, and it is now free to raise if that ever changes.
+// All N > 1 buys is sampling the canvas at several points along the texel's track
+// instead of one, and that is measured — both as sub-steps and as an average over the
+// track — at less than the 8-bit noise floor. The midpoint tap is simply not where
+// the error is; see `RESERVOIR_EXCHANGE_STEP`, which is. So it stays at 1 because the
+// taps are not worth paying for.
 const EXCHANGE_STEPS: u32 = 1u;
 
 // `sin(x)` and `1 − cos(x)` as the same truncated Maclaurin series `path::arc_at` uses,
@@ -951,24 +947,24 @@ fn tip_at(f: f32) -> vec4<f32> {
 //
 // All three share the one exposure, and it is the *same* segment travel the canvas
 // side integrates over, so nothing the canvas gave up waits to be credited. That is
-// the whole reason this runs per segment rather than on a cadence of its own: the
-// tool used to be reloaded every `spacing·radius` while the canvas was stripped every
-// segment, and a stroke ending mid-interval left the difference behind as a
-// tip-shaped patch of missing paint.
+// the whole reason this runs per segment rather than on a cadence of its own: reload
+// the tool every `spacing·radius` while the canvas is stripped every segment and a
+// stroke ending mid-interval leaves the difference behind as a tip-shaped patch of
+// missing paint.
 //
 // **The tool's side is swept too.** A reservoir texel does not hover over one spot for
 // a segment — it is dragged along a track `lr` radii long, over a canvas that is
 // changing under it, and the canvas side integrates over exactly that track through
-// the prefix-τ. This used to be a single bilinear tap at the segment's midpoint: the
-// midpoint rule, second-order in the segment length, and the only thing left in the
-// loop whose answer depended on how finely the path happened to be cut.
+// the prefix-τ. A single bilinear tap at the segment's midpoint would be the midpoint
+// rule, second-order in the segment length, and the one thing in this loop whose
+// answer depended on how finely the path happened to be cut.
 //
 // That dependence is visible, and it is *not* the kind that hides behind a tolerance:
 // the flattener's segment lengths follow the pointer samples, and a hand varies its
-// speed, so the same gesture drawn twice cut the tool's decay differently and the
-// smear faded at a different rate. Measured on a pure smear dragged out of a band of
-// paint, the same 300px stroke drawn with 2, 6, 20 and 80 pointer samples came out up
-// to 11 levels apart, and 15% away from the converged answer.
+// speed, so the same gesture drawn twice would cut the tool's decay differently and
+// the smear would fade at a different rate. Measured on a pure smear dragged out of a
+// band of paint, the same 300px stroke drawn with 2, 6, 20 and 80 pointer samples came
+// out up to 11 levels apart, and 15% away from the converged answer.
 //
 // So the track is walked in [`EXCHANGE_STEPS`] sub-steps, each with its own canvas tap
 // and its own share of the exposure. The kernel composes exactly, so splitting the
@@ -978,9 +974,9 @@ fn tip_at(f: f32) -> vec4<f32> {
 // **The segment's `snapshot` rides in the tail of this dispatch.** The two are
 // independent — the snapshot only reads the region, which the previous segment's
 // `deposit` last wrote, and writes the `under` scratch; the exchange reads that same
-// region and writes the reservoir — so the barrier that used to separate them was
-// paying for an ordering neither needed. Both must finish before `deposit`, and
-// sharing one dispatch is the cheapest way to say exactly that.
+// region and writes the reservoir — so a barrier between them would pay for an
+// ordering neither needs. Both must finish before `deposit`, and sharing one dispatch
+// is the cheapest way to say exactly that.
 //
 // Workgroups `[0, ex_groups)` on x are the reservoir; the rest are the footprint,
 // re-based onto its own grid. The grid's y extent is whatever the taller of the two
@@ -1081,15 +1077,13 @@ fn exchange(
         // `deposit` after us lays from it, over the very exposure it lays over — so
         // there is no correction factor.
         //
-        // There used to be one (`DEPLETE_FACTOR = 0.75`, "deplete a bit slower than the
-        // math would indicate to account for error"). The error it was accounting for
-        // was real but misdiagnosed: the two sides were solving different equations, so
-        // they disagreed about how much had changed hands and the tool over-drained.
-        // Draining slower papered over that — but a factor below 1 means the tool keeps
-        // a fraction of every deposit it makes, which compounds, so paint grew without
-        // bound over a long stroke. With both sides now taking complementary shares of
-        // one solution there is nothing left to correct, and the exact rate is also the
-        // conserving one.
+        // **No fudge factor belongs here.** A constant below 1 ("deplete a bit slower
+        // to account for error") means the tool keeps a fraction of every deposit it
+        // makes, which compounds — paint grows without bound over a long stroke. Such
+        // a factor only ever compensates for the two sides solving *different*
+        // equations and disagreeing about how much changed hands; with both taking
+        // complementary shares of one solution there is nothing to correct, and the
+        // exact rate is also the conserving one.
         h = h * (1.0 - ex.dep);
         m = m * (1.0 - ex.dep);
 
@@ -1107,9 +1101,9 @@ fn exchange(
         // quotient is enormous. `blend_latent` weights it by its own vanishing mass,
         // but "enormous × almost nothing" is not nothing: it leaves a few tenths of a
         // wild color on the tool, which the deposit then combs out along the stroke as
-        // thin bright streaks. The single mid-segment tap this replaced could hit that
-        // too, but once per segment and at the midpoint; walking the track samples the
-        // ends as well, where the canvas is emptiest, and eight times as often.
+        // thin bright streaks. Walking the track meets that case more often than a
+        // single mid-segment tap would: it samples the ends as well, where the canvas
+        // is emptiest, and eight times as often — hence the guard.
         if take_m > PAINT_EPS {
             lat = blend_latent(lat, m, rc.rgb / rc.a, take_m);
             // The same stack, on the same two masses, against the *entering* `m` —
@@ -1203,8 +1197,8 @@ fn exchange(
 // the difference, so at a fixed stencil `D` has a hard ceiling of `Σ(share·d²)` per
 // firing however hard the rate is driven. Measured on a 40 px tip, whose window
 // carries `e ≈ 1.7`: the whole of `bleed` from 0.95 to 1.0 takes `w` from 0.52 to
-// 0.99, ×1.9 in `D` and ×1.4 in distance, and past that nothing — which is exactly
-// why cranking the old knob past its λ-clamp changed nothing visible.
+// 0.99, ×1.9 in `D` and ×1.4 in distance, and past that nothing. Driving the rate
+// alone past its λ-clamp therefore buys nothing visible at all.
 //
 // That ceiling is not a stability bound, it is the stencil's own geometry, and
 // `Σ(share·d²)` is quadratic in the reach. So the host is given the diffusivity and
@@ -1874,10 +1868,9 @@ fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
 // normal**, which the media pass (§6.3) prints as a hard line straight across the
 // middle of the last footprint, perpendicular to the travel. It is not subtle at any
 // impasto worth the name: on a 64 px smear into thick paint the specular jumped 107
-// levels across one texel at exactly `xl = 0`, against 2 anywhere along the trail. The
-// note that used to stand here reasoned that "the kernel is already deep in saturation
-// and the kink costs nothing" — true of the *value*, and silent about the derivative,
-// which is the thing the light actually reads.
+// levels across one texel at exactly `xl = 0`, against 2 anywhere along the trail. That
+// the kernel is deep in saturation there is no defence — it is true of the *value* and
+// says nothing about the derivative, which is the thing the light actually reads.
 //
 // So the handover is the **p-norm soft minimum** of the two, `(owed⁻ᵖ + received⁻ᵖ)⁻¹ᐟᵖ`
 // — written below as `min · (1 + (min/max)ᵖ)⁻¹ᐟᵖ`, which is the same number and never
@@ -1936,7 +1929,7 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     // The slot carries zero travel and zero curvature, so the "sweep" is the tip's own
     // footprint and `outside_sweep` reduces to the brush-local unit square — the same
-    // rejection `snapshot` used to decide which texels it bothered to copy.
+    // rejection `snapshot` uses to decide which texels it bothers to copy.
     let sw = segment_frame(rt);
     if outside_sweep(sw) {
         return;

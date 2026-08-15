@@ -306,11 +306,10 @@ fn app() -> Element {
 
             // Order among those four says nothing, because at most one of them
             // is ever mounted: entering any mode leaves whichever was live
-            // (`modes::leave`). It used to be read as a priority — the four
-            // catchers all sit at the same z-index, where the *last* sibling
-            // takes the pointer rather than the first, so the arbitration the
-            // comments claimed ran the other way. A rule that cannot be got
-            // wrong is better than one stated correctly in four places.
+            // (`modes::leave`). Do not read it as a priority — the four catchers
+            // all sit at the same z-index, where the *last* sibling takes the
+            // pointer rather than the first. A rule that cannot be got wrong is
+            // better than one stated correctly in four places.
 
             // Collaborators' pointers, over the canvas and under the chrome
             // (§17.4). Empty and free when solo.
@@ -984,9 +983,8 @@ fn CommandRail() -> Element {
                         //
                         // It belongs here all the same, because this menu is the map
                         // of what is on screen, and because kept open the rack is
-                        // *clickable*: that is the mouse-only way to a slot, which
-                        // the chips used to be and which a hand with a pen and no
-                        // keyboard has no other route to.
+                        // *clickable*: it is the mouse-only way to a slot, which a
+                        // hand with a pen and no keyboard has no other route to.
                         MenubarItem {
                             index: PanelId::ALL.len(),
                             value: "quick-brushes".to_string(),
@@ -1164,8 +1162,8 @@ fn new_document(
     collab::leave(state);
     spawn_forever(async move {
         // A ground that will not fetch opens the document smooth rather than
-        // refusing to open it — and, unlike the old behaviour, the document then
-        // honestly *says* it is smooth instead of claiming a weave it hasn't got.
+        // refusing to open it — and the document then honestly *says* it is smooth
+        // instead of claiming a weave it hasn't got.
         let surface = grounds::resolve_signal(state, ground).await;
         state::with_engine(state, |r| {
             r.new_document(color, surface);

@@ -8,11 +8,11 @@
 //! engine and its projection are held in [`ReadOnly`] handles, which have `read` and
 //! `peek` and no `write`, so `&mut Renderer` cannot be obtained outside this module
 //! at all — the only doors are [`dispatch`] and [`with_engine`], which publish, and
-//! [`with_engine_quiet`], which is named for what it declines to do. Twice now a
-//! panel has reached the engine through the signal, changed something the chrome
-//! reads back, and left the chrome showing the old value until an unrelated command
-//! refreshed it: once for the canvas ground, once for the lighting environment
-//! (§4, §7). Neither spelling compiles now.
+//! [`with_engine_quiet`], which is named for what it declines to do. The failure this
+//! rules out: a panel reaches the engine through the signal, changes something the
+//! chrome reads back, and leaves the chrome showing the previous value until an
+//! unrelated command refreshes it (§4, §7). Both the canvas ground and the lighting
+//! environment are reachable that way, and neither spelling compiles.
 
 use dioxus::dioxus_core::{Subscribers, Task};
 use dioxus::prelude::*;

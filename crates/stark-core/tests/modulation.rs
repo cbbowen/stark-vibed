@@ -191,10 +191,9 @@ fn flow_follows_pressure_when_it_is_mapped_to_it() {
 /// Size driven by **tilt** instead of pressure — the pencil that widens as it is laid
 /// over — and pressure no longer reaching the radius at all.
 ///
-/// The second half is the part worth having: the pressure → size scaling used to be
-/// wired into the segment generator with no way to point it anywhere else, so a brush
-/// that sizes off tilt could not exist and a brush that sizes off nothing could not
-/// either.
+/// The second half is the part worth having. Wire the pressure → size scaling into the
+/// segment generator and there is nowhere else to point it: a brush that sizes off
+/// tilt cannot exist, and neither can one that sizes off nothing.
 #[test]
 fn size_can_be_driven_by_tilt_instead_of_pressure() {
     let Some(mut engine) = engine_or_skip() else {

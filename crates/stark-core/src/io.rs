@@ -126,9 +126,9 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// `Fill` action misreads from `paint` onward rather than degrading — which is
 /// the break the version refuses, the same shape as 5's.
 ///
-/// The reason is that the old trio could not express the thing people reach for.
-/// Coverage is `1 − exp(−K·opacity·height)`, so the brush's entire flow at full
-/// alpha covered 95% and no setting said "and the rest". Naming the *coverage*
+/// The reason is that a height-and-two-opacities trio cannot express the thing people
+/// reach for. Coverage is `1 − exp(−K·opacity·height)`, so the brush's entire flow at
+/// full alpha covers 95% and no setting says "and the rest". Naming the *coverage*
 /// and inverting the law for the mass — `slab.wesl`'s inversion, already here for
 /// blended merges — makes 1 mean opaque and ½ mean half, and leaves a fill only
 /// one control to disagree with.

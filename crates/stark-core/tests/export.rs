@@ -398,13 +398,13 @@ fn impossible_exports_are_errors() {
 
 /// The export limit is **the device's own**, and everything inside it really renders.
 ///
-/// It used to be the literal 8192. `wgpu::Limits::default()` happens to cap 2D
-/// textures there and the frontend requests that, so on the app's device the two
-/// agreed by coincidence — but the headless device asks for `downlevel_defaults`
-/// (2048, the web/WebGL2 floor), and there every size from 2049 to 8192 passed a
-/// check written against a limit the device did not have, then asked wgpu for a
-/// texture it was never granted. The permissive direction, from the one guard whose
-/// whole job is to report that in words instead.
+/// Not the literal 8192, which is only where `wgpu::Limits::default()` happens to cap
+/// 2D textures — the frontend requests those, so on the app's device a hardcoded
+/// number would agree by coincidence. The headless device asks for
+/// `downlevel_defaults` (2048, the web/WebGL2 floor), and there every size from 2049
+/// to 8192 would pass a check written against a limit the device does not have, then
+/// ask wgpu for a texture it was never granted: the permissive direction, from the one
+/// guard whose whole job is to report that in words instead.
 ///
 /// Both halves matter. Refusing one past the limit is the easy one; *rendering* the
 /// one exactly at it is what says the number is real and not merely arithmetic
@@ -460,10 +460,10 @@ fn the_export_limit_is_the_devices_own() {
 ///
 /// The navigator asks for the largest plan that fits its panel, and that question has
 /// to be answerable for any piece at all — the miniature matters most on the ones too
-/// big to see. It used to be asked as a 1× plan (to learn the rect) followed by a
-/// scaled one, which made a piece past the device's texture limit fail the query for a render
-/// that was never going to happen: `draw_overview` returned `None` and the panel went
-/// on quietly showing a stale picture.
+/// big to see. Asked as a 1× plan (to learn the rect) followed by a scaled one, a
+/// piece past the device's texture limit fails the query for a render that was never
+/// going to happen: `draw_overview` returns `None` and the panel goes on quietly
+/// showing a stale picture.
 #[test]
 fn a_piece_past_the_export_limit_still_has_an_overview() {
     use stark_core::geom::Extent2;

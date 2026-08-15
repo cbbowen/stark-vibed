@@ -17,14 +17,14 @@
 // paint), optical mass sums, and the parcel covers resident paint by its own visible
 // alpha `1 − exp(−K·opacity·height)`.
 //
-// It used to be a plain premultiplied-"over" weighed by the scratch's alpha, and
-// that alpha was built from the brush's per-unit opacity alone — so the `add` rate
-// (Flow), the thing that decides how much paint the segment actually lays, reached
-// the *height* and never the color. Over bare canvas the media pass hid it, because
-// visible alpha is `op · height` there and the height was right; over existing paint
-// nothing did, and a brush at 5% flow repainted the canvas at full strength in one
-// pass. It is the same defect §6.3 names in the layer composite — covering by
-// opacity rather than by opacity × thickness — one level further down.
+// **Not a premultiplied-"over" weighed by the scratch's alpha.** Such an alpha is
+// built from the brush's per-unit opacity alone, so the `add` rate (Flow) — the thing
+// that decides how much paint the segment actually lays — would reach the *height* and
+// never the color. Over bare canvas that hides, since visible alpha is `op · height`
+// there and the height is right; over existing paint nothing hides it, and a brush at
+// 5% flow repaints the canvas at full strength in one pass. It is the defect §6.3
+// names in the layer composite — covering by opacity rather than by
+// opacity × thickness — one level further down.
 
 import package::lib::paint_common::{blend_latent, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};

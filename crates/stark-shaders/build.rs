@@ -82,7 +82,8 @@ const CONSTS: &[(&str, &str)] = &[
 ///
 /// `composite`'s record is generated once and used twice: pass A draws the layer
 /// stack with it and the brush-dynamics loop composites its working region through
-/// the very same shader (§6.3), and the two had a `#[repr(C)]` struct each.
+/// the very same shader (§6.3). One declaration, so the two callers cannot disagree
+/// about the record they both feed.
 const VERTEX: &[(&str, &str, &str)] = &[
     ("composite", "vs_main", "Instance"),
     ("mask_region", "vs_main", "MaskInstance"),
@@ -93,10 +94,9 @@ const VERTEX: &[(&str, &str, &str)] = &[
 
 /// The WESL modules whose `@binding` indices are generated as named consts
 /// (`build/mirror.rs::emit_bindings`) — the third transcription of the host/shader
-/// boundary after the structs and the constants. `dynamics` is here because its
-/// ~37 indices were maintained in three places (the WESL declarations, the
-/// bind-group layouts, the bind-group entries) with margin comments as the only
-/// map.
+/// boundary after the structs and the constants. `dynamics` is here because it has
+/// the most to lose: ~37 indices reaching both the bind-group layouts and the
+/// bind-group entries, which a margin comment is no way to keep aligned.
 const BINDINGS: &[&str] = &["dynamics"];
 
 /// The vendored Mixbox shader (git submodule), source of the pigment-mixing
@@ -108,7 +108,7 @@ const SHADER_DIR: &str = "src/shaders";
 
 /// The module prefix generated code is mounted under. Importers say
 /// `package::gen::mixbox_poly`, so the import site itself says "build-time
-/// generated" — which is half the benefit of it no longer being a file in the tree.
+/// generated" — which is half the benefit of keeping it out of the source tree.
 const GEN_PREFIX: &str = "package::gen";
 
 fn main() {
@@ -145,19 +145,16 @@ fn main() {
 
     // Generated modules resolve out of `OUT_DIR`; everything else out of the tree.
     //
-    // The generated file **used to be written into `src/shaders`**, and that one fact
-    // is what the whole of this script's freshness apparatus existed to survive: the
-    // directory this script *reads* was also one it *wrote*, so the directory's
-    // fingerprint was entangled with the script's own output and cargo would
-    // sometimes call the artifacts fresh after a shader edit. A stale
-    // `composite.wgsl` paired with a freshly built `media_oklab.wgsl` is two halves
-    // of two different compositing models — tile-shaped artifacts that survive edits
-    // and vanish on `cargo clean`, the worst failure mode there is, because it
+    // **This script must never write into a directory it also reads.** `src/shaders`
+    // is an input, and an input whose fingerprint includes this script's own output is
+    // entangled with it — cargo can then call the artifacts fresh after a shader edit.
+    // A stale `composite.wgsl` paired with a freshly built `media_oklab.wgsl` is two
+    // halves of two different compositing models: tile-shaped artifacts that survive
+    // edits and vanish on `cargo clean`, the worst failure mode there is, because it
     // discredits whatever you happened to be changing at the time.
     //
-    // Writing to `OUT_DIR` instead retires the entanglement, the write-only-on-change
-    // mtime guard that mitigated it, and the `.gitignore` entry for a generated file
-    // sitting in the source tree.
+    // Writing to `OUT_DIR` keeps the two apart by construction, which is why there is
+    // no mtime guard here and no `.gitignore` entry for a generated shader.
     let mut router = wesl::Router::new();
     if let Some(dir) = &gen_dir {
         router.mount_resolver(
@@ -169,9 +166,8 @@ fn main() {
     let mut compiler = wesl::Wesl::new(SHADER_DIR).set_custom_resolver(router);
 
     // Two passes over the tree, differing only in whether the tile's residual channel
-    // exists (§6.7). `Feature::Disable` is `condcomp`'s default, so the first pass is
-    // the build that was here before this channel was added — the `@if(resid)`
-    // declarations simply are not in it.
+    // exists (§6.7). `Feature::Disable` is `condcomp`'s default, so the first pass
+    // simply does not contain the `@if(resid)` declarations.
     compiler.set_feature(RESID_FEATURE, false);
     for name in ENTRY_POINTS {
         if entry_point_enabled(name, mixbox) {
@@ -215,8 +211,8 @@ fn main() {
 ///
 /// The two names differ only for a residual variant (`stamp` → `stamp_resid`), which
 /// is the whole reason this is a function: `build_artifact` takes the artifact name
-/// separately, and the loop that used to pass the module name for both had nowhere to
-/// say so.
+/// separately, so the module a variant links and the file it lands in are stated
+/// independently at the one call site that needs them to differ.
 fn build_one(compiler: &wesl::Wesl<impl wesl::Resolver>, module: &str, artifact: &str) {
     let path = format!("package::{module}");
     compiler.build_artifact(

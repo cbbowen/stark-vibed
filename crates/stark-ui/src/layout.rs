@@ -173,12 +173,12 @@ pub struct ResizeState {
 /// from the live pointer so the math never feeds back on the shifting layout.
 ///
 /// This state exists **only while a pointer is down on a title bar** — [`drag_end`]
-/// commits the reorder and clears it in the same write. It used to outlive the gesture by
-/// 180ms so the dropped panel could ease into its slot, with a timer committing the order
-/// once it landed; when that timer failed to fire the panels were left wearing the
-/// preview's transforms over a stack that had never reordered, which is a whole panel of
-/// displacement and no way back. A gesture the browser itself delimits cannot get stuck
-/// that way, and that is worth more than the ease (§11).
+/// commits the reorder and clears it in the same write. Letting it outlive the gesture
+/// so the dropped panel can ease into its slot means a timer commits the order once it
+/// lands, and a timer that fails to fire leaves the panels wearing the preview's
+/// transforms over a stack that never reordered: a whole panel of displacement and no
+/// way back. A gesture the browser itself delimits cannot get stuck that way, and that
+/// is worth more than the ease (§11).
 #[derive(Clone, PartialEq)]
 pub struct DragState {
     id: PanelId,
@@ -592,10 +592,10 @@ pub fn drag_move(layout: PanelLayout, e: &Event<PointerData>) {
 /// Taking the state *out* of the signal is what disarms it, so that is one write and not
 /// two things to keep in step.
 ///
-/// Nothing is deferred here on purpose. The dragged panel used to ease into its slot over
-/// 180ms with a timer committing the order afterwards — a settle whose timer never fired,
-/// and a dropped panel is the one moment in the gesture where the user is looking at the
-/// *slot*, not at the panel.
+/// Nothing is deferred here on purpose. Easing the dragged panel into its slot would
+/// put a timer in charge of committing the order, and a settle whose timer never fires
+/// strands the layout — at the one moment in the gesture where the user is looking at
+/// the *slot*, not at the panel.
 pub fn drag_end(layout: PanelLayout) {
     let mut drag = layout.drag;
     let taken = drag.write().take();

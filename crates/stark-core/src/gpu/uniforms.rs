@@ -114,8 +114,8 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
 
     /// The **layout** entry a pass declares for these slots, and [`Self::binding`]
     /// the bind-group entry that satisfies it — the two ends of one ABI, both
-    /// stated by the type rather than by the four call sites that used to spell
-    /// `size_of::<T>()` out for themselves.
+    /// stated by the type rather than by each call site spelling `size_of::<T>()` out
+    /// for itself.
     ///
     /// Both sizes are the uniform's own, not [`Self::STRIDE`]: a slot is *padded* to
     /// the alignment and what the shader reads is the struct. Getting that pair

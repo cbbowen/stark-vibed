@@ -109,10 +109,10 @@ const BLEED_REACH_MAX: f32 = 0.5;
 /// the knob stays linear in `D` all the way to it.
 ///
 /// A pass of the tip at full crank buys `σ = sqrt(2·D) · radius`, about a fifth of the
-/// radius — where the old saturating knob topped out. The ladder's lower moment and
-/// the finer cadence it bought move the two factors in opposite directions and leave
-/// this within a tenth of where it was, which is the point of deriving it: the look at
-/// the top of the knob is a consequence of the ceilings, not a number to be kept.
+/// radius. That figure is a *consequence* of the two ceilings, not a number to be kept:
+/// the ladder's moment and its cadence move the two factors in opposite directions, and
+/// deriving the diffusivity is what lets either ceiling move without the top of the
+/// knob having to be re-tuned by hand.
 const BLEED_DIFFUSIVITY: f32 =
     2.0 * BLEED_BLEND * STENCIL_MOMENT_PER_REACH2 * BLEED_REACH_MAX * BLEED_REACH_MAX
         / BLEED_TRAVEL_QUANTUM;
@@ -238,10 +238,10 @@ mod tests {
     /// buys is linear in the knob — at every brush size, and through the reach's
     /// rounding to whole texels.
     ///
-    /// Linearity is the whole claim. The axis used to drive only the rate, and the
-    /// rate enters through a blend that clips at 1, so the knob's top end delivered
-    /// nothing at all: measured on a 40 px tip, all of 0.95 → 1.0 bought ×1.9 in
-    /// diffusivity and then stopped. Here the reach carries what the rate cannot, and
+    /// Linearity is the whole claim. Drive only the rate and the knob's top end
+    /// delivers nothing at all, since the rate enters through a blend that clips at 1:
+    /// measured on a 40 px tip, all of 0.95 → 1.0 buys ×1.9 in diffusivity and then
+    /// stops. Here the reach carries what the rate cannot, and
     /// the solve re-derives the blend from the *rounded* reach — which is why this can
     /// assert a tight relative error rather than a trend.
     #[test]

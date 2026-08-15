@@ -102,28 +102,28 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     let mut tol = crate::path::FLATTEN_TOLERANCE;
     // Use a more relaxed tolerance for larger brushes.
     tol.position = tol.position.max(0.01 * b.radius);
-    // The `attribute` bound is a step in the **pen's** own units, and every quantity
-    // it was sized for used to be linear in one: radius followed pressure directly,
-    // so 2% of pressure was 2% of radius. A modulation puts a curve between the two
-    // (§6.2), and a steep one turns that 2% into as much as 18% of the parameter —
-    // which draws a ramp as a staircase, since a segment sweeps at one value of
-    // everything. So the budget is charged the curve's own slope, which is bounded by
-    // construction (`document::MIN_BIAS`) precisely so this bill is.
+    // The `attribute` bound is a step in the **pen's** own units, so it prices a brush
+    // quantity correctly only while the two are proportional — 2% of pressure being 2%
+    // of radius. A modulation puts a curve between them (§6.2), and a steep one turns
+    // that 2% into as much as 18% of the parameter, which draws a ramp as a staircase
+    // since a segment sweeps at one value of everything. So the budget is charged the
+    // curve's own slope, bounded by construction (`document::MIN_BIAS`) precisely so
+    // this bill is.
     //
     // Exactly 1 for the unmodulated brush and for every plain linear mapping,
-    // including the default pressure → size: those brushes flatten on the budget they
-    // always did, to the bit.
+    // including the default pressure → size, so those brushes are unaffected to the
+    // bit.
     tol.attribute /= b.modulation.max_slope();
     // The tightest arc this tip may be swept along (§6.2). Both the
     // flattener and the segment generator get it from here, so an edge too tight to
     // sweep as an arc is priced as a chord as well as drawn as one.
     tol.max_arc_curvature = MAX_TIP_TURN / b.radius.max(0.5);
-    // `drain` used to be bought here, at `0.02 / drain` px per segment — a cap that
-    // could dominate everything else (at `drain = 0.02`, one segment per pixel). It is
-    // gone because the falloff is no longer a per-segment constant: both paths
-    // evaluate it from the fragment's own arc length, so the amount laid is exactly
-    // independent of how the path was cut and there is nothing left for a length cap
-    // to bound (`generate_segments_in`).
+    // **`drain` is deliberately not bought here.** A `0.02 / drain` px cap per segment
+    // dominates everything else (at `drain = 0.02`, one segment per pixel), and it buys
+    // nothing: the falloff is not a per-segment constant, since both paths evaluate it
+    // from the fragment's own arc length. The amount laid is exactly independent of how
+    // the path was cut, so there is nothing for a length cap to bound
+    // (`generate_segments_in`).
     // The stamp loop exchanges once per segment, so the segment length *is* the step
     // at which the tool reloads and drains — and unlike the canvas side, which the
     // prefix-τ integral makes exact at any length, that step is a plain first-order
@@ -146,8 +146,8 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
 /// The one definition, on purpose: the plan fills every slot's λ lanes from it,
 /// and [`exchange_travel`] prices the flattening budget off the same clamp
 /// ([`ln_keep`]). The flattener charging exactly the rates the shader will run is
-/// what the exchange-step bound rests on — and it used to rest on two closures,
-/// here and in the plan, agreeing by comment.
+/// what the exchange-step bound rests on, so it cannot rest on two closures — one
+/// here, one in the plan — agreeing by comment.
 pub(super) fn lambda(axis: f32) -> f32 {
     ln_keep(axis) / TAU_PER_PASS
 }
@@ -172,16 +172,16 @@ fn ln_keep(axis: f32) -> f32 {
 /// just `−ln((1 − lift)(1 − deposit))` — the `τ` cancels, and there is no calibration
 /// hiding in it.
 ///
-/// Two things this fixes, beyond the arithmetic:
+/// Two things the pricing gets right that a cruder one would not:
 ///
 /// * **`charge` is not a rate.** It sets the load the tool *starts* with, and a brush
 ///   that charges but neither lifts nor deposits has `k = 0`: `exchange_at` takes its
 ///   no-trading branch and the only thing reaching the canvas is `add`, which is linear
-///   in exposure and therefore exact at any segment length. Such a brush was paying the
-///   full cap for a transfer that never happens.
-/// * **The old test was a boolean.** Any brush with a non-zero axis was priced as the
-///   most extreme one, so a tip that lifts a tenth of a pass cost the same per pixel as
-///   a full smear.
+///   in exposure and therefore exact at any segment length. Such a brush must not pay
+///   the full cap for a transfer that never happens.
+/// * **It is continuous in the rates, not a boolean.** Priced on "has a non-zero axis"
+///   alone, every brush is charged as the most extreme one, and a tip that lifts a
+///   tenth of a pass costs the same per pixel as a full smear.
 ///
 /// The budget is calibrated so that `lift = deposit = 0.95` — the repro's brush, and
 /// about as hard as the transfer gets — comes out at exactly

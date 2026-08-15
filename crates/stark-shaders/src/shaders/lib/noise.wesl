@@ -6,15 +6,12 @@
 // same determinism contract as the sRGB↔Oklab constants (§6.5). So the whole of
 // this module is one texture sample and a scale.
 //
-// It used to carry a hash library alongside: `_pcg2d`/`_pcg3d`/`_pcg4d` (Jarzynski
-// & Olano, JCGT 2020), a `_unit` bit-twiddle, and seven `noise_N_to_M` wrappers
-// over them — 85 of the file's 111 lines, with **no caller anywhere in the tree**.
-// `media_common` imported one of them and never used it, which was the only
-// reference the family had. A hash the GPU never evaluates cannot change a pixel,
-// which makes it exactly the scaffolding this project declines to carry: it went
-// the way of `tooth`, `drag` and `wetness`, and comes back with the pass that
-// needs it. The live CPU `pcg4d` in `noise.rs` is untouched — it bakes the
-// textures this samples, and never had a GPU counterpart to agree with.
+// There is deliberately no GPU hash family here — no `pcg2d`/`pcg3d`/`pcg4d`, no
+// `noise_N_to_M` wrappers. A hash the GPU never evaluates cannot change a pixel,
+// which makes it exactly the scaffolding this project declines to carry; it belongs
+// here only alongside the pass that needs it. The CPU `pcg4d` in `noise.rs` is a
+// different thing: it bakes the textures this samples, and has no GPU counterpart to
+// agree with.
 
 // Per-channel color offset at a **stroke-local** position: sample the baked
 // tileable 2-D noise field (signed, ≈[-1,1] per channel) and scale each channel by

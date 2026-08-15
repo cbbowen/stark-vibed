@@ -14,11 +14,10 @@
 //! enumerating the ways it arises.
 //!
 //! [`Preview`] exists so that stays true. The four pieces of state it holds are one
-//! thing with one invariant, and they used to be four fields of [`Engine`] that any
-//! method could set: three of the epoch's five bumps were spelled out at their call
-//! sites, and the drag-preview slot could be — and in one arm was — cleared without
-//! bumping it at all. Here the slot cannot move without the epoch moving with it,
-//! because [`Preview::set_doc`] is the only way to move it.
+//! thing with one invariant, so they are one type rather than four fields of
+//! [`Engine`] that any method could set. **The slot cannot move without the epoch
+//! moving with it**, because [`Preview::set_doc`] is the only way to move it — where
+//! five bumps spelled out at their call sites would be five chances to forget one.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -146,12 +145,11 @@ impl Preview {
     /// The head cache is rebuilt into a **fresh** map rather than edited in place,
     /// which is what bounds it: a head is kept by being carried over, so one whose
     /// gesture is no longer in flight is dropped by construction rather than by a call
-    /// somebody has to remember to make. Edited in place it was kept instead — the
-    /// only cleanup was the wholesale clear on the "nobody is gesturing" path, so a
-    /// peer that lifted while another went on painting left its head behind, and with
-    /// it a whole `DocState`'s worth of `Arc<GpuTile>` handles the pool could not
-    /// reclaim. Exactly while two people are painting, which is when there is least to
-    /// spare.
+    /// somebody has to remember to make. Edited in place, the only cleanup would be
+    /// the wholesale clear on the "nobody is gesturing" path — so a peer that lifts
+    /// while another goes on painting leaves its head behind, and with it a whole
+    /// `DocState`'s worth of `Arc<GpuTile>` handles the pool cannot reclaim. Exactly
+    /// while two people are painting, which is when there is least to spare.
     fn rebuild(&mut self, ctx: &ApplyCtx, committed: &DocState, gestures: Vec<GestureView>) {
         if gestures.is_empty() {
             self.live = None;

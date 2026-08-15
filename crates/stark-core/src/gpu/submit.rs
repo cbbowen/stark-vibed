@@ -105,14 +105,12 @@ const FLUSH_TILES: usize = 256;
 /// the pooled handles the commands name, and the unpooled buffers and textures
 /// they read.
 ///
-/// **A held resource can reach its pool only through a submit.** That used to be a
-/// rule argued in a comment and upheld by a `drop` placed after the submit by
-/// hand — twice, in `transform` and in `merge`, the second copy documenting that
-/// it had learned from the first. Here [`finish`](Self::finish) takes `self` and
-/// [`flush`](Self::flush) submits before it releases, so a call site cannot get
-/// the order wrong: it never holds anything loose. A scope dropped on an unwind
-/// releases nothing to any pool, which is sound too — its commands were never
-/// submitted, so nothing pending names them.
+/// **A held resource can reach its pool only through a submit**, and the type is what
+/// says so rather than a `drop` each call site has to place after the submit by hand.
+/// [`finish`](Self::finish) takes `self` and [`flush`](Self::flush) submits before it
+/// releases, so a call site cannot get the order wrong: it never holds anything loose.
+/// A scope dropped on an unwind releases nothing to any pool, which is sound too — its
+/// commands were never submitted, so nothing pending names them.
 pub(crate) struct TileScope {
     ctx: GpuContext,
     label: &'static str,

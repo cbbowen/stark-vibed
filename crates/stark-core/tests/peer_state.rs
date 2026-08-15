@@ -296,8 +296,8 @@ fn solo_layer_ids_stay_small() {
 }
 
 /// A peer deleting the layer this client is painting on must not leave it pointed at
-/// a layer that no longer exists — after which every stroke was silently refused by
-/// `apply` with nothing on screen to explain it.
+/// a layer that no longer exists: `apply` would then refuse every stroke silently,
+/// with nothing on screen to explain it.
 #[test]
 fn a_remote_removal_repoints_the_active_layer() {
     let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
@@ -686,11 +686,11 @@ fn two_live_strokes_sharing_a_tile_are_both_shown() {
 /// away has to move the epoch, or the next fold reuses a head built over the
 /// previewed document on top of the committed one.
 ///
-/// `Seek` is the arm that used to get this wrong: it cleared the preview slot up
-/// front and bumped the epoch only inside `if self.timeline.seek(..)`, so a seek that
-/// declined dropped one without the other. `Preview::set_doc` is now the only way to
-/// move the slot and it bumps as it goes, which is what makes the whole class
-/// unrepresentable rather than fixed one arm at a time.
+/// `Seek` is the arm most exposed to it: clearing the preview slot up front while
+/// bumping the epoch only inside `if self.timeline.seek(..)` drops one without the
+/// other whenever the seek declines. `Preview::set_doc` is the only way to move the
+/// slot and it bumps as it goes, which makes the whole class unrepresentable rather
+/// than answered one arm at a time.
 ///
 /// Asserted on the epoch rather than on pixels, and deliberately: a preview that
 /// changes no *tiles* leaves a stale head drawing exactly the right paint, so the
@@ -724,9 +724,9 @@ fn every_replacement_of_the_preview_base_moves_the_epoch() {
     engine.process(DocCommand::Redo);
     let e4 = moved(&mut engine, e3, "a redo");
 
-    // The case the epoch used to miss: a drag preview up, and a `Seek` that declines
-    // to move the playhead. The slot is dropped either way, so the epoch must move
-    // either way.
+    // The case an epoch bump inside the seek's own `if` would miss: a drag preview up,
+    // and a `Seek` that declines to move the playhead. The slot is dropped either way,
+    // so the epoch must move either way.
     engine.process(ViewCommand::PreviewBackground(Some([0.9, 0.3, 0.1])));
     let e5 = moved(&mut engine, e4, "installing a second drag preview");
     let at = engine.scrub_range().map_or(0, |(at, _)| at);

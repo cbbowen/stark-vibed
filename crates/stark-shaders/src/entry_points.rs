@@ -1,10 +1,10 @@
 // The WESL modules that become standalone WGSL artifacts — the single list.
 //
 // `include!`d by **both** `build.rs` (which compiles each one) and `lib.rs` (which
-// embeds each one), because the two used to carry the list separately with nothing
-// checking that they agreed. Adding a shader to one and not the other failed at the
-// wrong layer: a missing `include_wesl!` artifact is a build-script-ordering error
-// several frames from the shader you just wrote.
+// embeds each one), so there is no second list for either to disagree with. Adding a
+// shader to one and not the other fails at the wrong layer: a missing `include_wesl!`
+// artifact is a build-script-ordering error several frames from the shader you just
+// wrote.
 //
 // Everything *not* in this list is a module reached only by import — the binding-free
 // leaves under `shaders/lib/`, and the binding-owning shared modules

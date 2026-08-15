@@ -172,9 +172,9 @@ pub enum ActionKind {
     /// Repaint a matte — a flat color or a gradient ramp (§15.4, §22.4).
     SetMattePaint(LayerId, MattePaint),
     /// Set the canvas substrate color — the ground the paint sits on, straight
-    /// sRGB (§15.5). Logged because the ground a piece was painted on
-    /// is part of what it is; it was previously a view setting, so the paper color
-    /// of a painting was not saved at all.
+    /// sRGB (§15.5). Logged rather than held as a view setting, because the ground a
+    /// piece was painted on is part of what it is: unlogged, the paper color of a
+    /// painting would not be saved at all.
     SetBackground([f32; 3]),
 
     /// Affine transform of the selected paint on `layer` (§16):

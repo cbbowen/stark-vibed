@@ -75,13 +75,13 @@ fn or_skip(built: stark_core::Result<Engine>) -> Option<Engine> {
 ///
 /// **On the procedural `Neutral` environment** — the reference light (§6.3), whose
 /// exposure is 1.0 and whose whole purpose is to be the identity a color can be
-/// judged against. The suite used to install the studio HDR here instead, which meant
-/// every claim it made about a rendered byte was a claim about a *particular decoded
-/// environment map*: a warm tint stood between every test and the paint it was
-/// checking, near-white paper read red-dominant by ~33 levels, and a difference in the
-/// pipeline arrived at the goldens multiplied by whatever the light happened to be
-/// doing there. Under the reference light what a test reads back is what the pipeline
-/// produced. [`engine_or_skip_studio`] keeps the image-based path covered.
+/// judged against. Install an image-based HDR here instead and every claim the suite
+/// makes about a rendered byte becomes a claim about a *particular decoded environment
+/// map*: a warm tint stands between each test and the paint it is checking, near-white
+/// paper reads red-dominant by ~33 levels, and a difference in the pipeline reaches
+/// the goldens multiplied by whatever the light happens to be doing there. Under the
+/// reference light what a test reads back is what the pipeline produced.
+/// [`engine_or_skip_studio`] keeps the image-based path covered.
 pub fn engine_or_skip() -> Option<Engine> {
     or_skip(pollster::block_on(headless_engine(TARGET, SIZE)))
 }

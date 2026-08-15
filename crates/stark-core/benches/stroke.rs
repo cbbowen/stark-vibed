@@ -205,8 +205,8 @@ fn live(c: &mut Criterion) {
         // flat sampling will not run fewer than one gesture per sample.
         .measurement_time(Duration::from_secs(15));
 
-    // 250/500 too, unlike the old sweep: a wide tip's live latency is exactly what
-    // this group exists to see, and it was the one thing it could not.
+    // Out to 250/500, because a wide tip's live latency is exactly what this group
+    // exists to see.
     for radius in [8.0f32, 30.0, 100.0, 250.0, 500.0] {
         for (mode, brush) in [("dynamics", smear(radius)), ("swept", plain(radius))] {
             // Same rationale as `commit`: the swept path at extreme radii is one

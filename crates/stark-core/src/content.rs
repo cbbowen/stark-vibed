@@ -5,10 +5,10 @@
 //! *name* — so anything that replays a log has first to answer "what does this
 //! need, and have I got it?".
 //!
-//! That question is asked from three places: loading a file, joining a session,
-//! and receiving a peer's action. They used to answer it separately, and the
-//! answer is the same one — which is why it is here, beside the engine's two
-//! stores, rather than in whichever crate needed it first.
+//! That question is asked from three places — loading a file, joining a session, and
+//! receiving a peer's action — and it is the same question each time. So the answer
+//! lives here, beside the engine's two stores, rather than three times over in
+//! whichever crate asked first.
 //!
 //! The two kinds are one hash and travel one way; they part only at the far end,
 //! where a brush mask decodes as luminance × alpha and a ground as channel 0. So

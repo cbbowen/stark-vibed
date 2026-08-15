@@ -621,9 +621,9 @@ impl MergeRenderer {
 
 /// One fullscreen pass over a tile's three channel targets.
 ///
-/// A thin call now: [`TileScope::fullscreen_pass`] carries the attachment count,
-/// which is the residual's `Option` (§6.7) and used to be decided here as well as at
-/// the transform and the fill.
+/// Thin, because [`TileScope::fullscreen_pass`] carries the attachment count — the
+/// residual's `Option` (§6.7) — for this pass, the transform and the fill alike,
+/// rather than each deciding it again.
 fn pass(
     scope: &mut TileScope,
     label: &str,

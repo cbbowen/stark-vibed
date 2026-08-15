@@ -32,9 +32,8 @@ struct TileXform {
     // (1/SURFACE_TILE_PX, zero when the ground has no relief to gate with) in .y;
     // .zw unused. Both stroke constants in the only sense that matters — each is a
     // function of something the fragment already knows, so it is evaluated there
-    // (`stroke_drain`, `surface_tooth`). The `add` source used to sit beside them and
-    // does not any more: it is pen-driven (§6.2) and rides the segment instance, like
-    // the radius.
+    // (`stroke_drain`, `surface_tooth`). `add` is not among them: it is pen-driven
+    // (§6.2) and rides the segment instance, like the radius.
     paint: vec4<f32>,
     // Color dynamics (§6.2): noise frequency per lookup axis
     // (across the stroke, along it) in .xy with 1/NOISE_TILE_PX pre-folded into

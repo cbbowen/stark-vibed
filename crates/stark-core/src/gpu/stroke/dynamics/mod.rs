@@ -69,10 +69,10 @@ pub(super) struct StrokePlan {
 /// nothing about the piece in hand, or the stroke's length, for it to disagree over —
 /// and it is what lets `render_range` re-ask on every pointer move for free.
 ///
-/// It reads that way because the stroke's *size* no longer decides anything: an
-/// oversized stroke is drawn one region-sized piece at a time ([`chunk_segments`])
-/// rather than degraded. All that is left is the floor no subdivision gets under —
-/// one segment's own footprint — which is [`segment_fits_region`]'s question.
+/// It can read that way because the stroke's *size* decides nothing: an oversized
+/// stroke is drawn one region-sized piece at a time ([`chunk_segments`]) rather than
+/// degraded. All that is left is the floor no subdivision gets under — one segment's
+/// own footprint — which is [`segment_fits_region`]'s question.
 pub(super) fn dynamics_setup(rec: &StrokeRecord) -> StrokePlan {
     let d = rec.brush.dynamics;
     // The brush's **own** rates, not the modulated ones — and that is sound rather

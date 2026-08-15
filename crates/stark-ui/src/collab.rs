@@ -347,8 +347,8 @@ fn install(state: AppState, session: CollabSession, mut events: Events) {
                         // the expiry with. The engine's own clock is no substitute:
                         // it advances only when that pump has something to drain,
                         // which on a client that is just watching is the heartbeat
-                        // — and a frame stamped a whole heartbeat stale is what
-                        // used to trip `GESTURE_TIMEOUT` mid-stroke.
+                        // — and a frame stamped a whole heartbeat stale trips
+                        // `GESTURE_TIMEOUT` mid-stroke.
                         (false, r.merge_presence(actor, frame, now_seconds()))
                     }
                     // The promise `join` made, called in: a peer named content

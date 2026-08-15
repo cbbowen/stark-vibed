@@ -5,10 +5,9 @@
 //
 // This is the inverse of `mixbox_poly`'s `mixbox_eval_polynomial`, and it exists for
 // one caller: the blend pass, which has to express a combination of *light* back as
-// a mixture of *pigment* (§18.0.4). Everywhere else in the engine
-// the direction is one-way — the CPU converts a picked color with the `mixbox`
-// crate, the GPU only ever evaluates the polynomial forward — so this is the first
-// time the LUT has had to be on the GPU at all.
+// a mixture of *pigment* (§18.0.4). It is the only reason the LUT is on the GPU at
+// all: everywhere else the direction is one-way — the CPU converts a picked color
+// with the `mixbox` crate, and the GPU only ever evaluates the polynomial forward.
 //
 // Hand-written rather than transpiled by `build.rs` like `package::gen::mixbox_poly`:
 // that generator works because the polynomial is pure arithmetic with no bindings, and

@@ -6,10 +6,9 @@
 //! objects plus `Arc`-backed handles". Keeping them here is what lets that sentence
 //! stay true of [`StrokeRenderer`](super::StrokeRenderer) itself.
 //!
-//! It is a complaint the module has made before, in the other direction:
-//! `DynamicsKit` records that it "used to carry the round tip's coverage cache, the
-//! one mutable thing in a struct documented as built-once", moved out to the renderer.
-//! The renderer is where all of it then piled up.
+//! `DynamicsKit` is the same rule from the other side: it holds built-once GPU objects
+//! and no cache, because a lazily-baked texture in a struct documented as immutable is
+//! the thing this module exists to collect.
 //!
 //! Cheap to clone with its renderer — everything is `Arc`-backed or a wgpu handle.
 
@@ -120,7 +119,7 @@ impl TipCache {
     ///
     /// The pair is built and cached **together**, off a single [`round_coverage`]
     /// evaluation, because they are two readings of one field: 256² texels of
-    /// `acos`/`exp` that used to be run twice for the same hardness, once per texture.
+    /// `acos`/`exp`, which a texture each would run twice for the same hardness.
     /// Cached as one entry for a second reason — held apart, the stamp loop could find
     /// its prefix hot and its coverage cold, and pay the field again anyway.
     fn round_tip(&self, hardness: f32) -> RoundTip {

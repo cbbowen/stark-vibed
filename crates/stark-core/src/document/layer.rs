@@ -76,13 +76,12 @@ impl LayerId {
 /// drop position in a stack except its foot — and "put this behind everything"
 /// is not an exotic move, it is where a background goes.
 ///
-/// The variant order is load-bearing. This replaced an `Option<LayerId>`, and
-/// postcard writes an `Option` as `0` for `None` / `1` for `Some` and an enum as
-/// its variant index — so `Top` and `Above` encode exactly as the `None` and
-/// `Some` they stand in for, and `Bottom` is an *appended* third variant. That
-/// is the one shape of change §8 allows without a format break, and
-/// `place_encodes_as_the_option_it_replaced` below is what keeps the
-/// claim honest.
+/// **The variant order is load-bearing: this must stay wire-compatible with
+/// `Option<LayerId>`.** Postcard writes an `Option` as `0` for `None` / `1` for `Some`
+/// and an enum as its variant index, so `Top` and `Above` occupy exactly the `None`
+/// and `Some` discriminants and `Bottom` is an *appended* third variant — the one
+/// shape §8 allows without a format break. `place_encodes_as_an_option_layer_id`
+/// below is what keeps the claim honest.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Place {
     /// On top of the stack, over everything already in it.
@@ -106,8 +105,8 @@ impl Place {
 }
 
 impl From<Option<LayerId>> for Place {
-    /// The old two-state anchor, which is still what insertion takes: a named
-    /// sibling, or the top of the stack.
+    /// The two-state anchor insertion takes: a named sibling, or the top of the
+    /// stack.
     fn from(above: Option<LayerId>) -> Self {
         match above {
             Some(id) => Place::Above(id),
@@ -154,9 +153,9 @@ fn mix32(x: u64) -> u32 {
 /// **The guarantee holds at any coverage**, which took getting right: a layer's
 /// coverage weighs it in the space where its blend function is affine, not in the
 /// working space, because applying a curve to a coverage-averaged color is not the
-/// same as averaging the curve. Stacking order used to matter by up to 20 levels
-/// wherever a stroke was less than solid. See `blend_common.wesl`'s `combined_light`,
-/// and §18.0.4 for what that costs.
+/// same as averaging the curve. Weighed in the working space instead, stacking order
+/// matters by up to 20 levels wherever a stroke is less than solid. See
+/// `blend_common.wesl`'s `combined_light`, and §18.0.4 for what that costs.
 ///
 /// [`Reinhard`](Self::Reinhard) and [`Drago`](Self::Drago) are the emissive half:
 /// they add light and their identity is black. [`Multiply`](Self::Multiply) is the
@@ -679,13 +678,12 @@ pub enum LayerContent {
 /// - **Intrinsic** — `visible`, `name`, which describe the layer itself and mean
 ///   the same thing whatever is under it.
 ///
-/// Opacity sits in the first group, and it took a bug to establish that it belongs
-/// there. It reads as intrinsic — "how faded is this layer" — but it is applied at
-/// the same step as the other two, to the same thing: the group's composited whole
-/// (§14.7). Held separately, it was applied to the base's own content *as well*, and
-/// a group base at 0.5 drew its paint at 0.25. Now the base composites with
-/// [`CompositeParams::IDENTITY`] and there are no longer three chances to get that
-/// wrong.
+/// Opacity sits in the first group, though it reads as intrinsic — "how faded is this
+/// layer". It is applied at the same step as the other two, to the same thing: the
+/// group's composited whole (§14.7). Held as a separate field it would also reach the
+/// base's own content, and a group base at 0.5 would draw its paint at 0.25; the base
+/// composites with [`CompositeParams::IDENTITY`] so there is one place that fade can
+/// be applied.
 #[derive(Clone)]
 pub struct Layer {
     pub id: LayerId,
@@ -867,17 +865,16 @@ impl Layer {
 mod tests {
     use super::*;
 
-    /// [`Place`] replaced an `Option<LayerId>` in a logged action, and it claims to
-    /// have done so **without changing a byte** of what was already written: postcard
-    /// encodes an `Option` as a `0`/`1` discriminant and an enum as its variant index,
-    /// so the two existing cases had to keep their indices and the new one had to be
-    /// appended (§8).
+    /// [`Place`] rides a logged action **byte-for-byte as an `Option<LayerId>`**:
+    /// postcard encodes an `Option` as a `0`/`1` discriminant and an enum as its
+    /// variant index, so the two `Option`-shaped cases hold those indices and anything
+    /// further is appended (§8).
     ///
     /// Asserted rather than reasoned about, because the failure is silent in exactly
     /// the way §8 warns: reorder the variants and every `MoveLayer` in every saved
     /// document decodes as a *different* move, with nothing in the file able to notice.
     #[test]
-    fn place_encodes_as_the_option_it_replaced() {
+    fn place_encodes_as_an_option_layer_id() {
         let id = LayerId(0x1234_5678_9ABC_DEF0);
         assert_eq!(
             postcard::to_allocvec(&Place::Top).expect("encodes"),

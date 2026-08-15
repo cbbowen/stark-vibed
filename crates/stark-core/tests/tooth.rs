@@ -370,13 +370,13 @@ fn turning_the_tooth_up_takes_a_level_set_away() {
 /// where the other left bare canvas.
 ///
 /// **The pair is a fraction of the mark's own contrast, not a level count**, and that
-/// is not fussiness. It used to be 18 and 6, sized against what this stroke did to a
-/// pixel under the studio HDR; painting under the reference light instead (§6.3) opens
-/// the ink-to-ground swing right up — the mark's strong ink runs to 190 levels where
-/// it ran to a few tens — and the same two numbers slid down into the rim, where a
-/// borderline population lives that neither path is claiming anything about. A pair
-/// quoted against the swing it is a share of cannot be moved that way. Half of the
-/// mark's strong ink is solid; a twentieth of it is bare.
+/// is not fussiness. A level count is a claim about the light (§6.3): change the
+/// lighting and the ink-to-ground swing changes with it — the mark's strong ink runs
+/// to 190 levels under the reference light and to a few tens under a warm studio one —
+/// so fixed thresholds slide down into the rim, where a borderline population lives
+/// that neither path is claiming anything about. A pair quoted against the swing it is
+/// a share of cannot be moved that way. Half of the mark's strong ink is solid; a
+/// twentieth of it is bare.
 #[test]
 fn the_tooth_reads_the_same_on_both_render_paths() {
     let Some(mut engine) = gesso_engine() else {

@@ -57,19 +57,13 @@
 //!
 //! # What is deliberately refused
 //!
-//! **Two layers sharing a blend mode — for now, and no longer on principle.** This
-//! was refused as *unsound*: the blend functions are associative by construction, but
-//! the Porter-Duff wrapper applied them to the accumulator's coverage-averaged
-//! color, and averaging does not commute with a curve, so a same-mode merge was only
-//! approximately the stack. That is fixed at the source rather than worked around
-//! here — the emissive modes now weigh coverage in emission, where the combination is
-//! addition, and are associative at any coverage (§18.0.4, `blend_common::added_light`).
-//!
-//! So the merge is now *sound* and merely unimplemented, which is a different
-//! sentence and a smaller one. What it still needs is the mode's algebra evaluated in
-//! **tile** space: the light conversion is per color space, and in a pigment document
-//! that means binding the Mixbox LUT into a pass that has never needed it. The slab-law
-//! inversion the result then has to be stored through already exists
+//! **Two layers sharing a blend mode — unimplemented, not unsound.** The soundness
+//! question is settled: the emissive modes weigh coverage in emission, where the
+//! combination is addition, so they are associative at any coverage (§18.0.4,
+//! `blend_common::added_light`). What it still needs is the mode's algebra evaluated
+//! in **tile** space: the light conversion is per color space, and in a pigment
+//! document that means binding the Mixbox LUT into a pass that has never needed it.
+//! The slab-law inversion the result then has to be stored through already exists
 //! (`merge.wesl::optical_mass`).
 //!
 //! **A source with a blend mode, merged into its carrier.** Sound for a different and

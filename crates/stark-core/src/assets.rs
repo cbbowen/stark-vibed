@@ -275,10 +275,10 @@ fn pad_dim(n: u32) -> u32 {
 /// at every angle; bilinear sampling, zero outside the source, so the border of the
 /// padding is exactly the border the mask had. Returns a `layers × ph × pw` buffer.
 ///
-/// Slice 0 is *not* the identity here, unlike the volume this replaced — it is the mask
-/// resampled into the padded grid. Nothing needs it to be: `FollowStroke`, the one
-/// caller that read layer 0 as the shape's native orientation, has its own unpadded
-/// single-layer bake now and never reads this at all.
+/// Slice 0 is *not* the identity — it is the mask resampled into the padded grid.
+/// Nothing needs it to be: `FollowStroke`, the one caller that would read layer 0 as
+/// the shape's native orientation, has its own unpadded single-layer bake and never
+/// reads this at all.
 fn rotate_layers_padded(
     coverage: &[f32],
     width: u32,

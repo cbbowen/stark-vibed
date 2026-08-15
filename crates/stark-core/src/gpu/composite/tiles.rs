@@ -33,8 +33,8 @@ pub(super) struct TilePass {
     /// The matte pipeline's group 1: the per-matte gradient ramp (§22.4), read
     /// through a **dynamic offset** so one buffer and one bind group serve every
     /// matte in the frame. A solid matte's slot is simply zeroed, its stop count
-    /// then saying "use the instance's own channels" — which is what the shared
-    /// `zero_ramp_bg` used to be, as an object rather than as 544 zero bytes.
+    /// then saying "use the instance's own channels" — so the absent-ramp case is 544
+    /// zero bytes in the buffer everything else reads, not a bind group of its own.
     pub(super) ramp_bgl: wgpu::BindGroupLayout,
 }
 
@@ -159,8 +159,8 @@ impl TilePass {
     ///
     /// Both pipelines share group 0 (the view uniform), so only the pipeline and the
     /// vertex buffer change at the boundary. Each [`Draw`] carries its own index into
-    /// the flat streams — the cursors the encoder used to walk with are the plan's
-    /// job now (`composite::plan`).
+    /// the flat streams, so the encoder walks no cursors of its own — that is the
+    /// plan's job (`composite::plan`).
     pub(super) fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,

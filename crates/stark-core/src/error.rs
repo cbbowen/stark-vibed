@@ -59,9 +59,9 @@ pub enum EngineError {
     /// **Refusing is the point.** Replaying anyway is not a degraded open, it is a
     /// wrong one that persists: a `SetSurface` whose height map is missing deposits
     /// every stroke made on it through the flat stand-in, and those pixels are stored,
-    /// so no later arrival un-bakes them (§6.4). This used to be a `tracing::error!`
-    /// with `Ok(())` behind it, which is how a captured bug report came to replay
-    /// perfectly smooth and cost an afternoon.
+    /// so no later arrival un-bakes them (§6.4). Logging and returning `Ok(())` here
+    /// would report success and hand back a document that replays perfectly smooth,
+    /// with nothing on screen to say which ground it was actually painted through.
     ///
     /// Settle it first — [`Engine::unresolved_content`](crate::Engine::unresolved_content)
     /// is the bill and names each need, `import_brush`/`accept_surface` pay it. A

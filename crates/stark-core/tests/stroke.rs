@@ -40,13 +40,13 @@ fn paint_stroke(engine: &mut Engine) {
 }
 
 // Lit paint is never a pure primary, so assert channel *dominance* rather than
-// near-saturation (the media pass legitimately shades and desaturates color). The
-// margin was sized against the warm studio tint these tests used to run under, where
-// even the neutral near-white PAPER read red-dominant by ~33 levels while actual red
-// paint dominated by ~210 (and blue BG by ~180). Under the reference light (§6.3) the
-// substrate is achromatic and the first of those is 0, so 60 is now conservative
-// rather than merely sufficient — kept because the separation it states is the one
-// that matters, not because the number is tight. Tests below self-check this.
+// near-saturation (the media pass legitimately shades and desaturates color). Under
+// the reference light (§6.3) the substrate is achromatic, so the neutral PAPER carries
+// no dominance at all while red paint dominates by ~210 and blue BG by ~180 — 60 is
+// conservative rather than merely sufficient. The margin is wide because the
+// separation it states is the one that matters, not because the number is tight; a
+// warm tint alone can push a neutral substrate to ~33 levels of false dominance.
+// Tests below self-check this.
 fn is_red(c: [u8; 4]) -> bool {
     c[0] as i32 > c[1] as i32 + 60 && c[0] as i32 > c[2] as i32 + 60
 }
@@ -135,14 +135,13 @@ fn long_band(engine: &mut Engine, points: &[Vec2]) {
 
 /// A stroke far wider than one stamp-loop region still **manipulates paint**.
 ///
-/// This is the regression the piecewise path exists for. The loop works on a 1:1 copy
-/// of the canvas under the stroke, and a stroke whose bounding box outgrew
-/// `MAX_REGION_DIM` used to degrade to the plain swept deposit — which is not a
-/// coarser version of the same brush but a different one: the swept path only ever
-/// *adds* paint, so a brush whose whole purpose is to lift it silently stopped doing
-/// the one thing it was for. Long strokes and fat tips are exactly where a smear
-/// brush earns its keep, so the failure landed on the strokes that wanted it most.
-/// Now the stroke is drawn in as many region-sized pieces as it takes.
+/// This is what the piecewise path exists for. The loop works on a 1:1 copy of the
+/// canvas under the stroke, so a stroke whose bounding box outgrows `MAX_REGION_DIM`
+/// has to be cut into as many region-sized pieces as it takes. Degrading to the plain
+/// swept deposit instead is not a coarser version of the same brush but a different
+/// one: the swept path only ever *adds* paint, so a brush whose whole purpose is to
+/// lift it silently stops doing the one thing it is for — and long strokes with fat
+/// tips are exactly where a smear brush earns its keep.
 ///
 /// The brush here is a pure scrape — it lifts everything and lays nothing back, and
 /// its own color is fully transparent — so the two paths are unmistakable: the loop
@@ -279,10 +278,10 @@ fn the_taper_widens_without_a_step() {
     // Stop a radius short of where the stroke ends (canvas x = 100, column 228). The
     // last 16 px are the round **cap**, which must narrow — that is what a round tip
     // is — and narrowing there says nothing about whether the taper has a step in it.
-    // The walk used to run to 226 and pass, because under the studio light the cap's
-    // edge fell below the dominance threshold a column or two sooner; the reference
-    // light renders the same paint against an achromatic ground, the cap reads to its
-    // full extent, and the cap's own curve was suddenly being asked to be monotone.
+    // Walking further — to 226, say — asks the cap's own curve to be monotone: under
+    // the reference light the paint sits against an achromatic ground and the cap
+    // reads to its full extent, so its edge stays above the dominance threshold all
+    // the way out.
     let widths: Vec<u32> = (30..212).map(|x| painted_height(&img, x)).collect();
     // Monotone up to the body (within the ±1 a rasterized edge rounds by), and never
     // jumping more than a couple of px between adjacent columns.
@@ -351,11 +350,12 @@ fn painted_span(img: &stark_core::RgbaImage, along_x: bool, at: u32) -> (u32, u3
 ///
 /// A swept deposit is a definite integral over travel, so a press that has not moved
 /// integrates over nothing. The minimum travel that fixes it (`segments::DAB_TRAVEL`)
-/// used to be swept *from* the point, in the `+x` a click's absent tangent fell back
-/// to: a whole tip's width of travel, all on one side, which read as a short dash
-/// pointing right rather than as a dot. And because it applied only to a stroke with
-/// no travel at all, moving one pixel replaced it with a twentieth of a dab — the dot
-/// vanished the moment the hand moved and came back a tip's width later.
+/// must be centred on the point rather than swept *from* it: swept from the point, in
+/// the `+x` a click's absent tangent falls back to, it is a whole tip's width of
+/// travel all on one side, which reads as a short dash pointing right rather than as a
+/// dot. And applying only to a stroke with no travel at all, one pixel of movement
+/// replaces it with a twentieth of a dab — the dot vanishes the moment the hand moves
+/// and comes back a tip's width later.
 ///
 /// So both are asserted here against the *same* threshold: a click is round and
 /// centred, and one pixel of movement changes it hardly at all.

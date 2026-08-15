@@ -13,11 +13,10 @@ use super::slots;
 /// GPU objects for the brush-dynamics stamp loop (§6.2), built once.
 /// All handles are `Arc`-backed, so the kit is cheap to clone with its renderer.
 ///
-/// Immutable throughout, which the type now says rather than merely intends: it
-/// used to carry the round tip's coverage cache, the one mutable thing in a struct
-/// documented as built-once. That lives with its sibling on the renderer
-/// ([`StrokeRenderer::round_tip`](super::StrokeRenderer)), where the rest of the
-/// lazily-baked brush textures already were.
+/// **Immutable throughout**, and the type says so rather than merely intending it: no
+/// cache lives here. The round tip's coverage cache and the rest of the lazily-baked
+/// brush textures sit together on the renderer
+/// ([`StrokeRenderer::round_tip`](super::StrokeRenderer)).
 #[derive(Clone)]
 pub(in crate::gpu::stroke) struct DynamicsKit {
     // Region composite: base tiles → one 1:1 canvas region (color + wide aux).
@@ -185,9 +184,9 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // **The list is all the host says.** What kind of thing each slot holds — a uniform
     // and how wide, a sampler, a texture, a storage texture of a particular format —
     // and whether it exists at all without the residual, come from the generated
-    // `BINDINGS` table (§6.10). The `resid` counts that used to close every array here
-    // (`[..12 + 4 * usize::from(resid)]`, seven of them, recounted by hand on every
-    // edit) are the `@if(resid)` on the declaration itself.
+    // `BINDINGS` table (§6.10). No array here closes with a `resid` count
+    // (`[..12 + 4 * usize::from(resid)]`, recounted by hand on every edit) — that gate
+    // is the `@if(resid)` on the declaration itself.
     let bgl = |label: &str, list: &[desc::Slot]| {
         desc::layout_for(
             device,

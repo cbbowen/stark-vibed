@@ -1,28 +1,27 @@
 //! How layers cover one another (§6.3, pass A).
 //!
 //! **The claim.** A layer affects what is beneath it only as much as it is visible
-//! at all. It sounds too obvious to test, and it used to be false: pass A weighed a
-//! layer's "over" by its per-unit **opacity** alone, so a film with opacity 1 and no
-//! thickness — which the media pass draws as nothing over bare canvas — replaced the
-//! color outright over another layer's paint. Every soft brush deposits exactly that
-//! state across its fringe (`stamp.wesl` saturates opacity as `1 − exp(−op·τ)`
-//! while height stays linear in `τ`), so the symptom was a ghost of the brush's whole
-//! footprint painted over the layer below.
+//! at all. It sounds too obvious to test, and it is not: weigh a layer's "over" by its
+//! per-unit **opacity** alone and a film with opacity 1 and no thickness — which the
+//! media pass draws as nothing over bare canvas — replaces the color outright over
+//! another layer's paint. Every soft brush deposits exactly that state across its
+//! fringe (`stamp.wesl` saturates opacity as `1 − exp(−op·τ)` while height stays
+//! linear in `τ`), so the symptom is a ghost of the brush's whole footprint painted
+//! over the layer below.
 //!
-//! **The law now.** Pass A weighs each layer by its own visible alpha — the slab law
-//! `1 − exp(−K·opacity·height)` that `paint_common.wesl` already uses to stack
-//! parcels *within* a layer — and the media pass reads the accumulated coverage
-//! instead of re-deriving it (`composite.wesl`, `media_common.wesl`). For a single
-//! layer that is algebraically the identity.
+//! **The law.** Pass A weighs each layer by its own visible alpha — the slab law
+//! `1 − exp(−K·opacity·height)` that `paint_common.wesl` uses to stack parcels
+//! *within* a layer — and the media pass reads the accumulated coverage instead of
+//! re-deriving it (`composite.wesl`, `media_common.wesl`). For a single layer that is
+//! algebraically the identity.
 //!
-//! **The smear interaction that stalled the first attempt**, for the record: the
-//! dynamics loop composites base tiles into its working region with the *same*
-//! `composite` shader, and that region must keep the tile representation itself —
-//! per-unit opacity in alpha — because the pickup reads it and the slice writes it
-//! back to persistent tiles. Applying the slab law there stored *coverage* as
-//! opacity, corrupting smeared paint differently on each side of a piece or freeze
-//! cut, which is why the preview stopped matching the commit. The screen path and
-//! the region path are now separate entry points (`fs_main` / `fs_raw`).
+//! **The smear interaction**, which is why the screen path and the region path are
+//! separate entry points (`fs_main` / `fs_raw`): the dynamics loop composites base
+//! tiles into its working region with the *same* `composite` shader, and that region
+//! must keep the tile representation itself — per-unit opacity in alpha — because the
+//! pickup reads it and the slice writes it back to persistent tiles. Applying the slab
+//! law there stores *coverage* as opacity, corrupting smeared paint differently on
+//! each side of a piece or freeze cut, so the preview stops matching the commit.
 
 mod common;
 

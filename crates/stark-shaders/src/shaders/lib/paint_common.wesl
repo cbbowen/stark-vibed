@@ -137,12 +137,11 @@ const TOOTH_RISE: f32 = 0.05;
 
 // The half-range the rise bytes span, as a fraction of the height range — the scale
 // `gpu::surface::encode_rise` quantizes against, and which `rise_ahead` below has to
-// decode with. The host reads this declaration rather than keeping a copy (§6.10).
-// It used to be folded into the literals `255.0 / 512.0` and `0.25` in `rise_ahead`,
-// where nothing could reach it while its comment still said "the folded constants
-// here must match". Naming it costs nothing — both spellings fold to exactly
-// 0.498046875 and 0.25, and 0.25 is a power of two, so the arithmetic is unchanged to
-// the bit.
+// decode with. The host reads this declaration rather than keeping a copy (§6.10),
+// which is why it is named here instead of folded into `rise_ahead`'s arithmetic as
+// the literals `255.0 / 512.0` and `0.25`. Naming it costs nothing: both spellings
+// fold to exactly 0.498046875 and 0.25, and 0.25 is a power of two, so the arithmetic
+// is identical to the bit.
 //
 // Real rises are small, so spending the byte on a narrow range is what keeps the
 // tooth's transition tonal rather than stepped.

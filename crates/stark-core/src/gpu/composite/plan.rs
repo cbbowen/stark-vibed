@@ -5,33 +5,24 @@
 //! It is `group.rs`'s counterpart on the other side of the boundary: that file says
 //! what the document *is*, this one says what drawing it *does*.
 //!
-//! # Why this exists
+//! # One walk, not four
 //!
-//! The tree used to be walked four times, and three of those walks produced things
-//! the fourth consumed **positionally**:
+//! The alternative is a walk per product — the flat instance order, the blend and
+//! filter uniform slots, how many levels isolate — with the encoder consuming all
+//! three **positionally**, by cursors. Nothing then ties them together but a sentence
+//! claiming they recurse alike. A slot walk that failed to recurse into a `Stack`
+//! would render every group through its *sibling's* blend mode: silently, and
+//! identically to the correct result whenever the two modes happened to agree. A
+//! depth walk that disagreed would panic mid-encode, at a message naming whichever
+//! feature happened to ask.
 //!
-//! | Walk | Produced |
-//! |---|---|
-//! | `CompositeGroup::items_into` | the flat instance order |
-//! | `collect`, inside `prepare_composite` | the blend and filter uniform slots |
-//! | `scratch_needs` | how many levels isolate |
-//! | `Compositor::encode_stack` | the draws, consuming all three by a `Cursors` |
-//!
-//! Nothing tied them together. `collect`'s doc comment asserted it was "the same
-//! recursion the encoder consumes them with" — which was true, and was a sentence.
-//! A `collect` that failed to recurse into a `Stack` would have rendered every group
-//! through its *sibling's* blend mode, silently, and identically to the correct
-//! result whenever the two modes happened to agree. A `scratch_needs` that disagreed
-//! about depth panicked mid-encode, at a message that named merges and was also load
-//! bearing for filters.
-//!
-//! Here each [`Step`] carries the slot index it draws from and the targets it reads
-//! and writes. The orders cannot drift because there is only one of them, and what
-//! the encoder needs is a fact recorded when the decision was made rather than a
-//! count reconstructed while executing it. The parity that lands the final
-//! accumulator in the caller's own targets, the level a group isolates into, and
-//! which uniform slot a merge binds are all byproducts of the same pass — and, being
-//! plain data, all testable without an adapter.
+//! So each [`Step`] carries the slot index it draws from and the targets it reads and
+//! writes. The orders cannot drift because there is only one of them, and what the
+//! encoder needs is a fact recorded when the decision was made rather than a count
+//! reconstructed while executing it. The parity that lands the final accumulator in
+//! the caller's own targets, the level a group isolates into, and which uniform slot a
+//! merge binds are all byproducts of the same pass — and, being plain data, all
+//! testable without an adapter.
 
 use std::ops::Range;
 
@@ -430,11 +421,11 @@ mod tests {
     /// Every slot a step names must be one the scratch was told to allocate, and an
     /// `Iso` must be one the level was told to *isolate*.
     ///
-    /// This is the invariant that used to live in two functions — the encoder's
-    /// recursion and `scratch_needs`' — with nothing but a matched pair of `if`s
-    /// holding them together. Its failure was `here.expect("a merge without scratch
-    /// targets")`, mid-encode, on a message that did not cover the filter case that
-    /// also depended on it.
+    /// Checkable here because the plan is plain data. Split across an encoder
+    /// recursion and a separate scratch-sizing walk, the invariant is held by nothing
+    /// but a matched pair of `if`s, and its failure is an
+    /// `expect("a merge without scratch targets")` mid-encode — a message that names
+    /// one of the features depending on it.
     fn every_slot_is_allocated(plan: &Plan<'_>) {
         let check = |slot: Slot| match slot {
             Slot::Target => {}
@@ -622,8 +613,8 @@ mod tests {
     /// The slot indices are dense and in step order, for both passes independently —
     /// a filter and a blend group side by side never count each other's slots.
     ///
-    /// This is what the two cursors used to reconstruct while encoding, from a list
-    /// built by a different function.
+    /// Recorded when the decision is made, rather than reconstructed by cursors while
+    /// encoding from a list some other function built.
     #[test]
     fn uniform_slots_are_dense_and_independent() {
         let groups = vec![plain(), blended(), filter(), blended(), filter()];

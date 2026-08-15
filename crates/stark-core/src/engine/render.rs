@@ -94,11 +94,10 @@ pub enum ExportScale {
     /// respected — what a *preview* of the whole piece asks for.
     ///
     /// It exists so asking that question does not require answering a harder one
-    /// first. The navigator used to ask for a 1× plan purely to learn the rect's
-    /// size, then scale that itself — which meant a piece wider than
-    /// [`max_export_dim`] failed the query for a render it was never going to make,
-    /// and the miniature quietly stopped refreshing at the size where an overview
-    /// starts to matter most.
+    /// first. Asking for a 1× plan purely to learn the rect's size and then scaling
+    /// that oneself means a piece wider than [`max_export_dim`] fails the query for a
+    /// render it was never going to make, and the miniature quietly stops refreshing
+    /// at the size where an overview starts to matter most.
     ///
     /// Scales *up* as happily as down: the overview's job is to show the whole of a
     /// piece at a glance, and a 60 px sketch shown at 60 px says less than the empty
@@ -183,10 +182,9 @@ impl Engine {
     ///
     /// The navigator's miniature is the consumer: an overview of the whole piece is a
     /// second view of the canvas, and once it has somewhere to draw there is no reason
-    /// for it to travel through the CPU. It used to be an [`export`](Self::export) —
-    /// render, copy back, hand the browser a `<canvas>` full of bytes — and this is
-    /// the same render with the copy deleted, which also deletes the frame of latency
-    /// the copy cost and the megabyte the pixels occupied on the way through.
+    /// for it to travel through the CPU. Reaching it through [`export`](Self::export)
+    /// instead — render, copy back, hand the browser a `<canvas>` full of bytes — is
+    /// this same render plus a frame of latency and a megabyte of pixels in transit.
     ///
     /// `into` holds the pass-A attachments (see [`Offscreen`]); a consumer drawing
     /// repeatedly keeps them, so a refresh allocates nothing at all. `target` must
@@ -695,10 +693,10 @@ impl Engine {
             // fast path, and the reason an ordinary document is one group.
             //
             // `as_direct_run_mut` is the test and the run in one, which is what makes
-            // this total. It used to ask `is_direct` of both sides and then re-match
-            // the two `GroupContent`s behind an `if let` with no else — so a group
-            // that answered "direct" while holding something other than a `Run` would
-            // have been counted as merged and then silently dropped.
+            // this total. Asking `is_direct` of both sides and then re-matching the
+            // two `GroupContent`s behind an `if let` with no else leaves a gap: a
+            // group answering "direct" while holding something other than a `Run`
+            // would be counted as merged and then silently dropped.
             let merged = match (
                 groups
                     .last_mut()
@@ -723,9 +721,9 @@ impl Engine {
     /// Every item comes out at **opacity 1**, and that is not a stub: the layer's
     /// opacity is a [`CompositeParams`] field, so it arrives with the other two and
     /// is folded in — or not — by [`CompositeGroup::leaf`], which is the one place
-    /// that decision is made (§14.7). This function tagging items with it as well is
-    /// exactly how a group's base came to be faded twice, so it no longer knows what
-    /// a layer's opacity is.
+    /// that decision is made (§14.7). This function is deliberately not told what a
+    /// layer's opacity is; tagging items with it here as well is how a group's base
+    /// gets faded twice.
     ///
     /// Paint is culled to `visible` (§6.3); a matte is not. A matte's rect can be
     /// the *hole* in a frame, whose fill covers everything outside it (§15.4.4), so

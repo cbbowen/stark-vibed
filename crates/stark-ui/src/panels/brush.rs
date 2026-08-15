@@ -201,9 +201,9 @@ fn PresetSection() -> Element {
 /// The "Save preset" dialog, opened by the Brush panel's Save button and mounted at
 /// the app root (`main.rs`) so its backdrop covers the window rather than the panel.
 ///
-/// Opens on the next free "Preset N" — selected, so typing replaces it — which is the
-/// same default the old inline field applied silently to an empty box, except here it
-/// is visible and editable before it is committed. Typing a name the library already
+/// Opens on the next free "Preset N" — selected, so typing replaces it. The default is
+/// visible and editable before it is committed, rather than applied silently to an
+/// empty box. Typing a name the library already
 /// has is not an error but a deliberate act, so the dialog names it: the button says
 /// "Replace" and a line underneath says what will be replaced. Blank is the one thing
 /// it will not take (there is no such preset to click), so Save goes dead rather than

@@ -42,8 +42,8 @@ use stark_shaders::mirror::dynamics::BAKE_RES;
 use stark_shaders::mirror::dynamics::binding as b;
 
 // The region composite runs `composite.wesl`, so it draws that shader's own
-// per-instance record (§6.10) — which this module used to declare a second
-// `#[repr(C)]` copy of, under a different name.
+// per-instance record (§6.10) rather than a second `#[repr(C)]` copy of it declared
+// here under a different name.
 use stark_shaders::mirror::composite::Instance as TileInstance;
 
 /// Workgroup counts for the reservoir half of `exchange`, which is dispatched over
@@ -67,9 +67,9 @@ impl StrokeRenderer {
     /// as many region-sized **pieces** as it takes ([`chunk_segments`]) rather than in
     /// one: the loop is sequential, so pieces run back to back over the same segments
     /// in the same order, each compositing what the last wrote back. Length therefore
-    /// costs the stroke extra pieces, not correctness — where it used to degrade past
-    /// [`MAX_REGION_DIM`](super::MAX_REGION_DIM) to the plain swept deposit, which
-    /// cannot manipulate paint at all.
+    /// costs the stroke extra pieces, not correctness. Degrading past
+    /// [`MAX_REGION_DIM`](super::MAX_REGION_DIM) to the plain swept deposit instead
+    /// would cost correctness, since that path cannot manipulate paint at all.
     ///
     /// The loop starts from `tool` rather than from a fresh tip when one is given, and
     /// hands back the state it ends in whenever a further range remains to be drawn,
@@ -176,8 +176,8 @@ struct DynamicsRun<'a> {
     /// trail a submit — the run-scoped leases (reservoir ping-pong, bake pair), the
     /// piece-scoped leases (region, snapshot, cells), and the piece's unpooled
     /// buffers and textures. The scope releases each tier only in the call that
-    /// submits the commands naming it ([`SubmitScope`]), which is what used to be
-    /// three fields and a flag holding the same ordering by convention.
+    /// submits the commands naming it ([`SubmitScope`]), so the ordering is the type's
+    /// rather than three fields and a flag holding it by convention.
     scope: SubmitScope,
     /// Every tile the run has rewritten, accumulated as each piece enumerates its own.
     /// The pieces partition the range's segments, so this ends up the set a second
@@ -467,9 +467,9 @@ impl<'a> DynamicsRun<'a> {
         //
         // **Before the scratch it sizes**, which is the order the two are actually in:
         // the plan measures every rect it will dispatch and the snapshot square is
-        // their maximum. It used to run the other way — the scratch sized itself from a
-        // position-independent bound over the same coverage boxes, and the plan then
-        // asserted each real rect came in under it.
+        // their maximum. Run the other way, the scratch would size itself from a
+        // position-independent bound over the same coverage boxes and the plan would
+        // have to assert each real rect came in under it.
         let ctx = PlanCtx {
             rec: self.rec,
             tol: self.tol,
@@ -753,9 +753,9 @@ impl<'a> DynamicsRun<'a> {
     ///
     /// Each is built from the very slot list its layout was ([`slots`](super::slots)),
     /// so a group and its layout cannot disagree about which bindings are present or in
-    /// what order — where this used to be two hand-kept arrays per entry point, here
-    /// and in [`kit`](super::kit), aligned by nothing but the order they were written
-    /// in and a per-layout element count.
+    /// what order. Written as two hand-kept arrays per entry point — one here, one in
+    /// [`kit`](super::kit) — they would be aligned by nothing but the order they were
+    /// written in and a per-layout element count.
     ///
     /// What each arm below supplies is therefore only the **resources**: given a slot,
     /// which view or buffer goes in it. A slot the residual gate excludes is never
@@ -870,7 +870,7 @@ impl<'a> DynamicsRun<'a> {
             )
         });
         // One bake bind group per reservoir phase; the deposit reads only the baked
-        // result, so it no longer needs the ping-pong at all.
+        // result, so it never touches the ping-pong.
         let bake = std::array::from_fn(|i| {
             desc::bind_group_for(
                 device,
@@ -1020,8 +1020,8 @@ impl<'a> DynamicsRun<'a> {
                     //
                     // The footprint `snapshot` rides in the tail of this same grid: it
                     // depends on nothing the exchange writes and the deposit needs
-                    // both, so the barrier that used to sit between them bought no
-                    // ordering. Hence the widened x — reservoir groups first, footprint
+                    // both, so a barrier between them would buy no ordering at all.
+                    // Hence the widened x — reservoir groups first, footprint
                     // groups after — and a y tall enough for the taller of the two
                     // (`dynamics.wesl::exchange`).
                     cpass.set_pipeline(&kit.exchange_pipeline);
@@ -1099,8 +1099,8 @@ impl<'a> DynamicsRun<'a> {
     /// from the region rectangle — so a tile's offset into the region is measured
     /// against it. Offsets are integral and non-negative by [`region_rect`]'s
     /// construction, and the far edge of the last tile's block is exactly the region's
-    /// extent, so every copy is in bounds (a violation is a loud validation error,
-    /// where the draws this replaced would have silently read out of bounds).
+    /// extent, so every copy is in bounds — and a violation is a loud validation error
+    /// here, where a draw would silently read out of bounds instead.
     fn write_back(
         &mut self,
         base: &TileMap,
@@ -1243,7 +1243,7 @@ struct Region {
 
 /// The footprint snapshot scratch.
 ///
-/// It no longer carries the square it was sized to: that number is the plan's
+/// It does not carry the square it was sized to: that number is the plan's
 /// ([`DynamicsPlan::dsize`](super::plan::DynamicsPlan)), derived from the rects the
 /// plan will dispatch, and the scratch is allocated *from* it rather than the plan
 /// being checked against the scratch.

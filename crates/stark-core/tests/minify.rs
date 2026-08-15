@@ -1,19 +1,19 @@
 //! What a zoomed-out view shows (§6.4).
 //!
 //! **The claim.** Minifying the canvas is *averaging* it, not sampling one texel in
-//! every `1/z²` the output pixel covers. Presentation used to do the latter: one
-//! bilinear tap per fragment into a tile texture with no mip chain, a canvas weave
-//! read at LOD 0, and impasto normals taken as a finite difference across screen
-//! pixels — so a thumbnail of a painting was a sparse, phase-dependent sample of it,
-//! which crawls under a pan and buzzes on every edge. The navigator's miniature (a
-//! whole piece in ~250 px) is the worst case and was where it was most obvious.
+//! every `1/z²` the output pixel covers. Sampling is what one bilinear tap per
+//! fragment gives — into a tile texture with no mip chain, a canvas weave read at
+//! LOD 0, impasto normals taken as a finite difference across screen pixels — and a
+//! thumbnail built that way is a sparse, phase-dependent sample of the painting, which
+//! crawls under a pan and buzzes on every edge. The navigator's miniature (a whole
+//! piece in ~250 px) is the worst case.
 //!
-//! **How it is answered.** Everything from pass A to the guides now runs at `ss`
-//! samples per axis and a box filter resolves it (`resolve.wesl`), so a 1:4 render is
-//! a 1:1 render boxed down by four. That is exactly what this asserts: at
-//! `ss × zoom = 1` the supersampled render *is* the full-size one, so the GPU's
-//! minified image has to agree with the full-size image downsampled on the CPU — and
-//! must not agree with the one texel in sixteen that the old path would have picked.
+//! **How it is answered.** Everything from pass A to the guides runs at `ss` samples
+//! per axis and a box filter resolves it (`resolve.wesl`), so a 1:4 render is a 1:1
+//! render boxed down by four. That is exactly what this asserts: at `ss × zoom = 1`
+//! the supersampled render *is* the full-size one, so the GPU's minified image has to
+//! agree with the full-size image downsampled on the CPU — and must not agree with the
+//! one texel in sixteen a single tap would pick.
 //!
 //! Nothing here can be answered by prefiltering the tiles alone, which is the reason
 //! the fix is where it is: the relief shading is a nonlinear function of the height

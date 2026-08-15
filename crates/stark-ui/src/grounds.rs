@@ -15,14 +15,13 @@
 //! being seeded after startup; here it shows up as the opening document being on
 //! `Flat` until linen lands ([`open_default`]).
 //!
-//! Getting grounds onto this footing is what closed a divergence between
-//! collaborators (§6.4, §12.4). A ground used to be a *name* — `Linen`, `Gesso` —
-//! and a name is only as good as the table the reader holds: a peer who had never
-//! picked Gesso received `SetSurface(Gesso)`, had no bytes for it, silently fell
-//! back to the flat stand-in, and from then on baked every stroke with no
-//! deposition tooth at all. A content id cannot go quietly missing that way. The
-//! holder either has those exact bytes or knows precisely what to ask a peer for,
-//! and what comes back is verified against the id that asked for it.
+//! Grounds are on this footing because a *name* — `Linen`, `Gesso` — is only as good
+//! as the table the reader holds, and that diverges collaborators (§6.4, §12.4): a
+//! peer who has never picked Gesso receives `SetSurface(Gesso)`, has no bytes for it,
+//! silently falls back to the flat stand-in, and from then on bakes every stroke with
+//! no deposition tooth at all. A content id cannot go quietly missing that way. The
+//! holder either has those exact bytes or knows precisely what to ask a peer for, and
+//! what comes back is verified against the id that asked for it.
 //!
 //! **Adding a ground is a file plus a row in [`GROUNDS`]** — it then appears in the
 //! Lighting panel's picker and in the New-document dialog.

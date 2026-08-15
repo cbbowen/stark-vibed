@@ -133,8 +133,8 @@ pub fn load(state: AppState) {
 pub fn set_armed(state: AppState, on: bool) {
     if on {
         // One composing mode at a time (`crate::modes`): the trace's catcher is
-        // the last of the four to be stacked, so arming while a transform was
-        // composing used to leave two of them over one pointer. `leave` writes
+        // the last of the four to be stacked, so arming while a transform is
+        // composing would leave two of them over one pointer. `leave` writes
         // this signal itself rather than calling back through here.
         crate::modes::leave(state);
     }

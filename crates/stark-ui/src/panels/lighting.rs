@@ -13,9 +13,9 @@ use stark_core::{EnvironmentId, MediaParams};
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
 /// stay out of the wasm binary (§6.6). The engine is handed the bytes.
 ///
-/// The canvas grounds used to live here too; they are `crate::grounds` now, because
-/// a ground is content-addressed and so needs a resolved-id cache that a bare
-/// `Asset` constant has nowhere to keep (§6.4).
+/// Canvas grounds are *not* here — they are `crate::grounds`, because a ground is
+/// content-addressed and so needs a resolved-id cache that a bare `Asset` constant has
+/// nowhere to keep (§6.4).
 pub const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1k.hdr");
 pub const ENV_BLOEM_HILL: Asset = asset!("/assets/environment/bloem_hill_01_1k.hdr");
 pub const ENV_KLOOFENDAL_OVERCAST: Asset =

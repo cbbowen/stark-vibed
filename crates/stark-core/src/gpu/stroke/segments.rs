@@ -21,10 +21,10 @@ use super::StrokeSpans;
 /// Split from the paint rates ([`Paint`]) because the module has two things that are
 /// swept and only one of them paints. A [`BleedFire`]'s window is a stretch of lateral
 /// diffusion at a standing tip: it has a start, a bend and a travel, and it has no
-/// `add`, no `lift` and no `deposit` — it used to be built as a whole [`Segment`] with
-/// the crossing segment's rates copied in, which `dynamics_plan` then zeroed back out
-/// lane by lane. Every box and every rect in this module is a function of this half
-/// alone, so they take it alone and cannot read a rate that is not there.
+/// `add`, no `lift` and no `deposit`. Built as a whole [`Segment`] instead, it would
+/// carry the crossing segment's rates for `dynamics_plan` to zero back out lane by
+/// lane. Every box and every rect in this module is a function of this half alone, so
+/// they take it alone and cannot read a rate that is not there.
 #[derive(Copy, Clone)]
 pub(super) struct Sweep {
     pub(super) start: Vec2,
@@ -594,7 +594,7 @@ struct Track {
 /// segment boundaries happened to fall, which is the one thing §6.2 works to keep out
 /// of the deposit. Evaluated per fragment it drops out of the sum entirely — the
 /// stroke lays `a(arc) · Στ`, and `Στ` is already independent of the cut — so the
-/// flattener no longer has to buy accuracy for it with segments
+/// flattener need not buy accuracy for it with segments
 /// (see [`flatten_tolerance`](super::flatten_tolerance)).
 ///
 /// Returns the range's segments plus the arc length at its end — measured on the
@@ -704,8 +704,9 @@ pub(super) fn generate_segments_in(
         }
         // The edge as an arc rather than a chord (see [`segment_arc`]): same
         // endpoints, but leaving along the curve's own tangent, so the swept outline
-        // no longer breaks its curvature at every joint. Curvature 0 comes back for a
-        // straight or barely-curved edge and everything below reduces to what it was.
+        // does not break its curvature at every joint. Curvature 0 comes back for a
+        // straight or barely-curved edge, and everything below reduces to the chord
+        // case exactly.
         let crate::path::Arc {
             dir,
             curvature: kappa,
@@ -1049,10 +1050,10 @@ mod tests {
     /// and no step in the outline between the two.
     ///
     /// Asked of the tip at the stroke's actual **ends** rather than of the first and
-    /// last segments' radii, which is the distinction the ramp introduced: a segment's
-    /// `radius` is its midpoint, and now that the cut no longer has to buy the first
-    /// order the segment holding the point can be long enough that its midpoint is
-    /// nowhere near one. What is at the point is `tip_at(0)`.
+    /// last segments' radii, which is a distinction the radius ramp makes real: a
+    /// segment's `radius` is its midpoint, and since the cut does not have to buy the
+    /// first order, the segment holding an end point can be long enough that its
+    /// midpoint is nowhere near one. What is at the point is `tip_at(0)`.
     #[test]
     fn a_tapered_stroke_narrows_at_both_ends() {
         let radius = 20.0;
@@ -1121,15 +1122,15 @@ mod tests {
         }
     }
 
-    /// The 2026-08-14 defect at the size that showed it: a radius-500 brush with long
-    /// tapers (the repro capture's shape) drew its point as a comb of ~5 px sawteeth,
-    /// because a segment swept at one radius and the cut could only make the step
-    /// between them smaller, never zero.
+    /// The outline at the size that strains it: a radius-500 brush with long tapers.
+    /// Swept at one radius per segment, the cut can only make the step between segments
+    /// smaller and never zero, so the point draws as a comb of ~5 px sawteeth; the
+    /// radius ramp is what removes the step rather than shrinking it.
     ///
-    /// It also pins what the ramp *bought*: the cut no longer has to buy the first
-    /// order, so a taper costs a logarithmic handful of segments instead of one per
-    /// `0.7 px` of radius. The count is the scale-free one — see the sibling test that
-    /// draws the same stroke a hundredth the size.
+    /// It also pins what the ramp buys: the cut does not have to buy the first order,
+    /// so a taper costs a logarithmic handful of segments instead of one per `0.7 px`
+    /// of radius. The count is the scale-free one — see the sibling test that draws the
+    /// same stroke a hundredth the size.
     #[test]
     fn a_huge_brushs_taper_has_no_step_in_its_outline() {
         let mut rec = tapered_record(500.0, 5.0, 11.0, 7600.0);
@@ -2027,8 +2028,8 @@ mod tests {
             // `drain` costs **nothing**, which is the point of this row: the falloff is
             // evaluated per fragment from its own arc length, so it asks the flattener
             // for no segments at all and this comes out identical to the smearing row
-            // above. It used to bind at `0.02 / drain` = 4px, and now costs nothing at all —
-            // for a quantity that is exact rather than merely finely sampled.
+            // above. Bought per segment it would bind at `0.02 / drain` = 4px, and for
+            // a quantity that is exact rather than merely finely sampled.
             (
                 "straight, draining tip",
                 118,
@@ -2040,16 +2041,15 @@ mod tests {
                     &straight,
                 ),
             ),
-            // The taper, and **no longer the most expensive row in the table** — the
-            // point of carrying the radius as a ramp. A segment holds the taper's
-            // slope exactly, so the cut buys only the sagitta of a chord across the
+            // The taper, and **not the most expensive row in the table** — the point
+            // of carrying the radius as a ramp. A segment holds the taper's slope
+            // exactly, so the cut buys only the sagitta of a chord across the
             // profile's own curvature: `len·√(|r''|/8E)` pieces, a second-order term
-            // where the two rules before it bought a first-order one. It was 211 when
-            // the step was denominated in the radius *factor*, 121 when it was
-            // denominated in px (which fixed a 500 px tip's sawteeth by charging
-            // ~700 pieces a zone for them), and 15 now. Nothing about the curve is
-            // driving this one — it is the same straight line as the 3-segment row
-            // above.
+            // where a per-segment constant radius buys a first-order one. Charging the
+            // first order instead costs 121 pieces here, and 211 if the step is
+            // denominated in the radius *factor* rather than in px. Nothing about the
+            // curve is driving this one — it is the same straight line as the
+            // 3-segment row above.
             (
                 "straight, tapered tip",
                 15,

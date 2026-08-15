@@ -460,12 +460,11 @@ fn a_complete_file_owes_nothing() {
 /// left exactly as it was.**
 ///
 /// The companion to [`a_lean_file_replays_identically_once_its_content_is_resolved`],
-/// and the reason that test's ordering is a guarantee rather than a convention. This
-/// used to be a `tracing::error!` with `Ok(())` behind it: the load reported success
-/// and replayed every toothed stroke through the flat stand-in, into *stored* pixels
-/// that no later arrival un-bakes (§6.4). A captured bug report replayed perfectly
-/// smooth in a dev harness for exactly that reason, and the smoothness was the bug
-/// being hunted.
+/// and the reason that test's ordering is a guarantee rather than a convention. Logged
+/// and returned as `Ok(())` instead, the load reports success and replays every toothed
+/// stroke through the flat stand-in, into *stored* pixels that no later arrival
+/// un-bakes (§6.4) — a document that opens perfectly smooth and gives no sign which
+/// ground it was painted through.
 ///
 /// Two claims, and the second is the one a log line could not make. It fails — with
 /// the bill in the error, so a caller can act on it — and it fails *before* adopting

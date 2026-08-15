@@ -65,14 +65,14 @@ pub struct Tol {
     /// definite integral over travel, and `generate_segments_in` drops any edge shorter
     /// than `1e-5` before the question reaches a shader at all.
     ///
-    /// The renderer always honoured that; the **fit** did not, and this column is what
-    /// caught it. `PathFitter`'s least squares summed over *reports*, and a pen reports
-    /// on a clock rather than on a ruler, so the eight reports a release spends crossing
-    /// half a pixel outvoted the whole last span of real curve: measured before the fix,
-    /// the fitted pressure came down over 88 px of a 563 px `LOOP_STROKE` and 134 px of
-    /// an 838 px `FAST_STROKE`, reaching the tip at 0.80 and 0.52 instead of 1.0, and
-    /// every case here moved — `line` by 22% of the viewport. What closed it is
-    /// `path::arc_weights` and the attribute end condition beside it.
+    /// The renderer honours that; the **fit** is where it is easy to lose, and this
+    /// column is what holds it. Least squares summed over *reports* weighs a pen that
+    /// reports on a clock rather than on a ruler, so the eight reports a release spends
+    /// crossing half a pixel outvote the whole last span of real curve: the fitted
+    /// pressure comes down over 88 px of a 563 px `LOOP_STROKE` and 134 px of an 838 px
+    /// `FAST_STROKE`, reaching the tip at 0.80 and 0.52 instead of 1.0, and every case
+    /// here moves — `line` by 22% of the viewport. `path::arc_weights` and the
+    /// attribute end condition beside it are what keep the weighting honest.
     pub lift: f64,
 }
 

@@ -129,9 +129,9 @@ mod iroh_wire {
 
     /// Upper bound on an encoded request.
     ///
-    /// A request used to be a variant tag and 256 bytes was generous. It now
-    /// carries the joiner's list of resolvable content ids, 32 bytes each, so the
-    /// ceiling has to clear a catalog that grows: 64 KiB is two thousand of them.
+    /// A request carries the joiner's list of resolvable content ids, 32 bytes each,
+    /// so the ceiling has to clear a catalog that grows rather than the variant tag
+    /// alone: 64 KiB is two thousand of them.
     const MAX_REQUEST: usize = 64 * 1024;
     /// Upper bound on a response: a whole session snapshot (log + brush PNGs).
     /// A session that outgrows it stops accepting new members, so crossing most

@@ -19,11 +19,10 @@ struct Media {
     // is mirrored into Rust from the unlinked source (§6.10), which cannot evaluate a
     // feature, and this pass has one bind group layout across both spaces.
     bg_resid: vec4<f32>,
-    // exposure, diffuse_lod, gloss, height_strength (the relief slope). The last
-    // arrived here when a `light: vec4` that carried it in `.w` was deleted: image-
-    // based lighting had taken over the direction its `.xyz` once held, leaving three
-    // lanes named for something the pass no longer has and one real number hiding in
-    // the fourth. `shade.w` was free, and the slope is a shading term.
+    // exposure, diffuse_lod, gloss, height_strength (the relief slope). The slope sits
+    // here because it is a shading term and there is no light *direction* to hang it
+    // off: the pass is image-based lit (§6.5), so the environment carries the
+    // direction and this uniform carries only what shading multiplies by.
     shade: vec4<f32>,
     surf_a: vec4<f32>, // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
     surf_b: vec4<f32>, // surface_strength, transparent (0/1), _, _

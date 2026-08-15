@@ -28,9 +28,9 @@ const DOC_EXT: &str = "stark";
 /// Write the document — the action log, not the pixels (§8).
 ///
 /// Lean: content this build ships with is named but not carried, because the
-/// bundle is what a `.stark` file weighs. A log is fitted paths; a canvas ground
-/// is megabytes, so a doodle on the built-in gesso used to be 2.8 MB of which
-/// almost none was the painting. Opening one resolves those ids out of the app's
+/// bundle is what a `.stark` file weighs. A log is fitted paths; a canvas ground is
+/// megabytes, so carrying one puts a doodle on the built-in gesso at 2.8 MB of which
+/// almost none is the painting. Opening one resolves those ids out of the app's
 /// own files (`crate::builtin_ids`), and the catalog is append-only so that keeps
 /// working.
 pub fn save_document(state: AppState) {

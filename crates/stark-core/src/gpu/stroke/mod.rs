@@ -94,9 +94,9 @@ pub struct StrokeRenderer {
     color_space: Arc<dyn ColorSpace>,
 
     /// The two render paths' GPU objects, each built by the module that dispatches
-    /// them. Symmetric on purpose: the swept path's pipelines used to sit loose here
-    /// among the caches while the loop's lived behind a type, which made a struct
-    /// documented as holding "only immutable GPU objects" hold one path by name.
+    /// them. Symmetric on purpose: one path behind a type and the other's pipelines
+    /// loose among the caches would make a struct documented as holding "only
+    /// immutable GPU objects" name one path and not the other.
     swept: SweptKit,
     /// The sequential stamp loop (§6.2), used when the brush manipulates existing
     /// paint (`lift` / `deposit` / `charge` / `bleed` — the four axes `dynamics_setup`
@@ -118,10 +118,10 @@ pub struct StrokeRenderer {
     scratch: ScratchPool,
 
     /// The base bound where a stroke reaches a tile the layer does not have yet
-    /// (§6.8's pattern). The integrate reads it through clamped loads, so bare
-    /// canvas needs no tile of its own — where this path used to acquire a whole
-    /// pooled tile and clear it, on every pointer move, whether or not the stroke
-    /// touched anything unpainted.
+    /// (§6.8's pattern). The integrate reads it through clamped loads, so bare canvas
+    /// needs no tile of its own — where a real pooled tile would be acquired and
+    /// cleared on every pointer move, whether or not the stroke touched anything
+    /// unpainted.
     zeroes: Zeroes,
 
     /// Selection masks (§6.8): the per-tile mask bound into the integrate
@@ -284,9 +284,9 @@ impl StrokeRenderer {
     ///
     /// The pool hands out textures, not tiles (see [`TexHandle`](crate::gpu::tile::TexHandle)).
     /// Pairing them here is what keeps the two formats coming from the color space
-    /// actually in use rather than from a constant — the pool previously hardcoded
-    /// `R16Float` for aux, which happened to match every color space but would have
-    /// panicked on the first one that chose otherwise (§6.7).
+    /// actually in use rather than from a constant in the pool: a hardcoded `R16Float`
+    /// aux matches every space currently built, and would panic on the first one that
+    /// chose otherwise (§6.7).
     fn acquire_tile(&self, pool: &TilePool, source: AllocSource) -> TilePairHandle {
         TilePairHandle::new(
             pool.acquire_tex(self.color_space.color_format(), source),

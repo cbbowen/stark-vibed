@@ -71,14 +71,13 @@
 //     about what "glow" means; XYZ does not have an opinion.
 //
 // The conversion pair itself is `lib/color.wesl`'s `linear_to_light` /
-// `light_to_linear`. It lived here while this was the only pass that worked in
-// light; the filter pass (§21) scales light too, and a module in `lib` is where a
-// binding-free conversion two pipelines share belongs — importing it out of *this*
-// file would have dragged this one's bindings along with it.
+// `light_to_linear`. The filter pass (§21) scales light too, and a module in `lib`
+// is where a binding-free conversion two pipelines share belongs — importing it out
+// of *this* file would drag this one's bindings along with it.
 
 // (The un-premultiply guard this pass needs is `COVERAGE_EPS`, in
-// `lib/paint_common.wesl` — it used to be a local `EPS` here at 1e-4 while four
-// other modules had an `EPS` at 1e-5. The importers take it directly.)
+// `lib/paint_common.wesl`. The importers take it directly, so there is one guard on
+// this boundary rather than a per-module `EPS` at whatever magnitude each picked.)
 
 // Blend-mode codes. Mirrored by `blend_code` in `gpu/composite.rs` — this is the
 // shader ABI for `BlendMode`, so it lives next to the shader rather than in the
@@ -101,9 +100,9 @@ struct Blend {
     // sends `document::DRAGO_K` here, since the uniform has one field and no way to
     // spell "absent".
     //
-    // It was a passed constant before it was a setting, which is why this pass needed
-    // no change when it became one: the shader has always been the mode's whole family
-    // of curves rather than one of them.
+    // The shader implements the mode's whole *family* of curves rather than one of
+    // them, so where `k` comes from — a constant or a per-layer setting — is entirely
+    // the host's business.
     k: f32,
     // Whether this layer is **clipped** to the paint beneath it: 0 or 1
     // (§14.4). Read by `merge`, which is where the whole of clipping
@@ -133,8 +132,8 @@ struct FsOut {
 // ---- the emissive modes' conjugating curve, as a pair --------------------------
 //
 // `Reinhard` and `Drago` are `f(a,b) = T(T⁻¹(a) + T⁻¹(b))`, and this is `T⁻¹` and `T`
-// — written as the pair rather than as the collapsed two-argument form they used to
-// be, because **the addition in the middle is the part that has to be reachable**.
+// — written as the pair rather than as a collapsed two-argument form, because **the
+// addition in the middle is the part that has to be reachable**.
 // Collapsed, the curve can only combine two values at full strength; separated, the
 // quantity that adds is a value in its own hand, so coverage and opacity can weigh it
 // (`added_light`) and a stack of any depth is one sum.
@@ -149,9 +148,9 @@ struct FsOut {
 // places past what an 8-bit target can show, and a sum of several stays finite in
 // f32 rather than reaching the `inf/inf` that would make a NaN of the whole texel.
 //
-// The collapsed form this replaced handled `a = b = 1` by working in the complements
-// and landing on exactly 1. That exactness is the one thing given up here, and it is
-// given up for a reason: the complement form cannot express "half a lamp".
+// A collapsed form working in the complements would land `a = b = 1` on exactly 1.
+// That exactness is the one thing the floor gives up, and it is given up for a reason:
+// the complement form cannot express "half a lamp".
 const EMISSION_EPS: f32 = 1e-6;
 
 // `T⁻¹`: the linear emission behind a display-referred light value.
@@ -224,16 +223,15 @@ fn merge_alpha(cb_a: f32, cs_a: f32) -> f32 {
 //
 // The interpolation `mix(…, αb)` is W3C's `(1 − αb)·Cs + αb·B(Cb, Cs)`: blend
 // against what is genuinely underneath, and where nothing is, the layer is simply
-// itself. It runs in the **working space**, which is right for `Multiply` and was
-// wrong for the emissive modes — see `added_light`, which is the path those take
-// now. What is left here is `Normal` (reached only by a clipped layer) and the one
-// mode whose blend function is bilinear, so that working-space mixing *is* its
-// linear quantity.
+// itself. It runs in the **working space**, which is right for `Multiply` and wrong
+// for the emissive modes — those take `added_light` instead. What this handles is
+// `Normal` (reached only by a clipped layer) and the one mode whose blend function
+// is bilinear, so that working-space mixing *is* its linear quantity.
 //
 // The source term is written `cs.rgb` and not `Cs·αs`, which is the same number:
-// `Cs` was only ever `cs.rgb` divided by `αs` so the blend function could see a
-// color rather than a premultiplied one, and multiplying it back would round-trip a
-// division for no reason. Spelling it this way is what makes an **empty backdrop**
+// `Cs` is just `cs.rgb` divided by `αs` so the blend function can see a color rather
+// than a premultiplied one, and multiplying it back would round-trip a division for
+// no reason. Spelling it this way is what makes an **empty backdrop**
 // exact: `mix(x, y, 0)` is `x` to the bit, so a mode over an empty stack is
 // bit-for-bit the `Normal` render, which `tests/blend.rs` asserts to the byte. The
 // space shaders route `αb = 0` here for exactly that reason rather than through
@@ -260,9 +258,9 @@ fn merge_alpha(cb_a: f32, cs_a: f32) -> f32 {
 // version does not have. Note the tail keeps the *unmodified* `αs`: inside the
 // backdrop's region the source still covers `αs` of it.
 //
-// The two weights below are written so that the unclipped case is **exactly** the
-// arithmetic this function performed before clipping existed — `x * 1.0` and
-// `x * keep` with `keep` an exact 1.0 — rather than something that agrees to a
+// The two weights below are written so that an **unclipped** layer runs exactly the
+// arithmetic it would with clipping out of the picture entirely — `x * 1.0` and
+// `x * keep` with `keep` an exact 1.0 — rather than something that agrees only to a
 // least-significant bit. `tests/blend.rs` compares byte-for-byte, and a `mix` that
 // reconstructs 1.0 from `(1−αb) + αb` would not survive it.
 //
@@ -278,12 +276,11 @@ fn merge_alpha(cb_a: f32, cs_a: f32) -> f32 {
 // does (§15.4.2). A frame that screens light is not a thing anyone has
 // asked for; if it becomes one, this is the line that has to learn the difference.
 // `hb` / `hs` are the two aux heights. They arrive as arguments like everything else
-// rather than being loaded from `back_aux` / `src_aux` in here, which is what this
-// function used to do — and the `p: vec2<i32>` it needed to do it was the only reason
-// a compositing routine took a texel coordinate at all. Half its inputs came down the
-// parameter list and half were fetched behind the caller's back, at a position the
-// caller had already computed. Now the whole of the algebra below is a function of its
-// arguments and the mode uniform, and the two color spaces read identically.
+// rather than being loaded from `back_aux` / `src_aux` in here: **the whole of the
+// algebra below is a function of its arguments and the mode uniform**, so the two
+// color spaces read identically and nothing is fetched behind the caller's back at a
+// position the caller has already computed. It is also why no compositing routine
+// here takes a texel coordinate.
 fn merge(cb: vec4<f32>, cs_raw: vec4<f32>, blended: vec3<f32>, hb: f32, hs: f32) -> FsOut {
     // The group's opacity, applied to its composited result — premultiplied
     // color and coverage scale together, which is the same thing

@@ -137,13 +137,12 @@ impl LinearTimeline {
     ///
     /// Asked of the history rather than tracked beside it: a second copy of a
     /// number the history already knows is a number that can disagree with it,
-    /// and `Version` is opaque, so there was nothing else to ask.
+    /// and `Version` is opaque, so there is nothing else to ask.
     ///
-    /// That principle used to cost a walk per call, which
-    /// [`scrub_range`](Timeline::scrub_range) makes a walk per render. It costs
-    /// nothing now — `actions()` reports its own length — so the answer that
-    /// cannot go stale is also the cheap one, and neither has to be traded for
-    /// the other.
+    /// It costs nothing — `actions()` reports its own length — so the answer that
+    /// cannot go stale is also the cheap one, and neither has to be traded for the
+    /// other. Which matters because [`scrub_range`](Timeline::scrub_range) asks it
+    /// once a render.
     fn applied(&self) -> usize {
         self.history.actions().len()
     }

@@ -137,16 +137,15 @@ pub struct CompositeScene<'a> {
 /// preset thumbnail deliberately does not.
 ///
 /// **No uniform buffer is here**, and that is the whole content of "nothing here
-/// changes". The view, media and resolve uniforms used to be, sound on the argument
-/// that each render writes them through the queue immediately before the submit that
-/// reads them and submits on one queue are ordered. That argument is about the
-/// *sequence of calls*, not about these types: two `Compositor`s over one of these is
-/// the documented arrangement, `&CompositorPipeline` is all either needs, and nothing
-/// stopped a caller straddling a write and its submit with another render. Each of
-/// the three holds per-target state anyway — what this render is looking at, how it
-/// is lit, how many samples it took — so they belong to the [`Compositor`] and now
-/// live there ([`ViewBindings`], [`Compositor::media_buf`], and inside
-/// [`Supersampled`]).
+/// changes". The view, media and resolve uniforms live on the [`Compositor`] instead
+/// ([`ViewBindings`], [`Compositor::media_buf`], and inside [`Supersampled`]). Sharing
+/// them would rest on each render writing them through the queue immediately before
+/// the submit that reads them, and submits on one queue being ordered — an argument
+/// about the *sequence of calls*, not about these types. Two `Compositor`s over one of
+/// these is the documented arrangement, `&CompositorPipeline` is all either needs, and
+/// nothing would stop a caller straddling a write and its submit with another render.
+/// Each of the three holds per-target state anyway: what this render is looking at,
+/// how it is lit, how many samples it took.
 ///
 /// [`Engine::new_sharing`]: crate::Engine::new_sharing
 pub struct CompositorPasses {
@@ -444,10 +443,9 @@ impl CompositorPipeline {
     /// The channel formats pass A writes (§6.7) — what a caller supplying its own
     /// targets to [`Compositor::composite_channels`] has to allocate.
     ///
-    /// The whole [`ChannelFormats`] rather than the `(color, aux, resid)` tuple it
-    /// used to be taken apart into: the residual is not a channel a caller may decide
-    /// to skip, and handing back the type that says so is cheaper than the paragraph
-    /// that used to.
+    /// The whole [`ChannelFormats`] rather than a `(color, aux, resid)` tuple: the
+    /// residual is not a channel a caller may decide to skip, and handing back the
+    /// type that says so is cheaper than a paragraph asking.
     pub(crate) fn channel_formats(&self) -> ChannelFormats {
         self.formats
     }

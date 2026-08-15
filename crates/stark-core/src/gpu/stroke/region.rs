@@ -3,11 +3,10 @@
 //!
 //! Split out of [`segments`](super::segments) because this is where one invariant
 //! lives and it deserves to be local: **the rectangle the chunker measures a piece
-//! against is the rectangle the render then allocates.** Those used to be three
-//! derivations — a tile set, a bounding box turned into region dimensions, and the set
-//! turned back into a rectangle — with a comment asking them to agree. They are one
-//! [`Coverage`] now, and [`Covered::rect`] takes its extent from the very
-//! [`dims`](Coverage::dims) the chunker checked.
+//! against is the rectangle the render then allocates.** One [`Coverage`] answers
+//! both, and [`Covered::rect`] takes its extent from the very
+//! [`dims`](Coverage::dims) the chunker checked — where separate derivations of a
+//! tile set, a bounding box and a rectangle can only be asked to agree.
 //!
 //! Nothing here touches the GPU. It is float arithmetic over [`Sweep`]s and tile
 //! coordinates, which is what lets the whole of it be pinned without an adapter
@@ -61,14 +60,12 @@ fn for_each_touched<'a>(
 /// walked back along the crossing segment's own arc, up to one
 /// [`BLEED_TRAVEL_QUANTUM`] before the segment it fires after (`plan::bleed_fires`) —
 /// and for the first segment of a piece or a live-tail range that stretch lies behind
-/// every segment box, with one apron texel of margin. Left out (as they were until
-/// 2026-08-11, while the snapshot scratch's sizing *did* take them), the flux written
-/// there was silently clipped by the region's bounds check, and a rewritten tile's
-/// apron could diverge from an unrewritten neighbour's interior — a §6.4 break in
-/// exactly the configuration `tests/seam.rs` does not draw.
+/// every segment box, with one apron texel of margin. Left out of an accounting, the
+/// flux written there is silently clipped by the region's bounds check, and a
+/// rewritten tile's apron can diverge from an unrewritten neighbour's interior — a
+/// §6.4 break in exactly the configuration `tests/seam.rs` does not draw.
 ///
-/// One function, so no caller can enumerate one and forget the other. That is the
-/// mistake above, stated as a thing the code no longer lets you make.
+/// One function, so no caller can enumerate the segments and forget the windows.
 pub(super) fn piece_sweeps<'a>(
     segments: &'a [Segment],
     fires: &'a [BleedFire],
@@ -81,19 +78,17 @@ pub(super) fn piece_sweeps<'a>(
 
 /// The canvas box a set of sweeps covers, accumulated one sweep at a time.
 ///
-/// **The one definition of what a piece needs**, and the reason it is a type. Three
-/// answers used to be derived three ways and were required to agree: `chunk_segments`
-/// measured a bounding box and turned it into region dimensions, `affected_tiles`
-/// enumerated a tile set, and `region_rect` turned that set back into a rectangle. The
-/// chunker's promise — "this piece fits [`MAX_REGION_DIM`]" — was about the first, and
-/// the region the loop actually allocates came from the third; a comment asked them to
-/// be the same rectangle and a test checked that they were.
+/// **The one definition of what a piece needs**, and the reason it is a type. The
+/// chunker's promise — "this piece fits [`MAX_REGION_DIM`]" — and the region the loop
+/// actually allocates have to be the same rectangle, and they are because they are the
+/// same arithmetic: [`Covered::rect`] takes its extent from [`dims`](Self::dims),
+/// which is the very function the chunker checked. Derived separately — a bounding box
+/// turned into region dimensions here, a tile set turned back into a rectangle there —
+/// the two can only be asked to agree by a comment and watched by a test.
 ///
-/// They are now the same rectangle because they are the same arithmetic:
-/// [`Covered::rect`] takes its extent from [`dims`](Self::dims), which is the very
-/// function the chunker checked. The tile set is still enumerated separately, because
-/// only the dynamics path wants it and a set insert per tile per segment is exactly the
-/// cost the incremental repaint exists to keep off a long stroke.
+/// The tile set *is* still enumerated separately, because only the dynamics path wants
+/// it and a set insert per tile per segment is exactly the cost the incremental repaint
+/// exists to keep off a long stroke.
 #[derive(Clone, Copy)]
 pub(super) struct Coverage {
     lo: Vec2,
@@ -290,10 +285,10 @@ pub(super) fn chunk_segments(segments: &[Segment], fires: &[BleedFire]) -> Vec<R
 /// [`chunk_segments`] can cut a stroke as fine as a single segment, but no finer: the
 /// reservoir pickup reduces over the whole tip at once, so the region can never be
 /// smaller than one footprint. A brush too fat for that is the one thing left that
-/// sends a dynamics stroke to the plain swept deposit — and, unlike the whole-stroke
-/// measurement this replaced, it is decided from the brush alone, so it costs nothing
-/// to re-ask on every pointer move and cannot answer differently for a piece than for
-/// the stroke it belongs to.
+/// sends a dynamics stroke to the plain swept deposit — and it is decided from the
+/// brush alone rather than from a whole-stroke measurement, so it costs nothing to
+/// re-ask on every pointer move and cannot answer differently for a piece than for the
+/// stroke it belongs to.
 ///
 /// Bounded rather than measured, since it has to hold for segments that do not exist
 /// yet: radius peaks at the brush's own (pressure only scales it down), travel at the
@@ -412,8 +407,8 @@ mod tests {
     /// A sweep carrying only what the region measurements read.
     ///
     /// The paint rates are absent rather than zeroed: the region measurements are
-    /// geometry, they take a [`Sweep`], and there is no longer anywhere to put a rate
-    /// that would imply one had been consulted.
+    /// geometry, so they take a [`Sweep`], which has nowhere to put a rate that would
+    /// imply one had been consulted.
     fn sweep(start: Vec2, end: Vec2, radius: f32) -> Sweep {
         let v = end - start;
         let length = v.length();
@@ -534,8 +529,8 @@ mod tests {
             }
         }
 
-        // And the whole point: the listed pairs are far fewer than the product the
-        // swept path used to shade.
+        // And the whole point: the listed pairs are far fewer than the full
+        // tile × segment product the swept path shades.
         let listed: usize = map.values().map(Vec::len).sum();
         assert!(
             listed < map.len() * segments.len() / 4,

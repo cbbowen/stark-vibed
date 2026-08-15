@@ -138,9 +138,9 @@ impl<R: Resource> Registry<R> {
     /// the document was on *at that point in the log* (§6.4), which is a question
     /// about the action being applied, not about what the compositor is showing.
     /// Also how [`register`](Self::register) and [`set`](Self::set) rebuild the
-    /// object they have just invalidated: they call this and drop the result. It
-    /// used to be a second method, `ensure`, which was this one without the return —
-    /// the same four lines, kept in step by nothing.
+    /// object they have just invalidated: they call this and drop the result, rather
+    /// than reaching for a returnless `ensure` twin that nothing would keep in step
+    /// with this one.
     pub fn get(&self, gpu: &GpuContext, id: R) -> R::Gpu {
         self.store().get(gpu, id)
     }

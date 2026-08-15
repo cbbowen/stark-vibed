@@ -7,10 +7,9 @@
 //! leaves this module should be a decision, not a consequence of how a file happened
 //! to be split.
 //!
-//! It used to be both at once. Every module was `pub` *and* re-exported, so
-//! `gpu::composite::Compositor` and `gpu::Compositor` were both public names for one
-//! type and `engine.rs` used each in different places — with `readback` the lone
-//! module that had no re-export, for no reason anyone had written down.
+//! So a module is `pub(crate)` **or** re-exported, never both: two public names for
+//! one type is two ways for a call site to spell the same import, and no way to tell
+//! which one the module meant to offer.
 
 pub(crate) mod channels;
 pub(crate) mod composite;

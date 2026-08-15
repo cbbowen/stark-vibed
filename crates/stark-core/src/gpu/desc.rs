@@ -172,8 +172,8 @@ impl Slot {
 /// The layout entry for one slot, resolved against the shader's own declaration.
 ///
 /// Returns `None` for a slot the shader declares `@if(resid)` when this build has no
-/// residual — which is what retired the `[..12 + 4 * usize::from(resid)]` element
-/// counts that every layout used to carry.
+/// residual, so a layout never restates that gate as an element count
+/// (`[..12 + 4 * usize::from(resid)]`).
 fn slot_entry(
     slot: Slot,
     vis: wgpu::ShaderStages,
@@ -210,8 +210,8 @@ fn slot_entry(
 ///
 /// Only the formats the shader tree actually declares. A new one is a deliberate
 /// addition here rather than a silent mismatch — which is the point of reading the
-/// format off the declaration at all: the host used to choose between two helpers
-/// (`stor` and `stor32`) at every layout that named a storage slot.
+/// format off the declaration at all, instead of having the host pick between helpers
+/// (`stor` / `stor32`) at every layout that names a storage slot.
 fn storage_format(wgsl: &str, name: &str) -> wgpu::TextureFormat {
     match wgsl {
         "rgba16float" => wgpu::TextureFormat::Rgba16Float,
@@ -242,8 +242,8 @@ fn view_dimension(wgsl: &str, name: &str) -> wgpu::TextureViewDimension {
 /// The list of slots is the *only* thing written on the host, and it is written once:
 /// [`bind_group_for`] builds the matching group from the same list, so a layout and its
 /// group cannot disagree about which bindings are present, in what order, or of what
-/// type. What this replaced was two hand-kept arrays per entry point — seven pairs of
-/// them for `dynamics.wesl` alone — joined by a magic element count.
+/// type. Two hand-kept arrays per entry point joined by a magic element count — seven
+/// pairs of them for `dynamics.wesl` alone — is what that saves.
 pub(crate) fn layout_for(
     device: &wgpu::Device,
     label: &str,
@@ -457,11 +457,11 @@ pub(crate) fn fullscreen_pipeline(
 /// rasterizes per-tile geometry takes (`draw(0..4, i..i+1)`).
 ///
 /// Spelled out field by field because a `const` cannot call `Default::default()`,
-/// which is the one thing here that could change a pixel silently: this replaced
-/// six pipelines written as `{ topology: TriangleStrip, ..Default::default() }`
-/// and four of the transform's written with an explicit `cull_mode: None`, and a
-/// field that disagreed with those would alter what they rasterize without failing
-/// anything. `quad_strip_is_the_default_with_a_strip_topology` is what checks it.
+/// which is the one thing here that could change a pixel silently: the ten pipelines
+/// that take this would otherwise each write
+/// `{ topology: TriangleStrip, ..Default::default() }`, and a field here disagreeing
+/// with that default would alter what they rasterize without failing anything.
+/// `quad_strip_is_the_default_with_a_strip_topology` is what checks it.
 ///
 /// `cull_mode: None` is load-bearing for the transform in particular: a
 /// negative-determinant affine (a flip) reverses winding, so both faces must draw

@@ -232,7 +232,8 @@ pub struct NetOptions {
     /// so a collaborator switching to a ground this app ships with costs a read
     /// from disk rather than megabytes over the wire.
     ///
-    /// Empty promises nothing, which is exactly the old behaviour.
+    /// Empty promises nothing, and is the safe default: every id then travels the
+    /// wire as it would with no local catalog at all.
     pub resolvable: Vec<AssetId>,
 }
 

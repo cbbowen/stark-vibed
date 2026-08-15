@@ -346,11 +346,11 @@ fn charged_tool_lays_a_finite_glob() {
     );
     let img = engine.render_to_image();
 
-    // Bare paper, read off this very image instead of hardcoded. The old bound was an
-    // absolute "reads ~200", which recorded what the tonemap happened to do the day it
-    // was written and had to be re-derived every time the lighting model moved — most
-    // recently when the media pass became a reference (§6.3) and bare paper
-    // brightened by forty levels. What this test is *about* is the difference: red
+    // Bare paper, read off this very image instead of hardcoded. An absolute bound
+    // ("reads ~200") records what the tonemap happens to do on the day it is written,
+    // and has to be re-derived every time the lighting model moves — bare paper shifts
+    // by forty levels between the studio HDR and the reference light (§6.3) alone.
+    // What this test is *about* is the difference: red
     // paint pulls the paper's green down where the glob landed, and pulls it down less
     // once the charge has run out. That survives any exposure or tonemap.
     let paper = img.pixel(20, 20); // well above the stroke, never touched
@@ -445,7 +445,7 @@ fn golden_smudge_drag() {
 fn golden_self_smear() {
     // A single stroke that crosses its own trail: because pickup reads the
     // *evolving* region, the second pass must smear the paint the first pass just
-    // laid — the order-dependence the old base-only reservoir could not express.
+    // laid — an order-dependence a base-only reservoir cannot express.
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -606,12 +606,12 @@ fn a_carrying_stroke_reads_as_one_continuous_mark() {
 /// rather than many short ones (a fresh gesture starts the tool empty, so repeating
 /// short strokes resets the very thing that accumulates).
 ///
-/// The bug it exists for: the tool's drain used to carry a fudge factor of 0.75
-/// ("deplete a bit slower than the math would indicate to account for error"), so the
-/// tool kept a quarter of every deposit it made *and laid it anyway*. That factor was
-/// covering for the old reload cadence — the tool reloading on its own schedule while
-/// the canvas was stripped every segment — and once both sides of the transfer measured
-/// the same segment it had nothing left to cover for. Reinstating it fails this by ~6%.
+/// The shape it rules out: a fudge factor on the tool's drain ("deplete a bit slower
+/// than the math would indicate to account for error") leaves the tool keeping a
+/// fraction of every deposit it makes *and laying it anyway*. Such a factor only ever
+/// compensates for the two sides of the transfer measuring different things; with both
+/// measuring the same segment there is nothing for it to cover, and a 0.75 fails this
+/// by ~6%.
 ///
 /// Measured as image darkness rather than height, since there is no height readback:
 /// the field is deliberately faint, because height only reaches the render while the
@@ -674,11 +674,11 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
 /// The other half of conservation: a smear must not **destroy** paint either.
 ///
 /// The test above bounds the transfer from one side only, and a leak passes it
-/// trivially — losing paint is never "more than went in". That is the side the
-/// exchange actually got wrong: the tool used to solve half the coupled pair (the
-/// canvas relaxing towards a tool that never took anything back) and then lift from
-/// the region as the `deposit` had already left it, so the two halves disagreed about
-/// how much had changed hands by `O(lift²)` per segment. At the rates below that is
+/// trivially — losing paint is never "more than went in". It is also the side that is
+/// easy to lose: solve half the coupled pair (the canvas relaxing towards a tool that
+/// never takes anything back) and then lift from the region as the `deposit` has
+/// already left it, and the two halves disagree about how much changed hands by
+/// `O(lift²)` per segment. At the rates below that is
 /// ~39% of the total `canvas + tool` height at *every* segment boundary, and what it
 /// draws is the pair of artifacts `golden_heavy_smear_regression` and
 /// `golden_lift_end_regression` pin: arcs at the segment spacing through thick paint,
@@ -694,13 +694,11 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
 /// made the discrepancy an `O(1)` fraction of the transfer instead of a rounding error.
 ///
 /// The bound is a **fraction of the field's own contrast** rather than a level count,
-/// and that is not fussiness. It used to be 60 levels, sized against what red paint did
-/// to the green channel under the studio HDR the suite ran on; moving to the reference
-/// light (§6.3) widened the paint-to-ground swing and the *same physical lightening*
-/// read 64 levels instead of 35, failing a test nothing had broken. A bound quoted
-/// against the swing it is a share of cannot be invalidated that way. Room on both
-/// sides: the tool's own load measures a shade under a third of the contrast, and the
-/// half-solved exchange measured 2.6× that.
+/// and that is not fussiness. A level count is a claim about the light: change the
+/// lighting and the same physical lightening reads a different number of levels, so
+/// the test fails with nothing broken. Quoted against the swing it is a share of, the
+/// bound survives that. Room on both sides: the tool's own load measures a shade under
+/// a third of the contrast, and a half-solved exchange measures 2.6× that.
 #[test]
 fn a_conservative_smear_does_not_destroy_paint_either() {
     let Some(mut engine) = engine_or_skip() else {
@@ -1291,11 +1289,10 @@ fn a_bleed_trail_across_an_edge_has_no_step_in_it() {
     );
 }
 
-/// The property the reach fix exists for: `bleed`'s smoothing distance scales
-/// with the brush, so a big blender softens far from the boundary in one pass —
-/// where a fixed 1-texel stencil tops out near a pixel of σ per pass and cannot
-/// move a reading 10 px away no matter the rate (the regression this pins: the
-/// axis "worked" but was invisible at any usable brush size).
+/// **`bleed`'s smoothing distance scales with the brush**, so a big blender softens
+/// far from the boundary in one pass. A fixed 1-texel stencil tops out near a pixel of
+/// σ per pass and cannot move a reading 10 px away no matter the rate — an axis that
+/// "works" and is invisible at any usable brush size.
 ///
 /// Measured as the red-vs-green contrast 10 px to each side of the boundary
 /// dropping materially after a single pass, which no orientation, color-space
@@ -1358,16 +1355,16 @@ fn bleed_reach_scales_with_the_brush() {
     );
 }
 
-/// The regression the bleed cadence's fire slots and the deposit's rewrite guard
-/// exist for (§6.2): a slow hand is fitted at a control point per pointer sample,
-/// so a bleed-only stroke can arrive as hundreds of **sub-pixel** knots — and over
-/// a flat coat it must change nothing at all. It used to brighten the coat by up
-/// to 28 levels: fired per segment, the per-texel exposure is prefix-cancellation
-/// noise and the flux sits under the f16 ULP of the heights it edits — and even at
-/// zero flux, re-storing an algebraically identical texel walks it down one ULP
-/// per rewrite on a backend whose f32→f16 storage conversion truncates (D3D12
-/// does). The dense record is appended to the log directly, exactly as the field
-/// repro's fitter produced it, rather than through the fitter.
+/// What the bleed cadence's fire slots and the deposit's rewrite guard exist for
+/// (§6.2): a slow hand is fitted at a control point per pointer sample, so a
+/// bleed-only stroke can arrive as hundreds of **sub-pixel** knots — and over a flat
+/// coat it must change nothing at all. Fired per segment instead, the per-texel
+/// exposure is prefix-cancellation noise and the flux sits under the f16 ULP of the
+/// heights it edits; even at zero flux, re-storing an algebraically identical texel
+/// walks it down one ULP per rewrite on a backend whose f32→f16 storage conversion
+/// truncates (D3D12 does), which brightens the coat by up to 28 levels. The dense
+/// record is appended to the log directly, exactly as the field repro's fitter
+/// produced it, rather than through the fitter.
 #[test]
 fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
     let Some(mut engine) = engine_or_skip() else {
@@ -1435,15 +1432,13 @@ fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
 /// A bleeding stroke must **preview as it commits** (§1.3).
 ///
 /// The bleed cadence fires on crossings of absolute arc and each firing sweeps a
-/// window reaching back one quantum (`bleed_fires`). The window's start used to be
-/// looked up among the segments the piece being drawn happened to hold, clamped to
-/// the first of them — so a window reaching further back than the range came out
-/// short. A live tail always starts at a span boundary while the commit renders the
-/// whole stroke from zero, so the two relaxed different amounts of paint at exactly
-/// that seam, and a bleeding stroke visibly changed when the pointer came up.
-///
-/// The window is walked back along the crossing segment's own arc now, which needs no
-/// history at all. This is the test that says so.
+/// window reaching back one quantum (`bleed_fires`). **The window's start is walked
+/// back along the crossing segment's own arc**, which needs no history at all. Looked
+/// up among the segments the piece being drawn happens to hold — clamped to the first
+/// of them — a window reaching further back than the range comes out short; a live
+/// tail always starts at a span boundary while the commit renders the whole stroke
+/// from zero, so the two would relax different amounts of paint at exactly that seam
+/// and a bleeding stroke would visibly change when the pointer came up.
 #[test]
 fn a_bleeding_stroke_previews_as_it_commits() {
     let Some(mut engine) = engine_or_skip() else {

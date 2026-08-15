@@ -80,10 +80,9 @@ pub struct Environment {
     /// flat. The media pass divides exposure by this, so `exposure = 1` means "a flat
     /// canvas reads its own albedo" in *any* environment, procedural or HDR.
     ///
-    /// This replaced the whole-image mean luminance, which only approximated it: the
-    /// mean over equirect texels over-weights the poles and includes light no
-    /// front-facing canvas ever sees, leaving a flat patch ~13% dark under the
-    /// procedural environment.
+    /// Not the whole-image mean luminance, which only approximates it: a mean over
+    /// equirect texels over-weights the poles and includes light no front-facing canvas
+    /// ever sees, leaving a flat patch ~13% dark under the procedural environment.
     pub flat_irradiance: f32,
     /// The exposure these pixels are shown at — [`EnvironmentId::exposure`] of
     /// whichever id actually produced them. Carried on the built environment rather

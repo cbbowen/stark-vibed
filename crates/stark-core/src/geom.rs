@@ -498,8 +498,8 @@ mod tests {
         assert_eq!((left.min, left.max), ((-1, -1), (-1, -1)));
     }
 
-    /// The two answers that used to be given silently and wrongly: a box that
-    /// cannot be measured, and one that cannot be addressed.
+    /// The two answers that must be refused rather than given silently and wrongly:
+    /// a box that cannot be measured, and one that cannot be addressed.
     #[test]
     fn covering_refuses_what_it_cannot_measure_or_address() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
@@ -695,8 +695,8 @@ mod tests {
         }
     }
 
-    /// An upright, unmirrored view has to go through the new matrix path *bit for
-    /// bit* as it went through the old scale pair — the golden images are blessed
+    /// An upright, unmirrored view has to go through the matrix path *bit for bit* as
+    /// it would through a plain scale-and-offset — the golden images are blessed
     /// against it, and a one-ulp drift in the raster transform is exactly the kind of
     /// change that shows up as a mysterious failure a year later.
     #[test]
@@ -798,7 +798,7 @@ mod tests {
                 "corner {corner:?} -> {c:?} outside {min:?}..{max:?}"
             );
         }
-        // Upright, it is exactly the old half-viewport-over-zoom rect.
+        // Upright, it is exactly the plain half-viewport-over-zoom rect.
         let upright = view(Vec2::ZERO, 2.0, Extent2::new(400, 300));
         assert_eq!(
             upright.visible_bounds(),

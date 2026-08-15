@@ -280,10 +280,10 @@ pub struct Engine {
     /// held as the `history::Action::Context` (§5).
     ///
     /// Stored rather than built per call. `history`'s `Context` is an owned
-    /// associated type, so there is nothing to hand it a borrow of; this used to be
-    /// rebuilt by cloning all four on *every* commit, undo, redo and remote merge —
-    /// tens of `Arc` bumps plus a `HashMap` allocation each time, for a value that
-    /// only changes when the color space is rebuilt.
+    /// associated type, so there is nothing to hand it a borrow of — and building it
+    /// per call means cloning all four on *every* commit, undo, redo and remote merge:
+    /// tens of `Arc` bumps plus a `HashMap` allocation each time, for a value that only
+    /// changes when the color space is rebuilt.
     ///
     /// They live only here: the engine reaches them through `self.apply` too, so
     /// there is one copy rather than the engine's plus the context's.
@@ -389,10 +389,10 @@ impl Engine {
             .ok_or(EngineError::UnsupportedColorSpace(color_space))?;
         // The registry starts on the builtin flat ground — it is all that can be
         // built before any bytes exist, and it is also what a fresh document is on
-        // (`DEFAULT_SURFACE`). The two agree now, where they used to have to be
-        // reconciled: a ground is named by the hash of its height map (§6.4), so an
-        // engine with no bytes has exactly one ground it can truthfully name, and a
-        // frontend that wants another opens a document on it.
+        // (`DEFAULT_SURFACE`), so there is nothing to reconcile between the two. A
+        // ground is named by the hash of its height map (§6.4), so an engine with no
+        // bytes has exactly one ground it can truthfully name, and a frontend that
+        // wants another opens a document on it.
         let surface = Registry::<SurfaceId>::new(&gpu, SurfaceId::default());
         // Lighting starts on the procedural neutral environment; image HDRs are
         // registered later by the frontend (§6.3).
@@ -463,9 +463,10 @@ impl Engine {
     /// This is what a *preview* engine is (§11): the brush editor's test canvas and
     /// a preset thumbnail both paint strokes that must render exactly as the main
     /// canvas would, which is an argument for sharing the machinery, not just an
-    /// economy. Building one used to mean recompiling ~19 shaders and ~30 pipelines
-    /// and re-decoding every image the app had already decoded once; now it is a
-    /// document, a compositor's attachments, and a fistful of `Arc` bumps.
+    /// economy. Sharing keeps the cost to a document, a compositor's attachments and a
+    /// fistful of `Arc` bumps, where building one standalone means recompiling ~19
+    /// shaders and ~30 pipelines and re-decoding every image the app has already
+    /// decoded once.
     ///
     /// What is shared is exactly what cannot disagree: the shared pieces are either
     /// immutable (pipelines), content-addressed (assets, the ground/environment
@@ -1376,9 +1377,9 @@ impl Engine {
 struct GpuBuild<'a> {
     gpu: &'a GpuContext,
     target_format: wgpu::TextureFormat,
-    // No viewport: nothing built here is sized by one. The `Compositor` used to take
-    // it and overwrite it on its first render, which is the only moment the zoom —
-    // and so the supersampled size — is known.
+    // No viewport: nothing built here is sized by one. A `Compositor` given one at
+    // construction would overwrite it on its first render anyway, since that is the
+    // only moment the zoom — and so the supersampled size — is known.
     cs: &'a Arc<dyn ColorSpace>,
     surface: &'a Surface,
     environment: &'a Environment,

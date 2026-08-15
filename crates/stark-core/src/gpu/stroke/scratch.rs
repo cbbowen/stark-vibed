@@ -1,22 +1,21 @@
 //! The pooled stroke scratch (§6.2): working textures kept across folds, and the
 //! **submit scope** that is the only way to hand one back.
 //!
-//! Every live update used to allocate its region, snapshot, cell, reservoir and
-//! bake textures afresh and `destroy()` them at submit — tens of megabytes of
-//! creation, zero-initialization and teardown per fold, all of it for textures the
-//! next fold would ask for again at the same sizes. This pool keeps them: a
-//! checkout reuses a free texture whose [`Key`] matches exactly, and a lease goes
-//! back on the free list *after the submit* of the commands recorded against it —
-//! commands on one queue run in submission order, so a texture whose last use is
-//! already submitted can be re-recorded against freely.
+//! A live update's region, snapshot, cell, reservoir and bake textures are the same
+//! sizes fold after fold, so allocating them afresh and `destroy()`ing them at submit
+//! is tens of megabytes of creation, zero-initialization and teardown per fold for
+//! nothing. This pool keeps them: a checkout reuses a free texture whose [`Key`]
+//! matches exactly, and a lease goes back on the free list *after the submit* of the
+//! commands recorded against it — commands on one queue run in submission order, so a
+//! texture whose last use is already submitted can be re-recorded against freely.
 //!
-//! **A lease can reach the free list only through a submit.** That used to be a
-//! convention argued in a comment at every release site — and the `TilePool`
-//! free-list-vs-open-encoder incident is what a missed site costs: "no live
-//! handle" is not "no pending GPU work", and a texture handed out while an
-//! unsubmitted encoder still names it is either a failed submit or another
-//! stroke's pixels. So the pool's `give` is private to this module, and the two
-//! ways a lease comes back both carry the ordering in their shape:
+//! **A lease can reach the free list only through a submit**, and that is carried by
+//! the types rather than argued at each release site. What a missed site costs is the
+//! `TilePool` free-list-vs-open-encoder failure: "no live handle" is not "no pending
+//! GPU work", and a texture handed out while an unsubmitted encoder still names it is
+//! either a failed submit or another stroke's pixels. So the pool's `give` is private
+//! to this module, and the two ways a lease comes back both carry the ordering in
+//! their shape:
 //!
 //! * [`SubmitScope`] — owns the encoder *and* the leases recorded against it, and
 //!   releases the leases only in the same call that submits the encoder

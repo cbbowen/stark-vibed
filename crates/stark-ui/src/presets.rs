@@ -349,12 +349,11 @@ pub fn load(state: AppState) {
 /// parameters are still moving, a default that cannot be updated is a default
 /// that is wrong.
 ///
-/// A stored preset whose name collides with one of the app's is **dropped**:
-/// under the old scheme the built-ins were persisted, so this is where those
-/// copies go — and where a browser that saved over one of them loses that, which
-/// is the same act read from the other side. Storage is rewritten without them,
-/// once, and only if something actually went, so an ordinary start writes
-/// nothing.
+/// A stored preset whose name collides with one of the app's is **dropped**. That is
+/// how a browser holding persisted copies of the built-ins sheds them — and how one
+/// that saved over a built-in loses that edit, which is the same act read from the
+/// other side. Storage is rewritten without them, once, and only if something actually
+/// went, so an ordinary start writes nothing.
 pub fn install_builtins(state: AppState) {
     let mut list = default_presets(state);
     let mut entries = state.presets;

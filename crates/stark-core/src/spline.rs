@@ -488,8 +488,9 @@ mod tests {
     ///
     /// To ~1%, not to rounding. The proximal ridge is `n · √ε`, and `√ε` is 3.4e-4 in
     /// f32 against 1.5e-8 in f64 — some 2300× more pull towards `prior` (zero here)
-    /// for the same data. That bias, not the quality of the fit, sets this bound. The
-    /// engine has always solved in f32; it was only this test that used to run in f64.
+    /// for the same data. That bias, not the quality of the fit, sets this bound. It
+    /// is measured in f32 because that is what the engine solves in; an f64 test would
+    /// hold the solver to a tolerance no caller ever sees.
     #[test]
     fn channel_fitting_recovers_an_exact_channel() {
         let s = wiggle_spline();

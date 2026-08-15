@@ -141,10 +141,10 @@ pub fn SelectPanel() -> Element {
                     // Fill's bucket is *full of* the color it would lay, so the row
                     // says what the gesture will deposit — the one thing that
                     // distinguishes this action from its four neighbours, and the one
-                    // thing a word cannot carry. It used to be a separate swatch beside
-                    // the word; the bucket already draws a vessel with paint in it, so
-                    // coloring that is one mark doing both jobs instead of two marks
-                    // splitting them, and the row keeps five glyphs on one baseline.
+                    // thing a word cannot carry. The bucket already draws a vessel with
+                    // paint in it, so coloring that is one mark doing both jobs rather
+                    // than a separate swatch beside the word splitting them — and the
+                    // row keeps five glyphs on one baseline.
                     if a == ShapeAction::Fill {
                         {icon_tinted(glyph, brush_color)}
                     } else {

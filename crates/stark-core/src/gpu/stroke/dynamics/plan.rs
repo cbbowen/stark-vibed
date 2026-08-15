@@ -26,17 +26,15 @@ use super::super::segments::{BleedFire, Segment, Sweep};
 use super::bleed::{BLEED_TRAVEL_QUANTUM, MAX_BLEED_FIRES_PER_SEGMENT, bleed_stencil};
 // The `Stamp` uniform, generated from `dynamics.wesl`'s own declaration at build
 // time (`stark-shaders/build/mirror.rs`) — lanes, offsets, and the documentation of
-// what each lane holds, which is now on the generated fields.
+// what each lane holds, all on the generated fields.
 //
-// It used to be written out here as well, nine `[f32; 4]` fields against the shader's
-// nine `vec4`s, with a second copy of the lane map in the doc comments and nothing
-// checking either half. Both halves drifted: this one still described `e.zw` as the
-// midpoint `exchange` samples the canvas at, some time after the shader had stopped
-// reading the lane at all. The shader decides how the lanes are *read*, so it is now
-// the only place they are written down.
+// **The shader decides how the lanes are read, so it is the only place they are
+// written down** (§6.10). A hand-written twin here — nine `[f32; 4]` fields against
+// the shader's nine `vec4`s, with its own copy of the lane map in the doc comments —
+// is a second declaration nothing checks against the first.
 //
-// Every slot is still a pure function of the `StrokeRecord` and the piece's own
-// geometry, computed in plain CPU float math, so replay is deterministic (§12.1).
+// Every slot is a pure function of the `StrokeRecord` and the piece's own geometry,
+// computed in plain CPU float math, so replay is deterministic (§12.1).
 use stark_shaders::mirror::dynamics::Stamp;
 
 /// One slot's window into the stamp buffer, and the `min_binding_size` its layout
@@ -396,16 +394,12 @@ impl Rect {
 /// The snapshot scratch's square for a piece: **the largest rect the piece will
 /// actually dispatch**, rounded up to [`SNAPSHOT_QUANTUM`].
 ///
-/// This used to be a bound rather than a maximum, and the difference is the whole of
-/// what changed. `snapshot_size` folded a position-independent `rect_extent(span)` over
-/// the coverage boxes; `dispatch_rect` then computed the real rect and *asserted* it
-/// came in under that bound. Two derivations of one number, related by an argument
-/// ("monotone in span, which is what makes the maximum a bound on every rect") and
-/// defended by a panic in the render path.
-///
-/// The rects are computed once now, so the scratch is sized by taking their maximum.
-/// There is nothing left for an assertion to state: a maximum is not a claim about the
-/// things it was taken over. `rect_extent` and both of its call sites are gone with it.
+/// **A maximum, not a bound**, and the distinction is the point. A bound would be a
+/// second derivation of this number — a position-independent extent folded over the
+/// coverage boxes — related to the real rects by an argument ("monotone in span") and
+/// defended by an assertion in the render path. The rects are computed once, so the
+/// scratch is sized by taking their maximum, and there is nothing for an assertion to
+/// state: a maximum is not a claim about the things it was taken over.
 fn snapshot_square(rects: &[Rect]) -> u32 {
     // A floor of one workgroup, so an empty plan — which cannot happen, a piece holding
     // at least one segment — still names a texture the device will create.
@@ -632,9 +626,9 @@ pub(super) fn dynamics_plan(
     }
 
     // ---- Pass two: the rect each of those dispatches over, and the scratch square
-    // that is their maximum. Computed once and carried, where the rect used to be
-    // measured approximately to size the scratch and then again exactly to dispatch,
-    // with an assertion in the render path holding the two together.
+    // that is their maximum. Computed once and carried, so the rect that sizes the
+    // scratch and the rect that is dispatched are the same number rather than two
+    // measurements an assertion in the render path has to hold together.
     let rects = rects_for(&sources, region_origin);
     let dsize = snapshot_square(&rects);
 
@@ -687,12 +681,11 @@ pub(super) fn dynamics_plan(
                         orient: sw.orient,
                         drain: b.drain,
                         // The `add` source rate is passed through **unscaled**, exactly
-                        // as `stamp.wesl` takes it. It used to carry a gain of 2
-                        // ("tuned so `add = 1` lays roughly a full-thickness deposit
-                        // per pass"), which made the same slider mean two different
-                        // amounts of paint depending on whether some *other* axis
-                        // happened to be non-zero — nudging `deposit` off zero doubled
-                        // the flow. The tuning it claimed is already met without it: a
+                        // as `stamp.wesl` takes it. A gain here would make the same
+                        // slider mean two different amounts of paint depending on
+                        // whether some *other* axis happened to be non-zero — nudging
+                        // `deposit` off zero would change the flow. Nor is one needed
+                        // to make `add = 1` lay a full-thickness deposit per pass: a
                         // pass of the tip is `TAU_PER_PASS ≈ 6.9` of exposure, so
                         // `add = 1` lays 6.9 of height, which the slab law reads as
                         // 0.999 coverage.
@@ -742,10 +735,10 @@ pub(super) fn dynamics_plan(
                     // zeroed rather than shared, so the deposit skips its noise taps
                     // entirely.
                     //
-                    // A [`BleedFire`] cannot carry those rates in the first place now:
-                    // it holds a [`Sweep`] and its one axis, where it used to hold a
-                    // whole `Segment` whose five rates were copied in by `bleed_fires`
-                    // for this arm to write back out.
+                    // A [`BleedFire`] cannot carry those rates in the first place: it
+                    // holds a [`Sweep`] and its one axis. Holding a whole `Segment`
+                    // instead, its five rates would be copied in by `bleed_fires` for
+                    // this arm to write straight back out.
                     slot: Slot {
                         start: p,
                         dir: w.dir,
@@ -909,18 +902,18 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<BleedFire> {
         // both its direction and its curvature, so this is the same circle traced the
         // other way and is exact for any path the segment itself describes.
         //
-        // It is history-free, and that is the point. Looking the position up meant
+        // It is history-free, and that is the point. Looking the position up means
         // clamping to the first segment in hand, so a window reaching further back
-        // than the range being drawn came out short — and a live tail always starts at
+        // than the range being drawn comes out short — and a live tail always starts at
         // a span boundary while the commit renders the whole stroke from zero, so the
-        // two relaxed different amounts of paint at exactly that seam. That is a
+        // two would relax different amounts of paint at exactly that seam. That is a
         // `preview == committed` break (§1.3), in the one place it cannot be
-        // repainted, and it was visible: a bleeding stroke lightened when the pointer
-        // came up.
+        // repainted, and a visible one: a bleeding stroke lightens when the pointer
+        // comes up.
         //
-        // What it costs is extrapolating one segment's curvature over the window,
-        // where the old form used the true path — the same bend for the whole span
-        // rather than each segment's own. Bounded by
+        // What it costs is extrapolating one segment's curvature over the window —
+        // the same bend for the whole span rather than each segment's own, which is
+        // what walking the true path would give. Bounded by
         // [`MAX_TIP_TURN`](super::budget::MAX_TIP_TURN), which caps how far the tip's
         // curvature may move at all, and the window is the arc that extrapolation
         // describes rather than a chord across it, so nothing else is given up on top.
@@ -934,11 +927,10 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<BleedFire> {
                 after: i,
                 // The window inherits the crossing segment's `bleed`, and **only** that
                 // — it is that segment's own firing, and the axis is the one thing the
-                // slot it becomes will read. Every other rate used to be copied here
-                // too, for `dynamics_plan` to zero back out lane by lane; a [`Sweep`]
-                // has nowhere to put them. Reading the axis from one point of the
-                // window is the cadence's usual approximation about the radius it
-                // fires at.
+                // slot it becomes will read. A [`Sweep`] has nowhere to put the other
+                // rates, which is what keeps `dynamics_plan` from having to zero them
+                // back out lane by lane. Reading the axis from one point of the window
+                // is the cadence's usual approximation about the radius it fires at.
                 bleed: seg.paint.bleed,
                 window: Sweep {
                     start,
@@ -1546,9 +1538,9 @@ mod tests {
         .0
     }
 
-    /// What [`settle_tangent`] used to do: walk back a radius through **the segments in
-    /// hand**. Kept here as the thing the test below measures against — it is the
-    /// behaviour that made a stroke's fade-out cap turn as the pointer came up.
+    /// The piece-local answer [`settle_tangent`] must *not* give: walk back a radius
+    /// through **the segments in hand**. Kept here as the foil the test below measures
+    /// against, since it is what makes a stroke's fade-out cap turn at pen-up.
     fn piece_local_tangent(segments: &[Segment], end: Vec2) -> Vec2 {
         let radius = segments.last().map_or(1.0, |s| s.sweep.radius);
         let mut back = end;
@@ -1575,12 +1567,12 @@ mod tests {
     ///
     /// A live tail starts at a span boundary while the commit renders the whole stroke
     /// from zero, and both run the settle — the tail's range reaches the stroke's end,
-    /// which is exactly the condition that asks for one. So a frame measured over "the
-    /// segments in hand" came out over a shorter window for the tail than for the
+    /// which is exactly the condition that asks for one. A frame measured over "the
+    /// segments in hand" therefore spans a shorter window for the tail than for the
     /// commit, and on a curving stroke that is a different direction: the settle's
     /// `min(owed, received)` lens is elongated along it, so the fade-out cap visibly
-    /// turned at pen-up. That is a `preview == committed` break (§1.3) in the one place
-    /// it cannot be repainted — the same one `bleed_fires` was fixed for.
+    /// turns at pen-up. That is a `preview == committed` break (§1.3) in the one place
+    /// it cannot be repainted — the same class `bleed_fires` has to answer.
     ///
     /// Checked at every cut point, since the interesting ones are those that leave the
     /// tail shorter than the tip being settled.
@@ -1611,7 +1603,7 @@ mod tests {
                 (got - want).length() < 1e-4,
                 "cutting at span {cut} moved the settle frame from {want:?} to {got:?}",
             );
-            // And the old piece-local walk really does move on these cuts, so the
+            // And the piece-local foil really does move on these cuts, so the
             // assertion above is not passing because the case is uninteresting.
             let last = whole.last().expect("segments");
             let last = &last.sweep;
@@ -1621,8 +1613,8 @@ mod tests {
         }
         assert!(
             ever_differed,
-            "no cut left a tail short enough to move the old frame — the test proves \
-             nothing",
+            "no cut left a tail short enough to move the piece-local frame — the test \
+             proves nothing",
         );
     }
 
@@ -1696,19 +1688,14 @@ mod tests {
     }
 
     /// **Every dispatch grid a piece builds fits the snapshot scratch that piece
-    /// sized** — restated for the design that replaced the one it used to check.
+    /// sized.**
     ///
-    /// It used to assert a *bound*: `snapshot_size` folded a position-independent
-    /// `rect_extent(span)` over the coverage boxes, `dispatch_rect` computed the real
-    /// rect, and a panic in the render path held the two together. Both derivations are
-    /// gone — [`snapshot_square`] takes the maximum of the very rects the plan
-    /// dispatches, so "a rect fits" is not a claim any more.
-    ///
-    /// What is still a claim, and what the shaders' bounds checks actually rest on, is
-    /// one step further out: a dispatch is rounded **up to whole 8×8 workgroups**, so
-    /// the texels a slot scans reach `groups·8`, past its own rect. That stays inside
-    /// the scratch only because [`SNAPSHOT_QUANTUM`] is itself a multiple of 8. This
-    /// pins that, over the geometry the old test stressed.
+    /// That a *rect* fits is no claim at all: [`snapshot_square`] takes the maximum of
+    /// the very rects the plan dispatches. What is a claim, and what the shaders'
+    /// bounds checks rest on, is one step further out — a dispatch is rounded **up to
+    /// whole 8×8 workgroups**, so the texels a slot scans reach `groups·8`, past its
+    /// own rect. That stays inside the scratch only because [`SNAPSHOT_QUANTUM`] is
+    /// itself a multiple of 8, and this is what pins it.
     ///
     /// The stress is in the fractional origins: a rect floors its origin and rounds its
     /// far edge outward, so the worst case is a box straddling texel boundaries at both

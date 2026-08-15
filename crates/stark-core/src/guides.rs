@@ -235,9 +235,9 @@ impl Default for PerspectiveGuide {
     /// in from its two walls, which under this turn puts the corner just below
     /// the center of view — squares the eye can count rather than a haze it
     /// reads as tone. All three components are nonzero, as they must be for all
-    /// three planes to have a grid to show at all; whole numbers are no longer
-    /// required of them, but they cost nothing and put the corner's own three
-    /// edges on guide lines.
+    /// three planes to have a grid to show at all; whole numbers are not required
+    /// of them, but they cost nothing and put the corner's own three edges on
+    /// guide lines.
     fn default() -> Self {
         Self {
             name: None,
@@ -1584,7 +1584,7 @@ mod tests {
         assert_eq!(g.rotation, g2.rotation);
     }
 
-    /// A free drag does **not** snap (§20.5). The case that used to fall into
+    /// A free drag does **not** snap (§20.5). The case most likely to be swept into
     /// one: a horizontal drag through the center of view implies a rotation
     /// within a few degrees of the near-vertical Y axis, and it is still the
     /// free arc — the grabbed direction lands exactly under the pointer, and Y
@@ -1601,8 +1601,8 @@ mod tests {
             g.center + Vec2::new(-100.0, 0.0),
             g.center + Vec2::new(140.0, 12.0),
         );
-        // The rotation this implies really is the near-Y one the old cone
-        // caught, so the test still stands where the snap used to fire.
+        // The rotation this implies really is a near-Y one, so the drag sits exactly
+        // where an axis cone would fire.
         let w = g.ray(from).cross(g.ray(to)).normalize();
         assert!(w.dot(g.axis_dirs()[1]).abs() > 0.99, "not a near-Y turn");
 

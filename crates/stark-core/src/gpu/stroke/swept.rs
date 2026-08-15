@@ -208,9 +208,8 @@ impl StrokeRenderer {
 
         // The submit scope: the per-stroke buffers and the shared scratch pair ride
         // in it, and only the `finish` that submits the commands naming them can
-        // release them (`scratch::SubmitScope`) — where this used to be a
-        // `ScopedResources` plus two carefully-placed `drop`s that a comment
-        // defended against being moved above the submit.
+        // release them (`scratch::SubmitScope`). The ordering is the scope's shape,
+        // not a pair of `drop`s placed after the submit and defended by a comment.
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke commit");
 
         // Resolve the brush's prefix-τ texture: image brushes from the asset
@@ -418,9 +417,9 @@ impl StrokeRenderer {
             let dst = self.acquire_tile(pool, AllocSource::IntegrateDestination);
             // The layer's resident paint here, or the 1×1 zero where it has none —
             // the integrate clamps its loads, so bare canvas costs no tile at all
-            // (§6.8's pattern). This used to acquire a whole pooled pair and clear
-            // it on every pointer move, whether or not the stroke reached anything
-            // unpainted.
+            // (§6.8's pattern), where acquiring a real pooled pair would mean
+            // allocating and clearing one on every pointer move whether or not the
+            // stroke reached anything unpainted.
             let (base_color, base_aux) = match base.get(coord) {
                 Some(tile) => (tile.color_view(), tile.aux_view()),
                 None => (&self.zeroes.color, &self.zeroes.aux),

@@ -85,10 +85,9 @@ fn apron_makes_tiles_seamless_under_zoom() {
 
     // The apron's compositing is near—but not bit—exact, and image-based lighting
     // (exposure + ACES tonemap) amplifies that sub-pixel residual along the tile
-    // seam a little more than the old directional model did, so a thin band of
-    // boundary pixels differs by ~10 levels. A genuinely *missing* apron is a stark
-    // lighting ridge along every boundary — tens of levels over a far larger area —
-    // so this threshold still catches the regression it guards.
+    // seam, so a thin band of boundary pixels differs by ~10 levels. A genuinely
+    // *missing* apron is a stark lighting ridge along every boundary — tens of levels
+    // over a far larger area — so this threshold still catches what it guards.
     let (frac, worst) = diff_fraction(&corner, &interior);
     assert!(
         worst <= 25 && frac < 0.07,

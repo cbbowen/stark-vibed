@@ -131,10 +131,10 @@ impl SelectionMode {
     /// Combine two coverages under this mode — the CPU twin of the shader's algebra,
     /// used to carry [`Selection::outside`] (where there is no tile to rasterize).
     ///
-    /// Literally the soft-set expressions above, on `f32`. It used to be a boolean
-    /// twin of them, which was sound while every coverage in play was 0 or 1; a
-    /// partial selection ([`SelectionOp::opacity`]) makes the real algebra the only
-    /// one that answers, and the two spellings can no longer drift apart.
+    /// Literally the soft-set expressions above, on `f32` — not a boolean twin of
+    /// them. A boolean twin is sound only while every coverage in play is 0 or 1, and
+    /// a partial selection ([`SelectionOp::opacity`]) makes the real algebra the only
+    /// one that answers.
     fn combine(self, prev: f32, shape: f32) -> f32 {
         match self {
             Self::Replace => shape,
@@ -242,9 +242,9 @@ pub struct Selection {
     ///
     /// Conservative in the same sense [`Self::hull`] is: coverage ≤ level, never
     /// that the level is reached. `Intersect` multiplies the two peaks, which is an
-    /// upper bound unless they peak in the same place; the old behaviour is the
-    /// limit of this one, since a selection built only from full-strength ops has
-    /// `level == 1` and every expression below reduces to what it was.
+    /// upper bound unless they peak in the same place. A selection built only from
+    /// full-strength ops has `level == 1`, and every expression below collapses to
+    /// the plain hard-edged answer for it.
     level: f32,
     /// A conservative analytic bounding box of the selected coverage, in canvas px
     /// — `None` when the selection is unbounded (`outside`) or its extent is not
@@ -462,9 +462,8 @@ impl Selection {
     /// flipped tiles' own extent — coarse, but still a box the coverage lives inside.
     ///
     /// `level − m` rather than `1 − m`, so the complement of a region selected at
-    /// 0.4 is its outside selected at 0.4 rather than at full strength. Identical to
-    /// the old expression for every selection built at full strength, where
-    /// `level == 1`.
+    /// 0.4 is its outside selected at 0.4 rather than at full strength. The two agree
+    /// for any selection built at full strength, where `level == 1`.
     pub(crate) fn plan_invert(&self) -> SelectionPlan {
         let rasterize: Vec<TileCoord> = self.tiles.keys().copied().collect();
         let outside = self.level - self.outside;

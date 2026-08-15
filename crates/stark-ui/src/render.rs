@@ -144,15 +144,15 @@ impl Renderer {
     /// Send a command to the engine — the **only** way to move engine state through
     /// a `Renderer`, deliberately.
     ///
-    /// Named `set_*` wrappers for individual settings used to sit beside this one,
-    /// each a one-line `engine.process(…)`. They were a second spelling of a
-    /// command, and the second spelling is the one that skips
-    /// [`state::dispatch`](crate::state::dispatch): a panel that reached one through
-    /// the renderer signal moved engine state without refreshing the observable
-    /// projection the chrome reads back, so its own control re-rendered showing the
-    /// *previous* value and stayed wrong until some unrelated command happened to
-    /// refresh `obs` (§4, §7). Core already declines to expose such a setter for the
-    /// canvas surface, and for the same reason (`Engine::apply_document_surface`).
+    /// **No named `set_*` wrappers sit beside it.** A one-line
+    /// `engine.process(…)` per setting is a second spelling of a command, and the
+    /// second spelling is the one that skips
+    /// [`state::dispatch`](crate::state::dispatch): a panel reaching one through the
+    /// renderer signal moves engine state without refreshing the observable projection
+    /// the chrome reads back, so its own control re-renders showing the *previous*
+    /// value and stays wrong until some unrelated command happens to refresh `obs`
+    /// (§4, §7). Core declines to expose such a setter for the canvas surface for the
+    /// same reason (`Engine::apply_document_surface`).
     ///
     /// Frontend code holding an `AppState` calls `state::dispatch`, which is this
     /// plus that refresh, the repaint and the outbox flush. This is for the callers

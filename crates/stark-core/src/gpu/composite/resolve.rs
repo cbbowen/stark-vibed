@@ -29,18 +29,16 @@ const MAX_SUPERSAMPLE: u32 = 4;
 /// back. Crossing a threshold reallocates all of them, so this is also a bound on the
 /// hitch a wheel-zoom can cost.
 ///
-/// **It is a byte budget because it was already meant to be one.** It was written as
-/// 16 Mpx with the note that this came to "~210 MB in the worst case", enumerating
-/// the scratch — but no pixel count can enumerate the scratch, whose size is a fact
-/// about the *document*, nor the residual, which is a fact about the color space. The
-/// real figures at 16 Mpx: 234 MB for a flat Oklab document, 571 MB with one blend
-/// group, 973 MB for the same in pigment, and ~1.6 GB at two levels of nesting. So
-/// the number here is the ~224 MiB that was always intended, and what varies is how
-/// many pixels of *this* document's attachments fit inside it.
+/// **It is a byte budget, not a pixel count.** No pixel count can enumerate the
+/// scratch, whose size is a fact about the *document*, nor the residual, which is a
+/// fact about the color space. At 16 Mpx the real figures run 234 MB for a flat Oklab
+/// document, 571 MB with one blend group, 973 MB for the same in pigment, and ~1.6 GB
+/// at two levels of nesting — a spread of seven that a megapixel ceiling cannot see.
+/// So the number is bytes, and what varies is how many pixels of *this* document's
+/// attachments fit inside it.
 ///
-/// A flat Oklab document is unchanged by the restatement, deliberately: 14 bytes a
-/// texel (8 + 2 accumulator, 4 resolve target) into 224 MiB is exactly the 16 Mpx
-/// this used to be. What moves is the case the old arithmetic was wrong about.
+/// The flat Oklab case is the calibration point: 14 bytes a texel (8 + 2 accumulator,
+/// 4 resolve target) into 224 MiB is 16 Mpx exactly.
 ///
 /// It binds on the window and not on a miniature, which is the right way round: the
 /// navigator renders a whole piece into ~250 px, is the worst-aliased view in the
@@ -100,9 +98,9 @@ pub(super) fn supersample(
 /// - **two trios per scratch level** that isolates and one per level that only
 ///   ping-pongs, which is `scratch_needs`' answer read as memory (§18.0.4, §21.3).
 ///
-/// The last is the term the old pixel budget could not express, and it is the one
-/// that dominates: a single blend group more than doubles the frame's footprint, and
-/// in a pigment document it more than triples it.
+/// The last is the term a pixel count cannot express, and it is the one that
+/// dominates: a single blend group more than doubles the frame's footprint, and in a
+/// pigment document it more than triples it.
 pub(super) fn attachment_bytes(
     formats: crate::gpu::channels::ChannelFormats,
     target_format: wgpu::TextureFormat,
@@ -312,21 +310,21 @@ mod tests {
         assert_eq!(supersample(wide, 0.1, &limits(), flat()), 1);
     }
 
-    /// The restatement's compatibility claim: a flat Oklab document sees exactly the
-    /// 16-Mpx ceiling the pixel budget used to impose, so nothing about the common
-    /// zoom-out moved. 14 bytes a texel into 224 MiB is 16 Mpx on the nose.
+    /// The byte budget's calibration point: a flat Oklab document sees a 16-Mpx
+    /// ceiling, which is what the common zoom-out is sized against. 14 bytes a texel
+    /// into 224 MiB is 16 Mpx on the nose.
     #[test]
     fn a_flat_oklab_frame_still_stops_at_sixteen_megapixels() {
         assert_eq!(flat(), 14, "8 + 2 accumulator, 4 resolve target");
         assert_eq!(MAX_SUPERSAMPLED_BYTES / flat(), 16 << 20);
     }
 
-    /// The term the pixel budget could not express, and the reason this is worth
-    /// changing: **the scratch dominates**. One blend group more than doubles the
-    /// frame — a `swap` trio and an `iso` trio, each the size of the accumulator —
-    /// and a pigment document pays 18 bytes a texel for every one of them.
+    /// The term a pixel count cannot express, and the reason the budget is in bytes:
+    /// **the scratch dominates**. One blend group more than doubles the frame — a
+    /// `swap` trio and an `iso` trio, each the size of the accumulator — and a pigment
+    /// document pays 18 bytes a texel for every one of them.
     ///
-    /// The old ceiling would have let all four of these render at 16 Mpx, which is
+    /// A flat 16-Mpx ceiling would let all four of these render at that size, which is
     /// 973 MB for the third and about 1.6 GB for the fourth.
     #[test]
     fn the_blend_scratch_is_most_of_what_a_nested_frame_costs() {

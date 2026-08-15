@@ -58,8 +58,8 @@ pub fn get() -> ClientIdentity {
 
 fn resolve() -> ClientIdentity {
     let Some(store) = storage() else {
-        // No storage to be durable in. A fresh key per run is the old behaviour, and
-        // is safe precisely because the id is new: nothing can be stale against it.
+        // No storage to be durable in, so a fresh key per run — safe precisely
+        // because the id is new: nothing can be stale against it.
         return ClientIdentity {
             secret: SecretKey::generate(),
             boot: 0,
