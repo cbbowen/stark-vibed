@@ -1416,25 +1416,15 @@ fn build_gpu(
             .into_iter()
             .chain(cs.resid_format()),
     );
-    let zeroes = Zeroes::new(gpu, cs.color_format(), cs.aux_format(), cs.resid_format());
+    let zeroes = Zeroes::new(gpu, crate::gpu::channels::ChannelFormats::of(cs.as_ref()));
     let stroke = StrokeRenderer::new(gpu, cs.clone(), selection.clone(), zeroes.clone());
     // Built once and shared: `gpu::merge` runs this very pipeline on tile-sized
     // targets to merge a layer down through its mode (§14.11), and building a second
     // one would decode the Mixbox LUT twice.
-    let blend = Arc::new(BlendPass::new(
-        gpu,
-        cs.as_ref(),
-        cs.color_format(),
-        cs.aux_format(),
-    ));
+    let blend = Arc::new(BlendPass::new(gpu, cs.as_ref()));
     // The same bargain for the filter pass, which `gpu::merge` runs on tile-sized
     // targets to merge a filter layer into the paint beneath it (§14.11.7).
-    let filter = Arc::new(FilterPass::new(
-        gpu,
-        cs.as_ref(),
-        cs.color_format(),
-        cs.aux_format(),
-    ));
+    let filter = Arc::new(FilterPass::new(gpu, cs.as_ref()));
     let compositor_pipeline = CompositorPipeline::new(
         gpu,
         target_format,

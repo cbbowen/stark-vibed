@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 
 use crate::document::StrokeRecord;
 use crate::geom::{TileCoord, Vec2};
+use crate::gpu::channels::Targets;
 use crate::gpu::composite::view_uniform;
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TileMap};
@@ -578,13 +579,18 @@ impl<'a> DynamicsRun<'a> {
             )
         });
         {
-            let (att, att_n) = desc::tile_attachments(&color, &aux, resid.as_ref(), desc::CLEAR);
+            let targets = Targets {
+                color: &color,
+                aux: &aux,
+                resid: resid.as_ref(),
+            };
+            let att = targets.attachments(desc::CLEAR);
             let mut pass = self
                 .scope
                 .encoder()
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark dynamics region composite"),
-                    color_attachments: &att[..att_n],
+                    color_attachments: &att[..targets.count()],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,

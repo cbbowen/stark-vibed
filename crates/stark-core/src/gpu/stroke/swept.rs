@@ -361,17 +361,13 @@ impl StrokeRenderer {
 
             // This tile's segments into the shared scratch, cleared as it goes.
             {
-                let (sweep_att, sweep_n) = desc::tile_attachments(
-                    scratch.color_view(),
-                    scratch.aux_view(),
-                    scratch.resid_view(),
-                    desc::CLEAR,
-                );
+                let sweep_targets = scratch.targets();
+                let sweep_att = sweep_targets.attachments(desc::CLEAR);
                 let mut pass = scope
                     .encoder()
                     .begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("stark sweep pass"),
-                        color_attachments: &sweep_att[..sweep_n],
+                        color_attachments: &sweep_att[..sweep_targets.count()],
                         depth_stencil_attachment: None,
                         timestamp_writes: None,
                         occlusion_query_set: None,
@@ -426,17 +422,13 @@ impl StrokeRenderer {
                 entries: &integrate_entries,
             });
             {
-                let (int_att, int_n) = desc::tile_attachments(
-                    dst.color_view(),
-                    dst.aux_view(),
-                    dst.resid_view(),
-                    desc::CLEAR,
-                );
+                let int_targets = dst.targets();
+                let int_att = int_targets.attachments(desc::CLEAR);
                 let mut pass = scope
                     .encoder()
                     .begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("stark integrate"),
-                        color_attachments: &int_att[..int_n],
+                        color_attachments: &int_att[..int_targets.count()],
                         depth_stencil_attachment: None,
                         timestamp_writes: None,
                         occlusion_query_set: None,

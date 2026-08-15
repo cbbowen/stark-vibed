@@ -12,6 +12,7 @@
 //! type and `engine.rs` used each in different places — with `readback` the lone
 //! module that had no re-export, for no reason anyone had written down.
 
+pub(crate) mod channels;
 pub(crate) mod composite;
 pub(crate) mod context;
 pub(crate) mod desc;

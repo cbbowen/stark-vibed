@@ -8,6 +8,7 @@
 use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
+use crate::gpu::channels::ChannelFormats;
 use crate::gpu::desc::{self, RenderPipe};
 
 use super::view::View;
@@ -41,14 +42,12 @@ impl TilePass {
         device: &wgpu::Device,
         view: &View,
         color_space: &dyn ColorSpace,
-        color_format: wgpu::TextureFormat,
-        aux_format: wgpu::TextureFormat,
+        formats: ChannelFormats,
     ) -> Self {
         let frag = wgpu::ShaderStages::FRAGMENT;
         // The residual channel a pigment space carries (§6.7): a third sampled tile
         // texture and a third target, on the shader variant built for it.
-        let resid_format = color_space.resid_format();
-        let resid = resid_format.is_some();
+        let resid = formats.has_resid();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark composite"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(resid).into()),
@@ -79,11 +78,14 @@ impl TilePass {
         // The residual composites through the *color's* blend, never the aux's: it is
         // premultiplied by the same coverage and covers by the same rule, being the
         // rest of the same color (§6.7).
+        // Spelled out rather than `formats.blended(..)`: pass A is the one pipeline
+        // whose three targets do *not* share a blend — the height aux is additive
+        // where the color and its residual composite `over` (§6.7).
         let mut space_targets = vec![
-            desc::blended_target(color_format, Some(color_space.color_blend())),
-            desc::blended_target(aux_format, Some(color_space.aux_blend())),
+            desc::blended_target(formats.color, Some(color_space.color_blend())),
+            desc::blended_target(formats.aux, Some(color_space.aux_blend())),
         ];
-        if let Some(f) = resid_format {
+        if let Some(f) = formats.resid {
             space_targets.push(desc::blended_target(f, Some(color_space.color_blend())));
         }
         let pipeline = desc::render_pipeline(
@@ -123,13 +125,7 @@ impl TilePass {
         // `OneMinusSrcAlpha` is valid on the alpha-less R16Float aux: the factor
         // reads the *source* alpha from the shader's output vec4.
         let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
-        let mut matte_targets = vec![
-            desc::blended_target(color_format, over),
-            desc::blended_target(aux_format, over),
-        ];
-        if let Some(f) = resid_format {
-            matte_targets.push(desc::blended_target(f, over));
-        }
+        let matte_targets = formats.blended(over);
         let matte_pipeline = desc::render_pipeline(
             device,
             RenderPipe {

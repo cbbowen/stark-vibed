@@ -9,46 +9,10 @@
 use crate::colorspace::ColorSpace;
 use crate::document::BlendMode;
 use crate::geom::Extent2;
+use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::pigment::PigmentLut;
-
-/// The channel targets pass A hands around: color, aux, and — in a space that has
-/// one — the residual (§6.7).
-///
-/// A struct rather than the tuple this was, because the third is an `Option` and
-/// `target.2` would have said nothing about why. `resid` is `Some` for every target
-/// of a pigment document and `None` for every target of a colorimetric one; it is
-/// decided by the color space once, never per call site.
-#[derive(Copy, Clone)]
-pub(super) struct Targets<'a> {
-    pub(super) color: &'a wgpu::TextureView,
-    pub(super) aux: &'a wgpu::TextureView,
-    pub(super) resid: Option<&'a wgpu::TextureView>,
-}
-
-impl<'a> Targets<'a> {
-    /// The color attachments in target order, with `resid` at location 2 when the
-    /// space has one — the order every pass A pipeline declares.
-    ///
-    /// Returned as an array-plus-length rather than a `Vec`: this is called once per
-    /// render pass encoded, and a render pass per tile run is the common case.
-    pub(super) fn attachments(
-        &self,
-        ops: wgpu::Operations<wgpu::Color>,
-    ) -> [Option<wgpu::RenderPassColorAttachment<'a>>; 3] {
-        [
-            Some(desc::attach(self.color, ops)),
-            Some(desc::attach(self.aux, ops)),
-            self.resid.map(|v| desc::attach(v, ops)),
-        ]
-    }
-
-    /// How many of [`Self::attachments`] are real — 2 without a residual, 3 with.
-    pub(super) fn count(&self) -> usize {
-        2 + usize::from(self.resid.is_some())
-    }
-}
 
 // Generated from `blend_common.wesl`'s own declaration (§6.7).
 pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
@@ -171,13 +135,9 @@ pub(crate) struct BlendPass {
 }
 
 impl BlendPass {
-    pub(crate) fn new(
-        ctx: &GpuContext,
-        color_space: &dyn ColorSpace,
-        color_format: wgpu::TextureFormat,
-        aux_format: wgpu::TextureFormat,
-    ) -> Self {
+    pub(crate) fn new(ctx: &GpuContext, color_space: &dyn ColorSpace) -> Self {
         let device = &ctx.device;
+        let color_format = ChannelFormats::of(color_space).color;
         let frag = wgpu::ShaderStages::FRAGMENT;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark blend"),
@@ -187,7 +147,8 @@ impl BlendPass {
         // at the fragment's own coordinate, so nothing needs filtering — except the
         // pigment LUT, which is a table Mixbox interpolates in hardware
         // (`mixbox_lut.wesl`).
-        let resid_format = color_space.resid_format();
+        let formats = ChannelFormats::of(color_space);
+        let resid_format = formats.resid;
         let mut entries = vec![
             // One slot per blend group in the frame; see [`BLEND_SLOT`].
             desc::uniform_slot(0, frag, std::mem::size_of::<BlendUniform>() as u64),
@@ -216,10 +177,7 @@ impl BlendPass {
         // No fixed-function blend on either target: the pass computes the whole
         // merge — backdrop included — and *replaces* what it writes. That is the
         // point of the ping-pong.
-        let mut targets = vec![desc::target(color_format), desc::target(aux_format)];
-        if let Some(f) = resid_format {
-            targets.push(desc::target(f));
-        }
+        let targets = formats.targets();
         let pipeline = desc::fullscreen_pipeline(
             device,
             "stark blend pipeline",
@@ -268,19 +226,17 @@ impl Trio {
         device: &wgpu::Device,
         size: Extent2,
         labels: (&str, &str, &str),
-        color_format: wgpu::TextureFormat,
-        aux_format: wgpu::TextureFormat,
-        resid_format: Option<wgpu::TextureFormat>,
+        formats: ChannelFormats,
     ) -> Self {
         let make = |format, label| super::offscreen_view(device, size, format, label);
         Self {
-            color: make(color_format, labels.0),
-            aux: make(aux_format, labels.1),
+            color: make(formats.color, labels.0),
+            aux: make(formats.aux, labels.1),
             // A pigment document isolates its residual alongside its concentrations:
             // the blend reads both to work out what light the layer carried
             // (§6.7), so a level that isolated only the color would hand the pass
             // a mixture and none of the correction that makes it a color.
-            resid: resid_format.map(|f| make(f, labels.2)),
+            resid: formats.resid.map(|f| make(f, labels.2)),
         }
     }
 
@@ -308,15 +264,8 @@ pub(super) struct ScratchLevel {
 }
 
 impl ScratchLevel {
-    fn new(
-        device: &wgpu::Device,
-        size: Extent2,
-        iso: bool,
-        color_format: wgpu::TextureFormat,
-        aux_format: wgpu::TextureFormat,
-        resid_format: Option<wgpu::TextureFormat>,
-    ) -> Self {
-        let trio = |labels| Trio::new(device, size, labels, color_format, aux_format, resid_format);
+    fn new(device: &wgpu::Device, size: Extent2, iso: bool, formats: ChannelFormats) -> Self {
+        let trio = |labels| Trio::new(device, size, labels, formats);
         Self {
             swap: trio((
                 "stark blend swap color",
@@ -371,17 +320,13 @@ impl ScratchTargets {
         device: &wgpu::Device,
         size: Extent2,
         needs: &[bool],
-        color_format: wgpu::TextureFormat,
-        aux_format: wgpu::TextureFormat,
-        resid_format: Option<wgpu::TextureFormat>,
+        formats: ChannelFormats,
     ) -> Self {
         Self {
             size,
             levels: needs
                 .iter()
-                .map(|&iso| {
-                    ScratchLevel::new(device, size, iso, color_format, aux_format, resid_format)
-                })
+                .map(|&iso| ScratchLevel::new(device, size, iso, formats))
                 .collect(),
         }
     }

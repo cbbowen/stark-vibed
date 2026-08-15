@@ -40,11 +40,12 @@ use crate::document::transform::{
     plan_gated_paint, plan_mask, plan_paint,
 };
 use crate::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
+use crate::gpu::channels::{ChannelFormats, Channels};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::selection::{SelectionRenderer, outside_clear};
 use crate::gpu::submit::TileScope;
-use crate::gpu::tile::{AllocSource, MASK_FORMAT, TexHandle, TileMap, TilePairHandle, TilePool};
+use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool};
 
 // Generated from `transform.wesl`'s own declarations (§6.7). The three constructors
 // below are free functions rather than inherent impls: the types live in
@@ -190,18 +191,15 @@ struct Gated<'a> {
 }
 
 /// A tile's paint channels as this module passes them around: the moved parcel a
-/// quad pass writes, and the destination a combine writes. `None` in the third slot
-/// is a space with no residual (§6.7) — the same `Option` `TilePairHandle` carries,
-/// before it becomes one.
-type Parcel = (TexHandle, TexHandle, Option<TexHandle>);
+/// quad pass writes, and the destination a combine writes.
+type Parcel = Channels;
 
 #[derive(Clone)]
 pub struct TransformRenderer {
     ctx: GpuContext,
-    color_format: wgpu::TextureFormat,
-    aux_format: wgpu::TextureFormat,
-    /// The residual channel's format, or `None` in a space that has none (§6.7).
-    resid_format: Option<wgpu::TextureFormat>,
+    /// The channel formats this transform's tiles carry — the color space's,
+    /// resolved once (§6.7).
+    formats: ChannelFormats,
     parcel_pipeline: wgpu::RenderPipeline,
     mask_pipeline: wgpu::RenderPipeline,
     combine_pipeline: wgpu::RenderPipeline,
@@ -230,10 +228,8 @@ impl TransformRenderer {
         zeroes: Zeroes,
     ) -> Self {
         let device = &ctx.device;
-        let color_format = color_space.color_format();
-        let aux_format = color_space.aux_format();
-        let resid_format = color_space.resid_format();
-        let resid = resid_format.is_some();
+        let formats = ChannelFormats::of(color_space);
+        let resid = formats.has_resid();
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark transform"),
@@ -312,10 +308,7 @@ impl TransformRenderer {
         // The paint channels, and the mask alone. Both paint pipelines — the moved
         // parcel and the combine — write the residual as a third target where the
         // space has one (§6.7).
-        let mut paint = vec![target(color_format), target(aux_format)];
-        if let Some(f) = resid_format {
-            paint.push(target(f));
-        }
+        let paint = formats.targets();
         let mask = [target(MASK_FORMAT)];
         // Moved mask coverage lands with **max** blending over the residue: the soft
         // union of what stayed and what arrived (§16.8), and — unlike the paint
@@ -405,9 +398,7 @@ impl TransformRenderer {
 
         Self {
             ctx: ctx.clone(),
-            color_format,
-            aux_format,
-            resid_format,
+            formats,
             parcel_pipeline,
             mask_pipeline,
             combine_pipeline,
@@ -463,18 +454,13 @@ impl TransformRenderer {
         let mut tiles = base.clone();
         for (dest, sources) in &plan.rewrites {
             let parcel = self.render_parcel(&mut scope, &mut from, affine, *dest, sources);
-            let dst = (
-                pool.acquire_tex(self.color_format, AllocSource::TransformDestination),
-                pool.acquire_tex(self.aux_format, AllocSource::TransformDestination),
-                self.resid_format
-                    .map(|f| pool.acquire_tex(f, AllocSource::TransformDestination)),
-            );
+            let dst = Channels::acquire(pool, self.formats, AllocSource::TransformDestination);
             self.combine(&mut scope, &from, *dest, parcel.as_ref(), &dst, None);
             // Held, not dropped: the parcel is written by the pass above and read
             // by the combine, both only *recorded*, so an early release hands its
             // texture to the next destination tile in this very encoder (`TileScope`).
             scope.hold(parcel);
-            tiles = tiles.insert(*dest, TilePairHandle::new(dst.0, dst.1, dst.2));
+            tiles = tiles.insert(*dest, dst.into_tile());
             scope.tile_done();
         }
         for coord in &plan.drops {
@@ -542,18 +528,13 @@ impl TransformRenderer {
         let mut tiles = base.clone();
         for (dest, unit_idxs) in &plan.rewrites {
             let parcel = self.render_gated_parcel(&mut scope, &mut from, &paint, unit_idxs, *dest);
-            let dst = (
-                pool.acquire_tex(self.color_format, AllocSource::TransformDestination),
-                pool.acquire_tex(self.aux_format, AllocSource::TransformDestination),
-                self.resid_format
-                    .map(|f| pool.acquire_tex(f, AllocSource::TransformDestination)),
-            );
+            let dst = Channels::acquire(pool, self.formats, AllocSource::TransformDestination);
             self.combine(&mut scope, &from, *dest, parcel.as_ref(), &dst, Some(rect));
             // Held, not dropped: the parcel is written by the pass above and read
             // by the combine, both only *recorded*, so an early release hands its
             // texture to the next destination tile in this very encoder (`TileScope`).
             scope.hold(parcel);
-            tiles = tiles.insert(*dest, TilePairHandle::new(dst.0, dst.1, dst.2));
+            tiles = tiles.insert(*dest, dst.into_tile());
             scope.tile_done();
         }
         for coord in &plan.drops {
@@ -608,17 +589,9 @@ impl TransformRenderer {
             return None;
         }
         let device = &self.ctx.device;
-        let color = from
-            .pool
-            .acquire_tex(self.color_format, AllocSource::TransformScratch);
-        let aux = from
-            .pool
-            .acquire_tex(self.aux_format, AllocSource::TransformScratch);
         // The parcel carries the residual it was cut with: the lift scales height
         // alone, so the color — both halves of it — rides through unscaled (§16.2).
-        let resid = self
-            .resid_format
-            .map(|f| from.pool.acquire_tex(f, AllocSource::TransformScratch));
+        let parcel = Channels::acquire(from.pool, self.formats, AllocSource::TransformScratch);
 
         let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
         for idx in unit_idxs {
@@ -651,17 +624,13 @@ impl TransformRenderer {
             draws.push((self.gated_bg(unit, g.inv, g.rect, dest), src_bg));
         }
 
-        let (parcel_att, parcel_n) = desc::tile_attachments(
-            color.view(),
-            aux.view(),
-            resid.as_ref().map(TexHandle::view),
-            desc::CLEAR,
-        );
+        let targets = parcel.targets();
+        let parcel_att = targets.attachments(desc::CLEAR);
         let mut pass = scope
             .encoder()
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark transform parcel gated"),
-                color_attachments: &parcel_att[..parcel_n],
+                color_attachments: &parcel_att[..targets.count()],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -674,7 +643,7 @@ impl TransformRenderer {
             pass.draw(0..4, 0..1);
         }
         drop(pass);
-        Some((color, aux, resid))
+        Some(parcel)
     }
 
     /// One destination mask tile under a rect-scoped map: the residue
@@ -781,17 +750,9 @@ impl TransformRenderer {
             return None;
         }
         let device = &self.ctx.device;
-        let color = from
-            .pool
-            .acquire_tex(self.color_format, AllocSource::TransformScratch);
-        let aux = from
-            .pool
-            .acquire_tex(self.aux_format, AllocSource::TransformScratch);
         // The parcel carries the residual it was cut with: the lift scales height
         // alone, so the color — both halves of it — rides through unscaled (§16.2).
-        let resid = self
-            .resid_format
-            .map(|f| from.pool.acquire_tex(f, AllocSource::TransformScratch));
+        let parcel = Channels::acquire(from.pool, self.formats, AllocSource::TransformScratch);
 
         let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
         for src in sources {
@@ -823,17 +784,13 @@ impl TransformRenderer {
             draws.push((self.quad_bg(affine, *src, dest), src_bg));
         }
 
-        let (parcel_att, parcel_n) = desc::tile_attachments(
-            color.view(),
-            aux.view(),
-            resid.as_ref().map(TexHandle::view),
-            desc::CLEAR,
-        );
+        let targets = parcel.targets();
+        let parcel_att = targets.attachments(desc::CLEAR);
         let mut pass = scope
             .encoder()
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark transform parcel"),
-                color_attachments: &parcel_att[..parcel_n],
+                color_attachments: &parcel_att[..targets.count()],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -846,7 +803,7 @@ impl TransformRenderer {
             pass.draw(0..4, 0..1);
         }
         drop(pass);
-        Some((color, aux, resid))
+        Some(parcel)
     }
 
     /// Cut `dest`'s base by its own mask and stack the parcel over it, into the
@@ -874,7 +831,7 @@ impl TransformRenderer {
         };
         let base_mask = self.selection.mask_for(from.selection, dest);
         let (parcel_color, parcel_aux) = match parcel {
-            Some((c, a, _)) => (c.view().clone(), a.view().clone()),
+            Some(p) => (p.color.view().clone(), p.aux.view().clone()),
             None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
         };
         // A virgin destination and a cut-only tile read the 1×1 zero for the residual
@@ -891,7 +848,7 @@ impl TransformRenderer {
                 ),
                 Some(
                     parcel
-                        .and_then(|(_, _, r)| r.as_ref())
+                        .and_then(|p| p.resid.as_ref())
                         .map_or_else(|| zero.clone(), |r| r.view().clone()),
                 ),
             ),
@@ -917,17 +874,13 @@ impl TransformRenderer {
             layout: &self.combine_bgl,
             entries: &entries,
         });
-        let (dst_att, dst_n) = desc::tile_attachments(
-            dst.0.view(),
-            dst.1.view(),
-            dst.2.as_ref().map(TexHandle::view),
-            desc::CLEAR,
-        );
+        let dst_targets = dst.targets();
+        let dst_att = dst_targets.attachments(desc::CLEAR);
         let mut pass = scope
             .encoder()
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark transform combine"),
-                color_attachments: &dst_att[..dst_n],
+                color_attachments: &dst_att[..dst_targets.count()],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,

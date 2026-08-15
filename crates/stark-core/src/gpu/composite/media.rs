@@ -110,11 +110,8 @@ impl MediaPass {
 pub(super) struct OffscreenDesc<'a> {
     pub(super) device: &'a wgpu::Device,
     pub(super) size: Extent2,
-    pub(super) color_format: wgpu::TextureFormat,
-    pub(super) aux_format: wgpu::TextureFormat,
-    /// `None` in a space with no residual (§6.7), which is also when the media
-    /// layout above has no binding 7 to fill.
-    pub(super) resid_format: Option<wgpu::TextureFormat>,
+    /// The channel formats the accumulator carries (§6.7).
+    pub(super) formats: crate::gpu::channels::ChannelFormats,
     pub(super) media: &'a MediaPass,
     pub(super) surface: &'a Surface,
     pub(super) environment: &'a Environment,
@@ -135,16 +132,16 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
     let OffscreenDesc {
         device,
         size,
-        color_format,
-        aux_format,
-        resid_format,
+        formats,
         media,
         surface,
         environment,
     } = d;
-    let color = super::offscreen_view(device, size, color_format, "stark comp color");
-    let aux = super::offscreen_view(device, size, aux_format, "stark comp aux");
-    let resid = resid_format.map(|f| super::offscreen_view(device, size, f, "stark comp resid"));
+    let color = super::offscreen_view(device, size, formats.color, "stark comp color");
+    let aux = super::offscreen_view(device, size, formats.aux, "stark comp aux");
+    let resid = formats
+        .resid
+        .map(|f| super::offscreen_view(device, size, f, "stark comp resid"));
 
     let mut entries = vec![
         wgpu::BindGroupEntry {

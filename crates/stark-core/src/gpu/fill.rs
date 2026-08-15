@@ -24,11 +24,12 @@ use crate::document::fill::{FillOp, GradientAxis, Parcel, plan};
 use crate::document::selection::{
     Selection, SelectionMode, SelectionOp, SelectionShape, mask_tex_origin,
 };
+use crate::gpu::channels::{ChannelFormats, Channels};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::submit::TileScope;
-use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
+use crate::gpu::tile::{AllocSource, TileMap, TilePool};
 
 // Generated from `fill.wesl`'s own declarations (§6.7).
 use stark_shaders::mirror::fill::Fill as FillUniform;
@@ -44,10 +45,9 @@ const _: () =
 pub struct FillRenderer {
     ctx: GpuContext,
     color_space: Arc<dyn ColorSpace>,
-    color_format: wgpu::TextureFormat,
-    aux_format: wgpu::TextureFormat,
-    /// The residual channel's format, or `None` in a space that has none (§6.7).
-    resid_format: Option<wgpu::TextureFormat>,
+    /// The channel formats this fill's tiles carry — the color space's, resolved
+    /// once (§6.7).
+    formats: ChannelFormats,
     pipeline: wgpu::RenderPipeline,
     bgl: wgpu::BindGroupLayout,
     /// The base of a tile the layer does not have yet, so a fill onto virgin canvas
@@ -66,13 +66,11 @@ impl FillRenderer {
         zeroes: Zeroes,
     ) -> Self {
         let device = &ctx.device;
-        let color_format = color_space.color_format();
-        let aux_format = color_space.aux_format();
-        let resid_format = color_space.resid_format();
+        let formats = ChannelFormats::of(color_space.as_ref());
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark fill"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::fill(resid_format.is_some()).into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::fill(formats.has_resid()).into()),
         });
         let frag = wgpu::ShaderStages::FRAGMENT;
         let mut entries = vec![
@@ -82,7 +80,7 @@ impl FillRenderer {
             desc::load_tex(3, frag), // the shape's coverage
             desc::load_tex(4, frag), // the author's selection
         ];
-        if resid_format.is_some() {
+        if formats.has_resid() {
             entries.push(desc::load_tex(5, frag)); // base residual (§6.7)
         }
         // The tile's canvas origin — per tile, where binding 0 is per fill. Bound
@@ -90,10 +88,7 @@ impl FillRenderer {
         entries.push(desc::uniform(6, frag));
         let bgl = desc::bind_group_layout(device, "stark fill bgl", &entries);
         let layout = desc::pipeline_layout(device, "stark fill layout", &[Some(&bgl)]);
-        let mut targets = vec![desc::target(color_format), desc::target(aux_format)];
-        if let Some(f) = resid_format {
-            targets.push(desc::target(f));
-        }
+        let targets = formats.targets();
         let pipeline = desc::fullscreen_pipeline(
             device,
             "stark fill pipeline",
@@ -106,9 +101,7 @@ impl FillRenderer {
         Self {
             ctx: ctx.clone(),
             color_space,
-            color_format,
-            aux_format,
-            resid_format,
+            formats,
             pipeline,
             bgl,
             zeroes,
@@ -217,12 +210,7 @@ impl FillRenderer {
                     usage: wgpu::BufferUsages::UNIFORM,
                 },
             ));
-            let dst = (
-                pool.acquire_tex(self.color_format, AllocSource::FillDestination),
-                pool.acquire_tex(self.aux_format, AllocSource::FillDestination),
-                self.resid_format
-                    .map(|f| pool.acquire_tex(f, AllocSource::FillDestination)),
-            );
+            let dst = Channels::acquire(pool, self.formats, AllocSource::FillDestination);
             let mut entries = vec![
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -245,17 +233,13 @@ impl FillRenderer {
                 layout: &self.bgl,
                 entries: &entries,
             });
-            let attachments = [
-                Some(desc::attach(dst.0.view(), desc::CLEAR)),
-                Some(desc::attach(dst.1.view(), desc::CLEAR)),
-                dst.2.as_ref().map(|t| desc::attach(t.view(), desc::CLEAR)),
-            ];
-            let n = 2 + usize::from(dst.2.is_some());
+            let dst_targets = dst.targets();
+            let attachments = dst_targets.attachments(desc::CLEAR);
             let mut pass = scope
                 .encoder()
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark fill tile"),
-                    color_attachments: &attachments[..n],
+                    color_attachments: &attachments[..dst_targets.count()],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
@@ -265,7 +249,7 @@ impl FillRenderer {
             pass.set_bind_group(0, &bg, &[]);
             pass.draw(0..3, 0..1);
             drop(pass);
-            tiles = tiles.insert(*coord, TilePairHandle::new(dst.0, dst.1, dst.2));
+            tiles = tiles.insert(*coord, dst.into_tile());
             scope.tile_done();
         }
 

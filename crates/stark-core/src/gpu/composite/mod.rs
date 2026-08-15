@@ -49,13 +49,14 @@ use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
 use crate::geom::{Extent2, ViewTransform};
+use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::environment::Environment;
 use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
 
 pub(crate) use blend::{BlendPass, BlendUniform, UNIFORM_SLOT, blend_code};
-use blend::{ScratchLevel, ScratchTargets, Targets, UniformSlots};
+use blend::{ScratchLevel, ScratchTargets, UniformSlots};
 pub(crate) use filter::{FilterPass, FilterUniform};
 use group::scratch_needs;
 // The free items are imported by name rather than qualified, because `render`'s own
@@ -185,13 +186,10 @@ pub struct CompositorPasses {
     media: MediaPass,
     resolve: ResolvePass,
 
-    // Offscreen channel formats (from the color space).
-    color_format: wgpu::TextureFormat,
-    aux_format: wgpu::TextureFormat,
-    /// The residual channel's format, or `None` in a space that has none (§6.7).
-    /// Decides the third attachment on every pass A target, and it is the color
-    /// space's answer rather than a per-target choice.
-    resid_format: Option<wgpu::TextureFormat>,
+    /// Offscreen channel formats, from the color space (§6.7) — including whether
+    /// there is a residual at all, which decides the third attachment on every pass A
+    /// target and is the space's answer rather than a per-target choice.
+    formats: ChannelFormats,
     /// What passes B–D write, and therefore what the supersampled target carries.
     target_format: wgpu::TextureFormat,
 }
@@ -352,15 +350,13 @@ impl CompositorPipeline {
         filter: Arc<FilterPass>,
     ) -> Self {
         let device = &ctx.device;
-        let color_format = color_space.color_format();
-        let aux_format = color_space.aux_format();
-        let resid_format = color_space.resid_format();
+        let formats = ChannelFormats::of(color_space);
         // Passes B–E all write the one target the frame is presented from.
         let screen = [desc::target(target_format)];
 
         let view = View::new(device);
         let passes = CompositorPasses {
-            tiles: TilePass::new(device, &view, color_space, color_format, aux_format),
+            tiles: TilePass::new(device, &view, color_space, formats),
             blend,
             filter,
             overlay: OverlayPass::new(device, &view, target_format),
@@ -369,9 +365,7 @@ impl CompositorPipeline {
             resolve: ResolvePass::new(device, &screen),
             view,
             ctx: ctx.clone(),
-            color_format,
-            aux_format,
-            resid_format,
+            formats,
             target_format,
         };
         Self::sharing(
@@ -451,7 +445,7 @@ impl CompositorPipeline {
         wgpu::TextureFormat,
         Option<wgpu::TextureFormat>,
     ) {
-        (self.color_format, self.aux_format, self.resid_format)
+        (self.formats.color, self.formats.aux, self.formats.resid)
     }
 
     /// The offscreen pair and the media bind group over it, at `size`.
@@ -459,9 +453,7 @@ impl CompositorPipeline {
         media::offscreen(media::OffscreenDesc {
             device: &self.ctx.device,
             size,
-            color_format: self.color_format,
-            aux_format: self.aux_format,
-            resid_format: self.resid_format,
+            formats: self.formats,
             media: &self.media,
             surface: &self.surface,
             environment: &self.environment,
@@ -1057,14 +1049,7 @@ impl Compositor {
                 return true;
             }
         }
-        self.scratch = Some(ScratchTargets::new(
-            &p.ctx.device,
-            size,
-            &needs,
-            p.color_format,
-            p.aux_format,
-            p.resid_format,
-        ));
+        self.scratch = Some(ScratchTargets::new(&p.ctx.device, size, &needs, p.formats));
         true
     }
 
@@ -1100,7 +1085,7 @@ impl Compositor {
     ) {
         debug_assert_eq!(
             resid.is_some(),
-            p.resid_format.is_some(),
+            p.formats.has_resid(),
             "pass A's attachment count is the color space's, not the caller's",
         );
         let streams = self.prepare_composite(p, view, groups);
@@ -1110,16 +1095,8 @@ impl Compositor {
         // [`Self::ensure_scratch`]). Blend modes have to be honoured here or an
         // eyedropper would report a color the screen never showed.
         let needs = scratch_needs(groups);
-        let scratch = (!needs.is_empty()).then(|| {
-            ScratchTargets::new(
-                &p.ctx.device,
-                view.viewport,
-                &needs,
-                p.color_format,
-                p.aux_format,
-                p.resid_format,
-            )
-        });
+        let scratch = (!needs.is_empty())
+            .then(|| ScratchTargets::new(&p.ctx.device, view.viewport, &needs, p.formats));
         let mut encoder = p
             .ctx
             .device

@@ -25,13 +25,14 @@ use std::sync::Arc;
 
 use crate::colorspace::ColorSpace;
 use crate::document::BlendMode;
+use crate::gpu::channels::{ChannelFormats, Channels, Targets};
 use crate::gpu::composite::{
     BlendPass, BlendUniform, FilterDraw, FilterPass, FilterUniform, UNIFORM_SLOT, blend_code,
 };
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::submit::TileScope;
-use crate::gpu::tile::{AllocSource, TexHandle, TileMap, TilePairHandle, TilePool};
+use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 
 // Generated from the shaders' own declarations (§6.10).
 use stark_shaders::mirror::merge::Merge as MergeUniform;
@@ -73,17 +74,12 @@ impl MergeScene<'_> {
     }
 }
 
-/// A tile's three channel textures, as this module passes them around — the shape
-/// [`TilePairHandle`] is built from, before it becomes one.
-type Trio = (TexHandle, TexHandle, Option<TexHandle>);
-
 #[derive(Clone)]
 pub struct MergeRenderer {
     ctx: GpuContext,
-    color_format: wgpu::TextureFormat,
-    aux_format: wgpu::TextureFormat,
-    /// The residual channel's format, or `None` in a space that has none (§6.7).
-    resid_format: Option<wgpu::TextureFormat>,
+    /// The channel formats this merge's tiles carry — the color space's, resolved
+    /// once (§6.7).
+    formats: ChannelFormats,
     /// The direct tile-space law: an unclipped `Normal` merge, settled in one pass
     /// (`merge.wesl`).
     direct: wgpu::RenderPipeline,
@@ -117,17 +113,12 @@ impl MergeRenderer {
         filter: Arc<FilterPass>,
     ) -> Self {
         let device = &ctx.device;
-        let color_format = color_space.color_format();
-        let aux_format = color_space.aux_format();
-        let resid_format = color_space.resid_format();
-        let resid = resid_format.is_some();
+        let formats = ChannelFormats::of(color_space);
+        let resid = formats.has_resid();
         let frag = wgpu::ShaderStages::FRAGMENT;
 
         // The channel targets both of this module's own passes write.
-        let mut targets = vec![desc::target(color_format), desc::target(aux_format)];
-        if let Some(f) = resid_format {
-            targets.push(desc::target(f));
-        }
+        let targets = formats.targets();
 
         let merge_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark merge"),
@@ -183,9 +174,7 @@ impl MergeRenderer {
 
         Self {
             ctx: ctx.clone(),
-            color_format,
-            aux_format,
-            resid_format,
+            formats,
             direct,
             direct_bgl,
             expand: slab("stark slab expand", "fs_expand"),
@@ -252,7 +241,7 @@ impl MergeRenderer {
                     &out,
                 );
             }
-            tiles = tiles.insert(coord, TilePairHandle::new(out.0, out.1, out.2));
+            tiles = tiles.insert(coord, out.into_tile());
             // Everything this tile needs is recorded, so this is the one point at
             // which the scratch behind it is safe to hand back.
             scope.tile_done();
@@ -301,7 +290,7 @@ impl MergeRenderer {
         for (coord, handle) in dest.iter() {
             let out = self.acquire(pool, AllocSource::MergeDestination);
             self.encode_filter(&mut scope, &uniform, Some(handle), &out);
-            tiles = tiles.insert(*coord, TilePairHandle::new(out.0, out.1, out.2));
+            tiles = tiles.insert(*coord, out.into_tile());
             scope.tile_done();
         }
         scope.finish();
@@ -323,7 +312,7 @@ impl MergeRenderer {
         scope: &mut TileScope,
         uniform: &wgpu::Buffer,
         tile: Option<&TilePairHandle>,
-        out: &Trio,
+        out: &Channels,
     ) {
         let mut entries = vec![
             wgpu::BindGroupEntry {
@@ -340,7 +329,7 @@ impl MergeRenderer {
             desc::tex(5, &self.blend.pigment.view),
             desc::samp(6, &self.blend.pigment.sampler),
         ];
-        if self.resid_format.is_some() {
+        if self.formats.has_resid() {
             entries.push(desc::tex(7, self.resid_of(tile)));
         }
         let bg = self.bind("stark merge filter bg", &self.filter.bgl, &entries);
@@ -393,7 +382,7 @@ impl MergeRenderer {
         uniform: &wgpu::Buffer,
         dst: Option<&TilePairHandle>,
         src: Option<&TilePairHandle>,
-        out: &Trio,
+        out: &Channels,
     ) {
         let mut entries = vec![
             desc::uniform_entry(0, uniform),
@@ -402,7 +391,7 @@ impl MergeRenderer {
             desc::tex(3, self.color_of(src)),
             desc::tex(4, self.aux_of(src)),
         ];
-        if self.resid_format.is_some() {
+        if self.formats.has_resid() {
             entries.push(desc::tex(5, self.resid_of(dst)));
             entries.push(desc::tex(6, self.resid_of(src)));
         }
@@ -424,7 +413,7 @@ impl MergeRenderer {
         pool: &TilePool,
         u: Uniforms<'_>,
         (dst, src): (Option<&TilePairHandle>, Option<&TilePairHandle>),
-        out: &Trio,
+        out: &Channels,
     ) {
         let lower = self.acquire(pool, AllocSource::MergeScratch);
         let upper = self.acquire(pool, AllocSource::MergeScratch);
@@ -432,7 +421,7 @@ impl MergeRenderer {
         self.encode_slab(scope, &self.expand, u.expand.0, self.views_of(dst), &lower);
         self.encode_slab(scope, &self.expand, u.expand.1, self.views_of(src), &upper);
         self.encode_blend(scope, u.blend, &lower, &upper, &blended);
-        self.encode_slab(scope, &self.store, u.store, views(&blended), out);
+        self.encode_slab(scope, &self.store, u.store, blended.targets(), out);
         // Held, not dropped: nothing in a recorded encoder has run, so an early
         // release hands these straight to the next tile's expand (`TileScope`).
         scope.hold(lower);
@@ -446,19 +435,15 @@ impl MergeRenderer {
         scope: &mut TileScope,
         pipeline: &wgpu::RenderPipeline,
         uniform: &wgpu::Buffer,
-        input: (
-            &wgpu::TextureView,
-            &wgpu::TextureView,
-            Option<&wgpu::TextureView>,
-        ),
-        out: &Trio,
+        input: Targets<'_>,
+        out: &Channels,
     ) {
         let mut entries = vec![
             desc::uniform_entry(0, uniform),
-            desc::tex(1, input.0),
-            desc::tex(2, input.1),
+            desc::tex(1, input.color),
+            desc::tex(2, input.aux),
         ];
-        if let Some(r) = input.2 {
+        if let Some(r) = input.resid {
             entries.push(desc::tex(3, r));
         }
         let bg = self.bind("stark slab bg", &self.slab_bgl, &entries);
@@ -475,9 +460,9 @@ impl MergeRenderer {
         &self,
         scope: &mut TileScope,
         uniform: &wgpu::Buffer,
-        back: &Trio,
-        src: &Trio,
-        out: &Trio,
+        back: &Channels,
+        src: &Channels,
+        out: &Channels,
     ) {
         let mut entries = vec![
             wgpu::BindGroupEntry {
@@ -488,14 +473,14 @@ impl MergeRenderer {
                     size: wgpu::BufferSize::new(std::mem::size_of::<BlendUniform>() as u64),
                 }),
             },
-            desc::tex(1, back.0.view()),
-            desc::tex(2, back.1.view()),
-            desc::tex(3, src.0.view()),
-            desc::tex(4, src.1.view()),
+            desc::tex(1, back.color.view()),
+            desc::tex(2, back.aux.view()),
+            desc::tex(3, src.color.view()),
+            desc::tex(4, src.aux.view()),
             desc::tex(5, &self.blend.pigment.view),
             desc::samp(6, &self.blend.pigment.sampler),
         ];
-        if let (Some(b), Some(s)) = (&back.2, &src.2) {
+        if let (Some(b), Some(s)) = (&back.resid, &src.resid) {
             entries.push(desc::tex(7, b.view()));
             entries.push(desc::tex(8, s.view()));
         }
@@ -518,19 +503,15 @@ impl MergeRenderer {
         pipeline: &wgpu::RenderPipeline,
         bg: &wgpu::BindGroup,
         offsets: &[u32],
-        out: &Trio,
+        out: &Channels,
     ) {
-        let (attachments, n) = desc::tile_attachments(
-            out.0.view(),
-            out.1.view(),
-            out.2.as_ref().map(TexHandle::view),
-            desc::CLEAR,
-        );
+        let targets = out.targets();
+        let attachments = targets.attachments(desc::CLEAR);
         let mut pass = scope
             .encoder()
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(label),
-                color_attachments: &attachments[..n],
+                color_attachments: &attachments[..targets.count()],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -542,19 +523,12 @@ impl MergeRenderer {
     }
 
     /// A tile's three channel textures, or the 1×1 zeroes where the layer has none.
-    fn views_of<'a>(
-        &'a self,
-        tile: Option<&'a TilePairHandle>,
-    ) -> (
-        &'a wgpu::TextureView,
-        &'a wgpu::TextureView,
-        Option<&'a wgpu::TextureView>,
-    ) {
-        (
-            self.color_of(tile),
-            self.aux_of(tile),
-            self.resid_format.is_some().then(|| self.resid_of(tile)),
-        )
+    fn views_of<'a>(&'a self, tile: Option<&'a TilePairHandle>) -> Targets<'a> {
+        Targets {
+            color: self.color_of(tile),
+            aux: self.aux_of(tile),
+            resid: self.formats.has_resid().then(|| self.resid_of(tile)),
+        }
     }
 
     fn color_of<'a>(&'a self, tile: Option<&'a TilePairHandle>) -> &'a wgpu::TextureView {
@@ -576,12 +550,8 @@ impl MergeRenderer {
         tile.and_then(TilePairHandle::resid_view).unwrap_or(zero)
     }
 
-    fn acquire(&self, pool: &TilePool, source: AllocSource) -> Trio {
-        (
-            pool.acquire_tex(self.color_format, source),
-            pool.acquire_tex(self.aux_format, source),
-            self.resid_format.map(|f| pool.acquire_tex(f, source)),
-        )
+    fn acquire(&self, pool: &TilePool, source: AllocSource) -> Channels {
+        Channels::acquire(pool, self.formats, source)
     }
 
     fn bind(
@@ -689,19 +659,4 @@ fn slab_uniform(opacity: f32) -> SlabUniform {
     SlabUniform {
         p: [opacity, 0.0, 0.0, 0.0],
     }
-}
-
-/// A scratch trio's own views, for the pass that reads it.
-fn views(
-    trio: &Trio,
-) -> (
-    &wgpu::TextureView,
-    &wgpu::TextureView,
-    Option<&wgpu::TextureView>,
-) {
-    (
-        trio.0.view(),
-        trio.1.view(),
-        trio.2.as_ref().map(TexHandle::view),
-    )
 }

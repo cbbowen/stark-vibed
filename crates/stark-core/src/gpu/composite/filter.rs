@@ -51,13 +51,10 @@ pub(crate) struct FilterPass {
 }
 
 impl FilterPass {
-    pub(crate) fn new(
-        ctx: &GpuContext,
-        color_space: &dyn ColorSpace,
-        color_format: wgpu::TextureFormat,
-        aux_format: wgpu::TextureFormat,
-    ) -> Self {
+    pub(crate) fn new(ctx: &GpuContext, color_space: &dyn ColorSpace) -> Self {
         let device = &ctx.device;
+        let formats = crate::gpu::channels::ChannelFormats::of(color_space);
+        let (color_format, aux_format) = (formats.color, formats.aux);
         let frag = wgpu::ShaderStages::FRAGMENT;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark filter"),

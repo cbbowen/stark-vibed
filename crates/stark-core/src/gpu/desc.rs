@@ -390,29 +390,6 @@ pub(crate) fn zero_texture(
     constant_texture(ctx, format, &vec![0u8; bytes], label)
 }
 
-/// The color attachments of a pass that writes a **tile**: color, aux, and the
-/// residual a pigment space adds (§6.7).
-///
-/// Returned as a fixed array plus how many of it are real, so the caller slices —
-/// `&attachments[..n]` — rather than allocating a `Vec` per render pass. These are
-/// encoded once per tile per stroke, which is the rate `ScopedResources` exists to
-/// keep allocations off (§6.2).
-pub(crate) fn tile_attachments<'a>(
-    color: &'a wgpu::TextureView,
-    aux: &'a wgpu::TextureView,
-    resid: Option<&'a wgpu::TextureView>,
-    ops: wgpu::Operations<wgpu::Color>,
-) -> ([Option<wgpu::RenderPassColorAttachment<'a>>; 3], usize) {
-    (
-        [
-            Some(attach(color, ops)),
-            Some(attach(aux, ops)),
-            resid.map(|v| attach(v, ops)),
-        ],
-        2 + usize::from(resid.is_some()),
-    )
-}
-
 /// The 1×1 stand-ins a pass binds where a tile does not exist — one per persistent
 /// tile channel.
 ///
@@ -437,16 +414,13 @@ pub(crate) struct Zeroes {
 }
 
 impl Zeroes {
-    pub(crate) fn new(
-        ctx: &GpuContext,
-        color_format: wgpu::TextureFormat,
-        aux_format: wgpu::TextureFormat,
-        resid_format: Option<wgpu::TextureFormat>,
-    ) -> Self {
+    pub(crate) fn new(ctx: &GpuContext, formats: crate::gpu::channels::ChannelFormats) -> Self {
         Self {
-            color: zero_texture(ctx, color_format, "stark zero color"),
-            aux: zero_texture(ctx, aux_format, "stark zero aux"),
-            resid: resid_format.map(|f| zero_texture(ctx, f, "stark zero resid")),
+            color: zero_texture(ctx, formats.color, "stark zero color"),
+            aux: zero_texture(ctx, formats.aux, "stark zero aux"),
+            resid: formats
+                .resid
+                .map(|f| zero_texture(ctx, f, "stark zero resid")),
         }
     }
 }
