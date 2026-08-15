@@ -40,6 +40,7 @@ mod group;
 mod guides;
 mod media;
 mod overlay;
+mod plan;
 mod resolve;
 mod tiles;
 mod view;
@@ -58,13 +59,13 @@ use crate::gpu::uniforms::{InstanceStream, UniformSlots};
 pub(crate) use blend::{BlendPass, BlendUniform, blend_code};
 use blend::{ScratchLevel, ScratchTargets};
 pub(crate) use filter::{FilterPass, FilterUniform};
-use group::scratch_needs;
 // `pack_guides` is imported by name rather than qualified, because `render`'s own
 // `guides` binding (the scene's list) would otherwise shadow the module in a reader's
 // eye — `guides::pack_guides(scene, view)` resolves fine and reads badly.
 use guides::{GuidePass, GuideUniform, pack_guides};
 use media::{MediaPass, MediaUniform};
 use overlay::{OverlayInstance, OverlayPass, PEER_OUTLINE_ALPHA};
+use plan::{Draw, Plan, Slot, Step};
 use resolve::{ResolvePass, ResolveUniform, supersample};
 use tiles::{Instance, MatteInstance, Ramp, TilePass};
 use view::{View, ViewBindings};
@@ -74,25 +75,21 @@ pub use media::MediaParams;
 pub use overlay::SelectionOutline;
 pub(crate) use view::view_uniform;
 
-/// What stays the same for the whole of pass A, as against what the walk varies.
+/// What stays the same for every step of pass A, as against what the step varies.
 ///
-/// The recursion down the group tree changes the target, the members and the level;
-/// these three do not, so they travel as one parameter rather than three repeated at
-/// every hop — the shape `CompositeScene` and `stroke::StrokeScene` already use.
+/// A step changes the targets and the slot; these two do not, so they travel as one
+/// parameter rather than two repeated at every call — the shape `CompositeScene` and
+/// `stroke::StrokeScene` already use.
 struct Encode<'a> {
     p: &'a CompositorPipeline,
-    /// The per-item bind groups `prepare_composite` gathered, in the flat order the
-    /// cursors consume them.
+    /// The per-item bind groups [`Compositor::upload`] gathered, in the flat order
+    /// the plan's [`Draw`]s index.
     streams: &'a PreparedStreams<'a>,
-    /// One per level of group nesting the document reaches; empty when nothing needs
-    /// isolating, which is the common document.
-    levels: &'a [ScratchLevel],
 }
 
-/// What `prepare_composite` hands the encoder: the per-tile bind groups, and the
-/// per-matte ramp bind groups beside them (`None` = solid, draw with the shared
-/// zeroed ramp; §22.4). One value because they are one preparation —
-/// built by the same walk, consumed by the same cursors.
+/// What [`Compositor::upload`] hands the encoder: the per-tile bind groups, and the
+/// per-matte ramp bind group beside them. One value because they are one
+/// preparation, gathered from one plan and indexed by its [`Draw`]s.
 ///
 /// The tile groups are **borrowed from the tiles themselves** — each is built once
 /// and kept for that tile's life ([`TilePairHandle::composite_bg`]) — so what this
@@ -105,20 +102,6 @@ struct Encode<'a> {
 struct PreparedStreams<'a> {
     tile_bgs: Vec<&'a wgpu::BindGroup>,
     matte_ramp_bg: Option<wgpu::BindGroup>,
-}
-
-/// How far through the frame's flat streams the encoder has drawn.
-///
-/// The instance buffers and the blend uniform's slots are flat across the whole
-/// group tree, while the drawing walks it — so the walk carries one of these and
-/// each run, each merge, takes the next entry. They are `u32` because that is what
-/// `draw` and the dynamic bind-group offset take.
-#[derive(Default)]
-struct Cursors {
-    tile: u32,
-    matte: u32,
-    blend: u32,
-    filter: u32,
 }
 
 /// What one render draws, as against *where and how* it draws it (the target and the
@@ -597,91 +580,60 @@ impl Compositor {
             .expect("the branch above builds it when it is absent")
     }
 
-    /// Write the view uniform and upload pass A's instance streams for `groups`,
-    /// returning the per-tile bind groups that pass draws with — and, beside
-    /// them, the per-matte ramp bind groups (`None` = solid, draw with the
-    /// shared zeroed ramp; §22.4).
+    /// Write the view uniform and upload everything `plan` decided, returning the
+    /// per-tile bind groups pass A draws with — and, beside them, the per-matte ramp
+    /// bind group (`None` when the frame has no matte at all; §22.4).
     ///
     /// Split out of [`Self::render`] so [`Self::composite_channels`] runs the *same*
     /// pass A rather than a second copy of it: what the eyedropper reports and what
     /// the screen shows then cannot drift, which is the whole reason for sampling
     /// through the compositor at all.
-    fn prepare_composite<'a>(
+    ///
+    /// No walk of its own. Everything here is a loop over what [`Plan::build`]
+    /// already ordered, which is what makes "slot `n` is the `n`th merge the encoder
+    /// reaches" true by construction rather than by two recursions agreeing.
+    fn upload<'a>(
         &mut self,
         p: &CompositorPipeline,
         view: ViewTransform,
-        groups: &'a [CompositeGroup],
+        plan: &Plan<'a>,
     ) -> PreparedStreams<'a> {
         let device = &p.ctx.device;
-        self.view.write(&p.ctx.queue, view);
+        let queue = &p.ctx.queue;
+        self.view.write(queue, view);
 
-        // Split the ordered item list into the two instance streams, remembering
-        // for each item which stream slot it draws from. The *order* of the items is
-        // what has to survive — a matte must composite over the tiles below it and
-        // under the tiles above — so the draw loop in `encode_composite` walks the
-        // groups, not these. The streams are flat across every group, so a blend
-        // group costs no extra buffer and the instance index keeps running.
-        let mut instances: Vec<Instance> = Vec::new();
-        let mut tile_bgs: Vec<&wgpu::BindGroup> = Vec::new();
-        let mut mattes: Vec<MatteInstance> = Vec::new();
-        let mut ramps: Vec<Ramp> = Vec::new();
-        let mut items: Vec<&CompositeItem> = Vec::new();
-        for group in groups {
-            group.items_into(&mut items);
-        }
-        for item in items {
-            match item {
-                CompositeItem::Tile {
-                    coord,
-                    handle,
-                    opacity,
-                } => {
-                    instances.push(Instance {
-                        origin: coord.origin().to_array(),
-                        opacity: *opacity,
-                    });
-                    // Built once per tile and kept on it, not once per tile per
-                    // frame — see [`TilePairHandle::composite_bg`] for why a tile's
-                    // immutability makes that sound, and what it was costing.
-                    tile_bgs.push(handle.composite_bg(|| {
-                        let mut entries = vec![
-                            desc::tex(0, handle.color_view()),
-                            desc::tex(1, handle.aux_view()),
-                        ];
-                        // The layout carries slot 2 exactly when the space has a
-                        // residual (§6.7), and every tile of such a document has
-                        // one — the space decides once, at `acquire_tile`.
-                        if let Some(view) = handle.resid_view() {
-                            entries.push(desc::tex(2, view));
-                        }
-                        device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("stark composite tile bg"),
-                            layout: &p.tiles.tile_bgl,
-                            entries: &entries,
-                        })
-                    }));
-                }
-                CompositeItem::Matte(m) => {
-                    mattes.push(MatteInstance {
-                        rect: m.rect,
-                        channels: m.channels,
-                        opacity: m.opacity,
-                        resid: m.resid,
-                        flags: m.flags,
-                    });
-                    // A gradient matte brings its ramp as a per-matte uniform
-                    // (§22.4); a solid one takes a zeroed slot, whose stop count says
-                    // "use the instance's own channels". One slot either way, so the
-                    // matte's instance index is also its ramp's.
-                    ramps.push(m.ramp.as_deref().copied().unwrap_or_default());
-                }
-            }
-        }
-        self.instances.write(device, &p.ctx.queue, &instances);
+        // Built once per tile and kept on it, not once per tile per frame — see
+        // [`TilePairHandle::composite_bg`] for why a tile's immutability makes that
+        // sound, and what it was costing.
+        let tile_bgs = plan
+            .tiles
+            .iter()
+            .map(|handle| {
+                handle.composite_bg(|| {
+                    let mut entries = vec![
+                        desc::tex(0, handle.color_view()),
+                        desc::tex(1, handle.aux_view()),
+                    ];
+                    // The layout carries slot 2 exactly when the space has a residual
+                    // (§6.7), and every tile of such a document has one — the space
+                    // decides once, at `acquire_tile`.
+                    if let Some(view) = handle.resid_view() {
+                        entries.push(desc::tex(2, view));
+                    }
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("stark composite tile bg"),
+                        layout: &p.tiles.tile_bgl,
+                        entries: &entries,
+                    })
+                })
+            })
+            .collect();
+
+        self.instances.write(device, queue, &plan.instances);
         let mut matte_ramp_bg = None;
-        if !mattes.is_empty() {
-            self.matte_instances.write(device, &p.ctx.queue, &mattes);
-            self.matte_ramps.write(device, &p.ctx.queue, &ramps);
+        if !plan.mattes.is_empty() {
+            self.matte_instances.write(device, queue, &plan.mattes);
+            self.matte_ramps.write(device, queue, &plan.ramps);
             // Built after the write, so it names the buffer the write may have just
             // grown — the same reason the guide pass builds its own per render.
             matte_ramp_bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -692,178 +644,88 @@ impl Compositor {
         }
 
         // One uniform slot per merge and one per filter layer, all written before the
-        // single submit — see [`UniformSlots`] for why they cannot share one.
+        // single submit — see [`UniformSlots`] for why they cannot share one. The
+        // *order* is the plan's, and each step carries the index it binds, so a
+        // filter and a blend group side by side cannot count each other's slots.
         //
-        // Collected by the **same recursion the encoder consumes them with**, so
-        // slot `n` is the `n`th merge (or the `n`th filter) either walk reaches. That
-        // is a post-order DFS: a group's members merge before the group itself does,
-        // because the group cannot be merged until it has been composited. The two
-        // cursors run independently, which is what lets a filter and a blend group
-        // sit side by side in a stack without either counting the other's slots.
-        //
-        // `view` rides along for one field: the chromatic filter's dispersion is
-        // stated in canvas terms by the document and *sampled* in accumulator
-        // texels by the pass, and this is the moment the two meet (§21.10).
-        fn collect(
-            members: &[CompositeGroup],
-            view: ViewTransform,
-            blends: &mut Vec<BlendUniform>,
-            filters: &mut Vec<FilterUniform>,
-        ) {
-            for m in members {
-                if m.as_direct_run().is_some() {
-                    continue;
-                }
-                if let GroupContent::Filter(f) = &m.content {
-                    filters.push(FilterUniform {
-                        kind: f.kind,
-                        strength: f.strength,
-                        clip: u32::from(f.clip),
-                        disp: chromatic_disp(f, view),
-                        params: f.params,
-                        params2: f.params2,
-                        // The gradient map's ramp, zeroed for every other kind —
-                        // `disp`'s convention: the true value, since no other
-                        // kind has stops (§21.11).
-                        stops: f.stops.as_deref().copied().unwrap_or([[0.0; 4]; 16]),
-                        // The padding WGSL's alignment leaves around `clip`, which
-                        // the generator names and nothing reads (§6.10).
-                        ..Default::default()
-                    });
-                    continue;
-                }
-                if let GroupContent::Stack(inner) = &m.content {
-                    collect(inner, view, blends, filters);
-                }
-                blends.push(BlendUniform {
-                    mode: blend::blend_code(m.params.blend),
-                    k: m.params.blend.drago_k(),
-                    clip: u32::from(m.params.clip),
-                    opacity: m.params.opacity,
-                });
-            }
-        }
-        let (mut blends, mut filters) = (Vec::new(), Vec::new());
-        collect(groups, view, &mut blends, &mut filters);
-        self.blend_uniforms.write(device, &p.ctx.queue, &blends);
-        self.filter_uniforms.write(device, &p.ctx.queue, &filters);
+        // The filter uniforms are built here rather than in the plan for one lane's
+        // sake: the chromatic dispersion is stated in canvas terms by the document
+        // and sampled in accumulator texels by the pass, and this — with `view`
+        // already supersampled — is the moment the two meet (§21.10).
+        self.blend_uniforms.write(device, queue, &plan.blends);
+        let filters: Vec<FilterUniform> = plan
+            .filters
+            .iter()
+            .map(|f| plan::filter_uniform(f, view))
+            .collect();
+        self.filter_uniforms.write(device, queue, &filters);
         PreparedStreams {
             tile_bgs,
             matte_ramp_bg,
         }
     }
 
-    /// Encode pass A: every group composited into `color` + `aux`, in stack order.
-    /// Requires a preceding [`Self::prepare_composite`] for the same `groups`.
+    /// Encode pass A: every step of `plan`, in order, into `target`.
     ///
-    /// `scratch` is the extra target pair set a non-`Normal` group needs, sized to
-    /// match `color`/`aux`. It may be `None` only when every group is `Normal`.
+    /// `scratch` is the extra target sets the frame's bounces need, sized to match
+    /// `target`. It may be `None` only when `plan.scratch` is empty — which
+    /// [`Self::ensure_scratch`] guarantees, having been given that very vector.
     ///
-    /// **The ping-pong, and why the caller's targets always win.** A blend pass reads
-    /// the accumulator and writes the merge, so it needs somewhere else to write; the
-    /// accumulator therefore alternates between the caller's pair and `scratch.swap`.
-    /// Rather than copy at the end, the *start* is chosen by parity: with an odd
-    /// number of blend groups the stack begins in `swap`, and every flip lands the
-    /// final result exactly where the caller asked for it. That is what lets the
-    /// media pass keep one bind group and the eyedropper keep its own targets.
-    fn encode_composite(
+    /// **No recursion, no cursors, no parity.** All three were decided in
+    /// [`Plan::build`] and are read back off the steps here; what is left is a
+    /// `match` that resolves three slot names against real targets.
+    fn encode_plan(
         &self,
         p: &CompositorPipeline,
         encoder: &mut wgpu::CommandEncoder,
         target: Targets<'_>,
-        groups: &[CompositeGroup],
+        plan: &Plan<'_>,
         streams: &PreparedStreams<'_>,
         scratch: Option<&ScratchTargets>,
     ) {
-        let e = Encode {
-            p,
-            streams,
-            levels: scratch.map_or(&[], |s| &s.levels),
+        // The parity claim, checked where it is relied on: whatever the plan did, the
+        // accumulator ends in the caller's own targets. That is what lets the media
+        // pass keep one bind group across every document and the eyedropper read back
+        // the buffers it supplied. `Plan`'s tests pin it for every shape they know;
+        // this catches one they do not.
+        debug_assert_eq!(
+            plan.steps.last().map(Step::out),
+            Some(Slot::Target),
+            "the ping-pong must land the accumulator in the caller's targets (§14.7)",
+        );
+        let levels: &[ScratchLevel] = scratch.map_or(&[], |s| &s.levels);
+        // The one place a `Slot` becomes a texture. Both `expect`s are the plan's own
+        // invariant read back — `Plan`'s tests assert that no step names a level the
+        // scratch was not told to allocate — rather than a condition this file could
+        // get out of step with.
+        let at = |slot: Slot| match slot {
+            Slot::Target => target,
+            Slot::Swap(l) => levels
+                .get(l)
+                .expect("a bounce at an unallocated level (Plan::scratch)")
+                .swap(),
+            Slot::Iso(l) => levels
+                .get(l)
+                .expect("an isolation at an unallocated level (Plan::scratch)")
+                .iso(),
         };
-        self.encode_stack(&e, encoder, target, groups, &mut Cursors::default(), 0);
-    }
-
-    /// Composite one stack's members into `target`, bottom-to-top — the recursion
-    /// (§14.7).
-    ///
-    /// Called on the document's root stack, and again on each group's members one
-    /// level deeper. `level` selects this stack's ping-pong pair and the `iso` its
-    /// members composite alone into; a member that is itself a group recurses into
-    /// that `iso` at `level + 1`, which is why nesting costs a pair-set per level
-    /// rather than per group.
-    fn encode_stack(
-        &self,
-        e: &Encode<'_>,
-        encoder: &mut wgpu::CommandEncoder,
-        target: Targets<'_>,
-        members: &[CompositeGroup],
-        cursors: &mut Cursors,
-        level: usize,
-    ) {
-        let merges = members
-            .iter()
-            .filter(|m| m.as_direct_run().is_none())
-            .count();
-        let here = e.levels.get(level);
-        let swap = here.map_or(target, ScratchLevel::swap);
-        let (mut cur, mut alt) = if merges % 2 == 1 {
-            (swap, target)
-        } else {
-            (target, swap)
-        };
-
-        // Whether `cur` holds a real accumulator yet. A direct member's draw clears
-        // as it goes; a merge cannot, because the pass *reads* what is under it, so
-        // a stack that opens with one needs the clear encoded on its own.
-        let mut written = false;
-
-        for member in members {
-            // The fast path, and its items in one step: `as_direct_run` is the test
-            // and the extraction together, so there is no second match to disagree
-            // with the first about what "direct" implies (§14.7).
-            if let Some(items) = member.as_direct_run() {
-                self.encode_items(e, encoder, cur, items, cursors, !written);
-                written = true;
-                continue;
-            }
-            let scratch = here.expect("a merge without scratch targets");
-            if !written {
-                blend::clear_targets(encoder, cur);
-                written = true;
-            }
-            // A **filter layer** takes the same ping-pong with nothing isolated into
-            // it: there is no source, so it reads `cur` and writes the adjusted
-            // result to `alt` directly (§21.3). The bounce is what it shares with a
-            // merge, and it is the reason both are counted by `merges` above — the
-            // parity that lands the final result in the caller's own targets is a
-            // count of *flips*, not of blend modes.
-            if let GroupContent::Filter(_) = &member.content {
-                self.encode_filter(e, encoder, cur, alt, cursors.filter);
-                cursors.filter += 1;
-                std::mem::swap(&mut cur, &mut alt);
-                continue;
-            }
-            // The group, alone on nothing — the isolation its mode and its clip are
-            // both defined against.
-            let iso = scratch.iso();
-            match &member.content {
-                GroupContent::Run(items) => {
-                    self.encode_items(e, encoder, iso, items, cursors, true)
+        let e = Encode { p, streams };
+        for step in &plan.steps {
+            match step {
+                Step::Draw { into, draws, clear } => {
+                    self.encode_items(&e, encoder, at(*into), &plan.draws[draws.clone()], *clear)
                 }
-                GroupContent::Stack(inner) => {
-                    self.encode_stack(e, encoder, iso, inner, cursors, level + 1)
+                Step::Clear { into } => blend::clear_targets(encoder, at(*into)),
+                Step::Blend {
+                    back,
+                    src,
+                    out,
+                    slot,
+                } => self.encode_blend(&e, encoder, at(*back), at(*src), at(*out), *slot),
+                Step::Filter { back, out, slot } => {
+                    self.encode_filter(&e, encoder, at(*back), at(*out), *slot)
                 }
-                GroupContent::Filter(_) => unreachable!("handled above"),
             }
-            self.encode_blend(e, encoder, cur, iso, alt, cursors.blend);
-            cursors.blend += 1;
-            // `alt` now holds the merged stack and becomes the accumulator; what was
-            // `cur` is stale, and the next blend pass overwrites all of it.
-            std::mem::swap(&mut cur, &mut alt);
-        }
-        // An empty stack still has to leave the caller a cleared accumulator.
-        if !written {
-            blend::clear_targets(encoder, cur);
         }
     }
 
@@ -871,22 +733,16 @@ impl Compositor {
     /// a matte sits between runs of tiles. Both pipelines share group 0 (the view
     /// uniform), so only the vertex buffer and pipeline change.
     ///
-    /// The cursors are `&mut` because the streams are flat across the whole tree:
-    /// a run draws the next stretch of them and hands the cursor on.
+    /// Each [`Draw`] carries its own index into the flat streams, which is what the
+    /// walking cursors used to reconstruct.
     fn encode_items(
         &self,
         e: &Encode<'_>,
         encoder: &mut wgpu::CommandEncoder,
         into: Targets<'_>,
-        items: &[CompositeItem],
-        cursors: &mut Cursors,
+        draws: &[Draw],
         clear: bool,
     ) {
-        let Cursors {
-            tile: tile_i,
-            matte: matte_i,
-            ..
-        } = cursors;
         let ops = if clear { desc::CLEAR } else { desc::LOAD };
         let attachments = into.attachments(ops);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -899,19 +755,18 @@ impl Compositor {
         });
         pass.set_bind_group(0, &self.view.tiles, &[]);
         let mut pipeline_is_matte = None;
-        for item in items {
-            match item {
-                CompositeItem::Tile { .. } => {
+        for draw in draws {
+            match *draw {
+                Draw::Tile(i) => {
                     if pipeline_is_matte != Some(false) {
                         pass.set_pipeline(&e.p.tiles.pipeline);
                         pass.set_vertex_buffer(0, self.instances.slice());
                         pipeline_is_matte = Some(false);
                     }
-                    pass.set_bind_group(1, e.streams.tile_bgs[*tile_i as usize], &[]);
-                    pass.draw(0..4, *tile_i..*tile_i + 1);
-                    *tile_i += 1;
+                    pass.set_bind_group(1, e.streams.tile_bgs[i as usize], &[]);
+                    pass.draw(0..4, i..i + 1);
                 }
-                CompositeItem::Matte(_) => {
+                Draw::Matte(i) => {
                     if pipeline_is_matte != Some(true) {
                         pass.set_pipeline(&e.p.tiles.matte_pipeline);
                         pass.set_vertex_buffer(0, self.matte_instances.slice());
@@ -926,9 +781,8 @@ impl Compositor {
                         .matte_ramp_bg
                         .as_ref()
                         .expect("a matte draw without its ramp slots");
-                    pass.set_bind_group(1, ramp, &[UniformSlots::<Ramp>::offset(*matte_i)]);
-                    pass.draw(0..4, *matte_i..*matte_i + 1);
-                    *matte_i += 1;
+                    pass.set_bind_group(1, ramp, &[UniformSlots::<Ramp>::offset(i)]);
+                    pass.draw(0..4, i..i + 1);
                 }
             }
         }
@@ -1122,22 +976,22 @@ impl Compositor {
             p.formats.count(),
             "pass A's attachment count is the color space's, not the caller's",
         );
-        let streams = self.prepare_composite(p, view, groups);
+        let plan = Plan::build(groups);
+        let streams = self.upload(p, view, &plan);
         // Its own scratch, thrown away with the call. A pick viewport is `2r+1`
         // square, so this is a few kilobytes; sharing the render path's cache would
         // trade that for reallocating the *window* twice a frame (see
         // [`Self::ensure_scratch`]). Blend modes have to be honoured here or an
         // eyedropper would report a color the screen never showed.
-        let needs = scratch_needs(groups);
-        let scratch = (!needs.is_empty())
-            .then(|| ScratchTargets::new(&p.ctx.device, view.viewport, &needs, p.formats));
+        let scratch = (!plan.scratch.is_empty())
+            .then(|| ScratchTargets::new(&p.ctx.device, view.viewport, &plan.scratch, p.formats));
         let mut encoder = p
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("stark pick encoder"),
             });
-        self.encode_composite(p, &mut encoder, into, groups, &streams, scratch.as_ref());
+        self.encode_plan(p, &mut encoder, into, &plan, &streams, scratch.as_ref());
         p.ctx.queue.submit([encoder.finish()]);
     }
 
@@ -1167,16 +1021,21 @@ impl Compositor {
         // How hard this view is minifying, and therefore how many samples per output
         // pixel it takes to stop the paint, the weave and the impasto relief aliasing
         // (§6.4). 1 at 1:1 and closer, where the rest of this is a no-op.
-        // What this frame's attachments cost per supersampled texel, which is what
-        // decides how many samples it can afford (§6.4). The scratch is most of it —
-        // two viewport-sized trios per isolating level — so the group tree has to be
-        // asked *before* the sample count, not after.
-        let needs = scratch_needs(groups);
+        // Everything this frame's pass A does, decided once (§14.7). It comes first
+        // because the sample count below is chosen from what it costs: the scratch
+        // is most of a zoomed-out frame's memory — two viewport-sized trios per
+        // isolating level — so the group tree has to be walked *before* the
+        // attachments are sized, not after (§6.4).
+        //
+        // Deliberately free of the view, which is why it can be built here at all:
+        // the one view-dependent number in pass A is a filter's dispersion, and that
+        // is filled in at `upload` once `ss` has settled (§21.10).
+        let plan = Plan::build(groups);
         let ss = supersample(
             view.viewport,
             view.zoom,
             &p.ctx.device.limits(),
-            resolve::attachment_bytes(p.formats, p.target_format, &needs),
+            resolve::attachment_bytes(p.formats, p.target_format, &plan.scratch),
         );
         // This compositor's attachments, brought in line with what is about to be
         // drawn. Nobody else's: a render into something other than this target — an
@@ -1188,8 +1047,8 @@ impl Compositor {
         // thing that still knows the real size — which is exactly the split the
         // resolve at the bottom closes.
         let view = view.supersampled(ss);
-        let streams = self.prepare_composite(p, view, groups);
-        let want_scratch = self.ensure_scratch(p, self.size, needs);
+        let streams = self.upload(p, view, &plan);
+        let want_scratch = self.ensure_scratch(p, self.size, plan.scratch.clone());
         // Bound after everything that needs `&mut self`.
         let device = &p.ctx.device;
         let scratch = if want_scratch {
@@ -1261,7 +1120,7 @@ impl Compositor {
         // Pass A: composite tiles into offscreen color + aux. The parity trick in
         // `encode_composite` guarantees the result lands in these two views however
         // many blend passes ran, so the media bind group never has to be rebuilt.
-        self.encode_composite(p, &mut encoder, accum.targets(), groups, &streams, scratch);
+        self.encode_plan(p, &mut encoder, accum.targets(), &plan, &streams, scratch);
 
         // Pass B: media/lighting → target.
         {
@@ -1404,26 +1263,6 @@ impl Compositor {
 
         p.ctx.queue.submit([encoder.finish()]);
     }
-}
-
-/// The chromatic filter's dispersion vector for this frame: the red-end → blue-end
-/// displacement, carried from the canvas terms the document states (`params` =
-/// spread in canvas px, angle in canvas radians) into the **accumulator texels**
-/// the pass samples in, through the view's full canvas→screen linear map — zoom,
-/// rotation and mirror alike, so the fringes stay attached to the artwork exactly
-/// as the canvas weave does (§21.10, §6.4). Zero for every other filter kind,
-/// which is the true value rather than a stand-in: no other kind disperses.
-///
-/// Derived here, per frame, rather than stored in [`FilterDraw`]: the draw
-/// describes the document, and which texels a canvas distance spans is the view's
-/// fact, known only where the uniform is written.
-fn chromatic_disp(f: &FilterDraw, view: ViewTransform) -> [f32; 2] {
-    if f.kind != stark_shaders::mirror::filter_common::FILTER_CHROMATIC {
-        return [0.0; 2];
-    }
-    let (spread, angle) = (f.params[0], f.params[1]);
-    let d = view.linear() * crate::geom::Vec2::new(angle.cos(), angle.sin()) * spread;
-    [d.x, d.y]
 }
 
 /// A viewport-sized offscreen render target, as pass A and the blend pass use.

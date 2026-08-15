@@ -384,64 +384,6 @@ impl CompositeGroup {
     fn is_free(&self) -> bool {
         self.params.is_free()
     }
-
-    /// Append every drawable in this group to `out`, in composite order — the flat
-    /// streams pass A uploads (the draw loop walks the tree, but the instance buffers
-    /// do not need to).
-    ///
-    /// Appends rather than returning a `Vec`, because the caller is
-    /// `prepare_composite` and it walks *every* group of *every* frame: a `Vec` each
-    /// was one allocation per group per render, on the same path the per-tile bind
-    /// groups were removed from (§1).
-    pub(super) fn items_into<'a>(&'a self, out: &mut Vec<&'a CompositeItem>) {
-        match &self.content {
-            GroupContent::Run(items) => out.extend(items.iter()),
-            GroupContent::Stack(members) => members.iter().for_each(|m| m.items_into(out)),
-            // Nothing to instance: a filter draws one fullscreen triangle off its
-            // uniform slot, with no per-item stream behind it.
-            GroupContent::Filter(_) => {}
-        }
-    }
-}
-
-/// What scratch compositing `members` as one stack takes, one entry per level the
-/// encoding recursion actually reaches: `needs[l]` says whether level `l` isolates
-/// anything — a merge composites its group alone into the level's `iso` — or only
-/// ping-pongs, which is all a **filter** does (§21.3) and costs the level its
-/// `swap` pair alone. Empty when every member draws straight into the accumulator,
-/// which is the common document and allocates nothing.
-///
-/// A stack consumes a level exactly when it holds a non-direct member — the same
-/// test `encode_stack` makes — so the entries here line up one-for-one with the
-/// levels the encoder will ask for, and a nested stack whose members all draw
-/// directly consumes none.
-pub(super) fn scratch_needs(members: &[CompositeGroup]) -> Vec<bool> {
-    fn walk(members: &[CompositeGroup], level: usize, needs: &mut Vec<bool>) {
-        if members.iter().all(|m| m.as_direct_run().is_some()) {
-            return;
-        }
-        if needs.len() <= level {
-            needs.resize(level + 1, false);
-        }
-        for m in members {
-            if m.as_direct_run().is_some() {
-                continue;
-            }
-            match &m.content {
-                // A filter reads the accumulator and writes the other half of the
-                // ping-pong: swap only, never iso.
-                GroupContent::Filter(_) => {}
-                GroupContent::Run(_) => needs[level] = true,
-                GroupContent::Stack(inner) => {
-                    needs[level] = true;
-                    walk(inner, level + 1, needs);
-                }
-            }
-        }
-    }
-    let mut needs = Vec::new();
-    walk(members, 0, &mut needs);
-    needs
 }
 
 #[cfg(test)]
@@ -463,17 +405,26 @@ mod tests {
         })
     }
 
-    /// The opacity of every drawable in a group, in order.
+    /// The opacity of every drawable in a group, in composite order.
+    ///
+    /// A test-local walk. It used to be an `items_into` on [`CompositeGroup`] that
+    /// the render path also called — one of the four traversals of this tree that had
+    /// to agree with each other, and the only one that survives here now is the
+    /// plan's (`composite::plan`).
     fn opacities(group: &CompositeGroup) -> Vec<f32> {
-        let mut items = Vec::new();
-        group.items_into(&mut items);
-        items
-            .iter()
-            .map(|i| match i {
-                CompositeItem::Matte(m) => m.opacity,
-                CompositeItem::Tile { opacity, .. } => *opacity,
-            })
-            .collect()
+        match &group.content {
+            GroupContent::Run(items) => items
+                .iter()
+                .map(|i| match i {
+                    CompositeItem::Matte(m) => m.opacity,
+                    CompositeItem::Tile { opacity, .. } => *opacity,
+                })
+                .collect(),
+            GroupContent::Stack(members) => members.iter().flat_map(opacities).collect(),
+            // Nothing to draw: a filter is one fullscreen triangle off its uniform
+            // slot, with no per-item stream behind it.
+            GroupContent::Filter(_) => Vec::new(),
+        }
     }
 
     fn faded(opacity: f32) -> CompositeParams {
