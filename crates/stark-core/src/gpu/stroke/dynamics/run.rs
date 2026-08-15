@@ -124,9 +124,14 @@ impl StrokeRenderer {
         // is no reservoir worth keeping. A range that stops short hands its tool on
         // instead, so nothing is stranded for the settle to hand back, and a live tail
         // computes the same settle its commit will.
-        let pieces = chunk_segments(&segments, &fires);
-        let last = pieces.len() - 1;
-        for (i, piece) in pieces.into_iter().enumerate() {
+        // Asked of the iterator rather than counted against `len() - 1`, which
+        // underflowed on an empty cut. That cut cannot be empty — `chunk_segments`
+        // pushes a run whenever it is given a segment, and the empty range returned
+        // above — but the proof was two functions away from the subtraction relying on
+        // it, and "is there another piece after this one" is the question anyway.
+        let mut pieces = chunk_segments(&segments, &fires).into_iter().peekable();
+        while let Some(piece) = pieces.next() {
+            let is_last = pieces.peek().is_none();
             // This piece's firings, re-keyed to its slice: `after` indexes `segments`,
             // and the piece's plan walks its own slice. The order — what
             // `dynamics_plan` asserts — survives a slice-and-shift untouched.
@@ -136,7 +141,7 @@ impl StrokeRenderer {
                 .iter()
                 .map(|(after, w)| (after - piece.start, *w))
                 .collect();
-            map = run.draw(&map, &segments[piece], &piece_fires, !capture && i == last);
+            map = run.draw(&map, &segments[piece], &piece_fires, !capture && is_last);
         }
         let tool_out = capture.then(|| run.capture_tool());
         // The pieces partition the segments, so the union of what each one enumerated
@@ -436,6 +441,29 @@ impl<'a> DynamicsRun<'a> {
         // The run's dirty set is the union of the pieces', which is why no caller has
         // to enumerate the whole range's tiles a second time.
         self.dirty.extend(coords.iter().copied());
+        // **Hold the map this piece is about to read.** The composite below samples
+        // `base`'s tiles into the piece's encoder, and the caller replaces its `map`
+        // with what this call returns — dropping, at that assignment, every tile handle
+        // the new map superseded. A `TilePairHandle`'s drop *is* its release to
+        // `TilePool`'s free list (`gpu::tile::GpuTex::drop`), so those textures become
+        // available to the next `acquire_tex` while the commands reading them are still
+        // only recorded. `PoolInner::trim` guards the irreversible half of that — it
+        // will not *destroy* a slot returned during the current epoch — but reuse is
+        // unguarded by construction, and reuse is enough: the next acquire renders over
+        // a texture this encoder is still compositing from.
+        //
+        // Consecutive pieces share the tiles around their cut, because `affected_tiles`
+        // grows every segment's box by an apron — so this is the ordinary case for any
+        // stroke long enough to be chunked, not a corner.
+        //
+        // It has never fired, and the reason was not a rule: the next statement the run
+        // executes is the following piece's `flush`, and nothing acquires in between.
+        // Holding the map moves that from an accident of statement order to the same
+        // footing everything else here stands on — the scope releases it in the call
+        // that submits the commands naming it, exactly as `render_swept` holds its
+        // scratch pair across the identical boundary. The clone is an `rpds` map of
+        // `Arc` handles: a refcount per tile, no pixels (§5.2).
+        self.scope.hold(base.clone());
         let region = self.composite_region(base, &halo, region_origin, w, h);
 
         // The snapshot scratch is sized over the firings as well as the segments: a

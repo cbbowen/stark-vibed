@@ -61,13 +61,19 @@ pub struct StrokeCarry {
     /// range with no geometry leaves the brush as it found it — so a caller holding
     /// earlier state should keep it rather than treat this as a reset.
     pub tool: Option<ToolState>,
-    /// The tiles this range rewrote — everything in the returned map that differs
-    /// from `scene.base`.
+    /// The tiles this range rewrote: every coordinate the returned map holds a fresh
+    /// handle at.
     ///
-    /// The renderer already enumerates these to decide what to draw
-    /// (`segments::affected_tiles`), and reporting them is what
-    /// lets several in-flight strokes be composited over one committed document
-    /// without diffing whole tile maps (§17.6).
+    /// A **superset** of the tiles whose pixels changed, deliberately. What the
+    /// renderer enumerates is where the stroke's geometry *reaches*
+    /// (`segments::affected_tiles`), and a tile at the very edge of that reach can
+    /// receive a fresh copy-on-write tile whose every fragment differenced its prefix-τ
+    /// taps to zero — bit-identical to the base, and still listed here. Narrowing it
+    /// would mean comparing pixels, which is the whole cost this field exists to avoid.
+    ///
+    /// Reporting them is what lets several in-flight strokes be composited over one
+    /// committed document without diffing whole tile maps (§17.6), and a superset costs
+    /// that a redundant composite rather than a wrong picture.
     pub dirty: Vec<TileCoord>,
 }
 

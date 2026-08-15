@@ -71,7 +71,8 @@ const UNIFORM_STRIDE: usize = 256;
 /// Take a lock whose only contents are a **cache or a free list**, poisoned or not.
 ///
 /// Every lock in this module guards derived state — a baked tip texture
-/// ([`tips`]), a pooled scratch list ([`dynamics`]'s `ScratchPool`) — whose values
+/// ([`tips`]), a pooled scratch list ([`dynamics`]'s `ScratchPool`), the seed of the
+/// last stroke complained about ([`StrokeRenderer::complained`]) — whose values
 /// are moved in whole after the work producing them has finished, so a panic while
 /// the lock is held cannot leave a torn value behind. All poisoning tells us is
 /// that some *other* thread panicked while it happened to be looking something up;
@@ -103,10 +104,11 @@ pub struct StrokeRenderer {
 
     /// What a brush resolves to, and the lazily-baked caches behind it (§6.6) — the
     /// prefix-τ volume both paths integrate against, the coverage mask the reservoir
-    /// weights by, and the color-dynamics field. **One of the two mutable things
-    /// here** (the other is [`scratch`](Self::scratch)), which is why it is a type of
-    /// its own rather than five fields: the sentence above about immutable objects is
-    /// then true of everything else without qualification.
+    /// weights by, and the color-dynamics field. **One of the three mutable things
+    /// here** (the others are [`scratch`](Self::scratch) and
+    /// [`complained`](Self::complained)), which is why it is a type of its own rather
+    /// than five fields: the sentence above about immutable objects is then true of
+    /// everything else without qualification.
     tips: TipCache,
 
     /// The stamp loop's pooled working textures (§6.2): checked out per fold, handed
@@ -125,6 +127,19 @@ pub struct StrokeRenderer {
     /// pass, and the region gather the stamp loop reads. Color-space independent, so
     /// it is handed in rather than rebuilt with the rest of this renderer.
     selection: SelectionRenderer,
+
+    /// The seed of the last stroke this renderer said it could not draw
+    /// ([`StrokePath::TipTooLarge`]), so it says so once per stroke rather than once
+    /// per pointer move.
+    ///
+    /// The gate is re-asked on every render, and deliberately so — it is a pure
+    /// function of the brush, which is what lets a live tail and its commit agree for
+    /// free ([`dynamics_setup`]). But its *answer* is a property of the record, so
+    /// repeating it per frame turns one undrawable brush into an unbounded stream of
+    /// `error!` and buries whatever else the log was carrying. One seed is enough to
+    /// collapse that: a gesture renders one stroke at a time, so remembering the last
+    /// is remembering the one being drawn.
+    complained: Arc<std::sync::Mutex<Option<u64>>>,
 }
 
 /// Everything a stroke is drawn *against*, as opposed to the stroke itself.
@@ -176,6 +191,7 @@ impl StrokeRenderer {
             scratch: ScratchPool::default(),
             zeroes,
             selection,
+            complained: Arc::default(),
         }
     }
 
@@ -228,17 +244,39 @@ impl StrokeRenderer {
                 // do nothing. It is the one degradation left (stroke *length* is
                 // handled by drawing the stroke in pieces, §6.2), and no
                 // brush the UI can build reaches it, so hitting it means a record came
-                // from somewhere else and is not being honoured. It repeats per
-                // pointer move, because the gate is re-asked per render.
-                tracing::error!(
-                    radius = rec.brush.radius,
-                    max_region_dim = MAX_REGION_DIM,
-                    "brush tip too large for one dynamics region: falling back to the \
-                     swept deposit, so this stroke's lift/deposit/charge do nothing",
-                );
+                // from somewhere else and is not being honoured.
+                //
+                // Said once per stroke, not once per render: the gate is a pure
+                // function of the brush and so answers the same way every pointer move
+                // ([`complained`](Self::complained)).
+                if self.complain_once(rec.seed) {
+                    tracing::error!(
+                        radius = rec.brush.radius,
+                        max_region_dim = MAX_REGION_DIM,
+                        "brush tip too large for one dynamics region: falling back to \
+                         the swept deposit, so this stroke's lift/deposit/charge do \
+                         nothing",
+                    );
+                }
                 self.render_swept(scene, rec, spans, plan.tol)
             }
         }
+    }
+
+    /// Whether this is the first render of stroke `seed` to find something worth
+    /// complaining about — see [`complained`](Self::complained).
+    ///
+    /// Deliberately not a set: a gesture draws one stroke at a time, so the last seed
+    /// is the one being drawn, and a replay that alternates between two undrawable
+    /// records is welcome to say so twice. What this rules out is the unbounded case,
+    /// which is one stroke shouting on every pointer move.
+    fn complain_once(&self, seed: u64) -> bool {
+        let mut last = unpoisoned(self.complained.lock());
+        if *last == Some(seed) {
+            return false;
+        }
+        *last = Some(seed);
+        true
     }
 
     /// Acquire a persistent tile: the color space's `color` + `aux` formats, paired.
