@@ -446,6 +446,12 @@ impl Engine {
     /// let readback = { engine.write().export(&mut own, frame, scale, bg, content)? }; // borrow ends
     /// let image = readback.await;
     /// ```
+    /// **This is [`export_view`](Self::export_view) through the plan's own view**,
+    /// which is the whole of what "export a frame" adds: [`ExportPlan::view`] already
+    /// exists so that the two things which render a planned rect derive it in one
+    /// place, and having said that, exporting one is not a second render path. The
+    /// tail — render off-screen, hand back a future that owns what it reads — was
+    /// written out twice, down to the borrow bargain the doc comment above explains.
     pub fn export(
         &mut self,
         into: &mut Offscreen,
@@ -454,19 +460,11 @@ impl Engine {
         background: Background,
         content: Rendered,
     ) -> Result<impl std::future::Future<Output = RgbaImage> + use<>> {
+        // Ahead of the render, so a frame too small or too large to export is
+        // refused before anything is drawn — and with the message that names the
+        // *frame*, since `export_view`'s checks are then satisfied by construction.
         let plan = self.export_plan(frame, scale)?;
-        let view = plan.view();
-        // No chrome: a selection outline or any other on-canvas affordance is a
-        // thing to draw *with*, never a thing to ship.
-        let (target, size) = self.render_offscreen(into, view, background, Chrome::Hidden, content);
-        let gpu = self.gpu.clone();
-        // Captured, not read through `self`: the future deliberately does not
-        // borrow the engine.
-        let format = self.target_format;
-        Ok(async move {
-            let pixels = crate::gpu::readback::read_rgba8(&gpu, &target, size).await;
-            RgbaImage::from_target_bytes(size.width, size.height, pixels, format)
-        })
+        self.export_view(into, plan.view(), background, content)
     }
 
     /// Render through an **explicit** view to a CPU-side image —
@@ -505,7 +503,11 @@ impl Engine {
                 size.width, size.height
             )));
         }
+        // No chrome: a selection outline or any other on-canvas affordance is a
+        // thing to draw *with*, never a thing to ship.
         let (target, size) = self.render_offscreen(into, view, background, Chrome::Hidden, content);
+        // Captured, not read through `self`: the future deliberately does not
+        // borrow the engine.
         let gpu = self.gpu.clone();
         let format = self.target_format;
         Ok(async move {

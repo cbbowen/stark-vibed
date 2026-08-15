@@ -198,7 +198,14 @@ impl MatteInfo {
 
 /// A cheap, UI-facing projection of engine state (§7). Published to
 /// the frontend so it can render chrome reactively without touching pixels.
-#[derive(Clone, Debug)]
+///
+/// `PartialEq` because "reactively" is the whole point: a frontend holding this in
+/// a signal marks every subscriber dirty when it publishes, and a projection that
+/// cannot be compared leaves it no way to notice that the answer did not move. Every
+/// field was already comparable but the two view settings, both plain data
+/// ([`ViewTransform`], [`MediaParams`](crate::gpu::MediaParams)), so this costs
+/// nothing but the derive.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ObservableState {
     pub can_undo: bool,
     pub can_redo: bool,

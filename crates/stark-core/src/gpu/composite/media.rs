@@ -19,7 +19,7 @@ pub(super) use stark_shaders::mirror::media_common::Media as MediaUniform;
 /// image-based lighting from an [`Environment`]; this is a single place to tune the
 /// look. A view setting — never historized (it changes how the canvas looks, not
 /// its pixels).
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct MediaParams {
     /// Relief slope: how strongly the height field tilts normals (impasto/weave).
     pub height_strength: f32,

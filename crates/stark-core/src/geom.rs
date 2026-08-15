@@ -250,7 +250,7 @@ impl Extent2 {
 /// the same kind of act as panning: per-client, never logged, never sent, and
 /// invisible to replay (§18.1.2). Two people sharing a drawing can
 /// have it at different angles.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ViewTransform {
     /// Canvas-space point shown at the center of the viewport.
     pub center: Vec2,
