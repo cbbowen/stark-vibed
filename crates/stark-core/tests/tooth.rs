@@ -633,7 +633,7 @@ fn the_bearing_fraction_tracks_the_ground() {
     assert_eq!(flat, 1.0, "a smooth ground is full contact at any tooth");
 
     let ground = gesso(&mut engine);
-    let mut at = |t| engine.surface_bearing(ground, t, east);
+    let at = |t| engine.surface_bearing(ground, t, east);
     assert_eq!(at(0.0), 1.0, "no tooth is full contact, exactly");
     let (a, b, c) = (at(0.25), at(0.5), at(0.75));
     assert!(

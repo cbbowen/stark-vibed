@@ -129,6 +129,7 @@ stark/
 │           ├── presets.rs      # named brush presets (localStorage)
 │           ├── builtins.rs     # the built-in shape table
 │           ├── brush_editor.rs # the brush dialog + its preview engine
+│           ├── thumbs.rs       # rendered preset thumbnails (a shared engine)
 │           └── collab.rs       # session lifecycle glue
 └── vendor/                     # third-party, EXCLUDED from the workspace
     ├── mixbox/                 # pigment mixing (submodule, CC BY-NC)

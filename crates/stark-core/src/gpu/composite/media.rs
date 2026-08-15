@@ -45,12 +45,16 @@ impl Default for MediaParams {
     }
 }
 
-/// The media pass, plus the parameters it is currently tuned to.
+/// The media pass. The parameters it is tuned to live on the
+/// [`CompositorPipeline`](super::CompositorPipeline) beside the other view
+/// settings, not here: the pass is part of the shareable pipeline kit, and two
+/// engines sharing one set of pipelines are still free to light their canvases
+/// differently — the uniform is written from the owner's parameters on every
+/// render, before the submit that reads it.
 pub(super) struct MediaPass {
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) bgl: wgpu::BindGroupLayout,
     pub(super) buf: wgpu::Buffer,
-    pub(super) params: MediaParams,
 }
 
 impl MediaPass {
@@ -95,12 +99,7 @@ impl MediaPass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        Self {
-            pipeline,
-            bgl,
-            buf,
-            params: MediaParams::default(),
-        }
+        Self { pipeline, bgl, buf }
     }
 }
 

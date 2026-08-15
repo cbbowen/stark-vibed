@@ -359,19 +359,38 @@ which the engine draws into directly. DOM chrome surrounds it.
     in a signal, the `putImageData` helper, and the imperative repaint that had
     to re-run whenever the element remounted.
 - **Compositing splits along "does it depend on the target?"**, so a second view
-  costs only its own attachments. `CompositorPipeline` holds pipelines, layouts,
-  the pigment LUT and the view settings the media pass reads; a `Compositor`
-  holds one target's offscreen attachments, blend scratch and instance streams.
+  costs only its own attachments — and again along **"does it ever change?"**, so
+  a second *engine* costs only its own view settings. `CompositorPipeline` holds
+  the view settings the media pass reads over an `Arc` of `CompositorPasses` —
+  the pipelines, layouts and pigment LUT, immutable once built and therefore
+  shareable across engines (`Engine::new_sharing`); a `Compositor` holds one
+  target's offscreen attachments, blend scratch and instance streams.
   The surface keeps one across frames; anything rendered beside it brings its own
   through an `Offscreen` slot, so an off-screen render never resizes the screen's
   attachments out from under it. Whether a slot outlives its call is the
   *caller's* to state, because only the caller knows whether the render repeats:
   the navigator holds one for the app's life, while a file export uses a local
   one so a 4× export of a large frame does not park its several-hundred-megabyte
-  pair for the session. View settings stay single-owned behind a process-wide
+  pair for the session. View settings stay per-pipeline behind a process-wide
   generation stamp, so a swapped weave or light — or a whole rebuilt pipeline, as
   a color-space change makes — reaches every consumer by being *noticed* rather
   than by a notification a new consumer could be left out of.
+- **A preview engine is a sibling, not a second boot.** The brush editor's test
+  canvas and the preset thumbnails each want an isolated document that renders
+  *exactly* as the main canvas would — which is an argument for sharing the
+  machinery, not merely an economy. `Engine::new_sharing` builds one around a
+  fresh document, sharing everything expensive and un-disagreeable: the compiled
+  pipelines (immutable), the content-addressed brush assets and the ground /
+  environment byte-and-build caches (a `Registry`'s store is `Arc`-shared while
+  each sibling keeps its own *current* id), and the tile pool (an allocator).
+  What an engine can set stays its own. So the editor's preview
+  (`Renderer::shared`) opens on the canvas's ground under its lighting with
+  nothing fetched and nothing decoded, and the thumbnails' engine
+  (`Renderer::shared_engine`, `thumbs.rs`) deliberately pins the opposite look —
+  flat ground, neutral light — so a thumbnail is the *brush's* identity card and
+  its cache key is the brush snapshot alone. Each preset row's stroke is two
+  replays and one small `Engine::export_view` readback on that one kept engine,
+  generated in the background and cached per session.
 - **Settings are one dialog, not a control tucked into whichever panel it came
   from.** Panels hold what you are painting *with* and change constantly
   mid-stroke; document dialogs hold what the drawing *is*. A standing per-client

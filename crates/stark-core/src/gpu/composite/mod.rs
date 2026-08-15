@@ -142,22 +142,24 @@ pub struct CompositeScene<'a> {
     pub guides: &'a [crate::guides::GuideScene],
 }
 
-/// Everything about compositing that does not depend on *what is being drawn into*:
-/// the passes and their layouts, the uniform buffers whose identity never changes,
-/// and the view settings the media pass reads.
+/// The pipelines themselves — the six passes, their layouts, the uniform buffers
+/// whose identity never changes, and the channel formats they were built for.
 ///
-/// Split from [`Compositor`] so several of them can share one of these. Each renders
-/// into a target of its own size and therefore keeps its own attachments; what they
-/// must *not* keep their own of is anything on this side of the line — the pipelines
-/// because they are expensive (six passes, plus a decoded Mixbox LUT), and the view
-/// settings because two consumers disagreeing about the canvas weave or the lighting
-/// would be a bug that shows only in the smaller picture.
+/// Split from [`CompositorPipeline`] along a second line: does it ever *change*?
+/// Nothing here does, which is what lets a second engine on the same device share
+/// one of these by `Arc` ([`Engine::new_sharing`]) instead of compiling seven
+/// shaders and eight pipelines of its own — while each engine keeps its own view
+/// settings, since the brush editor's preview mirrors the canvas's look and a
+/// preset thumbnail deliberately does not.
 ///
-/// Not immutable: the view settings change. It is immutable *during a render*, which
-/// is what lets every consumer hold it by shared reference. The uniform buffers are
-/// written through the queue rather than through `&mut`, and renders are sequential
-/// on one queue, so those writes stay ordered with the submits that read them.
-pub struct CompositorPipeline {
+/// The uniform buffers (`view`, the media pass's) are shared too, and that is
+/// sound for the reason the doc below gives for settings during a render: they are
+/// written through the queue at the top of every render, before the submit that
+/// reads them, and submits on one queue execute in order — so each render reads
+/// the values it wrote, whichever engine's render it is.
+///
+/// [`Engine::new_sharing`]: crate::Engine::new_sharing
+pub struct CompositorPasses {
     ctx: GpuContext,
 
     /// The canvas → NDC mapping passes A and C share.
@@ -183,7 +185,31 @@ pub struct CompositorPipeline {
     resid_format: Option<wgpu::TextureFormat>,
     /// What passes B–D write, and therefore what the supersampled target carries.
     target_format: wgpu::TextureFormat,
+}
 
+/// Everything about compositing that does not depend on *what is being drawn into*:
+/// the passes ([`CompositorPasses`], reached through `Deref`) and the view settings
+/// the media pass reads.
+///
+/// Split from [`Compositor`] so several of them can share one of these. Each renders
+/// into a target of its own size and therefore keeps its own attachments; what they
+/// must *not* keep their own of is anything on this side of the line — the pipelines
+/// because they are expensive (six passes, plus a decoded Mixbox LUT), and the view
+/// settings because two consumers disagreeing about the canvas weave or the lighting
+/// would be a bug that shows only in the smaller picture.
+///
+/// Not immutable: the view settings change. It is immutable *during a render*, which
+/// is what lets every consumer hold it by shared reference. The uniform buffers are
+/// written through the queue rather than through `&mut`, and renders are sequential
+/// on one queue, so those writes stay ordered with the submits that read them.
+pub struct CompositorPipeline {
+    /// The pipelines, shared: this engine's alone after [`Self::new`], a sibling
+    /// engine's too after [`Self::sharing`].
+    passes: Arc<CompositorPasses>,
+
+    /// Lighting parameters for the media pass (§6.3) — a view setting like the two
+    /// below, written into the (shared) media uniform on every render.
+    media_params: MediaParams,
     // The canvas surface (bump) sampled by the media pass for relief.
     surface: Surface,
     // The HDR lighting environment sampled by the media pass (§6.3).
@@ -294,6 +320,18 @@ impl Offscreen {
     }
 }
 
+// The passes are what almost every read wants — `p.tiles`, `p.ctx`, `p.resolve` —
+// and they moved wholesale into [`CompositorPasses`]. `Deref` keeps those reads
+// spelled as they were, so the split shows up only where it means something: the
+// three view settings, which stayed behind.
+impl std::ops::Deref for CompositorPipeline {
+    type Target = CompositorPasses;
+
+    fn deref(&self) -> &CompositorPasses {
+        &self.passes
+    }
+}
+
 impl CompositorPipeline {
     pub(crate) fn new(
         ctx: &GpuContext,
@@ -311,7 +349,7 @@ impl CompositorPipeline {
         let screen = [desc::target(target_format)];
 
         let view = View::new(device);
-        Self {
+        let passes = CompositorPasses {
             tiles: TilePass::new(device, &view, color_space, color_format, aux_format),
             blend,
             filter: FilterPass::new(ctx, color_space, color_format, aux_format),
@@ -325,20 +363,52 @@ impl CompositorPipeline {
             aux_format,
             resid_format,
             target_format,
+        };
+        Self::sharing(
+            Arc::new(passes),
+            surface,
+            environment,
+            MediaParams::default(),
+        )
+    }
+
+    /// A pipeline over **already-built** passes — the whole of what a sibling engine
+    /// pays for its compositor ([`Engine::new_sharing`]): no shader compiles, no
+    /// pipeline creation, just its own copy of the three view settings.
+    ///
+    /// The settings are the caller's to seed because the two consumers want opposite
+    /// things: the brush editor's preview opens mirroring the canvas's current look,
+    /// a preset thumbnail pins the fixed look its cache key assumes.
+    ///
+    /// [`Engine::new_sharing`]: crate::Engine::new_sharing
+    pub(crate) fn sharing(
+        passes: Arc<CompositorPasses>,
+        surface: Surface,
+        environment: Environment,
+        media_params: MediaParams,
+    ) -> Self {
+        Self {
+            passes,
+            media_params,
             surface,
             environment,
             generation: next_generation(),
         }
     }
 
+    /// The shared pipeline kit, for building a sibling engine's pipeline over it.
+    pub(crate) fn passes(&self) -> Arc<CompositorPasses> {
+        Arc::clone(&self.passes)
+    }
+
     /// The current media/lighting parameters (§6.3).
     pub fn media(&self) -> MediaParams {
-        self.media.params
+        self.media_params
     }
 
     /// Adjust the media/lighting parameters (§6.3).
     pub fn set_media(&mut self, media: MediaParams) {
-        self.media.params = media;
+        self.media_params = media;
     }
 
     /// Swap the canvas surface (bump) so the next render shades against it
@@ -1124,7 +1194,7 @@ impl Compositor {
         let exposure = p.environment.exposure / p.environment.flat_irradiance;
 
         // Media uniform.
-        let m = p.media.params;
+        let m = p.media_params;
         p.ctx.queue.write_buffer(
             &p.media.buf,
             0,

@@ -15,8 +15,8 @@ use stark_core::command::ViewCommand;
 use stark_core::document::Tool;
 use stark_core::geom::Extent2;
 use stark_core::{
-    ColorSpaceId, Engine, EnvironmentId, GpuContext, InputCommand, InputSample, MediaParams,
-    ObservableState, SurfaceId, ViewTransform,
+    ColorSpaceId, Engine, EnvironmentId, GpuContext, InputCommand, InputSample, ObservableState,
+    SurfaceId, ViewTransform,
 };
 use wasm_bindgen::JsCast;
 
@@ -85,8 +85,9 @@ pub struct Renderer {
 /// and the imperative repaint that had to be re-run whenever the element remounted.
 ///
 /// One document, two surfaces, on one device: exactly what the brush editor's preview
-/// canvas already does ([`init_shared`]), except that this one shares the *engine*
-/// too, so it is a second view of the real painting rather than a second painting.
+/// canvas already does ([`Renderer::shared`]), except that this one shares the
+/// *engine* too, so it is a second view of the real painting rather than a second
+/// painting.
 struct Overview {
     /// Kept so the drawing buffer can be resized with the surface: the miniature's
     /// pixel size follows the piece's aspect, not the window's.
@@ -262,11 +263,6 @@ impl Renderer {
             .map(|(_, id)| *id)
     }
 
-    /// The current lighting environment (§6.3).
-    pub fn environment(&self) -> EnvironmentId {
-        self.engine.environment()
-    }
-
     /// Whether an environment's bytes are loaded (the procedural `Neutral` always is).
     pub fn environment_loaded(&self, id: EnvironmentId) -> bool {
         self.engine.environment_loaded(id)
@@ -275,18 +271,6 @@ impl Renderer {
     /// Register frontend-fetched HDR bytes for a lighting environment (§6.3).
     pub fn register_environment(&mut self, id: EnvironmentId, hdr_bytes: Vec<u8>) {
         self.engine.register_environment(id, hdr_bytes);
-    }
-
-    /// The current media/lighting parameters (so a second renderer — the brush
-    /// editor's preview — can mirror the main canvas's look).
-    pub fn media_params(&self) -> MediaParams {
-        self.engine.observe().media
-    }
-
-    /// The shared GPU handles (cheap `Arc` clones), so a second renderer can be
-    /// built on the same device via [`init_shared`].
-    pub fn gpu(&self) -> GpuContext {
-        self.engine.gpu().clone()
     }
 
     /// The surface's current size in CSS pixels.
@@ -595,11 +579,6 @@ impl Renderer {
         self.engine.asset_bytes(id)
     }
 
-    /// Whether a brush asset is loaded in this engine.
-    pub fn has_asset(&self, id: stark_core::AssetId) -> bool {
-        self.engine.has_asset(id)
-    }
-
     /// Every imported brush asset, to seed a session's asset mirror.
     pub fn all_asset_bytes(&self) -> Vec<(stark_core::AssetId, Vec<u8>)> {
         self.engine.all_asset_bytes()
@@ -780,21 +759,77 @@ pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
     finish_init(canvas, surface, gpu).await
 }
 
-/// Build a second [`Renderer`] on the app's **existing** GPU device: a new
-/// surface bound to `canvas` plus its own `Engine` (its own document), sharing
-/// `gpu`'s instance/device/queue. Used by the brush editor's preview canvas —
-/// cheap (no adapter/device request), and the preview document stays fully
-/// isolated from the real one.
-pub async fn init_shared(canvas: web_sys::HtmlCanvasElement, gpu: GpuContext) -> Renderer {
-    let surface: wgpu::Surface<'static> = gpu
-        .instance
-        .create_surface(canvas_target(canvas.clone()))
-        .expect("create preview canvas surface");
-    finish_init(canvas, surface, gpu).await
+impl Renderer {
+    /// Build a second [`Renderer`] on this one's device: a new surface bound to
+    /// `canvas` plus an engine of its own that **shares** this engine's expensive
+    /// state — every compiled pipeline, the imported brush shapes, and the decoded
+    /// ground and environment caches (`Engine::new_sharing`). The preview document
+    /// stays fully isolated from the real one; it opens on this document's ground,
+    /// under this canvas's lighting and media parameters, so a stroke on it reads
+    /// exactly as it would here — with nothing re-fetched and nothing re-decoded.
+    ///
+    /// Synchronous, and callable only once this renderer exists — which is also the
+    /// only time it makes sense: a preview is a preview *of* this canvas. The caller
+    /// should await a layout frame ([`next_frame`]) before this, so the canvas
+    /// measures as laid out rather than at its 300×150 intrinsic size; the measure
+    /// here is still only a seed, corrected by [`Renderer::sync_to_canvas`] before
+    /// anything is placed against it.
+    ///
+    /// Configured to this engine's own target format rather than a format picked
+    /// from the new surface's capabilities, exactly as
+    /// [`attach_overview`](Self::attach_overview) is and for the same reason: the
+    /// shared pipelines are built for one format, and a second surface that chose
+    /// differently would fail validation rather than merely look wrong.
+    pub fn shared(&self, canvas: web_sys::HtmlCanvasElement) -> Renderer {
+        let (width, height) = canvas_size(&canvas);
+        canvas.set_width(width);
+        canvas.set_height(height);
+        let gpu = self.engine.gpu();
+        let surface: wgpu::Surface<'static> = gpu
+            .instance
+            .create_surface(canvas_target(canvas.clone()))
+            .expect("create preview canvas surface");
+        let caps = surface.get_capabilities(&gpu.adapter);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: self.engine.target_format(),
+            width,
+            height,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+            color_space: wgpu::SurfaceColorSpace::default(),
+        };
+        surface.configure(&gpu.device, &config);
+        let engine = Engine::new_sharing(&self.engine, Extent2::new(width, height));
+        Renderer {
+            canvas,
+            surface,
+            config,
+            engine,
+            // The name → id indexes ride along: the ids are content-addressed and
+            // the assets behind them are shared, so the donor's answers are this
+            // engine's answers.
+            builtins: self.builtins.clone(),
+            grounds: self.grounds.clone(),
+            overview: None,
+            frames_in_flight: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// A second engine sharing this one's GPU state, with no surface of its own —
+    /// for offscreen work: the preset thumbnails render through one
+    /// (`crate::thumbs`), reading back over `Engine::export_view` instead of
+    /// presenting.
+    pub fn shared_engine(&self, viewport: Extent2) -> Engine {
+        Engine::new_sharing(&self.engine, viewport)
+    }
 }
 
-/// Shared tail of [`init`]/[`init_shared`]: size the drawing buffer, pick the
-/// surface format, configure, and build the engine.
+/// Tail of [`init`]: size the drawing buffer, pick the surface format, configure,
+/// and build the engine. (A *second* renderer never comes through here — it is built
+/// synchronously by [`Renderer::shared`], on the first engine's format and state.)
 async fn finish_init(
     canvas: web_sys::HtmlCanvasElement,
     surface: wgpu::Surface<'static>,

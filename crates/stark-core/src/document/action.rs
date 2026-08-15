@@ -423,9 +423,8 @@ impl ApplyCtx {
     /// the caller then borrows other fields of `self` to build the scene around it.
     ///
     /// [`Registry::get`]: crate::gpu::registry::Registry::get
-    pub fn surface(&mut self, id: SurfaceId) -> crate::gpu::surface::Surface {
-        let gpu = self.gpu.clone();
-        self.surfaces.get(&gpu, id).clone()
+    pub fn surface(&self, id: SurfaceId) -> crate::gpu::surface::Surface {
+        self.surfaces.get(&self.gpu, id)
     }
 }
 

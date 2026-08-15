@@ -339,7 +339,7 @@ impl Engine {
     /// The canonical PNG bytes of a loaded image ground — what a save file bundles
     /// and what a live session serves to a joining peer (§8, §12.4).
     pub fn surface_bytes(&self, id: SurfaceId) -> Option<Vec<u8>> {
-        self.apply.surfaces.bytes(id).map(|b| b.to_vec())
+        self.apply.surfaces.bytes(id)
     }
 
     /// What share of a ground a tip with this `tooth`, travelling along `dir`, stands
@@ -353,11 +353,10 @@ impl Engine {
     /// *along the travel*, which makes the curve a property of the weave and the
     /// direction crossing it together. Builds the surface if this is the first time
     /// it has been asked for.
-    pub fn surface_bearing(&mut self, id: SurfaceId, tooth: f32, dir: crate::geom::Vec2) -> f32 {
-        let gpu = self.gpu.clone();
+    pub fn surface_bearing(&self, id: SurfaceId, tooth: f32, dir: crate::geom::Vec2) -> f32 {
         self.apply
             .surfaces
-            .get(&gpu, id)
+            .get(&self.gpu, id)
             .bearing(tooth, dir.to_array())
     }
 
@@ -431,7 +430,7 @@ impl Engine {
     /// it. No pipeline or pool rebuild, no document reset.
     fn apply_surface(&mut self) {
         self.compositor_pipeline
-            .set_surface(self.apply.surfaces.current().clone());
+            .set_surface(self.apply.surfaces.current());
     }
 
     /// The current lighting environment (§6.3).
@@ -468,7 +467,7 @@ impl Engine {
     /// Rebind the current environment in the media pass.
     fn apply_environment(&mut self) {
         self.compositor_pipeline
-            .set_environment(self.environment.current().clone());
+            .set_environment(self.environment.current());
     }
 
     /// Rebuild the GPU subsystems (pool/stroke/compositor) for `id`. Assumes the
@@ -480,7 +479,8 @@ impl Engine {
         // Cloned out before the rebuild: the registry lives on `self.apply`, whose
         // fields are reassigned below, and a `Surface` is two reference-counted wgpu
         // handles.
-        let surface = self.apply.surfaces.current().clone();
+        let surface = self.apply.surfaces.current();
+        let environment = self.environment.current();
         let (pool, stroke, compositor_pipeline, compositor, transform, fill, merge) =
             build_gpu(GpuBuild {
                 gpu: &self.gpu,
@@ -488,7 +488,7 @@ impl Engine {
                 viewport: self.session.view.viewport,
                 cs: &cs,
                 surface: &surface,
-                environment: self.environment.current(),
+                environment: &environment,
                 selection: &self.apply.selection,
             });
         self.color_space = cs;

@@ -198,6 +198,9 @@ pub struct AppState {
     /// The brush preset library (`crate::presets`), loaded from `localStorage`
     /// at startup like the shape library.
     pub presets: Signal<Vec<crate::presets::PresetEntry>>,
+    /// Rendered preset thumbnails and the offscreen rig that generates them
+    /// (`crate::thumbs`).
+    pub thumbs: crate::thumbs::ThumbState,
     /// The gradient library and its trace mode (§22; `crate::gradients`),
     /// loaded from `localStorage` at startup like the libraries above.
     pub gradients: crate::gradients::GradientsState,
@@ -392,6 +395,11 @@ impl AppState {
                 notice: root_signal(|| None),
             },
             presets: root_signal(Vec::new),
+            thumbs: crate::thumbs::ThumbState {
+                cache: root_signal(std::collections::HashMap::new),
+                rig: root_signal(|| None),
+                busy: root_signal(|| false),
+            },
             gradients: crate::gradients::GradientsState {
                 entries: root_signal(Vec::new),
                 selected: root_signal(|| None),

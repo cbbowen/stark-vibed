@@ -814,6 +814,21 @@ hr {
   background: #3a6ea5;
 }
 
+/* The brush as a stroke (`crate::thumbs`): a fixed box so a row reads the same
+   whether its render has landed yet, drawn at 2× and scaled down here for
+   density. The image is the whole statement — no border chrome — over a recess
+   dark enough that the thumbnail's paper reads as an inset picture, not a hole
+   in the row. */
+.preset-thumb {
+  flex: none;
+  width: 60px;
+  height: 24px;
+  border-radius: 4px;
+  background-color: #26262c;
+  background-size: cover;
+  background-position: center;
+}
+
 .preset-row-name {
   flex: 1;
   min-width: 0;

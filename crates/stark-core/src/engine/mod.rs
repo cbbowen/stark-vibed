@@ -405,8 +405,8 @@ impl Engine {
                 target_format,
                 viewport,
                 cs: &color_space,
-                surface: surface.current(),
-                environment: environment.current(),
+                surface: &surface.current(),
+                environment: &environment.current(),
                 selection: &selection,
             });
         let assets = AssetStore::new(gpu.clone());
@@ -453,6 +453,86 @@ impl Engine {
         // where it parks the registry on the id so the ground actually renders.
         engine.apply_document_surface();
         Ok(engine)
+    }
+
+    /// A second engine on `donor`'s device, **sharing** everything expensive and
+    /// immutable — the compiled pipelines (stroke, compositing, selection,
+    /// transform, fill, merge, the blend pass and its pigment LUT), the tile
+    /// allocator, the content-addressed brush assets, and the decoded ground and
+    /// environment caches — around a fresh document of its own.
+    ///
+    /// This is what a *preview* engine is (§11): the brush editor's test canvas and
+    /// a preset thumbnail both paint strokes that must render exactly as the main
+    /// canvas would, which is an argument for sharing the machinery, not just an
+    /// economy. Building one used to mean recompiling ~19 shaders and ~30 pipelines
+    /// and re-decoding every image the app had already decoded once; now it is a
+    /// document, a compositor's attachments, and a fistful of `Arc` bumps.
+    ///
+    /// What is shared is exactly what cannot disagree: the shared pieces are either
+    /// immutable (pipelines), content-addressed (assets, the ground/environment
+    /// byte-and-build caches), or an allocator (the tile pool). Everything an engine
+    /// can *set* stays per-engine — the document, the session view, and the three
+    /// compositor view settings, which start mirroring the donor's current look
+    /// (ground, lighting, media parameters) and move independently from there.
+    ///
+    /// The document opens on the donor's current ground, so a preview needs no
+    /// `SetSurface` step — and no ground bytes handed across, which is the point.
+    ///
+    /// Divergence after construction is safe but not tracked: a
+    /// [`new_document`](Self::new_document) that changes *this* engine's color
+    /// space rebuilds it an unshared set (`rebuild_gpu_for`), and the donor doing
+    /// the same simply stops feeding the shared caches this engine keeps using.
+    pub fn new_sharing(donor: &Engine, viewport: Extent2) -> Self {
+        let gpu = donor.gpu.clone();
+        let initial_surface = donor.document().surface;
+        let timeline: Box<dyn Timeline> = Box::new(LinearTimeline::new(
+            DocState::with_layer(ROOT_LAYER).with_surface(initial_surface),
+        ));
+        let session = crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER);
+        let compositor_pipeline = CompositorPipeline::sharing(
+            donor.compositor_pipeline.passes(),
+            donor.apply.surfaces.current(),
+            donor.environment.current(),
+            donor.compositor_pipeline.media(),
+        );
+        let compositor = Compositor::new(&compositor_pipeline, viewport);
+        let mut engine = Self {
+            target_format: donor.target_format,
+            color_space: donor.color_space.clone(),
+            apply: ApplyCtx {
+                pool: donor.apply.pool.clone(),
+                stroke: donor.apply.stroke.clone(),
+                assets: donor.apply.assets.clone(),
+                selection: donor.apply.selection.clone(),
+                transform: donor.apply.transform.clone(),
+                fill: donor.apply.fill.clone(),
+                merge: donor.apply.merge.clone(),
+                gpu: gpu.clone(),
+                surfaces: donor.apply.surfaces.clone(),
+            },
+            gpu,
+            compositor,
+            compositor_pipeline,
+            initial_surface,
+            environment: donor.environment.clone(),
+            timeline,
+            session,
+            peers: Peers::new(),
+            now: 0.0,
+            preview: Default::default(),
+            doc_revision: 0,
+            debug_samples: Vec::new(),
+            actor: ActorId::SOLO,
+            clock: 0,
+            next_layer: 1,
+            outbox: Vec::new(),
+            outbox_enabled: false,
+        };
+        // Park the sibling registry on the document's ground — a no-op here, since
+        // both were just seeded from the donor's current one, but stated so this
+        // constructor upholds the invariant the same way `new_with_color_space` does.
+        engine.apply_document_surface();
+        engine
     }
 
     /// Apply one input command (§4).

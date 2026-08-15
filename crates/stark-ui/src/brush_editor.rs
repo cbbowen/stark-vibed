@@ -9,10 +9,11 @@
 //! anything that changes the dialog's height (a section folding, a window
 //! resize), which [`resize_preview`] follows.
 //!
-//! The preview is a second `Engine` on its **own document** but the **shared GPU
-//! device** ([`render::init_shared`]), mirroring the main canvas's surface,
-//! environment, lighting, and background so a stroke reads exactly like it will
-//! on the real canvas. One test stroke — a seeded default with a pressure bell
+//! The preview is a second `Engine` on its **own document**, built by **sharing
+//! the main engine's state** ([`Renderer::shared`]): same device, same compiled
+//! pipelines, same imported shapes, and it opens on the canvas's ground under its
+//! lighting — so a stroke reads exactly like it will on the real canvas, and the
+//! dialog opens without fetching or decoding anything. One test stroke — a seeded default with a pressure bell
 //! and a ramping forward tilt (so pressure/tilt-driven settings respond even
 //! with a mouse), or whatever the user last drew on the preview — is re-stroked
 //! (undo → set brush → replay → paint) as settings change. Slider edits are
@@ -829,56 +830,30 @@ fn More(open: Signal<bool>, children: Element) -> Element {
 
 // --- preview engine ---
 
-/// Build the preview renderer on the shared GPU device, mirror the main canvas's
-/// look (surface, environment, lighting, background), import the bundled stamp
-/// shapes (same content-addressed ids as the main engine's), seed the default test
-/// stroke, and paint it with the current brush.
+/// Build the preview renderer by **sharing** the main engine's state
+/// (`Renderer::shared`): pipelines, imported stamp shapes, the decoded ground and
+/// environment all arrive with it, and the document opens on the canvas's ground
+/// under its lighting — so there is nothing to fetch and nothing to mirror but the
+/// background, which is document state. Then seed the default test stroke and
+/// paint it with the current brush.
 async fn init_preview(state: AppState, mut preview: Preview) {
-    // Copy everything out of the main renderer before any await (no held borrows).
-    let Some((gpu, surface_id, surface_bytes, env_id, media, bg)) =
-        state.renderer.peek().as_ref().map(|r| {
-            let surface_id = r.surface();
-            (
-                r.gpu(),
-                surface_id,
-                r.surface_bytes(surface_id),
-                r.environment(),
-                r.media_params(),
-                r.observe().background,
-            )
+    // One layout frame, so the freshly-mounted column measures as styled rather
+    // than at the canvas's 300×150 intrinsic size. Still only a seed: the element
+    // is re-read below, right before anything is placed against it.
+    render::next_frame().await;
+    let built = {
+        let renderer = state.renderer.peek();
+        renderer.as_ref().map(|main| {
+            let mut r = main.shared(render::canvas_element(PREVIEW_CANVAS_ID));
+            r.process(DocCommand::SetBackground(main.observe().background));
+            r
         })
-    else {
-        return;
     };
+    let Some(mut r) = built else { return };
 
-    let mut r = render::init_shared(render::canvas_element(PREVIEW_CANVAS_ID), gpu).await;
-
-    // The asset bytes were all fetched at app startup, so these hit the browser
-    // cache; content-addressed ids make the imports line up with the main engine.
-    crate::builtins::import_all(&mut r).await;
-    // The preview paints on the same ground the canvas is on, so its tooth reads the
-    // same weave. Copied by *bytes*, not re-fetched by name: the main engine already
-    // holds the height map, and a ground is named by the hash of exactly those bytes
-    // — so handing them over is what makes the two engines agree on the id, whether
-    // the ground is a bundled one or came from a peer (§6.4).
-    if let Some(bytes) = surface_bytes {
-        r.accept_surface(surface_id, &bytes);
-    }
-    r.process(DocCommand::SetSurface(surface_id));
-    if let Some(asset) = crate::panels::lighting::environment_asset(env_id)
-        && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
-    {
-        r.register_environment(env_id, bytes);
-    }
-    r.process(ViewCommand::SetEnvironment(env_id));
-    r.process(ViewCommand::SetMediaParams(media));
-    r.process(DocCommand::SetBackground(bg));
-
-    // The column was laid out while the fetches above were in flight, and
-    // `resize_preview` could not act on any of it — the renderer signal it reads is
-    // set below. Re-read the element before anything is measured against it: both
-    // strokes are placed from `r.size()`, so a stale viewport would put them off the
-    // column as well as leaving the surface stretched (`Renderer::sync_to_canvas`).
+    // Re-read the element before anything is measured against it: both strokes are
+    // placed from `r.size()`, so a stale viewport would put them off the column as
+    // well as leaving the surface stretched (`Renderer::sync_to_canvas`).
     r.sync_to_canvas();
 
     // Lay the fixed red reference stroke: committed once, beneath the
@@ -975,31 +950,16 @@ fn restroke(state: AppState, mut preview: Preview) {
     let Some(mut brush) = state.obs.peek().as_ref().map(|o| o.brush) else {
         return;
     };
-    // A custom shape selected on the main engine may be missing from the
-    // preview engine (its store is per-document). Copy the canonical bytes
-    // over — content-addressing lines the ids up, the same trick the preview's
-    // built-in imports rely on.
-    let shape_bytes = match brush.shape {
-        BrushShape::Stamp(id) => state
-            .renderer
-            .peek()
-            .as_ref()
-            .and_then(|main| main.asset_bytes(id))
-            .map(|bytes| (id, bytes)),
-        BrushShape::Round { .. } => None,
-    };
     // Force the test stroke to the fixed preview blue so it reads over the red
     // reference stroke; the brush's own alpha (Opacity) is left untouched.
+    // A stamp shape needs no handing over: the preview engine shares the main
+    // engine's content-addressed asset store, so whatever the brush holds is
+    // already here.
     brush.color[..3].copy_from_slice(&PREVIEW_STROKE_COLOR);
     let samples = preview.samples.peek().clone();
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();
     let Some(r) = guard.as_mut() else { return };
-    if let Some((id, bytes)) = shape_bytes
-        && !r.has_asset(id)
-    {
-        r.import_brush(&bytes);
-    }
     if *preview.committed.peek() {
         r.process(DocCommand::Undo);
     }

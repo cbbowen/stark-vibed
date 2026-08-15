@@ -588,7 +588,7 @@ fn render_span_range(
             assets: &ctx.assets,
             base: tiles_base,
             selection: &selection,
-            surface,
+            surface: &surface,
         },
         rec,
         spans,

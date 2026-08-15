@@ -37,6 +37,7 @@ mod settings;
 mod shapes;
 mod slots;
 mod state;
+mod thumbs;
 mod widgets;
 
 use std::collections::HashSet;

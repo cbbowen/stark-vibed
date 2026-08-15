@@ -171,12 +171,22 @@ fn SlotRack() -> Element {
 /// at the moment of saving does not earn a permanent row, and the dialog can say what
 /// the field could not — that a familiar name will replace what is already there.
 ///
-/// Safe as a child component: nothing here spawns, so there is no task to die with a
-/// re-render (unlike the editor's slider rows — see `brush_editor::edit`).
+/// Safe as a child component: nothing here spawns **into this scope** — the
+/// thumbnail generator is `spawn_forever` over root-owned signals
+/// (`crate::thumbs`), so there is no task to die with a re-render (unlike the
+/// editor's slider rows — see `brush_editor::edit`).
 #[component]
 fn PresetSection() -> Element {
     let state = use_context::<AppState>();
     let entries = (state.presets)();
+    // Every row wants a rendered stroke beside its name. Generation needs the
+    // main renderer, so this effect watches both the library and the renderer
+    // signal: whichever lands last is the one that kicks it off.
+    use_effect(move || {
+        let _ = state.presets.read().len();
+        let _ = state.renderer.read().is_some();
+        crate::thumbs::refresh(state);
+    });
     // The whole tool, feel included (§6.11), so a row goes out when the
     // smoothing moves off its snapshot like it does for any other knob.
     let brush = presets::Wearable {
@@ -216,11 +226,22 @@ fn PresetSection() -> Element {
                         let apply_name = entry.name.clone();
                         let remove_name = entry.name.clone();
                         let active = presets::matches(&brush, &entry.brush);
+                        let thumb = crate::thumbs::url(state, &entry.brush);
                         rsx! {
                             div {
                                 key: "{entry.name}",
                                 class: if active { "preset-row active" } else { "preset-row" },
                                 onclick: move |_| presets::apply(state, &apply_name),
+                                // The brush as a stroke (`crate::thumbs`), before its
+                                // name: what a preset *is* reads faster as a mark than
+                                // as a word, and the words stay for telling apart what
+                                // the marks cannot. An empty div until its render
+                                // lands — the box keeps the row from reflowing.
+                                if let Some(url) = thumb.filter(|u| !u.is_empty()) {
+                                    div { class: "preset-thumb", style: "background-image: url({url});" }
+                                } else {
+                                    div { class: "preset-thumb" }
+                                }
                                 span { class: "preset-row-name", title: "{entry.name}", "{entry.name}" }
                                 if entry.builtin {
                                     // The app's own, and the row says so where the

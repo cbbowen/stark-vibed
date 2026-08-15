@@ -468,6 +468,51 @@ impl Engine {
         })
     }
 
+    /// Render through an **explicit** view to a CPU-side image —
+    /// [`export`](Self::export) with the framing chosen by the caller instead of
+    /// derived from the document.
+    ///
+    /// `export` answers "the piece, at a scale": its rect comes from a frame or the
+    /// painted bounds, tile-aligned in the fallback. A preset thumbnail asks the
+    /// question the other way round — *this* rect, at *this* pixel size — and
+    /// deriving that from `export_rect` would crop to whichever tiles the test
+    /// stroke happened to land in. So this takes the view whole: `view.viewport` is
+    /// the output size, and the same borrow bargain as `export` applies — the
+    /// returned future owns what it reads, so the caller drops its engine borrow
+    /// before awaiting.
+    ///
+    /// No chrome, like every render that is not the screen's (§15.6).
+    ///
+    /// Errors mirror [`export_plan`](Self::export_plan)'s: a degenerate or
+    /// non-finite view, or a viewport past the device's texture limit, is reported
+    /// rather than surfacing as a wgpu validation panic.
+    pub fn export_view(
+        &mut self,
+        into: &mut Offscreen,
+        view: ViewTransform,
+        background: Background,
+        content: Rendered,
+    ) -> Result<impl std::future::Future<Output = RgbaImage> + use<>> {
+        if !(view.zoom.is_finite() && view.zoom > 0.0 && view.center.is_finite()) {
+            return Err(EngineError::Export("view must be finite".into()));
+        }
+        let size = view.viewport;
+        let limit = max_export_dim(&self.gpu);
+        if size.width == 0 || size.height == 0 || size.width > limit || size.height > limit {
+            return Err(EngineError::Export(format!(
+                "render is {} × {} px; this device's limit is {limit}",
+                size.width, size.height
+            )));
+        }
+        let (target, size) = self.render_offscreen(into, view, background, Chrome::Hidden, content);
+        let gpu = self.gpu.clone();
+        let format = self.target_format;
+        Ok(async move {
+            let pixels = crate::gpu::readback::read_rgba8(&gpu, &target, size).await;
+            RgbaImage::from_target_bytes(size.width, size.height, pixels, format)
+        })
+    }
+
     /// The compositor's draw list for `doc`, bottom-to-top: every visible layer's
     /// tiles and mattes, each tagged with its layer opacity, cut into blend groups
     /// (§18.0.4, §14.7).
