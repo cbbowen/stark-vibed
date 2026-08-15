@@ -30,7 +30,7 @@ which is `GPU_CLEANUP.md`'s finding about `gpu/stroke`'s lessons, one directory 
 | 3 | `guides.rs` hand-rolls `UniformSlots` with a literal stride | **done** — `8d7bda1` |
 | 4 | Four hand-rolled grow buffers; two allocate for nothing | **done** — `ec82183` |
 | 5 | The supersample budget omits the scratch and the residual | **done** — `2e8c3ca` |
-| 6 | Blend/filter bind groups rebuilt per frame over stable views | **done** — `8d7bda1`, `53826f9` |
+| 6 | Blend/filter bind groups rebuilt per frame over stable views | **done** — `8d7bda1`, `53826f9`; regressed and fixed — `4a3f5cd` |
 | 7 | Pass A is one draw and one bind group per tile | **not done** — measure first |
 | 8 | Smaller correctness and clarity items (six) | **five done** — `eeef655`, `3a5bd1e`; one left |
 | 9 | `scratch_needs` has no unit tests | **done** — `5eb05f3` |
@@ -169,9 +169,38 @@ and however many frames it is drawn for.
 **What landed.** The plan is what made the key available without a lookup: each
 bouncing step records which way round the ping-pong was when it was *decided*, so
 `Phase { level, back_is_swap }` rides on the step and the encoder indexes straight
-into the level's `OnceLock` pair. No key, no eviction policy — `ensure_targets` drops
-the whole scratch whenever the accumulator is rebuilt, so the lifetime is exactly the
-views'. `TilePairHandle::composite_bg`'s bargain, over a shorter life.
+into the level's `OnceLock` pair.
+
+**This shipped broken, and the shape of the mistake is worth keeping.** The
+justification above was "no key, no eviction policy — `ensure_targets` drops the whole
+scratch whenever the accumulator is rebuilt, so the lifetime is exactly the views'".
+That is true of the *textures* and false of the group as a whole: it also names the
+pass's **uniform buffer**, and a frame with more merges than any before it does not
+resize that buffer, it *replaces* it (`UniformSlots::write`). The kept bind group then
+pointed at a buffer too small for the offset it was about to be given —
+
+```
+Dynamic Offset[0] (256) is out of bounds of [Buffer "stark blend uniform"]
+with a size of 256 and a bound range of (offset: 0, size: 16).
+```
+
+— which is a validation error rather than a wrong pixel, so **every golden still
+passed**. Two or more non-`Normal` layers failed to render at all.
+
+The reason nothing caught it is the reason it is recorded here: it needs *two renders
+through one compositor*, the second with more merges than the first. `render_to_image`
+— the backbone of the whole suite — takes a fresh `Offscreen` every call, and a fresh
+compositor sizes its uniform buffer before it builds anything over it. Only the two
+consumers that keep a compositor for the life of the app, the surface and the
+navigator, could reach it.
+
+`UniformSlots::write` now reports whether the buffer moved, and `Compositor::upload`
+— the one place that knows, and the one both callers go through — drops the scratch's
+cached groups when it did. That also covers a case the original design would not have:
+the eyedropper shares these uniforms with the screen, so a pick with more merges than
+any render can stale the render path's cache. `a_kept_offscreen_survives_a_frame_with_
+more_merges_than_the_last` pins it, and fails with the exact validation error above
+when the fix is reverted.
 
 ## 7. Pass A is one draw and one bind group per tile — **not done**
 
@@ -290,8 +319,18 @@ it lowers the sample count for nested or pigment documents on a large zoomed-out
 window. No golden is blessed anywhere but `zoom = 1.0`, where `supersample` returns 1
 and this is a no-op, so nothing needed re-blessing.
 
-Sixteen tests were added for behaviour that had none: eleven in `composite::plan`
-(§9), and five in `composite::resolve` — the three existing `supersample` cases
-carried across to the byte budget, plus
-`a_flat_oklab_frame_still_stops_at_sixteen_megapixels` (§5's compatibility claim) and
-`the_blend_scratch_is_most_of_what_a_nested_frame_costs` (why it was worth changing).
+Seventeen tests were added for behaviour that had none: eleven in `composite::plan`
+(§9), five in `composite::resolve` — the three existing `supersample` cases carried
+across to the byte budget, plus `a_flat_oklab_frame_still_stops_at_sixteen_megapixels`
+(§5's compatibility claim) and `the_blend_scratch_is_most_of_what_a_nested_frame_costs`
+(why it was worth changing) — and one in `tests/composite.rs` for §6's regression.
+
+**The gap that let §6 ship broken is worth naming on its own**, because it is not
+specific to that finding. `render_to_image` takes a fresh `Offscreen` every call, so
+the entire golden suite renders each engine **once**. Nothing about *frame N+1* was
+tested at all — and "grew since the last frame" is precisely the axis every
+grow-on-demand mechanism here lives on (`UniformSlots`, `InstanceStream`, the scratch
+levels, the attachments). `a_kept_offscreen_renders_what_a_fresh_one_would` was the
+only test in that shape, and it varies size, lighting and color space rather than
+*count*. The new test covers merges; the other counts — mattes, guides, filters,
+outlined mask tiles — are still only ever rendered once per compositor.

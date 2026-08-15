@@ -333,3 +333,102 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
         );
     }
 }
+
+/// A kept slot must survive the frame's **uniform slots growing**, not just its
+/// attachments (§18.0.4).
+///
+/// The blend pass reads its per-merge uniform through a dynamic offset into one
+/// grow-on-demand buffer (`UniformSlots`), so a frame with more merges than any
+/// before it *reallocates* that buffer. Anything holding a bind group that named the
+/// old one is then binding a buffer too small for the offset it is about to be given,
+/// which is a validation error rather than a wrong pixel — and one no single-render
+/// test can reach, since a fresh compositor sizes its buffer before it builds
+/// anything over it.
+///
+/// So the shape here is the one that matters: **two renders through one slot**, the
+/// second with more blend groups than the first. `render_to_image` takes a fresh
+/// `Offscreen` every call and therefore cannot see this; the surface and the
+/// navigator, which keep theirs for the life of the app, are exactly where it bites.
+#[test]
+fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
+    use stark_core::document::{BlendMode, MattePaint, MatteRegion, Place};
+    use stark_core::geom::Extent2;
+    use stark_core::{Background, ExportScale, Offscreen, Rendered};
+
+    let Some(mut engine) = engine_or_skip_sized(Extent2::new(200, 150)) else {
+        return;
+    };
+    let mut kept = Offscreen::default();
+
+    paint(
+        &mut engine,
+        RED,
+        24.0,
+        &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
+    );
+    engine.process(DocCommand::AddMatte {
+        carrier: None,
+        at: Place::Top,
+        region: MatteRegion::OutsideRect {
+            min: Vec2::new(-80.0, -60.0),
+            max: Vec2::new(80.0, 60.0),
+        },
+        paint: MattePaint::Solid([0.0, 0.0, 0.0]),
+    });
+    let frame = engine.observe().layers.last().expect("matte").id;
+
+    let shot = |engine: &mut stark_core::Engine, into: &mut Offscreen| {
+        pollster::block_on(
+            engine
+                .export(
+                    into,
+                    Some(frame),
+                    ExportScale::Factor(1.0),
+                    Background::Substrate,
+                    Rendered::Committed,
+                )
+                .expect("export"),
+        )
+    };
+
+    // One merge: the buffer is one slot wide, and every bind group over it is built
+    // against that.
+    let mut merges = 0;
+    let mut add_merge = |engine: &mut stark_core::Engine| {
+        engine.process(DocCommand::AddLayer {
+            carrier: None,
+            above: None,
+        });
+        paint(
+            engine,
+            BLUE,
+            24.0,
+            &[Vec2::new(0.0, -40.0), Vec2::new(0.0, 40.0)],
+        );
+        let id = engine.observe().active_layer;
+        engine.process(DocCommand::SetLayerBlend(id, BlendMode::Multiply));
+        merges += 1;
+    };
+
+    add_merge(&mut engine);
+    let one = shot(&mut engine, &mut kept);
+
+    // A second merge through the **same** slot: the uniform buffer has to grow, and
+    // nothing may still be holding the buffer it grew out of.
+    add_merge(&mut engine);
+    let two = shot(&mut engine, &mut kept);
+    assert_eq!(merges, 2);
+
+    let (frac, worst) = diff_fraction(&two, &shot(&mut engine, &mut Offscreen::default()));
+    assert!(
+        worst <= 2,
+        "a kept slot drew the second merge differently from a fresh one \
+         ({frac:.4} of pixels differ, worst {worst})",
+    );
+    // And the two renders must actually differ, or the test is passing on a frame
+    // where the second merge did nothing.
+    assert!(
+        diff_fraction(&one, &two).1 > 2,
+        "the second merge changed no pixel — this test is not exercising what it claims",
+    );
+}

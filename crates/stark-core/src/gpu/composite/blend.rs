@@ -284,11 +284,19 @@ pub(super) struct ScratchLevel {
     /// each — however many merges the document has, and however many frames it is
     /// drawn for.
     ///
-    /// Filled on first use and kept, `TilePairHandle::composite_bg`'s bargain with a
-    /// shorter life: everything named here is either this level's own or the
-    /// accumulator, and `ensure_targets` drops the whole scratch whenever the
-    /// accumulator is rebuilt — so the lifetime is exactly the views'. That is what
-    /// makes it a `OnceLock` rather than a cache with a key and an eviction policy.
+    /// **Two things can invalidate one, and the second is easy to miss.** The
+    /// *textures* are this level's own or the accumulator's, and `ensure_targets`
+    /// drops the whole scratch whenever the accumulator is rebuilt — so those are
+    /// covered by the scratch's own lifetime. But the group also names the pass's
+    /// **uniform buffer**, and a frame with more merges than any before it does not
+    /// resize that buffer, it *replaces* it ([`UniformSlots::write`]) — leaving a kept
+    /// bind group pointing at one too small for the offset it is about to be given.
+    /// That is a validation error, not a wrong pixel, and no single-render test can
+    /// reach it: a fresh compositor sizes its buffer before it builds anything over
+    /// it. [`Compositor::upload`] calls [`ScratchTargets::invalidate_bind_groups`]
+    /// when the buffer moves, which is the whole of the second half.
+    ///
+    /// [`Compositor::upload`]: super::Compositor
     blend_bg: [OnceLock<wgpu::BindGroup>; 2],
     filter_bg: [OnceLock<wgpu::BindGroup>; 2],
 }
@@ -334,6 +342,13 @@ impl ScratchLevel {
         self.filter_bg[usize::from(back_is_swap)].get_or_init(make)
     }
 
+    /// Drop both caches, for the one thing they name that the scratch's own lifetime
+    /// does not cover — see [`Self::blend_bg`].
+    fn invalidate_bind_groups(&mut self) {
+        self.blend_bg = Default::default();
+        self.filter_bg = Default::default();
+    }
+
     pub(super) fn swap(&self) -> Targets<'_> {
         self.swap.targets()
     }
@@ -368,6 +383,15 @@ pub(super) struct ScratchTargets {
 }
 
 impl ScratchTargets {
+    /// Drop every level's cached bind groups, because the uniform buffer they name
+    /// has been replaced — see [`ScratchLevel::blend_bg`]. Cheap: at most two of each
+    /// per level, and only on the frame that grew the buffer.
+    pub(super) fn invalidate_bind_groups(&mut self) {
+        for level in &mut self.levels {
+            level.invalidate_bind_groups();
+        }
+    }
+
     pub(super) fn new(
         device: &wgpu::Device,
         size: Extent2,

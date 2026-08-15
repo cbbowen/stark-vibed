@@ -76,11 +76,24 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
     /// Write one uniform per slot, growing the buffer first if this frame has more
     /// of them than any before it. Every slot is written before the frame's single
     /// submit, which is the whole reason slots exist.
-    pub(crate) fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, uniforms: &[T]) {
+    ///
+    /// **Returns whether the buffer moved.** Growing does not resize a buffer, it
+    /// *replaces* one — so any bind group built over the old one is now naming a
+    /// buffer too small for the offsets it is about to be given, which is a
+    /// validation error rather than a wrong pixel. A caller that keeps such a bind
+    /// group has to drop it when this says `true`; one that rebuilds per frame can
+    /// ignore the answer, which is why this is a plain `bool` and not `#[must_use]`.
+    pub(crate) fn write(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        uniforms: &[T],
+    ) -> bool {
         if uniforms.is_empty() {
-            return;
+            return false;
         }
-        if uniforms.len() > self.slots {
+        let moved = uniforms.len() > self.slots;
+        if moved {
             self.buf = Self::alloc(device, self.label, uniforms.len());
             self.slots = uniforms.len();
         }
@@ -91,6 +104,7 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
                 bytemuck::bytes_of(uniform),
             );
         }
+        moved
     }
 
     /// The dynamic offset slot `slot` binds at.

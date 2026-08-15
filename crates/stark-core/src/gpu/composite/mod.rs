@@ -621,13 +621,27 @@ impl Compositor {
         // sake: the chromatic dispersion is stated in canvas terms by the document
         // and sampled in accumulator texels by the pass, and this — with `view`
         // already supersampled — is the moment the two meet (§21.10).
-        self.blend_uniforms.write(device, queue, &plan.blends);
+        let blend_moved = self.blend_uniforms.write(device, queue, &plan.blends);
         let filters: Vec<FilterUniform> = plan
             .filters
             .iter()
             .map(|f| plan::filter_uniform(f, view))
             .collect();
-        self.filter_uniforms.write(device, queue, &filters);
+        let filter_moved = self.filter_uniforms.write(device, queue, &filters);
+        // A frame with more merges (or more filters) than any before it does not
+        // resize those buffers, it **replaces** them — so the bind groups the scratch
+        // is holding now name a buffer too small for the offsets they are about to be
+        // given (`ScratchLevel::blend_bg`). Here rather than in the encoder because
+        // this is the one place that knows a buffer moved, and it covers both callers:
+        // the eyedropper shares these uniforms with the screen, so a pick with more
+        // merges than any render can stale the render path's cache too.
+        if let Some(scratch) = self
+            .scratch
+            .as_mut()
+            .filter(|_| blend_moved || filter_moved)
+        {
+            scratch.invalidate_bind_groups();
+        }
         PreparedStreams {
             tile_bgs,
             matte_ramp_bg,
