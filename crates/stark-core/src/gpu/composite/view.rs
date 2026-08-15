@@ -1,9 +1,13 @@
 //! The canvas → NDC mapping every pass that rasterizes canvas geometry reads.
 //!
-//! One buffer and one sampler, shared: pass A binds them vertex-only, the outline
-//! pass binds the same buffer to both stages (it converts a canvas-space distance
-//! to screen px with the zoom, §6.8), and the brush-dynamics loop writes its own
-//! [`ViewUniform`] into a buffer of its own for the region it composites (§6.2).
+//! One buffer and one sampler per **consumer**: pass A binds them vertex-only, the
+//! outline pass binds the same buffer to both stages (it converts a canvas-space
+//! distance to screen px with the zoom, §6.8), and the brush-dynamics loop writes its
+//! own [`ViewUniform`] into a buffer of its own for the region it composites (§6.2).
+//!
+//! The split here is the module's own, one level down: [`View`] is the shared,
+//! never-changing half (the sampler) and [`ViewBindings`] the per-target half (the
+//! buffer holding *what this render is looking at*, and the groups over it).
 
 use crate::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, ViewTransform};
 
@@ -39,28 +43,84 @@ pub(crate) fn view_uniform(st: [f32; 4], xlate: crate::geom::Vec2, zoom: f32) ->
     }
 }
 
-/// The view uniform's buffer and the sampler beside it, shared by every pass that
-/// draws in canvas space.
+/// The sampler every pass that draws in canvas space reads its tiles through —
+/// the whole of what the view contributes to the **shared** pipeline kit.
+///
+/// The buffer is deliberately not here; see [`ViewBindings`].
 pub(super) struct View {
-    pub(super) buf: wgpu::Buffer,
     pub(super) sampler: wgpu::Sampler,
 }
 
 impl View {
     pub(super) fn new(device: &wgpu::Device) -> Self {
         Self {
-            buf: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("stark composite view"),
-                size: std::mem::size_of::<ViewUniform>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("stark composite sampler"),
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
                 ..Default::default()
             }),
+        }
+    }
+}
+
+/// The view uniform's buffer and the two group-0 bind groups over it — **one
+/// consumer's**, not the pipeline's.
+///
+/// The buffer holds what this render is looking at, which is per-target by
+/// definition: the surface and the navigator's miniature draw the same document
+/// through different transforms, at different sizes, in the same frame. It sat on
+/// the shared [`CompositorPasses`](super::CompositorPasses) for as long as the
+/// argument "every render writes it immediately before the submit that reads it, and
+/// submits on one queue are ordered" held — which is true of every path today and is
+/// a property of the *call sequence*, not of the types. Two `Compositor`s are the
+/// documented arrangement and a `&CompositorPipeline` is all either needs, so nothing
+/// stopped a future caller from straddling a write and its submit with another
+/// render. Here the question cannot be asked.
+///
+/// The passes keep their layouts and their pipelines, which is the expensive half and
+/// genuinely never changes; what a consumer now owns is a 48-byte buffer and two bind
+/// groups, built once with the `Compositor` and never rebuilt (nothing they name is
+/// sized by the target).
+pub(super) struct ViewBindings {
+    buf: wgpu::Buffer,
+    /// Pass A's group 0 — the uniform vertex-only, plus the tile sampler.
+    pub(super) tiles: wgpu::BindGroup,
+    /// Pass C's group 0. Its own because the outline's fragment stage reads the
+    /// uniform too (it measures its width in screen px from a canvas-space distance,
+    /// §6.8) where pass A declares it vertex-only.
+    pub(super) overlay: wgpu::BindGroup,
+}
+
+impl ViewBindings {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        view: &View,
+        tile_view_bgl: &wgpu::BindGroupLayout,
+        overlay_view_bgl: &wgpu::BindGroupLayout,
+    ) -> Self {
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stark composite view"),
+            size: std::mem::size_of::<ViewUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let group = |label, layout| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout,
+                entries: &[
+                    crate::gpu::desc::uniform_entry(0, &buf),
+                    crate::gpu::desc::samp(1, &view.sampler),
+                ],
+            })
+        };
+        let tiles = group("stark composite view bg", tile_view_bgl);
+        let overlay = group("stark overlay view bg", overlay_view_bgl);
+        Self {
+            buf,
+            tiles,
+            overlay,
         }
     }
 

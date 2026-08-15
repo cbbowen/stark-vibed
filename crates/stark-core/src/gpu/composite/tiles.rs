@@ -10,8 +10,6 @@ use crate::gpu::channels::ChannelFormats;
 use crate::gpu::desc::{self, RenderPipe};
 use crate::gpu::uniforms::UniformSlots;
 
-use super::view::View;
-
 // The two per-instance records pass A draws with, generated from the `@location`
 // parameters of the vertex entry points that read them (§6.10) — the struct, the
 // attribute formats and their offsets all from the one declaration.
@@ -26,7 +24,9 @@ pub(super) struct TilePass {
     /// on *both* targets, so an opaque matte erases the relief beneath it rather
     /// than letting underlying impasto emboss through.
     pub(super) matte_pipeline: wgpu::RenderPipeline,
-    pub(super) view_bg: wgpu::BindGroup,
+    /// Group 0's layout, for the consumer that owns the buffer behind it
+    /// ([`ViewBindings`](super::view::ViewBindings)).
+    pub(super) view_bgl: wgpu::BindGroupLayout,
     pub(super) tile_bgl: wgpu::BindGroupLayout,
     /// The matte pipeline's group 1: the per-matte gradient ramp (§22.4), read
     /// through a **dynamic offset** so one buffer and one bind group serve every
@@ -39,7 +39,6 @@ pub(super) struct TilePass {
 impl TilePass {
     pub(super) fn new(
         device: &wgpu::Device,
-        view: &View,
         color_space: &dyn ColorSpace,
         formats: ChannelFormats,
     ) -> Self {
@@ -144,22 +143,10 @@ impl TilePass {
             },
         );
 
-        let view_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark composite view bg"),
-            layout: &view_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: view.buf.as_entire_binding(),
-                },
-                desc::samp(1, &view.sampler),
-            ],
-        });
-
         Self {
             pipeline,
             matte_pipeline,
-            view_bg,
+            view_bgl,
             tile_bgl,
             ramp_bgl,
         }

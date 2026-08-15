@@ -21,7 +21,8 @@
 //! [`CompositorPipeline`] is everything that does not — the pipelines, the layouts,
 //! the pigment LUT, and the view settings the media pass reads. A [`Compositor`] is
 //! one target's worth of what does: pass A's offscreen attachments, the media bind
-//! group over them, the blend scratch, and the instance streams.
+//! group over them, the blend scratch, the instance streams, and every uniform a
+//! render writes (what it is looking at, how it is lit, how many samples it took).
 //!
 //! The split exists because more than one thing gets drawn from the same document,
 //! at different sizes: the surface every frame, and beside it an export or the
@@ -66,7 +67,7 @@ use media::{MediaPass, MediaUniform};
 use overlay::{OverlayInstance, OverlayPass, PEER_OUTLINE_ALPHA};
 use resolve::{ResolvePass, ResolveUniform, supersample};
 use tiles::{Instance, MatteInstance, Ramp, TilePass};
-use view::View;
+use view::{View, ViewBindings};
 
 pub use group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent, MatteDraw};
 pub use media::MediaParams;
@@ -151,8 +152,8 @@ pub struct CompositeScene<'a> {
     pub guides: &'a [crate::guides::GuideScene],
 }
 
-/// The pipelines themselves — the six passes, their layouts, the uniform buffers
-/// whose identity never changes, and the channel formats they were built for.
+/// The pipelines themselves — the six passes, their layouts and samplers, and the
+/// channel formats they were built for.
 ///
 /// Split from [`CompositorPipeline`] along a second line: does it ever *change*?
 /// Nothing here does, which is what lets a second engine on the same device share
@@ -161,17 +162,23 @@ pub struct CompositeScene<'a> {
 /// settings, since the brush editor's preview mirrors the canvas's look and a
 /// preset thumbnail deliberately does not.
 ///
-/// The uniform buffers (`view`, the media pass's) are shared too, and that is
-/// sound for the reason the doc below gives for settings during a render: they are
-/// written through the queue at the top of every render, before the submit that
-/// reads them, and submits on one queue execute in order — so each render reads
-/// the values it wrote, whichever engine's render it is.
+/// **No uniform buffer is here**, and that is the whole content of "nothing here
+/// changes". The view, media and resolve uniforms used to be, sound on the argument
+/// that each render writes them through the queue immediately before the submit that
+/// reads them and submits on one queue are ordered. That argument is about the
+/// *sequence of calls*, not about these types: two `Compositor`s over one of these is
+/// the documented arrangement, `&CompositorPipeline` is all either needs, and nothing
+/// stopped a caller straddling a write and its submit with another render. Each of
+/// the three holds per-target state anyway — what this render is looking at, how it
+/// is lit, how many samples it took — so they belong to the [`Compositor`] and now
+/// live there ([`ViewBindings`], [`Compositor::media_buf`], [`Supersampled::buf`]).
 ///
 /// [`Engine::new_sharing`]: crate::Engine::new_sharing
 pub struct CompositorPasses {
     ctx: GpuContext,
 
-    /// The canvas → NDC mapping passes A and C share.
+    /// The tile sampler passes A and C share — the whole of the view that is not
+    /// per-target (see [`ViewBindings`] for the half that is).
     view: View,
     tiles: TilePass,
     /// Shared with `gpu::merge`, which runs the same pipeline on tile-sized
@@ -208,17 +215,17 @@ pub struct CompositorPasses {
 /// settings because two consumers disagreeing about the canvas weave or the lighting
 /// would be a bug that shows only in the smaller picture.
 ///
-/// Not immutable: the view settings change. It is immutable *during a render*, which
-/// is what lets every consumer hold it by shared reference. The uniform buffers are
-/// written through the queue rather than through `&mut`, and renders are sequential
-/// on one queue, so those writes stay ordered with the submits that read them.
+/// Not immutable: the view settings change, through `&mut self` on this type. It
+/// holds no GPU-visible state that a render writes — every uniform a render fills in
+/// belongs to the [`Compositor`] doing it — so a consumer's `&CompositorPipeline` is
+/// a read of settled values and nothing else.
 pub struct CompositorPipeline {
     /// The pipelines, shared: this engine's alone after [`Self::new`], a sibling
     /// engine's too after [`Self::sharing`].
     passes: Arc<CompositorPasses>,
 
     /// Lighting parameters for the media pass (§6.3) — a view setting like the two
-    /// below, written into the (shared) media uniform on every render.
+    /// below, copied into each renderer's own media uniform on every render.
     media_params: MediaParams,
     // The canvas surface (bump) sampled by the media pass for relief.
     surface: Surface,
@@ -256,8 +263,10 @@ fn next_generation() -> u64 {
 
 /// One consumer's worth of compositing state: the offscreen attachments pass A
 /// writes, the media bind group over them, the scratch the blend passes bounce
-/// through, and the instance streams. Everything here is sized either by the target
-/// or by how much there is to draw.
+/// through, the instance streams, and the uniforms a render fills in. Everything here
+/// is sized by the target, by how much there is to draw, or by neither and simply
+/// **written per render** — which is the same line, since a value a render writes is
+/// a value two targets would disagree about.
 ///
 /// One per thing being drawn into — the surface, and (with its own) anything that
 /// renders beside it: an export, the navigator's miniature. Sharing one across
@@ -267,22 +276,30 @@ pub struct Compositor {
     /// The size **every** offscreen attachment here is at: the target's, times
     /// [`Self::ss`]. Not the target's own, which is only known where the target is.
     size: Extent2,
+    /// The canvas → NDC mapping *this* render is drawing through, and the two group-0
+    /// bind groups over it (§6.4). Per consumer, not per pipeline — see
+    /// [`ViewBindings`].
+    view: ViewBindings,
     comp_color_view: wgpu::TextureView,
     comp_aux_view: wgpu::TextureView,
     /// The residual accumulator, in a space that has one (§6.7).
     comp_resid_view: Option<wgpu::TextureView>,
+    /// This consumer's lighting parameters as the media pass reads them, written at
+    /// the top of every render from the pipeline's [`MediaParams`]. Per consumer for
+    /// [`MediaPass`]'s reason: two engines sharing one pipeline kit light their
+    /// canvases differently, and the bind group naming this was per-consumer already.
+    media_buf: wgpu::Buffer,
     media_bg: wgpu::BindGroup,
     /// The [`CompositorPipeline::generation`] `media_bg` was built against.
     generation: u64,
 
     /// Samples per axis the attachments are built for (§6.4). `1` — the
     /// zoomed-in and 1:1 case — means passes B–D write the caller's target directly
-    /// and `ss_target` is `None`, so a view that never zooms out never allocates it.
+    /// and `ss` is `None`, so a view that never zooms out never allocates any of it.
     ss: u32,
-    /// Where passes B–D write when `ss > 1`, and the bind group the resolve reads it
-    /// through. One thing rather than two because they are built and dropped together
-    /// and the bind group is meaningless without the view it names.
-    ss_target: Option<(wgpu::TextureView, wgpu::BindGroup)>,
+    /// Everything that exists only while this view is zoomed out — see
+    /// [`Supersampled`].
+    ss_target: Option<Supersampled>,
 
     // Allocated on first use and kept: only a document with a non-`Normal` layer
     // ever pays for them.
@@ -305,6 +322,20 @@ pub struct Compositor {
     /// the two above, which this pass spent a hand-written stride and a hand-rolled
     /// grow loop reimplementing.
     guide_uniforms: UniformSlots<GuideUniform>,
+}
+
+/// Where passes B–D write when the view is zoomed out, and what pass E reads it back
+/// through (§6.4).
+///
+/// One value rather than three because they are built and dropped together and none
+/// of them means anything without the others: the bind group names the view, and the
+/// uniform holds the very `ss` that decided the view's size.
+struct Supersampled {
+    view: wgpu::TextureView,
+    bg: wgpu::BindGroup,
+    /// `n`, the sample count pass E box-averages over. This consumer's, because `ss`
+    /// is a function of *this* target's zoom.
+    buf: wgpu::Buffer,
 }
 
 /// Somewhere for a render that is **not** the surface's to keep its attachments
@@ -358,16 +389,15 @@ impl CompositorPipeline {
         // Passes B–E all write the one target the frame is presented from.
         let screen = [desc::target(target_format)];
 
-        let view = View::new(device);
         let passes = CompositorPasses {
-            tiles: TilePass::new(device, &view, color_space, formats),
+            tiles: TilePass::new(device, color_space, formats),
             blend,
             filter,
-            overlay: OverlayPass::new(device, &view, target_format),
+            overlay: OverlayPass::new(device, target_format),
             guides: GuidePass::new(device, target_format),
             media: MediaPass::new(device, color_space, &screen),
             resolve: ResolvePass::new(device, &screen),
-            view,
+            view: View::new(device),
             ctx: ctx.clone(),
             formats,
             target_format,
@@ -452,13 +482,15 @@ impl CompositorPipeline {
         (self.formats.color, self.formats.aux, self.formats.resid)
     }
 
-    /// The offscreen pair and the media bind group over it, at `size`.
-    fn offscreen(&self, size: Extent2) -> media::Offscreen {
+    /// The offscreen pair and the media bind group over it, at `size`. `media_buf`
+    /// is the consumer's own uniform, which that bind group names.
+    fn offscreen(&self, size: Extent2, media_buf: &wgpu::Buffer) -> media::Offscreen {
         media::offscreen(media::OffscreenDesc {
             device: &self.ctx.device,
             size,
             formats: self.formats,
             media: &self.media,
+            media_buf,
             surface: &self.surface,
             environment: &self.environment,
         })
@@ -471,9 +503,17 @@ impl Compositor {
     /// layouts, the decoded pigment LUT) lives in the pipeline and is only borrowed.
     pub fn new(pipeline: &CompositorPipeline, size: Extent2) -> Self {
         let device = &pipeline.ctx.device;
-        let off = pipeline.offscreen(size);
+        let media_buf = media::uniform_buffer(device);
+        let off = pipeline.offscreen(size, &media_buf);
         Self {
             size,
+            view: ViewBindings::new(
+                device,
+                &pipeline.view,
+                &pipeline.tiles.view_bgl,
+                &pipeline.overlay.view_bgl,
+            ),
+            media_buf,
             comp_color_view: off.color,
             comp_aux_view: off.aux,
             comp_resid_view: off.resid,
@@ -519,7 +559,7 @@ impl Compositor {
         self.ss = ss;
         self.generation = p.generation;
         self.scratch = None;
-        let off = p.offscreen(self.size);
+        let off = p.offscreen(self.size, &self.media_buf);
         self.comp_color_view = off.color;
         self.comp_aux_view = off.aux;
         self.comp_resid_view = off.resid;
@@ -527,19 +567,15 @@ impl Compositor {
         // Allocated only where it is written into. A 1:1 view drops it here, which is
         // what returns the memory the moment the artist zooms back in to paint.
         self.ss_target = (ss > 1).then(|| {
-            let view = offscreen_view(&p.ctx.device, size, p.target_format, "stark supersampled");
-            let bg = p.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            let device = &p.ctx.device;
+            let view = offscreen_view(device, size, p.target_format, "stark supersampled");
+            let buf = resolve::uniform_buffer(device);
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark resolve bg"),
                 layout: &p.resolve.bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: p.resolve.buf.as_entire_binding(),
-                    },
-                    desc::tex(1, &view),
-                ],
+                entries: &[desc::uniform_entry(0, &buf), desc::tex(1, &view)],
             });
-            (view, bg)
+            Supersampled { view, bg, buf }
         });
     }
 
@@ -559,7 +595,7 @@ impl Compositor {
         groups: &'a [CompositeGroup],
     ) -> PreparedStreams<'a> {
         let device = &p.ctx.device;
-        p.view.write(&p.ctx.queue, view);
+        self.view.write(&p.ctx.queue, view);
 
         // Split the ordered item list into the two instance streams, remembering
         // for each item which stream slot it draws from. The *order* of the items is
@@ -843,7 +879,7 @@ impl Compositor {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_bind_group(0, &e.p.tiles.view_bg, &[]);
+        pass.set_bind_group(0, &self.view.tiles, &[]);
         let mut pipeline_is_matte = None;
         for item in items {
             match item {
@@ -1142,7 +1178,7 @@ impl Compositor {
         // goes through the same resolve as the paint, so the marching ants and the
         // perspective grid come out antialiased rather than as the stairs a
         // one-sample-per-pixel line draws at any angle but the axes.
-        let draw_target = self.ss_target.as_ref().map_or(target, |(view, _)| view);
+        let draw_target = self.ss_target.as_ref().map_or(target, |s| &s.view);
 
         // Screen→canvas mapping for sampling the surface bump in canvas space, so the
         // weave stays attached to the canvas as it pans, zooms, turns and mirrors
@@ -1166,7 +1202,7 @@ impl Compositor {
         // Media uniform.
         let m = p.media_params;
         p.ctx.queue.write_buffer(
-            &p.media.buf,
+            &self.media_buf,
             0,
             bytemuck::bytes_of(&MediaUniform {
                 light: [0.0, 0.0, 0.0, m.height_strength],
@@ -1284,7 +1320,7 @@ impl Compositor {
                 multiview_mask: None,
             });
             pass.set_pipeline(&p.overlay.pipeline);
-            pass.set_bind_group(0, &p.overlay.view_bg, &[]);
+            pass.set_bind_group(0, &self.view.overlay, &[]);
             pass.set_vertex_buffer(0, self.overlay_instances.slice());
             for (i, bg) in mask_tiles.iter().enumerate() {
                 let idx = i as u32;
@@ -1327,9 +1363,9 @@ impl Compositor {
         // Pass E: the resolve — everything above, box-averaged in light down to the
         // caller's target (§6.4). Absent at 1:1, where `draw_target` *is* the
         // caller's target and the picture is already the size it was asked for.
-        if let Some((_, resolve_bg)) = &self.ss_target {
+        if let Some(ss_target) = &self.ss_target {
             p.ctx.queue.write_buffer(
-                &p.resolve.buf,
+                &ss_target.buf,
                 0,
                 bytemuck::bytes_of(&ResolveUniform {
                     n: [ss as f32, 0.0, 0.0, 0.0],
@@ -1346,7 +1382,7 @@ impl Compositor {
                 multiview_mask: None,
             });
             pass.set_pipeline(&p.resolve.pipeline);
-            pass.set_bind_group(0, resolve_bg, &[]);
+            pass.set_bind_group(0, &ss_target.bg, &[]);
             pass.draw(0..3, 0..1);
         }
 

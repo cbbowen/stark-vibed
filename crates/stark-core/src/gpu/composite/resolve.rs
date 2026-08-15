@@ -63,10 +63,14 @@ pub(super) fn supersample(size: Extent2, zoom: f32, limits: &wgpu::Limits) -> u3
         .unwrap_or(1)
 }
 
+/// The resolve pass — the pipeline and its layout. The uniform it reads (`n`, the
+/// sample count) is the *rendering* consumer's: `ss` is a function of that target's
+/// zoom, so the surface and a miniature beside it disagree about it by construction.
+/// It rides in the [`Supersampled`](super::Supersampled) set, which is exactly the
+/// state that exists only while a view is zoomed out.
 pub(super) struct ResolvePass {
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) bgl: wgpu::BindGroupLayout,
-    pub(super) buf: wgpu::Buffer,
 }
 
 impl ResolvePass {
@@ -97,14 +101,19 @@ impl ResolvePass {
             ("vs_main", "fs_main"),
             target,
         );
-        let buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stark resolve uniform"),
-            size: std::mem::size_of::<ResolveUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        Self { pipeline, bgl, buf }
+        Self { pipeline, bgl }
     }
+}
+
+/// The uniform buffer one supersampled render writes its sample count into — see
+/// [`ResolvePass`] for why it is not the pass's.
+pub(super) fn uniform_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stark resolve uniform"),
+        size: std::mem::size_of::<ResolveUniform>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
 }
 
 #[cfg(test)]

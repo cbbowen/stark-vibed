@@ -7,8 +7,6 @@
 use crate::document::selection::Selection;
 use crate::gpu::desc::{self, RenderPipe};
 
-use super::view::View;
-
 /// Per-mask-tile instance of the outline pass: where the tile is, and how to draw
 /// its contour. `tint.a == 0` selects the local actor's black/white marching ants;
 /// anything else draws a flat line in `tint.rgb` at that alpha — which is how
@@ -33,16 +31,14 @@ pub(super) const PEER_OUTLINE_ALPHA: f32 = 0.55;
 
 pub(super) struct OverlayPass {
     pub(super) pipeline: wgpu::RenderPipeline,
-    pub(super) view_bg: wgpu::BindGroup,
+    /// Group 0's layout, for the consumer that owns the buffer behind it
+    /// ([`ViewBindings`](super::view::ViewBindings)).
+    pub(super) view_bgl: wgpu::BindGroupLayout,
     pub(super) tile_bgl: wgpu::BindGroupLayout,
 }
 
 impl OverlayPass {
-    pub(super) fn new(
-        device: &wgpu::Device,
-        view: &View,
-        target_format: wgpu::TextureFormat,
-    ) -> Self {
+    pub(super) fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let frag = wgpu::ShaderStages::FRAGMENT;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark selection overlay"),
@@ -91,20 +87,9 @@ impl OverlayPass {
                 )],
             },
         );
-        let view_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark overlay view bg"),
-            layout: &view_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: view.buf.as_entire_binding(),
-                },
-                desc::samp(1, &view.sampler),
-            ],
-        });
         Self {
             pipeline,
-            view_bg,
+            view_bgl,
             tile_bgl,
         }
     }

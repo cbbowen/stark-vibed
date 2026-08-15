@@ -45,16 +45,21 @@ impl Default for MediaParams {
     }
 }
 
-/// The media pass. The parameters it is tuned to live on the
-/// [`CompositorPipeline`](super::CompositorPipeline) beside the other view
-/// settings, not here: the pass is part of the shareable pipeline kit, and two
-/// engines sharing one set of pipelines are still free to light their canvases
-/// differently — the uniform is written from the owner's parameters on every
-/// render, before the submit that reads it.
+/// The media pass — the pipeline and its layout, which is the whole of what is
+/// shareable about it.
+///
+/// The parameters it is tuned to live on the
+/// [`CompositorPipeline`](super::CompositorPipeline) beside the other view settings,
+/// and the **uniform buffer** they are written into lives on the
+/// [`Compositor`](super::Compositor) that is rendering. Both for the same reason:
+/// two engines sharing one set of pipelines light their canvases differently (the
+/// brush editor's preview mirrors the canvas, a preset thumbnail deliberately does
+/// not), so the values are per-consumer and so is the buffer holding them. The bind
+/// group over it was per-`Compositor` already, which is what made moving the buffer
+/// beside it cost nothing.
 pub(super) struct MediaPass {
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) bgl: wgpu::BindGroupLayout,
-    pub(super) buf: wgpu::Buffer,
 }
 
 impl MediaPass {
@@ -93,14 +98,19 @@ impl MediaPass {
             ("vs_main", "fs_main"),
             target,
         );
-        let buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stark media uniform"),
-            size: std::mem::size_of::<MediaUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        Self { pipeline, bgl, buf }
+        Self { pipeline, bgl }
     }
+}
+
+/// The uniform buffer one consumer writes its lighting into — see [`MediaPass`] for
+/// why it is not the pass's.
+pub(super) fn uniform_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stark media uniform"),
+        size: std::mem::size_of::<MediaUniform>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
 }
 
 /// The inputs to [`offscreen`]: one field from the [`Compositor`](super::Compositor)
@@ -113,6 +123,8 @@ pub(super) struct OffscreenDesc<'a> {
     /// The channel formats the accumulator carries (§6.7).
     pub(super) formats: crate::gpu::channels::ChannelFormats,
     pub(super) media: &'a MediaPass,
+    /// The consumer's own uniform buffer, which this bind group names.
+    pub(super) media_buf: &'a wgpu::Buffer,
     pub(super) surface: &'a Surface,
     pub(super) environment: &'a Environment,
 }
@@ -134,6 +146,7 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
         size,
         formats,
         media,
+        media_buf,
         surface,
         environment,
     } = d;
@@ -144,10 +157,7 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
         .map(|f| super::offscreen_view(device, size, f, "stark comp resid"));
 
     let mut entries = vec![
-        wgpu::BindGroupEntry {
-            binding: 0,
-            resource: media.buf.as_entire_binding(),
-        },
+        desc::uniform_entry(0, media_buf),
         desc::tex(1, &color),
         desc::tex(2, &aux),
         desc::tex(3, &surface.view),
