@@ -359,10 +359,7 @@ impl TilePairHandle {
     /// to keep down (§6.2). Now only a newly painted or newly loaded tile pays.
     ///
     /// [`Engine::new_sharing`]: crate::Engine::new_sharing
-    pub(crate) fn composite_bg(
-        &self,
-        make: impl FnOnce() -> wgpu::BindGroup,
-    ) -> &wgpu::BindGroup {
+    pub(crate) fn composite_bg(&self, make: impl FnOnce() -> wgpu::BindGroup) -> &wgpu::BindGroup {
         self.0.composite_bg.get_or_init(make)
     }
 

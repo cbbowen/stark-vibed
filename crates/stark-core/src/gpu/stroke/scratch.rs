@@ -28,6 +28,15 @@
 //! A scope dropped on an unwind returns nothing to the pool, which is also sound:
 //! its commands were never submitted, so nothing pending names its leases.
 //!
+//! [`TileScope`](crate::gpu::submit::TileScope) is this type's sibling, carrying the
+//! identical rule for the renderers that rewrite whole tiles — the transform, the
+//! merge, the fill, the selection. The two are separate only because they hold
+//! different things: this one holds [`ScratchPool`] leases, whose release must be
+//! unforgeable and is therefore private to this module, while that one holds
+//! ordinary pooled handles whose release is their `Drop`. Neither collapses into the
+//! other without weakening one of them, and a change to the ordering rule belongs in
+//! both.
+//!
 //! Contents are **not** zeroed on reuse, and no consumer may rely on the
 //! zero-initialization a fresh texture gets. That is an audited property of every
 //! key taken here: the region and narrow targets load with a clear; the reservoir is
@@ -43,7 +52,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::gpu::context::GpuContext;
 
-use super::{ScopedResources, unpoisoned};
+use super::unpoisoned;
+use crate::gpu::submit::ScopedResources;
 
 /// How many bytes of free textures the pool will hold before it starts destroying
 /// the least-recently-used. One wide-tip piece's working set — region, narrow,

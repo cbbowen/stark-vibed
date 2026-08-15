@@ -43,6 +43,7 @@ use crate::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::selection::{SelectionRenderer, outside_clear};
+use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TexHandle, TileMap, TilePairHandle, TilePool};
 
 // Generated from `transform.wesl`'s own declarations (§6.7). The three constructors
@@ -188,55 +189,11 @@ struct Gated<'a> {
     rect: (Vec2, Vec2),
 }
 
-/// A transform's command encoder together with the scratch parcels its passes will
-/// read — and the reason they are one type.
-///
-/// Nothing in a recorded encoder has *run*. A parcel is written by one pass and read
-/// by the `combine` after it, but both are only recorded, so releasing the parcel's
-/// handle early hands its texture straight back to the pool, which gives it to the
-/// next destination tile in this very encoder — whose parcel pass overwrites it
-/// before the earlier tile's combine ever reads it. The corruption would be a
-/// transform that smears one tile's paint into another's, on large selections only,
-/// and no test would name it.
-///
-/// That rule used to live in a comment and a `drop(scratch)` placed after the submit
-/// by hand, twice. Here [`Self::submit`] takes `self`, so the parcels cannot be
-/// released except by submitting first; and dropping the recording *without*
-/// submitting is safe too, because then no pass ran at all.
-struct Recording {
-    encoder: wgpu::CommandEncoder,
-    scratch: Vec<TexHandle>,
-}
-
 /// A tile's paint channels as this module passes them around: the moved parcel a
 /// quad pass writes, and the destination a combine writes. `None` in the third slot
 /// is a space with no residual (§6.7) — the same `Option` `TilePairHandle` carries,
 /// before it becomes one.
 type Parcel = (TexHandle, TexHandle, Option<TexHandle>);
-
-impl Recording {
-    fn new(device: &wgpu::Device, label: &str) -> Self {
-        Self {
-            encoder: device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) }),
-            scratch: Vec::new(),
-        }
-    }
-
-    /// Hold a parcel until this recording is submitted.
-    fn keep(&mut self, parcel: Option<Parcel>) {
-        if let Some((color, aux, resid)) = parcel {
-            self.scratch.push(color);
-            self.scratch.push(aux);
-            self.scratch.extend(resid);
-        }
-    }
-
-    /// Submit, then release the parcels — in that order, which is the whole point.
-    fn submit(self, queue: &wgpu::Queue) {
-        queue.submit([self.encoder.finish()]);
-    }
-}
 
 #[derive(Clone)]
 pub struct TransformRenderer {
@@ -498,24 +455,27 @@ impl TransformRenderer {
         let plan = plan_paint(base, selection, affine)?;
         let mask_plan = plan_mask(selection, affine)?;
 
-        let device = &self.ctx.device;
-        let mut rec = Recording::new(device, "stark transform");
+        let mut scope = TileScope::new(&self.ctx, "stark transform");
 
         // Source-tile bind groups are shared across every destination they reach.
         let mut from = Source::new(pool, base, selection);
 
         let mut tiles = base.clone();
         for (dest, sources) in &plan.rewrites {
-            let parcel = self.render_parcel(&mut rec.encoder, &mut from, affine, *dest, sources);
+            let parcel = self.render_parcel(&mut scope, &mut from, affine, *dest, sources);
             let dst = (
                 pool.acquire_tex(self.color_format, AllocSource::TransformDestination),
                 pool.acquire_tex(self.aux_format, AllocSource::TransformDestination),
                 self.resid_format
                     .map(|f| pool.acquire_tex(f, AllocSource::TransformDestination)),
             );
-            self.combine(&mut rec.encoder, &from, *dest, parcel.as_ref(), &dst, None);
-            rec.keep(parcel);
+            self.combine(&mut scope, &from, *dest, parcel.as_ref(), &dst, None);
+            // Held, not dropped: the parcel is written by the pass above and read
+            // by the combine, both only *recorded*, so an early release hands its
+            // texture to the next destination tile in this very encoder (`TileScope`).
+            scope.hold(parcel);
             tiles = tiles.insert(*dest, TilePairHandle::new(dst.0, dst.1, dst.2));
+            scope.tile_done();
         }
         for coord in &plan.drops {
             tiles = tiles.remove(coord);
@@ -526,8 +486,9 @@ impl TransformRenderer {
             HashTrieMap::new();
         for (dest, sources) in &mask_plan.rewrites {
             let dst = pool.acquire_mask(AllocSource::TransformMask);
-            self.render_mask(&mut rec.encoder, selection, affine, *dest, sources, &dst);
+            self.render_mask(&mut scope, selection, affine, *dest, sources, &dst);
             mask_tiles = mask_tiles.insert(*dest, dst);
+            scope.tile_done();
         }
         // The hull rides along: the AABB of the affine image of its corners.
         let hull = selection.hull().map(|(lo, hi)| {
@@ -546,7 +507,7 @@ impl TransformRenderer {
         let moved_selection =
             Selection::from_parts(mask_tiles, selection.outside(), selection.level(), hull);
 
-        rec.submit(&self.ctx.queue);
+        scope.finish();
         Some((tiles, moved_selection))
     }
 
@@ -569,8 +530,7 @@ impl TransformRenderer {
             GatedKind::Warp { .. } => None,
         };
 
-        let device = &self.ctx.device;
-        let mut rec = Recording::new(device, "stark transform gated");
+        let mut scope = TileScope::new(&self.ctx, "stark transform gated");
 
         let mut from = Source::new(pool, base, selection);
         let paint = Gated {
@@ -581,24 +541,20 @@ impl TransformRenderer {
 
         let mut tiles = base.clone();
         for (dest, unit_idxs) in &plan.rewrites {
-            let parcel =
-                self.render_gated_parcel(&mut rec.encoder, &mut from, &paint, unit_idxs, *dest);
+            let parcel = self.render_gated_parcel(&mut scope, &mut from, &paint, unit_idxs, *dest);
             let dst = (
                 pool.acquire_tex(self.color_format, AllocSource::TransformDestination),
                 pool.acquire_tex(self.aux_format, AllocSource::TransformDestination),
                 self.resid_format
                     .map(|f| pool.acquire_tex(f, AllocSource::TransformDestination)),
             );
-            self.combine(
-                &mut rec.encoder,
-                &from,
-                *dest,
-                parcel.as_ref(),
-                &dst,
-                Some(rect),
-            );
-            rec.keep(parcel);
+            self.combine(&mut scope, &from, *dest, parcel.as_ref(), &dst, Some(rect));
+            // Held, not dropped: the parcel is written by the pass above and read
+            // by the combine, both only *recorded*, so an early release hands its
+            // texture to the next destination tile in this very encoder (`TileScope`).
+            scope.hold(parcel);
             tiles = tiles.insert(*dest, TilePairHandle::new(dst.0, dst.1, dst.2));
+            scope.tile_done();
         }
         for coord in &plan.drops {
             tiles = tiles.remove(coord);
@@ -621,8 +577,9 @@ impl TransformRenderer {
                     inv: inv.as_ref(),
                     rect,
                 };
-                self.render_gated_mask(&mut rec.encoder, selection, &mask, unit_idxs, *dest, &dst);
+                self.render_gated_mask(&mut scope, selection, &mask, unit_idxs, *dest, &dst);
                 mask_tiles = mask_tiles.insert(*dest, dst);
+                scope.tile_done();
             }
             // The hull rides along: what stayed plus wherever the map can have
             // carried coverage, conservatively.
@@ -632,7 +589,7 @@ impl TransformRenderer {
             Selection::from_parts(mask_tiles, selection.outside(), selection.level(), hull)
         };
 
-        rec.submit(&self.ctx.queue);
+        scope.finish();
         Some((tiles, moved_selection))
     }
 
@@ -641,7 +598,7 @@ impl TransformRenderer {
     /// to [`SourceUnit`]s and the deposit gated by the source rect.
     fn render_gated_parcel(
         &self,
-        encoder: &mut wgpu::CommandEncoder,
+        scope: &mut TileScope,
         from: &mut Source<'_>,
         g: &Gated<'_>,
         unit_idxs: &[usize],
@@ -700,14 +657,16 @@ impl TransformRenderer {
             resid.as_ref().map(TexHandle::view),
             desc::CLEAR,
         );
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark transform parcel gated"),
-            color_attachments: &parcel_att[..parcel_n],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = scope
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark transform parcel gated"),
+                color_attachments: &parcel_att[..parcel_n],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
         pass.set_pipeline(&self.parcel_gated_pipeline);
         for (quad_bg, src_bg) in &draws {
             pass.set_bind_group(0, quad_bg, &[]);
@@ -723,7 +682,7 @@ impl TransformRenderer {
     /// drawn over with max blending — the soft union (§16.8).
     fn render_gated_mask(
         &self,
-        encoder: &mut wgpu::CommandEncoder,
+        scope: &mut TileScope,
         selection: &Selection,
         g: &Gated<'_>,
         unit_idxs: &[usize],
@@ -749,14 +708,16 @@ impl TransformRenderer {
             draws.push((self.gated_bg(unit, g.inv, g.rect, dest), mask_bg(&src)));
         }
 
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark transform mask gated"),
-            color_attachments: &[Some(desc::attach(dst.view(), desc::CLEAR))],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = scope
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark transform mask gated"),
+                color_attachments: &[Some(desc::attach(dst.view(), desc::CLEAR))],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
         pass.set_pipeline(&self.mask_base_pipeline);
         pass.set_bind_group(0, &base_draw.0, &[]);
         pass.set_bind_group(1, &base_draw.1, &[]);
@@ -810,7 +771,7 @@ impl TransformRenderer {
     /// `None` when nothing reaches this tile (a cut with no incoming paint).
     fn render_parcel(
         &self,
-        encoder: &mut wgpu::CommandEncoder,
+        scope: &mut TileScope,
         from: &mut Source<'_>,
         affine: Affine2,
         dest: TileCoord,
@@ -868,14 +829,16 @@ impl TransformRenderer {
             resid.as_ref().map(TexHandle::view),
             desc::CLEAR,
         );
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark transform parcel"),
-            color_attachments: &parcel_att[..parcel_n],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = scope
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark transform parcel"),
+                color_attachments: &parcel_att[..parcel_n],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
         pass.set_pipeline(&self.parcel_pipeline);
         for (quad_bg, src_bg) in &draws {
             pass.set_bind_group(0, quad_bg, &[]);
@@ -892,7 +855,7 @@ impl TransformRenderer {
     /// untouched.
     fn combine(
         &self,
-        encoder: &mut wgpu::CommandEncoder,
+        scope: &mut TileScope,
         from: &Source<'_>,
         dest: TileCoord,
         parcel: Option<&Parcel>,
@@ -960,14 +923,16 @@ impl TransformRenderer {
             dst.2.as_ref().map(TexHandle::view),
             desc::CLEAR,
         );
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark transform combine"),
-            color_attachments: &dst_att[..dst_n],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = scope
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark transform combine"),
+                color_attachments: &dst_att[..dst_n],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
         pass.set_pipeline(&self.combine_pipeline);
         pass.set_bind_group(0, &bg, &[]);
         pass.draw(0..3, 0..1);
@@ -977,7 +942,7 @@ impl TransformRenderer {
     /// mask's tiles, with the transformed source mask quads drawn over.
     fn render_mask(
         &self,
-        encoder: &mut wgpu::CommandEncoder,
+        scope: &mut TileScope,
         selection: &Selection,
         affine: Affine2,
         dest: TileCoord,
@@ -998,14 +963,16 @@ impl TransformRenderer {
             draws.push((self.quad_bg(affine, *src, dest), src_bg));
         }
 
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark transform mask"),
-            color_attachments: &[Some(desc::attach(dst.view(), outside_clear(selection)))],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = scope
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark transform mask"),
+                color_attachments: &[Some(desc::attach(dst.view(), outside_clear(selection)))],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
         pass.set_pipeline(&self.mask_pipeline);
         for (quad_bg, src_bg) in &draws {
             pass.set_bind_group(0, quad_bg, &[]);

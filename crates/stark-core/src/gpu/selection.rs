@@ -25,6 +25,7 @@ use crate::document::selection::{
 use crate::geom::{TileCoord, Vec2};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
+use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
 
 // Generated from the two shaders' own declarations (§6.7). `selection.wesl` and
@@ -397,23 +398,26 @@ impl SelectionRenderer {
             return Selection::from_parts(base, outside, level, hull);
         }
         let device = &self.ctx.device;
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("stark selection edit"),
-        });
+        // The lasso's edge texture and the shape's parameters both belong to the
+        // whole rasterize and outlive every flush; only the per-tile uniform below
+        // is scoped to one submit.
+        let mut scope = TileScope::new(&self.ctx, "stark selection edit");
         let mut tiles = base;
 
         for coord in coords {
             let dst = pool.acquire_mask(AllocSource::SelectionMask);
             let origin = mask_tex_origin(*coord);
-            let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("stark selection params"),
-                contents: bytemuck::bytes_of(&MaskUniform {
-                    a: [origin.x, origin.y, 2.0 / MASK_TEX as f32, feather],
-                    b,
-                    c,
+            let ubuf = scope.buffer(
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("stark selection params"),
+                    contents: bytemuck::bytes_of(&MaskUniform {
+                        a: [origin.x, origin.y, 2.0 / MASK_TEX as f32, feather],
+                        b,
+                        c,
+                    }),
+                    usage: wgpu::BufferUsages::UNIFORM,
                 }),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+            );
             let prev_view = self.mask_for(prev, *coord);
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark selection bg"),
@@ -428,21 +432,24 @@ impl SelectionRenderer {
                 ],
             });
             {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stark selection rasterize"),
-                    color_attachments: &[Some(desc::attach(dst.view(), desc::CLEAR))],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
+                let mut pass = scope
+                    .encoder()
+                    .begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("stark selection rasterize"),
+                        color_attachments: &[Some(desc::attach(dst.view(), desc::CLEAR))],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
                 pass.set_pipeline(&self.rasterize_pipeline);
                 pass.set_bind_group(0, &bg, &[]);
                 pass.draw(0..3, 0..1);
             }
             tiles = tiles.insert(*coord, dst);
+            scope.tile_done();
         }
-        self.ctx.queue.submit([encoder.finish()]);
+        scope.finish();
         Selection::from_parts(tiles, outside, level, hull)
     }
 

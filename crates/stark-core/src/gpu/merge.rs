@@ -30,6 +30,7 @@ use crate::gpu::composite::{
 };
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
+use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, TexHandle, TileMap, TilePairHandle, TilePool};
 
 // Generated from the shaders' own declarations (§6.10).
@@ -75,50 +76,6 @@ impl MergeScene<'_> {
 /// A tile's three channel textures, as this module passes them around — the shape
 /// [`TilePairHandle`] is built from, before it becomes one.
 type Trio = (TexHandle, TexHandle, Option<TexHandle>);
-
-/// A merge's command encoder together with the scratch it will read.
-///
-/// Nothing in a recorded encoder has *run*, so releasing a scratch handle early hands
-/// its texture straight back to the pool, which gives it to the next tile in this very
-/// encoder — whose expand overwrites it before the earlier tile's blend ever reads it.
-/// [`TransformRenderer`](super::transform::TransformRenderer)'s `Recording` learned
-/// that the hard way; this is the same guard, and it works the same way: [`submit`]
-/// takes `self`, so the scratch cannot be released except by submitting first.
-///
-/// [`submit`]: Recording::submit
-struct Recording {
-    encoder: wgpu::CommandEncoder,
-    scratch: Vec<TexHandle>,
-    /// Whether anything was encoded at all — a merge whose every tile passed through
-    /// by handle submits nothing rather than an empty command buffer.
-    drawn: bool,
-}
-
-impl Recording {
-    fn new(device: &wgpu::Device) -> Self {
-        Self {
-            encoder: device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("stark merge"),
-            }),
-            scratch: Vec::new(),
-            drawn: false,
-        }
-    }
-
-    /// Hold a trio until this recording is submitted.
-    fn keep(&mut self, trio: &Trio) {
-        self.scratch.push(trio.0.clone());
-        self.scratch.push(trio.1.clone());
-        self.scratch.extend(trio.2.clone());
-    }
-
-    /// Submit, then release the scratch — in that order, which is the whole point.
-    fn submit(self, queue: &wgpu::Queue) {
-        if self.drawn {
-            queue.submit([self.encoder.finish()]);
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct MergeRenderer {
@@ -247,7 +204,6 @@ impl MergeRenderer {
     /// unusable and no cap to exceed, because the result spans the union of two tile
     /// sets that the document already holds.
     pub fn apply(&self, pool: &TilePool, scene: MergeScene<'_>) -> TileMap {
-        let device = &self.ctx.device;
         let MergeScene {
             lower,
             upper,
@@ -273,17 +229,19 @@ impl MergeRenderer {
         // opacity is already inside the expansion, so the merge itself runs at 1.
         let blend_uniform = self.blend_uniform(blend, clip);
 
-        let mut rec = Recording::new(device);
+        // The five uniforms above are per *merge* and outlive every flush below,
+        // which is what lets the recording be cut at any tile boundary.
+        let mut scope = TileScope::new(&self.ctx, "stark merge");
         let mut tiles = lower.tiles.clone();
         for coord in self.rewritten(&scene) {
             let src = upper.tiles.get(&coord);
             let dst = lower.tiles.get(&coord);
             let out = self.acquire(pool, AllocSource::MergeDestination);
             if scene.is_direct() {
-                self.encode_direct(&mut rec, &direct_uniform, dst, src, &out);
+                self.encode_direct(&mut scope, &direct_uniform, dst, src, &out);
             } else {
                 self.encode_blended(
-                    &mut rec,
+                    &mut scope,
                     pool,
                     Uniforms {
                         expand: (&expand_lower, &expand_upper),
@@ -294,8 +252,10 @@ impl MergeRenderer {
                     &out,
                 );
             }
-            rec.drawn = true;
             tiles = tiles.insert(coord, TilePairHandle::new(out.0, out.1, out.2));
+            // Everything this tile needs is recorded, so this is the one point at
+            // which the scratch behind it is safe to hand back.
+            scope.tile_done();
         }
 
         // Tiles the source alone has, which every pass here would only be copying. A
@@ -312,7 +272,7 @@ impl MergeRenderer {
             }
         }
 
-        rec.submit(&self.ctx.queue);
+        scope.finish();
         tiles
     }
 
@@ -336,15 +296,15 @@ impl MergeRenderer {
             "a resampling filter cannot be merged (§14.11.7) — `merge::plan` declines              it, because no apron makes a gather a function of canvas position (§6.4)",
         );
         let uniform = self.filter_uniform(draw);
-        let mut rec = Recording::new(&self.ctx.device);
+        let mut scope = TileScope::new(&self.ctx, "stark merge filter");
         let mut tiles = dest.clone();
         for (coord, handle) in dest.iter() {
             let out = self.acquire(pool, AllocSource::MergeDestination);
-            self.encode_filter(&mut rec, &uniform, Some(handle), &out);
-            rec.drawn = true;
+            self.encode_filter(&mut scope, &uniform, Some(handle), &out);
             tiles = tiles.insert(*coord, TilePairHandle::new(out.0, out.1, out.2));
+            scope.tile_done();
         }
-        rec.submit(&self.ctx.queue);
+        scope.finish();
         tiles
     }
 
@@ -360,7 +320,7 @@ impl MergeRenderer {
     /// [`Compositor::encode_filter`]: crate::gpu::composite
     fn encode_filter(
         &self,
-        rec: &mut Recording,
+        scope: &mut TileScope,
         uniform: &wgpu::Buffer,
         tile: Option<&TilePairHandle>,
         out: &Trio,
@@ -384,7 +344,14 @@ impl MergeRenderer {
             entries.push(desc::tex(7, self.resid_of(tile)));
         }
         let bg = self.bind("stark merge filter bg", &self.filter.bgl, &entries);
-        self.pass(rec, "stark merge filter", &self.filter.tile, &bg, &[0], out);
+        self.pass(
+            scope,
+            "stark merge filter",
+            &self.filter.tile,
+            &bg,
+            &[0],
+            out,
+        );
     }
 
     /// The filter pass's uniform, in a buffer wide enough for its dynamic-offset slot.
@@ -422,7 +389,7 @@ impl MergeRenderer {
     /// The direct tile-space law: one pass, `merge.wesl` (§14.11).
     fn encode_direct(
         &self,
-        rec: &mut Recording,
+        scope: &mut TileScope,
         uniform: &wgpu::Buffer,
         dst: Option<&TilePairHandle>,
         src: Option<&TilePairHandle>,
@@ -440,7 +407,7 @@ impl MergeRenderer {
             entries.push(desc::tex(6, self.resid_of(src)));
         }
         let bg = self.bind("stark merge bg", &self.direct_bgl, &entries);
-        self.pass(rec, "stark merge tile", &self.direct, &bg, &[], out);
+        self.pass(scope, "stark merge tile", &self.direct, &bg, &[], out);
     }
 
     /// The general law: expand both sides into what they composite to, run the
@@ -453,7 +420,7 @@ impl MergeRenderer {
     /// produced by the very shader the screen would have run.
     fn encode_blended(
         &self,
-        rec: &mut Recording,
+        scope: &mut TileScope,
         pool: &TilePool,
         u: Uniforms<'_>,
         (dst, src): (Option<&TilePairHandle>, Option<&TilePairHandle>),
@@ -462,19 +429,21 @@ impl MergeRenderer {
         let lower = self.acquire(pool, AllocSource::MergeScratch);
         let upper = self.acquire(pool, AllocSource::MergeScratch);
         let blended = self.acquire(pool, AllocSource::MergeScratch);
-        self.encode_slab(rec, &self.expand, u.expand.0, self.views_of(dst), &lower);
-        self.encode_slab(rec, &self.expand, u.expand.1, self.views_of(src), &upper);
-        self.encode_blend(rec, u.blend, &lower, &upper, &blended);
-        self.encode_slab(rec, &self.store, u.store, views(&blended), out);
-        rec.keep(&lower);
-        rec.keep(&upper);
-        rec.keep(&blended);
+        self.encode_slab(scope, &self.expand, u.expand.0, self.views_of(dst), &lower);
+        self.encode_slab(scope, &self.expand, u.expand.1, self.views_of(src), &upper);
+        self.encode_blend(scope, u.blend, &lower, &upper, &blended);
+        self.encode_slab(scope, &self.store, u.store, views(&blended), out);
+        // Held, not dropped: nothing in a recorded encoder has run, so an early
+        // release hands these straight to the next tile's expand (`TileScope`).
+        scope.hold(lower);
+        scope.hold(upper);
+        scope.hold(blended);
     }
 
     /// One direction of the slab law over one tile (`slab.wesl`).
     fn encode_slab(
         &self,
-        rec: &mut Recording,
+        scope: &mut TileScope,
         pipeline: &wgpu::RenderPipeline,
         uniform: &wgpu::Buffer,
         input: (
@@ -493,7 +462,7 @@ impl MergeRenderer {
             entries.push(desc::tex(3, r));
         }
         let bg = self.bind("stark slab bg", &self.slab_bgl, &entries);
-        self.pass(rec, "stark slab tile", pipeline, &bg, &[], out);
+        self.pass(scope, "stark slab tile", pipeline, &bg, &[], out);
     }
 
     /// The compositor's blend pass, on tile-sized targets.
@@ -504,7 +473,7 @@ impl MergeRenderer {
     /// the offset is always the first.
     fn encode_blend(
         &self,
-        rec: &mut Recording,
+        scope: &mut TileScope,
         uniform: &wgpu::Buffer,
         back: &Trio,
         src: &Trio,
@@ -532,7 +501,7 @@ impl MergeRenderer {
         }
         let bg = self.bind("stark merge blend bg", &self.blend.bgl, &entries);
         self.pass(
-            rec,
+            scope,
             "stark merge blend",
             &self.blend.pipeline,
             &bg,
@@ -544,7 +513,7 @@ impl MergeRenderer {
     /// One fullscreen pass over a tile's three channel targets.
     fn pass(
         &self,
-        rec: &mut Recording,
+        scope: &mut TileScope,
         label: &str,
         pipeline: &wgpu::RenderPipeline,
         bg: &wgpu::BindGroup,
@@ -557,14 +526,16 @@ impl MergeRenderer {
             out.2.as_ref().map(TexHandle::view),
             desc::CLEAR,
         );
-        let mut pass = rec.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some(label),
-            color_attachments: &attachments[..n],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = scope
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(label),
+                color_attachments: &attachments[..n],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bg, offsets);
         pass.draw(0..3, 0..1);

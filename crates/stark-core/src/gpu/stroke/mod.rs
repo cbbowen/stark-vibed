@@ -153,53 +153,6 @@ pub struct StrokeScene<'a> {
     pub surface: &'a crate::gpu::surface::Surface,
 }
 
-/// GPU resources scoped to one `render()` call (currently the instance buffer;
-/// per-stroke region textures register here too as dynamics return). They're sized
-/// per-stroke, so — unlike the fixed-`TILE_TEX` tile pool — they can't be recycled,
-/// and a *live* stroke re-renders on every pointer move. Left to drop they'd only
-/// release the JS handle and wait on GC, which can't keep up → the tab OOMs. So
-/// they're collected here (cheap `Arc` clones) and **`destroy()`d on drop**, which
-/// `render` arranges to happen right after the submit — safe, because WebGPU defers
-/// the real free until the in-flight work referencing them completes.
-#[derive(Default)]
-struct ScopedResources {
-    textures: Vec<wgpu::Texture>,
-    buffers: Vec<wgpu::Buffer>,
-}
-
-impl ScopedResources {
-    /// Register a per-stroke texture; returns it unchanged (the clone keeps the GPU
-    /// resource alive until this `ScopedResources` drops).
-    fn texture(&mut self, tex: wgpu::Texture) -> wgpu::Texture {
-        self.textures.push(tex.clone());
-        tex
-    }
-
-    /// Register a per-stroke buffer; returns it unchanged.
-    fn buffer(&mut self, buf: wgpu::Buffer) -> wgpu::Buffer {
-        self.buffers.push(buf.clone());
-        buf
-    }
-}
-
-impl Drop for ScopedResources {
-    fn drop(&mut self) {
-        if !self.textures.is_empty() || !self.buffers.is_empty() {
-            tracing::trace!(
-                textures = self.textures.len(),
-                buffers = self.buffers.len(),
-                "destroying scoped stroke resources",
-            );
-        }
-        for tex in self.textures.drain(..) {
-            tex.destroy();
-        }
-        for buf in self.buffers.drain(..) {
-            buf.destroy();
-        }
-    }
-}
-
 impl StrokeRenderer {
     pub(crate) fn new(
         ctx: &GpuContext,

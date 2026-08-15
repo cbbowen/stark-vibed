@@ -27,6 +27,7 @@ use crate::document::selection::{
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::selection::SelectionRenderer;
+use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 
 // Generated from `fill.wesl`'s own declarations (§6.7).
@@ -146,9 +147,7 @@ impl FillRenderer {
         };
 
         let device = &self.ctx.device;
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("stark fill"),
-        });
+        let mut scope = TileScope::new(&self.ctx, "stark fill");
 
         // Every stop's color converts to this space's channels **on the CPU, once
         // per fill** — the shader then interpolates in the working space, which is
@@ -181,6 +180,8 @@ impl FillRenderer {
                 }
             }
         }
+        // Per *fill*, and so deliberately not registered with the scope: it is
+        // bound by every tile below and has to outlive each of their submits.
         let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark fill uniform"),
             contents: bytemuck::bytes_of(&uniform),
@@ -205,13 +206,17 @@ impl FillRenderer {
             // The tile's canvas origin, apron included — mask and paint tiles
             // share their geometry, so the selection's origin is this pass's too.
             let origin = mask_tex_origin(*coord);
-            let tile_ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("stark fill tile uniform"),
-                contents: bytemuck::bytes_of(&TileUniform {
-                    origin: [origin.x, origin.y, 0.0, 0.0],
-                }),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+            // Per tile, and destroyed at the submit that reads it rather than
+            // left for the GC (`ScopedResources`).
+            let tile_ubuf = scope.buffer(device.create_buffer_init(
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some("stark fill tile uniform"),
+                    contents: bytemuck::bytes_of(&TileUniform {
+                        origin: [origin.x, origin.y, 0.0, 0.0],
+                    }),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                },
+            ));
             let dst = (
                 pool.acquire_tex(self.color_format, AllocSource::FillDestination),
                 pool.acquire_tex(self.aux_format, AllocSource::FillDestination),
@@ -246,22 +251,25 @@ impl FillRenderer {
                 dst.2.as_ref().map(|t| desc::attach(t.view(), desc::CLEAR)),
             ];
             let n = 2 + usize::from(dst.2.is_some());
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark fill tile"),
-                color_attachments: &attachments[..n],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+            let mut pass = scope
+                .encoder()
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("stark fill tile"),
+                    color_attachments: &attachments[..n],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bg, &[]);
             pass.draw(0..3, 0..1);
             drop(pass);
             tiles = tiles.insert(*coord, TilePairHandle::new(dst.0, dst.1, dst.2));
+            scope.tile_done();
         }
 
-        self.ctx.queue.submit([encoder.finish()]);
+        scope.finish();
         Some(tiles)
     }
 }
