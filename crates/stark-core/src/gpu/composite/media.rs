@@ -139,6 +139,18 @@ pub(super) struct Offscreen {
     pub(super) bg: wgpu::BindGroup,
 }
 
+impl Offscreen {
+    /// The trio as pass A attaches it (§6.7) — the same three views the media bind
+    /// group above reads, which is the invariant this type exists to hold together.
+    pub(super) fn targets(&self) -> crate::gpu::channels::Targets<'_> {
+        crate::gpu::channels::Targets {
+            color: &self.color,
+            aux: &self.aux,
+            resid: self.resid.as_ref(),
+        }
+    }
+}
+
 /// (Re)create the offscreen composite targets and the media bind group over them.
 pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
     let OffscreenDesc {

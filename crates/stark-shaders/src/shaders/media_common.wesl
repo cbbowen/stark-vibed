@@ -9,7 +9,6 @@ import package::lib::color::{linear_to_srgb};
 import package::lib::paint_common::{PAINT_EPS};
 
 struct Media {
-    light: vec4<f32>,  // _, _, _, height_strength (relief slope; xyz unused under IBL)
     bg: vec4<f32>,     // background (substrate) in latent color space
     // The substrate color's **residual** (.xyz), the half of it the space's three
     // channels cannot express (§6.7); .w unused. Zero for every space but
@@ -20,7 +19,12 @@ struct Media {
     // is mirrored into Rust from the unlinked source (§6.10), which cannot evaluate a
     // feature, and this pass has one bind group layout across both spaces.
     bg_resid: vec4<f32>,
-    shade: vec4<f32>,  // exposure, diffuse_lod, gloss, _
+    // exposure, diffuse_lod, gloss, height_strength (the relief slope). The last
+    // arrived here when a `light: vec4` that carried it in `.w` was deleted: image-
+    // based lighting had taken over the direction its `.xyz` once held, leaving three
+    // lanes named for something the pass no longer has and one real number hiding in
+    // the fourth. `shade.w` was free, and the slope is a shading term.
+    shade: vec4<f32>,
     surf_a: vec4<f32>, // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
     surf_b: vec4<f32>, // surface_strength, transparent (0/1), _, _
     // The screen→canvas linear map, column-major: `surf_m.xy` is the first column,
@@ -131,7 +135,7 @@ fn over_substrate(paint: vec3<f32>, vis: f32) -> vec4<f32> {
 // than steepening as you zoom out.
 fn surface_normal(p: vec2<f32>, dim: vec2<i32>) -> vec3<f32> {
     let i = vec2<i32>(floor(p));
-    let strength = m.light.w / m.surf_a.z;
+    let strength = m.shade.w / m.surf_a.z;
     let hl = height_at(i + vec2<i32>(-1, 0), dim);
     let hr = height_at(i + vec2<i32>(1, 0), dim);
     let hu = height_at(i + vec2<i32>(0, -1), dim);

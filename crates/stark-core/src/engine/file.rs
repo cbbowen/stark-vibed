@@ -485,7 +485,6 @@ impl Engine {
             build_gpu(GpuBuild {
                 gpu: &self.gpu,
                 target_format: self.target_format,
-                viewport: self.session.view.viewport,
                 cs: &cs,
                 surface: &surface,
                 environment: &environment,

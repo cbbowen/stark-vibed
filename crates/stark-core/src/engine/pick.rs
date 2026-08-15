@@ -11,6 +11,7 @@ use super::Engine;
 use super::render::visible_tiles;
 use crate::document::LayerId;
 use crate::geom::{Extent2, ViewTransform};
+use crate::gpu::channels::Targets;
 
 /// Which layers an eyedropper sample is taken from (§18.0.2).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -235,11 +236,11 @@ impl Engine {
             )
         });
 
-        let (color_format, aux_format, resid_format) = self.compositor_pipeline.channel_formats();
+        let formats = self.compositor_pipeline.channel_formats();
         // The readback decodes four halves per texel. Both color spaces store the
         // color channels that way (§6.1); a new one that did not would
         // have to say so here rather than silently mis-decoding.
-        debug_assert_eq!(color_format, wgpu::TextureFormat::Rgba16Float);
+        debug_assert_eq!(formats.color, wgpu::TextureFormat::Rgba16Float);
 
         let mut colors = Vec::with_capacity(points.len());
         let mut resids = Vec::with_capacity(points.len());
@@ -268,7 +269,7 @@ impl Engine {
             };
             let color = self.offscreen_target(
                 "stark pick color",
-                color_format,
+                formats.color,
                 size,
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             );
@@ -276,7 +277,7 @@ impl Engine {
             // paint is there, not what color it is.
             let aux = self.offscreen_target(
                 "stark pick aux",
-                aux_format,
+                formats.aux,
                 size,
                 wgpu::TextureUsages::RENDER_ATTACHMENT,
             );
@@ -284,7 +285,7 @@ impl Engine {
             // is half the color, so an eyedropper that sampled only the concentrations
             // would report the polynomial's nearest reachable color — black as `#383838`
             // — which is precisely the defect this channel exists to fix (§6.7).
-            let resid = resid_format.map(|f| {
+            let resid = formats.resid.map(|f| {
                 self.offscreen_target(
                     "stark pick resid",
                     f,
@@ -292,14 +293,18 @@ impl Engine {
                     wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                 )
             });
+            // Named rather than inlined into the call: a `Targets` borrows its three
+            // views, so they have to outlive it.
+            let default = wgpu::TextureViewDescriptor::default();
+            let (color_view, aux_view) = (color.create_view(&default), aux.create_view(&default));
+            let resid_view = resid.as_ref().map(|t| t.create_view(&default));
             self.compositor.composite_channels(
                 &self.compositor_pipeline,
-                &color.create_view(&wgpu::TextureViewDescriptor::default()),
-                &aux.create_view(&wgpu::TextureViewDescriptor::default()),
-                resid
-                    .as_ref()
-                    .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
-                    .as_ref(),
+                Targets {
+                    color: &color_view,
+                    aux: &aux_view,
+                    resid: resid_view.as_ref(),
+                },
                 view,
                 &groups,
             );

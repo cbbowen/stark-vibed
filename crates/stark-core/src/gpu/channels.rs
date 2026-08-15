@@ -55,6 +55,14 @@ impl ChannelFormats {
         self.resid.is_some()
     }
 
+    /// How many attachments a pass over these channels declares — 2 without a
+    /// residual, 3 with. [`Targets::count`]'s other half: one is what the formats
+    /// say, the other what a caller brought, and comparing them is the whole of
+    /// "did this caller bring the right trio".
+    pub(crate) fn count(&self) -> usize {
+        2 + usize::from(self.has_resid())
+    }
+
     /// The trio as render-pipeline color targets, each replacing what it writes —
     /// what a pass computing whole texels declares.
     pub(crate) fn targets(&self) -> Vec<Option<wgpu::ColorTargetState>> {

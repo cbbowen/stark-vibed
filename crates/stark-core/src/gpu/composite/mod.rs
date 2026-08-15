@@ -193,7 +193,12 @@ pub struct CompositorPasses {
     filter: Arc<FilterPass>,
     overlay: OverlayPass,
     guides: GuidePass,
-    media: MediaPass,
+    /// `media_pass`, not `media`: [`CompositorPipeline`] reaches this whole struct
+    /// through `Deref` *and* has a `media()` of its own returning the
+    /// [`MediaParams`], so a bare `media` made `p.media` and `p.media()` two
+    /// different things one character apart — and the field, being the `Deref`'d one,
+    /// is the half a reader is least expecting.
+    media_pass: MediaPass,
     resolve: ResolvePass,
 
     /// Offscreen channel formats, from the color space (§6.7) — including whether
@@ -275,22 +280,25 @@ fn next_generation() -> u64 {
 pub struct Compositor {
     /// The size **every** offscreen attachment here is at: the target's, times
     /// [`Self::ss`]. Not the target's own, which is only known where the target is.
+    /// Meaningless while [`Self::accum`] is `None`.
     size: Extent2,
     /// The canvas → NDC mapping *this* render is drawing through, and the two group-0
     /// bind groups over it (§6.4). Per consumer, not per pipeline — see
     /// [`ViewBindings`].
     view: ViewBindings,
-    comp_color_view: wgpu::TextureView,
-    comp_aux_view: wgpu::TextureView,
-    /// The residual accumulator, in a space that has one (§6.7).
-    comp_resid_view: Option<wgpu::TextureView>,
+    /// Pass A's offscreen channels at [`Self::size`], and the media bind group over
+    /// them. `None` until the first render, because only a render knows the zoom and
+    /// therefore the supersampling factor these are sized by: building them at the
+    /// caller's guess would have been an allocation of the whole viewport that
+    /// [`Self::ensure_targets`] then threw away on its first call. It is also what
+    /// leaves the sizing rule in one place instead of two that could disagree.
+    accum: Option<media::Offscreen>,
     /// This consumer's lighting parameters as the media pass reads them, written at
     /// the top of every render from the pipeline's [`MediaParams`]. Per consumer for
     /// [`MediaPass`]'s reason: two engines sharing one pipeline kit light their
     /// canvases differently, and the bind group naming this was per-consumer already.
     media_buf: wgpu::Buffer,
-    media_bg: wgpu::BindGroup,
-    /// The [`CompositorPipeline::generation`] `media_bg` was built against.
+    /// The [`CompositorPipeline::generation`] [`Self::accum`] was built against.
     generation: u64,
 
     /// Samples per axis the attachments are built for (§6.4). `1` — the
@@ -356,9 +364,15 @@ struct Supersampled {
 pub struct Offscreen(Option<Compositor>);
 
 impl Offscreen {
-    /// The compositor, built against `p` at `size` if this is the first use.
-    pub(crate) fn get(&mut self, p: &CompositorPipeline, size: Extent2) -> &mut Compositor {
-        self.0.get_or_insert_with(|| Compositor::new(p, size))
+    /// The compositor, built against `p` if this is the first use.
+    ///
+    /// No size: the attachments are sized by the first *render*, which is the only
+    /// thing that knows the zoom and therefore the supersampling factor. This used to
+    /// take one and pass it to `Compositor::new`, where it was overwritten by the
+    /// very next call — so a miniature allocated a whole 1:1 viewport and threw it
+    /// away, and the parameter told a reader something that was not true.
+    pub(crate) fn get(&mut self, p: &CompositorPipeline) -> &mut Compositor {
+        self.0.get_or_insert_with(|| Compositor::new(p))
     }
 }
 
@@ -395,7 +409,7 @@ impl CompositorPipeline {
             filter,
             overlay: OverlayPass::new(device, target_format),
             guides: GuidePass::new(device, target_format),
-            media: MediaPass::new(device, color_space, &screen),
+            media_pass: MediaPass::new(device, color_space, &screen),
             resolve: ResolvePass::new(device, &screen),
             view: View::new(device),
             ctx: ctx.clone(),
@@ -466,20 +480,15 @@ impl CompositorPipeline {
         self.generation = next_generation();
     }
 
-    /// The raw channel formats pass A writes: `(color, aux, resid)`, the last `None`
-    /// in a space with no residual (§6.7). A caller supplying its own targets to
-    /// [`Compositor::composite_channels`] has to match them — **including the
-    /// residual**, since a pigment document's pass A writes three targets and a
-    /// caller that offered two would be missing an attachment, not merely losing a
-    /// channel.
-    pub fn channel_formats(
-        &self,
-    ) -> (
-        wgpu::TextureFormat,
-        wgpu::TextureFormat,
-        Option<wgpu::TextureFormat>,
-    ) {
-        (self.formats.color, self.formats.aux, self.formats.resid)
+    /// The channel formats pass A writes (§6.7) — what a caller supplying its own
+    /// targets to [`Compositor::composite_channels`] has to allocate.
+    ///
+    /// The whole [`ChannelFormats`] rather than the `(color, aux, resid)` tuple it
+    /// used to be taken apart into: the residual is not a channel a caller may decide
+    /// to skip, and handing back the type that says so is cheaper than the paragraph
+    /// that used to.
+    pub(crate) fn channel_formats(&self) -> ChannelFormats {
+        self.formats
     }
 
     /// The offscreen pair and the media bind group over it, at `size`. `media_buf`
@@ -489,7 +498,7 @@ impl CompositorPipeline {
             device: &self.ctx.device,
             size,
             formats: self.formats,
-            media: &self.media,
+            media: &self.media_pass,
             media_buf,
             surface: &self.surface,
             environment: &self.environment,
@@ -498,26 +507,24 @@ impl CompositorPipeline {
 }
 
 impl Compositor {
-    /// Attachments and instance streams for one target of `size`, against the shared
-    /// `pipeline`. Cheap — everything expensive (the six passes' pipelines, their
-    /// layouts, the decoded pigment LUT) lives in the pipeline and is only borrowed.
-    pub fn new(pipeline: &CompositorPipeline, size: Extent2) -> Self {
+    /// The instance streams, uniforms and view bindings for one consumer, against the
+    /// shared `pipeline`. Cheap — everything expensive (the six passes' pipelines,
+    /// their layouts, the decoded pigment LUT) lives in the pipeline and is only
+    /// borrowed, and everything *sized* (the accumulator, the supersampled target,
+    /// the blend scratch) waits for the first render, which is the only thing that
+    /// knows the zoom.
+    pub fn new(pipeline: &CompositorPipeline) -> Self {
         let device = &pipeline.ctx.device;
-        let media_buf = media::uniform_buffer(device);
-        let off = pipeline.offscreen(size, &media_buf);
         Self {
-            size,
+            size: Extent2::new(0, 0),
             view: ViewBindings::new(
                 device,
                 &pipeline.view,
                 &pipeline.tiles.view_bgl,
                 &pipeline.overlay.view_bgl,
             ),
-            media_buf,
-            comp_color_view: off.color,
-            comp_aux_view: off.aux,
-            comp_resid_view: off.resid,
-            media_bg: off.bg,
+            media_buf: media::uniform_buffer(device),
+            accum: None,
             generation: pipeline.generation,
             // 1:1 until a render says otherwise — `ensure_targets` is what decides,
             // because only a render knows the zoom.
@@ -534,9 +541,13 @@ impl Compositor {
         }
     }
 
-    /// Bring the attachments in line with what is about to be drawn: a target of
+    /// Bring the attachments in line with what is about to be drawn — a target of
     /// `target_size` rendered at `ss` samples per axis, against the pipeline's current
-    /// surface/environment.
+    /// surface/environment — and hand back the accumulator to draw into.
+    ///
+    /// Returning it rather than leaving the caller to unwrap [`Self::accum`] is what
+    /// makes "the accumulator exists" a consequence of having called this, in the one
+    /// place that can build it.
     ///
     /// Called at the top of every render, so a resized target, a zoom that crossed a
     /// supersampling threshold, a swapped canvas weave, a swapped light and a whole
@@ -550,33 +561,40 @@ impl Compositor {
     /// of by a second condition that could disagree with this one. It costs one
     /// reallocation on the next blended render, and only a document with a
     /// non-`Normal` layer has one at all.
-    fn ensure_targets(&mut self, p: &CompositorPipeline, target_size: Extent2, ss: u32) {
+    fn ensure_targets(
+        &mut self,
+        p: &CompositorPipeline,
+        target_size: Extent2,
+        ss: u32,
+    ) -> &media::Offscreen {
         let size = Extent2::new(target_size.width * ss, target_size.height * ss);
-        if size == self.size && ss == self.ss && self.generation == p.generation {
-            return;
-        }
-        self.size = size;
-        self.ss = ss;
-        self.generation = p.generation;
-        self.scratch = None;
-        let off = p.offscreen(self.size, &self.media_buf);
-        self.comp_color_view = off.color;
-        self.comp_aux_view = off.aux;
-        self.comp_resid_view = off.resid;
-        self.media_bg = off.bg;
-        // Allocated only where it is written into. A 1:1 view drops it here, which is
-        // what returns the memory the moment the artist zooms back in to paint.
-        self.ss_target = (ss > 1).then(|| {
-            let device = &p.ctx.device;
-            let view = offscreen_view(device, size, p.target_format, "stark supersampled");
-            let buf = resolve::uniform_buffer(device);
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark resolve bg"),
-                layout: &p.resolve.bgl,
-                entries: &[desc::uniform_entry(0, &buf), desc::tex(1, &view)],
+        let current = self.accum.is_some()
+            && size == self.size
+            && ss == self.ss
+            && self.generation == p.generation;
+        if !current {
+            self.size = size;
+            self.ss = ss;
+            self.generation = p.generation;
+            self.scratch = None;
+            self.accum = Some(p.offscreen(self.size, &self.media_buf));
+            // Allocated only where it is written into. A 1:1 view drops it here, which
+            // is what returns the memory the moment the artist zooms back in to paint.
+            self.ss_target = (ss > 1).then(|| {
+                let device = &p.ctx.device;
+                let view = offscreen_view(device, size, p.target_format, "stark supersampled");
+                let buf = resolve::uniform_buffer(device);
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("stark resolve bg"),
+                    layout: &p.resolve.bgl,
+                    entries: &[desc::uniform_entry(0, &buf), desc::tex(1, &view)],
+                });
+                Supersampled { view, bg, buf }
             });
-            Supersampled { view, bg, buf }
-        });
+        }
+        self.accum
+            .as_ref()
+            .expect("the branch above builds it when it is absent")
     }
 
     /// Write the view uniform and upload pass A's instance streams for `groups`,
@@ -1074,28 +1092,31 @@ impl Compositor {
     /// pigment mixture that cannot be picked back up, which is the point of mixing
     /// in pigment space at all.
     ///
-    /// `color` and `aux` must carry the formats
-    /// [`CompositorPipeline::channel_formats`] reports, and be `view.viewport` in
-    /// size. They are the caller's, not this compositor's: a sample is taken through
-    /// the compositor that belongs to the screen, so it must leave the screen's own
-    /// attachments — a few hundred texels wide against the window's millions —
-    /// exactly where they were. That is why this does not go through
-    /// [`Self::ensure_targets`], and why the blend scratch below is its own too.
-    pub fn composite_channels(
+    /// `into` must carry the formats [`CompositorPipeline::channel_formats`] reports
+    /// and be `view.viewport` in size. It is the caller's, not this compositor's: a
+    /// sample is taken through the compositor that belongs to the screen, so it must
+    /// leave the screen's own attachments — a few hundred texels wide against the
+    /// window's millions — exactly where they were. That is why this does not go
+    /// through [`Self::ensure_targets`], and why the blend scratch below is its own
+    /// too.
+    ///
+    /// A [`Targets`] rather than three views, which is how the residual stops being a
+    /// caller's decision. A pigment document's pass A **writes three attachments**,
+    /// so a caller offering two is missing one — a validation error the Oklab half of
+    /// the suite cannot see, guarded here by a `debug_assert` that only debug builds
+    /// ran. `ChannelFormats` exists to make "all three or none of them" unsayable
+    /// (§6.7); taking the trio it produces is what lets this path inherit that
+    /// instead of re-checking it.
+    pub(crate) fn composite_channels(
         &mut self,
         p: &CompositorPipeline,
-        color: &wgpu::TextureView,
-        aux: &wgpu::TextureView,
-        // The residual target, which a pigment document's pass A **requires**: it
-        // writes three attachments, and this is also the half of the color a caller
-        // needs to reconstruct an sRGB answer from what lands here (§6.7).
-        resid: Option<&wgpu::TextureView>,
+        into: Targets<'_>,
         view: ViewTransform,
         groups: &[CompositeGroup],
     ) {
         debug_assert_eq!(
-            resid.is_some(),
-            p.formats.has_resid(),
+            into.count(),
+            p.formats.count(),
             "pass A's attachment count is the color space's, not the caller's",
         );
         let streams = self.prepare_composite(p, view, groups);
@@ -1113,14 +1134,7 @@ impl Compositor {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("stark pick encoder"),
             });
-        self.encode_composite(
-            p,
-            &mut encoder,
-            Targets { color, aux, resid },
-            groups,
-            &streams,
-            scratch.as_ref(),
-        );
+        self.encode_composite(p, &mut encoder, into, groups, &streams, scratch.as_ref());
         p.ctx.queue.submit([encoder.finish()]);
     }
 
@@ -1170,9 +1184,10 @@ impl Compositor {
         } else {
             None
         };
-        let (comp_color_view, comp_aux_view, media_bg) =
-            (&self.comp_color_view, &self.comp_aux_view, &self.media_bg);
-        let comp_resid_view = self.comp_resid_view.as_ref();
+        let accum = self
+            .accum
+            .as_ref()
+            .expect("ensure_targets builds the accumulator");
         // What the lit image, the outlines and the guides are drawn into: the
         // supersampled target when there is one, else the caller's directly. Chrome
         // goes through the same resolve as the paint, so the marching ants and the
@@ -1205,10 +1220,9 @@ impl Compositor {
             &self.media_buf,
             0,
             bytemuck::bytes_of(&MediaUniform {
-                light: [0.0, 0.0, 0.0, m.height_strength],
                 bg: bg_channels,
                 bg_resid,
-                shade: [exposure, diffuse_lod, m.specular, 0.0],
+                shade: [exposure, diffuse_lod, m.specular, m.height_strength],
                 surf_a: [
                     canvas_origin.x,
                     canvas_origin.y,
@@ -1234,18 +1248,7 @@ impl Compositor {
         // Pass A: composite tiles into offscreen color + aux. The parity trick in
         // `encode_composite` guarantees the result lands in these two views however
         // many blend passes ran, so the media bind group never has to be rebuilt.
-        self.encode_composite(
-            p,
-            &mut encoder,
-            Targets {
-                color: comp_color_view,
-                aux: comp_aux_view,
-                resid: comp_resid_view,
-            },
-            groups,
-            &streams,
-            scratch,
-        );
+        self.encode_composite(p, &mut encoder, accum.targets(), groups, &streams, scratch);
 
         // Pass B: media/lighting → target.
         {
@@ -1267,8 +1270,8 @@ impl Compositor {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&p.media.pipeline);
-            pass.set_bind_group(0, media_bg, &[]);
+            pass.set_pipeline(&p.media_pass.pipeline);
+            pass.set_bind_group(0, &accum.bg, &[]);
             pass.draw(0..3, 0..1);
         }
 

@@ -308,9 +308,12 @@ impl Engine {
                 self.compositor
                     .render(&self.compositor_pipeline, target, view, scene)
             }
-            Attachments::Offscreen(into) => into
-                .get(&self.compositor_pipeline, view.viewport)
-                .render(&self.compositor_pipeline, target, view, scene),
+            Attachments::Offscreen(into) => into.get(&self.compositor_pipeline).render(
+                &self.compositor_pipeline,
+                target,
+                view,
+                scene,
+            ),
         }
     }
 

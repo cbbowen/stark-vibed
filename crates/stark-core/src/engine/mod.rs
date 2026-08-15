@@ -403,7 +403,6 @@ impl Engine {
             build_gpu(GpuBuild {
                 gpu: &gpu,
                 target_format,
-                viewport,
                 cs: &color_space,
                 surface: &surface.current(),
                 environment: &environment.current(),
@@ -495,7 +494,7 @@ impl Engine {
             donor.environment.current(),
             donor.compositor_pipeline.media(),
         );
-        let compositor = Compositor::new(&compositor_pipeline, viewport);
+        let compositor = Compositor::new(&compositor_pipeline);
         let mut engine = Self {
             target_format: donor.target_format,
             color_space: donor.color_space.clone(),
@@ -1377,7 +1376,9 @@ impl Engine {
 struct GpuBuild<'a> {
     gpu: &'a GpuContext,
     target_format: wgpu::TextureFormat,
-    viewport: Extent2,
+    // No viewport: nothing built here is sized by one. The `Compositor` used to take
+    // it and overwrite it on its first render, which is the only moment the zoom —
+    // and so the supersampled size — is known.
     cs: &'a Arc<dyn ColorSpace>,
     surface: &'a Surface,
     environment: &'a Environment,
@@ -1398,7 +1399,6 @@ fn build_gpu(
     let GpuBuild {
         gpu,
         target_format,
-        viewport,
         cs,
         surface,
         environment,
@@ -1434,7 +1434,7 @@ fn build_gpu(
         blend.clone(),
         filter.clone(),
     );
-    let compositor = Compositor::new(&compositor_pipeline, viewport);
+    let compositor = Compositor::new(&compositor_pipeline);
     let transform = TransformRenderer::new(gpu, cs.as_ref(), selection.clone(), zeroes.clone());
     let fill = FillRenderer::new(gpu, cs.clone(), selection.clone(), zeroes.clone());
     let merge = MergeRenderer::new(gpu, cs.as_ref(), zeroes, blend, filter);
