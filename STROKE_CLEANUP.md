@@ -5,403 +5,213 @@ Reviewed 2026-08-15 on branch `gpu-cleanup` (`8952270`), across all 11 files of
 modules), plus the two things it is joined to at the seam: the generated shader
 mirrors (`stark-shaders/build/mirror.rs`, §6.10) and `gpu/tile`'s pool.
 
-**Nothing here landed.** This file records what the review found and what it would
-cost; every finding is open. Symbol names are the durable part.
+**Seven of eleven findings have landed**, in four commits above `8952270`. Three are
+open and one landed in part; each says below what it would still cost. Symbol names
+are the durable part.
 
-This is `COMPOSITE_CLEANUP.md`'s review one directory over, and it finds the mirror
+This is `COMPOSITE_CLEANUP.md`'s review one directory over, and it found the mirror
 image. There the module's hardest rules were *argued in prose and consumed
-positionally*; here most of them are already structural — `SubmitScope` makes a lease
+positionally*; here most of them were already structural — `SubmitScope` makes a lease
 release unforgeable, `dynamics_setup` answers from the brush alone so no two renders
 can disagree, `Slot::pack` is pinned field-by-field against the lane the shader reads.
-What is left is a shorter list, and it clusters in the places that discipline has not
-reached: the GPU-facing half (`kit`/`run`), and the three or four types that carry more
-than one subject.
+What was left was a shorter list, and it clustered in the places that discipline had
+not reached: the GPU-facing half (`kit`/`run`), and the three or four types that
+carried more than one subject.
 
 ## The one-sentence summary
 
-**The models are separated and tested; the bindings and the boxes are not.** Every
-number a brush becomes is CPU float math with a test on it, but the layouts and their
-bind groups are two hand-maintained mirrors of one shader-declared fact (§4), one
-segment's coverage box is computed four times by three functions that must agree (§3,
-§5), and `Segment` carries a bleed window's rates that the slot then zeroes back out
-(§2). One correctness hazard is live-but-unreached (§1), and it is the very class
-`scratch.rs`'s module doc was written against.
+**The models were separated and tested; the bindings and the boxes were not.** Every
+number a brush becomes was CPU float math with a test on it, but the layouts and their
+bind groups were two hand-maintained mirrors of one shader-declared fact (§4), one
+segment's coverage box was computed four times by three functions that had to agree
+(§3, §5), and `Segment` carried a bleed window's rates that the slot then zeroed back
+out (§2). One correctness hazard was live-but-unreached (§1), and it was the very
+class `scratch.rs`'s module doc was written against.
 
 | § | Finding | Kind | Status |
 |---|---|---|---|
-| 1 | Base tiles reach the pool free list under an open encoder | latent, ordering-held | open |
-| 2 | `Segment` is a sweep and a paint parcel in one struct | god-struct, fabricated windows | open |
-| 3 | Dispatch rects computed twice; the fit is an assert, not a max | duplication + wasm panic | open |
-| 4 | Layouts and bind groups are two hand-written mirrors | ~350 lines, drift class | open |
-| 5 | Three answers to "what region do these sweeps need" | invariant by convention | open |
-| 6 | The swept path serializes on one shared scratch pair | 2N passes, no overlap | open, measure |
+| 1 | Base tiles reach the pool free list under an open encoder | latent, ordering-held | **landed** `174f405` |
+| 2 | `Segment` is a sweep and a paint parcel in one struct | god-struct, fabricated windows | **landed** `169bd0a` |
+| 3 | Dispatch rects computed twice; the fit is an assert, not a max | duplication + wasm panic | **landed** `169bd0a` |
+| 4 | Layouts and bind groups are two hand-written mirrors | ~350 lines, drift class | **landed** `140ae11` |
+| 5 | Three answers to "what region do these sweeps need" | invariant by convention | **landed** `169bd0a` |
+| 6 | The swept path serializes on one shared scratch pair | 2N passes, no overlap | **landed** `169bd0a`, −18/−20% |
 | 7 | 40–60 bind groups per fold on the live tail | allocation rate | open |
-| 8 | `segments.rs` is five subjects; `budget.rs` is three | 2.6k-line file | open |
+| 8 | `segments.rs` is five subjects; `budget.rs` is three | 2.6k-line file | **part landed** `951b032` |
 | 9 | Every kit field is `pub(super)`; the renderer has no boundary | encapsulation | open |
-| 10 | Smaller correctness and clarity items (four) | mixed | open |
+| 10 | Smaller correctness and clarity items (four) | mixed | **landed** `174f405` |
 | 11 | The `bake` dispatch shape has never been measured | measure first | open |
 
-Suggested order: **§1, §2, §3, §6, §8, §4**. §1 is one line and closes a known hazard
-class. §2 unlocks §3 and §5. §4 is the biggest payoff and wants its own round.
-
 ---
 
-## 1. Base tiles reach the pool free list under an open encoder — open
+## 1. Base tiles reach the pool free list under an open encoder — landed
 
-The `pool-free-list-vs-open-encoder` class, live in the dynamics path.
-`render_dynamic` walks its pieces at `run.rs`:
+`DynamicsRun::draw` recorded `composite_region`, which samples `base`'s tiles, into
+the piece's encoder; the caller then replaced its `map` with the return value,
+dropping at that assignment every tile handle the new map superseded. A
+`TilePairHandle`'s drop *is* its release to `TilePool`'s free list, so those textures
+became available to the next `acquire_tex` while the commands reading them were still
+only recorded.
 
-```rust
-map = run.draw(&map, &segments[piece], &piece_fires, !capture && i == last);
-```
+`PoolInner::trim` guards the irreversible half — it will not *destroy* a slot returned
+during the current epoch — but reuse is unguarded by construction, and reuse is enough.
+Consecutive pieces share the tiles around their cut, because `affected_tiles` grows
+every segment's box by an apron, so this was the ordinary case for any stroke long
+enough to be chunked.
 
-`DynamicsRun::draw` records `composite_region`, which **samples `map`'s tiles**, into
-the open encoder; it then returns a new map. The assignment drops the old map, and
-every `TilePairHandle` the new map replaced goes back to `TilePool`'s free list — with
-the commands that read it still only recorded.
+It never fired, and the reason was not a rule: the next statement the run executes is
+the following piece's `flush`, and nothing acquires in between.
 
-Consecutive pieces share the tiles around their cut (the apron guarantees it, which is
-`affected_tiles`' whole reason for growing a segment's box), so this is the common
-case for any stroke long enough to be chunked, not a corner.
+**What landed.** `self.scope.hold(base.clone())` before the composite, which is what
+`render_swept` already does with its scratch pair across the identical boundary. The
+scope releases it in the call that submits the commands naming it. An `rpds` map of
+`Arc` handles costs a refcount per tile and no pixels.
 
-`tile.rs`'s `PoolInner::trim` already knows about this hazard — "a slot that drops
-while an unsubmitted encoder still names its view reaches this free list" — and guards
-**destruction** behind the epoch. It does not, and cannot, guard **reuse**: the next
-`acquire_tex` of the same format is free to hand the texture straight back out.
+## 2. `Segment` is a sweep and a paint parcel in one struct — landed
 
-It does not fire today, and the reason is not a rule. The next statement executed is
-the following iteration's `self.scope.flush()`, and nothing acquires from `TilePool` in
-between. That is a one-statement margin holding an invariant the rest of this module
-makes structural — `swept.rs` holds its scratch pair across exactly this boundary with
-`scope.hold(scratch)`, and `scratch.rs`'s module doc spends five paragraphs on why
-"no live handle" is not "no pending GPU work".
+Ten geometry fields and five paint rates were one struct, so `bleed_fires` had to
+fabricate a whole `Segment` for a window that is not one: it copied `add`, `lift`,
+`deposit` and `tooth` in, `dynamics_plan` zeroed every one of them back out lane by
+lane, and `ramp: 0.0` needed nine lines explaining why a window must not have one.
 
-**What to do.** Hold the map the piece read across the piece's own submit, the same
-way the swept path holds its scratch:
+**What landed.** `Sweep` (where a tip goes and how wide it is) and `Paint` (what it is
+doing while it travels), with `Segment` holding both and `BleedFire { after, window:
+Sweep, bleed }` replacing the unnamed `(usize, Segment)` that was threaded through six
+signatures. Every box, rect and tile walk takes `&Sweep` and can no longer read a rate;
+a window cannot carry one.
 
-```rust
-// In `DynamicsRun::draw`, once the composite has been recorded against `base`:
-self.scope.hold(base.clone());
-```
+The test helpers split the same way, which is the part worth keeping: `whole()` returns
+`Vec<Sweep>` and `whole_segments()` returns segments, so a test that wanted a paint rate
+would have to say so.
 
-A `TileMap` clone is an `rpds` map of `Arc` handles, so this costs a refcount per tile
-and nothing else — and it makes the ordering the borrow checker's business rather than
-the statement order's. The alternative shape, if the clone is unwanted: have `draw`
-take `TileMap` by value and hold the whole predecessor, which says the same thing
-without the clone.
+## 3. Dispatch rects computed twice; the fit is an assert, not a max — landed
 
----
+`snapshot_size` folded a position-independent `rect_extent(span)` over the coverage
+boxes to size the scratch; `dispatch_rect` then computed the real rect and *asserted*
+it came in under that bound — a panic in the render path, which on wasm aborts the app.
+Two derivations of one number, related by an argument and defended by a crash.
 
-## 2. `Segment` is a sweep and a paint parcel in one struct — open
+**What landed.** `dynamics_plan` walks its sources once to fix the dispatch order,
+measures every rect against that walk, and takes `snapshot_square` as their maximum. A
+maximum is not a claim about what it was taken over, so `rect_extent` and both
+assertions are gone. `cell_geometry`'s survives as a `debug_assert` carrying its
+derivation. The plan now returns the square it sized, so the scratch is allocated *from*
+the plan rather than the plan checked against the scratch.
 
-`Segment` carries ten geometry/frame fields (`start`, `dir`, `curvature`, `radius`,
-`ramp`, `frame`, `reach`, `length`, `orient`, `dist`) and five paint rates (`add`,
-`lift`, `deposit`, `bleed`, `tooth`). The cost is not the field count; it is that half
-the fields are meaningless for one of the two things the type is used to represent.
+`every_dispatch_rect_fits_the_scratch_its_piece_sized` became
+`every_dispatch_grid_fits_the_scratch_its_piece_sized`: the surviving claim is one step
+out, that a dispatch rounded up to whole 8×8 workgroups still fits — which holds only
+because `SNAPSHOT_QUANTUM` is itself a multiple of 8.
 
-`bleed_fires` has to fabricate a whole `Segment` for a window that **is not a
-segment**. It copies `add`, `lift`, `deposit` and `tooth` in ("the window inherits the
-crossing segment's rates"), and `dynamics_plan` then zeroes every one of them back out
-when the window becomes a slot ("λ_lift = 0 so the canvas keeps everything, λ_deposit =
-0 so the (uninvolved) tool lays nothing, no drain because nothing is laid, no `add`
-because this is not a stretch of painting, no tooth because there is no `add` for the
-ground to gate"). `ramp: 0.0` needs a nine-line comment explaining why a window cannot
-have one — a fact the type could have carried instead.
+## 4. Layouts and bind groups are two hand-written mirrors — landed
 
-The same tuple, `(usize, Segment)`, is then threaded unnamed through five signatures:
-`affected_tiles`, `chunk_segments`, `snapshot_size`, `dynamics_plan`, `bleed_fires`,
-and `DynamicsRun::draw`.
+Seven entry points had their layouts hand-written in `kit.rs` and their bind groups
+hand-written in `run.rs`, aligned by nothing but the order they were written in and
+closed by a magic element count per layout (`[..12 + 4 * usize::from(resid)]`, seven of
+them). All seven were correct, by attention.
 
-**What to do.** Split the subject the type has two of:
+**What landed.** `emit_bindings` now emits a `BINDINGS` table beside the indices,
+carrying each slot's kind, its storage format, its uniform's `min_binding_size` and its
+`@if(resid)` gate — all read off the declaration. The host writes **one list per entry
+point** (`dynamics/slots.rs`) and `desc::layout_for` / `desc::bind_group_for` build both
+sides from it. `stor` versus `stor32` is not a choice any more, the element counts are
+gone, and `push_resid` went with them.
 
-```rust
-/// Where a tip goes and how wide it is — everything the shaders unroll a sweep from.
-struct Sweep { start, dir, curvature, radius, ramp, frame, reach, length, orient, dist }
+Filterability stays on the host, and that is not a gap: it is a property of the (entry
+point, binding) pair, since `region_color` is `textureLoad`ed by `snapshot` and
+`textureSample`d by `exchange`. So a list says `Slot::at` or `Slot::sampled` and nothing
+else. Two CPU tests stand behind the hand-written half.
 
-/// What the tip is doing while it goes there, as the pen asked for it here (§6.2).
-struct Paint { add, lift, deposit, bleed, tooth }
+Documented at the project level, which was the other half of the ask: §6.10 gained
+"Adding a binding table" and a closing rule that generalizes all five generators, and
+CLAUDE.md gained the one-line version.
 
-struct Segment { sweep: Sweep, paint: Paint }
+## 5. Three answers to "what region do these sweeps need" — landed
 
-/// One crossing of the bleed cadence: which segment it fires after, the stretch of
-/// path it relaxes over, and the one axis it uses.
-struct BleedFire { after: usize, window: Sweep, bleed: f32 }
-```
+`affected_tiles` enumerated a tile set, `region_of` turned a box into region dimensions
+inside `chunk_segments`, and `region_rect` turned the set back into a rectangle. The
+chunker's promise was about the second and the allocation about the third; a comment
+asked them to be the same rectangle.
 
-What it buys:
+**What landed.** One `Coverage` accumulator with `add`/`union`/`dims`, and a `Covered`
+that carries the tile set beside the box from a single walk. `Covered::rect` takes its
+**extent** from `Coverage::dims` — the very function the chunker checked — and only its
+**halo** from the set, which is sound because `min` of `floor(lo/tile)` is `floor(min
+lo/tile)`. That identity is what the rewritten test pins, the agreement itself no longer
+being a claim. `rect` also debug-asserts the `MAX_REGION_DIM` the chunker promised,
+which was missing at the point it is relied on.
 
-- `coverage_bounds`, `segment_bounds`, `for_each_touched`, `snapshot_size` and
-  `PlanCtx::rect` take `&Sweep` — they never read a rate, and would then be unable to.
-- A window **cannot** carry rates it does not mean, so both the copy-in and the
-  zero-out go away, and with them the paragraph defending `ramp: 0.0`.
-- The unnamed `(usize, Segment)` gets a name at six call sites.
-- `render_dynamic`'s per-piece re-key (`fires[lo..hi].iter().map(|(after, w)| (after -
-  piece.start, *w)).collect()`) becomes a slice plus an index base, dropping an
-  allocation per piece per pointer move.
+## 6. The swept path serializes on one shared scratch pair — landed, **−18% to −20%**
 
-`bleed_stencil` wants `(bleed, radius, span)`, all of which are on the `Sweep` plus the
-one scalar — so `BleedFire` is complete as written.
+One pair for the whole stroke is sound (every sweep clears) but serializing: tile *n+1*'s
+sweep writes the texture tile *n*'s integrate reads, a write-after-read the driver must
+order, so the path's `2N` render passes ran strictly back to back.
 
----
+**What landed.** A ring of three pairs, round-robin, all held to the submit for the
+reason the single pair was held. ~1.5 MB apiece at `TILE_TEX = 256`, against
+`ScratchPool`'s 256 MB budget; a stroke touching fewer tiles than the ring takes only
+as many pairs as it has tiles.
 
-## 3. Dispatch rects are computed twice, and the fit is an assert — open
+**Measured**, by setting `SCRATCH_RING` back to 1 — which is exactly the old code — and
+running `cargo bench -p stark-core --bench stroke` as an A/B:
 
-`snapshot_size` folds `rect_extent` over the piece's coverage boxes to size the
-snapshot square; `dispatch_rect` then computes the **real** rect per slot and asserts
-it fits:
-
-```rust
-assert!(
-    w <= rect_extent(span.x) && h <= rect_extent(span.y) && w <= dsize && h <= dsize,
-    "a {w}x{h} dispatch rect overruns the {dsize} snapshot scratch",
-);
-```
-
-`cell_geometry` carries the twin of this against `cell_scratch_size`.
-
-The doc comments are right that this beats what it replaced (a `debug_assert` and a
-`min`, which in release silently truncated a footprint). But the shape is still wrong
-in two ways. It is a **panic in the render path** — on wasm that aborts the whole app,
-for a condition the module elsewhere degrades from with a `tracing::error!` and a
-fallback (`StrokePath::TipTooLarge`). And it is only *needed* because the rect is
-derived twice: once approximately, to size the scratch, and once exactly, to dispatch.
-
-`coverage_bounds` is in fact evaluated four times per segment on the dynamics path —
-in `chunk_segments` (via `segment_bounds`), in `affected_tiles` (via
-`for_each_touched`), in `snapshot_size`, and in `dynamics_plan`. Each involves an
-`arc_at` and a `sqrt`.
-
-**What to do.** Compute the rects once, and take the scratch square as their maximum:
-
-```rust
-/// Every rect the piece will dispatch, and the square that holds all of them.
-struct PieceRects { rects: Vec<Rect>, dsize: u32 }
-```
-
-The fit stops being a bound to defend and becomes a `max` — no assertion, no
-`rect_extent`/`dispatch_rect` duality, and `rect_extent`'s "monotone in `span`, which
-is what makes `snapshot_size`'s maximum a bound on every rect rather than on the one
-that happened to be widest" stops needing to be true, because nothing depends on it.
-
-`SNAPSHOT_QUANTUM`'s round-up sits on top of the max unchanged. `cell_scratch_size`
-gets the same treatment from `dsize`, so `cell_geometry`'s assert goes with it.
-
-Note that `every_dispatch_rect_fits_the_scratch_its_piece_sized` and
-`the_scratch_is_sized_with_the_bleed_windows_in_it` are testing exactly the relation
-this makes unrepresentable — they should be kept, restated as "the max is over the
-rects that were dispatched".
-
----
-
-## 4. Layouts and bind groups are two hand-written mirrors — open
-
-The largest maintainability liability in the module, and the one with the most lines
-behind it.
-
-`kit.rs` hand-lists seven bind group layouts; `DynamicsRun::bind_piece` hand-lists the
-seven matching entry sets, ~200 lines of it. Each pair is joined by a magic slice
-count:
-
-```rust
-][..12 + 4 * usize::from(resid)],   // exchange_bgl
-][..12 + 3 * usize::from(resid)],   // deposit_bgl
-][..11 + 3 * usize::from(resid)],   // deposit_coarse_bgl
-][..9  + 3 * usize::from(resid)],   // settle_bgl
-```
-
-All seven are correct today (checked). All seven are recounted by hand on every edit,
-and the failure is a wgpu validation error at pipeline creation — loud, but at runtime
-and on a GPU, which is the half of the suite CI does not run against real pixels.
-
-The `filterable` argument to `ctex(b::X, true/false)` is a second hand-made decision
-per binding that must match how the entry point actually samples it, and nothing checks
-that either.
-
-**The declaration already carries everything.** From `dynamics.wesl`:
-
-```wgsl
-@group(0) @binding(17) var bake_load_w: texture_storage_2d<rgba32float, write>;
-@if(resid) @group(0) @binding(27) var brush_src_resid: texture_2d<f32>;
-```
-
-— index, name, WESL type, storage format, **and** the `resid` predicate that the
-`[..n + k]` slices are a hand-transcription of. `emit_bindings` in
-`stark-shaders/build/mirror.rs` already parses all of it and emits the index as
-`binding::BRUSH_SRC_RESID`; which bindings a given entry point reaches is derivable
-from the same AST.
-
-**What to do.** Emit the table, not just the index:
-
-```rust
-pub struct Binding { pub index: u32, pub kind: BindKind, pub resid: bool }
-
-pub const EXCHANGE: &[Binding] = &[
-    Binding { index: 0,  kind: Uniform { min_size: … },       resid: false },
-    Binding { index: 27, kind: Texture { filterable: … },     resid: true  },
-    …
-];
-```
-
-`kit.rs` then builds every layout by mapping the table and filtering on `resid`;
-`bind_piece` builds every group by supplying a resource per named binding. ~350
-hand-written lines collapse, the seven slice counts disappear along with the whole
-drift class, and a `resid` binding can no longer be declared in one half and forgotten
-in the other.
-
-**The one residue is filterability**, which is not in the declaration — a texture's
-type does not say whether the entry point `textureSample`s it or `textureLoad`s it.
-Two ways out, in order of preference: derive it from the entry point's AST (the
-generator is already walking it for reachability), or annotate it in WESL beside the
-`@if`. A host-side override map would work but re-opens a smaller version of the same
-hole.
-
-This also closes a test gap for free: with one table, "every layout has exactly the
-bindings its bind group supplies" is true by construction rather than untestable
-without an adapter.
-
----
-
-## 5. Three answers to "what region do these sweeps need" — open
-
-The same question is answered three ways, and all three must agree:
-
-| Walk | Where | Produces |
+| case | change | p |
 |---|---|---|
-| `for_each_touched` → `affected_tiles` | `segments.rs` | the tile set |
-| `region_of`, inside `chunk_segments` | `segments.rs` | bbox → region dims |
-| `region_rect` | `segments.rs` | tile set → the rect the loop allocates |
+| `live/swept/30` | **−17.8%** | 0.00 |
+| `live/swept/100` | **−20.3%** | 0.00 |
+| `live/swept/8` | +4.0% (no effect) | 0.26 |
+| `commit/swept/8`, `/30`, `/100` | −1.9%, −1.5%, +0.9% (no effect) | 0.51, 0.48, 0.64 |
 
-`chunk_segments` promises a piece whose region fits `MAX_REGION_DIM`; `region_rect`
-builds the region that promise is about, from a different input, by a different route.
-The comment says so ("those two answers have to be the same rectangle") and
-`the_chunker_measures_the_region_the_render_builds` tests it — but `region_rect` never
-**asserts** its own result is within `MAX_REGION_DIM`, so the promise is unchecked at
-the exact point it is relied on. A disagreement is a silent oversized allocation.
+The shape is the argument confirmed rather than a number to bank. The win is where
+there are passes to overlap — a live tail at radius 30 or 100 crosses many tiles — and
+absent where there are not: a radius-8 tail covers a handful, and a `commit` is one
+pass over the whole stroke rather than a re-render per pointer move. Nothing regressed.
 
-**What to do.** One accumulator, three readings:
-
-```rust
-#[derive(Default)]
-struct Coverage { lo: Vec2, hi: Vec2 }
-
-impl Coverage {
-    fn add(&mut self, s: &Sweep);            // grows by `segment_bounds`
-    fn dims(&self) -> (u32, u32);            // what `region_of` answers
-    fn tiles(&self) -> BTreeSet<TileCoord>;  // what `affected_tiles` answers
-    fn rect(&self) -> Option<RegionRect>;    // what `region_rect` answers
-}
-```
-
-`chunk_segments` then extends one of these and asks `dims()`; `draw` builds the same
-type from the piece it was handed and asks `rect()`. The two cannot disagree, because
-there is one definition of what a set of sweeps covers. Pairs naturally with §3, which
-wants the boxes computed once anyway.
-
----
-
-## 6. The swept path serializes on one shared scratch pair — open, measure
-
-`render_swept` acquires **one** scratch pair for the whole stroke and loops:
-
-```rust
-for (i, coord) in coords.iter().enumerate() {
-    // sweep this tile's segments into `scratch`, CLEAR load op
-    // integrate `scratch` over the base into a fresh CoW tile
-}
-```
-
-Tile *n+1*'s sweep writes the texture tile *n*'s integrate reads. That is a
-write-after-read dependency, so the driver must order them: `2N` render passes run
-strictly back to back with no overlap whatever. A live tail crossing ~30 tiles pays 60
-serialized passes per pointer move.
-
-The comment defends *sharing* the pair on lifetime grounds — "a pair acquired per tile
-and dropped at the end of its iteration goes back on the pool's free list while the
-passes naming it are still only recorded" — which is §1's hazard, correctly identified.
-But the fix it chose (one pair) is stronger than the hazard needs. A **ring** of pairs,
-all held by the scope until `finish`, is equally sound (every sweep pass clears, so no
-tile can see what another left) and gives the GPU *k*-way overlap.
-
-At `TILE_TEX = 256` a target is 256² × 8 B = 512 KB, so a ring of 3 costs ~3–4.5 MB
-depending on the residual. Against `ScratchPool`'s own 256 MB budget that is noise.
-
-Self-contained and cheap; bracket it with `cargo bench -p stark-core --bench stroke`
-before and after. The `stroke-bench-noise` warning in the lift-end notes applies.
-
-The larger version of this change — sweep every tile into a scratch **atlas** in one
-pass with per-tile viewports, then one integrate per tile — halves the pass count
-outright, but wants the atlas to be sized and pooled and is a much bigger diff. Worth
-naming as the direction if the ring measures well.
-
----
+Three is not tuned. Nothing was measured at 2 or 4, and the ceiling is memory rather
+than diminishing returns, so there may be a little more here.
 
 ## 7. 40–60 bind groups per fold on the live tail — open
 
-The module frets about WebGPU allocation *rate* in three separate doc comments —
-`UNIFORM_STRIDE`'s "the rate is the thing JS GC cannot keep up with", `ScopedResources`,
-`ScratchPool`'s reason for destroying rather than dropping — and then builds, per
-pointer move:
-
-- `bind_piece`: 8–10 bind groups per piece (snapshot, exchange ×2, bake ×2, deposit,
-  settle, and the coarse pair);
-- `composite_region`: **one per halo tile**, in the loop over `halo`;
-- `render_swept`: one `integrate_bg` per affected tile.
-
-For a live tail that is roughly 40–60 bind groups a frame. The buffers and uniforms
-were fixed (one buffer, dynamic offsets); the bind groups were not.
+The module frets about WebGPU allocation *rate* in three doc comments and then builds,
+per pointer move: 8–10 bind groups in `bind_piece`, **one per halo tile** in
+`composite_region`, and one `integrate_bg` per affected tile in `render_swept`.
 
 The halo ones are the easy half and the largest count: a composite tile bind group is a
 pure function of `(tile identity, layout)` — the tile's own three views and nothing
 else. Cache it on the `GpuTile` beside its views, or memoize on the `DynamicsRun` keyed
 by `TileCoord` so at least the pieces of one stroke share it.
 
-`render_swept`'s `integrate_bg` genuinely varies per tile (it binds that tile's base
-views) and cannot be hoisted without bindless; the `bind_piece` ten are already once per
-piece rather than per dispatch. So this finding is really about the halo loop.
+`render_swept`'s `integrate_bg` genuinely varies per tile and cannot be hoisted without
+bindless; `bind_piece`'s ten are already once per piece rather than per dispatch. So
+this finding is really about the halo loop.
 
-Measure before and after — this is a CPU-side cost on the submit thread, so the stroke
+Measure before and after — it is a CPU-side cost on the submit thread, so the stroke
 bench sees it but a GPU timestamp will not.
 
----
+## 8. `segments.rs` is five subjects; `budget.rs` is three — part landed
 
-## 8. `segments.rs` is five subjects; `budget.rs` is three — open
+**What landed.** `region.rs` (the tile walk, the coverage boxes, `Coverage`/`Covered`,
+`chunk_segments`, `segment_fits_region`, `RegionRect`) and `dynamics/bleed.rs` (the
+cadence, the stencil solve and their seven tests). Those were the two the finding
+singled out: `region.rs` because it is where §5's invariant lives and file-locality is
+the precondition for it staying structural, `bleed.rs` because the axis is one model
+that was being decided in two places a directory apart. `budget.rs` is now the one
+subject its own header describes.
 
-`segments.rs` is 2,636 lines carrying, in order: the round tip's coverage field, the
-taper model, segment generation, the tile walk and the coverage boxes, and the region
-chunker. Only the middle one is what the file is named for.
+**What is left.** The other two splits of `segments.rs`:
 
 | new file | contents |
 |---|---|
 | `tip.rs` | `round_coverage`, `tip_reach`, `frame_scale`, `orientation_turns` |
 | `taper.rs` | `taper_profile`, `Taper`, `TAPER_*`, `DAB_TRAVEL` |
-| `segments.rs` | `Segment`/`Sweep`/`Paint`, `generate_segments_in`, `sample_at` |
-| `region.rs` | `for_each_touched`, `affected_tiles`, `tiles_with_segments`, `coverage_bounds`, `segment_bounds`, `region_of`, `chunk_segments`, `segment_fits_region`, `region_rect`, `RegionRect` |
 
-`region.rs` is the split that earns it: §5's "these two must be the same rectangle"
-invariant becomes file-local, which is the precondition for making it structural.
+The same mechanical move, with each one's test block. Lower priority now: at 2.1k lines
+`segments.rs` is no longer the file that most needs it.
 
-Separately, `round_coverage` is really an **asset** function. It pairs with
-`assets::build_prefix_tau` — its own test sweeps it through that function's `tau_of` to
-avoid the clamp drifting between them — and its only consumer is `tips.rs`. It reads
-oddly in a file about turning a path into segments, and `stark-assetid`/`assets` is
-where its sibling lives.
-
-`budget.rs` (735 lines) holds three models that share nothing but a file:
-
-- the flattening and region caps — `MAX_REGION_DIM`, `MAX_STAMPS`, `MAX_TIP_TURN`,
-  `flatten_tolerance`, `exchange_travel`, `lambda`. This is what the file's header
-  describes.
-- the **bleed diffusion solver** — `BLEED_*`, `bleed_stencil`, `stencil_moment`,
-  `STENCIL_MOMENT_PER_REACH2`, ~200 lines plus seven tests. Its only consumer is
-  `dynamics/plan.rs`, next to `bleed_fires`, which is the other half of the same model.
-- the **coarse deposit cell law** — `footprint_cell`, `shoulder_per_radius`,
-  `FOOTPRINT_CELL_MAX`.
-
-Move the bleed solver to `dynamics/bleed.rs` beside `bleed_fires` and the axis has one
-home. `shoulder_per_radius` genuinely has two consumers on opposite sides (the cell and
-the taper's subdivision) and should stay where both can reach it.
-
----
+Still worth saying separately: `round_coverage` is really an **asset** function. It
+pairs with `assets::build_prefix_tau` — its own test sweeps it through that function's
+`tau_of` to keep the clamp from drifting between them — and its only consumer is
+`tips.rs`.
 
 ## 9. Every kit field is `pub(super)`; the renderer has no boundary — open
 
@@ -411,78 +221,53 @@ the taper's subdivision) and should stay where both can reach it.
 private fields. Everything in the module is a friend of everything.
 
 `SweptKit`'s own doc comment names the problem it was created to fix — "these five sat
-loose on `StrokeRenderer` among the caches, so a struct documented as holding 'only
-immutable GPU objects' held one path's pipelines by name". The type landed; the
-boundary did not. The fields simply moved behind a name that is still fully public to
-every file in the tree.
+loose on `StrokeRenderer` among the caches" — and the type landed while the boundary did
+not.
 
-**What to do.** Give each kit the API its type implies — `SweptKit::record(&self, enc,
-&SweptJob)`, `DynamicsKit::record_loop(&self, cpass, &plan, &bindings)` — and keep the
-only `impl StrokeRenderer` in `mod.rs`. Lower priority than §1–§4 and mostly a
-readability change, but it is why "where does this pipeline get bound" is currently a
-grep rather than a jump.
+**What to do.** Give each kit the API its type implies (`SweptKit::record(&self, enc,
+&SweptJob)`, `DynamicsKit::record_loop(&self, cpass, &plan, &bindings)`) and keep the
+only `impl StrokeRenderer` in `mod.rs`. Mostly a readability change, but it is why
+"where does this pipeline get bound" is a grep rather than a jump.
 
----
+Note that §4 moved the needle here without meaning to: `kit.rs` no longer holds seven
+hand-written layouts, so the file is 338 lines rather than 501, and `slots.rs` is now
+the thing both sides read. The remaining coupling is the pipelines and the samplers.
 
-## 10. Smaller correctness and clarity items — open
+## 10. Smaller correctness and clarity items — landed
 
-**10.1 — `let last = pieces.len() - 1` underflows.** `render_dynamic` relies on
-`chunk_segments` never returning empty, which is true (it pushes `start..len` whenever
-`segments` is non-empty, and `segments.is_empty()` returned early two screens up) but is
-a non-local invariant across two functions. `pieces.len().saturating_sub(1)`, or
-restructure so the last piece is named rather than counted.
+- `pieces.len() - 1` underflowed on an empty cut. That cut cannot be empty, but the
+  proof was two functions from the subtraction; it asks the iterator now.
+- `TipTooLarge` shouted on every pointer move. The gate is a pure function of the brush
+  — which is what lets a tail and its commit agree for free — so its *answer* is a
+  property of the record, and is said once per stroke seed.
+- `StrokeCarry::dirty` is a superset of the tiles whose pixels changed, not the set: a
+  tile at the edge of the reach can take a fresh CoW tile that differences to zero.
+  Narrowing it means comparing pixels, which is the cost it exists to avoid. Documented
+  as the superset it is.
+- The archaeology comments (`swept.rs`'s tombstone for a deleted test) were left alone.
+  On reflection they are cheap, and the surrounding density is the module's main asset.
 
-**10.2 — `TipTooLarge` logs an error per pointer move.** `render_range`'s
-`tracing::error!` fires on every render of a record that will never stop failing —
-the comment notes this ("It repeats per pointer move, because the gate is re-asked per
-render") but names it as a consequence rather than a thing to fix. It is a property of
-the *record*, so it should be said once per record, not per frame. The engine has the
-stroke id to key on.
-
-**10.3 — `StrokeCarry::dirty` over-reports.** Documented as "everything in the returned
-map that differs from `scene.base`", but the swept path reports every tile
-`for_each_touched` named — including tiles where every fragment differenced its prefix
-taps to zero and the fresh CoW tile is bit-identical to the base. Harmless for §17.6's
-purpose (a superset costs a redundant composite, not a wrong picture), but the doc
-should say superset if the behaviour is staying.
-
-**10.4 — Comments that have become archaeology.** The density is overwhelmingly an
-asset here — the measurements and dead ends recorded on `BLEED_TRAVEL_QUANTUM`,
-`RESERVOIR_EXCHANGE_STEP` and `footprint_cell` are the reason those constants are
-tunable at all, and none of that should move. But a few passages now document a change
-rather than the code: `swept.rs`'s five-line tombstone for a deleted test
-("`the_draw_call_and_the_strip_agree_on_the_vertex_count` stood here…"), and the note
-above the `Stamp` import recording what a since-deleted host-side copy used to say.
-Those belong in the commits.
-
----
-
-## 11. The `bake` dispatch shape has never been measured — open, measure first
+## 11. The `bake` dispatch shape has never been measured — open
 
 `record_loop` dispatches the reservoir bake as `dispatch_workgroups(1, BAKE_RES, 1)` —
-**one workgroup wide** — once per segment, and the loop is sequential so none of them
-overlap. A fine stroke is thousands of segments, so this is a long chain of tiny
-serialized dispatches.
+one workgroup wide — once per segment, and the loop is sequential so none of them
+overlap. A fine stroke is thousands of segments.
 
 That is plausibly the dispatch-bound regime the `dynamics-perf-profile` and
-`march-vs-master-perf` notes describe at small radius, where the ALU work per segment
-is trivial and the win came from doing fewer, bigger things. It may be irreducible —
-the sequence is what makes the loop a loop — but the split has not been measured on
-master.
+`march-vs-master-perf` notes describe at small radius. It may be irreducible — the
+sequence is what makes the loop a loop — but the split has not been measured on master.
 
-**What to do before anything else in the loop.** Get the per-entry-point share of a
-live fold at `radius = 8` and `radius = 100`: bake vs exchange vs deposit vs the
-composite and write-back either side. Timestamp queries or a coarse A/B (stub one entry
-point to a no-op and diff the fold time). If bake is a third of the fold at small
-radius, the shape is worth attacking; if it is 5%, §6 and §7 are the whole story and
-this closes.
+**Before anything else in the loop**, get the per-entry-point share of a live fold at
+`radius = 8` and `radius = 100`: bake vs exchange vs deposit vs the composite and
+write-back either side. If bake is a third of the fold at small radius the shape is
+worth attacking; if it is 5%, §7 is the whole story and this closes.
 
 ---
 
 ## What the review did not find
 
 No bug against a shipped behaviour. Several invariants that would have been easy to get
-wrong are already structural, and the review confirmed rather than disturbed them:
+wrong were already structural, and the review confirmed rather than disturbed them:
 
 - **`dynamics_setup` asks only about the brush**, so a live tail and its commit cannot
   take different paths — and because a modulation is a factor in `[0, 1]` by
@@ -510,7 +295,26 @@ The `unpoisoned` lock helper and the two hand-rolled LRUs in `tips.rs` are fine 
 
 ## Verification
 
-None. Nothing has been changed, built or run — this is the review, not the work.
-Every claim above about what the code does was read out of the source at `8952270`;
-the arithmetic claims in "What the review did not find" were re-derived rather than
-taken from the comments that assert them.
+Every commit was taken green: `cargo fmt --all --check`, `cargo clippy -p stark-core
+--all-targets -D warnings`, and `cargo test --workspace` redirected once to a file per
+batch. **831 tests pass with the goldens rendered and compared** (`STARK_SKIP_GOLDEN`
+unset, `STARK_ALLOW_NO_GPU` unset), which is the check that matters: §1, §2, §3, §5, §6
+and §8 must all be pixel-identical, and are.
+
+§4 additionally ran the second configuration — `cargo clippy --workspace --all-targets
+--no-default-features --features stark-net/webrtc` — because that is the `resid = false`
+path its whole residual gate drives, and `cargo check -p stark-ui --target
+wasm32-unknown-unknown`.
+
+Two tests were added (`slots::tests`) for the one hand-written half §4 leaves behind,
+and four rewritten to state what survived the change rather than what it replaced:
+`every_dispatch_grid_fits_the_scratch_its_piece_sized`,
+`the_scratch_is_sized_with_the_bleed_windows_in_it` (which had been passing on the
+quantum's slack), `the_box_and_the_tile_set_measure_the_same_rectangle`, and
+`the_per_tile_lists_hold_exactly_the_segments_that_reach_each_tile`.
+
+§6 is the only change here that claims a performance number, and it was measured as
+an A/B against `SCRATCH_RING = 1` — which is exactly the code it replaced — rather than
+against a different commit: `−17.8%` on `live/swept/30` and `−20.3%` on `live/swept/100`,
+both at `p = 0.00`, with no significant movement anywhere else. Nothing else here claims
+one. §7 and §11 are open *because* they want measurement first.
