@@ -15,10 +15,10 @@ use std::sync::Arc;
 
 use rpds::Vector;
 
-use super::action::{Action, ActionKind, ActorId};
+use super::action::{Action, ActorId};
 use super::filter::Filter;
-use super::footprint::{Resource, footprint};
-use super::layer::{BlendMode, Layer, LayerId, MatteRegion};
+use super::footprint::{Prop, Resource, footprint};
+use super::layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion};
 use super::selection::Selection;
 use super::state::{DocState, LayerSite};
 use crate::geom::{TileCoord, TileRect};
@@ -69,6 +69,49 @@ enum PatchOp {
     Background([f32; 3]),
 }
 
+impl PatchOp {
+    /// `state` with this op's value written back — the other half of
+    /// [`capture_resource`], and the reason both are per-op rather than per-action:
+    /// what a resource *is* decides how it is recorded and how it is put back, and
+    /// the two belong next to each other rather than in two matches over
+    /// `ActionKind`.
+    fn restore(&self, state: &DocState) -> DocState {
+        match self {
+            PatchOp::Tiles { layer, tiles } => {
+                match state.layer(*layer).and_then(|l| l.tiles()).cloned() {
+                    Some(mut map) => {
+                        for (coord, handle) in tiles {
+                            map = match handle {
+                                Some(handle) => map.insert(*coord, handle.clone()),
+                                None => map.remove(coord),
+                            };
+                        }
+                        state.map_layer(*layer, |l| l.with_tiles(map))
+                    }
+                    None => state.clone(),
+                }
+            }
+            PatchOp::Absent(id) => state.remove_layer(*id),
+            PatchOp::Present { site, layer } => state.restore_layer(site, layer.clone()),
+            PatchOp::Structure(shape) => restore_structure(state, shape),
+            PatchOp::Blend(id, v) => state.set_layer_blend(*id, *v),
+            PatchOp::Clip(id, v) => state.set_layer_clip(*id, *v),
+            PatchOp::Opacity(id, v) => state.set_layer_opacity(*id, *v),
+            PatchOp::Visible(id, v) => state.set_layer_visible(*id, *v),
+            PatchOp::Name(id, v) => state.set_layer_name(*id, v.clone()),
+            // The *value*, not the rect: a region restored through its rect could
+            // not round-trip `Everything`, which has none.
+            PatchOp::Matte(id, region, paint) => state
+                .set_matte_region(*id, *region)
+                .set_matte_paint(*id, paint.clone()),
+            PatchOp::Filter(id, filter) => state.set_filter(*id, filter.clone()),
+            PatchOp::Selection(actor, selection) => state.with_selection(*actor, selection.clone()),
+            PatchOp::Surface(id) => state.with_surface(*id),
+            PatchOp::Background(rgb) => state.with_background(*rgb),
+        }
+    }
+}
+
 /// `state` with every resource `action` writes restored to the value it holds
 /// in `previous` — the state the action was originally applied to. Valid
 /// exactly when every action applied between the two commutes with `action`
@@ -86,117 +129,33 @@ struct StatePatch {
 
 impl StatePatch {
     /// The patch that rewrites what `action` writes back to the values `to`
-    /// holds, diffed against `from` so untouched entries cost nothing. Walks
-    /// only the action's own footprint.
+    /// holds, diffed against `from` so untouched entries cost nothing.
+    ///
+    /// **Driven by the footprint's own write list**, resource for resource, rather
+    /// than by a second match on [`ActionKind`](super::action::ActionKind). That is
+    /// what makes "a patch restores exactly what the action declared" true by
+    /// construction instead of by inspection: the two used to be parallel matches in
+    /// two files with nothing but prose between them, and Rust's exhaustiveness gets
+    /// the *presence* of an arm, never its *correspondence*. A kind whose footprint
+    /// grows a resource now grows the op that puts it back, in the same edit.
+    ///
+    /// `Undo` falls out rather than needing an arm: it is never materialized, which
+    /// is why its footprint is empty, so it captures nothing.
     fn capture(action: &Action, to: &DocState, from: &DocState) -> StatePatch {
-        let actor = action.id.actor;
         let mut ops = Vec::new();
-        match &action.kind {
-            ActionKind::CommitStroke(rec) => {
-                tile_diff(rec.layer, paint_rect(action, rec.layer), to, from, &mut ops);
-            }
-            // A fill writes only paint (it carries no mask along, unlike a
-            // transform), so restoring it is the stroke's own diff over its rect.
-            ActionKind::Fill { layer, .. } => {
-                tile_diff(*layer, paint_rect(action, *layer), to, from, &mut ops);
-            }
-            ActionKind::Transform { layer, .. }
-            | ActionKind::TransformPerspective { layer, .. }
-            | ActionKind::TransformWarp { layer, .. } => {
-                tile_diff(*layer, paint_rect(action, *layer), to, from, &mut ops);
-                ops.push(PatchOp::Selection(actor, to.selection_of(actor)));
-            }
-            ActionKind::AddLayer { id, .. }
-            | ActionKind::AddMatte { id, .. }
-            | ActionKind::AddFilter { id, .. }
-            | ActionKind::RemoveLayer(id) => {
-                match (to.site_of(*id), from.contains_layer(*id)) {
-                    (None, true) => ops.push(PatchOp::Absent(*id)),
-                    (Some(site), false) => ops.push(PatchOp::Present {
-                        site,
-                        layer: to.layer(*id).expect("sited layer exists").clone(),
-                    }),
-                    // Present or absent on both sides: the action no-oped.
-                    _ => {}
-                }
-            }
-            // Every layer the copy brought into being, gone again. Removing the
-            // root takes the rest of the subtree with it, so the later ops are
-            // no-ops — but the copies are what this action *wrote*, and a patch
-            // that named only the root would be claiming the others were
-            // somebody else's.
-            ActionKind::DuplicateLayer { ids } => {
-                for (_, copy) in ids {
-                    // Absent in `to` and present in `from` is the only direction a
-                    // duplicate can go: the state it was applied to predates every
-                    // one of these ids.
-                    if to.site_of(*copy).is_none() && from.contains_layer(*copy) {
-                        ops.push(PatchOp::Absent(*copy));
-                    }
-                }
-            }
-            // A merge writes three things and this puts back all three: the
-            // destination's paint, the opacity the fold left at 1.0, and the source
-            // layer itself — record and place, exactly as `RemoveLayer`'s restore does
-            // (§14.11). The tile diff comes first so the destination is there to take
-            // the source back when its site names it as its carrier.
-            ActionKind::MergeLayerDown { source, dest } => {
-                tile_diff(*dest, paint_rect(action, *dest), to, from, &mut ops);
-                if let Some(l) = to.layer(*dest) {
-                    ops.push(PatchOp::Opacity(*dest, l.composite.opacity));
-                }
-                if let (Some(site), false) = (to.site_of(*source), from.contains_layer(*source)) {
-                    ops.push(PatchOp::Present {
-                        site,
-                        layer: to.layer(*source).expect("sited layer exists").clone(),
-                    });
-                }
-            }
-            ActionKind::MoveLayer { .. } => ops.push(PatchOp::Structure(structure(to))),
-            ActionKind::SetLayerBlend(id, _) => {
-                if let Some(l) = to.layer(*id) {
-                    ops.push(PatchOp::Blend(*id, l.composite.blend));
-                }
-            }
-            ActionKind::SetLayerClip(id, _) => {
-                if let Some(l) = to.layer(*id) {
-                    ops.push(PatchOp::Clip(*id, l.composite.clip));
-                }
-            }
-            ActionKind::SetLayerOpacity(id, _) => {
-                if let Some(l) = to.layer(*id) {
-                    ops.push(PatchOp::Opacity(*id, l.composite.opacity));
-                }
-            }
-            ActionKind::SetLayerVisible(id, _) => {
-                if let Some(l) = to.layer(*id) {
-                    ops.push(PatchOp::Visible(*id, l.visible));
-                }
-            }
-            ActionKind::SetLayerName(id, _) => {
-                if let Some(l) = to.layer(*id) {
-                    ops.push(PatchOp::Name(*id, l.name.clone()));
-                }
-            }
-            ActionKind::SetMatteRect(id, _, _) | ActionKind::SetMattePaint(id, _) => {
-                if let Some(l) = to.layer(*id)
-                    && let super::layer::LayerContent::Matte { region, paint } = &l.content
-                {
-                    ops.push(PatchOp::Matte(*id, *region, paint.clone()));
-                }
-            }
-            ActionKind::SetFilter(id, _) => {
-                if let Some(f) = to.layer(*id).and_then(|l| l.filter()) {
-                    ops.push(PatchOp::Filter(*id, f));
-                }
-            }
-            ActionKind::Select(_) | ActionKind::InvertSelection => {
-                ops.push(PatchOp::Selection(actor, to.selection_of(actor)));
-            }
-            ActionKind::SetSurface(_) => ops.push(PatchOp::Surface(to.surface)),
-            ActionKind::SetBackground(_) => ops.push(PatchOp::Background(to.background)),
-            // Never materialized (resolved into its target's effectiveness).
-            ActionKind::Undo(_) => {}
+        // **Existence first**, whatever order a footprint happens to list its writes
+        // in. A layer has to be back in the tree before anything can put its tiles,
+        // its properties or the tree's shape right — `restore_structure` in
+        // particular arranges records it does not create, and drops a layer the shape
+        // names but the state has lost. Partitioning here rather than relying on the
+        // footprints being written that way is what keeps that from being a rule
+        // `footprint.rs` has to remember.
+        let writes = footprint(action).writes;
+        let (existence, rest): (Vec<&Resource>, Vec<&Resource>) = writes
+            .iter()
+            .partition(|r| matches!(r, Resource::Existence(_)));
+        for resource in existence.into_iter().chain(rest) {
+            capture_resource(resource, to, from, &mut ops);
         }
         StatePatch { ops }
     }
@@ -205,43 +164,58 @@ impl StatePatch {
     fn restore(&self, state: &DocState) -> DocState {
         let mut state = state.clone();
         for op in &self.ops {
-            state = match op {
-                PatchOp::Tiles { layer, tiles } => {
-                    match state.layer(*layer).and_then(|l| l.tiles()).cloned() {
-                        Some(mut map) => {
-                            for (coord, handle) in tiles {
-                                map = match handle {
-                                    Some(handle) => map.insert(*coord, handle.clone()),
-                                    None => map.remove(coord),
-                                };
-                            }
-                            state.map_layer(*layer, |l| l.with_tiles(map))
-                        }
-                        None => state,
-                    }
-                }
-                PatchOp::Absent(id) => state.remove_layer(*id),
-                PatchOp::Present { site, layer } => state.restore_layer(site, layer.clone()),
-                PatchOp::Structure(shape) => restore_structure(&state, shape),
-                PatchOp::Blend(id, v) => state.set_layer_blend(*id, *v),
-                PatchOp::Clip(id, v) => state.set_layer_clip(*id, *v),
-                PatchOp::Opacity(id, v) => state.set_layer_opacity(*id, *v),
-                PatchOp::Visible(id, v) => state.set_layer_visible(*id, *v),
-                PatchOp::Name(id, v) => state.set_layer_name(*id, v.clone()),
-                // The *value*, not the rect: a region restored through its rect
-                // could not round-trip `Everything`, which has none.
-                PatchOp::Matte(id, region, paint) => state
-                    .set_matte_region(*id, *region)
-                    .set_matte_paint(*id, paint.clone()),
-                PatchOp::Filter(id, filter) => state.set_filter(*id, filter.clone()),
-                PatchOp::Selection(actor, selection) => {
-                    state.with_selection(*actor, selection.clone())
-                }
-                PatchOp::Surface(id) => state.with_surface(*id),
-                PatchOp::Background(rgb) => state.with_background(*rgb),
-            };
+            state = op.restore(&state);
         }
         state
+    }
+}
+
+/// Record what `to` holds for one written resource — the map from the
+/// [`Footprint`](super::footprint::Footprint) vocabulary to the [`PatchOp`] that
+/// puts that resource back, and the whole of the correspondence [`StatePatch::capture`]
+/// rests on.
+///
+/// Silence is a real answer here and it means "nothing of this action's to restore":
+/// a layer absent on both sides (the action no-oped), a `Matte` prop on something
+/// that is not a matte, a `Filter` prop on something that is not a filter.
+fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &mut Vec<PatchOp>) {
+    match resource {
+        Resource::Paint(layer, rect) => tile_diff(*layer, *rect, to, from, ops),
+        Resource::Existence(id) => match (to.site_of(*id), from.contains_layer(*id)) {
+            (None, true) => ops.push(PatchOp::Absent(*id)),
+            (Some(site), false) => ops.push(PatchOp::Present {
+                site,
+                layer: to.layer(*id).expect("sited layer exists").clone(),
+            }),
+            // Present or absent on both sides: the action no-oped.
+            _ => {}
+        },
+        Resource::Prop(id, prop) => {
+            let Some(l) = to.layer(*id) else {
+                return;
+            };
+            ops.push(match prop {
+                Prop::Blend => PatchOp::Blend(*id, l.composite.blend),
+                Prop::Clip => PatchOp::Clip(*id, l.composite.clip),
+                Prop::Opacity => PatchOp::Opacity(*id, l.composite.opacity),
+                Prop::Visible => PatchOp::Visible(*id, l.visible),
+                Prop::Name => PatchOp::Name(*id, l.name.clone()),
+                Prop::Matte => match &l.content {
+                    LayerContent::Matte { region, paint } => {
+                        PatchOp::Matte(*id, *region, paint.clone())
+                    }
+                    LayerContent::Paint(_) | LayerContent::Filter(_) => return,
+                },
+                Prop::Filter => match l.filter() {
+                    Some(f) => PatchOp::Filter(*id, f),
+                    None => return,
+                },
+            });
+        }
+        Resource::StackOrder => ops.push(PatchOp::Structure(structure(to))),
+        Resource::Selection(actor) => ops.push(PatchOp::Selection(*actor, to.selection_of(*actor))),
+        Resource::Surface => ops.push(PatchOp::Surface(to.surface)),
+        Resource::Background => ops.push(PatchOp::Background(to.background)),
     }
 }
 
@@ -307,29 +281,6 @@ fn restore_structure(state: &DocState, shape: &[(LayerId, Option<LayerId>)]) -> 
         out
     }
     state.with_layers(build(None, &children, &records))
-}
-
-/// The tile rect an action's footprint claims on `layer` — the region the
-/// commutation gate guarantees nothing in between has touched.
-///
-/// Asked of the footprint itself rather than re-derived, so the region a restore
-/// rewrites is the very region the action declared; the two cannot drift.
-///
-/// **Empty** when the footprint claims no paint on this layer, and that is the
-/// safe answer rather than a fallback: an action that did not declare paint here
-/// did not write paint here, so there is nothing of its to put back. Claiming
-/// everything instead would restore tiles *outside* the action's footprint —
-/// exactly the tiles a commuting action in the gap may own — which is the one
-/// thing [`tile_diff`]'s rect bound exists to prevent.
-fn paint_rect(action: &Action, layer: LayerId) -> TileRect {
-    footprint(action)
-        .writes
-        .iter()
-        .find_map(|r| match r {
-            Resource::Paint(l, rect) if *l == layer => Some(*rect),
-            _ => None,
-        })
-        .unwrap_or(TileRect::EMPTY)
 }
 
 /// Record `to`'s value for every tile entry of `layer` **within `rect`** that

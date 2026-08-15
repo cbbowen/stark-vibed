@@ -573,107 +573,16 @@ impl history::Action for Action {
                 *layer,
                 &crate::document::transform::TransformMap::Warp(map.clone()),
             ),
+            // Fold two layers into one without moving a pixel of the composite
+            // (§14.11) — the orchestration is `merge_apply`, beside `transform_apply`
+            // and for its reason.
+            ActionKind::MergeLayerDown { source, dest } => merge_apply(state, ctx, *source, *dest),
             // Lay a parcel of paint through the region's coverage, gated by the
             // author's selection — the same gate a stroke passes through, so a fill
             // is clipped by a selection exactly as a brush is
             // (§18.0.4). Refused on a matte or absent layer like a stroke; refused
             // deterministically when unbounded or oversized, so peers and replays
             // agree about a log that contains one.
-            // Fold two layers into one without moving a pixel of the composite
-            // (§14.11). The plan is re-derived from the state being folded over rather
-            // than trusted from the log, so a replay and a peer decide from the same
-            // document — and a plan that no longer names `dest` (a concurrent reorder,
-            // a mode set on either layer since) declines the whole action, leaving the
-            // document untouched. Deterministic, so everyone declines together.
-            ActionKind::MergeLayerDown { source, dest } => {
-                let Some(plan) = super::merge::plan(&state, *source) else {
-                    return Ok(state);
-                };
-                if plan.dest != *dest {
-                    tracing::warn!("merge down no longer names this destination; ignored");
-                    return Ok(state);
-                }
-                // A **filter** source is the other kind of merge (§14.11.7): nothing
-                // is stacked, so the destination's channels are rewritten where they
-                // stand and every other thing about that layer — its blend, its clip,
-                // its opacity, its place — is left exactly as it was.
-                if let super::merge::MergeKind::Filter {
-                    filter,
-                    source_params,
-                } = &plan.kind
-                {
-                    let Some(tiles) = paint_base(&state, *dest) else {
-                        return Ok(state);
-                    };
-                    // A **neutral** filter is not run at all, and that is the honest
-                    // answer rather than a shortcut: the draw list already leaves one
-                    // out (§21.3), so what it contributes to the picture is nothing,
-                    // and the merge that must not change the picture therefore has
-                    // nothing to write. Rewriting the tiles anyway would spend a pass
-                    // per tile to land the identity *plus* one round trip's rounding.
-                    let merged = if filter.is_neutral() {
-                        tiles
-                    } else {
-                        ctx.merge.apply_filter(
-                            &ctx.pool,
-                            &tiles,
-                            // Built through the very constructor the draw list goes
-                            // through, off the very params the compositor reads
-                            // (§21.4) — so the merged tile is what the screen was
-                            // showing, not a second reading of the same layer.
-                            &crate::gpu::composite::FilterDraw::new(filter.clone(), *source_params),
-                        )
-                    };
-                    return Ok(state
-                        .map_layer(*dest, |l| l.with_tiles(merged.clone()))
-                        .remove_layer(*source));
-                }
-                let super::merge::MergeKind::Stack {
-                    source_params,
-                    dest_opacity,
-                    keeps,
-                } = plan.kind
-                else {
-                    unreachable!("the filter kind returned above")
-                };
-                // Both sides are paint that carries nothing — `plan` said so — so the
-                // tile maps are there to be read. Cloned out before the rewrite for
-                // the reason `paint_base` clones: a handful of `Arc` bumps, and it is
-                // what keeps the borrow of the state off the tree being rebuilt.
-                let (Some(lower), Some(upper)) =
-                    (paint_base(&state, *dest), paint_base(&state, *source))
-                else {
-                    return Ok(state);
-                };
-                // Every number here is the plan's: what each side's tiles are worth on
-                // their own, how the upper meets the lower, and what the survivor
-                // carries afterwards. The two differ by where the destination's slider
-                // belongs — folded into the tiles beside a sibling, left on the layer
-                // when the destination is a carrier and the slider is the group's
-                // (§14.7) — and that decision is made once, in `plan`, rather than
-                // twice here and there.
-                let tiles = ctx.merge.apply(
-                    &ctx.pool,
-                    crate::gpu::merge::MergeScene {
-                        lower: crate::gpu::merge::MergeSide {
-                            tiles: &lower,
-                            opacity: dest_opacity,
-                        },
-                        upper: crate::gpu::merge::MergeSide {
-                            tiles: &upper,
-                            opacity: source_params.opacity,
-                        },
-                        blend: source_params.blend,
-                        clip: source_params.clip,
-                    },
-                );
-                state
-                    .map_layer(*dest, |l| Layer {
-                        composite: keeps,
-                        ..l.with_tiles(tiles)
-                    })
-                    .remove_layer(*source)
-            }
             ActionKind::Fill { layer, op } => {
                 let Some(base) = paint_base(&state, *layer) else {
                     return Ok(state);
@@ -719,6 +628,110 @@ fn transform_apply(
             state
         }
     }
+}
+
+/// The body of [`ActionKind::MergeLayerDown`] (§14.11): fold `source` into the
+/// layer beneath it, which is the one action whose promise is about pixels that do
+/// **not** move.
+///
+/// Beside [`transform_apply`] and for its reason — an `apply` arm says *what* an
+/// action does, and reconciling a plan, a renderer and a state rewrite is a
+/// paragraph rather than a line. [`merge::plan`](super::merge::plan) stays where it
+/// is: it is pure CPU and its module says so, while this half holds a [`TilePool`].
+///
+/// The plan is **re-derived from the state being folded over** rather than trusted
+/// from the log, so a replay and a peer decide from the same document — and a plan
+/// that no longer names `dest` (a concurrent reorder, a mode set on either layer
+/// since) declines the whole action, leaving the document untouched. Deterministic,
+/// so everyone declines together.
+fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) -> DocState {
+    let Some(plan) = super::merge::plan(&state, source) else {
+        return state;
+    };
+    if plan.dest != dest {
+        tracing::warn!("merge down no longer names this destination; ignored");
+        return state;
+    }
+    // Cloned out before the rewrite for the reason `paint_base` clones: a handful of
+    // `Arc` bumps, and it is what keeps the borrow of the state off the tree being
+    // rebuilt. `plan` has already said the destination is paint.
+    let Some(lower) = paint_base(&state, dest) else {
+        return state;
+    };
+    // What the survivor's tiles become, and what its params become — `None` for
+    // "its own, untouched", which is the whole content of a filter merge (see
+    // [`MergeKind`](super::merge::MergeKind)). Saying the difference once here is
+    // what the two `return`ing branches this replaced could not.
+    let (tiles, keeps) = match plan.kind {
+        // A **filter** source is the other kind of merge (§14.11.7): nothing is
+        // stacked, so the destination's channels are rewritten where they stand and
+        // every other thing about that layer — its blend, its clip, its opacity, its
+        // place — is left exactly as it was.
+        super::merge::MergeKind::Filter {
+            filter,
+            source_params,
+        } => {
+            // A **neutral** filter is not run at all, and that is the honest answer
+            // rather than a shortcut: the draw list already leaves one out (§21.3), so
+            // what it contributes to the picture is nothing, and the merge that must
+            // not change the picture therefore has nothing to write. Rewriting the
+            // tiles anyway would spend a pass per tile to land the identity *plus* one
+            // round trip's rounding.
+            let merged = if filter.is_neutral() {
+                lower
+            } else {
+                ctx.merge.apply_filter(
+                    &ctx.pool,
+                    &lower,
+                    // Built through the very constructor the draw list goes through,
+                    // off the very params the compositor reads (§21.4) — so the merged
+                    // tile is what the screen was showing, not a second reading of the
+                    // same layer.
+                    &crate::gpu::composite::FilterDraw::new(filter, source_params),
+                )
+            };
+            (merged, None)
+        }
+        // Every number here is the plan's: what each side's tiles are worth on their
+        // own, how the upper meets the lower, and what the survivor carries
+        // afterwards. The two kinds differ by where the destination's slider belongs
+        // — folded into the tiles beside a sibling, left on the layer when the
+        // destination is a carrier and the slider is the group's (§14.7) — and that
+        // decision is made once, in `plan`, rather than twice here and there.
+        super::merge::MergeKind::Stack {
+            source_params,
+            dest_opacity,
+            keeps,
+        } => {
+            // Both sides are paint that carries nothing — `plan` said so — so the
+            // tile map is there to be read.
+            let Some(upper) = paint_base(&state, source) else {
+                return state;
+            };
+            let tiles = ctx.merge.apply(
+                &ctx.pool,
+                crate::gpu::merge::MergeScene {
+                    lower: crate::gpu::merge::MergeSide {
+                        tiles: &lower,
+                        opacity: dest_opacity,
+                    },
+                    upper: crate::gpu::merge::MergeSide {
+                        tiles: &upper,
+                        opacity: source_params.opacity,
+                    },
+                    blend: source_params.blend,
+                    clip: source_params.clip,
+                },
+            );
+            (tiles, Some(keeps))
+        }
+    };
+    state
+        .map_layer(dest, |l| Layer {
+            composite: keeps.unwrap_or(l.composite),
+            ..l.with_tiles(tiles)
+        })
+        .remove_layer(source)
 }
 
 /// The tiles `layer` paints into, or `None` if it has none — the gate every
