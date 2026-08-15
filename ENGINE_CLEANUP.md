@@ -1,25 +1,26 @@
 # Engine cleanup
 
-A review of `crates/stark-core/src/engine/` — two confirmed defects and the
-architectural changes that would stop the next one of their kind. Nothing here is
-done; this is the work list.
+A review of `crates/stark-core/src/engine/` — the defects it found, the
+architectural changes that follow from them, and what was done about each.
 
-Functions are cited by name rather than by line, per CLAUDE.md — line numbers rot
-and these will move as the list is worked through.
+**Status: worked through.** Everything below is landed except the two items marked
+*not done*, each of which says why. Functions are cited by name rather than by line,
+per CLAUDE.md.
 
-## Two confirmed bugs, one root cause
+## Three confirmed bugs, one root cause — **fixed**
 
-Both are the same shape: **a `match` over `ActionKind` with a `_ =>` arm, which a
-later-added variant walked straight past.** Each was reproduced with a throwaway
-integration test before being written down; the reproductions are below, ready to
-become regression tests.
+All three were the same shape: **a `match` over `ActionKind` with a `_ =>` arm,
+which a later-added variant walked straight past.** §17.9 records two of these
+defect *classes* as fixed; each was reopened by a feature that arrived afterwards.
+Each was reproduced with a throwaway test before being written down, and each now
+has a regression test in the tree.
 
-### 1. `resync_counters` doesn't know `AddFilter` mints a layer id
+### 1. `resync_counters` didn't know `AddFilter` mints a layer id
 
-`engine/file.rs::resync_counters` notes `AddLayer`, `AddMatte` and
-`DuplicateLayer`. But `process_doc_inner`'s `AddFilter` arm mints an id through
-`mint_layer` as well, and `DocState::insert` has no duplicate-id guard — so after a
-load or a join, `next_layer` resumes below an id already in the log:
+`AddFilter` mints through `mint_layer` like every other `Add`, but the resync
+listed three variants and it was not one of them — and `DocState::insert` has no
+duplicate-id guard. So a document whose highest ordinal came from a filter reloaded
+with a counter that would mint that id a second time:
 
 ```
 before save: [LayerId(0), LayerId(1)]
@@ -27,185 +28,128 @@ after load:  [LayerId(0), LayerId(1)]
 after add:   [LayerId(0), LayerId(1), LayerId(1)]   <-- two layers, one id
 ```
 
-Reproduced by: add a filter, `save_bytes`, `load_bytes`, add a layer. From there
-`layer(id)` finds whichever comes first, so painting, renaming and deleting all
-reach the wrong row. Reached through `join_collaboration` — which calls the same
-`resync_counters` — it is a convergence failure: exactly the defect §17.9 says
-per-client identity was introduced to rule out.
+Through `join_collaboration`, which resyncs the same way, it is a convergence
+failure outright.
 
-### 2. A remote `MergeLayerDown` strands the active layer
+Now asked of `ActionKind::minted_layers`, beside the variants.
+*Test:* `filter.rs::a_filters_id_is_not_reused_after_a_reload`.
 
-`engine/collab.rs::merge_remote` extracts the removed layer from `RemoveLayer`
-alone, with `_ => None`. But `document/action.rs::merge_apply` ends in
-`.remove_layer(source)`, so a peer merging down the layer this client is painting on
-leaves `session.active_layer` dangling:
+### 2. Undo of an `AddLayer` stranded the active layer
 
-```
-B's active layer LayerId(10451216376902189057) no longer exists
-— every stroke will be silently refused
-```
+Found while fixing #3, and the most ordinary of the three: `AddLayer` arms the layer
+it added, undo withdraws exactly that layer, and nothing repointed the brush. Add a
+layer, change your mind, and every subsequent stroke was silently refused.
+*Test:* `layers.rs::undoing_an_add_leaves_the_brush_somewhere_it_can_paint`.
 
-Reproduced by: A shares, paints, adds a layer, paints again; B joins and selects the
-top layer; A merges it down; B merges the action. This is verbatim the second defect
-§17.9 records as fixed ("a remote `RemoveLayer` could strand the active layer"),
-reintroduced by a feature added afterwards.
+### 3. A remote `MergeLayerDown` stranded the active layer
 
-**The fix is to stop asking which actions remove a layer.** Delete the `removed`
-extraction and call `repoint_active_layer()` unconditionally on a successful merge:
-it already returns early when the layer still exists, so it costs one
-`contains_layer` per remote commit and cannot miss a variant.
+`merge_remote` keyed the repoint on the `RemoveLayer` variant, but `merge_apply`
+ends in `.remove_layer(source)`. A peer merging down the layer you are painting on
+left you pointing at nothing.
+*Test:* `collab.rs::a_remote_merge_down_does_not_strand_the_active_layer`.
 
-## A. Move per-variant questions onto `ActionKind`, exhaustively
+**Both repoints are one now.** The rule is not "which actions remove a layer" but
+"the document has been replaced", and `committed_changed` is already the single
+funnel every commit, undo/redo step, seek, merge, share, join and reset comes
+through. The repoint went there and four keyed call sites went away.
 
-Three live wildcards — `engine/collab.rs::merge_remote`,
-`engine/file.rs::resync_counters` and `content.rs::action_content` — each keep a
-fact about actions *away from* the enum, where adding a variant is silent instead of
-loud.
+## A. Per-variant questions moved onto `ActionKind` — **done**
 
-The idiom to follow is already in the tree: `tests/footprint.rs::slot` is exhaustive
-with no `_` arm, and the comment beside it explains why — and even names `AddFilter`
-as the variant that escaped an under-specified list once before. The two bugs above
-are that same comment, one scope over, unheeded.
+Three live wildcards, all now exhaustive with no `_` arm, following
+`tests/footprint.rs::slot` — whose own comment names `AddFilter` as the variant
+that escaped *it* once:
 
-So put the questions next to `apply`, in `document/action.rs`:
+- `ActionKind::minted_layers` — replaces the list in `resync_counters`.
+- `ActionKind::is_noop_on` — see C.
+- `content::action_content` — was latent (only `CommitStroke` names an asset), but a
+  wildcard answers "needs nothing" for every variant that does not exist yet, and an
+  unbundled ground bakes a smooth deposit into tiles no later arrival un-bakes.
 
-```rust
-impl ActionKind {
-    /// Every layer id this action *mints*. Exhaustive with no `_` arm: a new
-    /// variant that mints one stops this file compiling.
-    pub fn minted_layers(&self) -> impl Iterator<Item = LayerId> + '_ { ... }
+`Engine::document_file` also kept a second scan of the log for content, beside the
+one `content::action_content`'s doc comment calls "the single definition". Folded
+onto `required_content`.
 
-    /// Whether applying this can remove a layer — what the brush is repointed
-    /// after, locally and on a merge alike.
-    pub fn removes_layers(&self) -> bool { ... }
-}
-```
+## B. `Engine`'s loose field groups — **done**
 
-`content.rs::action_content` should lose its wildcard the same way. That one is
-latent today — only `CommitStroke` names an asset — but a gradient fill or a matte
-carrying an id would silently save an unbundled document, which is the failure the
-whole bundling path exists to prevent (§8).
+- **`build_gpu` returned a seven-tuple**, assigned field-by-field in two places. It
+  returns the whole `ApplyCtx` now, so `rebuild_gpu_for` is `self.apply =
+  built.apply` and a renderer added to the context is rebuilt by construction. What
+  a rebuild *keeps* is `GpuKeep` — the interesting half of that function, stated as
+  a list.
+- **`ApplyCtx` derives `Clone`**, and `new_sharing` uses it. Cloning nine fields by
+  hand meant a renderer added to the context was shared by every engine except the
+  preview one.
+- **`Authoring`** groups `actor`, `clock`, `next_layer` and the outbox, because they
+  move as one thing. `reset_document` is one assignment rather than five.
+- **The outbox is `Option<Vec<Action>>`**, so "queued actions that will never be
+  sent" is unrepresentable and the queue's presence *is* `is_shared`. It also buys a
+  real saving: `commit` cloned its action unconditionally, and a `CommitStroke`
+  carries the stroke's whole control-point list — a solo session duplicated one per
+  commit to drop it an instruction later.
+- **`debug_samples` is `#[cfg]`**, not a `cfg!` around a field that exists anyway.
+  That also fixed a live inconsistency: `Start` was ungated while `To` was gated, so
+  a shipping build kept the first sample of every stroke and dropped the rest.
 
-While there: `engine/file.rs::document_file` hand-rolls the "which brush shapes does
-this log name" scan that `content::action_content` already answers, and
-`referenced_surfaces` hand-rolls the ground scan beside it. Three walks of the log
-across two modules answering one question. Fold `document_file` onto
-`required_content()` so there is one list to keep right.
+**The `is_shared` / `scrub_range` divergence is documented, not fixed.**
+`end_collaboration` stops the broadcast but keeps the `ReplicatedTimeline`, which
+takes the trait's default `scrub_range` (`None`) — so after leaving a session the
+history scrubber stays unavailable until a new or loaded document brings a linear
+history. That is *consistent* (there is no seek on a replicated timeline), so the
+thing that was lying was `is_shared`, and it now says which question it answers.
+Making the scrubber come back means implementing `seek` on `ReplicatedTimeline`,
+which is a feature rather than a cleanup.
 
-## B. `Engine` is a 30-field, 66-public-method god object
+## C. A setter's two rules are one call — **done**
 
-Splitting the `impl` across six files was right for readability, and the module doc
-is honest that it is "a division of the *file* and not of the type" — but that means
-all 122 methods still reach all 30 fields and nothing is enforced. Three tightenings,
-in increasing order of effort:
+- **"Don't spend an undo step on nothing"** had four hand-rolled shapes and was
+  missing from `SetLayerVisible`, `SetLayerClip`, `SetMatteRect` and
+  `SetBackground`. Now `ActionKind::is_noop_on`, beside `apply` — which is also the
+  answer to a discomfort three of those arms wrote down themselves ("a second rule
+  about what a matte is, kept somewhere `apply` cannot see").
+- **"A commit supersedes the drag"** was 11 `preview.set_doc(None)` calls, present
+  at 8 commit sites and absent from 13, including the gesture commit. It moved into
+  `commit`.
+- `settle` is the two together, because a slider released on the value it was
+  pressed on must log nothing *and* still drop what it was showing.
 
-**`build_gpu` returns a 7-tuple**, destructured and assigned field-by-field in two
-places (`new_with_color_space`, `rebuild_gpu_for`). Return one
-`GpuStack { pool, stroke, transform, fill, merge, compositor, compositor_pipeline }`
-held as a single field, and a rebuild becomes one assignment instead of seven a new
-subsystem could be left out of.
+*Tests:* `layers.rs::setting_a_value_to_the_one_it_already_holds_is_not_an_edit`,
+`layers.rs::a_commit_supersedes_a_drag_it_knows_nothing_about`.
 
-**The 30-field struct literal is written twice** — `new_with_color_space` and
-`new_sharing` — and then reset piecemeal a third time in
-`engine/file.rs::reset_document`. Three places that have to agree about what a fresh
-session is, where the compiler catches a *missing* field but never a *wrong* one.
-Group the authoring scalars:
+## D. The eyedropper's per-sample cost — **half done, and the review over-claimed it**
 
-```rust
-struct Authoring { actor: ActorId, clock: u64, next_layer: u64, outbox: Vec<Action>, outbox_enabled: bool }
-```
+The draw list is now built **once** for a trace, culled to the union of every patch
+(`patch_view`, `patch_cull`, `TileRect::union`), instead of once per point. That is
+the honest expression of "the list does not depend on the point" and it is what the
+review asked for.
 
-Then both constructors say `authoring: Authoring::solo()`, `reset_document` says the
-same, and "did I remember to clear the outbox" stops being a question.
+**But it was not where the time went.** Measured on a 9-layer document, a
+128-sample trace: **4.78 ms → 4.65 ms**. The patch cull already held each pass to a
+couple of tiles, so the tree walk was never the cost.
 
-**`outbox` + `outbox_enabled` should be `Option<Vec<Action>>`**, which makes "queued
-actions while not sharing" unrepresentable. Related, and already broken:
-`is_shared()` reports `outbox_enabled`, but `end_collaboration` leaves the
-`ReplicatedTimeline` in place — and `ReplicatedTimeline` takes the trait's default
-`scrub_range`, which is `None`. So after leaving a session `is_shared()` says solo
-while the history scrubber stays permanently dead. Two notions of "shared" that have
-already diverged.
-
-This is also what unblocks the §7 actor migration. `export` and `pick_color` already
-work around whole-`&mut self` borrows by cloning what their futures need; that is a
-symptom of the single-owner shape, not a design.
-
-## C. Make the two per-command rules structural rather than enumerated
-
-**"A commit supersedes the drag preview."** Written out at 11 call sites, each with
-its own paragraph of justification — and **13 of the 24 commit paths omit it**:
-`Select`, `InvertSelection`, `SetSurface`, `AddLayer`, `AddMatte`, `AddFilter`,
-`DuplicateLayer`, `RemoveLayer`, `MergeLayerDown`, `SetLayerClip`,
-`SetLayerVisible`, `SetLayerName`, `MoveLayer`, and the gesture-end commit. Hold a
-slider so a preview is installed, delete a layer by keyboard without releasing, and
-the canvas goes on showing the pre-delete document.
-
-Move `self.preview.set_doc(None)` into `commit` itself. An unlogged drag is by
-definition superseded by any logged change, and `merge_remote` does not route
-through `commit`, so a peer's edit still will not cancel a local drag. This is the
-"rule out a class rather than enumerate its instances" convention exactly.
-
-**"Don't spend an undo step on a no-op."** Hand-rolled in four different shapes
-(`SetLayerOpacity`, `SetLayerBlend`, `SetFilter`, `SetMattePaint`, plus
-`SetLayerName` and `SetSurface`), while `SetLayerVisible`, `SetLayerClip`,
-`SetMatteRect`, `SetBackground` and `MoveLayer` have none — so toggling the eye to
-the value it already holds costs an undo step, and so does `SetBackground` with the
-color it already is.
-
-The comments at those sites already worry about "a second rule about what a matte
-is, kept somewhere `apply` cannot see". Answer that by putting the predicate where
-`apply` lives:
-
-```rust
-impl ActionKind {
-    /// Whether applying this to `state` would leave it as it found it.
-    pub fn is_noop_on(&self, state: &DocState) -> bool { ... }
-}
-```
-
-and have `commit` consult it once. The engine then holds no rules at all about what
-a filter or a matte is.
-
-## D. The eyedropper's per-sample cost
-
-`engine/pick.rs::pick_colors` loops over points and, **per point**, rebuilds the
-entire draw list (`composite_groups` — a full layer-tree walk cloning an
-`Arc<GpuTile>` per visible tile) and creates two or three textures. `pick_gradient`
-traces up to `gradient::MAX_SAMPLES` (128) points, so one gradient capture is 128
-tree walks and up to 384 texture creations before the — already batched — readback.
-
-Two independent wins, neither changing what is sampled:
-
-- **Hoist the draw list.** It varies with the point only through
-  `visible_tiles(view)`. Take the union of the patch rects once, build `groups`
-  once, reuse it for every point: 128 walks become 1.
-- **Stop allocating per point.** A patch is at most 65×65, so render them into one
-  atlas texture (or a small reused ring) rather than a fresh triple each. That also
-  collapses the readback to a single texture.
+What the time is actually in is **128 queue submissions and ~380 texture creations**
+— `composite_channels` owns a command encoder and submits it per call. Batching
+those into one encoder is a real change to that method's shape: the per-compositor
+upload buffers are reused between calls, so N passes in one submission would need
+them not to be. **Not done**: 4.65 ms for a one-shot gesture does not buy that
+risk. Revisit if the trace ever runs at pointer rate.
 
 ## E. Smaller items
 
-- `engine/render.rs::export` and `::export_view` duplicate the identical
-  render-then-readback tail, including the `use<>` future shape; they differ only in
-  how the view is derived. `export` could be `export_view(plan.view())` once the
-  device-limit check is shared.
-- `debug_samples: Vec<InputSample>` is a real field in shipping builds, gated by a
-  runtime `cfg!()` at three sites rather than by `#[cfg]` on the field. It costs
-  nothing, but it contradicts "do not add inert scaffolding".
-- `contributes()` inside `observe` walks each layer's whole subtree, once per
-  visited layer — O(n·depth). Harmless on a flat document, quadratic in a deep chain
-  of groups. The same shape as the `merge_down` search the comment beside it already
-  celebrates having removed.
-- `ObservableState` derives `Clone, Debug` but not `PartialEq`, so the frontend's
-  `obs.set()` marks every subscriber dirty even when the projection is identical.
-  `LayerInfo` and `MatteInfo` already derive it; the container is the only thing
-  missing.
+- **`export` is `export_view` through the plan's view** — done. The
+  render-then-readback tail, including the borrow bargain, was written out twice.
+- **`ObservableState` derives `PartialEq`** — done, plus `ViewTransform` and
+  `MediaParams`, the only two fields that lacked it. The frontend can now notice
+  that a re-publish did not move; taking that up is a `stark-ui` change.
+- **`contributes()` in `observe` is O(n·depth)** — **not done**, deliberately. It
+  recurses each layer's subtree once per visited row, so a deep chain of groups is
+  quadratic. Unlike the `merge_down` search that shared its shape (79 µs at 60
+  layers), this one is an allocation-free boolean walk that short-circuits as soon
+  as the stack is filled: the pathological case is a few microseconds. Restructuring
+  a readable pre-order walk into a post-order accumulation is not worth that.
 
-## Suggested order
+## What is left
 
-1. **The two bugs plus A.** Contained, two proven defects behind it, and the
-   exhaustive `ActionKind` methods are what stop the third.
-2. **C.** Small, and removes a whole class at each of two sites.
-3. **B.** The larger refactor. Worth sequencing *before* the §7 actor work rather
-   than as a project of its own.
-4. **D**, if gradient capture is felt to be slow. **E** as it is passed.
+Nothing from this list except the two marked *not done*, both of which are judgement
+calls recorded above rather than omissions. The larger thing this cleanup was
+sequenced ahead of — the §7 actor migration — is now better placed for it:
+`ApplyCtx`, `GpuKeep` and `Authoring` are the seams a channel would be drawn along.
