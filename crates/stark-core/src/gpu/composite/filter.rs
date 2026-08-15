@@ -10,11 +10,12 @@
 //! blend, the pass computes the whole result" pipeline.
 //!
 //! [`ScratchLevel`]: super::blend::ScratchLevel
-//! [`UniformSlots`]: super::blend::UniformSlots
+//! [`UniformSlots`]: crate::gpu::uniforms::UniformSlots
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
+use crate::gpu::uniforms::UniformSlots;
 
 // Generated from `filter_common.wesl`'s own declaration (§6.10).
 pub(crate) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
@@ -75,7 +76,7 @@ impl FilterPass {
         // core feature set — and costs the point filters nothing: a sampled
         // declaration still serves their exact `textureLoad`s.
         let mut entries = vec![
-            desc::uniform_slot(0, frag, std::mem::size_of::<FilterUniform>() as u64),
+            UniformSlots::<FilterUniform>::layout(0, frag),
             desc::sample_tex(1, frag), // accumulator color
             desc::sample_tex(2, frag), // accumulator aux
             desc::sampler(3, frag),    // the chromatic gather's bilinear taps

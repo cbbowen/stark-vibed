@@ -7,6 +7,7 @@
 
 use crate::geom::ViewTransform;
 use crate::gpu::desc;
+use crate::gpu::uniforms::UniformSlots;
 
 // Generated from `guides.wesl`'s own declaration — pass D, the drawing guides
 // (§20.4, §6.7).
@@ -75,13 +76,6 @@ pub(super) fn pack_guides(scene: &crate::guides::GuideScene, view: ViewTransform
     }
 }
 
-/// One dynamic-offset slot of the guide uniform, padded to a multiple of the
-/// alignment like [`BLEND_SLOT`](super::blend::BLEND_SLOT) and for the same reason:
-/// every visible guide's slot is written before the single submit, and each draw
-/// binds its own offset. Two alignment units, because [`GuideUniform`] outgrew one
-/// when the fisheye brought the second set of poles (§20.8).
-pub(super) const GUIDE_SLOT: u64 = 512;
-
 pub(super) struct GuidePass {
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) bgl: wgpu::BindGroupLayout,
@@ -97,12 +91,16 @@ impl GuidePass {
         let bgl = desc::bind_group_layout(
             device,
             "stark guides bgl",
-            // One slot per visible guide in the frame; see [`GUIDE_SLOT`].
-            &[desc::uniform_slot(
-                0,
-                frag,
-                std::mem::size_of::<GuideUniform>() as u64,
-            )],
+            // One slot per visible guide in the frame, the stride derived from
+            // [`GuideUniform`] itself. It was a hand-written `GUIDE_SLOT = 512` for
+            // as long as this pass allocated its own buffer — and 512 is what
+            // `UniformSlots` computes, so the constant was *right* and would have
+            // stayed right only until the next time the uniform grew. It had
+            // already been widened once, when the fisheye brought the second set of
+            // poles (§20.8); a second such growth past 512 would have under-strided
+            // every slot, and two visible guides would have read each other's
+            // lanes with nothing to say so.
+            &[UniformSlots::<GuideUniform>::layout(0, frag)],
         );
         let layout = desc::pipeline_layout(device, "stark guides layout", &[Some(&bgl)]);
         let pipeline = desc::fullscreen_pipeline(
@@ -120,13 +118,4 @@ impl GuidePass {
         );
         Self { pipeline, bgl }
     }
-}
-
-pub(super) fn alloc_guides(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("stark guides uniform"),
-        size: GUIDE_SLOT * count.max(1) as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }

@@ -87,11 +87,7 @@ impl FillRenderer {
         // The tile's canvas origin — per tile, where binding 0 is per fill, so it
         // is a dynamic-offset slot rather than a buffer each (`UniformSlots`). Bound
         // unconditionally at 6 so its index does not move with the resid feature.
-        entries.push(desc::uniform_slot(
-            6,
-            frag,
-            std::mem::size_of::<TileUniform>() as u64,
-        ));
+        entries.push(UniformSlots::<TileUniform>::layout(6, frag));
         let bgl = desc::bind_group_layout(device, "stark fill bgl", &entries);
         let layout = desc::pipeline_layout(device, "stark fill layout", &[Some(&bgl)]);
         let targets = formats.targets();
@@ -233,14 +229,7 @@ impl FillRenderer {
             if let Some(view) = &base_resid {
                 entries.push(desc::tex(5, view));
             }
-            entries.push(wgpu::BindGroupEntry {
-                binding: 6,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: tile_slots.buffer(),
-                    offset: 0,
-                    size: wgpu::BufferSize::new(std::mem::size_of::<TileUniform>() as u64),
-                }),
-            });
+            entries.push(tile_slots.binding(6));
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark fill bg"),
                 layout: &self.bgl,

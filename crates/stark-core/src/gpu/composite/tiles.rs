@@ -10,6 +10,7 @@ use wgpu::util::DeviceExt;
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::ChannelFormats;
 use crate::gpu::desc::{self, RenderPipe};
+use crate::gpu::uniforms::UniformSlots;
 
 use super::view::View;
 
@@ -114,11 +115,7 @@ impl TilePass {
         let ramp_bgl = desc::bind_group_layout(
             device,
             "stark matte ramp bgl",
-            &[desc::uniform_slot(
-                0,
-                frag,
-                std::mem::size_of::<stark_shaders::mirror::matte::Ramp>() as u64,
-            )],
+            &[UniformSlots::<Ramp>::layout(0, frag)],
         );
         let matte_layout = desc::pipeline_layout(
             device,

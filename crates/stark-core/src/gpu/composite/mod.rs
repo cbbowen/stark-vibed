@@ -58,10 +58,10 @@ pub(crate) use blend::{BlendPass, BlendUniform, blend_code};
 use blend::{ScratchLevel, ScratchTargets};
 pub(crate) use filter::{FilterPass, FilterUniform};
 use group::scratch_needs;
-// The free items are imported by name rather than qualified, because `render`'s own
+// `pack_guides` is imported by name rather than qualified, because `render`'s own
 // `guides` binding (the scene's list) would otherwise shadow the module in a reader's
-// eye — `alloc_guides(device, guides.len())` resolves fine and reads badly.
-use guides::{GUIDE_SLOT, GuidePass, GuideUniform, alloc_guides, pack_guides};
+// eye — `guides::pack_guides(scene, view)` resolves fine and reads badly.
+use guides::{GuidePass, GuideUniform, pack_guides};
 use media::{MediaPass, MediaUniform};
 use overlay::{OverlayInstance, OverlayPass, PEER_OUTLINE_ALPHA, alloc_overlay};
 use resolve::{ResolvePass, ResolveUniform, supersample};
@@ -304,9 +304,10 @@ pub struct Compositor {
     // Pass C's, grown to the outlined mask-tile count.
     overlay_instances: wgpu::Buffer,
     overlay_cap: usize,
-    // Pass D's, one dynamic-offset slot per visible guide.
-    guide_buf: wgpu::Buffer,
-    guide_slots: usize,
+    /// Pass D's, one dynamic-offset slot per visible guide — the same mechanism as
+    /// the two above, which this pass spent a hand-written stride and a hand-rolled
+    /// grow loop reimplementing.
+    guide_uniforms: UniformSlots<GuideUniform>,
 }
 
 /// Somewhere for a render that is **not** the surface's to keep its attachments
@@ -495,8 +496,7 @@ impl Compositor {
             filter_uniforms: UniformSlots::new(device, "stark filter uniform", 1),
             overlay_instances: alloc_overlay(device, 1),
             overlay_cap: 1,
-            guide_buf: alloc_guides(device, 1),
-            guide_slots: 1,
+            guide_uniforms: UniformSlots::new(device, "stark guide uniform", 1),
         }
     }
 
@@ -653,19 +653,12 @@ impl Compositor {
             matte_ramp_bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark matte ramp bg"),
                 layout: &p.tiles.ramp_bgl,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: self.matte_ramps.buffer(),
-                        offset: 0,
-                        size: wgpu::BufferSize::new(std::mem::size_of::<Ramp>() as u64),
-                    }),
-                }],
+                entries: &[self.matte_ramps.binding(0)],
             }));
         }
 
         // One uniform slot per merge and one per filter layer, all written before the
-        // single submit — see `UNIFORM_SLOT` for why they cannot share one.
+        // single submit — see [`UniformSlots`] for why they cannot share one.
         //
         // Collected by the **same recursion the encoder consumes them with**, so
         // slot `n` is the `n`th merge (or the `n`th filter) either walk reaches. That
@@ -919,14 +912,7 @@ impl Compositor {
         slot: u32,
     ) {
         let mut entries = vec![
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: self.blend_uniforms.buffer(),
-                    offset: 0,
-                    size: wgpu::BufferSize::new(std::mem::size_of::<BlendUniform>() as u64),
-                }),
-            },
+            self.blend_uniforms.binding(0),
             desc::tex(1, back.color),
             desc::tex(2, back.aux),
             desc::tex(3, src.color),
@@ -985,14 +971,7 @@ impl Compositor {
         slot: u32,
     ) {
         let mut entries = vec![
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: self.filter_uniforms.buffer(),
-                    offset: 0,
-                    size: wgpu::BufferSize::new(std::mem::size_of::<FilterUniform>() as u64),
-                }),
-            },
+            self.filter_uniforms.binding(0),
             desc::tex(1, back.color),
             desc::tex(2, back.aux),
             desc::samp(3, &e.p.filter.sampler),
@@ -1345,33 +1324,17 @@ impl Compositor {
         // the perspective grid is chrome the whole canvas is read *through*,
         // so it is the topmost thing drawn (§20.4). One render pass; one
         // fullscreen triangle per visible guide, each off its own uniform
-        // slot (see `GUIDE_SLOT` for why they cannot share one).
+        // slot (see [`UniformSlots`] for why they cannot share one).
         if !guides.is_empty() {
-            if guides.len() > self.guide_slots {
-                self.guide_buf = alloc_guides(device, guides.len());
-                self.guide_slots = guides.len();
-            }
-            for (i, scene) in guides.iter().enumerate() {
-                p.ctx.queue.write_buffer(
-                    &self.guide_buf,
-                    i as u64 * GUIDE_SLOT,
-                    bytemuck::bytes_of(&pack_guides(scene, view)),
-                );
-            }
+            let packed: Vec<GuideUniform> = guides.iter().map(|s| pack_guides(s, view)).collect();
+            self.guide_uniforms.write(device, &p.ctx.queue, &packed);
             // Per render rather than kept, like the blend bind group: it has
             // to follow the buffer through reallocation, and a bind group over
             // one small uniform is cheap beside everything else in the frame.
             let guide_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark guides bg"),
                 layout: &p.guides.bgl,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.guide_buf,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(std::mem::size_of::<GuideUniform>() as u64),
-                    }),
-                }],
+                entries: &[self.guide_uniforms.binding(0)],
             });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark guides pass"),
@@ -1382,8 +1345,8 @@ impl Compositor {
                 multiview_mask: None,
             });
             pass.set_pipeline(&p.guides.pipeline);
-            for i in 0..guides.len() {
-                pass.set_bind_group(0, &guide_bg, &[(i as u64 * GUIDE_SLOT) as u32]);
+            for i in 0..guides.len() as u32 {
+                pass.set_bind_group(0, &guide_bg, &[UniformSlots::<GuideUniform>::offset(i)]);
                 pass.draw(0..3, 0..1);
             }
         }

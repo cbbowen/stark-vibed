@@ -13,6 +13,7 @@ use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::pigment::PigmentLut;
+use crate::gpu::uniforms::UniformSlots;
 
 // Generated from `blend_common.wesl`'s own declaration (§6.7).
 pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
@@ -63,8 +64,8 @@ impl BlendPass {
         let formats = ChannelFormats::of(color_space);
         let resid_format = formats.resid;
         let mut entries = vec![
-            // One slot per blend group in the frame; see [`BLEND_SLOT`].
-            desc::uniform_slot(0, frag, std::mem::size_of::<BlendUniform>() as u64),
+            // One slot per blend group in the frame; see [`UniformSlots`].
+            UniformSlots::<BlendUniform>::layout(0, frag),
             desc::load_tex(1, frag),   // accumulator color
             desc::load_tex(2, frag),   // accumulator aux
             desc::load_tex(3, frag),   // isolated layer color

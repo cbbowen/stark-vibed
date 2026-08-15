@@ -92,7 +92,7 @@ impl SelectionRenderer {
             "stark selection bgl",
             &[
                 // Per tile, so a dynamic-offset slot rather than a buffer each.
-                desc::uniform_slot(0, frag, std::mem::size_of::<MaskUniform>() as u64),
+                UniformSlots::<MaskUniform>::layout(0, frag),
                 desc::load_tex(1, frag), // previous mask
                 desc::load_tex(2, frag), // lasso edges
             ],
@@ -429,14 +429,7 @@ impl SelectionRenderer {
                 label: Some("stark selection bg"),
                 layout: &self.rasterize_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: slots.buffer(),
-                            offset: 0,
-                            size: wgpu::BufferSize::new(std::mem::size_of::<MaskUniform>() as u64),
-                        }),
-                    },
+                    slots.binding(0),
                     desc::tex(1, &prev_view),
                     desc::tex(2, edges),
                 ],
