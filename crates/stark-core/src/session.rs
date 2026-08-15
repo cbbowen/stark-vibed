@@ -732,13 +732,10 @@ impl Session {
             // A snapped stroke's path is the shape's, not the fit's — there is nothing
             // left for a last solve to settle.
             if b.assist.is_none() {
-                // The winch (§6.11): the towed tip runs straight up the string
-                // to the lift point before the fit closes, so the mark ends
-                // where the hand did.
-                if let Some(tow) = b.tow.as_mut() {
-                    let fitter = &mut b.fitter;
-                    tow.finish(&mut |s| fitter.push(s));
-                }
+                // The towed tip needs nothing at pen-up (§6.11): lifting stops
+                // pulling the string rather than reeling the tip in, so the fit
+                // closes on the last towed sample and the mark ends where the
+                // rope had towed it to — the trace the preview was showing.
                 b.fitter.finish();
             }
             b.to_record()

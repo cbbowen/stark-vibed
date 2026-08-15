@@ -4,9 +4,10 @@
 //! length. While the pointer wanders within the rope of the tip, the string is
 //! slack and the tip is **parked** — jitter and hesitation never move it at
 //! all. The moment it comes taut the tip is dragged, and a dragged tip traces
-//! the classical pursuit curve, the **tractrix**. The pen-up is a **winch**:
-//! the rope runs to nothing and the tip travels straight up the string to the
-//! lift point, so the mark still ends where the hand did (§6.2).
+//! the classical pursuit curve, the **tractrix**. The pen-up **parks the tip**:
+//! lifting stops pulling the string, it does not reel the tip in, so the mark
+//! ends where the rope had towed it to — which is the trace the preview was
+//! already showing at the release (§6.11).
 //!
 //! This is an *input* transform: it sits between the raw pointer reports and
 //! [`PathFitter::push`](crate::path::PathFitter::push), one stage upstream of
@@ -56,15 +57,16 @@ pub struct TowString {
 /// The towed tip: a stateful transform on the raw [`InputSample`] stream.
 ///
 /// Feed every report through [`to`](Self::to); it emits zero or more towed
-/// samples for the fitter (none while the tip is parked). Close the stroke
-/// with [`finish`](Self::finish), which winches the tip to the last report.
+/// samples for the fitter (none while the tip is parked). There is nothing to
+/// do at pen-up: the last emission already *is* the tip, and lifting the pen
+/// stops pulling the string rather than reeling it in (§6.11).
 #[derive(Clone, Debug)]
 pub struct Tow {
     rope: f32,
     tip: Vec2,
     /// The last raw report — the target the string runs to. Kept whole (not
-    /// just the position) because the winch ends the stroke with its
-    /// attributes.
+    /// just the position) because a run's emissions interpolate the pen
+    /// channels across it.
     target: InputSample,
 }
 
@@ -169,18 +171,6 @@ impl Tow {
             }
         }
     }
-
-    /// The pen-up winch (§6.11): the rope runs to nothing and the tip travels
-    /// straight up the string to the last report — the tow's own continuation
-    /// for a stationary target, so the exit leaves at the direction the string
-    /// already held. Emits the closing sample; a stroke whose tip is already
-    /// under the hand (a click) has nothing to close.
-    pub fn finish(&mut self, emit: &mut impl FnMut(InputSample)) {
-        if self.tip != self.target.pos {
-            self.tip = self.target.pos;
-            emit(self.target);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -263,37 +253,37 @@ mod tests {
         assert_eq!(tow.tip(), jitter[0], "the tip left its park");
     }
 
+    /// The pen-up parks the tip (§6.11): the mark ends where the rope had towed
+    /// it to, one string short of the lift point and dead astern of it. The run
+    /// out to the hand that a winch would splice on is exactly what must not be
+    /// drawn — nothing steered it, and nothing previewed it.
     #[test]
-    fn the_winch_ends_exactly_at_the_lift_point() {
-        let (mut tow, _) = run(40.0, &[Vec2::ZERO, Vec2::new(100.0, 30.0)]);
-        let mut closing = Vec::new();
-        tow.finish(&mut |s| closing.push(s));
-        assert_eq!(closing.len(), 1);
-        assert_eq!(
-            closing[0].pos,
-            Vec2::new(100.0, 30.0),
-            "the mark must end where the hand did (§6.2)"
+    fn the_pen_up_leaves_the_tip_where_the_rope_towed_it() {
+        let lift = Vec2::new(100.0, 30.0);
+        let (tow, out) = run(40.0, &[Vec2::ZERO, lift]);
+        let end = *out.last().expect("a run well past the rope tows");
+        assert_eq!(tow.tip(), end, "the last emission is not the tip");
+        // Straight tow, so the tip lies on the target's own line, a rope behind.
+        let gap = (lift - end).length();
+        assert!(
+            (gap - 40.0).abs() < 1e-2,
+            "tip {end} is {gap} from the lift point, not one rope"
         );
-        assert_eq!(tow.tip(), Vec2::new(100.0, 30.0));
-        // A second finish has nothing left to close.
-        let mut again = Vec::new();
-        tow.finish(&mut |s| again.push(s));
-        assert!(again.is_empty());
     }
 
-    /// A flick shorter than the rope never tows; the winch turns it into the
-    /// one straight stroke it was meant as.
+    /// A flick shorter than the rope never brings the string taut, so it never
+    /// tows — and the pen-up does not rescue it. The mark is the dab that was
+    /// on screen for the whole gesture: a tick smaller than the string is
+    /// indistinguishable from the wobble the string exists to eat, and a brush
+    /// that hatches wants little smoothing or none.
     #[test]
-    fn a_short_flick_becomes_a_straight_tick() {
-        let (mut tow, out) = run(
+    fn a_flick_inside_the_rope_leaves_only_the_dab() {
+        let (tow, out) = run(
             60.0,
             &[Vec2::ZERO, Vec2::new(20.0, 8.0), Vec2::new(35.0, 14.0)],
         );
         assert!(out.is_empty(), "a flick inside the rope towed: {out:?}");
-        let mut closing = Vec::new();
-        tow.finish(&mut |s| closing.push(s));
-        assert_eq!(closing.len(), 1);
-        assert_eq!(closing[0].pos, Vec2::new(35.0, 14.0));
+        assert_eq!(tow.tip(), Vec2::ZERO, "the pen-up moved a parked tip");
     }
 
     /// The string is an invariant, not a tendency: at every emission the tip
@@ -324,11 +314,11 @@ mod tests {
         }
     }
 
-    /// The wiring the session repeats (§6.11): tow into fitter, winch before
-    /// finish. A towed, fitted stroke starts at the press and ends at the
-    /// lift, with the towed samples in between.
+    /// The wiring the session repeats (§6.11): tow into fitter, nothing at
+    /// pen-up. A towed, fitted stroke starts at the press and ends at the tip —
+    /// a rope short of the lift, with the towed samples in between.
     #[test]
-    fn a_towed_stroke_fits_from_press_to_lift() {
+    fn a_towed_stroke_fits_from_press_to_the_tip() {
         use crate::path::PathFitter;
         let mut fitter = PathFitter::new();
         let first = sample(0.0, 0.0);
@@ -338,16 +328,20 @@ mod tests {
             let s = sample(i as f32 * 4.0, (i as f32 * 0.1).sin() * 3.0);
             tow.to(s, &mut |t| fitter.push(t));
         }
-        tow.finish(&mut |t| fitter.push(t));
         fitter.finish();
         let path = fitter.path();
         assert!(path.len() >= 2);
         assert_eq!(path[0].pos, Vec2::ZERO);
         let end = path.last().unwrap().pos;
+        assert!(
+            (end - tow.tip()).length() < 1e-3,
+            "fitted end {end} is not the towed tip {}",
+            tow.tip()
+        );
         let lift = Vec2::new(240.0, (6.0f32).sin() * 3.0);
         assert!(
-            (end - lift).length() < 1e-3,
-            "fitted end {end} is not the lift point {lift}"
+            (end - lift).length() > 1.0,
+            "the fit ran on to the lift point {lift}"
         );
     }
 }

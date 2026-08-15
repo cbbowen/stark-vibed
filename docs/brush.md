@@ -1350,18 +1350,43 @@ included — which is not a loss the tow introduces but the fitter's own standin
 answer to a stationary hand: a report that did not move carries no geometry,
 and its attributes apply to a zero-length piece of path (§6.2).
 
-### The pen-up is a winch
+### The pen-up parks the tip
 
-At lift the tip is up to `L` short of where the hand stopped. The stroke
-finishes by **winching**: `L` runs to zero and the tip travels straight up the
-string to the lift point — which is the tow's own continuation for a stationary
-target, not a spliced-on line, so the exit leaves at the direction the curve was
-already heading. The mark ends where the hand did, the principle §6.2 already
-holds geometry to; the trailing taper lands on the winched run, which is what
-gives a lettering brush its exit; and a flick shorter than the string — a hatch
-tick — becomes the one straight stroke it was meant as, drawn whole at lift.
-The winch also makes the release drift of §6.2 moot twice over: sub-pixel nib
-wander at lift is deep inside the dead zone, so it never steers the tip at all.
+At lift the tip is up to `L` short of where the hand stopped, and **that is
+where the mark ends**. Lifting the pen stops pulling the string; it does not
+reel the tip in.
+
+The alternative was built first and is wrong in the hand. **Winching** — `L`
+runs to zero and the tip travels straight up the string to the lift point — has
+a tidy derivation behind it (it is the tow's own continuation for a stationary
+target, so it exits along the direction the curve already held) and it satisfies
+the letter of §6.2's "the mark ends where the hand did". It still reads as a
+defect, for two reasons that outrank the derivation:
+
+- **Nothing steered it.** The string is the one part of the gesture the artist
+  is deliberately *not* aiming with — the whole point of the dead zone is that
+  the hand's last rope of travel is noise. A winch promotes exactly that
+  discarded rope to a drawn line, appearing at release, at a place nothing was
+  drawn, in a direction nobody chose. On a heavy setting it is up to 160 screen
+  px of stroke the artist never made.
+- **Nothing previewed it.** While the pen is down the preview ends at the tip;
+  the winched run cannot be shown, because until the pen comes up there is no
+  winch. That makes the commit differ from the preview at the last possible
+  instant, which is the one thing the renderer's `preview == committed`
+  invariant exists to forbid.
+
+Parking makes the release the cheapest event in the stroke — the last towed
+emission is simply the last control point — and extends the dead zone's
+guarantee over the end of the mark as well as its middle: the release drift of
+§6.2 is sub-pixel nib wander deep inside the string, so it never steers the tip
+at all.
+
+The price is stated rather than compensated. A flick shorter than the string
+never brings it taut, so it lays down only the dab it was showing while it was
+drawn; a hatch tick wants a brush with little smoothing or none, which is the
+same sentence this section opened with about the pencil. And the trailing taper
+lands on the towed trail's own end rather than on a splice, so a lettering
+brush's exit is the tractrix it was already tracing.
 
 ### The string is visible
 
@@ -1444,9 +1469,10 @@ headless), and "smoothing" is its user-facing name.
 Each of these pins a claim above: cutting a target segment anywhere yields the
 same towed path (partition independence, exact); a straight tow settles to a
 trail of exactly `L`; `rope = 0` is the identity on every corpus stroke
-(goldens untouched by construction); the winch ends exactly at the lift point;
-a staircase inside the dead zone parks the tip; the fitted knot count on a
-towed jitter trace drops against the raw fit.
+(goldens untouched by construction); the pen-up leaves the tip exactly where the
+rope towed it, a string short of the lift; a staircase inside the dead zone
+parks the tip — and, being never towed at all, is the whole of a flick that
+short; the fitted knot count on a towed jitter trace drops against the raw fit.
 
 **Not built, and deliberately:** prediction (a negative-lag mode that
 extrapolates the pointer — a latency lever, §13's ledger owns that trade);
