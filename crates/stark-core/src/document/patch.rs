@@ -339,3 +339,279 @@ fn tile_diff(
         ops.push(PatchOp::Tiles { layer, tiles });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::action::{ActionId, ActionKind};
+    use crate::document::layer::Place;
+    use crate::gpu::SurfaceId;
+
+    const A: LayerId = LayerId(0);
+    const B: LayerId = LayerId(1);
+    const C: LayerId = LayerId(2);
+
+    fn act(kind: ActionKind) -> Action {
+        Action {
+            id: ActionId {
+                lamport: 7,
+                actor: ActorId(1),
+            },
+            kind,
+        }
+    }
+
+    /// The tree's shape, flattened — what a structural assertion compares.
+    fn shape(state: &DocState) -> Vec<(LayerId, usize)> {
+        let mut out = Vec::new();
+        state.visit(&mut |l, depth| out.push((l.id, depth)));
+        out
+    }
+
+    /// Everything a [`Prop`] can name about one layer, as one comparable value —
+    /// so a round trip is asserted on all of them at once and a property the
+    /// comparison forgot cannot pass by looking unchanged.
+    type Props = (
+        super::super::layer::CompositeParams,
+        bool,
+        Option<Arc<str>>,
+        Option<Filter>,
+        Option<(MatteRegion, super::super::layer::MattePaint)>,
+    );
+
+    fn props(l: &Layer) -> Props {
+        let matte = match &l.content {
+            LayerContent::Matte { region, paint } => Some((*region, paint.clone())),
+            LayerContent::Paint(_) | LayerContent::Filter(_) => None,
+        };
+        (l.composite, l.visible, l.name.clone(), l.filter(), matte)
+    }
+
+    /// Three layers in the root stack, bottom to top: A, B, C.
+    fn flat() -> DocState {
+        DocState::with_layer(A)
+            .insert_layer(B, None, Some(A))
+            .insert_layer(C, None, Some(B))
+    }
+
+    /// Every property an action can write, put back by the patch that declared it.
+    ///
+    /// Driven off [`Prop::ALL`] rather than a list of its own, so a property that
+    /// grows a resource cannot quietly go untested: the coverage and the enum are
+    /// the same list, and the match below has no `_` arm.
+    #[test]
+    fn every_property_round_trips() {
+        use crate::document::layer::{MattePaint, MatteRegion};
+        use crate::document::{BlendMode, ColorAdjust, Filter};
+        use crate::geom::Vec2;
+
+        let rect = MatteRegion::OutsideRect {
+            min: Vec2::ZERO,
+            max: Vec2::splat(64.0),
+        };
+        // One of each kind of layer, so a `Matte` or a `Filter` property has
+        // somewhere to land.
+        let before = flat()
+            .insert_matte(
+                LayerId(3),
+                None,
+                Place::Top,
+                rect,
+                MattePaint::Solid([0.2, 0.4, 0.6]),
+            )
+            .insert_filter(LayerId(4), None, None, Filter::Color(ColorAdjust::NEUTRAL));
+
+        for prop in Prop::ALL {
+            let (kind, target) = match prop {
+                Prop::Blend => (ActionKind::SetLayerBlend(B, BlendMode::Multiply), B),
+                Prop::Clip => (ActionKind::SetLayerClip(B, true), B),
+                Prop::Opacity => (ActionKind::SetLayerOpacity(B, 0.25), B),
+                Prop::Visible => (ActionKind::SetLayerVisible(B, false), B),
+                Prop::Name => (ActionKind::SetLayerName(B, Some("wash".into())), B),
+                Prop::Matte => (
+                    ActionKind::SetMattePaint(LayerId(3), MattePaint::Solid([1.0; 3])),
+                    LayerId(3),
+                ),
+                Prop::Filter => (
+                    ActionKind::SetFilter(
+                        LayerId(4),
+                        Filter::Color(ColorAdjust {
+                            saturation: 0.0,
+                            ..ColorAdjust::NEUTRAL
+                        }),
+                    ),
+                    LayerId(4),
+                ),
+            };
+            let action = act(kind);
+            // Applied by hand: these arms of `apply` are pure `DocState` calls, so
+            // the GPU context it nominally takes has nothing to do here — which is
+            // what lets this whole module be tested without an adapter.
+            let after = match &action.kind {
+                ActionKind::SetLayerBlend(id, v) => before.set_layer_blend(*id, *v),
+                ActionKind::SetLayerClip(id, v) => before.set_layer_clip(*id, *v),
+                ActionKind::SetLayerOpacity(id, v) => before.set_layer_opacity(*id, *v),
+                ActionKind::SetLayerVisible(id, v) => before.set_layer_visible(*id, *v),
+                ActionKind::SetLayerName(id, v) => {
+                    before.set_layer_name(*id, v.as_deref().map(Into::into))
+                }
+                ActionKind::SetMattePaint(id, v) => before.set_matte_paint(*id, v.clone()),
+                ActionKind::SetFilter(id, v) => before.set_filter(*id, v.clone()),
+                other => unreachable!("{other:?} is not a property write"),
+            };
+            let was = props(before.layer(target).expect("target exists"));
+            let now = props(after.layer(target).expect("target exists"));
+            // …the action really did change something, or the round trip below is
+            // vacuous.
+            assert_ne!(
+                now, was,
+                "{prop:?} was a no-op, so its round trip would prove nothing",
+            );
+
+            let back = unapply(&action, &before, &after);
+            let restored = props(back.layer(target).expect("target survives the restore"));
+            assert_eq!(restored, was, "{prop:?} did not come back");
+        }
+    }
+
+    /// **The two states are not adjacent** — the whole subtlety of `Action::inverse`
+    /// (§12.6). The history calls this while shifting an undone action past later
+    /// ones it commutes with, so the state handed in carries their work too and the
+    /// restore must leave it standing.
+    ///
+    /// Here `B`'s opacity is undone across a rename of `C` that commutes with it. A
+    /// patch restoring more than its footprint would take the rename with it.
+    #[test]
+    fn a_restore_leaves_a_commuting_edit_alone() {
+        let before = flat();
+        let action = act(ActionKind::SetLayerOpacity(B, 0.25));
+        let after = before
+            .set_layer_opacity(B, 0.25)
+            .set_layer_name(C, Some("sky".into()));
+
+        let back = unapply(&action, &before, &after);
+        assert_eq!(
+            back.layer(B).expect("B").composite.opacity,
+            1.0,
+            "the undone action's own write has to be restored",
+        );
+        assert_eq!(
+            back.layer_name(C),
+            Some("sky"),
+            "a commuting edit in the gap has to survive the restore",
+        );
+    }
+
+    /// Adding a layer is undone by removing it; removing one is undone by putting
+    /// the record back **where it was**, subtree and all (§14.8).
+    #[test]
+    fn existence_round_trips_in_both_directions() {
+        let before = flat();
+        let added = before.insert_layer(LayerId(9), None, Some(A));
+        let back = unapply(
+            &act(ActionKind::AddLayer {
+                id: LayerId(9),
+                carrier: None,
+                above: Some(A),
+            }),
+            &before,
+            &added,
+        );
+        assert_eq!(shape(&back), shape(&before), "the add came back out");
+
+        // A group, removed and restored: the subtree travels as one.
+        let grouped = flat().move_layer(C, Some(B), Place::Top);
+        let removed = grouped.remove_layer(B);
+        assert!(removed.layer(C).is_none(), "the subtree went with its base");
+        let back = unapply(&act(ActionKind::RemoveLayer(B)), &grouped, &removed);
+        assert_eq!(
+            shape(&back),
+            shape(&grouped),
+            "the group came back at its own site, carrying what it carried",
+        );
+    }
+
+    /// A move is undone through the tree's whole **shape**, which is the only thing
+    /// `StackOrder` can restore — and the rebuild keeps each layer's *current*
+    /// record, so a name that arrived in the gap survives it.
+    #[test]
+    fn a_move_restores_the_shape_and_keeps_current_records() {
+        let before = flat();
+        let action = act(ActionKind::MoveLayer {
+            id: C,
+            carrier: Some(A),
+            at: Place::Top,
+        });
+        let after = before
+            .move_layer(C, Some(A), Place::Top)
+            .set_layer_name(C, Some("sky".into()));
+
+        let back = unapply(&action, &before, &after);
+        assert_eq!(shape(&back), shape(&before), "the move came back out");
+        assert_eq!(
+            back.layer_name(C),
+            Some("sky"),
+            "the rebuild keeps the record it finds, not the one the shape was taken with",
+        );
+    }
+
+    /// The canvas's own two resources, which belong to the document rather than to
+    /// any layer.
+    #[test]
+    fn the_canvas_round_trips() {
+        let before = flat().with_background([0.5, 0.5, 0.5]);
+        let after = before.with_background([0.1, 0.2, 0.3]);
+        let back = unapply(
+            &act(ActionKind::SetBackground([0.1, 0.2, 0.3])),
+            &before,
+            &after,
+        );
+        assert_eq!(back.background, before.background);
+
+        let after = before.with_surface(SurfaceId::Flat);
+        let back = unapply(
+            &act(ActionKind::SetSurface(SurfaceId::Flat)),
+            &before,
+            &after,
+        );
+        assert_eq!(back.surface, before.surface);
+    }
+
+    /// `Undo` is resolved by the timeline and never materialized, which is *why* its
+    /// footprint is empty — so its patch restores nothing at all. With the capture
+    /// driven by the footprint (§4) that falls out rather than needing an arm, and
+    /// this is what says so.
+    #[test]
+    fn an_undo_action_captures_nothing() {
+        let before = flat();
+        let after = before.set_layer_opacity(B, 0.25);
+        let back = unapply(
+            &act(ActionKind::Undo(ActionId {
+                lamport: 1,
+                actor: ActorId(1),
+            })),
+            &before,
+            &after,
+        );
+        assert_eq!(
+            back.layer(B).expect("B").composite.opacity,
+            0.25,
+            "an empty patch has to leave the state exactly as it found it",
+        );
+    }
+
+    /// `restore_structure` guards a shape that names a layer twice — a crafted log,
+    /// which the rebuild would otherwise recurse on forever. The guard is the
+    /// `placed` set, and nothing else exercised it.
+    #[test]
+    fn a_shape_naming_a_layer_twice_is_survived() {
+        let state = flat();
+        let doubled = vec![(A, None), (B, None), (B, None), (C, None)];
+        let back = restore_structure(&state, &doubled);
+        let ids: Vec<LayerId> = shape(&back).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids.len(), 3, "each layer lands exactly once");
+        for id in [A, B, C] {
+            assert!(ids.contains(&id), "{id:?} survived");
+        }
+    }
+}
