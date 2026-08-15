@@ -469,11 +469,33 @@ the overlay can afford the width of a real preview and costs the panel nothing �
 and the previews were already there to be shown, one cache keyed by the brush
 itself, so a slot that came from a preset is rendered once for both viewers.
 
-Two things it deliberately does not do. **It never takes the pointer**: the
-gesture it belongs to is hold-*and-draw*, and the hand is very often painting
-directly under it. **It reads no live brush**: the held row *is* the live brush by
-construction, so there is nothing to compare against and nothing to re-render per
-sample of the stroke underneath.
+**The Panels menu can keep it up** ("Quick brushes" — the one entry in that menu
+that is not a panel in the stack), and that is what makes the rack *clickable*:
+pinned, a row takes the pointer and clicking one applies that slot for good
+(`slots::pick`). It is the mouse-only way to a slot, and the reason the pin
+exists — the rule this whole feature is built on needs a keyboard, and a hand
+with a pen in it and a tablet under it has no spare finger for the number row.
+Tapping the key still does not apply a slot, for the reason below.
+
+Transient, it takes no pointer at all: the gesture it belongs to then is
+hold-*and-draw*, and the hand is very often painting directly under it. Pinning
+is the user asking for that strip to be a control and paying for it in canvas,
+exactly as opening a panel is. The container declines the pointer either way, so
+the gaps between rows and the column below the last one are never anything but
+painting.
+
+**Two marks, two questions.** The held row is ringed; the row the live brush
+still *is* (color aside) is lit in the preset rows' own blue, on the same test —
+so a slot and a preset holding one brush light together and say they are two ways
+to it. They only look like one question while a key is down. Pinned and idle, the
+lit row is the only thing saying which of the ten is in hand, which is what the
+chips' `active` used to be for. Held wins where both apply: it is what the user is
+doing, not a state they are in.
+
+Reading the live brush costs nothing per stroke, and that is not an accident of
+this component: a sample dispatches *quietly* and never refreshes the observable,
+so chrome that watches the brush re-renders when the brush changes rather than
+while one is being painted.
 
 It does fade with the rest of the floating chrome, which goes to nothing while a
 canvas gesture is in flight — it stands over the painting like the panels and the
@@ -485,19 +507,24 @@ first mark. Appearing, though, is instant — the transition fires on the dim an
 the return, not on the insert, which is the right way round for something
 summoned by a finger that is already down.
 
-What went with the chips is the click that applied a slot for good — the
-mouse-only way in. A row that swallowed the stroke being drawn beneath it would
-be a worse control than the preset list, which reaches any brush with a mouse
-already; the rack is the *keyboard's* index of that library, not a second one.
-Tapping the key deliberately does not apply a slot either, because a tap and a
-hold are one keystroke told apart by how long it lasted, and binding them to
-different outcomes would make every hold a race against the user's own reflexes.
+Tapping the key deliberately does not apply a slot, because a tap and a hold are
+one keystroke told apart by how long it lasted, and binding them to different
+outcomes would make every hold a race against the user's own reflexes. A click is
+its own gesture and says what it means — which is why the mouse's way in is a
+click on a pinned row and not a shorter press of the same key.
 
-The overlay is mounted on a **key** hold alone, which is the one place the two
-grips are told apart rather than being the same hold. The pen's tail holds slot 0
-for as long as it is on the glass — that is every erase stroke — and a rack
-flying in and out of the corner of the eye on each one is noise answering a
-question nobody asked. Holding `0` shows the same row.
+Clicking a row *during* a hold is left meaning what the one rule already makes it
+mean: the click puts that slot's brush on, and the hold keeps whatever is live
+when it ends, so holding 3 and clicking 5 copies 5 onto 3 exactly as holding 3
+and clicking a preset assigns that preset. One rule, no special case.
+
+The hold that summons the overlay is a **key** hold alone, which is the one place
+the two grips are told apart rather than being the same hold. The pen's tail
+holds slot 0 for as long as it is on the glass — that is every erase stroke — and
+a rack flying in and out of the corner of the eye on each one is noise answering
+a question nobody asked. Holding `0` shows the same row. (A rack that is *pinned*
+shows the tail's slot anyway, lit rather than ringed, because that slot's brush
+is the live one for the length of the contact.)
 
 A browser that has never set a slot is seeded from the preset library: each
 shipped preset declares the digit it **ships on** (`PresetEntry::slot`), and the
@@ -530,10 +557,10 @@ than offered as a replace: the work would not survive the next start, and a
 second row of that name would make "the preset called Pen" two brushes to every
 lookup by name.
 
-**Not built**: a second row (Shift+digit) for twenty, any way to assign or apply
-a slot without the keyboard (dragging a preset onto one, say), and clearing a
-slot back to empty — a slot is overwritten today, which is the only operation the
-rack has needed.
+**Not built**: a second row (Shift+digit) for twenty, any way to *assign* a slot
+without the keyboard (dragging a preset onto a pinned row, say — applying one
+needs no keyboard, filling one still does), and clearing a slot back to empty — a
+slot is overwritten today, which is the only operation the rack has needed.
 
 #### 18.1.9 Modifier drags — zoom, size and flow under the hand — built
 

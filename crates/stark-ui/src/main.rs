@@ -840,6 +840,7 @@ fn CommandRail() -> Element {
         .unwrap_or((false, false, false));
     let hidden = (layout.hidden)();
     let timeline_open = (state.timeline.open)();
+    let rack_pinned = (state.slots.pinned)();
 
     rsx! {
         div { class: chrome_class(state, "command-rail"),
@@ -973,6 +974,32 @@ fn CommandRail() -> Element {
                                 span { class: "menu-check",
                                     if !hidden.contains(&id) { {icon(icons::CHECK)} }
                                 }
+                            }
+                        }
+                        // The quick-brush rack (§18.1.8), last and slightly apart:
+                        // it is the one thing this menu shows and hides that is not
+                        // a panel in the stack — it stands down the left, it has no
+                        // title bar to close itself from, and while a number is held
+                        // it appears whatever this entry says.
+                        //
+                        // It belongs here all the same, because this menu is the map
+                        // of what is on screen, and because kept open the rack is
+                        // *clickable*: that is the mouse-only way to a slot, which
+                        // the chips used to be and which a hand with a pen and no
+                        // keyboard has no other route to.
+                        MenubarItem {
+                            index: PanelId::ALL.len(),
+                            value: "quick-brushes".to_string(),
+                            on_select: move |_| {
+                                let mut pin = state.slots.pinned;
+                                pin.set(!rack_pinned);
+                            },
+                            span { class: "menu-item",
+                                {icon(icons::QUICK_BRUSHES)}
+                                "Quick brushes"
+                            }
+                            span { class: "menu-check",
+                                if rack_pinned { {icon(icons::CHECK)} }
                             }
                         }
                     }

@@ -870,12 +870,19 @@ hr {
    room to give. Overflow is clipped for the same reason — a rack taller than the gap
    loses its ends rather than climbing over the rail.
 
-   It never takes the pointer. The gesture it belongs to is hold-*and-draw*, and the
-   hand is often painting directly under it; the peer cursors and the size ring are
-   over the canvas for the same reason and decline it the same way. It does carry
-   `chrome`, so it fades with the panels and the bars while a stroke is in flight —
-   the fade is safe on a momentary thing here because the hold outlives the stroke,
-   and the rack comes back the moment the pen lifts with the key still down.
+   The container never takes the pointer, so the gaps between rows and the empty
+   column below the last one are never anything but painting. The rows take it only
+   under `.pinned` — the Panels menu keeping the rack up is the user asking for that
+   space to be a control and paying for it in canvas, as a panel is. Transient, the
+   gesture it belongs to is hold-*and-draw* and the hand is often painting directly
+   under it; the peer cursors and the size ring are over the canvas for the same
+   reason and decline it the same way.
+
+   It does carry `chrome`, so it fades with the panels and the bars while a stroke is
+   in flight — the fade is safe on a momentary thing here because the hold outlives
+   the stroke, and the rack comes back the moment the pen lifts with the key still
+   down. Which also means a pinned rack stops taking clicks mid-stroke, as faded
+   chrome everywhere does.
 
    Appearing is a key press, so it is instant: the transition `.chrome` carries fires
    on the dim and the return, not on the insert, which is the right way round for a
@@ -910,9 +917,35 @@ hr {
   box-shadow: 0 2px 8px #0006;
 }
 
+/* Kept up by the Panels menu, where the rows are controls rather than a picture:
+   they take the pointer and answer a hover in light, which is the preset rows' own
+   answer — a background swap would be invisible under a full-bleed image. The
+   container is left declining the pointer, so only the rows themselves are ever
+   over the painting. */
+.slot-overlay.pinned .slot-row {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.slot-overlay.pinned .slot-row:hover {
+  filter: brightness(1.12);
+}
+
+/* The slot the live brush still is, color aside — the same test and the same blue
+   the preset rows are lit by, so a slot and a preset holding the one brush light
+   together and say they are two ways to it. This is the mark that matters when the
+   rack is pinned and idle: with no key down, it is the only thing saying which of
+   the ten is in hand. */
+.slot-row.active {
+  box-shadow:
+    inset 0 0 0 2px #3a6ea5,
+    0 2px 8px #0006;
+}
+
 /* Held right now — the same ring the chips wore, and it means the same thing: this
-   is the brush in hand, for as long as the key is down. Nothing else in the column
-   is lit, because nothing else is happening. */
+   is the brush in hand, for as long as the key is down. It wins over the blue above
+   (a held slot is nearly always also the live one, and the two would otherwise fight
+   over the same edge): held is what the user is *doing*, not a state they are in. */
 .slot-row.held {
   box-shadow:
     0 0 0 2px #eee,

@@ -42,9 +42,11 @@
 //! the document (`localStorage`), and degrades to a per-session rack where
 //! storage is unavailable.
 //!
-//! The rack draws itself only while a number is held ([`SlotOverlay`]) — a
-//! column of the brushes the digits carry, each as the rendered stroke the
-//! preset library shows.
+//! The rack draws itself while a number is held ([`SlotOverlay`]) — a column of
+//! the brushes the digits carry, each as the rendered stroke the preset library
+//! shows. The Panels menu can keep it up ("Quick brushes"), which is what makes
+//! it clickable: the rule above needs a keyboard, and a rack that can be clicked
+//! is the whole of what a hand without one gets ([`pick`]).
 
 use dioxus::prelude::*;
 
@@ -216,41 +218,72 @@ pub fn release_all(state: AppState) {
 /// is on the key that summons it, this can afford the width of a real preview
 /// and costs the panel nothing.
 ///
-/// Three things it deliberately does not do:
+/// Up while a number is held, and **kept** up by the Panels menu's "Quick
+/// brushes" ([`AppState::slots`]`.pinned`) — which is the same picture with one
+/// thing added: pinned, the rows take clicks, and clicking one is [`pick`].
+/// That is the mouse-only way to a slot, and it is why the pin exists at all —
+/// a pen in one hand and a tablet under it leaves no spare finger for the number
+/// row, and the transient rack cannot be clicked (see below).
 ///
-/// - **It never takes the pointer** (`pointer-events: none` in the stylesheet).
-///   The gesture it belongs to is hold-*and-draw*, and the hand is very often
-///   painting under it. That is also where the chips' click went: applying a slot
-///   for good was the mouse-only way in, and a row that swallowed the stroke
-///   being drawn beneath it would be a worse control than the preset list, which
-///   reaches any brush with a mouse already.
-/// - **It fades with the rest of the floating chrome** (`layout::chrome_class`),
-///   which goes to nothing while a canvas gesture is in flight: it stands over
-///   the painting like the panels and the bars, and while a stroke is being laid
-///   the screen goes back to being the painting. What makes the fade safe here,
-///   where a momentary thing might not survive one, is that **the hold outlives
-///   the stroke** — the key is still down when the pen lifts, so the rack comes
-///   straight back and the answer is there whenever the hand wants it rather
-///   than only before the first mark.
-/// - **It reads no live brush.** The held row *is* the live brush by
-///   construction — that is what a hold is — so there is nothing to compare it
-///   against, and a component that read the observable would re-render on every
-///   sample of the stroke being drawn under it.
+/// Two things it deliberately does not do:
 ///
-/// Mounted on a **key** hold alone, which is the one place the two grips are
-/// told apart rather than being the same hold. The pen's tail holds [`ERASER`]
-/// for as long as it is on the glass (`input::bind_pen`) — that is every erase
-/// stroke — and a rack flying in and out of the corner of the eye on each one is
-/// noise answering a question nobody asked. Holding `0` shows the same row.
+/// - **It never takes the pointer while it is transient** (`pointer-events` in
+///   the stylesheet, granted to the rows only under `.pinned`). The gesture it
+///   belongs to then is hold-*and-draw*, and the hand is very often painting
+///   under it; a row that swallowed the stroke being drawn beneath it would be a
+///   worse control than no control. Pinned is the user asking for that space to
+///   be a control, and paying for it in canvas, exactly as a panel is. The
+///   *container* declines the pointer either way, so the gaps and the empty
+///   column below the last row are never anything but painting.
+/// - **It shows no digit that has nothing in it**, pinned or not, with one
+///   exception: the digit being held. Holding an empty number is not a mistake —
+///   it is how the number gets its first brush — while a standing rack of empty
+///   rows would be a column of controls that do nothing.
+///
+/// It **fades with the rest of the floating chrome** (`layout::chrome_class`),
+/// which goes to nothing while a canvas gesture is in flight: it stands over the
+/// painting like the panels and the bars, and while a stroke is being laid the
+/// screen goes back to being the painting. What makes that safe on something
+/// this momentary is that **the hold outlives the stroke** — the key is still
+/// down when the pen lifts, so the rack comes straight back and the answer is
+/// there whenever the hand wants it rather than only before the first mark.
+///
+/// The **held** row is ringed and the row the live brush *is* (color aside) is
+/// lit, which are two different questions and only look like one while a key is
+/// down: pinned and idle, the lit row is the only thing saying which slot is in
+/// hand, and it is the same test and the same light the preset rows use. Reading
+/// the live brush costs nothing per stroke — a sample dispatches quietly and
+/// never refreshes the observable (`state::dispatch_sample`), so this re-renders
+/// when the brush *changes*, not while one is painting.
+///
+/// The hold that mounts it is a **key** hold alone, which is the one place the
+/// two grips are told apart rather than being the same hold. The pen's tail holds
+/// [`ERASER`] for as long as it is on the glass (`input::bind_pen`) — that is
+/// every erase stroke — and a rack flying in and out of the corner of the eye on
+/// each one is noise answering a question nobody asked. Holding `0` shows the
+/// same row.
 #[component]
 pub fn SlotOverlay() -> Element {
     let state = use_context::<AppState>();
-    // Nothing held: read nothing else at all, so a rack or a library that changes
-    // during a stroke cannot re-render anything.
-    let Some(held) = (state.slots.held)().filter(Held::by_key) else {
+    let pinned = (state.slots.pinned)();
+    let held = (state.slots.held)().filter(Held::by_key).map(|h| h.slot);
+    // Neither held nor pinned: read nothing else at all, so a rack, a library or a
+    // brush that changes during a stroke cannot re-render anything.
+    if !pinned && held.is_none() {
         return rsx! {};
-    };
+    }
     let rack = (state.slots.brushes)();
+    // The whole tool, feel included (§6.11) — subscribing reads, so the lit row
+    // tracks a smoothing drag exactly as it tracks a radius one.
+    let live = presets::Wearable {
+        params: state
+            .obs
+            .read()
+            .as_ref()
+            .map(|o| o.brush)
+            .unwrap_or_default(),
+        smoothing: (state.smoothing)(),
+    };
     // The rows are resolved against the library up front, so no read guard is
     // alive while the rows below read the thumbnail cache one by one.
     let rows: Vec<(usize, Option<Wearable>, String)> = {
@@ -259,10 +292,7 @@ pub fn SlotOverlay() -> Element {
         // slot last — where the `0` key is, and where a tenth of anything goes.
         (1..COUNT)
             .chain(std::iter::once(ERASER))
-            // The filled numbers, and the held one whether or not it is filled:
-            // holding an empty digit is how it gets its first brush, and a hold
-            // whose own row was missing would look like a rack that had lost it.
-            .filter(|&slot| rack[slot].is_some() || slot == held.slot)
+            .filter(|&slot| rack[slot].is_some() || Some(slot) == held)
             .map(|slot| {
                 let brush = rack[slot];
                 // The library's name for it, where the slot still *is* one of the
@@ -279,8 +309,12 @@ pub fn SlotOverlay() -> Element {
             .collect()
     };
 
+    let mut class = chrome_class(state, "slot-overlay");
+    if pinned {
+        class.push_str(" pinned");
+    }
     rsx! {
-        div { class: chrome_class(state, "slot-overlay"),
+        div { class,
             for (slot, brush, label) in rows {
                 {
                     // The brush as a stroke, filling the row as its background —
@@ -293,15 +327,41 @@ pub fn SlotOverlay() -> Element {
                         Some(url) if !url.is_empty() => format!("background-image: url({url});"),
                         _ => "background-image: none;".to_string(),
                     };
+                    // Lit like a preset row and on the same test — this is the
+                    // brush in hand, color aside, until any knob moves off it.
+                    // Held wins in the stylesheet: it is what the user is doing
+                    // right now rather than a state they are in.
                     let mut class = String::from("slot-row");
                     if brush.is_none() {
                         class.push_str(" empty");
+                    } else if brush.is_some_and(|b| presets::matches(&live, &b)) {
+                        class.push_str(" active");
                     }
-                    if slot == held.slot {
+                    if Some(slot) == held {
                         class.push_str(" held");
                     }
+                    // Says the binding a picture cannot, and only ever seen pinned
+                    // — an element that takes no pointer is shown no tooltip. The
+                    // eraser's names the pen rather than the key, because the thing
+                    // that reaches it is already in the hand.
+                    let title = match (slot, brush.is_some()) {
+                        (ERASER, true) => "Click to paint with this, or flip the pen over".to_string(),
+                        (ERASER, false) => "Empty. Hold 0 (or the pen's eraser end) and click a preset".to_string(),
+                        (n, true) => format!("Click to paint with this, or hold {n}"),
+                        (n, false) => format!("Empty. Hold {n} and click a preset to fill it"),
+                    };
                     rsx! {
-                        div { key: "{slot}", class, style: "{bg}",
+                        div {
+                            key: "{slot}",
+                            class,
+                            style: "{bg}",
+                            title,
+                            // Reachable only while pinned, the stylesheet having
+                            // given the rows the pointer there and nowhere else —
+                            // the same way faded chrome stops taking clicks
+                            // (`.chrome.dimmed`) rather than by every handler
+                            // asking whether it is visible.
+                            onclick: move |_| pick(state, slot),
                             span { class: "slot-row-digit",
                                 if slot == ERASER {
                                     {icon(icons::ERASER)}
@@ -315,6 +375,28 @@ pub fn SlotOverlay() -> Element {
                 }
             }
         }
+    }
+}
+
+/// Make `slot`'s brush the live one for good — what clicking a row of the pinned
+/// rack does, and the only way to a slot for a hand with no keyboard under it (a
+/// pen in one hand and a tablet under the other leaves no spare finger for the
+/// number row).
+///
+/// Deliberately *not* what tapping the number key does. A tap and a hold are the
+/// same keystroke told apart only by how long it lasted, so binding them to
+/// different outcomes would make every hold a race against the user's own
+/// reflexes. A click is its own gesture and says what it means.
+///
+/// Clicking a row *during* a hold is left to mean what the one rule already says
+/// it means: the click makes that slot's brush live, and the hold then keeps
+/// whatever is live when it ends — so holding 3 and clicking 5 copies 5 onto 3,
+/// exactly as holding 3 and clicking a preset assigns that preset. One rule, not
+/// a special case (`Held::settle`).
+pub fn pick(state: AppState, slot: usize) {
+    let brush = state.slots.brushes.peek().get(slot).copied().flatten();
+    if let Some(brush) = brush {
+        presets::wear(state, brush);
     }
 }
 

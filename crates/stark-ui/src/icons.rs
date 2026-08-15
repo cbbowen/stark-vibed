@@ -360,6 +360,14 @@ icons! {
     LAYERS => "stack-bold",
     PERSPECTIVE_GRID => "vector-three-bold",
     LIGHTING => "sphere-bold",
+    // The quick-brush rack's entry in that same menu (§18.1.8) — the one thing the
+    // menu shows and hides that is not one of the panels above it.
+    //
+    // A marker rather than [`BRUSH`]'s paint brush, and the difference is the point:
+    // the two would sit four rows apart in one menu, and a rack of ten brushes is not
+    // the Brush panel by another name. A marker is the tool a hand grabs without
+    // looking, which is what the number keys are for.
+    QUICK_BRUSHES => "highlighter-bold",
 }
 
 /// One icon, sized and colored by whatever it sits in (`.icon` in `stark.css`).

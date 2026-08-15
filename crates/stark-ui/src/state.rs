@@ -225,6 +225,15 @@ pub struct SlotState {
     /// this (`slots::SlotOverlay`), and the release reads the brushes it has to
     /// restore from it.
     pub held: Signal<Option<crate::slots::Held>>,
+    /// Whether the rack is kept open with no key held — the Panels menu's
+    /// "Quick brushes" (§18.1.8). What it buys is a rack that can be *clicked*,
+    /// which is the only way to a slot for a hand with no keyboard under it.
+    ///
+    /// Not persisted, like the panel stack's own visibility (`layout::PanelLayout`
+    /// — which this is not part of, the rack being chrome of its own down the
+    /// left rather than a panel in the stack): the menu says what is on screen
+    /// now, and none of its entries claims to say what will be next time.
+    pub pinned: Signal<bool>,
 }
 
 /// A drawing guide selected for composing (§20.5): which entry of the
@@ -411,6 +420,7 @@ impl AppState {
             slots: SlotState {
                 brushes: root_signal(|| [None; crate::slots::COUNT]),
                 held: root_signal(|| None),
+                pinned: root_signal(|| false),
             },
         }
     }
