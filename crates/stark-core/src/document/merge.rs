@@ -179,14 +179,6 @@ pub enum MergeKind {
 pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
     let site = state.site_of(source)?;
     let s = state.layer(source)?;
-    // A source is one of two things, and which one decides the whole shape of the
-    // merge (see [`MergeKind`]): paint that carries nothing — a subtree cannot travel
-    // as one tile — or a **filter**, which carries nothing by construction (§21.2).
-    let filter = s.filter();
-    if filter.is_none() && !is_plain_paint(s) {
-        return None;
-    }
-
     let (dest, backdrop_is_dest) = match site.carrier {
         // In a carried stack, the bottom member's backdrop is the carrier's **own
         // content** — a group's members composite over its base (§14.1) — so
@@ -209,7 +201,57 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
             )
         }
     };
-    let d = state.layer(dest)?;
+    plan_at(&MergeSite {
+        source: s,
+        dest: state.layer(dest)?,
+        backdrop_is_dest,
+        dest_is_carrier: site.carrier == Some(dest),
+    })
+}
+
+/// Where a candidate source sits, as a **compositing walk of the tree already knows
+/// it** — the pure input [`plan_at`] decides from.
+///
+/// Split out from [`plan`] because the projection asks this question of *every*
+/// layer (the control is offered per row, §14.11), and `plan`'s own `site_of` is a
+/// walk of the whole tree: asking it per layer made `Engine::observe` quadratic in
+/// the layer count. A walk in composite order already knows each of these — the
+/// lower sibling it just visited, the carrier it descended through — so the search
+/// was for an answer the caller had in hand, which is the argument `LayerInfo`'s
+/// own `has_backdrop` already makes one field over.
+pub(crate) struct MergeSite<'a> {
+    /// The layer that would be consumed.
+    pub source: &'a Layer,
+    /// The layer directly beneath it: its lower sibling, or — at the foot of a
+    /// carried stack — the carrier whose own content it composites over (§14.1).
+    pub dest: &'a Layer,
+    /// Whether [`dest`](Self::dest) is the whole of what the source composites onto
+    /// (§14.11.2). True where the source is the bottom member of the stack its
+    /// carrier opens, and where it sits second from the foot of the **root** stack
+    /// over an unclipped layer, whose accumulator starts cleared.
+    pub backdrop_is_dest: bool,
+    /// Whether the destination is the source's **carrier** — the group case, where
+    /// the base composites at full strength inside the isolation and its slider
+    /// belongs to the group as a whole (§14.7).
+    pub dest_is_carrier: bool,
+}
+
+/// The merge on offer at a located site, or `None` when there is none that
+/// preserves the document's appearance — [`plan`] without the search.
+///
+/// Everything below this point is a question about the two layers themselves, which
+/// is why the split falls here: the tree is consulted only to find `dest` and to
+/// answer the two flags, and nothing after that reads it again.
+pub(crate) fn plan_at(site: &MergeSite) -> Option<MergePlan> {
+    let (s, d) = (site.source, site.dest);
+    let backdrop_is_dest = site.backdrop_is_dest;
+    // A source is one of two things, and which one decides the whole shape of the
+    // merge (see [`MergeKind`]): paint that carries nothing — a subtree cannot travel
+    // as one tile — or a **filter**, which carries nothing by construction (§21.2).
+    let filter = s.filter();
+    if filter.is_none() && !is_plain_paint(s) {
+        return None;
+    }
 
     // Hiding a layer hides what it carries (§14.3), so a merge across a difference in
     // visibility would either reveal paint that is hidden or hide paint that is not.
@@ -245,13 +287,12 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
         if !backdrop_is_dest || f.resamples() {
             return None;
         }
-        let dest_is_carrier = site.carrier == Some(dest);
-        if !d.content_is_paint() || (!dest_is_carrier && d.is_group()) {
+        if !d.content_is_paint() || (!site.dest_is_carrier && d.is_group()) {
             return None;
         }
         return Some(MergePlan {
-            source,
-            dest,
+            source: s.id,
+            dest: d.id,
             kind: MergeKind::Filter {
                 filter: f,
                 source_params: s.composite,
@@ -265,7 +306,7 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
         return None;
     }
 
-    let keeps = match site.carrier {
+    let keeps = if site.dest_is_carrier {
         // Into the **carrier**. Everything about it survives untouched: its blend and
         // its clip point outward — they describe how the group meets what lies under
         // the group (§14.4.3) — and its opacity is applied to the group's composited
@@ -276,12 +317,11 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
         // The source may carry **any** mode here, and that is not a special case: the
         // group's isolated content is `merge_source(base, source)` before and after,
         // so what the group merges outward is unchanged whatever the source's mode is.
-        Some(_) if site.index == 0 => {
-            if !d.content_is_paint() {
-                return None;
-            }
-            d.composite
+        if !d.content_is_paint() {
+            return None;
         }
+        d.composite
+    } else {
         // Into a **sibling**. Here the destination is a leaf whose own opacity rides
         // on its tiles, so it folds in with the source's and the survivor stands at
         // full strength.
@@ -297,39 +337,37 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
         // composites as one layer carrying `merge(D,S)`. That was false until the
         // emissive modes stopped weighing coverage in the working space, and the merge
         // was refused for exactly that reason.
-        _ => {
-            if !is_plain_paint(d) || d.composite.clip {
-                return None;
-            }
-            // At the foot of the root stack neither mode is stated against anything,
-            // so they need not agree — both are the identity there, and so is
-            // whichever one the survivor ends up wearing. Anywhere else one set of
-            // params has to speak for both afterwards, so they must.
-            //
-            // `!=` and not "the same mode": a mode that carries parameters is a
-            // *family* of curves (§18.0.4), and the associativity that carries this
-            // merge is each curve's own — two `Drago`s at different bends are two
-            // different functions, and folding one through the other's curve would be
-            // exactly the silently-different picture a merge promises not to be.
-            if !backdrop_is_dest && d.composite.blend != s.composite.blend {
-                return None;
-            }
-            CompositeParams {
-                blend: d.composite.blend,
-                clip: false,
-                opacity: 1.0,
-            }
+        if !is_plain_paint(d) || d.composite.clip {
+            return None;
+        }
+        // At the foot of the root stack neither mode is stated against anything,
+        // so they need not agree — both are the identity there, and so is
+        // whichever one the survivor ends up wearing. Anywhere else one set of
+        // params has to speak for both afterwards, so they must.
+        //
+        // `!=` and not "the same mode": a mode that carries parameters is a
+        // *family* of curves (§18.0.4), and the associativity that carries this
+        // merge is each curve's own — two `Drago`s at different bends are two
+        // different functions, and folding one through the other's curve would be
+        // exactly the silently-different picture a merge promises not to be.
+        if !backdrop_is_dest && d.composite.blend != s.composite.blend {
+            return None;
+        }
+        CompositeParams {
+            blend: d.composite.blend,
+            clip: false,
+            opacity: 1.0,
         }
     };
 
     Some(MergePlan {
-        source,
-        dest,
+        source: s.id,
+        dest: d.id,
         kind: MergeKind::Stack {
             source_params: s.composite,
             // A carrier's own content composites at full strength inside the
             // isolation; a sibling's rides its own slider (§14.7).
-            dest_opacity: if site.index == 0 && site.carrier.is_some() {
+            dest_opacity: if site.dest_is_carrier {
                 1.0
             } else {
                 d.composite.opacity

@@ -69,6 +69,57 @@ fn offered(engine: &Engine, id: LayerId) -> Option<LayerId> {
     info(engine, id).and_then(|l| l.merge_down)
 }
 
+/// **The projection's answer survives a walk that descends and comes back.**
+///
+/// `Engine::observe` reads each row's merge target off its compositing walk rather
+/// than asking `merge::plan`, which searches the tree — the difference between a
+/// linear projection and a quadratic one (DOCUMENT_CLEANUP.md §6). What that trades
+/// is a `LayerSite` derived by search for one accumulated as the walk goes, and the
+/// place that can go wrong is a stack the walk *leaves and re-enters*: a layer's
+/// index has to keep counting after a descent into what a lower sibling carries.
+///
+/// So: `[A[X], B, C]` with `C` clipped. `C` sits third in the root stack, which is
+/// not where the accumulator is `B` alone, so a clipped `C` may not be folded into
+/// it (§14.11.2) — and the walk has visited `X` at depth 1 in between. An index that
+/// reset on the way back up would read `C` as second from the foot and offer a merge
+/// the law forbids, which no flat-stack test can see.
+#[test]
+fn an_index_keeps_counting_across_a_carried_stack() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let b = add_layer(&mut engine);
+    let c = add_layer(&mut engine);
+    let x = add_layer(&mut engine);
+    engine.process(DocCommand::MoveLayer {
+        id: x,
+        carrier: Some(ROOT),
+        at: Place::Top,
+    });
+    // Root is [ROOT[X], B, C] — paint on each, so none is refused for being empty.
+    for (layer, points) in [(ROOT, AWAY), (b, H_STROKE), (c, V_STROKE)] {
+        engine.process(PeerCommand::SetActiveLayer(layer));
+        paint(&mut engine, WARM, 10.0, points);
+    }
+    assert_eq!(
+        offered(&engine, b),
+        None,
+        "the layer below B is a group, which is never a destination",
+    );
+
+    engine.process(DocCommand::SetLayerClip(c, true));
+    assert_eq!(
+        offered(&engine, c),
+        None,
+        "C is third from the foot, so B is not its whole backdrop and its clip \
+         cannot be folded in — the index must not have reset over X",
+    );
+    // …and unclipped it is offered again, so what refuses it above is the clip
+    // against its position rather than the position alone.
+    engine.process(DocCommand::SetLayerClip(c, false));
+    assert_eq!(offered(&engine, c), Some(b));
+}
+
 /// Merge `id` down and return what the document looked like before and after.
 ///
 /// Asserts the merge was actually offered and actually happened, so a test that

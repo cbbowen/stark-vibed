@@ -309,7 +309,7 @@ impl DocState {
     /// is why a group's base can never be the layer without a backdrop however
     /// the group itself sits. `Engine::observe` reads it off this walk for free;
     /// a standalone predicate searched the tree per layer to say the same thing.
-    pub fn visit(&self, f: &mut impl FnMut(&Layer, usize)) {
+    pub fn visit<'a>(&'a self, f: &mut impl FnMut(&'a Layer, usize)) {
         for l in self.layers.iter() {
             l.visit(0, f);
         }

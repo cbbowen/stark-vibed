@@ -845,7 +845,12 @@ impl Layer {
     /// list, the peers' layer index — so "what order does a group composite in"
     /// is answered in one place instead of once per caller with a chance to
     /// disagree.
-    pub fn visit(&self, depth: usize, f: &mut impl FnMut(&Layer, usize)) {
+    /// The borrow is the **tree's**, not each call's, so a walk may keep the layers
+    /// it has seen — which is what lets a reader answer a question about a layer's
+    /// lower sibling or its carrier without searching for either
+    /// ([`MergeSite`](super::merge::MergeSite)). A `FnMut(&Layer, usize)` binds its
+    /// argument for the call alone and nothing may outlive it.
+    pub fn visit<'a>(&'a self, depth: usize, f: &mut impl FnMut(&'a Layer, usize)) {
         f(self, depth);
         for l in self.carries.iter() {
             l.visit(depth + 1, f);

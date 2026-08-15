@@ -1138,38 +1138,55 @@ impl Engine {
         // and `carrier` (§14.6). Flat rather than nested because that
         // is the order a panel draws in and the order the compositor draws in, and
         // one list that means both is one thing to keep in agreement.
+        /// What the walk knows about the stack it is currently in, one per depth.
+        ///
+        /// Three facts rather than three parallel vectors, because they are kept in
+        /// step by exactly the same rule — truncating on the way back up is what makes
+        /// them per-*stack* rather than per-depth: re-entering depth `d` from deeper is
+        /// the same stack and keeps them, while descending to a new `d` starts a fresh
+        /// stack.
+        struct Cursor<'a> {
+            /// Whether this stack has anything drawable beneath the row being visited
+            /// — the walk's own answer to "would a filter here reach something"
+            /// (§21.2), kept in agreement with the draw list's culls (`render.rs`)
+            /// rather than with row order: a hidden, transparent or empty sibling
+            /// fills nothing.
+            filled: bool,
+            /// The row visited before this one **in this stack** — a layer's lower
+            /// sibling, which is what it would merge down onto (§14.11).
+            below: Option<&'a Layer>,
+            /// How far up this stack the row being visited sits, counting from the
+            /// bottom — `LayerSite::index` without the search for it.
+            index: usize,
+        }
         let mut layers: Vec<LayerInfo> = Vec::new();
-        // The carrier chain down to the current row: the id (what `LayerInfo::carrier`
-        // reports) and whether that carrier's own content draws anything — the seed
-        // for the stack its carries open, since a base composites at the bottom of
-        // its group (§14.1).
-        let mut carriers: Vec<(LayerId, bool)> = Vec::new();
-        // Whether each depth's *current* stack has anything drawable beneath the row
-        // being visited — the walk's own answer to "would a filter here reach
-        // something" (§21.2), kept in agreement with the draw list's culls
-        // (`render.rs`) rather than with row order: a hidden, transparent or empty
-        // sibling fills nothing. Truncating on the way back up is what makes it
-        // per-stack rather than per-depth: re-entering depth `d` from deeper is the
-        // same stack and keeps its flag, while descending to a new `d` starts it at
-        // the carrier's own content.
-        let mut filled: Vec<bool> = Vec::new();
+        // The carrier chain down to the current row: the layer (whose id
+        // `LayerInfo::carrier` reports) and whether its own content draws anything —
+        // the seed for the stack its carries open, since a base composites at the
+        // bottom of its group (§14.1).
+        let mut carriers: Vec<(&Layer, bool)> = Vec::new();
+        let mut stack: Vec<Cursor> = Vec::new();
         shown.visit(&mut |l, depth| {
             carriers.truncate(depth);
-            if filled.len() > depth {
-                filled.truncate(depth + 1);
+            if stack.len() > depth {
+                stack.truncate(depth + 1);
             } else {
-                let seed = carriers.last().is_some_and(|&(_, draws)| draws);
-                filled.resize(depth + 1, seed);
+                let filled = carriers.last().is_some_and(|&(_, draws)| draws);
+                stack.push(Cursor {
+                    filled,
+                    below: None,
+                    index: 0,
+                });
             }
-            let has_underlay = filled[depth];
-            filled[depth] = filled[depth] || contributes(l);
+            let has_underlay = stack[depth].filled;
+            stack[depth].filled = stack[depth].filled || contributes(l);
             layers.push(LayerInfo {
                 id: l.id,
                 blend: l.composite.blend,
                 clip: l.composite.clip,
                 opacity: l.composite.opacity,
                 visible: l.visible,
-                carrier: carriers.last().map(|&(id, _)| id),
+                carrier: carriers.last().map(|&(c, _)| c.id),
                 depth,
                 is_group: l.is_group(),
                 // Read straight off the traversal: composite order visits the
@@ -1191,9 +1208,36 @@ impl Engine {
                 has_underlay,
                 // Asked of the *shown* document, like everything else on this row, so
                 // the control tracks a drag preview rather than the value behind it.
-                merge_down: crate::document::merge::plan(shown, l.id).map(|p| p.dest),
+                //
+                // **Read off the walk**, which already knows the two things the
+                // question needs: the lower sibling it visited a moment ago, and the
+                // carrier it descended through. Asking `merge::plan` per row instead
+                // spent a `site_of` — a walk of the whole tree — per layer, which made
+                // this projection quadratic in the layer count (79 µs at 60 layers
+                // against 1.3 µs at 4). That is the search `has_backdrop` above
+                // already refuses to make, for the same reason.
+                merge_down: stack[depth]
+                    .below
+                    .map(|d| (d, false))
+                    .or_else(|| carriers.last().map(|&(c, _)| (c, true)))
+                    .and_then(|(dest, dest_is_carrier)| {
+                        crate::document::merge::plan_at(&crate::document::merge::MergeSite {
+                            source: l,
+                            dest,
+                            // The destination is the whole backdrop where it carries
+                            // the source, and — in the root stack — where the source
+                            // sits second from the foot over an unclipped layer, whose
+                            // accumulator starts cleared (§14.11.2).
+                            backdrop_is_dest: dest_is_carrier
+                                || (depth == 0 && stack[depth].index == 1 && !dest.composite.clip),
+                            dest_is_carrier,
+                        })
+                        .map(|p| p.dest)
+                    }),
             });
-            carriers.push((l.id, draws_content(l)));
+            stack[depth].below = Some(l);
+            stack[depth].index += 1;
+            carriers.push((l, draws_content(l)));
         });
         ObservableState {
             can_undo: self.timeline.can_undo(),
