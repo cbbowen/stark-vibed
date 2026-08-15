@@ -374,14 +374,14 @@ impl Engine {
     ) -> Option<DocState> {
         let doc = self.timeline.current();
         let base = doc.layer(layer)?.tiles()?;
-        let selection = doc.selection_of(self.actor);
+        let selection = doc.selection_of(self.actor());
         let (tiles, moved) = self
             .apply
             .transform
             .apply(&self.apply.pool, base, &selection, map)?;
         Some(
             doc.map_layer(layer, |l| l.with_tiles(tiles))
-                .with_selection(self.actor, moved),
+                .with_selection(self.actor(), moved),
         )
     }
 
@@ -398,7 +398,7 @@ impl Engine {
     ) -> Option<DocState> {
         let doc = self.timeline.current();
         let base = doc.layer(layer)?.tiles()?.clone();
-        let selection = doc.selection_of(self.actor);
+        let selection = doc.selection_of(self.actor());
         let tiles = self
             .apply
             .fill
@@ -459,7 +459,7 @@ impl Engine {
     /// gives the uniform ordering without the duplication (§17.4).
     fn live_gestures(&self) -> Vec<GestureView> {
         let mut out: Vec<GestureView> = Vec::new();
-        out.extend(self.session.gesture_view(self.actor));
+        out.extend(self.session.gesture_view(self.actor()));
         out.extend(self.peers.iter().filter_map(Peer::gesture_view));
         out.sort_by_key(|g| g.actor);
         out
@@ -471,8 +471,12 @@ impl Engine {
     /// exact sequence of pointer reports — their spacing carries the pen's speed,
     /// which is what the density policy and the freezing both key off — and no
     /// synthetic curve stands in for a real hand. This turns one into a test case.
+    /// Compiled away without the feature, along with the buffer it prints: a
+    /// diagnostic that cannot reach a shipping build should not be *carried* by one
+    /// either (see [`Engine::note_debug_sample`]).
+    #[cfg(feature = "debug-unfrozen")]
     pub(super) fn log_debug_samples(&mut self) {
-        if !cfg!(feature = "debug-unfrozen") || self.debug_samples.is_empty() {
+        if self.debug_samples.is_empty() {
             return;
         }
         // Positions *and* the pen channels. Position alone is not the input: pressure
@@ -495,6 +499,9 @@ impl Engine {
         );
         self.debug_samples.clear();
     }
+
+    #[cfg(not(feature = "debug-unfrozen"))]
+    pub(super) fn log_debug_samples(&mut self) {}
 }
 
 /// Draw spans `head.spans..frozen` onto the frozen head, so the next move need

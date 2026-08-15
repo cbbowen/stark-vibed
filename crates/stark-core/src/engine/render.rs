@@ -872,7 +872,7 @@ impl Engine {
     fn visible_selections(&self) -> Vec<(crate::document::Selection, Option<[f32; 3]>)> {
         let doc = self.presented();
         let mut out = Vec::new();
-        let mine = doc.selection_of(self.actor);
+        let mine = doc.selection_of(self.actor());
         if mine.is_active() {
             out.push((mine, None));
         }

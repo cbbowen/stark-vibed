@@ -35,14 +35,24 @@ pub struct PresenceTick {
 impl Engine {
     // --- the action channel (§12) ---------------------------------------
 
-    /// Whether this engine is in a shared session (replicated timeline active).
+    /// Whether this engine is **broadcasting**: authoring into a shared session,
+    /// with an outbox for the transport to drain (§12.4).
+    ///
+    /// Not quite the same question as "is this document's history a shared log",
+    /// and the difference is real rather than pedantic:
+    /// [`end_collaboration`](Self::end_collaboration) stops the broadcast but keeps
+    /// the [`ReplicatedTimeline`], so afterwards this answers `false` while the
+    /// history is still the session's — which is why
+    /// [`scrub_range`](Self::scrub_range) is the authority on *that* question and
+    /// goes on reporting `None`. Editing continues; the scrubber does not come back
+    /// until a new or loaded document brings a linear history with it.
     pub fn is_shared(&self) -> bool {
-        self.outbox_enabled
+        self.authoring.outbox.is_some()
     }
 
     /// This engine's author id for new actions.
     pub fn actor(&self) -> ActorId {
-        self.actor
+        self.authoring.actor
     }
 
     /// Start sharing the **current** document as `actor` (the host side).
@@ -68,14 +78,14 @@ impl Engine {
         let initial = DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface);
         let ctx = &mut self.apply;
         self.timeline = Box::new(ReplicatedTimeline::from_log(actor, initial, log, ctx));
-        self.actor = actor;
+        self.authoring.actor = actor;
         self.session.adopt_identity(identity);
-        self.outbox_enabled = true;
+        self.authoring.outbox = Some(Vec::new());
         self.preview.set_doc(None);
         self.committed_changed();
         // New actor, new layer-id space: this client's counter restarts, and the
         // pre-share layers keep the `SOLO` ids they were minted with.
-        self.next_layer = 1;
+        self.authoring.next_layer = 1;
         self.mark_live_stale();
     }
 
@@ -98,10 +108,10 @@ impl Engine {
             file.actions.clone(),
             ctx,
         ));
-        self.actor = actor;
+        self.authoring.actor = actor;
         self.session.adopt_identity(identity);
         self.resync_counters(&file.actions);
-        self.outbox_enabled = true;
+        self.authoring.outbox = Some(Vec::new());
         // Whatever the replayed log left the document on.
         self.apply_document_surface();
         self.committed_changed();
@@ -117,8 +127,10 @@ impl Engine {
     /// to reproduce their strokes; they simply stop being drawn, since the roster is
     /// what decides that (§17.3).
     pub fn end_collaboration(&mut self) {
-        self.outbox.clear();
-        self.outbox_enabled = false;
+        // Taking the queue away is what stops the broadcast — there is no second
+        // flag to leave disagreeing with it, and whatever was still queued goes with
+        // it, since there is no longer anyone owed it.
+        self.authoring.outbox = None;
         self.peers.clear();
         self.mark_live_stale();
     }
@@ -127,7 +139,7 @@ impl Engine {
     /// duplicates are rejected by id. Advances the Lamport clock past the
     /// remote action so future local ids order after everything seen.
     pub fn merge_remote(&mut self, action: Action) -> bool {
-        self.clock = self.clock.max(action.id.lamport + 1);
+        self.authoring.clock = self.authoring.clock.max(action.id.lamport + 1);
         let author = action.id.actor;
         let ctx = &mut self.apply;
         let merged = self.timeline.merge(action, ctx);
@@ -152,8 +164,15 @@ impl Engine {
     }
 
     /// Drain locally-committed actions awaiting broadcast (empty when solo).
+    ///
+    /// Drains the queue rather than taking it, so a shared session stays shared: the
+    /// only thing that ends the broadcast is [`end_collaboration`](Self::end_collaboration).
     pub fn take_outbox(&mut self) -> Vec<Action> {
-        std::mem::take(&mut self.outbox)
+        self.authoring
+            .outbox
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 
     /// How the timeline has serviced materializations (§12.6): the
@@ -213,7 +232,7 @@ impl Engine {
     /// Conservative in the same direction as [`Session::publish_due`]: it may say
     /// yes where the drain then finds nothing, never the reverse.
     pub fn presence_due(&self, now: f64) -> bool {
-        self.peers.expiry_due(now) || (self.outbox_enabled && self.session.publish_due(now))
+        self.peers.expiry_due(now) || (self.is_shared() && self.session.publish_due(now))
     }
 
     /// A counter that changes whenever the peer roster does, so a frontend can tell
@@ -238,7 +257,7 @@ impl Engine {
             self.mark_live_stale();
         }
         let frame = self
-            .outbox_enabled
+            .is_shared()
             .then(|| self.session.publish(self.now))
             .flatten();
         PresenceTick { frame, repaint }
@@ -273,7 +292,7 @@ impl Engine {
     pub fn merge_presence(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> bool {
         self.now = now.max(self.now);
         let now = self.now;
-        if actor == self.actor {
+        if actor == self.actor() {
             // Our own frame, echoed back by a flood transport. The local session is
             // the authority on this client; taking it back off the wire would fight
             // with it.

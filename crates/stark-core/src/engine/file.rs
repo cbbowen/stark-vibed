@@ -13,11 +13,11 @@
 
 use std::sync::Arc;
 
-use super::{Engine, GpuBuild, ROOT_LAYER, build_gpu};
+use super::{Authoring, Engine, GpuBuild, GpuKeep, ROOT_LAYER, build_gpu};
 use crate::assets::AssetId;
 use crate::colorspace::{ColorSpace, ColorSpaceId};
 use crate::content::AssetNeed;
-use crate::document::{Action, ActorId, DocState, LinearTimeline, effective_actions};
+use crate::document::{Action, DocState, LinearTimeline, effective_actions};
 use crate::gpu::{EnvironmentId, SurfaceId};
 use crate::io::DocumentFile;
 use crate::{EngineError, Result};
@@ -463,28 +463,31 @@ impl Engine {
     /// infallible: every caller has already had to obtain one, so there is no
     /// "unsupported space" case left to handle here or to forget.
     fn rebuild_gpu_for(&mut self, cs: Arc<dyn ColorSpace>) {
-        // Cloned out before the rebuild: the registry lives on `self.apply`, whose
-        // fields are reassigned below, and a `Surface` is two reference-counted wgpu
-        // handles.
+        // Cloned out before the rebuild: the registry lives on `self.apply`, which is
+        // replaced below, and a `Surface` is two reference-counted wgpu handles.
         let surface = self.apply.surfaces.current();
         let environment = self.environment.current();
-        let (pool, stroke, compositor_pipeline, compositor, transform, fill, merge) =
-            build_gpu(GpuBuild {
-                gpu: &self.gpu,
-                target_format: self.target_format,
-                cs: &cs,
-                surface: &surface,
-                environment: &environment,
-                selection: &self.apply.selection,
-            });
+        let built = build_gpu(GpuBuild {
+            // What a rebuild does not touch, moved through into the new context —
+            // stated as a list rather than as four arguments, because "what survives
+            // a color-space change" is the interesting half of this function.
+            keep: GpuKeep {
+                gpu: self.gpu.clone(),
+                assets: self.apply.assets.clone(),
+                selection: self.apply.selection.clone(),
+                surfaces: self.apply.surfaces.clone(),
+            },
+            target_format: self.target_format,
+            cs: &cs,
+            surface: &surface,
+            environment: &environment,
+        });
         self.color_space = cs;
-        self.apply.pool = pool;
-        self.apply.stroke = stroke;
-        self.apply.transform = transform;
-        self.apply.fill = fill;
-        self.apply.merge = merge;
-        self.compositor = compositor;
-        self.compositor_pipeline = compositor_pipeline;
+        // Whole, not renderer by renderer: a subsystem added to `ApplyCtx` is rebuilt
+        // here by construction rather than by somebody remembering this line.
+        self.apply = built.apply;
+        self.compositor = built.compositor;
+        self.compositor_pipeline = built.compositor_pipeline;
     }
 
     /// Reset to an empty document (one root layer) before a load/replay. Also
@@ -497,13 +500,12 @@ impl Engine {
         self.preview.clear();
         self.peers.clear();
         self.committed_changed();
-        self.clock = 0;
-        self.next_layer = 1;
+        // One assignment: who this client is and what it owes the wire go back to
+        // what a fresh engine starts with, which is the same statement the two
+        // constructors make rather than a fourth list of fields to keep level.
+        self.authoring = Authoring::solo();
         self.session.cancel_stroke();
         self.session.active_layer = ROOT_LAYER;
-        self.actor = ActorId::SOLO;
-        self.outbox.clear();
-        self.outbox_enabled = false;
     }
 
     /// Commit one already-built action onto the timeline (replays its GPU work).
@@ -528,12 +530,12 @@ impl Engine {
             // same set as the actions that *name* an id, so nothing about a wrong
             // answer shows up until two layers share one.
             for id in a.kind.minted_layers() {
-                if id.minted_by(self.actor) {
+                if id.minted_by(self.actor()) {
                     max_ordinal = max_ordinal.max(id.ordinal());
                 }
             }
         }
-        self.clock = max_lamport.map_or(0, |m| m + 1);
-        self.next_layer = max_ordinal + 1;
+        self.authoring.clock = max_lamport.map_or(0, |m| m + 1);
+        self.authoring.next_layer = max_ordinal + 1;
     }
 }

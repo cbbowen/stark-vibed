@@ -349,15 +349,70 @@ pub struct Engine {
     doc_revision: u64,
     /// Raw pointer reports of the in-flight stroke, dumped on release under the
     /// `debug-unfrozen` feature so a misfit stroke can be replayed as a test.
+    #[cfg(feature = "debug-unfrozen")]
     debug_samples: Vec<crate::command::InputSample>,
+    /// Who this client is when it writes to the log, and the counters that keep
+    /// its writes unique.
+    authoring: Authoring,
+}
+
+/// Who this client is when it writes to the log (§17.9), and what it owes the
+/// wire (§12.4).
+///
+/// One struct because they are one thing and they *move* as one thing: an engine
+/// is authoring solo, or as some actor in a session, and every field here changes
+/// at exactly the moments that identity does — sharing, joining, and the reset that
+/// precedes a load. Written out flat they were reset field-by-field in
+/// `reset_document` and constructed field-by-field in two constructors, so what "a
+/// fresh solo session" is had three statements that the compiler could only hold to
+/// the same *shape*, never to the same values.
+struct Authoring {
     actor: ActorId,
+    /// This client's Lamport counter: the `lamport` half of every [`ActionId`] it
+    /// mints, advanced past everything it has seen (§12.1).
     clock: u64,
+    /// The next per-actor layer ordinal. Resumed past the log's own on a load
+    /// ([`Engine::resync_counters`]) and restarted at 1 when the actor changes,
+    /// because the id space is partitioned by author (§17.9).
     next_layer: u64,
-    /// Locally-committed actions awaiting broadcast to peers (§12.4).
-    /// Only populated in a shared session (`outbox_enabled`), and drained by the
-    /// transport via [`Engine::take_outbox`]; solo mode never accumulates.
-    outbox: Vec<Action>,
-    outbox_enabled: bool,
+    /// Locally-committed actions awaiting broadcast to peers (§12.4), drained by
+    /// the transport through [`Engine::take_outbox`].
+    ///
+    /// `None` when solo, rather than an empty `Vec` beside a flag: "queued actions
+    /// that will never be sent" was a state the pair could express and this cannot,
+    /// and the presence of the queue *is* the answer to
+    /// [`is_shared`](Engine::is_shared). It also decides whether a commit pays to
+    /// clone its action at all — a stroke's control-point list is the largest thing
+    /// in the log, and a solo session has nowhere to put the copy.
+    outbox: Option<Vec<Action>>,
+}
+
+/// Whether a captured pointer report opens a stroke or continues one — see
+/// [`Engine::note_debug_sample`]. A named pair rather than a `bool`, because a
+/// bare `true` at the call site says nothing about which way round it is.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Capture {
+    /// The press: forget the last stroke's samples first.
+    Restart,
+    /// A move within the stroke in hand.
+    Continue,
+}
+
+impl Authoring {
+    /// A fresh, unshared session: the solo actor, both counters at their origins,
+    /// nothing owed to anybody.
+    ///
+    /// `next_layer` starts at 1 rather than 0 because [`ROOT_LAYER`] is
+    /// `LayerId(0)` — an id that predates any actor, which is why every peer can
+    /// agree on it (§17.9).
+    const fn solo() -> Self {
+        Self {
+            actor: ActorId::SOLO,
+            clock: 0,
+            next_layer: 1,
+            outbox: None,
+        }
+    }
 }
 
 impl Engine {
@@ -393,22 +448,23 @@ impl Engine {
         // ground is named by the hash of its height map (§6.4), so an engine with no
         // bytes has exactly one ground it can truthfully name, and a frontend that
         // wants another opens a document on it.
-        let surface = Registry::<SurfaceId>::new(&gpu, SurfaceId::default());
+        let surfaces = Registry::<SurfaceId>::new(&gpu, SurfaceId::default());
         // Lighting starts on the procedural neutral environment; image HDRs are
         // registered later by the frontend (§6.3).
         let environment = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
-        let selection = SelectionRenderer::new(&gpu);
-        let gpu_for_ctx = gpu.clone();
-        let (pool, stroke, compositor_pipeline, compositor, transform, fill, merge) =
-            build_gpu(GpuBuild {
-                gpu: &gpu,
-                target_format,
-                cs: &color_space,
-                surface: &surface.current(),
-                environment: &environment.current(),
-                selection: &selection,
-            });
-        let assets = AssetStore::new(gpu.clone());
+        let surface = surfaces.current();
+        let built = build_gpu(GpuBuild {
+            keep: GpuKeep {
+                assets: AssetStore::new(gpu.clone()),
+                selection: SelectionRenderer::new(&gpu),
+                gpu: gpu.clone(),
+                surfaces,
+            },
+            target_format,
+            cs: &color_space,
+            surface: &surface,
+            environment: &environment.current(),
+        });
 
         let initial = DocState::with_layer(ROOT_LAYER);
         let initial_surface = initial.surface;
@@ -419,19 +475,9 @@ impl Engine {
             gpu,
             target_format,
             color_space,
-            apply: ApplyCtx {
-                pool,
-                stroke,
-                assets,
-                selection,
-                transform,
-                fill,
-                merge,
-                gpu: gpu_for_ctx,
-                surfaces: surface,
-            },
-            compositor,
-            compositor_pipeline,
+            apply: built.apply,
+            compositor: built.compositor,
+            compositor_pipeline: built.compositor_pipeline,
             initial_surface,
             environment,
             timeline,
@@ -440,12 +486,9 @@ impl Engine {
             now: 0.0,
             preview: Default::default(),
             doc_revision: 0,
+            #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
-            actor: ActorId::SOLO,
-            clock: 0,
-            next_layer: 1,
-            outbox: Vec::new(),
-            outbox_enabled: false,
+            authoring: Authoring::solo(),
         };
         // Point the ground registry at the document's ground. A no-op for a fresh
         // document (both are `Flat`), and not for one seeded by `new_document`,
@@ -499,17 +542,12 @@ impl Engine {
         let mut engine = Self {
             target_format: donor.target_format,
             color_space: donor.color_space.clone(),
-            apply: ApplyCtx {
-                pool: donor.apply.pool.clone(),
-                stroke: donor.apply.stroke.clone(),
-                assets: donor.apply.assets.clone(),
-                selection: donor.apply.selection.clone(),
-                transform: donor.apply.transform.clone(),
-                fill: donor.apply.fill.clone(),
-                merge: donor.apply.merge.clone(),
-                gpu: gpu.clone(),
-                surfaces: donor.apply.surfaces.clone(),
-            },
+            // The context **whole**, which is what "shares everything expensive and
+            // immutable" means and is now what it says: cloned field-by-field, a
+            // renderer added to `ApplyCtx` was shared by every engine except the one
+            // this constructor built, and nothing about that would show up until a
+            // preview canvas used it.
+            apply: donor.apply.clone(),
             gpu,
             compositor,
             compositor_pipeline,
@@ -521,12 +559,9 @@ impl Engine {
             now: 0.0,
             preview: Default::default(),
             doc_revision: 0,
+            #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
-            actor: ActorId::SOLO,
-            clock: 0,
-            next_layer: 1,
-            outbox: Vec::new(),
-            outbox_enabled: false,
+            authoring: Authoring::solo(),
         };
         // Park the sibling registry on the document's ground — a no-op here, since
         // both were just seeded from the donor's current one, but stated so this
@@ -566,16 +601,10 @@ impl Engine {
                     // knob (§6.8).
                     self.session.start_selection(tool, sample.pos);
                 } else {
-                    let seed = self.clock;
+                    let seed = self.authoring.clock;
                     self.session
                         .start_stroke(tool, sample, seed, tolerance, rope);
-                    // Gated like the `To` arm below, which it was not: the capture is
-                    // a diagnostic, so a shipping build must not keep a sample it has
-                    // no path to ever print.
-                    if cfg!(feature = "debug-unfrozen") {
-                        self.debug_samples.clear();
-                        self.debug_samples.push(sample);
-                    }
+                    self.note_debug_sample(Capture::Restart, sample);
                 }
                 self.mark_live_stale();
             }
@@ -584,9 +613,7 @@ impl Engine {
                     self.session.selection_to(sample.pos);
                 } else {
                     self.session.stroke_to(sample);
-                    if cfg!(feature = "debug-unfrozen") {
-                        self.debug_samples.push(sample);
-                    }
+                    self.note_debug_sample(Capture::Continue, sample);
                 }
                 self.mark_live_stale();
             }
@@ -973,7 +1000,7 @@ impl Engine {
     /// in between. This renders the stroke exactly once, at commit. Used by the
     /// brush editor's test-stroke replay.
     pub fn replay_stroke(&mut self, tool: Tool, samples: &[crate::command::InputSample]) {
-        self.replay_stroke_seeded(tool, samples, self.clock, 0.0);
+        self.replay_stroke_seeded(tool, samples, self.authoring.clock, 0.0);
     }
 
     /// [`Engine::replay_stroke`] with an explicit jitter `seed` instead of the
@@ -1168,8 +1195,8 @@ impl Engine {
             doc_revision: self.doc_revision,
             active_layer: self.session.active_layer,
             layers,
-            has_selection: doc.has_selection(self.actor),
-            selection_hull: doc.selection_of(self.actor).hull(),
+            has_selection: doc.has_selection(self.actor()),
+            selection_hull: doc.selection_of(self.actor()).hull(),
             shape_action: self.session.shape_action,
             selection_feather: self.session.selection_feather,
             shape_opacity: self.session.shape_opacity,
@@ -1296,13 +1323,20 @@ impl Engine {
             id: self.next_action_id(),
             kind,
         };
+        // Cloned only when there is somewhere for the copy to go. A `CommitStroke`
+        // carries the stroke's whole fitted control-point list — the largest thing
+        // in the log — and a solo session was duplicating one per commit to drop it
+        // an instruction later.
+        let broadcast = self.is_shared().then(|| action.clone());
         let ctx = &mut self.apply;
-        self.timeline.push(action.clone(), ctx);
+        self.timeline.push(action, ctx);
         // The committed document is what every in-flight preview is drawn over, so
         // every cached head built against the old one is now stale.
         self.committed_changed();
-        if self.outbox_enabled {
-            self.outbox.push(action);
+        if let Some(action) = broadcast
+            && let Some(outbox) = self.authoring.outbox.as_mut()
+        {
+            outbox.push(action);
         }
     }
 
@@ -1325,10 +1359,32 @@ impl Engine {
         }
     }
 
+    /// Keep a raw pointer report of the stroke in hand, so a misfit seen in the app
+    /// can be dumped on release and replayed as a test
+    /// ([`log_debug_samples`](Self::log_debug_samples)).
+    ///
+    /// A diagnostic, so a shipping build carries neither the samples nor the field
+    /// that would hold them: this is `#[cfg]`, not a runtime `cfg!` around a `Vec`
+    /// that exists either way. Keeping the capture behind a *call* rather than
+    /// behind an `#[cfg]` block at each site is what keeps the gesture arms
+    /// readable, and what stops the two of them disagreeing about the gate again —
+    /// `Start` was ungated while `To` was gated, so a shipping build accumulated the
+    /// first sample of every stroke and dropped the rest.
+    #[cfg(feature = "debug-unfrozen")]
+    fn note_debug_sample(&mut self, capture: Capture, sample: crate::command::InputSample) {
+        if capture == Capture::Restart {
+            self.debug_samples.clear();
+        }
+        self.debug_samples.push(sample);
+    }
+
+    #[cfg(not(feature = "debug-unfrozen"))]
+    fn note_debug_sample(&mut self, _capture: Capture, _sample: crate::command::InputSample) {}
+
     /// Mint the next layer id for this client (§17.9).
     fn mint_layer(&mut self) -> LayerId {
-        let id = LayerId::mint(self.actor, self.next_layer);
-        self.next_layer += 1;
+        let id = LayerId::mint(self.actor(), self.authoring.next_layer);
+        self.authoring.next_layer += 1;
         id
     }
 
@@ -1361,23 +1417,23 @@ impl Engine {
 
     fn next_action_id(&mut self) -> ActionId {
         let id = ActionId {
-            lamport: self.clock,
-            actor: self.actor,
+            lamport: self.authoring.clock,
+            actor: self.actor(),
         };
-        self.clock += 1;
+        self.authoring.clock += 1;
         id
     }
 }
 
-/// Build the GPU subsystems whose layout/shaders depend on the color space.
 /// What the color-space-dependent GPU subsystems are built from.
 ///
 /// Grouped because they are always supplied together: the pool, stroke renderer and
 /// compositor are torn down and rebuilt as a set whenever the color space changes
-/// (§6.7), and `surface` / `environment` / `selection` are precisely the
-/// pieces that *survive* that rebuild and have to be handed back in.
+/// (§6.7).
 struct GpuBuild<'a> {
-    gpu: &'a GpuContext,
+    /// What the rebuild does **not** touch, moved through into the context it comes
+    /// back in.
+    keep: GpuKeep,
     target_format: wgpu::TextureFormat,
     // No viewport: nothing built here is sized by one. A `Compositor` given one at
     // construction would overwrite it on its first render anyway, since that is the
@@ -1385,27 +1441,55 @@ struct GpuBuild<'a> {
     cs: &'a Arc<dyn ColorSpace>,
     surface: &'a Surface,
     environment: &'a Environment,
-    selection: &'a SelectionRenderer,
 }
 
-fn build_gpu(
-    b: GpuBuild<'_>,
-) -> (
-    TilePool,
-    StrokeRenderer,
-    CompositorPipeline,
-    Compositor,
-    TransformRenderer,
-    FillRenderer,
-    MergeRenderer,
-) {
+/// The pieces of [`ApplyCtx`] a color-space rebuild **survives** — the device, and
+/// the three stores whose contents are either content-addressed or independent of
+/// how color is represented (§6.7).
+///
+/// A struct rather than four parameters so that "what survives a rebuild" is stated
+/// once and read as a list. The two callers differ only in where they get it: a
+/// fresh engine builds these, a rebuild clones them off the context it is replacing.
+struct GpuKeep {
+    gpu: GpuContext,
+    /// Brush shapes, named by the hash of their bytes — so nothing about them
+    /// changes when the color space does (§6.6).
+    assets: AssetStore,
+    /// A mask is one coverage channel whatever the paint is, so the rasterizer is
+    /// color-space independent and is handed back in rather than rebuilt (§6.8).
+    selection: SelectionRenderer,
+    /// The canvas grounds and their registered bytes: a height map, likewise
+    /// nothing to do with how color is represented (§6.4).
+    surfaces: Registry<SurfaceId>,
+}
+
+/// Everything a build hands back, in the shape the engine stores it.
+///
+/// The whole [`ApplyCtx`] rather than the renderers loose, which is the point: a
+/// rebuild is then `self.apply = built.apply` and a renderer added to the context
+/// is rebuilt by construction. Assigned field-by-field, `TransformRenderer` and
+/// `FillRenderer` and `MergeRenderer` each had to be remembered in three places —
+/// the tuple, the constructor and the rebuild — and the rebuild is the one whose
+/// omission shows up only in a document that changed color space.
+struct GpuBuilt {
+    apply: ApplyCtx,
+    compositor_pipeline: CompositorPipeline,
+    compositor: Compositor,
+}
+
+fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
     let GpuBuild {
-        gpu,
+        keep:
+            GpuKeep {
+                gpu,
+                assets,
+                selection,
+                surfaces,
+            },
         target_format,
         cs,
         surface,
         environment,
-        selection,
     } = b;
     // The color space's formats — the only ones this call site knows. The pool
     // unions in its own (the selection mask, the wide scratch aux), so none can be
@@ -1419,17 +1503,17 @@ fn build_gpu(
             .into_iter()
             .chain(cs.resid_format()),
     );
-    let zeroes = Zeroes::new(gpu, crate::gpu::channels::ChannelFormats::of(cs.as_ref()));
-    let stroke = StrokeRenderer::new(gpu, cs.clone(), selection.clone(), zeroes.clone());
+    let zeroes = Zeroes::new(&gpu, crate::gpu::channels::ChannelFormats::of(cs.as_ref()));
+    let stroke = StrokeRenderer::new(&gpu, cs.clone(), selection.clone(), zeroes.clone());
     // Built once and shared: `gpu::merge` runs this very pipeline on tile-sized
     // targets to merge a layer down through its mode (§14.11), and building a second
     // one would decode the Mixbox LUT twice.
-    let blend = Arc::new(BlendPass::new(gpu, cs.as_ref()));
+    let blend = Arc::new(BlendPass::new(&gpu, cs.as_ref()));
     // The same bargain for the filter pass, which `gpu::merge` runs on tile-sized
     // targets to merge a filter layer into the paint beneath it (§14.11.7).
-    let filter = Arc::new(FilterPass::new(gpu, cs.as_ref()));
+    let filter = Arc::new(FilterPass::new(&gpu, cs.as_ref()));
     let compositor_pipeline = CompositorPipeline::new(
-        gpu,
+        &gpu,
         target_format,
         cs.as_ref(),
         surface.clone(),
@@ -1438,18 +1522,24 @@ fn build_gpu(
         filter.clone(),
     );
     let compositor = Compositor::new(&compositor_pipeline);
-    let transform = TransformRenderer::new(gpu, cs.as_ref(), selection.clone(), zeroes.clone());
-    let fill = FillRenderer::new(gpu, cs.clone(), selection.clone(), zeroes.clone());
-    let merge = MergeRenderer::new(gpu, cs.as_ref(), zeroes, blend, filter);
-    (
-        pool,
-        stroke,
+    let transform = TransformRenderer::new(&gpu, cs.as_ref(), selection.clone(), zeroes.clone());
+    let fill = FillRenderer::new(&gpu, cs.clone(), selection.clone(), zeroes.clone());
+    let merge = MergeRenderer::new(&gpu, cs.as_ref(), zeroes, blend, filter);
+    GpuBuilt {
+        apply: ApplyCtx {
+            pool,
+            stroke,
+            assets,
+            selection,
+            transform,
+            fill,
+            merge,
+            gpu,
+            surfaces,
+        },
         compositor_pipeline,
         compositor,
-        transform,
-        fill,
-        merge,
-    )
+    }
 }
 
 /// Convenience for tests/tools: build an engine on a headless device.

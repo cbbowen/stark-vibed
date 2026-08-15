@@ -546,6 +546,14 @@ pub struct Action {
 /// Side-channel passed to [`history::Action::apply`]: the GPU resources needed
 /// to render a stroke (§5). It owns cheap `Arc`-backed clones, so it
 /// has no borrow lifetime — which is what lets it be the `Action::Context`.
+///
+/// `Clone` for the same reason it has no lifetime: every field is a handle, so a
+/// copy is a fistful of refcount bumps and shares the thing rather than doubling
+/// it. That is exactly what a *preview* engine wants (`Engine::new_sharing`,
+/// §11) — and cloning the context whole is what keeps a renderer added here from
+/// being shared by everything except the one constructor that listed its
+/// siblings by hand.
+#[derive(Clone)]
 pub struct ApplyCtx {
     pub pool: TilePool,
     pub stroke: StrokeRenderer,
