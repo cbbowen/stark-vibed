@@ -17,23 +17,36 @@ pub(super) use stark_shaders::mirror::resolve::Resolve as ResolveUniform;
 /// 1:4 is a thumbnail whose next improvement is a better filter, not more of this one.
 const MAX_SUPERSAMPLE: u32 = 4;
 
-/// Most supersampled pixels a render may cover, whatever the zoom asks for.
+/// Most GPU memory a render may hold in viewport-sized attachments, whatever the
+/// zoom asks for.
 ///
-/// The ceiling exists because *every* offscreen attachment scales with it: pass A's
-/// `Rgba16Float` color and `R16Float` aux, the blend scratch if the document has a
-/// mode in it, and the target the resolve reads. At 16 Mpx that is ~210 MB in the
-/// worst case, which is the most a painting canvas may quietly take to stop
-/// sparkling — and it is only taken while the view is actually zoomed out, since
-/// [`supersample`] returns 1 at 1:1 and the attachments shrink back. Crossing a
-/// threshold reallocates all of them, so the ceiling is also a bound on the hitch a
-/// wheel-zoom can cost.
+/// The ceiling exists because *every* offscreen attachment scales with the sample
+/// count: pass A's color, aux and — in a pigment space — residual, the target the
+/// resolve reads, and **the blend scratch, two trios per level of nesting**, if the
+/// document has a mode or a filter in it. Only taken while the view is actually
+/// zoomed out, since [`supersample`] returns 1 at 1:1 and the attachments shrink
+/// back. Crossing a threshold reallocates all of them, so this is also a bound on the
+/// hitch a wheel-zoom can cost.
+///
+/// **It is a byte budget because it was already meant to be one.** It was written as
+/// 16 Mpx with the note that this came to "~210 MB in the worst case", enumerating
+/// the scratch — but no pixel count can enumerate the scratch, whose size is a fact
+/// about the *document*, nor the residual, which is a fact about the color space. The
+/// real figures at 16 Mpx: 234 MB for a flat Oklab document, 571 MB with one blend
+/// group, 973 MB for the same in pigment, and ~1.6 GB at two levels of nesting. So
+/// the number here is the ~224 MiB that was always intended, and what varies is how
+/// many pixels of *this* document's attachments fit inside it.
+///
+/// A flat Oklab document is unchanged by the restatement, deliberately: 14 bytes a
+/// texel (8 + 2 accumulator, 4 resolve target) into 224 MiB is exactly the 16 Mpx
+/// this used to be. What moves is the case the old arithmetic was wrong about.
 ///
 /// It binds on the window and not on a miniature, which is the right way round: the
 /// navigator renders a whole piece into ~250 px, is the worst-aliased view in the
 /// application, and reaches [`MAX_SUPERSAMPLE`] for a few megapixels. What it costs
-/// is the common zoom-outs on a large window — 2× rather than 4× past 1:2 — where
-/// the picture is already most of the way back and the fourth sample buys least.
-const MAX_SUPERSAMPLED_PX: u32 = 16 << 20;
+/// is the common zoom-outs on a large window, where the picture is already most of
+/// the way back and the fourth sample buys least.
+const MAX_SUPERSAMPLED_BYTES: u64 = 224 << 20;
 
 /// How many samples per axis a render of `size` at `zoom` takes (§6.4).
 ///
@@ -41,9 +54,20 @@ const MAX_SUPERSAMPLED_PX: u32 = 16 << 20;
 /// painting at 100% costs exactly what it always did and every golden blessed at
 /// `zoom = 1.0` is bit-identical. Below that it is the minification ratio, so each
 /// output pixel gets back roughly one sample per canvas pixel it covers, capped by
-/// [`MAX_SUPERSAMPLE`], by [`MAX_SUPERSAMPLED_PX`] and by what the device will
+/// [`MAX_SUPERSAMPLE`], by [`MAX_SUPERSAMPLED_BYTES`] and by what the device will
 /// allocate.
-pub(super) fn supersample(size: Extent2, zoom: f32, limits: &wgpu::Limits) -> u32 {
+///
+/// `bytes_per_px` is what *one supersampled texel of this frame* costs across every
+/// attachment that scales with the sample count — see [`attachment_bytes`]. It is the
+/// caller's to compute because only the caller knows the document: the color space
+/// decides whether there is a residual, and the group tree decides how many scratch
+/// levels there are.
+pub(super) fn supersample(
+    size: Extent2,
+    zoom: f32,
+    limits: &wgpu::Limits,
+    bytes_per_px: u64,
+) -> u32 {
     if !(zoom.is_finite() && zoom > 0.0) {
         return 1;
     }
@@ -56,11 +80,37 @@ pub(super) fn supersample(size: Extent2, zoom: f32, limits: &wgpu::Limits) -> u3
         .rev()
         .find(|n| {
             let (sw, sh) = (w.saturating_mul(*n), h.saturating_mul(*n));
+            let bytes = u64::from(sw)
+                .saturating_mul(u64::from(sh))
+                .saturating_mul(bytes_per_px);
             sw <= limits.max_texture_dimension_2d
                 && sh <= limits.max_texture_dimension_2d
-                && sw.saturating_mul(sh) <= MAX_SUPERSAMPLED_PX
+                && bytes <= MAX_SUPERSAMPLED_BYTES
         })
         .unwrap_or(1)
+}
+
+/// What one supersampled texel costs this frame, across every attachment that scales
+/// with the sample count (§6.4) — the input [`supersample`] measures its budget in.
+///
+/// - the **accumulator** trio, always;
+/// - the **resolve target**, which only exists above 1× but is what the whole
+///   question is about, so it is counted unconditionally;
+/// - **two trios per scratch level** that isolates and one per level that only
+///   ping-pongs, which is `scratch_needs`' answer read as memory (§18.0.4, §21.3).
+///
+/// The last is the term the old pixel budget could not express, and it is the one
+/// that dominates: a single blend group more than doubles the frame's footprint, and
+/// in a pigment document it more than triples it.
+pub(super) fn attachment_bytes(
+    formats: crate::gpu::channels::ChannelFormats,
+    target_format: wgpu::TextureFormat,
+    scratch: &[bool],
+) -> u64 {
+    let trio = formats.bytes_per_px();
+    let resolve = u64::from(target_format.block_copy_size(None).unwrap_or(0));
+    let scratch: u64 = scratch.iter().map(|&iso| trio * (1 + u64::from(iso))).sum();
+    trio + resolve + scratch
 }
 
 /// The resolve pass — the pipeline and its layout. The uniform it reads (`n`, the
@@ -119,6 +169,7 @@ pub(super) fn uniform_buffer(device: &wgpu::Device) -> wgpu::Buffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu::channels::ChannelFormats;
 
     /// The device this policy is written against: the `downlevel_webgl2` floor's
     /// 8192-px limit, which is what the wasm build can count on.
@@ -129,40 +180,111 @@ mod tests {
         }
     }
 
+    const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
+
+    fn oklab() -> ChannelFormats {
+        ChannelFormats {
+            color: wgpu::TextureFormat::Rgba16Float,
+            aux: wgpu::TextureFormat::R16Float,
+            resid: None,
+        }
+    }
+
+    fn pigment() -> ChannelFormats {
+        ChannelFormats {
+            resid: Some(wgpu::TextureFormat::Rgba16Float),
+            ..oklab()
+        }
+    }
+
+    /// A flat document: the accumulator and the resolve target, no scratch.
+    fn flat() -> u64 {
+        attachment_bytes(oklab(), TARGET, &[])
+    }
+
     #[test]
     fn magnification_costs_nothing() {
         let window = Extent2::new(1280, 720);
         for zoom in [1.0, 1.5, 4.0, 64.0] {
-            assert_eq!(supersample(window, zoom, &limits()), 1, "at {zoom}×");
+            assert_eq!(
+                supersample(window, zoom, &limits(), flat()),
+                1,
+                "at {zoom}×"
+            );
         }
         // A degenerate zoom asks for nothing rather than for a division by it.
         for zoom in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-            assert_eq!(supersample(window, zoom, &limits()), 1, "at {zoom}×");
+            assert_eq!(
+                supersample(window, zoom, &limits(), flat()),
+                1,
+                "at {zoom}×"
+            );
         }
     }
 
     #[test]
     fn minification_is_matched_sample_for_canvas_pixel() {
-        // Small enough that neither cap binds, so this is the rule itself.
+        // Small enough that no cap binds, so this is the rule itself.
         let thumb = Extent2::new(252, 176);
-        assert_eq!(supersample(thumb, 0.5, &limits()), 2);
-        assert_eq!(supersample(thumb, 0.25, &limits()), 4);
+        assert_eq!(supersample(thumb, 0.5, &limits(), flat()), 2);
+        assert_eq!(supersample(thumb, 0.25, &limits(), flat()), 4);
         // Past the cap the ratio keeps growing and the answer does not.
-        assert_eq!(supersample(thumb, 0.01, &limits()), MAX_SUPERSAMPLE);
+        assert_eq!(supersample(thumb, 0.01, &limits(), flat()), MAX_SUPERSAMPLE);
     }
 
     #[test]
     fn a_large_target_gives_up_samples_rather_than_the_render() {
-        // The pixel budget binds first at window sizes: 4× of this is 176 Mpx.
+        // The memory budget binds first at window sizes: 4× of this is 176 Mpx.
         let window = Extent2::new(2560, 1440);
-        let n = supersample(window, 0.1, &limits());
+        let n = supersample(window, 0.1, &limits(), flat());
         assert!(n > 1, "a zoomed-out window should still supersample");
+        let px = u64::from(window.width * n) * u64::from(window.height * n);
         assert!(
-            (window.width * n) * (window.height * n) <= MAX_SUPERSAMPLED_PX,
-            "{n}× of {window:?} is over the pixel budget"
+            px * flat() <= MAX_SUPERSAMPLED_BYTES,
+            "{n}× of {window:?} is over the memory budget",
         );
         // And the device limit binds before either of the others on a wide one.
         let wide = Extent2::new(7000, 400);
-        assert_eq!(supersample(wide, 0.1, &limits()), 1);
+        assert_eq!(supersample(wide, 0.1, &limits(), flat()), 1);
+    }
+
+    /// The restatement's compatibility claim: a flat Oklab document sees exactly the
+    /// 16-Mpx ceiling the pixel budget used to impose, so nothing about the common
+    /// zoom-out moved. 14 bytes a texel into 224 MiB is 16 Mpx on the nose.
+    #[test]
+    fn a_flat_oklab_frame_still_stops_at_sixteen_megapixels() {
+        assert_eq!(flat(), 14, "8 + 2 accumulator, 4 resolve target");
+        assert_eq!(MAX_SUPERSAMPLED_BYTES / flat(), 16 << 20);
+    }
+
+    /// The term the pixel budget could not express, and the reason this is worth
+    /// changing: **the scratch dominates**. One blend group more than doubles the
+    /// frame — a `swap` trio and an `iso` trio, each the size of the accumulator —
+    /// and a pigment document pays 18 bytes a texel for every one of them.
+    ///
+    /// The old ceiling would have let all four of these render at 16 Mpx, which is
+    /// 973 MB for the third and about 1.6 GB for the fourth.
+    #[test]
+    fn the_blend_scratch_is_most_of_what_a_nested_frame_costs() {
+        let cost = |f, s: &[bool]| attachment_bytes(f, TARGET, s);
+        assert_eq!(cost(oklab(), &[]), 14);
+        assert_eq!(cost(oklab(), &[true]), 14 + 20, "swap + iso, 10 bytes each");
+        // A level whose only non-direct members are filters ping-pongs and never
+        // isolates, so it pays for `swap` alone (§21.3).
+        assert_eq!(cost(oklab(), &[false]), 14 + 10, "swap alone");
+        assert_eq!(cost(pigment(), &[]), 22, "18 accumulator + 4 target");
+        assert_eq!(cost(pigment(), &[true, true]), 22 + 4 * 18);
+
+        // And the budget turns that into samples: the same window that supersamples
+        // when flat gives them up as the document nests.
+        let window = Extent2::new(2560, 1440);
+        let at = |f, s: &[bool]| supersample(window, 0.1, &limits(), cost(f, s));
+        assert!(at(oklab(), &[]) >= at(oklab(), &[true]));
+        assert!(at(oklab(), &[true]) >= at(pigment(), &[true]));
+        assert_eq!(
+            at(pigment(), &[true, true]),
+            1,
+            "two nested levels in pigment cannot afford a second sample on this window",
+        );
     }
 }

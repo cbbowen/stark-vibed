@@ -63,6 +63,17 @@ impl ChannelFormats {
         2 + usize::from(self.has_resid())
     }
 
+    /// What one texel of this trio costs, across all of its targets — 10 bytes in
+    /// Oklab (`Rgba16Float` + `R16Float`), 18 with a residual (§6.7).
+    ///
+    /// The one place the residual's *size* is counted, so that a budget over
+    /// viewport-sized attachments (see `composite::resolve`) cannot be written in a
+    /// way that silently assumes the colorimetric space.
+    pub(crate) fn bytes_per_px(&self) -> u64 {
+        let of = |f: wgpu::TextureFormat| u64::from(f.block_copy_size(None).unwrap_or(0));
+        of(self.color) + of(self.aux) + self.resid.map_or(0, of)
+    }
+
     /// The trio as render-pipeline color targets, each replacing what it writes —
     /// what a pass computing whole texels declares.
     pub(crate) fn targets(&self) -> Vec<Option<wgpu::ColorTargetState>> {

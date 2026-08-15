@@ -1049,13 +1049,16 @@ impl Compositor {
     /// use it: a pick viewport is a handful of texels, and letting the two share one
     /// cache would reallocate a target-sized pair twice a frame for the whole of an
     /// Alt-drag.
+    /// `needs` is [`scratch_needs`]' answer for this frame, computed by the caller
+    /// because the supersampling decision above wanted it first: how many levels there
+    /// are, and how many of them isolate, is most of what a zoomed-out frame costs in
+    /// memory (`resolve::attachment_bytes`).
     fn ensure_scratch(
         &mut self,
         p: &CompositorPipeline,
         size: Extent2,
-        groups: &[CompositeGroup],
+        mut needs: Vec<bool>,
     ) -> bool {
-        let mut needs = scratch_needs(groups);
         if needs.is_empty() {
             return false;
         }
@@ -1164,7 +1167,17 @@ impl Compositor {
         // How hard this view is minifying, and therefore how many samples per output
         // pixel it takes to stop the paint, the weave and the impasto relief aliasing
         // (§6.4). 1 at 1:1 and closer, where the rest of this is a no-op.
-        let ss = supersample(view.viewport, view.zoom, &p.ctx.device.limits());
+        // What this frame's attachments cost per supersampled texel, which is what
+        // decides how many samples it can afford (§6.4). The scratch is most of it —
+        // two viewport-sized trios per isolating level — so the group tree has to be
+        // asked *before* the sample count, not after.
+        let needs = scratch_needs(groups);
+        let ss = supersample(
+            view.viewport,
+            view.zoom,
+            &p.ctx.device.limits(),
+            resolve::attachment_bytes(p.formats, p.target_format, &needs),
+        );
         // This compositor's attachments, brought in line with what is about to be
         // drawn. Nobody else's: a render into something other than this target — an
         // export, the navigator's miniature — goes through a `Compositor` of its own,
@@ -1176,7 +1189,7 @@ impl Compositor {
         // resolve at the bottom closes.
         let view = view.supersampled(ss);
         let streams = self.prepare_composite(p, view, groups);
-        let want_scratch = self.ensure_scratch(p, self.size, groups);
+        let want_scratch = self.ensure_scratch(p, self.size, needs);
         // Bound after everything that needs `&mut self`.
         let device = &p.ctx.device;
         let scratch = if want_scratch {
