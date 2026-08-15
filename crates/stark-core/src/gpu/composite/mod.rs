@@ -670,6 +670,7 @@ impl Compositor {
                     filters.push(FilterUniform {
                         kind: f.kind,
                         strength: f.strength,
+                        clip: u32::from(f.clip),
                         disp: chromatic_disp(f, view),
                         params: f.params,
                         params2: f.params2,
@@ -677,6 +678,9 @@ impl Compositor {
                         // `disp`'s convention: the true value, since no other
                         // kind has stops (§21.11).
                         stops: f.stops.as_deref().copied().unwrap_or([[0.0; 4]; 16]),
+                        // The padding WGSL's alignment leaves around `clip`, which
+                        // the generator names and nothing reads (§6.10).
+                        ..Default::default()
                     });
                     continue;
                 }

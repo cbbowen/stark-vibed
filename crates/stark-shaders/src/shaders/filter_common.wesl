@@ -34,6 +34,11 @@
 //     the ones it read, so an aux left unwritten would be whatever the previous
 //     bounce left there.
 //
+// A filter that *gathers* is the exception to both, and it is the only one: the
+// chromatic aberration (§21.10) carries coverage and height along with the light it
+// displaces, because a fringe past a stroke's edge with neither could not be seen.
+// `clip` is where that exception is spent — see the lane below.
+//
 //
 // WHY THE ADJUSTMENT IS IN OKLAB
 //
@@ -68,6 +73,19 @@ struct Filter {
     // draw list already spends nothing on, since a layer at zero opacity never
     // reaches the compositor at all.
     strength: f32,
+    // Whether this filter is **clipped**: 0 or 1 (§21.4, §14.4). §14.4's sentence —
+    // *this layer exists only where there is paint beneath it in its group* — read
+    // for a layer that has no source of its own: the filter's result exists only
+    // where the backdrop it read had coverage. So a clipped filter hands coverage
+    // and height back **exactly as it found them**. It may say what color the paint
+    // already there should be; it may not say where there is paint.
+    //
+    // Which makes it inert for a point filter, and provably so rather than by
+    // convention: `resolve` writes `cb.a` and copies the aux across, so there is
+    // nothing left for a clip to delete and no arm below reads this lane. The gather
+    // in each space's `fs_main` is the one thing here that moves either, and it is
+    // the one thing that reads this.
+    clip: u32,
     // The chromatic filter's dispersion: the displacement from where the red end of
     // the spectrum lands to where the blue end does, in **accumulator texels**
     // (§21.10). Derived by the encoder each frame from the filter's own two numbers
@@ -251,12 +269,27 @@ fn weigh(was: vec3<f32>, now: vec3<f32>) -> vec3<f32> {
     return mix(was, now, f.strength);
 }
 
+// Whether this filter is **clipped** (§21.4) — confined to the coverage it read.
+//
+// A predicate rather than a comparison at each call site, on `is_normal`'s argument
+// in `blend_common.wesl`: what it decides is which tail a gather takes, and that is
+// one question however many spaces ask it.
+fn is_clipped() -> bool {
+    return f.clip != 0u;
+}
+
 // The filtered channels premultiplied back, with the coverage and the height put
 // back untouched.
 //
 // `chan` is un-premultiplied and `cb` is the raw sample, so the premultiply is by
 // `cb.a` — the same coverage that came in, because a filter changes what color the
 // paint is and not how much of it there is.
+//
+// **This is also the clipped tail**, and that it is the same function is the whole
+// statement (§21.4): a clipped filter is one with no opinion about coverage, which
+// is what every point filter already is. So a clipped gather does not get a
+// suppression term of its own — it hands its color to the tail the point filters
+// take, and the coverage and height it displaced are simply never written.
 fn resolve(cb: vec4<f32>, chan: vec3<f32>, out_chan: vec3<f32>, h: f32) -> FsOut {
     var out: FsOut;
     out.color = vec4<f32>(weigh(chan, out_chan) * cb.a, cb.a);

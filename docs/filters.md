@@ -136,7 +136,9 @@ pass's own visibility law: paint shows only where coverage *and* height both exi
 would land on zero height and be a fringe that cannot be seen. §21.10 says what
 "together" means precisely; what survives from the two rules above is the shape of
 the promise — a filter changes only what its kind is *about*, and both kinds leave a
-strength-0 pass bit-identical to the backdrop.
+strength-0 pass bit-identical to the backdrop. A **clip** is the layer-side control
+over exactly that difference: it holds a resampling filter to the point-filter
+promise, coverage and height included (§21.4.1).
 
 ### 21.4 What a filter borrows from a layer, and what it cannot
 
@@ -146,18 +148,61 @@ strength-0 pass bit-identical to the backdrop.
 | `visible` | on/off | as everywhere |
 | `name`, position, removal, duplication | as everywhere | it is a layer |
 | `blend` | **refused** | a mode describes how a *source* meets a backdrop; a filter has no source, it *is* the backdrop — and it can never be a group's base (§21.2), so no outward-pointing merge exists either. State declines to store one, like paint on a matte, rather than holding a value nothing can ever read |
-| `clip` | **refused** | same reason, and there is nothing to clip: a filter already writes only where the backdrop is |
+| `clip` | the bound on **where its result may land** | §14.4's sentence read for a layer with no source of its own: the filter's result exists only where the backdrop it read had coverage. So a clipped filter hands coverage and height back exactly as it found them — see below, and §21.4.1 for why that is inert on a point filter and live on a gather |
 | carried layers | **refused** | a filter never carries — see §21.2; the state declines the attachment itself |
 | paint | **refused** | no tile map — the same refusal a matte gives (§15.7), in `apply` and in the preview path alike, so replay and peers agree |
 
 Strength is mixed in the **working space** rather than in light, which is what makes
 strength 0 the *exact* identity rather than the identity plus a round trip's rounding.
 
-The panel shows blend and clip disabled on a filter row for the reason §14.4.3 shows
-them inert on the bottom row: a control that cannot express anything here should say
-so rather than accept a value nothing reads. The opacity slider is relabelled
-**Strength** on a filter row — "50% opacity" on a color adjustment invites the reading
-that the filter is half transparent, when what it is is half applied.
+The panel shows blend disabled on a filter row for the reason §14.4.3 shows it inert
+on the bottom row: a control that cannot express anything here should say so rather
+than accept a value nothing reads. The clip chip beside it stays **live** — the row
+is where the two halves of that shared question come apart, and §21.4.1 is why. The
+opacity slider is relabelled **Strength** on a filter row — "50% opacity" on a color
+adjustment invites the reading that the filter is half transparent, when what it is
+is half applied.
+
+#### 21.4.1 What clipping a filter means
+
+> A clipped filter may say what color the paint already there should be. It may not
+> say where there is paint.
+
+That is §14.4's *this layer exists only where there is paint beneath it in its group*,
+with the one substitution a filter forces: it has no content of its own to exist, so
+what is confined is its **result**. The confinement is stated on the two lanes that
+carry "how much paint is here" — a clipped filter writes back the coverage and the
+height it read, unchanged.
+
+Two consequences, and the second is the whole reason the flag exists:
+
+- **On a point filter it is a bit-exact no-op**, and structurally so rather than by
+  convention. §21.3.1's first rule already says a point filter writes back the
+  coverage it read and copies the height across; there is nothing left for a clip to
+  delete. In
+  the shader that is not a branch that happens to compute the same thing — it is the
+  same function: `filter_common.wesl`'s `resolve`, which no clipped-point path is
+  written against because the unclipped one is already it.
+- **On a gather it is the live case.** The chromatic filter (§21.10) transports
+  coverage and height with the light it displaces, which is what lets a fringe be seen
+  past a stroke's edge — and is exactly what a clip refuses. Clipped, the gather's
+  color still lands, over the coverage that was already there: the fringe colors the
+  silhouette from inside instead of spilling out of it. The clipped gather tails
+  through `resolve` too, and that it is the *same* tail is the statement — a clipped
+  filter is one with no opinion about coverage, which is what a point filter is.
+
+Inert with nothing beneath, exactly as it is for paint (§14.4.3) — and the engine
+agrees for free, because a filter reaching nothing is dropped from the draw list
+altogether (§21.2). What the panel greys the chip on is `has_underlay` rather than
+`has_backdrop`, for the reason §21.2 gives that predicate at all: a filter carried
+onto a painted layer *is* reaching that layer's paint even as the first carried row,
+and that arrangement is the "filter just this layer" gesture. Reading the positional
+predicate there would leave the chip dead in the one place it is reached for most.
+
+Nothing about **scope** changes. Where the row sits is still the whole of what a
+filter acts on (§21.1); the clip does not narrow that set, it bounds what the pass may
+write within it. A clipped filter at the top of the document still grades the whole
+painting — it just cannot grow it.
 
 ### 21.5 The color filter
 
@@ -471,6 +516,15 @@ nothing on screen to say where it came from.
 19. A **rampless** gradient map changes no pixel — the kind's neutral, held to
     the byte like every other — and one **works in a pigment document**, where a
     saturated mapped color needs the residual leg to survive re-entry (§6.7).
+20. **Clipping a point filter changes nothing, to the byte** (§21.4.1). The claim
+    is that a clip is inert wherever the filter has no opinion about coverage, and
+    a tolerance would not have made it: what is asserted is that the two renders
+    are the same bytes, which is what "the same tail" means.
+21. **A clipped gather stays inside the paint it filters.** The chromatic filter
+    unclipped changes bare canvas beside a stroke; clipped, every texel the paint
+    does not cover comes through byte for byte, while the stroke itself is still
+    filtered. Both halves, because either alone is a different bug — no spill and
+    no effect is a filter that did not run.
 
 ### 21.9 Open
 
@@ -558,6 +612,16 @@ that shows it. Transport conserves what §6.1 demands conserved: a shift-and-ave
 of the height field moves paint without minting any. The strength mix then runs on
 the raw premultiplied lanes — all of them, together — so strength 0 is the backdrop
 bit for bit, the same exactness `weigh` gives the point filters (§21.4).
+
+**And a clip is what takes that back** (§21.4.1). This is the one filter with an
+opinion about coverage, so it is the one filter a clip has anything to say to:
+clipped, the gather's color still lands but its displaced coverage and height do
+not, and the pass tails through `filter_common.wesl`'s `resolve` — the point
+filters' own ending. The fringe then colors the silhouette from inside rather than
+spilling out of it, which is what a painter wants when the aberration is a grade on
+a shape rather than a lens over the whole picture. It is also the shape of the
+result that a merge can bake into the destination's own tiles, since the tile set
+does not grow.
 
 **The knobs are canvas facts; the view arrives per frame.** The accumulator is the
 supersampled render, and a distance in screen texels is not a distance in canvas px

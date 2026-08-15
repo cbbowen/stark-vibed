@@ -125,6 +125,14 @@ but it is the nearest analog by a wide margin, and a painter arriving with the
 concept reaches for the right control on the first try — worth more than a name
 accurate only to a reader who does not have the concept yet.
 
+A **filter layer** takes the same flag, and the sentence above needs exactly one
+substitution to fit it: a filter has no content of its own to *exist*, so what is
+bounded is its **result**. Clipped, it may say what color the paint already there
+should be and never where there is paint — which is the identity for a filter that
+was already a function of one texel, and the live case for one that displaces
+(§21.4.1). Its blend mode, by contrast, stays refused: that one describes a source
+meeting a backdrop, and a filter has no source at all.
+
 #### 14.4.1 The formula, and why the obvious one is wrong
 
 The natural phrasing — *multiply by the opacity of what it is compositing onto* —
@@ -193,6 +201,12 @@ has_backdrop(L) = L has a sibling below it in its stack
 This is the same predicate that decides whether a **blend mode** does anything,
 which is the point: the two relational properties go live and inert together, so
 there is one fact to teach rather than two.
+
+They part on one row, and it is the row with no source: on a **filter** the mode is
+refused outright while the clip is live, and the clip is inert there by the
+renderer's predicate (`has_underlay`, §21.2) rather than by this positional one —
+a filter carried onto a painted layer is reaching that paint even with no sibling
+below it. Same fact, asked of the thing each control is actually defined against.
 
 It fails in exactly one place — the bottom-most layer of the root stack, which
 has nothing under it anywhere (§14.3). There the two properties degrade

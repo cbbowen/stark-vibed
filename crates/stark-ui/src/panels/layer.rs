@@ -271,12 +271,28 @@ pub fn LayerPanel() -> Element {
     // and cannot be read again after a handler has moved it. The id is all most
     // handlers here want, and it still copies.
     let selected_id = selected.as_ref().map(|l| l.id);
-    // Whether the two relational controls — blend and clip — have anything to say
-    // about the selected layer: nothing beneath it (§14.4.3), or no source of its own
-    // to meet what is beneath (§21.4, a filter).
-    let relational_inert = selected
+    // Whether the two relational controls have anything to say about the selected
+    // layer. **They part on a filter**, which is the one row where the shared
+    // condition they used to take was wrong (§21.4): a mode describes how a *source*
+    // meets a backdrop and a filter has no source, while a clip says where the layer
+    // may land — a question a filter still answers, by being confined to the coverage
+    // it read. Both go inert with nothing beneath them (§14.4.3), which is the half
+    // they do share.
+    //
+    // And they read *different predicates* for that half, which is the second thing
+    // the split brings out. A blend is positional, so it takes `has_backdrop`. A
+    // filter's clip is inert exactly where the **filter** is, so it takes
+    // `has_underlay` — the renderer's own answer (§21.2), which counts a carrier's
+    // base as beneath what it carries. `has_backdrop` would say no there, and that
+    // arrangement is "filter just this layer": the chip would be dead in the one
+    // place it is reached for most.
+    let blend_inert = selected
         .as_ref()
         .is_none_or(|l| !l.has_backdrop || l.filter.is_some());
+    let clip_inert = selected.as_ref().is_none_or(|l| match l.filter {
+        Some(_) => !l.has_underlay,
+        None => !l.has_backdrop,
+    });
     // Where "Add layer" puts one: into the selected layer's own stack, above it.
     // Read out here rather than in the handler because the row block below consumes
     // `selected`, and this is the only part of it the handler wants.
@@ -432,16 +448,17 @@ pub fn LayerPanel() -> Element {
                     {icon(icons::BLEND)}
                     {label(if l.is_group { "Blend \u{2014} of the group" } else { "Blend" })}
                 }
-                // Both go inert on a **filter** as well as at the bottom of the
-                // document, and for a stronger reason than "there is nothing to
-                // combine with": a filter has no source at all — it *is* the
-                // backdrop, rewritten — so neither control has anything to describe
-                // (§21.4). One condition, read by both.
                 // Blend and clip are one row because they are one question — *how does
                 // this layer meet what is below it* — and they share the answer's two
                 // halves: the mode says how the paint combines, the toggle says where it
                 // is allowed to land. Both go inert together at the bottom of the
                 // document, which is the other thing the shared row makes visible.
+                //
+                // On a **filter** the two halves come apart, and the row is where you
+                // can see that they were always two: a filter has no source, so the
+                // mode has nothing to describe and goes inert — but "where is this
+                // allowed to land" still has an answer, and the chip stays live to
+                // give it (§21.4).
                 div { class: "row blend-row",
                     select {
                         class: "select",
@@ -453,7 +470,7 @@ pub fn LayerPanel() -> Element {
                         // (§14.4.3). Shown rather than hidden: the control belongs to the
                         // layer wherever it sits, and a row that loses a control when it
                         // is dragged to the bottom reads as a bug.
-                        disabled: relational_inert,
+                        disabled: blend_inert,
                         onchange: move |e| {
                             if let Some(m) = BlendMode::ALL.iter().find(|m| m.label() == e.value()) {
                                 dispatch(state, DocCommand::SetLayerBlend(l.id, *m));
@@ -481,12 +498,12 @@ pub fn LayerPanel() -> Element {
                     button {
                         class: if l.clip { "chip active" } else { "chip" },
                         title: "{clip_hint(&l)}",
-                        // Inert for the same reason the blend picker is — except that
-                        // where a mode over nothing is harmlessly the identity, a clip
-                        // over nothing would erase the layer, which is the whole reason
-                        // this one has to be stopped rather than merely left to do
-                        // nothing (§14.4.3).
-                        disabled: relational_inert,
+                        // Inert only where there is nothing beneath — and where a mode
+                        // over nothing is harmlessly the identity, a clip over nothing
+                        // would erase the layer, which is the whole reason this one has
+                        // to be stopped rather than merely left to do nothing
+                        // (§14.4.3).
+                        disabled: clip_inert,
                         onclick: move |_| dispatch(state, DocCommand::SetLayerClip(l.id, !l.clip)),
                         {icon(icons::CLIP)}
                     }
@@ -520,7 +537,7 @@ pub fn LayerPanel() -> Element {
                         value: "{k.log2()}",
                         title: "{BEND_HINT}",
                         // Inert with its mode: a bend over nothing bends nothing.
-                        disabled: relational_inert,
+                        disabled: blend_inert,
                         // Previewed per sample, committed once when the drag settles —
                         // the same bargain, through the same `settle`. The whole mode
                         // travels rather than the number, because that is what both
@@ -691,6 +708,15 @@ fn clip_hint(layer: &LayerInfo) -> &'static str {
     if !layer.has_backdrop {
         return "Nothing composites under this layer, so clipping it would leave nothing \
                 to show.";
+    }
+    // A filter's clip is about **where its result is allowed to land** rather than
+    // where the layer shows, because a filter has nothing of its own to show
+    // (§21.4). Worth its own sentence for exactly that reason: the word is the same
+    // one every other row wears, and what it bounds here is a fringe rather than
+    // paint.
+    if layer.filter.is_some() {
+        return "Clip: keep this filter inside the paint it is filtering \u{2014} it may \
+                change the color that is there, never spread past its edge.";
     }
     if layer.is_group {
         return "Clip: this group shows only where there is paint under the group.";

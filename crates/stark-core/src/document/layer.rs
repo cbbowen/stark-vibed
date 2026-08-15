@@ -642,9 +642,18 @@ pub enum LayerContent {
     ///
     /// Its layer opacity is the filter's **strength**, mixed against the untouched
     /// backdrop, so fading a filter layer means what fading any other layer means
-    /// (§21.4). Its blend mode and clip, by contrast, have nothing to say: both
-    /// describe how a *source* meets a backdrop, and a filter has no source — it
-    /// *is* the backdrop, rewritten (§21.4).
+    /// (§21.4). Its **blend mode** has nothing to say and is refused: a mode
+    /// describes how a *source* meets a backdrop, and a filter has no source — it
+    /// *is* the backdrop, rewritten.
+    ///
+    /// Its **clip** is live, and the asymmetry with the mode beside it is the whole
+    /// of §21.4.1. A clip does not ask about a source; it says where the layer is
+    /// allowed to land, and that survives having none — the filter's result exists
+    /// only where the backdrop it read had coverage. So a clipped filter hands
+    /// coverage and height back exactly as it found them: it may say what color the
+    /// paint already there should be, never where there is paint. Inert for a filter
+    /// that is a function of one texel, and the live case for one that displaces
+    /// (§21.10).
     Filter(Filter),
 }
 

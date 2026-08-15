@@ -635,16 +635,18 @@ impl Engine {
             // beneath it here** (the foot of a stack, or a stack whose lower members
             // were all culled), or the filter is at its **neutral** setting, which is
             // what a freshly added one holds (§21.3).
+            //
+            // The first of those is also where a **clip** would have nothing to say
+            // (§14.4.3) — a filter with no backdrop is already the identity, so the
+            // one place the two properties could disagree is a pass that is not
+            // encoded at all.
             if let Some(f) = layer.filter() {
                 debug_assert!(
                     layer.carries.is_empty(),
                     "a filter never carries (§21.2) — the state refuses the arrangement",
                 );
                 if (under || !groups.is_empty()) && !f.is_neutral() {
-                    groups.push(CompositeGroup::filter(FilterDraw::new(
-                        f,
-                        layer.composite.opacity,
-                    )));
+                    groups.push(CompositeGroup::filter(FilterDraw::new(f, layer.composite)));
                 }
                 continue;
             }

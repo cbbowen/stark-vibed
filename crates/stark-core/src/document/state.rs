@@ -569,6 +569,10 @@ impl DocState {
     /// in a frontend rule is what keeps a stored-but-unreadable mode out of every
     /// replayed and replicated document.
     ///
+    /// **Not** the rule its neighbour [`Self::set_layer_clip`] follows, and the two
+    /// docs are worth reading together: a clip asks a question a filter can answer
+    /// (§21.4.1), so only the mode is turned away here.
+    ///
     /// The mode is **sanitized on the way in**, as a filter is (§21.5): a mode now
     /// carries numbers of its own, and a file or a peer reaches this without passing
     /// through `Engine::process`.
@@ -587,17 +591,24 @@ impl DocState {
     }
 
     /// Set whether a layer clips to the paint beneath it (no-op if absent) —
-    /// §14.4. A no-op on a filter, for [`Self::set_layer_blend`]'s reason.
+    /// §14.4.
+    ///
+    /// **Live on a filter**, unlike [`Self::set_layer_blend`] beside it, and the
+    /// asymmetry is the point (§21.4). A mode says how a *source* meets a backdrop
+    /// and a filter has no source, so there is nothing for one to describe. A clip
+    /// says where the layer is allowed to land, and that question survives having no
+    /// source: a filter is confined to the coverage it read, so it may say what color
+    /// the paint already there should be and never where there is paint. For a point
+    /// filter that is what it does anyway — the flag is a bit-exact no-op — and for a
+    /// filter that *gathers* (§21.10) it is the difference between a fringe held
+    /// inside the silhouette and one spilling past it.
     pub fn set_layer_clip(&self, id: LayerId, clip: bool) -> Self {
-        self.map_layer(id, |l| match &l.content {
-            LayerContent::Filter(_) => l.clone(),
-            LayerContent::Paint(_) | LayerContent::Matte { .. } => Layer {
-                composite: CompositeParams {
-                    clip,
-                    ..l.composite
-                },
-                ..l.clone()
+        self.map_layer(id, |l| Layer {
+            composite: CompositeParams {
+                clip,
+                ..l.composite
             },
+            ..l.clone()
         })
     }
 
@@ -969,12 +980,16 @@ mod tests {
         );
     }
 
-    /// Blend and clip are structurally inert on a filter — no source, and (per the
-    /// test above) never a group — so state refuses to store them, exactly as a
-    /// matte refuses paint (§21.4, §15.7). Refused in state so replayed and
-    /// replicated documents agree with local ones.
+    /// **A blend is refused on a filter and a clip is not**, and the two halves are
+    /// one test because the pair is where the difference is legible (§21.4.1). A
+    /// mode is structurally inert there — no source, and (per the test above) never
+    /// a group — so state refuses to store it, exactly as a matte refuses paint
+    /// (§15.7); refused in state so replayed and replicated documents agree with
+    /// local ones. A clip is not about a source at all: it bounds what the pass may
+    /// write, which a filter can answer, so the flag is stored and the compositor
+    /// reads it.
     #[test]
-    fn blend_and_clip_are_refused_on_a_filter() {
+    fn a_filter_refuses_a_blend_and_takes_a_clip() {
         let state = with_filter()
             .set_layer_blend(FILTER, BlendMode::Multiply)
             .set_layer_clip(FILTER, true);
@@ -984,7 +999,17 @@ mod tests {
             BlendMode::Normal,
             "a filter stored a blend mode"
         );
-        assert!(!filter.composite.clip, "a filter stored a clip");
+        assert!(filter.composite.clip, "a filter dropped its clip");
+        // …and it comes back off again: a flag that could only be set would be a
+        // trap, since clearing it is how a spilling fringe is asked for.
+        assert!(
+            !state
+                .set_layer_clip(FILTER, false)
+                .layer(FILTER)
+                .expect("filter exists")
+                .composite
+                .clip,
+        );
         // …while a paint layer beside it still takes both.
         let state = state
             .set_layer_blend(BASE, BlendMode::Multiply)

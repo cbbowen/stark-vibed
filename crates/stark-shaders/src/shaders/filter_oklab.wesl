@@ -17,7 +17,7 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS};
 import package::filter_common::{
     FsOut, f, FILTER_CHROMATIC, back_color, back_aux, back_samp, filtered, resolve,
-    ca_taps, ca_s, ca_uv, ca_weight, ca_lum,
+    is_clipped, ca_taps, ca_s, ca_uv, ca_weight, ca_lum,
 };
 
 @vertex
@@ -62,6 +62,14 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         }
         let a = cov_acc / y_acc;
         let lab = linear_srgb_to_oklab(lin_acc / w_acc / max(a, COVERAGE_EPS));
+        // **Clipped**: the fringe's color lands, its displaced coverage does not
+        // (§21.4). The gather's own `a` is spent on un-premultiplying the light it
+        // summed and then dropped, so what is left is a color for the coverage that
+        // was already here — which is exactly the point filters' tail, taken
+        // verbatim rather than restated.
+        if is_clipped() {
+            return resolve(cb, cb.rgb / max(cb.a, COVERAGE_EPS), lab, h);
+        }
         // The strength mix runs on the raw premultiplied lanes — color, coverage
         // and height together, because this filter moved all three — so strength 0
         // is `cb` itself, bit for bit, the same exactness `weigh` gives the point

@@ -17,6 +17,11 @@
 //! layer. So the control already exists and it is the Layers panel — which is why
 //! this file has the filter's own numbers and nothing else.
 //!
+//! The clip chip a filter row *does* wear (§21.4.1) is not that control and does not
+//! reopen this: it bounds what the pass may **write** — a clipped filter cannot push
+//! coverage past the paint it found — while what the pass **reads** is still, only,
+//! where the row sits.
+//!
 //! With more than one *kind* of filter (§21.10), "+ Filter" grew the one thing it
 //! was always going to need: a picker over [`Filter::ALL`], which is the core's own
 //! list in the core's own order. The bar itself keys everything per-kind off the

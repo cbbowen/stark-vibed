@@ -22,7 +22,7 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS};
 import package::filter_common::{
     f, FILTER_CHROMATIC, back_color, back_aux, back_samp, filtered, resolve, weigh,
-    ca_taps, ca_s, ca_uv, ca_weight, ca_lum,
+    is_clipped, ca_taps, ca_s, ca_uv, ca_weight, ca_lum,
 };
 
 // The backdrop's residual half (§6.7). **Binding 7 of group 0** — `filter_common`
@@ -55,6 +55,27 @@ fn latent_to_lab(conc: vec3<f32>, res: vec3<f32>) -> vec3<f32> {
 fn latent_to_linear(conc: vec3<f32>, res: vec3<f32>) -> vec3<f32> {
     let srgb = clamp(mixbox_eval_polynomial(conc) + res, vec3<f32>(0.0), vec3<f32>(1.0));
     return srgb_to_linear(srgb);
+}
+
+// `filter_common::resolve` with the residual beside it — the whole tail of a filter
+// that has no opinion about coverage, which is every point filter and every clipped
+// one (§21.4). Both halves of the color take the identical strength mix on the
+// identical coverage, and both ride the alpha `resolve` already decided (§6.7).
+//
+// One definition, two callers: the point path below and the clipped gather, which is
+// the same argument `filter_common::resolve` makes for being shared between the two
+// spaces. The residual's own target alpha is `cb.a` too — duplicated only because
+// the fixed-function "over" that filled these targets reads each one's.
+fn resolve_latent(
+    cb: vec4<f32>, chan: vec3<f32>, res: vec3<f32>,
+    out_chan: vec3<f32>, out_res: vec3<f32>, h: f32,
+) -> FsOut {
+    let base = resolve(cb, chan, out_chan, h);
+    var out: FsOut;
+    out.color = base.color;
+    out.aux = base.aux;
+    out.resid = vec4<f32>(weigh(res, out_res) * cb.a, cb.a);
+    return out;
 }
 
 @vertex
@@ -108,6 +129,13 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // The rest of `mixbox_rgb_to_latent`: what the polynomial cannot say about
         // the color the gather arrived at (§6.7).
         let out_res = srgb - mixbox_eval_polynomial(out_conc);
+        // **Clipped**: the fringe's color lands, its displaced coverage does not
+        // (§21.4) — `filter_oklab.wesl`'s branch, with the residual carried through
+        // the same tail the point path takes.
+        if is_clipped() {
+            let cov = max(cb.a, COVERAGE_EPS);
+            return resolve_latent(cb, cb.rgb / cov, rb.rgb / cov, out_conc, out_res, h);
+        }
         // The strength mix on the raw premultiplied lanes — both halves of the
         // color, the coverage and the height together, so strength 0 is the
         // backdrop bit for bit (§21.4).
@@ -138,13 +166,5 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // would be pulled toward the polynomial's reachable set.
     let out_res = srgb - mixbox_eval_polynomial(out_chan);
 
-    let base = resolve(cb, chan, out_chan, h);
-
-    var out: FsOut;
-    out.color = base.color;
-    out.aux = base.aux;
-    // The residual takes the identical strength mix on the identical coverage, and
-    // rides the alpha `resolve` already decided (§6.7).
-    out.resid = vec4<f32>(weigh(res, out_res) * cb.a, cb.a);
-    return out;
+    return resolve_latent(cb, chan, res, out_chan, out_res, h);
 }

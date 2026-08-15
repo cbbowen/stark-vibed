@@ -13,7 +13,9 @@
 //!   its stack has built so far, so at the root it filters the whole painting and
 //!   inside a group it filters that group — which means "filter just this layer" is
 //!   that layer carrying the filter, the same single gesture §14.4 spends on
-//!   clipping. There is no clip-to-layer-below mode to invent.
+//!   clipping. There is no clip-to-layer-below mode to invent — and the `clip` a
+//!   filter layer *does* take (§21.4.1) is not one: it bounds what the pass may
+//!   write, never what it reads, so scope is still position and nothing else.
 //! - **Layer opacity is filter strength.** The pass mixes its result against the
 //!   untouched backdrop by the layer's opacity, so a half-opacity filter is half the
 //!   adjustment and a zero-opacity one is the identity — which is what fading a

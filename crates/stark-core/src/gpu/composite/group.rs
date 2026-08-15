@@ -77,12 +77,21 @@ impl CompositeItem {
 /// [`blend_code`](super::blend::blend_code) makes for a blend mode). Flattening it
 /// here also puts the layer's opacity where the pass wants it — as a strength — so
 /// the encoder has one thing to write rather than two to remember to combine.
+///
+/// **Both of the two [`CompositeParams`] a filter reads live here**, for that reason
+/// and no other. They are not on the enclosing [`CompositeGroup`] because a filter
+/// merges nothing outward for them to describe (see [`GroupContent::Filter`]) — they
+/// are settings of the pass, and this is the pass's description.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FilterDraw {
     /// The filter's shader code — see `filter_common.wesl`.
     pub kind: u32,
     /// How much of the adjustment lands: the layer's opacity (§21.4).
     pub strength: f32,
+    /// Whether the filter is confined to the coverage it read: the layer's clip
+    /// (§21.4, §14.4). A **point** filter is already confined, so this changes
+    /// nothing for one; the gather is what it bounds.
+    pub clip: bool,
     /// The filter's own numbers, read according to `kind` — two lanes of four, so a
     /// kind with more than four has somewhere to put them without the bind group
     /// layout learning anything (`filter_common.wesl`).
@@ -102,7 +111,13 @@ pub struct FilterDraw {
 const MAX_MAP_STOPS: usize = crate::gradient::MAX_STOPS;
 
 impl FilterDraw {
-    /// The draw parameters for `filter` applied at `strength`.
+    /// The draw parameters for `filter` under the layer's own `params`.
+    ///
+    /// The whole [`CompositeParams`] rather than the two scalars it reads, because
+    /// the rule about which of the three a filter has is a rule about the value as a
+    /// whole (§21.4): the opacity becomes the strength, the clip travels as itself,
+    /// and the blend is the one a filter never has — state declines to store one, so
+    /// there is no mode here to drop.
     ///
     /// The one place a `Filter` becomes numbers, so the ABI is stated once — and
     /// each arm's code is the **mirrored** `FILTER_*` constant from
@@ -112,11 +127,15 @@ impl FilterDraw {
     /// than rendering as whichever kind happens to share its index. (The shader's
     /// `filtered()` still needs its arm; what cannot happen is the two agreeing on
     /// the *wrong* number.)
-    pub fn new(filter: Filter, strength: f32) -> Self {
+    pub fn new(filter: Filter, composite: CompositeParams) -> Self {
+        // Named apart from the `params` lanes below, which are the *filter's* own
+        // numbers and have nothing to do with the layer's.
+        let (strength, clip) = (composite.opacity, composite.clip);
         match filter {
             Filter::Color(c) => Self {
                 kind: stark_shaders::mirror::filter_common::FILTER_COLOR,
                 strength,
+                clip,
                 params: [c.exposure, c.contrast, c.saturation, c.hue],
                 params2: [c.tint[0], c.tint[1], 0.0, 0.0],
                 stops: None,
@@ -128,6 +147,7 @@ impl FilterDraw {
             Filter::Chromatic(c) => Self {
                 kind: stark_shaders::mirror::filter_common::FILTER_CHROMATIC,
                 strength,
+                clip,
                 params: [c.spread, c.angle, 0.0, 0.0],
                 params2: [0.0; 4],
                 stops: None,
@@ -155,6 +175,7 @@ impl FilterDraw {
                 Self {
                     kind: stark_shaders::mirror::filter_common::FILTER_GRADIENT_MAP,
                     strength,
+                    clip,
                     params: [
                         g.as_ref().map_or(0.0, |g| g.stops().len() as f32),
                         0.0,
@@ -224,9 +245,11 @@ pub enum GroupContent {
     /// (`composite/filter.rs`).
     ///
     /// Its enclosing [`CompositeGroup`]'s params are [`CompositeParams::IDENTITY`],
-    /// always: a filter has no source to merge, so there is nothing for them to
-    /// describe, and its opacity is already inside the draw as the filter's strength
-    /// (§21.4).
+    /// always: those describe a **merge**, and a filter has no source to merge. The
+    /// two of them a filter does read are inside the draw instead — the opacity as
+    /// the filter's strength, the clip as the bound on what the pass may write
+    /// (§21.4) — which is why they are settings of a pass here rather than
+    /// parameters of a merge that does not happen.
     Filter(FilterDraw),
 }
 
@@ -278,7 +301,8 @@ impl CompositeGroup {
 
     /// A filter layer's pass, which merges nothing and is merged through nothing
     /// (§21) — see [`GroupContent::Filter`] for why the params are fixed rather than
-    /// taken from the layer.
+    /// taken from the layer, and [`FilterDraw`] for where the two the layer really
+    /// does state have gone.
     pub fn filter(draw: FilterDraw) -> Self {
         Self {
             params: CompositeParams::IDENTITY,

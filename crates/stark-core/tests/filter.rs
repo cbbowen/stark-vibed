@@ -7,11 +7,13 @@
 //! rest of the document alone, which is what makes carrying a filter onto a layer
 //! the whole of "filter just this one").
 //!
-//! Three of these are about a filter doing **nothing**, and that is deliberate. A
+//! Several of these are about a filter doing **nothing**, and that is deliberate. A
 //! pass that runs over every texel of the frame has no coverage to hide behind, so
 //! the cases where it must be the exact identity — neutral, hidden, nothing beneath
 //! it — are the ones where a mistake is a whole-picture change with nothing on
-//! screen to say where it came from.
+//! screen to say where it came from. Clipping a *point* filter joins them (§21.4.1):
+//! there the identity is the claim itself, since a clip can only take away what a
+//! filter said about coverage and a point filter said nothing.
 
 mod common;
 
@@ -680,6 +682,131 @@ fn chromatic_aberration_parts_the_spectrum_in_pigment_too() {
         hi > 15 && lo < -15,
         "dispersion in pigment should part red and blue both ways across the \
          stroke, got a swing of {lo}..{hi}",
+    );
+}
+
+/// **Clipping a point filter changes nothing, to the byte** (§21.4.1).
+///
+/// The claim is not "close enough": a clip is inert wherever the filter has no
+/// opinion about coverage, and a point filter has none — it writes back the alpha it
+/// read and copies the height across (§21.3.1). So the two renders are not two paths
+/// that agree, they are the same path, and bytes are what says so. A tolerance here
+/// would pass just as happily on a clipped branch that recomputed the texel some
+/// other way, which is the thing this rules out.
+///
+/// Asserted on the **greyscale** rather than on a gentle grade for the reason
+/// [`GREY`] is the suite's sharpest filter: a clip that suppressed the adjustment
+/// where coverage is partial — the plausible wrong implementation — would show up on
+/// the stroke's soft edge, which is most of the pixels this filter touches.
+#[test]
+fn clipping_a_point_filter_changes_nothing() {
+    let Some(mut engine) = painted() else { return };
+    let bare = engine.render_to_image();
+    let id = add_filter(&mut engine, None, GREY);
+    let open = engine.render_to_image();
+    assert!(
+        !images_match(&bare, &open, 0),
+        "the filter has to be doing something for this test to mean anything",
+    );
+
+    engine.process(DocCommand::SetLayerClip(id, true));
+    assert!(
+        engine
+            .observe()
+            .layers
+            .iter()
+            .find(|l| l.id == id)
+            .is_some_and(|l| l.clip),
+        "state refused the clip, so the render below proves nothing",
+    );
+    assert!(
+        images_match(&open, &engine.render_to_image(), 0),
+        "clipping a point filter changed the picture",
+    );
+}
+
+/// Whether `(x, y)` is canvas the painting never reached — **and is clear of the
+/// paint's own edge by [`CLEAR`]**.
+///
+/// The bare test itself is exact: the substrate is a pure function of canvas position
+/// (§6.4), so a pixel the painting left untouched is bit-identical to the same pixel
+/// with no painting at all. The *margin* is what the rendered byte cannot say on its
+/// own. A frame pixel is a downsample of the supersampled accumulator (§6.4), so one
+/// that rounds to the substrate may still cover a whisker of paint — coverage of a
+/// few thousandths, which a filter is entitled to recolor and which lands as a single
+/// level. Measured, that band is one pixel wide at the rim of a soft stroke; the
+/// margin is two, so what the caller gets back is a statement about **coverage**
+/// rather than about rounding.
+fn is_bare(painted: &RgbaImage, unpainted: &RgbaImage, x: u32, y: u32) -> bool {
+    let (w, h) = (painted.width as i32, painted.height as i32);
+    (-CLEAR..=CLEAR).all(|dy| {
+        (-CLEAR..=CLEAR).all(|dx| {
+            let (nx, ny) = (
+                (x as i32 + dx).clamp(0, w - 1),
+                (y as i32 + dy).clamp(0, h - 1),
+            );
+            painted.pixel(nx as u32, ny as u32) == unpainted.pixel(nx as u32, ny as u32)
+        })
+    })
+}
+
+/// How far [`is_bare`] holds a pixel clear of anything the painting touched.
+const CLEAR: i32 = 2;
+
+/// **A clipped gather stays inside the paint it filters** (§21.4.1, §21.10).
+///
+/// The chromatic filter is the one kind with an opinion about coverage: it carries
+/// coverage and height along with the light it displaces, which is what lets a fringe
+/// be seen past a stroke's edge — and is exactly what a clip refuses. Both halves are
+/// asserted, because either alone is a different bug:
+///
+/// - unclipped, the fringe **does** reach bare canvas (else the test is vacuous);
+/// - clipped, every texel the paint does not cover comes through **byte for byte**,
+///   while the stroke itself is still filtered.
+///
+/// "Bare canvas" is read off the paint-free render rather than guessed at from a
+/// color — see [`is_bare`], which is also where the one subtlety lives. That makes
+/// the mask a fact about the render rather than a threshold to tune, and it is why
+/// the comparison can be exact: where coverage is zero a clipped filter writes the
+/// zero it read, so the accumulator, and then the frame, is unchanged.
+#[test]
+fn a_clipped_gather_stays_inside_the_paint() {
+    let Some(mut empty) = engine_or_skip() else {
+        return;
+    };
+    let unpainted = empty.render_to_image();
+    let Some(mut engine) = painted() else { return };
+    let bare = engine.render_to_image();
+
+    let id = add_filter(&mut engine, None, FRINGE);
+    let open = engine.render_to_image();
+    engine.process(DocCommand::SetLayerClip(id, true));
+    let shut = engine.render_to_image();
+
+    // The two questions, asked pixel by pixel over the canvas the paint never
+    // reached: did the unclipped fringe land here, and did the clipped one stay away?
+    let (mut spilled, mut leaked) = (0u32, 0u32);
+    for y in 0..bare.height {
+        for x in 0..bare.width {
+            if !is_bare(&bare, &unpainted, x, y) {
+                continue;
+            }
+            spilled += u32::from(open.pixel(x, y) != bare.pixel(x, y));
+            leaked += u32::from(shut.pixel(x, y) != bare.pixel(x, y));
+        }
+    }
+    assert!(
+        spilled > 0,
+        "the unclipped fringe never left the paint, so the clip has nothing to bound",
+    );
+    assert_eq!(
+        leaked, 0,
+        "a clipped filter wrote {leaked} texels of bare canvas: coverage came out \
+         other than it went in",
+    );
+    assert!(
+        !images_match(&bare, &shut, 0),
+        "the clipped filter changed nothing at all, so it is not the clip under test",
     );
 }
 
