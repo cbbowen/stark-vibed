@@ -29,6 +29,7 @@ pub(crate) mod submit;
 pub(crate) mod surface;
 pub(crate) mod tile;
 pub(crate) mod transform;
+pub(crate) mod uniforms;
 
 pub(crate) use composite::{BlendPass, FilterPass};
 pub use composite::{

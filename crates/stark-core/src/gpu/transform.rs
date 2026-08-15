@@ -621,7 +621,7 @@ impl TransformRenderer {
                     })
                 })
                 .clone();
-            draws.push((self.gated_bg(unit, g.inv, g.rect, dest), src_bg));
+            draws.push((self.gated_bg(scope, unit, g.inv, g.rect, dest), src_bg));
         }
 
         let targets = parcel.targets();
@@ -669,12 +669,15 @@ impl TransformRenderer {
         // The residue reads the destination's *old* coverage — a real tile or
         // the outside constant, through the same clamped-read pattern.
         let old = self.selection.mask_for(selection, dest);
-        let base_draw = (self.gated_base_bg(g.rect, dest), mask_bg(&old));
+        let base_draw = (self.gated_base_bg(scope, g.rect, dest), mask_bg(&old));
         let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
         for idx in unit_idxs {
             let unit = &g.units[*idx];
             let src = self.selection.mask_for(selection, unit.src);
-            draws.push((self.gated_bg(unit, g.inv, g.rect, dest), mask_bg(&src)));
+            draws.push((
+                self.gated_bg(scope, unit, g.inv, g.rect, dest),
+                mask_bg(&src),
+            ));
         }
 
         let mut pass = scope
@@ -702,26 +705,37 @@ impl TransformRenderer {
     /// The group-0 bind for one gated piece draw.
     fn gated_bg(
         &self,
+        scope: &mut TileScope,
         unit: &SourceUnit,
         inv: Option<&Homography>,
         rect: (Vec2, Vec2),
         dest: TileCoord,
     ) -> wgpu::BindGroup {
-        self.gated_uniform_bg(gated_uniform(unit, inv, rect, dest))
+        self.gated_uniform_bg(scope, gated_uniform(unit, inv, rect, dest))
     }
 
     /// The group-0 bind for the mask residue pass.
-    fn gated_base_bg(&self, rect: (Vec2, Vec2), dest: TileCoord) -> wgpu::BindGroup {
-        self.gated_uniform_bg(gated_base(rect, dest))
+    fn gated_base_bg(
+        &self,
+        scope: &mut TileScope,
+        rect: (Vec2, Vec2),
+        dest: TileCoord,
+    ) -> wgpu::BindGroup {
+        self.gated_uniform_bg(scope, gated_base(rect, dest))
     }
 
-    fn gated_uniform_bg(&self, uniform: GatedUniform) -> wgpu::BindGroup {
+    fn gated_uniform_bg(&self, scope: &mut TileScope, uniform: GatedUniform) -> wgpu::BindGroup {
         let device = &self.ctx.device;
-        let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("stark transform gated uniform"),
-            contents: bytemuck::bytes_of(&uniform),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        // Registered with the scope, so it is destroyed at the submit that reads it
+        // rather than waiting on the GC (`ScopedResources`). Still a buffer per
+        // draw — see the note on `quad_bg`.
+        let ubuf = scope.buffer(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("stark transform gated uniform"),
+                contents: bytemuck::bytes_of(&uniform),
+                usage: wgpu::BufferUsages::UNIFORM,
+            }),
+        );
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark transform gated bg"),
             layout: &self.quad_bgl,
@@ -781,7 +795,7 @@ impl TransformRenderer {
                     })
                 })
                 .clone();
-            draws.push((self.quad_bg(affine, *src, dest), src_bg));
+            draws.push((self.quad_bg(scope, affine, *src, dest), src_bg));
         }
 
         let targets = parcel.targets();
@@ -820,11 +834,13 @@ impl TransformRenderer {
         gate: Option<(Vec2, Vec2)>,
     ) {
         let device = &self.ctx.device;
-        let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("stark transform combine uniform"),
-            contents: bytemuck::bytes_of(&combine_uniform(dest, gate)),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let ubuf = scope.buffer(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("stark transform combine uniform"),
+                contents: bytemuck::bytes_of(&combine_uniform(dest, gate)),
+                usage: wgpu::BufferUsages::UNIFORM,
+            }),
+        );
         let (base_color, base_aux) = match from.base.get(&dest) {
             Some(tile) => (tile.color_view().clone(), tile.aux_view().clone()),
             None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
@@ -913,7 +929,7 @@ impl TransformRenderer {
                 layout: &self.mask_src_bgl,
                 entries: &[desc::tex(2, handle.view())],
             });
-            draws.push((self.quad_bg(affine, *src, dest), src_bg));
+            draws.push((self.quad_bg(scope, affine, *src, dest), src_bg));
         }
 
         let mut pass = scope
@@ -935,13 +951,31 @@ impl TransformRenderer {
     }
 
     /// The group-0 bind for one quad draw: its uniform plus the shared sampler.
-    fn quad_bg(&self, affine: Affine2, src: TileCoord, dest: TileCoord) -> wgpu::BindGroup {
+    ///
+    /// Still a buffer and a bind group **per draw**, where the fill and the selection
+    /// now take a dynamic-offset slot apiece (`UniformSlots`). The difference is that
+    /// those know their tile count before they encode anything, so one buffer can be
+    /// sized up front; a transform's draw count is the sum over its plan of the
+    /// sources reaching each destination, and growing a slot buffer mid-encode would
+    /// reallocate under the bind groups already recorded against it. The buffers are
+    /// at least destroyed at their submit now rather than left for the GC; slotting
+    /// them properly means pre-counting the plan, which is a change to the plan's
+    /// shape rather than to this function.
+    fn quad_bg(
+        &self,
+        scope: &mut TileScope,
+        affine: Affine2,
+        src: TileCoord,
+        dest: TileCoord,
+    ) -> wgpu::BindGroup {
         let device = &self.ctx.device;
-        let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("stark transform quad uniform"),
-            contents: bytemuck::bytes_of(&quad_uniform(affine, src, dest)),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let ubuf = scope.buffer(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("stark transform quad uniform"),
+                contents: bytemuck::bytes_of(&quad_uniform(affine, src, dest)),
+                usage: wgpu::BufferUsages::UNIFORM,
+            }),
+        );
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark transform quad bg"),
             layout: &self.quad_bgl,

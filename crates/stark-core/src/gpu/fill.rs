@@ -30,6 +30,7 @@ use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, TileMap, TilePool};
+use crate::gpu::uniforms::UniformSlots;
 
 // Generated from `fill.wesl`'s own declarations (§6.7).
 use stark_shaders::mirror::fill::Fill as FillUniform;
@@ -83,9 +84,14 @@ impl FillRenderer {
         if formats.has_resid() {
             entries.push(desc::load_tex(5, frag)); // base residual (§6.7)
         }
-        // The tile's canvas origin — per tile, where binding 0 is per fill. Bound
+        // The tile's canvas origin — per tile, where binding 0 is per fill, so it
+        // is a dynamic-offset slot rather than a buffer each (`UniformSlots`). Bound
         // unconditionally at 6 so its index does not move with the resid feature.
-        entries.push(desc::uniform(6, frag));
+        entries.push(desc::uniform_slot(
+            6,
+            frag,
+            std::mem::size_of::<TileUniform>() as u64,
+        ));
         let bgl = desc::bind_group_layout(device, "stark fill bgl", &entries);
         let layout = desc::pipeline_layout(device, "stark fill layout", &[Some(&bgl)]);
         let targets = formats.targets();
@@ -181,8 +187,25 @@ impl FillRenderer {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
+        // One slot per tile, all written before the first submit — see
+        // [`UniformSlots`] for why they cannot share a single rewritten buffer.
+        let origins: Vec<TileUniform> = coords
+            .iter()
+            .map(|coord| {
+                // Mask and paint tiles share their geometry, so the selection's
+                // origin is this pass's too.
+                let origin = mask_tex_origin(*coord);
+                TileUniform {
+                    origin: [origin.x, origin.y, 0.0, 0.0],
+                }
+            })
+            .collect();
+        let mut tile_slots =
+            UniformSlots::<TileUniform>::new(device, "stark fill tile", coords.len());
+        tile_slots.write(device, &self.ctx.queue, &origins);
+
         let mut tiles = base.clone();
-        for coord in &coords {
+        for (i, coord) in coords.iter().enumerate() {
             let (base_color, base_aux) = match base.get(coord) {
                 Some(tile) => (tile.color_view().clone(), tile.aux_view().clone()),
                 None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
@@ -196,20 +219,6 @@ impl FillRenderer {
             });
             let region_mask = self.selection.mask_for(&region, *coord);
             let gate_mask = self.selection.mask_for(gate, *coord);
-            // The tile's canvas origin, apron included — mask and paint tiles
-            // share their geometry, so the selection's origin is this pass's too.
-            let origin = mask_tex_origin(*coord);
-            // Per tile, and destroyed at the submit that reads it rather than
-            // left for the GC (`ScopedResources`).
-            let tile_ubuf = scope.buffer(device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("stark fill tile uniform"),
-                    contents: bytemuck::bytes_of(&TileUniform {
-                        origin: [origin.x, origin.y, 0.0, 0.0],
-                    }),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                },
-            ));
             let dst = Channels::acquire(pool, self.formats, AllocSource::FillDestination);
             let mut entries = vec![
                 wgpu::BindGroupEntry {
@@ -226,7 +235,11 @@ impl FillRenderer {
             }
             entries.push(wgpu::BindGroupEntry {
                 binding: 6,
-                resource: tile_ubuf.as_entire_binding(),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: tile_slots.buffer(),
+                    offset: 0,
+                    size: wgpu::BufferSize::new(std::mem::size_of::<TileUniform>() as u64),
+                }),
             });
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark fill bg"),
@@ -246,7 +259,7 @@ impl FillRenderer {
                     multiview_mask: None,
                 });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bg, &[]);
+            pass.set_bind_group(0, &bg, &[UniformSlots::<TileUniform>::offset(i as u32)]);
             pass.draw(0..3, 0..1);
             drop(pass);
             tiles = tiles.insert(*coord, dst.into_tile());

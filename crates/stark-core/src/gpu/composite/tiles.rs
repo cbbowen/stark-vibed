@@ -17,7 +17,7 @@ use super::view::View;
 // parameters of the vertex entry points that read them (§6.10) — the struct, the
 // attribute formats and their offsets all from the one declaration.
 pub(super) use stark_shaders::mirror::composite::Instance;
-pub(super) use stark_shaders::mirror::matte::MatteInstance;
+pub(super) use stark_shaders::mirror::matte::{MatteInstance, Ramp};
 
 /// Pass A's pipelines and the bind groups they draw through.
 pub(super) struct TilePass {
@@ -29,12 +29,12 @@ pub(super) struct TilePass {
     pub(super) matte_pipeline: wgpu::RenderPipeline,
     pub(super) view_bg: wgpu::BindGroup,
     pub(super) tile_bgl: wgpu::BindGroupLayout,
-    /// The matte pipeline's group 1: the per-matte gradient ramp (§22.4).
+    /// The matte pipeline's group 1: the per-matte gradient ramp (§22.4), read
+    /// through a **dynamic offset** so one buffer and one bind group serve every
+    /// matte in the frame. A solid matte's slot is simply zeroed, its stop count
+    /// then saying "use the instance's own channels" — which is what the shared
+    /// `zero_ramp_bg` used to be, as an object rather than as 544 zero bytes.
     pub(super) ramp_bgl: wgpu::BindGroupLayout,
-    /// The ramp a solid matte binds: zeroed, so its stop count says "use the
-    /// instance's own channels". One buffer for every solid matte ever drawn,
-    /// against a bind group the layout obliges the draw to set regardless.
-    pub(super) zero_ramp_bg: wgpu::BindGroup,
 }
 
 impl TilePass {
@@ -111,8 +111,15 @@ impl TilePass {
         });
         // Group 1: the gradient ramp, per matte where the view is per pass
         // (§22.4). Fragment-only — the vertex stage has no use for it.
-        let ramp_bgl =
-            desc::bind_group_layout(device, "stark matte ramp bgl", &[desc::uniform(0, frag)]);
+        let ramp_bgl = desc::bind_group_layout(
+            device,
+            "stark matte ramp bgl",
+            &[desc::uniform_slot(
+                0,
+                frag,
+                std::mem::size_of::<stark_shaders::mirror::matte::Ramp>() as u64,
+            )],
+        );
         let matte_layout = desc::pipeline_layout(
             device,
             "stark matte layout",
@@ -154,27 +161,12 @@ impl TilePass {
             ],
         });
 
-        let zero_ramp = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("stark matte zero ramp"),
-            contents: bytemuck::bytes_of(&stark_shaders::mirror::matte::Ramp::default()),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let zero_ramp_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark matte zero ramp bg"),
-            layout: &ramp_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: zero_ramp.as_entire_binding(),
-            }],
-        });
-
         Self {
             pipeline,
             matte_pipeline,
             view_bg,
             tile_bgl,
             ramp_bgl,
-            zero_ramp_bg,
         }
     }
 }

@@ -45,8 +45,6 @@ mod view;
 
 use std::sync::Arc;
 
-use wgpu::util::DeviceExt;
-
 use crate::colorspace::ColorSpace;
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::channels::{ChannelFormats, Targets};
@@ -55,8 +53,9 @@ use crate::gpu::desc;
 use crate::gpu::environment::Environment;
 use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
 
-pub(crate) use blend::{BlendPass, BlendUniform, UNIFORM_SLOT, blend_code};
-use blend::{ScratchLevel, ScratchTargets, UniformSlots};
+use crate::gpu::uniforms::UniformSlots;
+pub(crate) use blend::{BlendPass, BlendUniform, blend_code};
+use blend::{ScratchLevel, ScratchTargets};
 pub(crate) use filter::{FilterPass, FilterUniform};
 use group::scratch_needs;
 // The free items are imported by name rather than qualified, because `render`'s own
@@ -66,7 +65,7 @@ use guides::{GUIDE_SLOT, GuidePass, GuideUniform, alloc_guides, pack_guides};
 use media::{MediaPass, MediaUniform};
 use overlay::{OverlayInstance, OverlayPass, PEER_OUTLINE_ALPHA, alloc_overlay};
 use resolve::{ResolvePass, ResolveUniform, supersample};
-use tiles::{Instance, MatteInstance, TilePass, alloc_instances, alloc_mattes};
+use tiles::{Instance, MatteInstance, Ramp, TilePass, alloc_instances, alloc_mattes};
 use view::View;
 
 pub use group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent, MatteDraw};
@@ -98,9 +97,13 @@ struct Encode<'a> {
 /// and kept for that tile's life ([`TilePairHandle::composite_bg`]) — so what this
 /// collects per frame is a list of references rather than a list of new wgpu
 /// objects. The lifetime is the draw list's, which outlives the render.
+///
+/// The ramps are one bind group over one slotted buffer, not one apiece: matte `i`
+/// binds slot `i`, which is the instance index the draw already carries. `None` only
+/// when the frame has no matte at all.
 struct PreparedStreams<'a> {
     tile_bgs: Vec<&'a wgpu::BindGroup>,
-    matte_ramp_bgs: Vec<Option<wgpu::BindGroup>>,
+    matte_ramp_bg: Option<wgpu::BindGroup>,
 }
 
 /// How far through the frame's flat streams the encoder has drawn.
@@ -290,6 +293,9 @@ pub struct Compositor {
     instance_cap: usize,
     matte_instances: wgpu::Buffer,
     matte_cap: usize,
+    /// One dynamic-offset slot per matte in the frame, holding its gradient ramp —
+    /// zeroed for a solid one (§22.4).
+    matte_ramps: UniformSlots<Ramp>,
     // One dynamic-offset slot per blend group in the frame, and one per filter
     // layer (§21). Separate buffers, one mechanism — see [`UniformSlots`] for both
     // the sharing and the separation.
@@ -484,6 +490,7 @@ impl Compositor {
             instance_cap: 1,
             matte_instances: alloc_mattes(device, 1),
             matte_cap: 1,
+            matte_ramps: UniformSlots::new(device, "stark matte ramp", 1),
             blend_uniforms: UniformSlots::new(device, "stark blend uniform", 1),
             filter_uniforms: UniformSlots::new(device, "stark filter uniform", 1),
             overlay_instances: alloc_overlay(device, 1),
@@ -569,7 +576,7 @@ impl Compositor {
         let mut instances: Vec<Instance> = Vec::new();
         let mut tile_bgs: Vec<&wgpu::BindGroup> = Vec::new();
         let mut mattes: Vec<MatteInstance> = Vec::new();
-        let mut matte_ramp_bgs: Vec<Option<wgpu::BindGroup>> = Vec::new();
+        let mut ramps: Vec<Ramp> = Vec::new();
         for item in groups.iter().flat_map(CompositeGroup::items) {
             match item {
                 CompositeItem::Tile {
@@ -611,23 +618,10 @@ impl Compositor {
                         flags: m.flags,
                     });
                     // A gradient matte brings its ramp as a per-matte uniform
-                    // (§22.4); a solid one draws with the shared zeroed
-                    // ramp, so the slot records only that there is nothing to bind.
-                    matte_ramp_bgs.push(m.ramp.as_deref().map(|ramp| {
-                        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("stark matte ramp"),
-                            contents: bytemuck::bytes_of(ramp),
-                            usage: wgpu::BufferUsages::UNIFORM,
-                        });
-                        device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("stark matte ramp bg"),
-                            layout: &p.tiles.ramp_bgl,
-                            entries: &[wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: buf.as_entire_binding(),
-                            }],
-                        })
-                    }));
+                    // (§22.4); a solid one takes a zeroed slot, whose stop count says
+                    // "use the instance's own channels". One slot either way, so the
+                    // matte's instance index is also its ramp's.
+                    ramps.push(m.ramp.as_deref().copied().unwrap_or_default());
                 }
             }
         }
@@ -640,6 +634,7 @@ impl Compositor {
                 .queue
                 .write_buffer(&self.instances, 0, bytemuck::cast_slice(&instances));
         }
+        let mut matte_ramp_bg = None;
         if !mattes.is_empty() {
             if mattes.len() > self.matte_cap {
                 self.matte_instances = alloc_mattes(device, mattes.len());
@@ -648,6 +643,21 @@ impl Compositor {
             p.ctx
                 .queue
                 .write_buffer(&self.matte_instances, 0, bytemuck::cast_slice(&mattes));
+            self.matte_ramps.write(device, &p.ctx.queue, &ramps);
+            // Built after the write, so it names the buffer the write may have just
+            // grown — the same reason the guide pass builds its own per render.
+            matte_ramp_bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark matte ramp bg"),
+                layout: &p.tiles.ramp_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: self.matte_ramps.buffer(),
+                        offset: 0,
+                        size: wgpu::BufferSize::new(std::mem::size_of::<Ramp>() as u64),
+                    }),
+                }],
+            }));
         }
 
         // One uniform slot per merge and one per filter layer, all written before the
@@ -708,7 +718,7 @@ impl Compositor {
         self.filter_uniforms.write(device, &p.ctx.queue, &filters);
         PreparedStreams {
             tile_bgs,
-            matte_ramp_bgs,
+            matte_ramp_bg,
         }
     }
 
@@ -876,15 +886,16 @@ impl Compositor {
                         pass.set_vertex_buffer(0, self.matte_instances.slice(..));
                         pipeline_is_matte = Some(true);
                     }
-                    // Group 1 is the ramp — a gradient matte's own, or the
-                    // shared zeroed one whose stop count says "solid"
-                    // (§22.4). Bound per matte either way: the two
-                    // pipelines' group-1 layouts differ, so a pipeline switch
-                    // has already invalidated whatever was set.
-                    let ramp = e.streams.matte_ramp_bgs[*matte_i as usize]
+                    // Group 1 is the ramp, at this matte's own slot (§22.4).
+                    // Re-set per matte either way: the offset changes, and a
+                    // pipeline switch has already invalidated whatever was
+                    // bound, the two pipelines' group-1 layouts differing.
+                    let ramp = e
+                        .streams
+                        .matte_ramp_bg
                         .as_ref()
-                        .unwrap_or(&e.p.tiles.zero_ramp_bg);
-                    pass.set_bind_group(1, ramp, &[]);
+                        .expect("a matte draw without its ramp slots");
+                    pass.set_bind_group(1, ramp, &[UniformSlots::<Ramp>::offset(*matte_i)]);
                     pass.draw(0..4, *matte_i..*matte_i + 1);
                     *matte_i += 1;
                 }

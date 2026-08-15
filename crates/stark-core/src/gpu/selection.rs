@@ -27,6 +27,7 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
+use crate::gpu::uniforms::UniformSlots;
 
 // Generated from the two shaders' own declarations (§6.7). `selection.wesl` and
 // `slice.wesl` both call theirs `Params`, which is why the mirrors are namespaced by
@@ -90,7 +91,8 @@ impl SelectionRenderer {
             device,
             "stark selection bgl",
             &[
-                desc::uniform(0, frag),
+                // Per tile, so a dynamic-offset slot rather than a buffer each.
+                desc::uniform_slot(0, frag, std::mem::size_of::<MaskUniform>() as u64),
                 desc::load_tex(1, frag), // previous mask
                 desc::load_tex(2, frag), // lasso edges
             ],
@@ -402,22 +404,26 @@ impl SelectionRenderer {
         // whole rasterize and outlive every flush; only the per-tile uniform below
         // is scoped to one submit.
         let mut scope = TileScope::new(&self.ctx, "stark selection edit");
+        // One slot per tile, all written before the first submit (`UniformSlots`).
+        let params: Vec<MaskUniform> = coords
+            .iter()
+            .map(|coord| {
+                let origin = mask_tex_origin(*coord);
+                MaskUniform {
+                    a: [origin.x, origin.y, 2.0 / MASK_TEX as f32, feather],
+                    b,
+                    c,
+                }
+            })
+            .collect();
+        let mut slots =
+            UniformSlots::<MaskUniform>::new(device, "stark selection params", coords.len());
+        slots.write(device, &self.ctx.queue, &params);
+
         let mut tiles = base;
 
-        for coord in coords {
+        for (i, coord) in coords.iter().enumerate() {
             let dst = pool.acquire_mask(AllocSource::SelectionMask);
-            let origin = mask_tex_origin(*coord);
-            let ubuf = scope.buffer(
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("stark selection params"),
-                    contents: bytemuck::bytes_of(&MaskUniform {
-                        a: [origin.x, origin.y, 2.0 / MASK_TEX as f32, feather],
-                        b,
-                        c,
-                    }),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                }),
-            );
             let prev_view = self.mask_for(prev, *coord);
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark selection bg"),
@@ -425,7 +431,11 @@ impl SelectionRenderer {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: ubuf.as_entire_binding(),
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: slots.buffer(),
+                            offset: 0,
+                            size: wgpu::BufferSize::new(std::mem::size_of::<MaskUniform>() as u64),
+                        }),
                     },
                     desc::tex(1, &prev_view),
                     desc::tex(2, edges),
@@ -443,7 +453,7 @@ impl SelectionRenderer {
                         multiview_mask: None,
                     });
                 pass.set_pipeline(&self.rasterize_pipeline);
-                pass.set_bind_group(0, &bg, &[]);
+                pass.set_bind_group(0, &bg, &[UniformSlots::<MaskUniform>::offset(i as u32)]);
                 pass.draw(0..3, 0..1);
             }
             tiles = tiles.insert(*coord, dst);
