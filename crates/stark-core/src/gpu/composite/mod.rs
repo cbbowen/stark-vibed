@@ -53,7 +53,7 @@ use crate::gpu::desc;
 use crate::gpu::environment::Environment;
 use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
 
-use crate::gpu::uniforms::UniformSlots;
+use crate::gpu::uniforms::{InstanceStream, UniformSlots};
 pub(crate) use blend::{BlendPass, BlendUniform, blend_code};
 use blend::{ScratchLevel, ScratchTargets};
 pub(crate) use filter::{FilterPass, FilterUniform};
@@ -63,9 +63,9 @@ use group::scratch_needs;
 // eye — `guides::pack_guides(scene, view)` resolves fine and reads badly.
 use guides::{GuidePass, GuideUniform, pack_guides};
 use media::{MediaPass, MediaUniform};
-use overlay::{OverlayInstance, OverlayPass, PEER_OUTLINE_ALPHA, alloc_overlay};
+use overlay::{OverlayInstance, OverlayPass, PEER_OUTLINE_ALPHA};
 use resolve::{ResolvePass, ResolveUniform, supersample};
-use tiles::{Instance, MatteInstance, Ramp, TilePass, alloc_instances, alloc_mattes};
+use tiles::{Instance, MatteInstance, Ramp, TilePass};
 use view::View;
 
 pub use group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent, MatteDraw};
@@ -289,10 +289,8 @@ pub struct Compositor {
     scratch: Option<ScratchTargets>,
 
     // Pass A's instance streams, grown to the frame's tile and matte counts.
-    instances: wgpu::Buffer,
-    instance_cap: usize,
-    matte_instances: wgpu::Buffer,
-    matte_cap: usize,
+    instances: InstanceStream<Instance>,
+    matte_instances: InstanceStream<MatteInstance>,
     /// One dynamic-offset slot per matte in the frame, holding its gradient ramp —
     /// zeroed for a solid one (§22.4).
     matte_ramps: UniformSlots<Ramp>,
@@ -302,8 +300,7 @@ pub struct Compositor {
     blend_uniforms: UniformSlots<BlendUniform>,
     filter_uniforms: UniformSlots<FilterUniform>,
     // Pass C's, grown to the outlined mask-tile count.
-    overlay_instances: wgpu::Buffer,
-    overlay_cap: usize,
+    overlay_instances: InstanceStream<OverlayInstance>,
     /// Pass D's, one dynamic-offset slot per visible guide — the same mechanism as
     /// the two above, which this pass spent a hand-written stride and a hand-rolled
     /// grow loop reimplementing.
@@ -487,15 +484,12 @@ impl Compositor {
             ss: 1,
             ss_target: None,
             scratch: None,
-            instances: alloc_instances(device, 1),
-            instance_cap: 1,
-            matte_instances: alloc_mattes(device, 1),
-            matte_cap: 1,
+            instances: InstanceStream::new(device, "stark composite instances"),
+            matte_instances: InstanceStream::new(device, "stark matte instances"),
             matte_ramps: UniformSlots::new(device, "stark matte ramp", 1),
             blend_uniforms: UniformSlots::new(device, "stark blend uniform", 1),
             filter_uniforms: UniformSlots::new(device, "stark filter uniform", 1),
-            overlay_instances: alloc_overlay(device, 1),
-            overlay_cap: 1,
+            overlay_instances: InstanceStream::new(device, "stark overlay instances"),
             guide_uniforms: UniformSlots::new(device, "stark guide uniform", 1),
         }
     }
@@ -629,24 +623,10 @@ impl Compositor {
                 }
             }
         }
-        if !instances.is_empty() {
-            if instances.len() > self.instance_cap {
-                self.instances = alloc_instances(device, instances.len());
-                self.instance_cap = instances.len();
-            }
-            p.ctx
-                .queue
-                .write_buffer(&self.instances, 0, bytemuck::cast_slice(&instances));
-        }
+        self.instances.write(device, &p.ctx.queue, &instances);
         let mut matte_ramp_bg = None;
         if !mattes.is_empty() {
-            if mattes.len() > self.matte_cap {
-                self.matte_instances = alloc_mattes(device, mattes.len());
-                self.matte_cap = mattes.len();
-            }
-            p.ctx
-                .queue
-                .write_buffer(&self.matte_instances, 0, bytemuck::cast_slice(&mattes));
+            self.matte_instances.write(device, &p.ctx.queue, &mattes);
             self.matte_ramps.write(device, &p.ctx.queue, &ramps);
             // Built after the write, so it names the buffer the write may have just
             // grown — the same reason the guide pass builds its own per render.
@@ -870,7 +850,7 @@ impl Compositor {
                 CompositeItem::Tile { .. } => {
                     if pipeline_is_matte != Some(false) {
                         pass.set_pipeline(&e.p.tiles.pipeline);
-                        pass.set_vertex_buffer(0, self.instances.slice(..));
+                        pass.set_vertex_buffer(0, self.instances.slice());
                         pipeline_is_matte = Some(false);
                     }
                     pass.set_bind_group(1, e.streams.tile_bgs[*tile_i as usize], &[]);
@@ -880,7 +860,7 @@ impl Compositor {
                 CompositeItem::Matte(_) => {
                     if pipeline_is_matte != Some(true) {
                         pass.set_pipeline(&e.p.tiles.matte_pipeline);
-                        pass.set_vertex_buffer(0, self.matte_instances.slice(..));
+                        pass.set_vertex_buffer(0, self.matte_instances.slice());
                         pipeline_is_matte = Some(true);
                     }
                     // Group 1 is the ramp, at this matte's own slot (§22.4).
@@ -1292,15 +1272,8 @@ impl Compositor {
             }
         }
         if !mask_tiles.is_empty() {
-            if overlay_instances.len() > self.overlay_cap {
-                self.overlay_instances = alloc_overlay(device, overlay_instances.len());
-                self.overlay_cap = overlay_instances.len();
-            }
-            p.ctx.queue.write_buffer(
-                &self.overlay_instances,
-                0,
-                bytemuck::cast_slice(&overlay_instances),
-            );
+            self.overlay_instances
+                .write(device, &p.ctx.queue, &overlay_instances);
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark selection overlay pass"),
@@ -1312,7 +1285,7 @@ impl Compositor {
             });
             pass.set_pipeline(&p.overlay.pipeline);
             pass.set_bind_group(0, &p.overlay.view_bg, &[]);
-            pass.set_vertex_buffer(0, self.overlay_instances.slice(..));
+            pass.set_vertex_buffer(0, self.overlay_instances.slice());
             for (i, bg) in mask_tiles.iter().enumerate() {
                 let idx = i as u32;
                 pass.set_bind_group(1, *bg, &[]);

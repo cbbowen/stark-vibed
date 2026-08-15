@@ -1,16 +1,29 @@
-//! Uniforms a pass varies **across the draws of one submit**, and the one rule that
-//! makes that work (§6.2).
+//! Buffers a pass grows to **what this frame holds**, in the two shapes a draw reads
+//! them: [`UniformSlots`] for what varies across the draws of one submit, and
+//! [`InstanceStream`] for the per-instance records beside it (§6.2).
+//!
+//! # The rule the slots exist for
 //!
 //! `write_buffer` is a *queue* operation, so N rewrites of one buffer before a single
 //! submit leave every pass reading the last value written. Anything that varies per
 //! draw therefore needs either a buffer per draw — a rate of small WebGPU
 //! allocations, which is what JS GC cannot keep up with — or one buffer of
-//! **dynamic-offset slots**, which is this.
+//! **dynamic-offset slots**, which is [`UniformSlots`].
 //!
 //! It lived in `composite::blend` and was used only there, while three other call
 //! sites wrote a buffer *and* a bind group per draw for want of it: the transform's
 //! per-quad uniform, the fill's per-tile origin, the selection's per-tile params.
 //! `gpu::stroke` had a third copy of the law as a bare `UNIFORM_STRIDE` constant.
+//!
+//! # Why the vertex side lives here too
+//!
+//! An [`InstanceStream`] obeys no slot law — a vertex buffer is indexed by the draw's
+//! own instance range, not by an aligned offset — and shares the other half of what
+//! `UniformSlots` is: *allocate to the high-water mark, never shrink within a
+//! session, write the whole of this frame before the submit*. That policy was written
+//! out four times in `composite` (pass A's tiles and mattes, pass C's outlines, pass
+//! D's guides) as a `buf`/`cap` field pair and a grow-then-write block apiece. One
+//! policy, one place; the two types differ in stride and usage and in nothing else.
 
 /// The dynamic-offset alignment every backend accepts
 /// (`min_uniform_buffer_offset_alignment` is 256 on the strictest) — the quantum a
@@ -116,6 +129,68 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
             label: Some(label),
             size: Self::STRIDE * count.max(1) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+}
+
+/// A grow-on-demand **vertex** buffer of per-instance records — [`UniformSlots`]'s
+/// sibling, with the slot law removed and the growth policy kept.
+///
+/// Packed rather than padded: a vertex buffer is walked by the draw's own instance
+/// range against the stride the pipeline's `VertexBufferLayout` declares, so there is
+/// no alignment quantum to round up to and no offset for a caller to get wrong. What
+/// it shares with `UniformSlots` is everything else — allocate to the high-water
+/// mark, keep it, and write the whole of this frame's records in one go before the
+/// submit that draws them.
+///
+/// The records past `items.len()` are left as whatever the last frame wrote. That is
+/// sound because a draw names its own instance range and never reaches them, and it
+/// is why this allocates with a bare `create_buffer`: two of the four hand-rolled
+/// buffers this replaces used `create_buffer_init` with a `vec![Default; count]`,
+/// building and uploading a CPU-side vector of placeholders that the very next
+/// `write_buffer` overwrote in full.
+pub(crate) struct InstanceStream<T> {
+    buf: wgpu::Buffer,
+    cap: usize,
+    label: &'static str,
+    _instance: std::marker::PhantomData<T>,
+}
+
+impl<T: bytemuck::Pod> InstanceStream<T> {
+    pub(crate) fn new(device: &wgpu::Device, label: &'static str) -> Self {
+        Self {
+            buf: Self::alloc(device, label, 1),
+            cap: 1,
+            label,
+            _instance: std::marker::PhantomData,
+        }
+    }
+
+    /// Upload this frame's records, growing the buffer first if there are more of
+    /// them than any frame before it. Empty is a no-op: nothing is drawn from a
+    /// stream with no records, so there is nothing to overwrite.
+    pub(crate) fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, items: &[T]) {
+        if items.is_empty() {
+            return;
+        }
+        if items.len() > self.cap {
+            self.buf = Self::alloc(device, self.label, items.len());
+            self.cap = items.len();
+        }
+        queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(items));
+    }
+
+    /// The whole buffer, as `set_vertex_buffer` takes it.
+    pub(crate) fn slice(&self) -> wgpu::BufferSlice<'_> {
+        self.buf.slice(..)
+    }
+
+    fn alloc(device: &wgpu::Device, label: &'static str, count: usize) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: (std::mem::size_of::<T>() * count.max(1)) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
     }

@@ -4,8 +4,6 @@
 //! local actor's selection draws as marching ants; a peer's draws as a flat line in
 //! their own color, so the two never read as the same thing.
 
-use wgpu::util::DeviceExt;
-
 use crate::document::selection::Selection;
 use crate::gpu::desc::{self, RenderPipe};
 
@@ -110,19 +108,4 @@ impl OverlayPass {
             tile_bgl,
         }
     }
-}
-
-pub(super) fn alloc_overlay(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("stark overlay instances"),
-        contents: bytemuck::cast_slice(&vec![
-            OverlayInstance {
-                origin: [0.0; 2],
-                tint: [0.0; 4],
-                level: 1.0,
-            };
-            count.max(1)
-        ]),
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-    })
 }

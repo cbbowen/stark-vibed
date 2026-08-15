@@ -5,8 +5,6 @@
 //! [`View`] holds. The two pipelines share group 0, so a run that interleaves them
 //! changes only the pipeline and the vertex buffer.
 
-use wgpu::util::DeviceExt;
-
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::ChannelFormats;
 use crate::gpu::desc::{self, RenderPipe};
@@ -166,27 +164,4 @@ impl TilePass {
             ramp_bgl,
         }
     }
-}
-
-pub(super) fn alloc_instances(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("stark composite instances"),
-        contents: bytemuck::cast_slice(&vec![
-            Instance {
-                origin: [0.0; 2],
-                opacity: 1.0
-            };
-            count.max(1)
-        ]),
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-    })
-}
-
-pub(super) fn alloc_mattes(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("stark matte instances"),
-        size: (std::mem::size_of::<MatteInstance>() * count.max(1)) as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }
