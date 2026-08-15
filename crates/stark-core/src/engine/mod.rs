@@ -682,16 +682,8 @@ impl Engine {
             }
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
             DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
-            DocCommand::Fill { layer, op } => {
-                // The commit supersedes whatever the gradient-fill mode was
-                // previewing (§22.4) — `Transform`'s reason, one arm up.
-                self.preview.set_doc(None);
-                self.commit(ActionKind::Fill { layer, op });
-            }
+            DocCommand::Fill { layer, op } => self.commit(ActionKind::Fill { layer, op }),
             DocCommand::Transform { layer, map } => {
-                // The commit supersedes whatever the gesture was previewing, for
-                // the same reason `SetMatteRect` drops its preview.
-                self.preview.set_doc(None);
                 // A degenerate or non-finite map would be rejected by `apply`
                 // anyway (deterministically — §16.1); refusing it
                 // here as well keeps a knowably-dead action out of the log.
@@ -706,13 +698,19 @@ impl Engine {
                         }
                         TransformMap::Warp(map) => ActionKind::TransformWarp { layer, map },
                     });
+                } else {
+                    // Nothing is logged, but the gesture's preview still has to be
+                    // superseded — `settle`'s bargain, made by hand because the
+                    // refusal is about the map rather than about the document.
+                    self.preview.set_doc(None);
                 }
             }
             DocCommand::SetSurface(id) => {
-                if id != self.document().surface {
-                    self.commit(ActionKind::SetSurface(id));
-                    self.apply_document_surface();
-                }
+                self.settle(ActionKind::SetSurface(id));
+                // Unconditional, and a no-op when the ground did not move: the
+                // registry is brought level with the document rather than with what
+                // this command asked for.
+                self.apply_document_surface();
             }
             DocCommand::AddLayer { carrier, above } => {
                 let id = self.mint_layer();
@@ -762,61 +760,19 @@ impl Engine {
                 // selects it, which is what raises its bar.
             }
             DocCommand::SetFilter(id, filter) => {
-                // Drops the preview whether or not the commit below happens, for the
-                // reason `SetMatteColor` drops it: a drag that settles on the value
-                // it opened at must still supersede what it was showing.
-                self.preview.set_doc(None);
                 // Normalized here, where the action is minted, so replay puts back
                 // what was applied rather than re-deriving it from rules that may
-                // have moved (§21.5) — the same funnel `SetLayerName` goes through.
-                let filter = filter.sanitized();
-                // Refused when it would change nothing, as `SetLayerOpacity` and
-                // `SetMatteColor` are, and asked of the layer's *content* for the
-                // same reason: only a filter layer has a filter to compare. A
-                // non-filter layer still commits an action `apply` will no-op,
-                // rather than growing a second rule about what a filter is somewhere
-                // `apply` cannot see.
-                let unchanged = self
-                    .document()
-                    .layer(id)
-                    .and_then(|l| l.filter())
-                    .is_some_and(|current| current == filter);
-                if !unchanged {
-                    self.commit(ActionKind::SetFilter(id, filter));
-                }
+                // have moved (§21.5) — the same funnel `SetLayerName` goes through,
+                // and the reason `is_noop_on` can compare payloads directly.
+                self.settle(ActionKind::SetFilter(id, filter.sanitized()));
             }
             DocCommand::SetMatteRect(id, min, max) => {
-                // The committed rect supersedes whatever the drag was previewing;
-                // leaving the preview up would pin the canvas to the last dragged
-                // value and shadow every later edit.
-                self.preview.set_doc(None);
-                self.commit(ActionKind::SetMatteRect(id, min, max));
+                self.settle(ActionKind::SetMatteRect(id, min, max))
             }
             DocCommand::SetMattePaint(id, paint) => {
-                // Drops the preview whether or not the commit below happens, for the
-                // reason `SetMatteRect` drops it above: a pick that settles on the
-                // paint it opened on must still supersede what it was showing.
-                self.preview.set_doc(None);
-                // Refused when it would change nothing, as `SetLayerOpacity` and
-                // `SetLayerName` are — and asked of the layer's *content*, since a
-                // matte is the only thing that has paint to compare (§15.2). A
-                // paint layer still commits, which is what it did before: that action
-                // is inert rather than duplicated, and refusing it here would be a
-                // second rule about what a matte is, kept somewhere `apply` cannot see.
-                let unchanged = matches!(
-                    self.document().layer(id).map(|l| &l.content),
-                    Some(LayerContent::Matte { paint: current, .. }) if *current == paint
-                );
-                if !unchanged {
-                    self.commit(ActionKind::SetMattePaint(id, paint));
-                }
+                self.settle(ActionKind::SetMattePaint(id, paint))
             }
-            DocCommand::SetBackground(rgb) => {
-                // The committed color supersedes whatever the drag was previewing,
-                // for the same reason `SetMatteRect` drops it above.
-                self.preview.set_doc(None);
-                self.commit(ActionKind::SetBackground(rgb));
-            }
+            DocCommand::SetBackground(rgb) => self.settle(ActionKind::SetBackground(rgb)),
             DocCommand::DuplicateLayer(source) => {
                 // One minted id per layer of the subtree, paired with the layer it
                 // copies, in composite order — the map the action carries
@@ -878,62 +834,26 @@ impl Engine {
                 }
             }
             DocCommand::SetLayerBlend(id, blend) => {
-                // Drops the preview whether or not the commit below happens, for
-                // `SetFilter`'s reason: a parameter drag that settles on the value it
-                // opened at must still supersede what it was showing.
-                self.preview.set_doc(None);
                 // Normalized here, where the action is minted, so replay puts back
                 // what was applied rather than re-deriving it from rules that may
                 // have moved — the same funnel `SetFilter` goes through, and the
-                // reason the comparison below is against the sanitized value rather
-                // than the raw one.
-                let blend = blend.sanitized();
-                // Refused when it would change nothing, as `SetLayerOpacity` is: a
-                // Bend drag that travelled out and came back must log nothing, and
-                // without this a slider reporting 0.6000001 would spend an undo step
-                // on a document that already reads that way.
-                let unchanged = self
-                    .document()
-                    .layer(id)
-                    .is_some_and(|l| l.composite.blend == blend);
-                if !unchanged {
-                    self.commit(ActionKind::SetLayerBlend(id, blend));
-                }
+                // reason `is_noop_on` compares the sanitized value rather than the
+                // raw one without having to sanitize a second time.
+                self.settle(ActionKind::SetLayerBlend(id, blend.sanitized()))
             }
-            DocCommand::SetLayerClip(id, clip) => self.commit(ActionKind::SetLayerClip(id, clip)),
+            DocCommand::SetLayerClip(id, clip) => self.settle(ActionKind::SetLayerClip(id, clip)),
             DocCommand::SetLayerOpacity(id, opacity) => {
-                // The committed opacity supersedes whatever the drag was previewing,
-                // for the same reason `SetMatteRect` drops its preview above — and
-                // it is dropped whether or not the commit below happens, so a drag
-                // that ends where it started leaves nothing pinned.
-                self.preview.set_doc(None);
                 // Clamped here rather than compared raw, because that is what the
                 // action would store (`DocState::set_layer_opacity`): without it a
                 // slider that reports 1.0000001 would log a step that changes
-                // nothing when reached. The same argument as `SetLayerName`'s, and
-                // the same case makes it — a drag that returns to the value it
-                // started on is not an edit.
-                let opacity = opacity.clamp(0.0, 1.0);
-                if self
-                    .document()
-                    .layer(id)
-                    .is_none_or(|l| l.composite.opacity != opacity)
-                {
-                    self.commit(ActionKind::SetLayerOpacity(id, opacity));
-                }
+                // nothing when reached.
+                self.settle(ActionKind::SetLayerOpacity(id, opacity.clamp(0.0, 1.0)))
             }
             DocCommand::SetLayerVisible(id, visible) => {
-                self.commit(ActionKind::SetLayerVisible(id, visible))
+                self.settle(ActionKind::SetLayerVisible(id, visible))
             }
             DocCommand::SetLayerName(id, name) => {
-                let name = normalize_name(name);
-                // A rename to the name it already has is not an edit, and logging it
-                // would spend an undo step that appears to do nothing when reached.
-                // Commit-on-blur makes this the common case: leaving a field you only
-                // looked at must cost nothing.
-                if self.timeline.current().layer_name(id) != name.as_deref() {
-                    self.commit(ActionKind::SetLayerName(id, name));
-                }
+                self.settle(ActionKind::SetLayerName(id, normalize_name(name)))
             }
             DocCommand::MoveLayer { id, carrier, at } => {
                 self.commit(ActionKind::MoveLayer { id, carrier, at })
@@ -1361,7 +1281,17 @@ impl Engine {
         self.apply_document_surface();
     }
 
+    /// Log one action and apply it.
+    ///
+    /// **The unlogged drag in flight is dropped here**, once, rather than at each
+    /// commit site that remembered to. A drag preview is a whole document standing
+    /// in for the committed one (§17.6), so anything that moves the committed
+    /// document supersedes it — leaving it up pins the canvas to the last dragged
+    /// value and shadows every later edit. Written out at the call sites it was
+    /// present at eight of them and absent from thirteen, including the gesture
+    /// commit, and which thirteen was not a decision anybody had made.
     fn commit(&mut self, kind: ActionKind) {
+        self.preview.set_doc(None);
         let action = Action {
             id: self.next_action_id(),
             kind,
@@ -1373,6 +1303,25 @@ impl Engine {
         self.committed_changed();
         if self.outbox_enabled {
             self.outbox.push(action);
+        }
+    }
+
+    /// [`commit`](Self::commit), unless the document already reads that way
+    /// ([`ActionKind::is_noop_on`]) — the shape every *setter* command takes.
+    ///
+    /// The two halves are one bargain and that is why they are one call. A slider
+    /// drag previews per pointer move and commits on release, so a drag that
+    /// travels out and comes back must log nothing — and must still drop the
+    /// preview it left up, because a preview is superseded by *something* or not at
+    /// all. Splitting those apart is how `SetLayerVisible` came to log a step for
+    /// setting the value it already held while `SetLayerOpacity` did not.
+    fn settle(&mut self, kind: ActionKind) {
+        if kind.is_noop_on(self.document()) {
+            // Nothing to log, and the drag still has to be superseded: a slider
+            // released on the value it was pressed on left a preview up.
+            self.preview.set_doc(None);
+        } else {
+            self.commit(kind);
         }
     }
 

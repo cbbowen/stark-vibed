@@ -325,6 +325,88 @@ fn renaming_to_the_same_name_is_not_an_edit() {
     );
 }
 
+/// **Every setter makes the same bargain**, not just the four that were written
+/// with a check of their own (§5.4).
+///
+/// `renaming_to_the_same_name_is_not_an_edit` states the rule for one command;
+/// this states it for the ones that had no check at all, and they are the ordinary
+/// ones — a visibility toggle, a clip toggle, the canvas color. Setting a value to
+/// the value it already holds spent an undo step that appears to do nothing when
+/// reached, which is the failure that rule exists to prevent, and which of the
+/// commands avoided it was an accident of who wrote which arm.
+///
+/// Counted through `scrub_range`, whose applied count *is* the number of logged
+/// steps — a cheaper and more exact question than walking undos back.
+#[test]
+fn setting_a_value_to_the_one_it_already_holds_is_not_an_edit() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+    engine.process(DocCommand::SetLayerVisible(TOP, false));
+    engine.process(DocCommand::SetLayerClip(TOP, true));
+
+    let logged = |e: &Engine| e.scrub_range().expect("solo history").0;
+    let before = logged(&engine);
+    let picture = engine.render_to_image();
+
+    // Each of these is the value the document already reads.
+    engine.process(DocCommand::SetLayerVisible(TOP, false));
+    engine.process(DocCommand::SetLayerClip(TOP, true));
+    engine.process(DocCommand::SetLayerOpacity(TOP, 1.0));
+    engine.process(DocCommand::SetBackground([
+        BG.r as f32,
+        BG.g as f32,
+        BG.b as f32,
+    ]));
+    assert_eq!(
+        logged(&engine),
+        before,
+        "a setter that changes nothing must log nothing",
+    );
+    // …and the document is where it was, which is what makes the claim above about
+    // the log rather than about a refusal to apply.
+    assert!(images_match(&picture, &engine.render_to_image(), 0));
+
+    // The rule is not "never log": a real change still does.
+    engine.process(DocCommand::SetLayerVisible(TOP, true));
+    assert_eq!(logged(&engine), before + 1);
+}
+
+/// **A commit supersedes the unlogged drag**, whichever commit it is (§17.6).
+///
+/// The rule was written out at the commit sites that remembered it and absent from
+/// thirteen that did not, so a drag left in flight while some *other* edit landed
+/// pinned the canvas to the dragged value and shadowed it. `RemoveLayer` is the
+/// case here because it is one of the thirteen and because its effect is
+/// unmistakable: the layer being previewed at 0% opacity is the layer that goes
+/// away, so a preview that survived the commit would still be drawing it.
+#[test]
+fn a_commit_supersedes_a_drag_it_knows_nothing_about() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+    // Only the root layer's red will be left once the top layer is gone.
+    engine.process(DocCommand::SetLayerVisible(TOP, false));
+    let without_top = engine.render_to_image();
+    engine.process(DocCommand::SetLayerVisible(TOP, true));
+
+    // A drag in flight on the root layer, never released.
+    engine.process(ViewCommand::PreviewLayerOpacity(Some((ROOT, 0.0))));
+    // An unrelated commit lands mid-drag.
+    engine.process(DocCommand::RemoveLayer(TOP));
+    assert!(
+        images_match(&without_top, &engine.render_to_image(), 2),
+        "the drag preview outlived the commit and is still fading the root layer",
+    );
+    assert_eq!(
+        opacity_of(&engine, ROOT),
+        Some(1.0),
+        "and the projection agrees: nothing of the drag was kept",
+    );
+}
+
 #[test]
 fn layer_names_survive_save_load() {
     let Some(mut engine) = engine_or_skip_blue() else {

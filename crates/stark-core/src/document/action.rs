@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::brush::BrushParams;
 use super::filter::Filter;
-use super::layer::{BlendMode, Layer, LayerId, MattePaint, MatteRegion, Place};
+use super::layer::{BlendMode, Layer, LayerContent, LayerId, MattePaint, MatteRegion, Place};
 use super::selection::SelectionOp;
 use super::state::DocState;
 use crate::geom::Vec2;
@@ -398,6 +398,104 @@ impl ActionKind {
             | ActionKind::Fill { .. } => (None, &[]),
         };
         one.into_iter().chain(copies.iter().map(|&(_, copy)| copy))
+    }
+
+    /// Whether applying this to `state` would leave it exactly as it found it —
+    /// so a command that would spend an undo step on nothing can decline to log
+    /// one (§5.4).
+    ///
+    /// **The question belongs here, beside `apply`.** It was asked six times over
+    /// in the engine's command handler, in four different shapes, each reaching
+    /// into a layer's content to ask what kind of layer it is — and the comments
+    /// there say why that is uncomfortable: it is "a second rule about what a matte
+    /// is, kept somewhere `apply` cannot see". The four that had a check were not
+    /// the four that needed one, either: `SetLayerVisible`, `SetLayerClip`,
+    /// `SetMatteRect` and `SetBackground` had none, so setting a value to the value
+    /// it already held cost an undo step that appears to do nothing when reached.
+    ///
+    /// Asked of the action **as it will be logged**. The engine sanitizes at mint
+    /// (§21.5, §6.3) so that replay puts back what was applied rather than
+    /// re-deriving it, which means the payload compared here is the payload that
+    /// would be stored — a slider reporting `0.6000001` is clamped before it gets
+    /// this far.
+    ///
+    /// Conservative in the one safe direction: everything whose effect is pixels
+    /// answers `false`. A stroke, a fill or a transform *could* leave a layer
+    /// byte-identical, but finding that out means doing the work, and the point of
+    /// the question is to avoid it. A false "no" costs an undo step; a false "yes"
+    /// would silently drop an edit.
+    ///
+    /// An action naming a layer that does not exist answers `false` too, and
+    /// deliberately: it is inert *here*, but the same action reaching a peer whose
+    /// tree is one step ahead is not, and a log that omits it would be a different
+    /// log on the two clients (§12.1).
+    ///
+    /// **Exhaustive, with no `_` arm**, for [`minted_layers`](Self::minted_layers)'s
+    /// reason: a variant added later must be made to answer rather than defaulted
+    /// into the safe answer and forgotten.
+    pub fn is_noop_on(&self, state: &DocState) -> bool {
+        // The layer this action names, or `false` from every arm below when it is
+        // absent — see the doc comment.
+        let layer = |id: LayerId| state.layer(id);
+        match self {
+            ActionKind::SetLayerOpacity(id, opacity) => {
+                layer(*id).is_some_and(|l| l.composite.opacity == *opacity)
+            }
+            ActionKind::SetLayerBlend(id, blend) => {
+                layer(*id).is_some_and(|l| l.composite.blend == *blend)
+            }
+            ActionKind::SetLayerClip(id, clip) => {
+                layer(*id).is_some_and(|l| l.composite.clip == *clip)
+            }
+            ActionKind::SetLayerVisible(id, visible) => {
+                layer(*id).is_some_and(|l| l.visible == *visible)
+            }
+            // Compared against the *stored* name, which is `None` for a layer that
+            // has never been named — so clearing an unnamed layer's name is the
+            // no-op it looks like. Commit-on-blur makes this the common case:
+            // leaving a field you only looked at must cost nothing.
+            ActionKind::SetLayerName(id, name) => {
+                layer(*id).is_some() && state.layer_name(*id) == name.as_deref()
+            }
+            // Asked of the layer's *content*, since only a filter has a filter to
+            // compare. A non-filter layer answers `false` and logs an action `apply`
+            // will no-op, rather than growing a rule about what a filter is.
+            ActionKind::SetFilter(id, filter) => {
+                layer(*id).and_then(|l| l.filter()).as_ref() == Some(filter)
+            }
+            ActionKind::SetMattePaint(id, paint) => matches!(
+                layer(*id).map(|l| &l.content),
+                Some(LayerContent::Matte { paint: current, .. }) if current == paint
+            ),
+            // A region with no rect answers `false`: `with_rect` leaves it alone, so
+            // the action is inert, but saying so here would be this file's third
+            // opinion about what an `Everything` matte is.
+            ActionKind::SetMatteRect(id, min, max) => {
+                layer(*id)
+                    .and_then(|l| l.matte_region())
+                    .and_then(|r| r.rect())
+                    == Some((*min, *max))
+            }
+            ActionKind::SetBackground(rgb) => state.background == *rgb,
+            ActionKind::SetSurface(id) => state.surface == *id,
+            // Everything whose effect is pixels, or whose effect depends on a tree
+            // walk this question will not pay for.
+            ActionKind::CommitStroke(_)
+            | ActionKind::Fill { .. }
+            | ActionKind::Transform { .. }
+            | ActionKind::TransformPerspective { .. }
+            | ActionKind::TransformWarp { .. }
+            | ActionKind::Select(_)
+            | ActionKind::InvertSelection
+            | ActionKind::AddLayer { .. }
+            | ActionKind::AddMatte { .. }
+            | ActionKind::AddFilter { .. }
+            | ActionKind::DuplicateLayer { .. }
+            | ActionKind::RemoveLayer(_)
+            | ActionKind::MergeLayerDown { .. }
+            | ActionKind::MoveLayer { .. }
+            | ActionKind::Undo(_) => false,
+        }
     }
 
     /// What this action *is*, in two or three words — the caption a history
