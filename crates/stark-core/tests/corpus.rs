@@ -20,6 +20,8 @@ use common::*;
 use stark_core::RgbaImage;
 use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushParams, Tool};
+use stark_core::geom::{TILE_SIZE, Vec2};
+use stark_core::gpu::SurfaceId;
 use stark_core::path::DEFAULT_TOLERANCE;
 
 /// One `#[test]` per case, plus the check that the two lists agree.
@@ -87,6 +89,18 @@ const REFINEMENT: f32 = 4.0;
 /// and `Tol::lift` are the same measurement and the corpus reads as one table.
 const VISIBLE_LEVELS: u8 = 12;
 
+/// Per-channel levels a case may move when the whole of it is drawn half a tile further
+/// along and viewed from half a tile further along. See [`check_translation`].
+///
+/// **Global where `Tol`'s bounds are per case, and for `Tol`'s own reason.** Those are
+/// per case because the answers differ by two orders of magnitude and the differences
+/// are the interesting part. Here they do not differ: every case in the corpus comes in
+/// at 1 to 3 levels, swept and sequential alike, which is f16 storage rounding. A column
+/// of near-identical numbers would read as a table of measurements and be a table of
+/// noise. The headroom above 3 is for another adapter's rounding, not for a case with
+/// something to say.
+const TRANSLATION_LEVELS: u8 = 4;
+
 fn run(name: &str) {
     let case = CASES
         .iter()
@@ -103,6 +117,7 @@ fn run(name: &str) {
     check_save_load(case, &engine, &committed, &mut report);
     check_refinement(case, brush, &committed, &mut report);
     check_lift_off(case, brush, &mut report);
+    check_translation(case, brush, &committed, &mut report);
 
     report.finish();
 
@@ -354,6 +369,78 @@ fn check_lift_off(case: &Case, brush: BrushParams, report: &mut Report) {
             case.tol.lift,
         ));
     }
+}
+
+/// **Where the tile grid falls under a mark must not change the mark.**
+///
+/// The whole case — undercoat, ground, stroke — is laid down half a tile further along
+/// *both* axes, and the view is moved by exactly the same amount, so the same mark falls
+/// on the same screen pixels. The two renders must agree.
+///
+/// This is §6.4 asked from the outside. Every pass that writes tiles must be a pure
+/// function of canvas position, which is what makes a tile's apron bit-identical to its
+/// neighbour's interior without a copy pass; `tests/seam.rs` checks that from the
+/// inside, one pass at a time, on a synthetic pair of tiles. What it cannot reach is the
+/// *composition* — a stroke's deposit, its reservoir exchanges, its bleed stencil, the
+/// apron refreshes between them and the compositor reading the result, all landing on a
+/// different set of tiles with the mark at a different phase against their boundaries.
+///
+/// **Half a tile is the offset that asks the question.** A whole tile is invariant for a
+/// trivial reason: every tile-relative quantity is unchanged, so the render would agree
+/// even if the pipeline were riddled with tile-local state. Half a tile puts every
+/// boundary through the middle of where it used to be, so a mark that crossed one now
+/// crosses two, spans are cut in different places, and a tile that was interior becomes
+/// an edge. `TILE_SIZE` is 254, so the offset is 127.
+///
+/// Measured by **worst texel**, unlike its two neighbours, and the measurements are why:
+/// every case comes in at 1 to 3 levels, which is f16 storage rounding and nothing else.
+/// There is no haze to average over — a fault here is a seam, which is loud in the
+/// maximum and quiet in the area.
+fn check_translation(case: &Case, brush: BrushParams, committed: &RgbaImage, report: &mut Report) {
+    let offset = Vec2::splat((TILE_SIZE / 2) as f32);
+    let Some((mut moved, _)) = case.open_at(offset) else {
+        return;
+    };
+    case.paint_input(
+        &mut moved,
+        brush,
+        DEFAULT_TOLERANCE,
+        &case.samples_at(offset),
+    );
+    let translated = moved.render_to_image();
+
+    // Whether this case's picture is nailed to the **canvas** rather than to the
+    // gesture. A ground with relief is a height field in canvas coordinates (§6.4): the
+    // tooth gate reads it where the paint lands and the media pass lights it where it
+    // lies, so the grain under a mark is not the grain 127 px along. Such a case is not
+    // translation invariant and must not be.
+    //
+    // Asked of the **document** rather than declared per case, so the exemption cannot
+    // go stale — `Flat` is the one ground with no relief, and a case that stops using
+    // linen stops being exempt in the same edit.
+    if moved.document().surface != SurfaceId::Flat {
+        // Checked in the opposite direction, because an exemption nothing tests is an
+        // exemption that quietly widens. A woven case that came through translation
+        // *unchanged* would mean the grain is no longer being read at canvas position,
+        // which is the §6.4 violation this whole check is about — arriving as a case
+        // that suddenly passes.
+        let (_, worst) = diff_fraction(committed, &translated);
+        if worst <= VISIBLE_LEVELS {
+            report.note(
+                "a woven ground survived being moved half a tile: either the grain \
+                 has stopped being read at canvas position (§6.4), or this case has \
+                 stopped painting on one and no longer earns its exemption",
+            );
+        }
+        return;
+    }
+
+    report.check(
+        "the case drawn half a tile over, viewed from half a tile over",
+        committed,
+        &translated,
+        TRANSLATION_LEVELS,
+    );
 }
 
 // --- reporting ----------------------------------------------------------------

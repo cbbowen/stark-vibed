@@ -92,7 +92,15 @@ pub struct Case {
     /// first is usually inseparable from the brush that will work on it (a smear needs
     /// something to smear; a toothed tip needs a ground with a weave), and splitting
     /// them invites a case that asks for one without the other.
-    pub prepare: fn(&mut Engine) -> BrushParams,
+    ///
+    /// The `Vec2` is where the case is being drawn — added to **every canvas
+    /// coordinate this lays down**, so that the whole configuration can be moved and
+    /// still be the same picture (the battery's translation check). A closure that
+    /// lays nothing ignores it;
+    /// one that lays an undercoat must not, or the translated case would
+    /// smear a stroke over a field that stayed behind, which is a different picture
+    /// and would say nothing about tile boundaries.
+    pub prepare: fn(&mut Engine, Vec2) -> BrushParams,
     /// The pointer reports, as the app would deliver them.
     pub path: fn() -> Vec<InputSample>,
     pub tol: Tol,
@@ -102,13 +110,39 @@ impl Case {
     /// A prepared engine and the case's brush, or `None` if this machine has no
     /// adapter and skipping is permitted.
     pub fn open(&self) -> Option<(Engine, BrushParams)> {
+        self.open_at(Vec2::ZERO)
+    }
+
+    /// [`open`](Self::open) with the whole case laid down `offset` further along, and
+    /// the **view moved to match** so the same mark falls on the same screen pixels.
+    ///
+    /// Both halves together, because either alone is a different question: moving the
+    /// content without the view asks what the mark looks like somewhere else, and
+    /// moving the view without the content asks what the *viewport* does at a
+    /// fractional tile. What this asks is whether the tile grid the mark happens to
+    /// land on can be seen at all.
+    pub fn open_at(&self, offset: Vec2) -> Option<(Engine, BrushParams)> {
         let mut engine = engine_or_skip_sized(self.view)?;
-        let brush = (self.prepare)(&mut engine);
+        let brush = (self.prepare)(&mut engine, offset);
+        let center = engine.view().center + offset;
+        engine.process(ViewCommand::CenterOn(center));
         Some((engine, brush))
     }
 
     pub fn samples(&self) -> Vec<InputSample> {
         (self.path)()
+    }
+
+    /// The case's pointer reports, every one of them `offset` further along — the
+    /// stroke's half of what [`open_at`](Self::open_at) does for the canvas.
+    pub fn samples_at(&self, offset: Vec2) -> Vec<InputSample> {
+        self.samples()
+            .into_iter()
+            .map(|s| InputSample {
+                pos: s.pos + offset,
+                ..s
+            })
+            .collect()
     }
 
     /// Paint the whole stroke and commit it, at a chosen input tolerance.
@@ -161,7 +195,10 @@ pub fn smear_brush(radius: f32) -> BrushParams {
 
 /// Two crossing bands for a smear brush to pick up. A `lift` brush over bare canvas
 /// carries nothing and would exercise none of the reservoir.
-fn undercoat(engine: &mut Engine) {
+///
+/// Laid at `at`, like everything else the case puts down, so that a translated case
+/// smears the *same* field rather than a field that stayed where it was.
+fn undercoat(engine: &mut Engine, at: Vec2) {
     for (color, from, to) in [
         ([0.1, 0.9, 0.2, 1.0], (-110.0, -40.0), (110.0, -10.0)),
         ([0.95, 0.85, 0.1, 1.0], (-90.0, 50.0), (100.0, 20.0)),
@@ -171,7 +208,7 @@ fn undercoat(engine: &mut Engine) {
         stroke_with(
             engine,
             b,
-            &[Vec2::new(from.0, from.1), Vec2::new(to.0, to.1)],
+            &[at + Vec2::new(from.0, from.1), at + Vec2::new(to.0, to.1)],
         );
     }
 }
@@ -345,7 +382,7 @@ pub const CASES: &[Case] = &[
                than any axis layered over it, and every other case can be read as this \
                plus one thing.",
         view: SIZE,
-        prepare: |_| {
+        prepare: |_, _| {
             let mut b = brush(RED, 40.0);
             b.drain = 0.0;
             b
@@ -368,7 +405,7 @@ pub const CASES: &[Case] = &[
                then flatten into swept arcs. The only cover for `max_arc_curvature` \
                and for the corner-preserving half of the angle bound.",
         view: SIZE,
-        prepare: |_| {
+        prepare: |_, _| {
             let mut b = brush(RED, 18.0);
             b.drain = 0.0;
             b
@@ -396,7 +433,7 @@ pub const CASES: &[Case] = &[
                formula has this stroke's sample spacing, and the fitter's freeze cadence \
                answers to spacing.",
         view: SIZE,
-        prepare: |_| {
+        prepare: |_, _| {
             let mut b = brush(RED, 16.0);
             b.drain = 0.0;
             b
@@ -422,7 +459,7 @@ pub const CASES: &[Case] = &[
                drawing as a staircase of radii; sweeping it over ×0.125…×8 once left \
                every committed golden bit-identical, because nothing pressed the pen.",
         view: SIZE,
-        prepare: |_| {
+        prepare: |_, _| {
             let mut b = brush(RED, 46.0);
             b.drain = 0.0;
             b
@@ -472,7 +509,7 @@ pub const CASES: &[Case] = &[
                cover for the freeze hold-back (`gpu::stroke::safe_frozen`), and a taper \
                baked into a span too early leaves a pinch that is never redrawn.",
         view: SIZE,
-        prepare: |_| {
+        prepare: |_, _| {
             let mut b = brush(RED, 16.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
             b.drain = 0.0;
@@ -496,7 +533,7 @@ pub const CASES: &[Case] = &[
                over nothing and has to be rescued (`segments::DAB_TRAVEL`) — and a \
                taper read literally would shrink the rescue to an invisible speck.",
         view: SIZE,
-        prepare: |_| {
+        prepare: |_, _| {
             let mut b = brush(RED, 40.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
             b.drain = 0.0;
@@ -521,7 +558,7 @@ pub const CASES: &[Case] = &[
                curve, and loosening the tangent bound to what `position` allows moves \
                this by a worst 19 levels with every committed golden bit-identical.",
         view: SIZE,
-        prepare: |e| {
+        prepare: |e, _| {
             let mut b = bristle_stamp(e, 45.0);
             b.dynamics.lift = 0.6;
             b.dynamics.deposit = 0.5;
@@ -548,7 +585,7 @@ pub const CASES: &[Case] = &[
                `OrientationSource` and is a different code path from following the \
                stroke, not a parameter of it.",
         view: SIZE,
-        prepare: |e| {
+        prepare: |e, _| {
             let mut b = bristle_stamp(e, 60.0);
             b.orientation = OrientationSource::Pen;
             b
@@ -581,7 +618,7 @@ pub const CASES: &[Case] = &[
                cut. Loosening the tangent bound to what `position` allows moves this by \
                a worst 50 levels, which is what the coverage claim is worth.",
         view: SIZE,
-        prepare: |e| {
+        prepare: |e, _| {
             linen_ground(e);
             let mut b = smear_brush(45.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
@@ -604,8 +641,8 @@ pub const CASES: &[Case] = &[
                previous one loaded, so a cut that dropped the reservoir shows here as a \
                step in color trailing back across the stroke.",
         view: SIZE,
-        prepare: |e| {
-            undercoat(e);
+        prepare: |e, at| {
+            undercoat(e, at);
             smear_brush(15.0)
         },
         path: || sine_sweep(140, 124.0, 34.0, 1.3),
@@ -625,8 +662,8 @@ pub const CASES: &[Case] = &[
                the canvas change inside a taper, and head and commit must still walk \
                exactly the same sequence.",
         view: SIZE,
-        prepare: |e| {
-            undercoat(e);
+        prepare: |e, at| {
+            undercoat(e, at);
             let mut b = smear_brush(15.0);
             b.start_taper_length = 4.0;
             b.end_taper_length = 9.0;
@@ -647,8 +684,8 @@ pub const CASES: &[Case] = &[
                segment (`budget::bleed_stencil`), so it is the axis a per-segment \
                argument about the stamp loop says nothing about.",
         view: SIZE,
-        prepare: |e| {
-            undercoat(e);
+        prepare: |e, at| {
+            undercoat(e, at);
             let mut b = brush(RED, 30.0);
             b.drain = 0.0;
             b.dynamics.add = 0.0;
@@ -675,13 +712,17 @@ pub const CASES: &[Case] = &[
             width: 768,
             height: 512,
         },
-        prepare: |e| {
+        prepare: |e, at| {
             // A thick field to smear, laid flat so the smear's own structure is what
             // shows. Wider than the tip that will work it, so the mark stays inside it.
             let mut lay = brush([0.0, 0.0, 0.0, 1.0], 260.0);
             lay.dynamics.add = 1.5;
             lay.drain = 0.0;
-            stroke_with(e, lay, &[Vec2::new(-260.0, 0.0), Vec2::new(260.0, 0.0)]);
+            stroke_with(
+                e,
+                lay,
+                &[at + Vec2::new(-260.0, 0.0), at + Vec2::new(260.0, 0.0)],
+            );
             let mut b = smear_brush(250.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
             b.dynamics.add = 0.0;
@@ -717,13 +758,13 @@ pub const CASES: &[Case] = &[
             width: 1280,
             height: 256,
         },
-        prepare: |e| {
+        prepare: |e, at| {
             let mut lay = brush([0.1, 0.9, 0.2, 1.0], 30.0);
             lay.drain = 0.0;
             let band: Vec<Vec2> = (0..220)
                 .map(|i| {
                     let t = i as f32 / 219.0;
-                    Vec2::new(t * 2560.0 - 2000.0, (t * 26.0).sin() * 40.0)
+                    at + Vec2::new(t * 2560.0 - 2000.0, (t * 26.0).sin() * 40.0)
                 })
                 .collect();
             stroke_with(e, lay, &band);

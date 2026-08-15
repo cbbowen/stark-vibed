@@ -19,4 +19,7 @@ Thumbs.db
 
 
 # Golden mismatches.
-*.actual.pngrustc-ice-*.txt
+*.actual.png
+
+# Compiler crash dumps.
+rustc-ice-*.txt
