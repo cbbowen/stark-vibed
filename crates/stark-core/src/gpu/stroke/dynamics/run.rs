@@ -17,7 +17,7 @@ use crate::gpu::tile::{AllocSource, TileMap};
 
 use super::super::scratch::{Key, SubmitScope};
 use super::super::segments::{
-    RegionRect, Segment, affected_tiles, chunk_segments, generate_segments_in, region_rect,
+    BleedFire, RegionRect, Segment, chunk_segments, cover, generate_segments_in,
 };
 use super::super::{
     StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState, UNIFORM_STRIDE,
@@ -25,7 +25,6 @@ use super::super::{
 use super::BAKE_FORMAT;
 use super::plan::{
     LoopDispatch, PlanCtx, SLOT, SlotKind, bleed_fires, cell_scratch_size, dynamics_plan,
-    snapshot_size,
 };
 /// Resolution (texels per side) of the stamp loop's tool reservoir
 /// (§6.2). Brush-local, so carried color detail is ~radius/32 canvas px — plenty
@@ -41,13 +40,6 @@ use stark_shaders::mirror::dynamics::BAKE_RES;
 // the bind groups here and the layouts in [`kit`](super::kit) both name the
 // shader's numbering rather than keeping copies of it.
 use stark_shaders::mirror::dynamics::binding as b;
-
-/// The snapshot square's pool quantum: [`DynamicsRun::snapshot_scratch`] rounds the
-/// measured size up to a multiple of this, so the handful of sizes a stroke's folds
-/// actually take recur — a [`ScratchPool`] hit — instead of drifting a few texels
-/// per pointer move and missing every time. See the round-up's comment for why the
-/// rounding is invisible to every pass.
-const SNAPSHOT_QUANTUM: u32 = 64;
 
 // The region composite runs `composite.wesl`, so it draws that shader's own
 // per-instance record (§6.10) — which this module used to declare a second
@@ -135,11 +127,14 @@ impl StrokeRenderer {
             // This piece's firings, re-keyed to its slice: `after` indexes `segments`,
             // and the piece's plan walks its own slice. The order — what
             // `dynamics_plan` asserts — survives a slice-and-shift untouched.
-            let lo = fires.partition_point(|(after, _)| *after < piece.start);
-            let hi = fires.partition_point(|(after, _)| *after < piece.end);
-            let piece_fires: Vec<(usize, Segment)> = fires[lo..hi]
+            let lo = fires.partition_point(|f| f.after < piece.start);
+            let hi = fires.partition_point(|f| f.after < piece.end);
+            let piece_fires: Vec<BleedFire> = fires[lo..hi]
                 .iter()
-                .map(|(after, w)| (after - piece.start, *w))
+                .map(|f| BleedFire {
+                    after: f.after - piece.start,
+                    ..*f
+                })
                 .collect();
             map = run.draw(&map, &segments[piece], &piece_fires, !capture && is_last);
         }
@@ -417,14 +412,14 @@ impl<'a> DynamicsRun<'a> {
         &mut self,
         base: &TileMap,
         segments: &[Segment],
-        fires: &[(usize, Segment)],
+        fires: &[BleedFire],
         settle: bool,
     ) -> TileMap {
         self.scope.flush();
-        // Segments and firings both: a window writes up to a quantum behind the
-        // piece's first segment, and a tile (or region) the walk misses is flux
-        // silently clipped at the boundary (`affected_tiles`).
-        let coords = affected_tiles(segments, fires);
+        // Segments and firings both, in one walk: a window writes up to a quantum
+        // behind the piece's first segment, and a tile (or region) the walk misses is
+        // flux silently clipped at the boundary (`segments::piece_sweeps`).
+        let covered = cover(segments, fires);
         // A piece holds at least one segment, and a segment covers at least one tile,
         // so the empty case cannot arise here — but it costs nothing to leave the
         // canvas alone if it ever did.
@@ -434,10 +429,11 @@ impl<'a> DynamicsRun<'a> {
             origin: region_origin,
             w,
             h,
-        }) = region_rect(&coords)
+        }) = covered.rect()
         else {
             return base.clone();
         };
+        let coords = &covered.tiles;
         // The run's dirty set is the union of the pieces', which is why no caller has
         // to enumerate the whole range's tiles a second time.
         self.dirty.extend(coords.iter().copied());
@@ -466,33 +462,35 @@ impl<'a> DynamicsRun<'a> {
         self.scope.hold(base.clone());
         let region = self.composite_region(base, &halo, region_origin, w, h);
 
-        // The snapshot scratch is sized over the firings as well as the segments: a
-        // window sweeps up to a quarter radius where the piece's own segments may
-        // be sub-pixel, so its coverage box can be the largest in the piece.
-        let under = self.snapshot_scratch(segments, fires);
-
         // ---- The dispatch plan, one slot per dispatch, uploaded as one buffer the
         // loop reads through dynamic offsets.
+        //
+        // **Before the scratch it sizes**, which is the order the two are actually in:
+        // the plan measures every rect it will dispatch and the snapshot square is
+        // their maximum. It used to run the other way — the scratch sized itself from a
+        // position-independent bound over the same coverage boxes, and the plan then
+        // asserted each real rect came in under it.
         let ctx = PlanCtx {
             rec: self.rec,
             tol: self.tol,
             region_origin,
-            dsize: under.size,
             consts: &self.consts,
             surface: self.scene.surface,
         };
         let plan = dynamics_plan(&ctx, segments, fires, settle);
+        let under = self.snapshot_scratch(plan.dsize);
         // The cell scratch (§6.2), only when some slot actually takes the coarse
         // path — a small or hard tip allocates nothing and binds nothing.
         let cells = plan
+            .slots
             .iter()
             .any(|d| d.cell_groups.is_some())
-            .then(|| self.cell_scratch(under.size));
-        let stamp_buf = self.upload_plan(&plan);
+            .then(|| self.cell_scratch(plan.dsize));
+        let stamp_buf = self.upload_plan(&plan.slots);
         let bind = self.bind_piece(&region, &under, &stamp_buf, cells.as_ref());
 
-        self.record_loop(&plan, &bind);
-        self.write_back(base, &coords, lo, &region)
+        self.record_loop(&plan.slots, &bind);
+        self.write_back(base, coords, lo, &region)
     }
 
     /// The piece's canvas region — a 1:1 copy of what lies under its segments — and
@@ -669,27 +667,12 @@ impl<'a> DynamicsRun<'a> {
     /// The footprint snapshot scratch: the copy that gives `deposit` and `settle`
     /// something to read while they storage-write the region.
     ///
-    /// The rect must cover any one segment's coverage box — its swept arc plus the tip
-    /// riding along it — which is measured rather than bounded analytically, since
-    /// `coverage_bounds` is already the exact box and a curved sweep has no
-    /// closed-form "worst rotation" to fall back on. Sized from *this* piece's
-    /// segments, so a piece drawn with a fine tip pays for a fine tip.
-    ///
-    /// The fit against every dispatch rect is structural, not arithmetic kept in
-    /// step: both sides go through `plan::rect_extent` — [`snapshot_size`] takes its
-    /// maximum over the piece's own coverage boxes, and `plan::dispatch_rect`
-    /// asserts each rect against it — so no rect a piece can build overruns the
-    /// scratch that piece sized.
-    fn snapshot_scratch(&mut self, segments: &[Segment], fires: &[(usize, Segment)]) -> Snapshot {
+    /// `size` is the plan's own [`dsize`](super::plan::DynamicsPlan::dsize) — the
+    /// largest rect the piece will actually dispatch, rounded to the pool's quantum.
+    /// Nothing is asserted or clamped here because there is nothing left to check: the
+    /// square is a maximum over the rects, not a bound the rects have to respect.
+    fn snapshot_scratch(&mut self, size: u32) -> Snapshot {
         let r = self.r;
-        // Rounded up to a coarse quantum for the pool's sake alone: the measured
-        // maximum drifts a few texels per fold as the tail's geometry evolves, which
-        // would make nearly every checkout a pool miss. Nothing the shaders compute
-        // changes — stores and reads are gated by the slot rects and the sweep test,
-        // and the `textureDimensions` bounds only widen onto texels those gates
-        // reject — so the round-up moves no pixel; `dsize` downstream is this
-        // rounded square, on both sides of every fit assertion.
-        let size = snapshot_size(segments, fires).next_multiple_of(SNAPSHOT_QUANTUM);
         let mut under_tex = |label: &'static str| {
             self.scope
                 .take_piece(Key {
@@ -701,7 +684,6 @@ impl<'a> DynamicsRun<'a> {
                 .1
         };
         Snapshot {
-            size,
             color: under_tex("stark dynamics under color"),
             aux: under_tex("stark dynamics under aux"),
             resid: r
@@ -1262,10 +1244,13 @@ struct Region {
     sel_mask: wgpu::TextureView,
 }
 
-/// The footprint snapshot scratch, and the square it was sized to. Every dispatch
-/// rect in the piece's plan is clamped to `size`, so the two travel together.
+/// The footprint snapshot scratch.
+///
+/// It no longer carries the square it was sized to: that number is the plan's
+/// ([`DynamicsPlan::dsize`](super::plan::DynamicsPlan)), derived from the rects the
+/// plan will dispatch, and the scratch is allocated *from* it rather than the plan
+/// being checked against the scratch.
 struct Snapshot {
-    size: u32,
     color: wgpu::TextureView,
     aux: wgpu::TextureView,
     /// The snapshot's residual half, copied on exactly the texels the color is.

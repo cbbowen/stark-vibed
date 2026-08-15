@@ -23,7 +23,7 @@ use crate::geom::Vec2;
 use super::super::budget::{
     BLEED_TRAVEL_QUANTUM, MAX_BLEED_FIRES_PER_SEGMENT, bleed_stencil, footprint_cell, lambda,
 };
-use super::super::segments::{Segment, coverage_bounds};
+use super::super::segments::{BleedFire, Segment, Sweep, coverage_bounds, segment_end};
 // The `Stamp` uniform, generated from `dynamics.wesl`'s own declaration at build
 // time (`stark-shaders/build/mirror.rs`) — lanes, offsets, and the documentation of
 // what each lane holds, which is now on the generated fields.
@@ -338,9 +338,6 @@ pub(super) struct PlanCtx<'a> {
     /// The region rectangle's top-left in canvas px — what every slot's coordinates
     /// are measured from, since the shader never learns where the piece sits.
     pub(super) region_origin: Vec2,
-    /// The snapshot scratch's square ([`Snapshot::size`]), which every dispatch rect
-    /// is clamped to.
-    pub(super) dsize: u32,
     /// Everything both render paths read off the record and the scene
     /// ([`StrokeConstants`](super::super::StrokeConstants)) — the color a slot's `c` is, the
     /// weave map its `i` carries, and the color-dynamics lookup for `f`–`h`.
@@ -352,80 +349,31 @@ pub(super) struct PlanCtx<'a> {
 /// sampling just outside its own texel still lands inside the rect.
 const RECT_MARGIN: f32 = 1.5;
 
-/// The texels a coverage box `span` px across can occupy once [`dispatch_rect`] has
-/// added its margin and snapped the result outward — **wherever it sits**.
+/// The snapshot square's pool quantum: [`snapshot_square`] rounds the measured maximum
+/// up to a multiple of this.
 ///
-/// This is the one number the scratch and the dispatch are related by, and it is a
-/// function of the span alone precisely so that they can share it. `2·RECT_MARGIN` for
-/// the margin either side; `+2` because the rect then floors its origin and rounds its
-/// far edge outward, which can each cost a texel however the box falls across the
-/// grid.
-///
-/// Monotone in `span`, which is what makes [`snapshot_size`]'s maximum a bound on
-/// every rect rather than on the one that happened to be widest.
-fn rect_extent(span: f32) -> u32 {
-    (span + 2.0 * RECT_MARGIN).ceil() as u32 + 2
-}
-
-/// The snapshot scratch's square for a piece: large enough for any one slot's
-/// [`dispatch_rect`], measured from the coverage boxes rather than bounded
-/// analytically, since `coverage_bounds` is already the exact box and a curved sweep
-/// has no closed-form "worst rotation" to fall back on.
-///
-/// The fit is now structural rather than an argument spread over four numbers: both
-/// sides go through [`rect_extent`], and this takes its maximum, so no rect a piece
-/// can build overruns the scratch that piece sized. It used to be `+3` and `+2` here
-/// against a margin and a rounding there — an equality nothing enforced, backed by a
-/// `debug_assert` that in release let a too-large rect clip into a silently truncated
-/// footprint.
-///
-/// Split out from [`DynamicsRun::snapshot_scratch`] so that fit can be exercised
-/// without a GPU (`tests`).
-pub(super) fn snapshot_size(segments: &[Segment], fires: &[(usize, Segment)]) -> u32 {
-    segments
-        .iter()
-        .chain(fires.iter().map(|(_, f)| f))
-        .fold(rect_extent(1.0), |m, s| {
-            let (lo, hi) = coverage_bounds(s);
-            m.max(rect_extent(hi.x - lo.x))
-                .max(rect_extent(hi.y - lo.y))
-        })
-}
+/// For the scratch pool's sake alone. The maximum drifts a few texels per fold as the
+/// tail's geometry evolves, which would make nearly every checkout a miss
+/// ([`ScratchPool`](super::super::scratch)); rounded, the handful of sizes a stroke's
+/// folds actually take recur. Nothing the shaders compute changes — stores and reads
+/// are gated by the slot rects and the sweep test, and the `textureDimensions` bounds
+/// only widen onto texels those gates reject — so the round-up moves no pixel.
+const SNAPSHOT_QUANTUM: u32 = 64;
 
 /// One slot's dispatch rectangle over a canvas-space coverage box: its integral origin
-/// in region texels, and the workgroup counts covering it.
+/// in region texels and its extent, from which the workgroup counts follow.
 ///
 /// The slot's own box rather than the piece-wide worst case, so an axis-aligned sweep
 /// dispatches ~4·r² threads where a square would spend ~10·r². Texels the rounding adds
 /// beyond the box read zero exposure and fall out of `deposit` untouched.
-///
-/// Every rect fits `dsize` **by construction**: its extent is at most
-/// [`rect_extent`] of the box's own span, and [`snapshot_size`] took the maximum of
-/// exactly that over exactly these boxes. The assertion states the relation rather
-/// than defending against it — and it is a real one, because the alternative it
-/// replaced (a `debug_assert` and a `min`) let a release build clip a too-large rect
-/// into a silently truncated footprint, which is wrong pixels with no signal at all.
-///
-/// The extent is measured exactly here rather than taken from `rect_extent`, which
-/// only bounds it: the bound is position-independent by design and so is a texel loose
-/// wherever the box happens to land on the grid, and there is no reason to dispatch
-/// that texel.
-fn dispatch_rect(lo: Vec2, hi: Vec2, region_origin: Vec2, dsize: u32) -> Rect {
-    let span = hi - lo;
+fn dispatch_rect(lo: Vec2, hi: Vec2, region_origin: Vec2) -> Rect {
     let lo = lo - region_origin - Vec2::splat(RECT_MARGIN);
     let hi = hi - region_origin + Vec2::splat(RECT_MARGIN);
     let origin = Vec2::new(lo.x.floor(), lo.y.floor());
-    let (w, h) = (
-        ((hi.x - origin.x).ceil() as u32) + 1,
-        ((hi.y - origin.y).ceil() as u32) + 1,
-    );
-    assert!(
-        w <= rect_extent(span.x) && h <= rect_extent(span.y) && w <= dsize && h <= dsize,
-        "a {w}x{h} dispatch rect overruns the {dsize} snapshot scratch",
-    );
     Rect {
         origin,
-        groups: (w.div_ceil(8), h.div_ceil(8)),
+        w: ((hi.x - origin.x).ceil() as u32) + 1,
+        h: ((hi.y - origin.y).ceil() as u32) + 1,
     }
 }
 
@@ -433,8 +381,38 @@ fn dispatch_rect(lo: Vec2, hi: Vec2, region_origin: Vec2, dsize: u32) -> Rect {
 struct Rect {
     /// The rect's top-left in region texels, integral — the `d.xy` a slot carries.
     origin: Vec2,
+    /// Its extent in texels.
+    w: u32,
+    h: u32,
+}
+
+impl Rect {
     /// Workgroup counts covering it, at the shaders' 8×8.
-    groups: (u32, u32),
+    fn groups(&self) -> (u32, u32) {
+        (self.w.div_ceil(8), self.h.div_ceil(8))
+    }
+}
+
+/// The snapshot scratch's square for a piece: **the largest rect the piece will
+/// actually dispatch**, rounded up to [`SNAPSHOT_QUANTUM`].
+///
+/// This used to be a bound rather than a maximum, and the difference is the whole of
+/// what changed. `snapshot_size` folded a position-independent `rect_extent(span)` over
+/// the coverage boxes; `dispatch_rect` then computed the real rect and *asserted* it
+/// came in under that bound. Two derivations of one number, related by an argument
+/// ("monotone in span, which is what makes the maximum a bound on every rect") and
+/// defended by a panic in the render path.
+///
+/// The rects are computed once now, so the scratch is sized by taking their maximum.
+/// There is nothing left for an assertion to state: a maximum is not a claim about the
+/// things it was taken over. `rect_extent` and both of its call sites are gone with it.
+fn snapshot_square(rects: &[Rect]) -> u32 {
+    // A floor of one workgroup, so an empty plan — which cannot happen, a piece holding
+    // at least one segment — still names a texture the device will create.
+    rects
+        .iter()
+        .fold(8, |m, r| m.max(r.w).max(r.h))
+        .next_multiple_of(SNAPSHOT_QUANTUM)
 }
 
 /// The cell scratch's square for a piece, in cells: enough for any rect the piece's
@@ -493,24 +471,82 @@ fn cell_geometry(
         (region_origin.x as i32).rem_euclid(c) as f32,
         (region_origin.y as i32).rem_euclid(c) as f32,
     );
+    let groups = rect.groups();
     let cells = |origin: f32, a: f32, groups: u32| -> u32 {
         cell_span(origin as i32 + a as i32, (groups * 8).min(dsize) as i32, c)
     };
-    let cx = cells(rect.origin.x, anchor.x, rect.groups.0);
-    let cy = cells(rect.origin.y, anchor.y, rect.groups.1);
+    let cx = cells(rect.origin.x, anchor.x, groups.0);
+    let cy = cells(rect.origin.y, anchor.y, groups.1);
+    // Derived rather than defended, now that `dsize` is the maximum of the very rects
+    // this is asked about: a rect spans at most `dsize` texels, so at a cell of `c ≥ 2`
+    // it names at most `ceil(dsize/c) + 1 + 2·CELL_BORDER ≤ dsize.div_ceil(2) + 3`
+    // cells, and [`cell_scratch_size`] is that plus one. Debug-only for the reason the
+    // dispatch rect's assertion is gone altogether — a panic mid-render is a worse
+    // failure than the thing it guards, and this one is arithmetic.
     let fit = cell_scratch_size(dsize);
-    assert!(
+    debug_assert!(
         cx <= fit && cy <= fit,
         "a {cx}x{cy}-cell hoist overruns the {fit}-cell scratch",
     );
     (anchor, Some((cx.div_ceil(8), cy.div_ceil(8))))
 }
 
-impl PlanCtx<'_> {
-    /// [`dispatch_rect`] against this piece's origin and snapshot square.
-    fn rect(&self, lo: Vec2, hi: Vec2) -> Rect {
-        dispatch_rect(lo, hi, self.region_origin, self.dsize)
+/// What one slot of the plan is built from, and — because the walk that produces these
+/// is the walk that defines the plan's order — the single statement of that order.
+///
+/// The rects are measured over this list and the slots are built by zipping the two, so
+/// the two passes cannot drift into disagreeing about which rect belongs to which slot.
+/// That is the price of computing a rect once instead of twice, and it is paid here
+/// rather than by two `for` loops that happen to be written the same way.
+enum SlotSource<'a> {
+    Segment(&'a Segment),
+    Bleed(&'a BleedFire),
+    /// The pen-up, which is the last segment read a different way — a standing tip
+    /// rather than a stretch of travel.
+    Settle(&'a Segment),
+}
+
+impl SlotSource<'_> {
+    /// The canvas box this slot's dispatch has to cover.
+    fn bounds(&self) -> (Vec2, Vec2) {
+        match self {
+            SlotSource::Segment(s) => coverage_bounds(&s.sweep),
+            SlotSource::Bleed(f) => coverage_bounds(&f.window),
+            // The tip's own square rather than a swept box — a pen-up is a standing
+            // tip. Its half-extent is the tip's `reach`, which is the radius only for a
+            // shape that stays inside its own disc (`segments::tip_reach`); the settle
+            // writes the same footprint the pass was laying, corners included. It
+            // cannot be the largest box in the piece: a segment's box is this square
+            // grown by its travel, and this is the last segment's.
+            SlotSource::Settle(s) => {
+                let end = segment_end(&s.sweep);
+                let reach = Vec2::splat(s.sweep.reach);
+                (end - reach, end + reach)
+            }
+        }
     }
+}
+
+/// The rect each of `sources` dispatches over. Split out so the fit the scratch is
+/// sized by can be exercised without an adapter (`tests`).
+fn rects_for(sources: &[SlotSource<'_>], region_origin: Vec2) -> Vec<Rect> {
+    sources
+        .iter()
+        .map(|src| {
+            let (lo, hi) = src.bounds();
+            dispatch_rect(lo, hi, region_origin)
+        })
+        .collect()
+}
+
+/// The plan's slots in dispatch order, and the snapshot square they fit.
+///
+/// The square rides with the slots because it is derived from them — see
+/// [`snapshot_square`]. A caller that has one has the other, so there is no way to
+/// allocate a scratch for a plan other than the one that measured it.
+pub(super) struct DynamicsPlan {
+    pub(super) slots: Vec<LoopDispatch>,
+    pub(super) dsize: u32,
 }
 
 /// Build the swept-exchange dispatch plan (§6.2): one `snapshot` +
@@ -527,9 +563,9 @@ impl PlanCtx<'_> {
 pub(super) fn dynamics_plan(
     ctx: &PlanCtx<'_>,
     segments: &[Segment],
-    fires: &[(usize, Segment)],
+    fires: &[BleedFire],
     settle: bool,
-) -> Vec<LoopDispatch> {
+) -> DynamicsPlan {
     let &PlanCtx {
         rec,
         region_origin,
@@ -565,137 +601,26 @@ pub(super) fn dynamics_plan(
         weave: [consts.grain_uv, grain_bias.x, grain_bias.y],
     };
 
-    let mut plan = Vec::new();
     // Drained in step with the walk below, which is only correct because `bleed_fires`
     // emits them in segment order. Cheap to state, and the alternative — a firing
     // silently landing in the wrong piece of the plan — is not something a pixel would
     // show.
     debug_assert!(
-        fires.is_sorted_by_key(|(after, _)| *after),
+        fires.is_sorted_by_key(|f| f.after),
         "bleed firings must arrive in segment order",
     );
+
+    // ---- Pass one: what the plan dispatches, in order. This walk is the *only*
+    // statement of that order; the rects and the slots below both hang off it.
+    let mut sources: Vec<SlotSource> = Vec::new();
     let mut pending = fires.iter().peekable();
     for (si, s) in segments.iter().enumerate() {
-        // The segment's swept exchange: the frame is (start, travel tangent at the
-        // start, curvature), over the segment's own coverage box.
-        let p = s.start - region_origin;
-        let (clo, chi) = coverage_bounds(s);
-        let rect = ctx.rect(clo, chi);
-        // The tangent at the segment's **midpoint**, along the arc rather than the
-        // chord: what the bearing below is read along, since a curved segment's canvas
-        // side sees a heading that turns across the sweep and the midpoint is the
-        // representative of that whose error is second order where either endpoint's
-        // would be first.
-        let (_, mid_dir) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length * 0.5);
-        // The footprint cell this segment's deposit may evaluate the exchange at
-        // (§6.2): a pure function of the brush shape and the segment's own radius
-        // ([`footprint_cell`]), so a live tail and its commit pick the same cell —
-        // and 1, the exact kernel, for every tip whose shoulder proves nothing.
-        let cell = footprint_cell(&b.shape, s.radius);
-        let (cell_anchor, cell_groups) = cell_geometry(cell, region_origin, &rect, ctx.dsize);
-        plan.push(LoopDispatch {
-            groups: rect.groups,
-            cell_groups,
-            kind: SlotKind::Segment,
-            slot: Slot {
-                start: p,
-                dir: s.dir,
-                // The frame, and the travel in its units — both the volume's, which is
-                // the tip's own for everything but a padded (pen-oriented) stamp.
-                frame: s.frame,
-                travel_radii: s.length / s.frame,
-                frame_scale: s.frame / s.radius,
-                // The tip's growth across this segment, which the frame shares
-                // because the two differ by the constant `frame_scale` above
-                // ([`Segment::ramp`]). Everything the host prices off `s.radius` —
-                // the cell, the bleed cadence, the exchange step — stays on the
-                // reference tip, which is what that radius is.
-                ramp: s.ramp,
-                lambda_lift: lambda(s.lift),
-                lambda_deposit: lambda(s.deposit),
-                rect_origin: rect.origin,
-                orient: s.orient,
-                drain: b.drain,
-                // The `add` source rate is passed through **unscaled**, exactly as
-                // `stamp.wesl` takes it. It used to carry a gain of 2 ("tuned so
-                // `add = 1` lays roughly a full-thickness deposit per pass"), which made
-                // the same slider mean two different amounts of paint depending on
-                // whether some *other* axis happened to be non-zero — nudging `deposit`
-                // off zero doubled the flow. The tuning it claimed is already met without
-                // it: a pass of the tip is `TAU_PER_PASS ≈ 6.9` of exposure, so
-                // `add = 1` lays 6.9 of height, which the slab law reads as 0.999
-                // coverage.
-                //
-                // Off the segment, since the pen can drive it (§6.2) — the same number
-                // the swept path now reads off its instance.
-                add: s.add,
-                curvature: s.curvature,
-                tooth: s.tooth,
-                cell: cell as f32,
-                cell_anchor,
-                // No `bleed_reach` and no `lambda_bleed`: the lateral flux runs only on
-                // the dedicated firings, so a painting segment takes the no-bleed path
-                // bit-for-bit (§6.2). Both are `Slot::default`'s zero.
-                ..common.painting(s.dist, bearing(s.tooth, mid_dir))
-            }
-            .pack(),
-        });
-
-        // The bleed slots that fire at this segment's end (§6.2, `bleed_fires`):
-        // a quad whose sweep is the firing's travel window, with every vertical rate
-        // and the source zeroed — the dispatch is the identity everywhere except the
-        // lateral flux. The noise lanes are zeroed too, so the deposit skips its
-        // color-jitter taps.
-        while let Some((_, fire)) = pending.next_if(|(after, _)| *after == si) {
-            let p = fire.start - region_origin;
-            let (clo, chi) = coverage_bounds(fire);
-            let rect = ctx.rect(clo, chi);
-            // The stencil this firing diffuses with: how far it reaches, and how hard
-            // it relaxes to get there. Both come out of the diffusivity the axis asks
-            // for — see [`bleed_stencil`], which is where the axis's whole meaning is.
-            let (reach, lambda_bleed) = bleed_stencil(fire.bleed, fire.radius, fire.length);
-            plan.push(LoopDispatch {
-                groups: rect.groups,
-                // Bleed slots keep the exact deposit whatever the tip: the ladder's
-                // flux pairs need both threads of a pair to read per-texel exposures,
-                // and the firings are rare and small next to the painting they cut.
-                cell_groups: None,
-                kind: SlotKind::Bleed,
-                // Everything a painting segment carries and this does not is
-                // `Slot::default`'s zero, which is what the slot *means*: λ_lift = 0 so
-                // the canvas keeps everything, λ_deposit = 0 so the (uninvolved) tool
-                // lays nothing, no drain because nothing is laid, no `add` because this
-                // is not a stretch of painting, no tooth because there is no `add` for
-                // the ground to gate, and no color jitter — which is zeroed rather
-                // than shared, so the deposit skips its noise taps entirely.
-                slot: Slot {
-                    start: p,
-                    dir: fire.dir,
-                    frame: fire.frame,
-                    travel_radii: fire.length / fire.frame,
-                    frame_scale: fire.frame / fire.radius,
-                    rect_origin: rect.origin,
-                    orient: fire.orient,
-                    // The window's own curvature, so the relaxed band follows the paint
-                    // rather than cutting the corner off it (`bleed_fires`).
-                    curvature: fire.curvature,
-                    // The stencil's longest tap — the only slot that carries one.
-                    bleed_reach: reach,
-                    dist: fire.dist,
-                    // The rate that lands this window's exposure on the blend its reach
-                    // needs — not `lambda(axis)`, which is the vertical rates' mapping
-                    // and would make the axis a rate rather than a diffusivity. A firing
-                    // whose modulated axis has fallen to zero still dispatches: λ = 0
-                    // makes it the identity, and keeping the plan a pure function of the
-                    // segmentation is worth more than the dispatch it would save.
-                    lambda_bleed,
-                    ..common.slot()
-                }
-                .pack(),
-            });
+        sources.push(SlotSource::Segment(s));
+        // The bleed slots that fire at this segment's end (§6.2, `bleed_fires`).
+        while let Some(fire) = pending.next_if(|f| f.after == si) {
+            sources.push(SlotSource::Bleed(fire));
         }
     }
-
     // The pen-up (`dynamics.wesl::settle`), as one more slot on the same uniform: the
     // tip standing at the stroke's last point with **zero travel**, which is what makes
     // the shared `segment_frame`/`outside_sweep` reduce to the tip's own footprint and
@@ -703,65 +628,211 @@ pub(super) fn dynamics_plan(
     // reads is already here — the frame, the radius, the two λs and the orientation —
     // so it costs a slot rather than a second uniform.
     if let Some(s) = settle.then(|| segments.last()).flatten() {
-        let (end, _) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length);
-        // The frame comes off the *record* — see [`settle_tangent`]. `segments` is one
-        // piece of one range, and a lookback that walked it would stop wherever that
-        // cut fell, so a live tail and its commit would settle at different angles.
-        let tan = settle_tangent(rec, ctx.tol, segments);
-        let p = end - region_origin;
-        // The tip's own square rather than a swept box — a pen-up is a standing tip.
-        // Its half-extent is the tip's `reach`, which is the radius only for a shape
-        // that stays inside its own disc (`segments::tip_reach`); the settle writes the
-        // same footprint the pass was laying, corners included. It cannot overrun the
-        // snapshot scratch: that was sized from coverage boxes, and a segment's box is
-        // this square grown by its travel.
-        let rect = ctx.rect(end - Vec2::splat(s.reach), end + Vec2::splat(s.reach));
-        plan.push(LoopDispatch {
-            groups: rect.groups,
-            // The settle is one dispatch at the end of a stroke — nothing to amortize
-            // — and its p-norm handover is exactly the smooth structure a cell would
-            // staircase, so it stays exact whatever the tip.
-            cell_groups: None,
-            kind: SlotKind::Settle,
-            slot: Slot {
-                start: p,
-                dir: tan,
-                // No travel: a pen-up is a break of contact, not a stretch of it. The
-                // rates are the *last* segment's, which is where the pen was when it
-                // left the page — the same segment this slot takes its radius and
-                // orientation from. (`travel_radii` stays at its default 0.)
-                frame: s.frame,
-                frame_scale: s.frame / s.radius,
-                lambda_lift: lambda(s.lift),
-                lambda_deposit: lambda(s.deposit),
-                rect_origin: rect.origin,
-                orient: s.orient,
-                drain: b.drain,
-                // The last segment's tooth: the settle delivers what the pass still
-                // owed, and it owes it through the same ground the pass was laying
-                // through. What the valleys do not take stays on the tool, which is
-                // discarded — a knife lifted off a canvas keeps what it did not
-                // reach (§6.4).
-                tooth: s.tooth,
-                // No `add`: the source is a rate per unit of travel, and there is none.
-                // No curvature, for the same reason — the frame is a standing tip. No
-                // bleed reach: a settle is not a firing. And no λ_bleed either — that
-                // axis carries no reservoir, every firing having applied its window as
-                // the tip passed, so a break of contact strands nothing for a settle to
-                // finish, unlike the vertical transfer whose in-flight half lives on the
-                // tool. All four are `Slot::default`'s zero.
-                //
-                // The bearing is the neutral 1: the tool is not written back at pen-up,
-                // so nothing reads it — the settle's own gate is per texel, from the
-                // weave. The color channels are filled consistently with a segment slot
-                // rather than left as junk, though the settle lays the tool's *carried*
-                // paint and so reads none of them.
-                ..common.painting(s.dist + s.length, 1.0)
-            }
-            .pack(),
-        });
+        sources.push(SlotSource::Settle(s));
     }
-    plan
+
+    // ---- Pass two: the rect each of those dispatches over, and the scratch square
+    // that is their maximum. Computed once and carried, where the rect used to be
+    // measured approximately to size the scratch and then again exactly to dispatch,
+    // with an assertion in the render path holding the two together.
+    let rects = rects_for(&sources, region_origin);
+    let dsize = snapshot_square(&rects);
+
+    // ---- Pass three: the slots themselves, zipped to the rects measured for them.
+    let mut plan = Vec::with_capacity(sources.len());
+    for (src, rect) in sources.iter().zip(&rects) {
+        let groups = rect.groups();
+        let dispatch = match src {
+            SlotSource::Segment(s) => {
+                let (sw, paint) = (&s.sweep, &s.paint);
+                // The segment's swept exchange: the frame is (start, travel tangent at
+                // the start, curvature), over the segment's own coverage box.
+                let p = sw.start - region_origin;
+                // The tangent at the segment's **midpoint**, along the arc rather than
+                // the chord: what the bearing below is read along, since a curved
+                // segment's canvas side sees a heading that turns across the sweep and
+                // the midpoint is the representative of that whose error is second
+                // order where either endpoint's would be first.
+                let (_, mid_dir) =
+                    crate::path::arc_at(sw.start, sw.dir, sw.curvature, sw.length * 0.5);
+                // The footprint cell this segment's deposit may evaluate the exchange
+                // at (§6.2): a pure function of the brush shape and the segment's own
+                // radius ([`footprint_cell`]), so a live tail and its commit pick the
+                // same cell — and 1, the exact kernel, for every tip whose shoulder
+                // proves nothing.
+                let cell = footprint_cell(&b.shape, sw.radius);
+                let (cell_anchor, cell_groups) = cell_geometry(cell, region_origin, rect, dsize);
+                LoopDispatch {
+                    groups,
+                    cell_groups,
+                    kind: SlotKind::Segment,
+                    slot: Slot {
+                        start: p,
+                        dir: sw.dir,
+                        // The frame, and the travel in its units — both the volume's,
+                        // which is the tip's own for everything but a padded
+                        // (pen-oriented) stamp.
+                        frame: sw.frame,
+                        travel_radii: sw.length / sw.frame,
+                        frame_scale: sw.frame / sw.radius,
+                        // The tip's growth across this segment, which the frame shares
+                        // because the two differ by the constant `frame_scale` above
+                        // ([`Sweep::ramp`]). Everything the host prices off
+                        // `sw.radius` — the cell, the bleed cadence, the exchange step
+                        // — stays on the reference tip, which is what that radius is.
+                        ramp: sw.ramp,
+                        lambda_lift: lambda(paint.lift),
+                        lambda_deposit: lambda(paint.deposit),
+                        rect_origin: rect.origin,
+                        orient: sw.orient,
+                        drain: b.drain,
+                        // The `add` source rate is passed through **unscaled**, exactly
+                        // as `stamp.wesl` takes it. It used to carry a gain of 2
+                        // ("tuned so `add = 1` lays roughly a full-thickness deposit
+                        // per pass"), which made the same slider mean two different
+                        // amounts of paint depending on whether some *other* axis
+                        // happened to be non-zero — nudging `deposit` off zero doubled
+                        // the flow. The tuning it claimed is already met without it: a
+                        // pass of the tip is `TAU_PER_PASS ≈ 6.9` of exposure, so
+                        // `add = 1` lays 6.9 of height, which the slab law reads as
+                        // 0.999 coverage.
+                        //
+                        // Off the segment, since the pen can drive it (§6.2) — the same
+                        // number the swept path now reads off its instance.
+                        add: paint.add,
+                        curvature: sw.curvature,
+                        tooth: paint.tooth,
+                        cell: cell as f32,
+                        cell_anchor,
+                        // No `bleed_reach` and no `lambda_bleed`: the lateral flux runs
+                        // only on the dedicated firings, so a painting segment takes
+                        // the no-bleed path bit-for-bit (§6.2). Both are
+                        // `Slot::default`'s zero.
+                        ..common.painting(sw.dist, bearing(paint.tooth, mid_dir))
+                    }
+                    .pack(),
+                }
+            }
+            // A quad whose sweep is the firing's travel window, with every vertical
+            // rate and the source zeroed — the dispatch is the identity everywhere
+            // except the lateral flux. The noise lanes are zeroed too, so the deposit
+            // skips its color-jitter taps.
+            SlotSource::Bleed(fire) => {
+                let w = &fire.window;
+                let p = w.start - region_origin;
+                // The stencil this firing diffuses with: how far it reaches, and how
+                // hard it relaxes to get there. Both come out of the diffusivity the
+                // axis asks for — see [`bleed_stencil`], which is where the axis's
+                // whole meaning is.
+                let (reach, lambda_bleed) = bleed_stencil(fire.bleed, w.radius, w.length);
+                LoopDispatch {
+                    groups,
+                    // Bleed slots keep the exact deposit whatever the tip: the ladder's
+                    // flux pairs need both threads of a pair to read per-texel
+                    // exposures, and the firings are rare and small next to the
+                    // painting they cut.
+                    cell_groups: None,
+                    kind: SlotKind::Bleed,
+                    // Everything a painting segment carries and this does not is
+                    // `Slot::default`'s zero, which is what the slot *means*: λ_lift = 0
+                    // so the canvas keeps everything, λ_deposit = 0 so the (uninvolved)
+                    // tool lays nothing, no drain because nothing is laid, no `add`
+                    // because this is not a stretch of painting, no tooth because there
+                    // is no `add` for the ground to gate, and no color jitter — which is
+                    // zeroed rather than shared, so the deposit skips its noise taps
+                    // entirely.
+                    //
+                    // A [`BleedFire`] cannot carry those rates in the first place now:
+                    // it holds a [`Sweep`] and its one axis, where it used to hold a
+                    // whole `Segment` whose five rates were copied in by `bleed_fires`
+                    // for this arm to write back out.
+                    slot: Slot {
+                        start: p,
+                        dir: w.dir,
+                        frame: w.frame,
+                        travel_radii: w.length / w.frame,
+                        frame_scale: w.frame / w.radius,
+                        rect_origin: rect.origin,
+                        orient: w.orient,
+                        // The window's own curvature, so the relaxed band follows the
+                        // paint rather than cutting the corner off it (`bleed_fires`).
+                        curvature: w.curvature,
+                        // The stencil's longest tap — the only slot that carries one.
+                        bleed_reach: reach,
+                        dist: w.dist,
+                        // The rate that lands this window's exposure on the blend its
+                        // reach needs — not `lambda(axis)`, which is the vertical rates'
+                        // mapping and would make the axis a rate rather than a
+                        // diffusivity. A firing whose modulated axis has fallen to zero
+                        // still dispatches: λ = 0 makes it the identity, and keeping the
+                        // plan a pure function of the segmentation is worth more than
+                        // the dispatch it would save.
+                        lambda_bleed,
+                        ..common.slot()
+                    }
+                    .pack(),
+                }
+            }
+            SlotSource::Settle(s) => {
+                let (sw, paint) = (&s.sweep, &s.paint);
+                let p = segment_end(sw) - region_origin;
+                // The frame comes off the *record* — see [`settle_tangent`]. `segments`
+                // is one piece of one range, and a lookback that walked it would stop
+                // wherever that cut fell, so a live tail and its commit would settle at
+                // different angles.
+                let tan = settle_tangent(rec, ctx.tol, segments);
+                LoopDispatch {
+                    groups,
+                    // The settle is one dispatch at the end of a stroke — nothing to
+                    // amortize — and its p-norm handover is exactly the smooth structure
+                    // a cell would staircase, so it stays exact whatever the tip.
+                    cell_groups: None,
+                    kind: SlotKind::Settle,
+                    slot: Slot {
+                        start: p,
+                        dir: tan,
+                        // No travel: a pen-up is a break of contact, not a stretch of
+                        // it. The rates are the *last* segment's, which is where the pen
+                        // was when it left the page — the same segment this slot takes
+                        // its radius and orientation from. (`travel_radii` stays at its
+                        // default 0.)
+                        frame: sw.frame,
+                        frame_scale: sw.frame / sw.radius,
+                        lambda_lift: lambda(paint.lift),
+                        lambda_deposit: lambda(paint.deposit),
+                        rect_origin: rect.origin,
+                        orient: sw.orient,
+                        drain: b.drain,
+                        // The last segment's tooth: the settle delivers what the pass
+                        // still owed, and it owes it through the same ground the pass
+                        // was laying through. What the valleys do not take stays on the
+                        // tool, which is discarded — a knife lifted off a canvas keeps
+                        // what it did not reach (§6.4).
+                        tooth: paint.tooth,
+                        // No `add`: the source is a rate per unit of travel, and there
+                        // is none. No curvature, for the same reason — the frame is a
+                        // standing tip. No bleed reach: a settle is not a firing. And no
+                        // λ_bleed either — that axis carries no reservoir, every firing
+                        // having applied its window as the tip passed, so a break of
+                        // contact strands nothing for a settle to finish, unlike the
+                        // vertical transfer whose in-flight half lives on the tool. All
+                        // four are `Slot::default`'s zero.
+                        //
+                        // The bearing is the neutral 1: the tool is not written back at
+                        // pen-up, so nothing reads it — the settle's own gate is per
+                        // texel, from the weave. The color channels are filled
+                        // consistently with a segment slot rather than left as junk,
+                        // though the settle lays the tool's *carried* paint and so reads
+                        // none of them.
+                        ..common.painting(sw.dist + sw.length, 1.0)
+                    }
+                    .pack(),
+                }
+            }
+        };
+        plan.push(dispatch);
+    }
+    DynamicsPlan { slots: plan, dsize }
 }
 
 /// The bleed cadence (§6.2): one dedicated **bleed slot** per crossing of
@@ -798,7 +869,7 @@ pub(super) fn dynamics_plan(
 /// crossing segment's own arc** rather than looked up among the segments in hand, so a
 /// window is never truncated by where the range being drawn happens to begin — see the
 /// note at the walk itself for what that truncation cost.
-pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
+pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<BleedFire> {
     let mut fires = Vec::new();
     // The brush's own axis, so *which* windows fire stays a function of the geometry
     // and the brush alone; how hard each one relaxes is the pen's business, and comes
@@ -807,7 +878,8 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segme
     if bleed <= 0.0 {
         return fires;
     }
-    for (i, s) in segments.iter().enumerate() {
+    for (i, seg) in segments.iter().enumerate() {
+        let s = &seg.sweep;
         let bq = BLEED_TRAVEL_QUANTUM * s.radius;
         // Before the division, not after it. A tip with no width sweeps nothing and has
         // nothing to relax, and asking how many quanta fit in it first made `crossings`
@@ -858,9 +930,17 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segme
         for n in (0..crossings).rev() {
             let back = (n + 1) as f32 * bq;
             let (start, back_dir) = crate::path::arc_at(end, end_dir * -1.0, -s.curvature, back);
-            fires.push((
-                i,
-                Segment {
+            fires.push(BleedFire {
+                after: i,
+                // The window inherits the crossing segment's `bleed`, and **only** that
+                // — it is that segment's own firing, and the axis is the one thing the
+                // slot it becomes will read. Every other rate used to be copied here
+                // too, for `dynamics_plan` to zero back out lane by lane; a [`Sweep`]
+                // has nowhere to put them. Reading the axis from one point of the
+                // window is the cadence's usual approximation about the radius it
+                // fires at.
+                bleed: seg.paint.bleed,
+                window: Sweep {
                     start,
                     // The reversed walk arrives pointing back the way it came, so the
                     // window's own heading is its negation — the tangent the path had
@@ -900,18 +980,8 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segme
                     length: bq,
                     orient: s.orient,
                     dist: s.dist + s.length - back,
-                    // The window inherits the crossing segment's rates: it is that
-                    // segment's own firing, and `bleed` is the only one it will use —
-                    // every other axis is zeroed in the slot it becomes. Reading them
-                    // from one point of the window is the cadence's usual
-                    // approximation about the radius it fires at.
-                    add: s.add,
-                    lift: s.lift,
-                    deposit: s.deposit,
-                    bleed: s.bleed,
-                    tooth: s.tooth,
                 },
-            ));
+            });
         }
     }
     fires
@@ -966,11 +1036,11 @@ fn settle_tangent(
     tol: crate::path::FlattenTolerance,
     segments: &[Segment],
 ) -> Vec2 {
-    let radius = segments.last().map_or(1.0, |s| s.radius);
+    let radius = segments.last().map_or(1.0, |s| s.sweep.radius);
     // A click's frame: the dab's own direction, which is deliberate rather than
     // fitted. `generate_segments_in` sweeps it symmetrically about the point pressed,
     // so which direction it is cannot matter — but it has to be *a* direction.
-    let fallback = || segments.last().map_or(Vec2::new(1.0, 0.0), |s| s.dir);
+    let fallback = || segments.last().map_or(Vec2::new(1.0, 0.0), |s| s.sweep.dir);
     let last = crate::path::span_count(rec.path.len());
     if last == 0 {
         return fallback();
@@ -1023,14 +1093,12 @@ mod tests {
     use crate::geom::Vec2;
     use crate::gpu::stroke::StrokeSpans;
     use crate::gpu::stroke::budget::flatten_tolerance;
+    use crate::gpu::stroke::segments::Paint;
     use crate::gpu::stroke::segments::generate_segments_in;
 
-    /// A straight segment of `length` from `start` along `dir`, at arc length `dist`.
-    /// The plan builders read the frame, the radius and the arc clock; the paint rates
-    /// are left at zero except where a test sets one, so a value that mattered would
-    /// have to be given deliberately.
-    fn seg(start: Vec2, dir: Vec2, length: f32, radius: f32, dist: f32) -> Segment {
-        Segment {
+    /// A straight sweep of `length` from `start` along `dir`, at arc length `dist`.
+    fn sweep(start: Vec2, dir: Vec2, length: f32, radius: f32, dist: f32) -> Sweep {
+        Sweep {
             start,
             dir,
             curvature: 0.0,
@@ -1045,11 +1113,17 @@ mod tests {
             length,
             orient: 0.0,
             dist,
-            add: 0.0,
-            lift: 0.0,
-            deposit: 0.0,
-            bleed: 0.0,
-            tooth: 0.0,
+        }
+    }
+
+    /// The same, as a whole segment. The plan builders read the frame, the radius and
+    /// the arc clock; the paint rates are left at [`Paint::default`]'s zero except
+    /// where a test sets one, so a value that mattered would have to be given
+    /// deliberately.
+    fn seg(start: Vec2, dir: Vec2, length: f32, radius: f32, dist: f32) -> Segment {
+        Segment {
+            sweep: sweep(start, dir, length, radius, dist),
+            paint: Paint::default(),
         }
     }
 
@@ -1206,7 +1280,8 @@ mod tests {
     fn cell_boundaries_are_canvas_anchored_whatever_the_region_origin() {
         let rect = Rect {
             origin: Vec2::ZERO,
-            groups: (8, 8),
+            w: 64,
+            h: 64,
         };
         let boundaries = |origin: f32| -> Vec<i32> {
             let (anchor, groups) = cell_geometry(5, Vec2::new(origin, origin), &rect, 64);
@@ -1246,7 +1321,8 @@ mod tests {
                 for rect_origin in [0.0f32, 1.0, 7.0, 33.0] {
                     let rect = Rect {
                         origin: Vec2::splat(rect_origin),
-                        groups: (3, 5),
+                        w: 24,
+                        h: 40,
                     };
                     let (anchor, groups) =
                         cell_geometry(cell, Vec2::splat(region_origin), &rect, dsize);
@@ -1256,7 +1332,7 @@ mod tests {
                     let base = (rect_origin as i32 + a).div_euclid(c) - CELL_BORDER as i32;
                     // The texels the deposit scans: its rect as rounded to whole
                     // workgroups, clamped to the snapshot square — what `cells` counts.
-                    let span = (rect.groups.0 * 8).min(dsize) as i32;
+                    let span = (rect.groups().0 * 8).min(dsize) as i32;
                     let count = cell_span(rect_origin as i32 + a, span, c) as i32;
                     for t in 0..span {
                         let rt = rect_origin as i32 + t;
@@ -1298,7 +1374,7 @@ mod tests {
         let all = run(40, 1.5, 10.0);
         let whole: Vec<_> = bleed_fires(0.4, &all)
             .into_iter()
-            .map(|(i, f)| (i, f.start, f.length, f.dist))
+            .map(|f| (f.after, f.window.start, f.window.length, f.window.dist))
             .collect();
         assert!(
             whole.len() > 3,
@@ -1309,13 +1385,16 @@ mod tests {
         for cut in 1..all.len() {
             let mut split: Vec<_> = bleed_fires(0.4, &all[..cut])
                 .into_iter()
-                .map(|(i, f)| (i, f.start, f.length, f.dist))
+                .map(|f| (f.after, f.window.start, f.window.length, f.window.dist))
                 .collect();
-            split.extend(
-                bleed_fires(0.4, &all[cut..])
-                    .into_iter()
-                    .map(|(i, f)| (i + cut, f.start, f.length, f.dist)),
-            );
+            split.extend(bleed_fires(0.4, &all[cut..]).into_iter().map(|f| {
+                (
+                    f.after + cut,
+                    f.window.start,
+                    f.window.length,
+                    f.window.dist,
+                )
+            }));
             assert_eq!(
                 split, whole,
                 "cutting after segment {cut} changed the firings"
@@ -1351,7 +1430,7 @@ mod tests {
         let (mut p, mut d, mut dist) = (Vec2::ZERO, Vec2::new(1.0, 0.0), 0.0);
         for _ in 0..20 {
             let mut s = seg(p, d, len, tip, dist);
-            s.curvature = kappa;
+            s.sweep.curvature = kappa;
             segs.push(s);
             (p, d) = crate::path::arc_at(p, d, kappa, len);
             dist += len;
@@ -1360,16 +1439,17 @@ mod tests {
         let fires = bleed_fires(0.4, &segs);
         // The cap is what stops this being `len / quantum` = 53 per segment.
         assert_eq!(fires.len(), 20 * MAX_BLEED_FIRES_PER_SEGMENT);
-        for (i, f) in &fires {
+        for f in &fires {
+            let w = &f.window;
             assert_eq!(
-                f.length, quantum,
+                w.length, quantum,
                 "a firing swept more than its own quantum"
             );
             // Every point of the window sits on the circle the path traced — not just
             // its two ends, which the walk back along the crossing segment's own arc
             // already put there.
             for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
-                let on = crate::path::arc_at(f.start, f.dir, f.curvature, f.length * t).0;
+                let on = crate::path::arc_at(w.start, w.dir, w.curvature, w.length * t).0;
                 assert!(
                     ((on - centre).length() - r).abs() < 1e-2,
                     "the window left the path {} px at t = {t}",
@@ -1378,8 +1458,8 @@ mod tests {
             }
             // Butted end to end, back from the segment's end: no quantum of travel is
             // diffused twice, and none is skipped between the cap and that end.
-            let s = &segs[*i];
-            let from_end = s.dist + s.length - f.dist;
+            let s = &segs[f.after].sweep;
+            let from_end = s.dist + s.length - w.dist;
             let quanta = from_end / quantum;
             assert!(
                 (quanta - quanta.round()).abs() < 1e-3
@@ -1413,14 +1493,15 @@ mod tests {
         let fine = run(400, 0.39, radius);
         let fires = bleed_fires(0.4, &fine);
         assert!(fires.len() > 5, "only {} firings", fires.len());
-        for (_, f) in &fires {
+        for f in &fires {
+            let w = &f.window;
             assert!(
-                (f.length - quantum).abs() < 0.5,
+                (w.length - quantum).abs() < 0.5,
                 "a firing swept {} of the {quantum} its cadence carries",
-                f.length,
+                w.length,
             );
             assert!(
-                f.length > 10.0 * 0.39,
+                w.length > 10.0 * 0.39,
                 "the window is segment-sized, which is the regime the cadence exists \
                  to leave",
             );
@@ -1469,12 +1550,12 @@ mod tests {
     /// hand**. Kept here as the thing the test below measures against — it is the
     /// behaviour that made a stroke's fade-out cap turn as the pointer came up.
     fn piece_local_tangent(segments: &[Segment], end: Vec2) -> Vec2 {
-        let radius = segments.last().map_or(1.0, |s| s.radius);
+        let radius = segments.last().map_or(1.0, |s| s.sweep.radius);
         let mut back = end;
         let mut acc = 0.0;
         for s in segments.iter().rev() {
-            back = s.start;
-            acc += s.length;
+            back = s.sweep.start;
+            acc += s.sweep.length;
             if acc >= radius {
                 break;
             }
@@ -1484,7 +1565,7 @@ mod tests {
         if len > 1e-4 {
             v / len
         } else {
-            segments.last().map_or(Vec2::new(1.0, 0.0), |s| s.dir)
+            segments.last().map_or(Vec2::new(1.0, 0.0), |s| s.sweep.dir)
         }
     }
 
@@ -1533,6 +1614,7 @@ mod tests {
             // And the old piece-local walk really does move on these cuts, so the
             // assertion above is not passing because the case is uninteresting.
             let last = whole.last().expect("segments");
+            let last = &last.sweep;
             let end = crate::path::arc_at(last.start, last.dir, last.curvature, last.length).0;
             let stale = piece_local_tangent(&tail, end);
             ever_differed |= (stale - piece_local_tangent(&whole, end)).length() > 1e-2;
@@ -1586,50 +1668,82 @@ mod tests {
         assert_eq!(segs.len(), 1, "a click is one swept dab");
         assert_eq!(
             settle_tangent(&rec, flatten_tolerance(&rec.brush), &segs),
-            segs[0].dir,
+            segs[0].sweep.dir,
         );
     }
 
     // --- the dispatch rects fit the scratch --------------------------------
 
-    /// Every dispatch rect a piece builds fits the snapshot scratch that piece sized.
+    /// The sources a piece's plan would walk, in the order [`dynamics_plan`] walks
+    /// them — segments, each followed by its own firings, then the pen-up.
+    fn sources_of<'a>(
+        segments: &'a [Segment],
+        fires: &'a [BleedFire],
+        settle: bool,
+    ) -> Vec<SlotSource<'a>> {
+        let mut sources = Vec::new();
+        let mut pending = fires.iter().peekable();
+        for (si, s) in segments.iter().enumerate() {
+            sources.push(SlotSource::Segment(s));
+            while let Some(f) = pending.next_if(|f| f.after == si) {
+                sources.push(SlotSource::Bleed(f));
+            }
+        }
+        if let Some(s) = settle.then(|| segments.last()).flatten() {
+            sources.push(SlotSource::Settle(s));
+        }
+        sources
+    }
+
+    /// **Every dispatch grid a piece builds fits the snapshot scratch that piece
+    /// sized** — restated for the design that replaced the one it used to check.
     ///
-    /// The two now go through one function — [`rect_extent`], of which `snapshot_size`
-    /// takes the maximum — so the fit is structural rather than an equality between a
-    /// margin here and two magic numbers there. `dispatch_rect` asserts it; this runs
-    /// that assert over shapes chosen to stress it, on the CPU, with no adapter needed.
+    /// It used to assert a *bound*: `snapshot_size` folded a position-independent
+    /// `rect_extent(span)` over the coverage boxes, `dispatch_rect` computed the real
+    /// rect, and a panic in the render path held the two together. Both derivations are
+    /// gone — [`snapshot_square`] takes the maximum of the very rects the plan
+    /// dispatches, so "a rect fits" is not a claim any more.
+    ///
+    /// What is still a claim, and what the shaders' bounds checks actually rest on, is
+    /// one step further out: a dispatch is rounded **up to whole 8×8 workgroups**, so
+    /// the texels a slot scans reach `groups·8`, past its own rect. That stays inside
+    /// the scratch only because [`SNAPSHOT_QUANTUM`] is itself a multiple of 8. This
+    /// pins that, over the geometry the old test stressed.
     ///
     /// The stress is in the fractional origins: a rect floors its origin and rounds its
     /// far edge outward, so the worst case is a box straddling texel boundaries at both
-    /// ends — which is exactly the case `rect_extent`'s `+2` is for.
+    /// ends. Curvature is swept too, since a bent sweep bows a sagitta out of its box.
     #[test]
-    fn every_dispatch_rect_fits_the_scratch_its_piece_sized() {
-        // Sub-pixel origins are the point: the rect floors its origin and rounds its
-        // far edge out, so the worst case is a box straddling texel boundaries at both
-        // ends. Curvature is swept too, since a bent sweep bows a sagitta out of its box.
+    fn every_dispatch_grid_fits_the_scratch_its_piece_sized() {
         for &radius in &[0.5f32, 1.0, 7.3, 40.0, 120.0] {
             for &length in &[0.0f32, 0.37, 4.0, 60.0] {
                 for &kappa in &[0.0f32, 0.004, -0.02] {
                     for &frac in &[0.0f32, 0.499, 0.5, 0.999] {
                         let start = Vec2::new(frac, -frac);
                         let mut s = seg(start, Vec2::new(1.0, 0.0), length, radius, 0.0);
-                        s.curvature = kappa;
+                        s.sweep.curvature = kappa;
                         let segments = [s];
-                        let dsize = snapshot_size(&segments, &[]);
-
-                        let (lo, hi) = coverage_bounds(&s);
+                        // With the pen-up, whose square is built from the tip alone
+                        // rather than from the swept box.
+                        let sources = sources_of(&segments, &[], true);
                         // Region origins that put the box at both ends of the region.
+                        let (lo, _) = coverage_bounds(&s.sweep);
                         for &origin in &[Vec2::ZERO, lo.floor(), Vec2::new(-13.7, 91.2)] {
-                            dispatch_rect(lo, hi, origin, dsize);
-                            // The pen-up's square, which is sized from the same scratch
-                            // but built from the tip alone rather than the swept box.
-                            let end = crate::path::arc_at(s.start, s.dir, s.curvature, s.length).0;
-                            dispatch_rect(
-                                end - Vec2::splat(radius),
-                                end + Vec2::splat(radius),
-                                origin,
-                                dsize,
-                            );
+                            let rects = rects_for(&sources, origin);
+                            let dsize = snapshot_square(&rects);
+                            for r in &rects {
+                                let (gx, gy) = r.groups();
+                                assert!(
+                                    gx * 8 <= dsize && gy * 8 <= dsize,
+                                    "a {}x{} rect scans {}x{} texels of a {dsize} \
+                                     scratch (radius {radius}, length {length}, \
+                                     curvature {kappa}, frac {frac})",
+                                    r.w,
+                                    r.h,
+                                    gx * 8,
+                                    gy * 8,
+                                );
+                            }
                         }
                     }
                 }
@@ -1638,24 +1752,39 @@ mod tests {
     }
 
     /// A bleed window can be the largest footprint in its piece — it sweeps up to a
-    /// half-radius where the piece's own segments may be sub-pixel — so the scratch has
-    /// to be sized with the firings in it, not just the segments.
+    /// quarter-radius where the piece's own segments may be sub-pixel — so the scratch
+    /// has to be sized with the firings in it, not just the segments.
+    ///
+    /// Still worth stating with the rects computed once: the maximum is only over what
+    /// the walk collected, so a walk that forgot the firings would size the scratch
+    /// short and go on asserting nothing.
     #[test]
     fn the_scratch_is_sized_with_the_bleed_windows_in_it() {
-        // Long enough to cross the 0.5 · 30 = 15 px cadence, cut far finer than it.
+        // Long enough to cross the 0.25 · 30 px cadence, cut far finer than it.
         let segments = run(200, 0.2, 30.0);
         let fires = bleed_fires(0.5, &segments);
         assert!(!fires.is_empty(), "no firing to size against");
-        let with = snapshot_size(&segments, &fires);
-        let without = snapshot_size(&segments, &[]);
+        // The widest rect, **before** [`SNAPSHOT_QUANTUM`] rounds it. Asked of the raw
+        // maximum on purpose: the round-up is a pool-hit concession, and on this case
+        // it is generous enough to swallow the difference and let a walk that forgot
+        // the firings pass. What is being pinned is that the walk collects them.
+        let widest = |f: &[BleedFire]| {
+            rects_for(&sources_of(&segments, f, false), Vec2::ZERO)
+                .iter()
+                .fold(0, |m, r| m.max(r.w).max(r.h))
+        };
+        let (with, without) = (widest(&fires), widest(&[]));
         assert!(
             with > without,
             "a firing's window did not widen the scratch ({without} -> {with})"
         );
-        for (_, f) in &fires {
-            let (lo, hi) = coverage_bounds(f);
-            dispatch_rect(lo, hi, Vec2::ZERO, with);
-        }
+        // And the square the piece allocates holds the wider of the two.
+        assert!(
+            snapshot_square(&rects_for(
+                &sources_of(&segments, &fires, false),
+                Vec2::ZERO
+            )) >= with,
+        );
     }
 
     // `the_host_and_the_shader_agree_on_the_loops_constants` stood here, reading

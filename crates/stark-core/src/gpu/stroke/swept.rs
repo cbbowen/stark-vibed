@@ -11,7 +11,7 @@ use crate::geom::{TILE_APRON, TILE_TEX, TileCoord};
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 
-use super::segments::{SegmentInstance, generate_segments_in, tiles_with_segments};
+use super::segments::{Segment, SegmentInstance, generate_segments_in, tiles_with_segments};
 use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, UNIFORM_STRIDE};
 
 // Vertices in one segment's swept geometry: a triangle strip of two rims across
@@ -39,6 +39,17 @@ use stark_shaders::mirror::stamp_common::TileXform;
 /// One tile's window into the stroke's transform buffer — the `min_binding_size` the
 /// sweep's layout declares, taken from the struct rather than written down.
 const XFORM_SLOT: u64 = std::mem::size_of::<TileXform>() as u64;
+
+/// How many scratch pairs the sweep rotates through (§6.2) — see
+/// [`render_swept`](StrokeRenderer::render_swept), where the ring is acquired.
+///
+/// The floor is the dependency being removed: at 1, tile `n+1`'s sweep waits on tile
+/// `n`'s integrate, and the path's `2N` render passes cannot overlap at all. The
+/// ceiling is memory — one pair is `TILE_TEX²` of the color format plus the wide
+/// scratch aux plus a residual, so ~1.5 MB in a pigment space. Three is enough for the
+/// driver to keep a sweep, an integrate and a spare in flight; past that the win falls
+/// off well before the megabytes do.
+const SCRATCH_RING: usize = 3;
 
 /// The swept fast path's GPU objects, built once (§6.2) — the sweep that accumulates
 /// a stroke's footprint into a scratch tile, and the integrate that stacks that
@@ -247,21 +258,21 @@ impl StrokeRenderer {
         for idx in touched.values() {
             let from = instances.len() as u32;
             instances.extend(idx.iter().map(|&i| {
-                let s = &segments[i as usize];
+                let Segment { sweep, paint } = &segments[i as usize];
                 SegmentInstance {
-                    start: s.start.to_array(),
-                    dir: s.dir.to_array(),
+                    start: sweep.start.to_array(),
+                    dir: sweep.dir.to_array(),
                     // The **frame**, not the tip: brush-local coordinates are the
                     // volume's, and a padded one is wider than the shape inside it
-                    // (§6.6, [`Segment::frame`]). The two are the same number for
+                    // (§6.6, [`Sweep::frame`]). The two are the same number for
                     // every brush but a pen-oriented stamp.
                     //
                     // The ramp rides here unscaled, and that is the point of its being
                     // *relative*: the frame is the tip times a constant, so the tip's
-                    // fractional growth is the frame's ([`Segment::ramp`]).
-                    geom: [s.frame, s.length, s.ramp],
-                    extra: [s.orient, s.dist, s.curvature, s.add],
-                    tooth: s.tooth,
+                    // fractional growth is the frame's ([`Sweep::ramp`]).
+                    geom: [sweep.frame, sweep.length, sweep.ramp],
+                    extra: [sweep.orient, sweep.dist, sweep.curvature, paint.add],
+                    tooth: paint.tooth,
                 }
             }));
             runs.push(from..instances.len() as u32);
@@ -342,22 +353,38 @@ impl StrokeRenderer {
         // with the latent premultiplied by it, the aux accumulates its height and
         // optical mass additively). The scratch aux is the wide format.
         //
-        // **One pair for the whole stroke, released only after the submit.** Sharing
-        // it across tiles is sound because every sweep pass below clears both targets,
-        // so no tile can see what the tile before it left; what makes it *necessary*
-        // is that nothing in a recorded encoder has run yet. A pair acquired per tile
-        // and dropped at the end of its iteration goes back on the pool's free list
-        // while the passes naming it are still only recorded — and the free list is
-        // where `TilePool::trim` takes from, tail first, on any `acquire_tex` that
-        // happens to end an epoch. Destroying a texture this command buffer names
-        // fails the submit, so every destination tile in it keeps whatever paint the
-        // pool last had there: one frame of other tiles' work, gone on the next
-        // render. Same rule as `transform::Recording`, and for the same reason.
-        let scratch = self.acquire_scratch(pool, AllocSource::StrokeScratch);
+        // **A ring, held to the submit — not one pair, and not one per tile.** Two
+        // separate rules meet here:
+        //
+        // * Every scratch must outlive the submit of the passes naming it. A pair
+        //   acquired per tile and dropped at the end of its iteration goes back on the
+        //   pool's free list while those passes are still only recorded — and the free
+        //   list is where `TilePool::trim` takes from, tail first, on any `acquire_tex`
+        //   that happens to end an epoch. Destroying a texture this command buffer names
+        //   fails the submit, so every destination tile in it keeps whatever paint the
+        //   pool last had there: one frame of other tiles' work, gone on the next
+        //   render. Same rule as `transform::Recording`. Hence `scope.hold` below.
+        //
+        // * Sharing **one** pair across every tile is sound — each sweep pass clears
+        //   both targets, so no tile can see what the tile before it left — but it
+        //   serializes the path. Tile n+1's sweep writes the very texture tile n's
+        //   integrate reads, which is a write-after-read the driver has to order, so
+        //   the `2N` passes ran strictly back to back with no overlap at all.
+        //
+        // A ring satisfies the first and drops the second: `SCRATCH_RING` tiles' worth
+        // of work can be in flight before the dependency comes round again. At
+        // `TILE_TEX = 256` a target is 512 KB, so the whole ring is a few MB against
+        // `ScratchPool`'s 256 MB budget — and a stroke touching fewer tiles than the
+        // ring takes only as many pairs as it has tiles.
+        let ring: Vec<_> = (0..SCRATCH_RING.min(coords.len()))
+            .map(|_| self.acquire_scratch(pool, AllocSource::StrokeScratch))
+            .collect();
 
         let mut new_map = base.clone();
         for (i, coord) in coords.iter().enumerate() {
             let xform_off = (i * UNIFORM_STRIDE) as u32;
+            // Round-robin, so the reuse distance is the ring's length.
+            let scratch = &ring[i % ring.len()];
 
             // This tile's segments into the shared scratch, cleared as it goes.
             {
@@ -441,13 +468,13 @@ impl StrokeRenderer {
             new_map = new_map.insert(*coord, dst);
         }
 
-        // The scratch pair rides the scope past the submit, for the reason given
-        // where it is acquired: released any earlier it is a *pooled* texture this
+        // The scratch ring rides the scope past the submit, for the reason given
+        // where it is acquired: released any earlier these are *pooled* textures this
         // command buffer still names, free to be handed out — or destroyed — before
         // the submit. `finish` then submits and releases everything behind that
-        // submit: the tile pair back to its pool by drop, the per-stroke buffers by
+        // submit: the tile pairs back to their pool by drop, the per-stroke buffers by
         // `destroy()` (left to JS GC they pile up and OOM the tab, §6.2).
-        scope.hold(scratch);
+        scope.hold(ring);
         scope.finish();
         (new_map, carry)
     }

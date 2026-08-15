@@ -14,14 +14,23 @@ use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use super::StrokeSpans;
 use super::budget::{BLEED_TRAVEL_QUANTUM, MAX_REGION_DIM, MAX_STAMPS};
 
-/// One swept segment of the stroke.
+/// **Where a tip goes, and how wide it is** — everything the shaders need to unroll
+/// one sweep, and nothing about what the tip is doing while it travels.
 ///
 /// The centreline is a **circular arc**, not a chord: `start` and `dir` give the
 /// frame it leaves in, `curvature` bends it, and `length` measures along it. A
 /// straight sweep is `curvature == 0` and is what every quantity below reduces to,
 /// exactly — see [`crate::path::fit_arc`].
+///
+/// Split from the paint rates ([`Paint`]) because the module has two things that are
+/// swept and only one of them paints. A [`BleedFire`]'s window is a stretch of lateral
+/// diffusion at a standing tip: it has a start, a bend and a travel, and it has no
+/// `add`, no `lift` and no `deposit` — it used to be built as a whole [`Segment`] with
+/// the crossing segment's rates copied in, which `dynamics_plan` then zeroed back out
+/// lane by lane. Every box and every rect in this module is a function of this half
+/// alone, so they take it alone and cannot read a rate that is not there.
 #[derive(Copy, Clone)]
-pub(super) struct Segment {
+pub(super) struct Sweep {
     pub(super) start: Vec2,
     /// Unit travel tangent **at the segment's start** — the x axis of the frame the
     /// sweep is integrated in. On a curved segment the tangent turns as the tip
@@ -97,23 +106,54 @@ pub(super) struct Segment {
     /// relative angle between the shape's native axis and the travel direction, used to
     /// pick the prefix-τ orientation layer. 0 for follow-stroke (§6.6).
     pub(super) orient: f32,
-    /// Arc length from the stroke start to this segment's start (canvas px) — the
+    /// Arc length from the stroke start to this sweep's start (canvas px) — the
     /// third axis of the color-dynamics noise lookup (§6.2).
     pub(super) dist: f32,
-    /// The brush's paint rates **as the pen asked for them here** (§6.2): the four
-    /// axes of [`BrushDynamics`](crate::document::BrushDynamics) scaled by whatever
-    /// [`Modulations`](crate::document::Modulations) maps onto each.
+}
+
+impl Sweep {
+    /// The tip in force a fraction `u` of this sweep's travel in, canvas px — the
+    /// host's statement of the ramp `stamp_common::ramp_scale` applies, so the two
+    /// definitions can be read against each other.
     ///
-    /// They live on the segment rather than on the stroke because that is now what
-    /// they are — the pen attributes they follow are interpolated per segment, and
-    /// the flattener already holds their step to
-    /// [`FlattenTolerance::attribute`](crate::path::FlattenTolerance::attribute).
-    /// Each is at most the brush's own value, never more, which is what lets every
-    /// bound taken against `rec.brush` stay a bound (see
-    /// [`Modulation`](crate::document::Modulation)).
+    /// `u` is clamped, like the shader's: past either end the tip has, as far as this
+    /// sweep is concerned, stopped at the end it reached.
     ///
-    /// `charge` is absent on purpose: it is the tool's *initial* load, one number for
-    /// the whole stroke, and there is no per-segment version of it to carry.
+    /// Only the tests ask — the renderer evaluates the ramp on the GPU, per fragment,
+    /// and the one thing the *host* needs from it (the widest tip, which sizes the
+    /// coverage box) is [`widest_tip`](Self::widest_tip).
+    #[cfg(test)]
+    pub(super) fn tip_at(&self, u: f32) -> f32 {
+        self.radius * (1.0 + self.ramp * (u.clamp(0.0, 1.0) - 0.5))
+    }
+
+    /// The widest tip this sweep reaches, canvas px.
+    ///
+    /// Spelled as the shader spells it (`stamp_common::sweep_vertex`'s `hull`) rather
+    /// than as `max(r_start, r_end)`, which it equals algebraically. The two can differ
+    /// by an ulp in floats, and this one has to come out **no smaller** than the strip
+    /// the GPU rasterizes: it is what [`coverage_bounds`] grows the box by, and a box
+    /// narrower than its own geometry is a stroke clipped at a tile boundary.
+    fn widest_tip(&self) -> f32 {
+        self.radius * (1.0 + 0.5 * self.ramp.abs())
+    }
+}
+
+/// The brush's paint rates **as the pen asked for them here** (§6.2): the four axes of
+/// [`BrushDynamics`](crate::document::BrushDynamics) scaled by whatever
+/// [`Modulations`](crate::document::Modulations) maps onto each, plus the tooth.
+///
+/// They live on the segment rather than on the stroke because that is now what they
+/// are — the pen attributes they follow are interpolated per segment, and the
+/// flattener already holds their step to
+/// [`FlattenTolerance::attribute`](crate::path::FlattenTolerance::attribute). Each is
+/// at most the brush's own value, never more, which is what lets every bound taken
+/// against `rec.brush` stay a bound (see [`Modulation`](crate::document::Modulation)).
+///
+/// `charge` is absent on purpose: it is the tool's *initial* load, one number for the
+/// whole stroke, and there is no per-segment version of it to carry.
+#[derive(Copy, Clone, Default)]
+pub(super) struct Paint {
     pub(super) add: f32,
     pub(super) lift: f32,
     pub(super) deposit: f32,
@@ -124,32 +164,28 @@ pub(super) struct Segment {
     pub(super) tooth: f32,
 }
 
-impl Segment {
-    /// The tip in force a fraction `u` of this segment's travel in, canvas px — the
-    /// host's statement of the ramp `stamp_common::ramp_scale` applies, so the two
-    /// definitions can be read against each other.
-    ///
-    /// `u` is clamped, like the shader's: past either end the tip has, as far as this
-    /// segment is concerned, stopped at the end it reached.
-    ///
-    /// Only the tests ask — the renderer evaluates the ramp on the GPU, per fragment,
-    /// and the one thing the *host* needs from it (the widest tip, which sizes the
-    /// coverage box) is [`widest_tip`](Self::widest_tip).
-    #[cfg(test)]
-    pub(super) fn tip_at(&self, u: f32) -> f32 {
-        self.radius * (1.0 + self.ramp * (u.clamp(0.0, 1.0) - 0.5))
-    }
+/// One swept segment of the stroke: where the tip went, and what it was doing.
+#[derive(Copy, Clone)]
+pub(super) struct Segment {
+    pub(super) sweep: Sweep,
+    pub(super) paint: Paint,
+}
 
-    /// The widest tip this segment reaches, canvas px.
-    ///
-    /// Spelled as the shader spells it (`stamp_common::sweep_vertex`'s `hull`) rather
-    /// than as `max(r_start, r_end)`, which it equals algebraically. The two can differ
-    /// by an ulp in floats, and this one has to come out **no smaller** than the strip
-    /// the GPU rasterizes: it is what [`coverage_bounds`] grows the segment's box by,
-    /// and a box narrower than its own geometry is a stroke clipped at a tile boundary.
-    fn widest_tip(&self) -> f32 {
-        self.radius * (1.0 + 0.5 * self.ramp.abs())
-    }
+/// One crossing of the bleed cadence (§6.2): which segment it fires after, the stretch
+/// of path it relaxes over, and the one axis it uses.
+///
+/// A named type rather than the `(usize, Segment)` it was, and a [`Sweep`] rather than
+/// a whole segment. A firing lays no paint — `dynamics_plan` zeroes every vertical rate
+/// on the slot it becomes — so carrying rates here meant copying five numbers in for
+/// the sole purpose of writing them back out, and left `ramp: 0.0` as a field a window
+/// had to remember not to set. It cannot set one now.
+#[derive(Copy, Clone)]
+pub(super) struct BleedFire {
+    /// Index into the segments this firing was derived from — the segment it follows.
+    pub(super) after: usize,
+    pub(super) window: Sweep,
+    /// The crossing segment's modulated `bleed`, which is the only axis a firing reads.
+    pub(super) bleed: f32,
 }
 
 // Per-segment instance data for the sweep shader, generated from `stamp.wesl`'s own
@@ -526,7 +562,8 @@ struct At {
     tilt: Vec2,
 }
 
-/// The arc one segment sweeps along.
+/// The arc one segment travels along, as [`generate_segments_in`]'s builder is handed
+/// it — the path half of a [`Sweep`], before the tip is measured onto it.
 ///
 /// `dir` is the tangent the sweep *starts* along — the frame's x axis — while
 /// `mid_dir` is the one at the midpoint, the same midpoint-sampling argument applied
@@ -536,7 +573,7 @@ struct At {
 /// `dist` is the exception to that rule: it is the arc length at the segment's
 /// **start**, because the shader adds the fragment's own offset along the travel to
 /// it (`stamp_common.wesl`).
-struct Sweep {
+struct Track {
     dir: Vec2,
     mid_dir: Vec2,
     curvature: f32,
@@ -614,7 +651,7 @@ pub(super) fn generate_segments_in(
     // ([`Segment::ramp`]). Everything else is sampled at the midpoint, `at`: the rates
     // below are applied per segment and the midpoint is the reading whose error is
     // second order where either end's would be first.
-    let make = |at: At, sweep: Sweep, ends: (f32, f32)| {
+    let make = |at: At, track: Track, ends: (f32, f32)| {
         // The pen as the modulations read it, at this segment's own attributes
         // (§6.2). `Modulation::factor` clamps anyway.
         let pen = PenState {
@@ -634,10 +671,10 @@ pub(super) fn generate_segments_in(
         // The two coincide, bit for bit, wherever the tip does not change — which is
         // every segment of an untapered brush at constant pressure.
         let radius = (r0 + r1) * 0.5;
-        let mut seg = Segment {
+        let mut sweep = Sweep {
             start: at.pos,
-            dir: sweep.dir,
-            curvature: sweep.curvature,
+            dir: track.dir,
+            curvature: track.curvature,
             radius,
             ramp: (r1 - r0) / radius,
             frame: radius * frame_scale(b),
@@ -645,17 +682,21 @@ pub(super) fn generate_segments_in(
             // still building — and must be *that* expression rather than one equal to
             // it, since this bounds the strip the GPU draws.
             reach: 0.0,
-            length: sweep.length,
-            orient: orientation_turns(b.orientation, sweep.mid_dir, at.tilt),
-            dist: sweep.dist,
-            add: d.add * m.flow(pen),
-            lift: d.lift * m.lift(pen),
-            deposit: d.deposit * m.deposit(pen),
-            bleed: d.bleed * m.bleed(pen),
-            tooth: b.tooth * m.tooth(pen),
+            length: track.length,
+            orient: orientation_turns(b.orientation, track.mid_dir, at.tilt),
+            dist: track.dist,
         };
-        seg.reach = seg.widest_tip() * tip_reach(&b.shape);
-        seg
+        sweep.reach = sweep.widest_tip() * tip_reach(&b.shape);
+        Segment {
+            sweep,
+            paint: Paint {
+                add: d.add * m.flow(pen),
+                lift: d.lift * m.lift(pen),
+                deposit: d.deposit * m.deposit(pen),
+                bleed: d.bleed * m.bleed(pen),
+                tooth: b.tooth * m.tooth(pen),
+            },
+        }
     };
 
     for w in pts.windows(2) {
@@ -719,7 +760,7 @@ pub(super) fn generate_segments_in(
                     pressure,
                     tilt,
                 },
-                Sweep {
+                Track {
                     dir: tan,
                     mid_dir: mid_tan,
                     curvature: kappa,
@@ -775,7 +816,7 @@ pub(super) fn generate_segments_in(
                         pressure,
                         tilt,
                     },
-                    Sweep {
+                    Track {
                         dir,
                         mid_dir: dir,
                         curvature: 0.0,
@@ -906,9 +947,12 @@ pub(super) fn orientation_turns(source: OrientationSource, dir: Vec2, tilt: Vec2
 /// prefix-τ taps that are equal and writes nothing at all (see [`coverage_bounds`]).
 /// Zero through the `over` blend and zero through the additive one are both exact
 /// identities, so which segments a tile is handed cannot change what lands in it.
-fn for_each_touched(segments: &[Segment], mut f: impl FnMut(usize, TileCoord)) {
+fn for_each_touched<'a>(
+    sweeps: impl Iterator<Item = &'a Sweep>,
+    mut f: impl FnMut(usize, TileCoord),
+) {
     let tile = TILE_SIZE as f32;
-    for (i, s) in segments.iter().enumerate() {
+    for (i, s) in sweeps.enumerate() {
         let (lo, hi) = segment_bounds(s);
         let (x0, x1) = ((lo.x / tile).floor() as i32, (hi.x / tile).floor() as i32);
         let (y0, y1) = ((lo.y / tile).floor() as i32, (hi.y / tile).floor() as i32);
@@ -920,33 +964,125 @@ fn for_each_touched(segments: &[Segment], mut f: impl FnMut(usize, TileCoord)) {
     }
 }
 
-/// Tiles whose texture any segment's swept capsule overlaps — [`for_each_touched`]
-/// with the segments forgotten — **plus the bleed firings' windows**. What the
-/// dynamics path wants, which sizes a region from the tiles alone.
+/// Every sweep a piece will rasterize: its painting segments **and its bleed firings'
+/// windows**, in the order the plan dispatches them.
 ///
-/// The windows are in the walk because they write: a firing's sweep is walked back
-/// along the crossing segment's own arc, up to one [`BLEED_TRAVEL_QUANTUM`] before
-/// the segment it fires after (`plan::bleed_fires`) — and for the first segment of
-/// a piece or a live-tail range that stretch lies behind every segment box here,
-/// with one apron texel of margin. Left out of the accounting (as they were until
-/// 2026-08-11, while [`snapshot_size`](super::dynamics) *did* take them), the flux
-/// written there was silently clipped by the region's bounds check, and a rewritten
-/// tile's apron could diverge from an unrewritten neighbour's interior — a §6.4
-/// break in exactly the configuration `tests/seam.rs` does not draw.
-pub(super) fn affected_tiles(
-    segments: &[Segment],
-    fires: &[(usize, Segment)],
-) -> BTreeSet<TileCoord> {
-    let mut coords = BTreeSet::new();
-    for_each_touched(segments, |_, c| {
-        coords.insert(c);
-    });
-    for (_, w) in fires {
-        for_each_touched(std::slice::from_ref(w), |_, c| {
-            coords.insert(c);
-        });
+/// The windows belong in every accounting because they write: a firing's sweep is
+/// walked back along the crossing segment's own arc, up to one
+/// [`BLEED_TRAVEL_QUANTUM`] before the segment it fires after (`plan::bleed_fires`) —
+/// and for the first segment of a piece or a live-tail range that stretch lies behind
+/// every segment box, with one apron texel of margin. Left out (as they were until
+/// 2026-08-11, while the snapshot scratch's sizing *did* take them), the flux written
+/// there was silently clipped by the region's bounds check, and a rewritten tile's
+/// apron could diverge from an unrewritten neighbour's interior — a §6.4 break in
+/// exactly the configuration `tests/seam.rs` does not draw.
+///
+/// One function, so no caller can enumerate one and forget the other. That is the
+/// mistake above, stated as a thing the code no longer lets you make.
+pub(super) fn piece_sweeps<'a>(
+    segments: &'a [Segment],
+    fires: &'a [BleedFire],
+) -> impl Iterator<Item = &'a Sweep> + Clone {
+    segments
+        .iter()
+        .map(|s| &s.sweep)
+        .chain(fires.iter().map(|f| &f.window))
+}
+
+/// The canvas box a set of sweeps covers, accumulated one sweep at a time.
+///
+/// **The one definition of what a piece needs**, and the reason it is a type. Three
+/// answers used to be derived three ways and were required to agree: `chunk_segments`
+/// measured a bounding box and turned it into region dimensions, `affected_tiles`
+/// enumerated a tile set, and `region_rect` turned that set back into a rectangle. The
+/// chunker's promise — "this piece fits [`MAX_REGION_DIM`]" — was about the first, and
+/// the region the loop actually allocates came from the third; a comment asked them to
+/// be the same rectangle and a test checked that they were.
+///
+/// They are now the same rectangle because they are the same arithmetic:
+/// [`Covered::rect`] takes its extent from [`dims`](Self::dims), which is the very
+/// function the chunker checked. The tile set is still enumerated separately, because
+/// only the dynamics path wants it and a set insert per tile per segment is exactly the
+/// cost the incremental repaint exists to keep off a long stroke.
+#[derive(Clone, Copy)]
+pub(super) struct Coverage {
+    lo: Vec2,
+    hi: Vec2,
+}
+
+impl Default for Coverage {
+    /// The empty box, which absorbs into any other: `min`/`max` against infinities.
+    fn default() -> Self {
+        Self {
+            lo: Vec2::splat(f32::INFINITY),
+            hi: Vec2::splat(f32::NEG_INFINITY),
+        }
     }
-    coords
+}
+
+impl Coverage {
+    /// Grow to hold one more sweep, apron included ([`segment_bounds`]).
+    fn add(&mut self, s: &Sweep) {
+        let (lo, hi) = segment_bounds(s);
+        self.lo = self.lo.min(lo);
+        self.hi = self.hi.max(hi);
+    }
+
+    /// This box grown by another, without disturbing either — what the chunker asks
+    /// before it commits a segment to the run in hand.
+    fn union(self, other: Self) -> Self {
+        Self {
+            lo: self.lo.min(other.lo),
+            hi: self.hi.max(other.hi),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.lo.x.is_finite()
+    }
+
+    /// The region rectangle's extent in texels: the tile block the coverage spans,
+    /// measured between tile origins, plus the apron either side that makes each block
+    /// a whole [`TILE_TEX`].
+    ///
+    /// Measured by bounding box rather than by enumerating tiles, and the two agree
+    /// exactly: `min` over segments of `floor(lo.x / tile)` *is* `floor(min lo.x /
+    /// tile)`, so the extreme tile origins of the set are the extreme tile origins of
+    /// the box. That identity is why [`Covered::rect`] can take its size from here
+    /// while taking its halo from the set.
+    fn dims(&self) -> (u32, u32) {
+        let tile = TILE_SIZE as f32;
+        let span = |a: f32, b: f32| ((b / tile).floor() - (a / tile).floor()) * tile;
+        (
+            span(self.lo.x, self.hi.x) as u32 + TILE_TEX,
+            span(self.lo.y, self.hi.y) as u32 + TILE_TEX,
+        )
+    }
+}
+
+/// What one piece's sweeps cover: the tiles they touch and the box they span, from a
+/// single walk.
+///
+/// Both in one pass because both callers want both — the write-back and the dirty set
+/// need the tiles, the region allocation needs the box — and because computing them
+/// apart is what let them disagree.
+pub(super) struct Covered {
+    pub(super) tiles: BTreeSet<TileCoord>,
+    bounds: Coverage,
+}
+
+/// Walk a piece's sweeps once, collecting the tiles they touch and the box they span.
+pub(super) fn cover(segments: &[Segment], fires: &[BleedFire]) -> Covered {
+    let mut tiles = BTreeSet::new();
+    let mut bounds = Coverage::default();
+    let sweeps = piece_sweeps(segments, fires);
+    for_each_touched(sweeps.clone(), |_, c| {
+        tiles.insert(c);
+    });
+    for s in sweeps {
+        bounds.add(s);
+    }
+    Covered { tiles, bounds }
 }
 
 /// The same walk, keeping **which** segments reach each tile.
@@ -965,23 +1101,25 @@ pub(super) fn affected_tiles(
 /// sees the stroke's own order over the subset that reaches it.
 pub(super) fn tiles_with_segments(segments: &[Segment]) -> BTreeMap<TileCoord, Vec<u32>> {
     let mut map: BTreeMap<TileCoord, Vec<u32>> = BTreeMap::new();
-    for_each_touched(segments, |i, c| map.entry(c).or_default().push(i as u32));
+    for_each_touched(segments.iter().map(|s| &s.sweep), |i, c| {
+        map.entry(c).or_default().push(i as u32)
+    });
     map
 }
 
-/// Where a segment's centreline ends — along the arc, not along the chord.
-pub(super) fn segment_end(s: &Segment) -> Vec2 {
+/// Where a sweep's centreline ends — along the arc, not along the chord.
+pub(super) fn segment_end(s: &Sweep) -> Vec2 {
     crate::path::arc_at(s.start, s.dir, s.curvature, s.length).0
 }
 
-/// The canvas box one segment's swept coverage occupies — the arc, grown by the tip
-/// that rides along it.
+/// The canvas box one sweep's coverage occupies — the arc, grown by the tip that rides
+/// along it.
 ///
 /// The rasterized geometry reaches further than this at the caps (the shaders sweep a
 /// generous angular margin so the round end is never clipped), but every fragment out
 /// there differences two prefix taps to exactly zero and writes nothing. What a box
 /// has to contain is where the deposit *lands*, which is within the tip's
-/// [`reach`](Segment::reach) of the arc.
+/// [`reach`](Sweep::reach) of the arc.
 ///
 /// **The tip's reach, not its radius.** The two are the same number only for a shape
 /// that stays inside the disc inscribed in its mask; a stamp that fills the corners
@@ -990,37 +1128,19 @@ pub(super) fn segment_end(s: &Segment) -> Vec2 {
 /// boundary — `for_each_touched` leaves the tile out of the render (or leaves this
 /// segment out of a tile another segment brought in), and the dynamics loop dispatches
 /// a rect too small for its own footprint.
-pub(super) fn coverage_bounds(s: &Segment) -> (Vec2, Vec2) {
+pub(super) fn coverage_bounds(s: &Sweep) -> (Vec2, Vec2) {
     let end = segment_end(s);
     let reach = Vec2::splat(s.reach + crate::path::arc_sagitta(s.curvature, s.length));
     (s.start.min(end) - reach, s.start.max(end) + reach)
 }
 
 /// [`coverage_bounds`] grown by the apron a rewritten tile's neighbours reach into
-/// (§6.4). The one place that reach is defined: [`affected_tiles`] enumerates the
-/// tiles it touches, [`chunk_segments`] accumulates it into the region a run of
-/// segments needs, and those two answers have to be the same rectangle.
-fn segment_bounds(s: &Segment) -> (Vec2, Vec2) {
+/// (§6.4). The one place that reach is defined — [`Coverage`] is the only consumer,
+/// and every rectangle in this module comes out of it.
+fn segment_bounds(s: &Sweep) -> (Vec2, Vec2) {
     let (lo, hi) = coverage_bounds(s);
     let apron = Vec2::splat(TILE_APRON as f32);
     (lo - apron, hi + apron)
-}
-
-/// The size of the region [`region_rect`] would build for a coverage box, without
-/// building the tile set.
-///
-/// Same rectangle, reached by bounding box rather than by enumerating tiles:
-/// [`chunk_segments`] asks this question once per segment while it walks a stroke,
-/// and `affected_tiles` costs a set insert per tile per segment — on a long stroke,
-/// the very cost the incremental repaint exists to avoid.
-fn region_of(lo: Vec2, hi: Vec2) -> (u32, u32) {
-    let tile = TILE_SIZE as f32;
-    // The tile block the coverage spans, measured between tile origins.
-    let span = |a: f32, b: f32| ((b / tile).floor() - (a / tile).floor()) * tile;
-    (
-        span(lo.x, hi.x) as u32 + TILE_TEX,
-        span(lo.y, hi.y) as u32 + TILE_TEX,
-    )
 }
 
 /// Split a stroke's segments into consecutive runs, each of which the stamp loop can
@@ -1042,31 +1162,31 @@ fn region_of(lo: Vec2, hi: Vec2) -> (u32, u32) {
 /// at least one segment — one tip's own footprint is the floor no subdivision gets
 /// under, which is what [`segment_fits_region`] gates on instead.
 ///
-/// A segment is measured **with its own bleed firings** ([`affected_tiles`]'s
-/// reason): a window can reach back a quantum before the segment it fires after, so
-/// a piece's region must hold everything the piece will write, windows included —
-/// the same rectangle [`region_rect`] then builds from the tiles the pair names.
-pub(super) fn chunk_segments(
-    segments: &[Segment],
-    fires: &[(usize, Segment)],
-) -> Vec<Range<usize>> {
+/// A segment is measured **with its own bleed firings** ([`piece_sweeps`]'s reason): a
+/// window can reach back a quantum before the segment it fires after, so a piece's
+/// region must hold everything the piece will write, windows included — the same
+/// rectangle [`Covered::rect`] then builds, through the same [`Coverage::dims`] this
+/// checks against.
+pub(super) fn chunk_segments(segments: &[Segment], fires: &[BleedFire]) -> Vec<Range<usize>> {
     let mut runs = Vec::new();
-    let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
+    let mut run = Coverage::default();
     let mut start = 0;
     let mut pending = fires.iter().peekable();
     for (i, s) in segments.iter().enumerate() {
-        let (mut slo, mut shi) = segment_bounds(s);
-        while let Some((_, w)) = pending.next_if(|(after, _)| *after == i) {
-            let (wlo, whi) = segment_bounds(w);
-            (slo, shi) = (slo.min(wlo), shi.max(whi));
+        // This segment and whatever fires after it, as one box: they are committed to a
+        // piece together or not at all.
+        let mut here = Coverage::default();
+        here.add(&s.sweep);
+        while let Some(f) = pending.next_if(|f| f.after == i) {
+            here.add(&f.window);
         }
-        let (glo, ghi) = (lo.min(slo), hi.max(shi));
-        let (w, h) = region_of(glo, ghi);
+        let grown = run.union(here);
+        let (w, h) = grown.dims();
         if i > start && (w > MAX_REGION_DIM || h > MAX_REGION_DIM || i - start >= MAX_STAMPS) {
             runs.push(start..i);
-            (start, lo, hi) = (i, slo, shi);
+            (start, run) = (i, here);
         } else {
-            (lo, hi) = (glo, ghi);
+            run = grown;
         }
     }
     if start < segments.len() {
@@ -1114,52 +1234,67 @@ pub(super) fn segment_fits_region(b: &BrushParams, tol: crate::path::FlattenTole
     worst <= MAX_REGION_DIM
 }
 
-/// The region the stamp loop evolves for a stroke piece's affected `coords`: exactly
-/// the tile block they span, grown by one apron on each side so the write-back can
-/// slice whole `TILE_TEX` blocks out of it — plus the *list* of tiles to composite
-/// into it, which is those tiles and the one-tile ring around them (§6.4).
-///
-/// The ring is in the tile list but deliberately **not** in the rectangle. Its whole
-/// job is to give a rewritten tile's apron the neighbour interior it overlaps, and an
-/// apron is [`TILE_APRON`] texels — so extending the rectangle by a whole *tile* on
-/// every side, as it once did, paid for roughly 4× the region to fill a one-texel
-/// band. Ring tiles that fall outside the rectangle simply clip when composited. On a
-/// live tail, which covers a handful of tiles and is redrawn on every pointer move,
-/// that difference is most of the cost of the whole path.
-///
-/// Returns `None` if `coords` is empty. The size is [`chunk_segments`]'s business,
-/// not this one's — it hands over pieces that fit by construction.
-pub(super) fn region_rect(coords: &BTreeSet<TileCoord>) -> Option<RegionRect> {
-    let mut lo = Vec2::splat(f32::INFINITY);
-    let mut hi = Vec2::splat(f32::NEG_INFINITY);
-    for c in coords {
-        lo = lo.min(c.origin());
-        hi = hi.max(c.origin());
-    }
-    if !lo.x.is_finite() {
-        return None;
-    }
-    let w = (hi.x - lo.x) as u32 + TILE_TEX;
-    let h = (hi.y - lo.y) as u32 + TILE_TEX;
-    let mut halo: BTreeSet<TileCoord> = BTreeSet::new();
-    for c in coords {
-        for dy in -1..=1 {
-            for dx in -1..=1 {
-                halo.insert(TileCoord::new(c.x + dx, c.y + dy));
+impl Covered {
+    /// The region the stamp loop evolves for this piece: exactly the tile block its
+    /// sweeps span, grown by one apron on each side so the write-back can slice whole
+    /// `TILE_TEX` blocks out of it — plus the *list* of tiles to composite into it,
+    /// which is the touched set and the one-tile ring around it (§6.4).
+    ///
+    /// **The extent comes from [`Coverage::dims`]**, which is the function
+    /// [`chunk_segments`] checked this piece against. That is the whole point of the
+    /// type: the promise "this piece fits `MAX_REGION_DIM`" and the allocation the
+    /// promise is about are now one arithmetic rather than two that a comment asked to
+    /// agree. Only the halo comes from the tile set, and only because a diagonal stroke
+    /// touches fewer tiles than its bounding rectangle holds — compositing the
+    /// rectangle would be correct and slower.
+    ///
+    /// The ring is in the tile list but deliberately **not** in the rectangle. Its
+    /// whole job is to give a rewritten tile's apron the neighbour interior it
+    /// overlaps, and an apron is [`TILE_APRON`] texels — so extending the rectangle by
+    /// a whole *tile* on every side, as it once did, paid for roughly 4× the region to
+    /// fill a one-texel band. Ring tiles that fall outside the rectangle simply clip
+    /// when composited. On a live tail, which covers a handful of tiles and is redrawn
+    /// on every pointer move, that difference is most of the cost of the whole path.
+    ///
+    /// Returns `None` if nothing was covered.
+    pub(super) fn rect(&self) -> Option<RegionRect> {
+        if self.bounds.is_empty() {
+            return None;
+        }
+        let (w, h) = self.bounds.dims();
+        // Stated where it is relied on, which is what it was missing: `chunk_segments`
+        // hands over pieces that fit by construction, and until this line nothing said
+        // so at the point the region is actually allocated. Debug-only because the
+        // failure is an oversized allocation rather than a wrong picture, and because a
+        // panic in the render path is its own defect (see `plan::dispatch_rect`).
+        debug_assert!(
+            w <= MAX_REGION_DIM && h <= MAX_REGION_DIM,
+            "a {w}x{h} region overruns the {MAX_REGION_DIM} the chunker promised",
+        );
+        // The top-left *tile* origin the box spans. Taken off the tile set rather than
+        // re-floored off the box, which is the same point: `dims` is a span between
+        // exactly these origins.
+        let mut lo = Vec2::splat(f32::INFINITY);
+        let mut halo: BTreeSet<TileCoord> = BTreeSet::new();
+        for c in &self.tiles {
+            lo = lo.min(c.origin());
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    halo.insert(TileCoord::new(c.x + dx, c.y + dy));
+                }
             }
         }
+        Some(RegionRect {
+            halo: halo.into_iter().collect(),
+            lo,
+            origin: lo - Vec2::splat(TILE_APRON as f32),
+            w,
+            h,
+        })
     }
-    let origin = lo - Vec2::splat(TILE_APRON as f32);
-    Some(RegionRect {
-        halo: halo.into_iter().collect(),
-        lo,
-        origin,
-        w,
-        h,
-    })
 }
 
-/// What [`region_rect`] measures for a piece: the region rectangle the stamp loop
+/// What [`Covered::rect`] measures for a piece: the region rectangle the stamp loop
 /// evolves, and the tiles composited into it.
 pub(super) struct RegionRect {
     /// The tiles to composite: the affected set plus the one-tile ring around it, so
@@ -1245,8 +1380,24 @@ mod tests {
         }
     }
 
-    fn whole(rec: &StrokeRecord) -> Vec<Segment> {
+    /// Every segment of a stroke, as [`Segment`]s — what the chunker and the tile
+    /// walks are handed.
+    fn whole_segments(rec: &StrokeRecord) -> Vec<Segment> {
         generate_segments_in(rec, flatten_tolerance(&rec.brush), StrokeSpans::whole(rec)).0
+    }
+
+    /// The same, as bare [`Sweep`]s.
+    ///
+    /// Almost everything below is a claim about *geometry* — where the tip went and how
+    /// wide it was — so it is asked of the half that carries geometry. A test that
+    /// wanted a paint rate would have to say so by using [`whole_segments`], which is
+    /// the point of the split being visible here too.
+    fn whole(rec: &StrokeRecord) -> Vec<Sweep> {
+        sweeps(whole_segments(rec))
+    }
+
+    fn sweeps(segs: Vec<Segment>) -> Vec<Sweep> {
+        segs.into_iter().map(|s| s.sweep).collect()
     }
 
     /// The profile's two end conditions are the whole design (see [`taper_profile`]),
@@ -1319,7 +1470,7 @@ mod tests {
     /// *boundaries*, where the arc length a segment measures its taper at is
     /// accumulated along the polyline and the two sides can differ by an ulp or two of
     /// a large number.
-    fn assert_outline_is_continuous(segs: &[Segment]) {
+    fn assert_outline_is_continuous(segs: &[Sweep]) {
         for (i, w) in segs.windows(2).enumerate() {
             let (before, after) = (w[0].tip_at(1.0), w[1].tip_at(0.0));
             let tol = 1e-3 * before.max(after).max(1.0);
@@ -1337,7 +1488,7 @@ mod tests {
     /// at both ends of every segment. Structural rather than enforced — it follows
     /// from flooring both ends at half a px — so this checks the algebra rather than a
     /// rule that could be forgotten.
-    fn assert_tips_stay_positive(segs: &[Segment]) {
+    fn assert_tips_stay_positive(segs: &[Sweep]) {
         for (i, s) in segs.iter().enumerate() {
             assert!(
                 s.ramp.abs() < 2.0,
@@ -1596,7 +1747,8 @@ mod tests {
             one_pass.len(),
             "the split re-cut it"
         );
-        for (i, (a, b)) in head.iter().chain(&tail).zip(&one_pass).enumerate() {
+        let split = sweeps(head.into_iter().chain(tail).collect());
+        for (i, (a, b)) in split.iter().zip(&one_pass).enumerate() {
             assert_eq!(a.start, b.start, "segment {i}: start differs");
             assert_eq!(a.length, b.length, "segment {i}: length differs");
         }
@@ -1639,7 +1791,7 @@ mod tests {
                 dist,
             },
         );
-        let split: Vec<Segment> = head.into_iter().chain(tail).collect();
+        let split = sweeps(head.into_iter().chain(tail).collect());
         let one_pass = whole(&rec);
 
         assert_eq!(
@@ -2374,11 +2526,15 @@ mod tests {
 
     // --- region measurement ----------------------------------------------
 
-    /// A segment carrying only what the region measurements read.
-    fn seg(start: Vec2, end: Vec2, radius: f32) -> Segment {
+    /// A sweep carrying only what the region measurements read.
+    ///
+    /// The paint rates are absent rather than zeroed: the region measurements are
+    /// geometry, they take a [`Sweep`], and there is no longer anywhere to put a rate
+    /// that would imply one had been consulted.
+    fn sweep(start: Vec2, end: Vec2, radius: f32) -> Sweep {
         let v = end - start;
         let length = v.length();
-        Segment {
+        Sweep {
             start,
             dir: if length > 0.0 {
                 v / length
@@ -2397,26 +2553,51 @@ mod tests {
             length,
             orient: 0.0,
             dist: 0.0,
-            // The region measurements are geometry: they read the frame and the
-            // radius and nothing else, so the paint rates are left at zero rather
-            // than given values that would imply they were consulted.
-            add: 0.0,
-            lift: 0.0,
-            deposit: 0.0,
-            bleed: 0.0,
-            tooth: 0.0,
         }
     }
 
-    /// The union of every segment's — and firing window's — [`segment_bounds`], as
-    /// [`chunk_segments`] accumulates it.
-    fn measured(segments: &[Segment], fires: &[(usize, Segment)]) -> Option<(u32, u32)> {
-        let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
-        for s in segments.iter().chain(fires.iter().map(|(_, w)| w)) {
-            let (slo, shi) = segment_bounds(s);
-            (lo, hi) = (lo.min(slo), hi.max(shi));
+    /// The same, as a whole segment — what the chunker and the tile walks take.
+    fn seg(start: Vec2, end: Vec2, radius: f32) -> Segment {
+        Segment {
+            sweep: sweep(start, end, radius),
+            paint: Paint::default(),
         }
-        lo.x.is_finite().then(|| region_of(lo, hi))
+    }
+
+    /// A firing after segment `after`, sweeping `window`.
+    fn fire(after: usize, window: Sweep) -> BleedFire {
+        BleedFire {
+            after,
+            window,
+            bleed: 0.5,
+        }
+    }
+
+    /// The region extent as [`Coverage`] measures it: a bounding box over every sweep
+    /// the piece will rasterize.
+    fn measured(segments: &[Segment], fires: &[BleedFire]) -> Option<(u32, u32)> {
+        let mut c = Coverage::default();
+        for s in piece_sweeps(segments, fires) {
+            c.add(s);
+        }
+        (!c.is_empty()).then(|| c.dims())
+    }
+
+    /// The same extent reached the **other** way: the tile block the touched set spans,
+    /// measured between its extreme tile origins.
+    fn from_tiles(tiles: &BTreeSet<TileCoord>) -> Option<(u32, u32)> {
+        let mut lo = Vec2::splat(f32::INFINITY);
+        let mut hi = Vec2::splat(f32::NEG_INFINITY);
+        for c in tiles {
+            lo = lo.min(c.origin());
+            hi = hi.max(c.origin());
+        }
+        lo.x.is_finite().then(|| {
+            (
+                (hi.x - lo.x) as u32 + TILE_TEX,
+                (hi.y - lo.y) as u32 + TILE_TEX,
+            )
+        })
     }
 
     /// The per-tile segment lists cover exactly the tiles [`affected_tiles`] names, and
@@ -2444,7 +2625,7 @@ mod tests {
         let map = tiles_with_segments(&segments);
         assert_eq!(
             map.keys().copied().collect::<BTreeSet<_>>(),
-            affected_tiles(&segments, &[]),
+            cover(&segments, &[]).tiles,
             "the two walks disagree on which tiles a stroke touches",
         );
         assert!(map.len() > 4, "not enough tiles to be an interesting case");
@@ -2457,7 +2638,7 @@ mod tests {
             // The list against the membership test itself, segment by segment: a tile
             // is in a segment's block exactly when the segment is in the tile's list.
             for (i, s) in segments.iter().enumerate() {
-                let (lo, hi) = segment_bounds(s);
+                let (lo, hi) = segment_bounds(&s.sweep);
                 let inside = (lo.x / tile).floor() <= coord.x as f32
                     && coord.x as f32 <= (hi.x / tile).floor()
                     && (lo.y / tile).floor() <= coord.y as f32
@@ -2481,15 +2662,23 @@ mod tests {
         );
     }
 
-    /// [`chunk_segments`] decides where to cut a stroke by measuring the region a run
-    /// of segments would need with [`region_of`], but the render that follows sizes
-    /// the actual textures from [`region_rect`]. They are two ways of measuring one
-    /// rectangle — bounding box versus enumerated tiles — so they have to agree
-    /// exactly. If the bounding box ever under-reported, a piece would allocate past
-    /// [`MAX_REGION_DIM`]; if it over-reported, strokes would be cut into more pieces
-    /// than they need, each paying for its own region composite.
+    /// **The identity [`Covered::rect`] rests on**: the extent of the bounding box a
+    /// piece covers is the extent of the tile block its touched set spans.
+    ///
+    /// The chunker decides where to cut by measuring a box ([`Coverage::dims`]) and the
+    /// render allocates the region the cut was about; those are one function now, so
+    /// that half is structural rather than tested. What is left is why it is allowed to
+    /// be: `rect` takes its **size** from the box and its **halo** from the set, and
+    /// that is only sound because `min` over segments of `floor(lo / tile)` is
+    /// `floor(min lo / tile)`. This checks the two against each other on shapes where a
+    /// disagreement would show — a fat tip reaching past its own endpoints, negative
+    /// tiles, extremes contributed by different segments.
+    ///
+    /// If the box ever under-reported, a piece would allocate past [`MAX_REGION_DIM`];
+    /// if it over-reported, strokes would be cut into more pieces than they need, each
+    /// paying for its own region composite.
     #[test]
-    fn the_chunker_measures_the_region_the_render_builds() {
+    fn the_box_and_the_tile_set_measure_the_same_rectangle() {
         let tile = TILE_SIZE as f32;
         let cases: Vec<(&str, Vec<Segment>)> = vec![
             (
@@ -2518,13 +2707,24 @@ mod tests {
             ),
         ];
         for (what, segments) in cases {
-            let want = region_rect(&affected_tiles(&segments, &[])).map(|r| (r.w, r.h));
+            let covered = cover(&segments, &[]);
+            let want = from_tiles(&covered.tiles);
             assert_eq!(
                 measured(&segments, &[]),
                 want,
-                "region size disagrees for {what}"
+                "the box and the tile set disagree for {what}"
+            );
+            // And that is the size the region is actually allocated at.
+            assert_eq!(
+                covered.rect().map(|r| (r.w, r.h)),
+                want,
+                "the region built for {what} is not the rectangle measured"
             );
         }
+        assert!(
+            cover(&[], &[]).rect().is_none(),
+            "no segments is not a region"
+        );
         assert_eq!(measured(&[], &[]), None, "no segments is not a region");
     }
 
@@ -2550,12 +2750,12 @@ mod tests {
         let s = seg(Vec2::new(x0, 8.0), Vec2::new(x0 + 50.0, 8.0), radius);
         // Its firing's window, one quantum of arc ending where the segment starts —
         // the shape `bleed_fires` emits for the first segment of a range.
-        let w = seg(Vec2::new(x0 - bq, 8.0), Vec2::new(x0, 8.0), radius);
-        let fires = vec![(0usize, w)];
+        let w = sweep(Vec2::new(x0 - bq, 8.0), Vec2::new(x0, 8.0), radius);
+        let fires = vec![fire(0, w)];
 
-        let without = affected_tiles(&[s], &[]);
-        let with = affected_tiles(&[s], &fires);
-        let window_tiles = affected_tiles(&[w], &[]);
+        let without = cover(&[s], &[]).tiles;
+        let with = cover(&[s], &fires).tiles;
+        let window_tiles = cover(&[], &fires).tiles;
         assert!(
             window_tiles.iter().any(|c| !without.contains(c)),
             "the window does not reach past the segment boxes — the case has gone \
@@ -2569,8 +2769,8 @@ mod tests {
         // tiles — fires on both sides of the relation, like the segments always were.
         assert_eq!(
             measured(&[s], &fires),
-            region_rect(&with).map(|r| (r.w, r.h)),
-            "the chunker and the region disagree once the windows are counted",
+            from_tiles(&with),
+            "the box and the tile set disagree once the windows are counted",
         );
         assert_eq!(
             chunk_segments(&[s], &fires),
