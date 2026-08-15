@@ -30,7 +30,7 @@ which is `GPU_CLEANUP.md`'s finding about `gpu/stroke`'s lessons, one directory 
 | 3 | `guides.rs` hand-rolls `UniformSlots` with a literal stride | **done** — `8d7bda1` |
 | 4 | Four hand-rolled grow buffers; two allocate for nothing | **done** — `ec82183` |
 | 5 | The supersample budget omits the scratch and the residual | **done** — `2e8c3ca` |
-| 6 | Blend/filter bind groups rebuilt per frame over stable views | **done** — `8d7bda1`, `53826f9`; regressed and fixed — `4a3f5cd` |
+| 6 | Blend/filter bind groups rebuilt per frame over stable views | **done** — `8d7bda1`, `53826f9`; regressed and fixed — `3b3afd7` |
 | 7 | Pass A is one draw and one bind group per tile | **not done** — measure first |
 | 8 | Smaller correctness and clarity items (six) | **five done** — `eeef655`, `3a5bd1e`; one left |
 | 9 | `scratch_needs` has no unit tests | **done** — `5eb05f3` |
