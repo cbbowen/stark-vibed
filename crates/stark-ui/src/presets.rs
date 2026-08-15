@@ -226,7 +226,7 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
             BrushParams {
                 // The sharpened point itself now, where the radius used to stand
                 // for the *widest* mark the tilt mapping would scale back from.
-                radius: 7.0,
+                radius: 15.0,
                 shape: pencil,
                 // Which aims the stretch, as well as turning the stamp: the axis a
                 // tip is drawn out along is the axis it faces (§6.6).
@@ -237,12 +237,16 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
                 // "the pen is upright" rather than a case to floor away.
                 stretch: 0.75,
                 modulation: Modulations {
-                    stretch: Some(Modulation::linear(ModSource::Tilt)),
+                    stretch: Some(Modulation {
+                        source: ModSource::Tilt,
+                        floor: 0.0,
+                        curve: -0.5,
+                    }),
                     flow: Some(Modulation::linear(ModSource::Pressure)),
                     ..Modulations::default()
                 },
                 dynamics: BrushDynamics {
-                    add: 0.2,
+                    add: 0.4,
                     ..BrushDynamics::default()
                 },
                 color_dynamics: ColorDynamics {
