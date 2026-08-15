@@ -224,6 +224,16 @@ struct Slot {
     /// so cell boundaries are pinned to canvas texels whatever region surrounds them
     /// (§6.4). Zero whenever `cell` is 1.
     cell_anchor: Vec2,
+    /// How much the tip grows across this slot's sweep, as a fraction of
+    /// [`frame`](Self::frame) — [`Segment::ramp`](super::super::segments::Segment).
+    ///
+    /// Zero on a bleed window and on a settle, and both are meant: a firing is a
+    /// stretch of *diffusion* at one tip (which is also the radius
+    /// [`bleed_stencil`] solved its stencil against), and a settle is the tip
+    /// standing still with no travel to ramp along. Zero is also
+    /// [`Default`]'s value, so a slot kind that has never heard of ramps cannot
+    /// accidentally acquire one.
+    ramp: f32,
 }
 
 impl Default for Slot {
@@ -262,6 +272,7 @@ impl Default for Slot {
             weave_bias: Vec2::ZERO,
             cell: 1.0,
             cell_anchor: Vec2::ZERO,
+            ramp: 0.0,
         }
     }
 }
@@ -306,7 +317,7 @@ impl Slot {
                 self.weave_bias.y,
             ],
             j: self.resid,
-            k: [self.cell, self.cell_anchor.x, self.cell_anchor.y, 0.0],
+            k: [self.cell, self.cell_anchor.x, self.cell_anchor.y, self.ramp],
         }
     }
 }
@@ -594,6 +605,12 @@ pub(super) fn dynamics_plan(
                 frame: s.frame,
                 travel_radii: s.length / s.frame,
                 frame_scale: s.frame / s.radius,
+                // The tip's growth across this segment, which the frame shares
+                // because the two differ by the constant `frame_scale` above
+                // ([`Segment::ramp`]). Everything the host prices off `s.radius` —
+                // the cell, the bleed cadence, the exchange step — stays on the
+                // reference tip, which is what that radius is.
+                ramp: s.ramp,
                 lambda_lift: lambda(s.lift),
                 lambda_deposit: lambda(s.deposit),
                 rect_origin: rect.origin,
@@ -865,6 +882,14 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segme
                     // ([`MAX_TIP_TURN`](super::budget::MAX_TIP_TURN)).
                     curvature: s.curvature,
                     radius: s.radius,
+                    // **A window does not ramp**, even when the segment it fires after
+                    // does. A firing is a stretch of lateral diffusion at one tip, and
+                    // that tip is the radius `bleed_stencil` solved its reach and rate
+                    // against (`plan`, below) — a sweep whose rim moved under it would
+                    // be diffusing at a width its own stencil was not built for. The
+                    // cadence's usual approximation about the radius it fires at, and
+                    // the same one the inherited rates below make.
+                    ramp: 0.0,
                     // The crossing segment's shape is the window's shape — a firing is
                     // that segment relaxing its own footprint, so it is swept in the
                     // same frame and reaches exactly as far from the centreline.
@@ -1010,6 +1035,9 @@ mod tests {
             dir,
             curvature: 0.0,
             radius,
+            // A tip that holds still, so the frame the shader unrolls is the one
+            // these builders are being measured against and nothing else.
+            ramp: 0.0,
             // A round tip's frame and reach, both the radius: the plan builders are
             // being measured here, not the width of any one shape.
             frame: radius,
@@ -1076,6 +1104,7 @@ mod tests {
             resid: [36.0, 37.0, 38.0, 39.0],
             cell: 40.0,
             cell_anchor: Vec2::new(41.0, 42.0),
+            ramp: 44.0,
         }
         .pack();
 
@@ -1119,8 +1148,8 @@ mod tests {
         );
         assert_eq!(
             packed.k,
-            [40.0, 41.0, 42.0, 0.0],
-            "k: the footprint cell + its canvas anchor (§6.2)"
+            [40.0, 41.0, 42.0, 44.0],
+            "k: the footprint cell + its canvas anchor, and the radius ramp (§6.2)"
         );
     }
 

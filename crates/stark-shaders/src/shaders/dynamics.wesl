@@ -76,7 +76,7 @@
 // is fixed CPU-side per stroke; every dispatch is a pure function of what it reads.
 // Replay and live == committed hold.
 
-import package::stamp_common::{prefix_at, Sweep, sweep_at, sweep_tangent};
+import package::stamp_common::{prefix_at, ramp_apply, Sweep, sweep_at, sweep_tangent};
 import package::lib::noise::{color_jitter};
 import package::lib::paint_common::{blend_latent, ground_at, rise_ahead, tooth_gate, PAINT_EPS};
 import package::lib::sample::{load1, bilerp_taps, bilerp_mix};
@@ -169,7 +169,17 @@ struct Stamp {
     //    them, without the shader ever learning a canvas coordinate too large for an
     //    f32 to hold exactly. `.x` is 1 (and .yz 0) on every slot the host keeps on
     //    the exact path — small tips, hard tips, bleed and settle slots — none of
-    //    which read this lane; .w unused.
+    //    which read this lane.
+    //
+    //    `.w` is the **radius ramp** (§6.2, `Segment::ramp`): how much the tip grows
+    //    across this slot's sweep, as a fraction of the frame radius in `b.x`, so the
+    //    tip a fraction `u` of the way through is `b.x·(1 + .w·(u − ½))`. A segment
+    //    does not have one radius — the taper and the size modulation both scale the
+    //    tip with distance travelled — and a sweep at a single radius steps the
+    //    stroke's outline at every cut. Its neutral value is 0, unlike `e.w` and
+    //    `k.x` beside it, because it is a *difference* rather than a scale: a zeroed
+    //    lane is a tip that holds still, which is what a bleed window and a settle
+    //    both are, and what every untapered stroke at constant pressure is.
     k: vec4<f32>,
 }
 
@@ -209,6 +219,11 @@ fn seg_dir() -> vec2<f32> { return st.a.zw; }
 fn frame_radius() -> f32 { return st.b.x; }
 fn travel_radii() -> f32 { return st.b.y; }
 fn travel_px() -> f32 { return st.b.y * st.b.x; }
+
+// How much the tip grows across this slot's sweep, as a fraction of `frame_radius()`
+// (see `Stamp::k`). 0 on a tip that holds still — every bleed window, every settle,
+// and every segment of an untapered brush the pen is not driving.
+fn radius_ramp() -> f32 { return st.k.w; }
 
 // How much wider that frame is than the tip inside it (§6.6). Exactly 1 for every
 // unpadded volume, which is every brush but a pen-oriented stamp, so a slot that never
@@ -783,9 +798,23 @@ fn bake(
 //
 // `travel_radii()` carries the travel as `length / radius`, so the arc length it was built
 // from is recovered by multiplying back through.
+//
+// **The single place the loop builds a frame**, which is what lets the radius ramp
+// (§6.2, `Segment::ramp`) be applied in exactly one line: `deposit`, its coarse twin,
+// the bleed flux, `snapshot` and `settle` all come through here, so all five agree
+// about where the sweep's rim is — and `outside_sweep`, which several of them use to
+// skip work the others must then also skip, is computed from the same frame. Applying
+// it anywhere further down would be five chances to disagree.
+//
+// The tool *reservoir* deliberately does not ramp: `bake` and `exchange` place a
+// brush-local grid, which is the tool's own and does not stretch as the tip does, and
+// they reach the canvas through `frame_radius()` rather than through a `Sweep` at all.
+// What ramps is the canvas-side coverage — the prefix-τ difference, which is what the
+// stroke's outline is made of.
 fn segment_frame(rt: vec2<i32>) -> Sweep {
     let p = vec2<f32>(rt) + vec2<f32>(0.5, 0.5);
-    return sweep_at(p, seg_start(), seg_dir(), frame_radius(), travel_px(), curvature());
+    let sw = sweep_at(p, seg_start(), seg_dir(), frame_radius(), travel_px(), curvature());
+    return ramp_apply(sw, radius_ramp());
 }
 
 // Whether a region texel is provably outside the segment's sweep — the span
@@ -1441,8 +1470,10 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // The brush's own color at this texel: the stroke color offset by the
     // color-dynamics field, sampled at the same stroke-local (lateral, arc)
-    // domain as the fast path — both in canvas px (the travel frame's y is in
-    // radius units, so it scales by the radius).
+    // domain as the fast path — both in canvas px. The travel frame's `y` is in
+    // units of the tip **in force here** and scales by `sw.radius`; its `x` is in the
+    // segment's reference units and scales by `frame_radius()`. The two axes are
+    // denominated differently on a ramping tip (`stamp_common::Sweep`).
     // How far along the stroke this texel sits, and what the brush has left to lay
     // there. The same value whichever segment is drawing it — segment `i` starts at
     // `dᵢ` and sees this texel at `(arc − dᵢ)/radius` — so both rates below come out
@@ -1454,7 +1485,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var own_lat = brush_lat();
     if any(noise_amp() != vec3<f32>(0.0, 0.0, 0.0)) {
-        let lateral = yl * frame_radius();
+        let lateral = yl * sw.radius;
         own_lat += color_jitter(
             dyn_noise_tex, dyn_noise_samp, vec2<f32>(lateral, arc),
             noise_freq(), noise_amp(), noise_off(),
@@ -1760,7 +1791,7 @@ fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     let own_op = brush_op() * drain;
     var own_lat = brush_lat();
     if any(noise_amp() != vec3<f32>(0.0, 0.0, 0.0)) {
-        let lateral = sw.local.y * frame_radius();
+        let lateral = sw.local.y * sw.radius;
         own_lat += color_jitter(
             dyn_noise_tex, dyn_noise_samp, vec2<f32>(lateral, arc),
             noise_freq(), noise_amp(), noise_off(),

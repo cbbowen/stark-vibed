@@ -255,7 +255,11 @@ impl StrokeRenderer {
                     // volume's, and a padded one is wider than the shape inside it
                     // (§6.6, [`Segment::frame`]). The two are the same number for
                     // every brush but a pen-oriented stamp.
-                    geom: [s.frame, s.length],
+                    //
+                    // The ramp rides here unscaled, and that is the point of its being
+                    // *relative*: the frame is the tip times a constant, so the tip's
+                    // fractional growth is the frame's ([`Segment::ramp`]).
+                    geom: [s.frame, s.length, s.ramp],
                     extra: [s.orient, s.dist, s.curvature, s.add],
                     tooth: s.tooth,
                 }

@@ -65,8 +65,14 @@ fn vs_main(
     @location(0) start: vec2<f32>,
     // Unit tangent at the segment start.
     @location(1) dir: vec2<f32>,
-    // Radius, arc length.
-    @location(2) geom: vec2<f32>,
+    // The segment's **reference** radius (its midpoint tip), its arc length, and its
+    // radius ramp — `(r_end − r_start)/radius`, so the tip a fraction `u` of the way
+    // through is `radius·(1 + ramp·(u − ½))`. A segment does not have *a* radius: the
+    // taper and the size modulation both scale the tip with distance travelled, and
+    // carrying only one value per segment puts a step in the stroke's outline at every
+    // cut (§6.2, `Segment::ramp`). Zero wherever the tip holds still, which is the
+    // branch that keeps those strokes bit-identical.
+    @location(2) geom: vec3<f32>,
     // Orientation (turns ∈ [0,1)), arc length at the segment start, signed
     // curvature, and the `add` source rate — the one paint rate the swept path
     // reads, here because a modulation can point at it (§6.2).

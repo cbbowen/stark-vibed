@@ -175,18 +175,43 @@ goldens and peers must agree on it bit for bit.
 
 Two places the obvious implementation is wrong:
 
-- The taper varies radius *with distance travelled* while a segment sweeps at a
-  constant one. Paid for by cutting segments finer, but **locally**: only edges
-  actually inside a taper are subdivided. The step the cut holds the radius to is
-  denominated in **canvas px**, not in the radius — a sub-pixel floor (the
-  outline granted the same positional budget as the centreline, since a segment
-  boundary puts the edge off the true cone by half the step), relaxed to a
-  quarter of the tip's shoulder where the falloff blurs the join anyway, the same
-  resolvable-feature bound the footprint cell coarsens against. Denominated in
-  the radius *factor* (2%), as it first was, the step was invisible on a 20 px
-  brush and drew a radius-500 taper as ~5 px sawteeth, coarsest right at the
-  point; denominated in px, a fat soft brush pays logarithmically few extra
-  segments and a hard one pays for exactly the edge it shows.
+- The taper varies radius *with distance travelled*. **A segment does not have a
+  radius**: it has a reference radius (its midpoint) and a *ramp*, the tip's
+  fractional growth across its travel, and the tip in force a fraction `u` in is
+  `radius·(1 + ramp·(u − ½))`. Both quantities that scale the tip vary with
+  travel — the taper and the size modulation — so this is not a taper feature;
+  the pen drives the same mechanism.
+
+  Carrying a ramp is what makes the outline **continuous by construction**.
+  Adjacent segments compute the tip at the knot they share from the same pen and
+  the same taper at the same arc length, so they agree on it to the bit and there
+  is no C⁰ break to alias. A single radius per segment cannot do this at any
+  subdivision — it can only make the step smaller, and a step in an edge is
+  visible far below the pixel it is quantized to. That is what drew a radius-500
+  taper as a comb of ~5 px sawteeth. `|ramp| < 2` structurally, so the tip is
+  positive at both ends without a clamp: the ends are floored at half a px and
+  `|r₁ − r₀| < r₁ + r₀`.
+
+  What the cut still buys is second order — the ramp is a *chord* across a cubic
+  profile, so the outline bows off it by the sagitta `|r''|·h²/8`, held under the
+  flattener's own sub-pixel budget or under a quarter of the tip's shoulder where
+  the falloff is wider than that. Only edges actually inside a taper are
+  subdivided, and a whole zone now costs a handful of segments where the two
+  earlier rules — a step in the radius *factor*, then a step in px — cost 211 and
+  121 on the reference stroke, and ~700 per zone on a hard 500 px tip.
+
+  There is deliberately no cap on the ramp itself. A large one costs accuracy in
+  the *deposit* (the sweep's travel axis is denominated in the reference radius),
+  not in the outline; and where it is largest no cut can reduce it — cut an edge
+  reaching a taper's point into `n` uniform pieces and piece `k` has ramp
+  `1/(k + ½)`, independent of `n`. Away from the point the sagitta bound has
+  already made it small.
+
+  One consequence worth knowing: a segment's sweep is rasterized over a strip
+  built on its *widest* tip, which puts real fragments outside the footprint's
+  own `|y| ≤ 1` square. The prefix-τ lookup returns zero out there explicitly —
+  it must not clamp to the mask's border row, which is small but not zero, or
+  every ramping segment prints a faint hard-edged rectangle the size of its quad.
 - A taper is measured from the ends of the **whole** stroke, and while the
   pointer is down the far end has not happened yet. So freezing is held back: a
   span is settled only once it is a trailing taper's length clear of the live end

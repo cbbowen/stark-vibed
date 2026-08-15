@@ -79,8 +79,11 @@ struct VsOut {
     // interpolating them across a curved sweep would be meaningless.
     @location(1) @interpolate(flat) start: vec2<f32>,
     @location(2) @interpolate(flat) dir: vec2<f32>,
-    // radius, arc length.
-    @location(3) @interpolate(flat) geom: vec2<f32>,
+    // The **reference** radius, the arc length, and the radius ramp — how much the tip
+    // grows across the segment as a fraction of that radius (§6.2, `Segment::ramp`).
+    // Zero on a tip that does not change, which is the branch every untapered stroke
+    // at constant pressure takes.
+    @location(3) @interpolate(flat) geom: vec3<f32>,
     // Shape orientation in turns ∈ [0,1) (the relative angle between the shape's
     // native axis and the travel direction, picking the prefix-τ slice, §6.6); the
     // arc length of the segment's start from the stroke start (canvas px); the
@@ -120,8 +123,15 @@ struct FsOut {
 
 // A canvas point's place in the frame the sweep is integrated in.
 struct Sweep {
-    // Brush-local: .x the travel coordinate in radius units (0 at the segment start,
-    // growing the way the tip goes), .y the lateral offset in radius units.
+    // Brush-local: .x the travel coordinate in units of the segment's *reference*
+    // radius (0 at the segment start, growing the way the tip goes), .y the lateral
+    // offset in units of the radius **in force where this point is** — which is the
+    // reference one only on a segment whose tip does not ramp (`ramp_apply`).
+    //
+    // The two axes are denominated differently on purpose. `.x` is conjugate to `lr`
+    // and to the prefix table's travel axis, so the pair must share one frame; `.y`
+    // indexes the coverage profile across the stroke, which is what the outline *is*,
+    // so it has to follow the tip that is actually there.
     local: vec2<f32>,
     // The segment's travel **in this point's own measure**, radius units. On a curved
     // sweep a point on the outside of the turn sees the tip cross more of its own
@@ -148,6 +158,51 @@ struct Sweep {
     // flattener happened to cut a curve. The local tangent is the same field however
     // finely the curve is chopped, so the tooth stays a property of the path.
     turn: f32,
+    // The tip radius **in force where this point is**, in the same px the frame is
+    // measured in — the segment's reference radius on a tip that does not ramp, and
+    // the ramp read at this point's own travel otherwise (`ramp_apply`).
+    //
+    // What turns a brush-local lateral offset back into px: `local.y · radius`. The
+    // travel axis does *not* convert through this one — `local.x` is in reference
+    // units and pairs with the reference radius (`stroke_arc`).
+    radius: f32,
+}
+
+// The tip in force a fraction `u` of the way through a ramping segment, as a multiple
+// of the segment's reference radius: `1 + ramp·(u − ½)` (§6.2, `Segment::ramp`).
+//
+// Positive for every `u ∈ [0,1]` without a clamp, because the host floors both ends of
+// the ramp at half a px and `|r₁ − r₀| < r₁ + r₀` — so `|ramp| < 2` structurally.
+//
+// Clamped in `u` rather than extrapolated: past either end of the segment the tip has,
+// as far as this segment is concerned, stopped at the end it reached. That is also what
+// keeps the overhanging caps of two adjacent segments agreeing about the knot they
+// share, instead of each running off along its own slope.
+fn ramp_scale(ramp: f32, x: f32, lr: f32) -> f32 {
+    // Every segment of an untapered brush at constant pressure takes this branch, and
+    // it is an exact identity — those strokes render as they did before ramps existed,
+    // to the bit. It also carries the settle slot, whose travel is zero.
+    if ramp == 0.0 || lr <= 0.0 {
+        return 1.0;
+    }
+    return 1.0 + ramp * (clamp(x / lr, 0.0, 1.0) - 0.5);
+}
+
+// Re-denominate a sweep's lateral axis against the tip actually in force there.
+//
+// Split out of `sweep_at` rather than folded into it because the two callers need it at
+// different moments. The dynamics loop builds its frame per fragment and applies this
+// immediately (`dynamics::segment_frame`). The stamp path builds the frame at the
+// *vertices* and interpolates it, and this correction is not affine in canvas position
+// — it is a ratio of two affine functions — so interpolating its result would be wrong
+// where interpolating `sweep_at`'s is exact. There it is applied after the interpolation
+// instead (`sweep_of`), on quantities that survive it.
+fn ramp_apply(sw: Sweep, ramp: f32) -> Sweep {
+    let s = ramp_scale(ramp, sw.local.x, sw.lr);
+    var out = sw;
+    out.local.y = sw.local.y / s;
+    out.radius = sw.radius * s;
+    return out;
 }
 
 // The tip's heading `turn` into the segment, from the tangent it left the start with.
@@ -200,6 +255,7 @@ fn sweep_at(
     let across = dot(w, perp);
 
     var out: Sweep;
+    out.radius = radius;
     if kappa == 0.0 {
         out.local = vec2<f32>(along, across) / radius;
         out.lr = len / radius;
@@ -251,7 +307,7 @@ fn sweep_vertex(
     vi: u32,
     start: vec2<f32>,
     dir: vec2<f32>,   // unit tangent at the segment start
-    geom: vec2<f32>,  // radius, arc length
+    geom: vec3<f32>,  // reference radius, arc length, radius ramp
     extra: vec4<f32>, // orientation (turns ∈ [0,1)), arc length at start, curvature, `add`
     tooth: f32,       // how deep this tip bites into the weave (§6.4)
 ) -> VsOut {
@@ -260,23 +316,37 @@ fn sweep_vertex(
     let kappa = extra.z;
     let perp = vec2<f32>(-dir.y, dir.x);
 
+    // The strip is built at the segment's **widest** tip, not its reference one: a
+    // ramping segment's footprint reaches `radius·(1 + |ramp|/2)` at the fat end, and
+    // the strip has only to be conservative — a fragment outside the true footprint
+    // differences its prefix taps to zero and writes nothing, while one the strip
+    // misses is a clipped stroke. Exactly `radius` when the tip does not ramp, so no
+    // existing stroke pays a fragment for this.
+    let hull = radius * (1.0 + 0.5 * abs(geom.z));
+
     let u = f32(vi >> 1u) / f32(SWEEP_SLICES); // 0..1 along the travel
     let side = select(-1.0, 1.0, (vi & 1u) != 0u); // the two lateral rims
 
     var canvas: vec2<f32>;
     if kappa == 0.0 {
         // The straight case is one quad's worth of geometry, cut into slices.
-        let lr = len / radius;
+        // The travel margin is a radius of the *widest* tip at each end, for the
+        // same reason the lateral rim is.
+        let lr = len / hull;
         let cx = -1.0 + u * (lr + 2.0);
-        canvas = start + dir * (cx * radius) + perp * (side * radius);
+        canvas = start + dir * (cx * hull) + perp * (side * hull);
     } else {
         let ak = abs(kappa);
         let sk = sign(kappa);
         let abs_r = 1.0 / ak;
         // The tip's own turn, plus the angular margin that carries the round cap past
         // each end. The margin is measured at the *inner* rim, where a radius of
-        // travel subtends the largest angle, so it covers both rims.
-        let margin = radius / (abs_r - radius);
+        // travel subtends the largest angle, so it covers both rims. Built on the
+        // widest tip, like the straight branch, and `max`'d away from a degenerate
+        // denominator should a hull ever reach the centre of curvature — `MAX_TIP_TURN`
+        // caps `radius·|curvature|` at a tenth, so this has an order of magnitude in
+        // hand even at the largest ramp a segment can carry.
+        let margin = hull / max(abs_r - hull, 1e-6);
         let span = len * ak + 2.0 * margin;
         let delta = -margin + u * span;
         // Circumscribe: a chord of the outer rim would cut inside the true arc and
@@ -284,7 +354,7 @@ fn sweep_vertex(
         // gets the same factor the other way, which only over-covers.
         let half = 0.5 * span / f32(SWEEP_SLICES);
         let c = cos(half);
-        var rho = abs_r - sk * side * radius;
+        var rho = abs_r - sk * side * hull;
         rho = select(rho * c, rho / c, sk * side < 0.0);
         // The same frame `sweep_at` unrolls, run forwards: `ρ sin δ` along the start
         // tangent and `sign(κ)(|R| − ρ cos δ)` across it.
@@ -323,13 +393,19 @@ fn sweep_vertex(
 // finishes — and the travel it was swept by is the range's own width. Stated that way
 // round because it is the range that is fundamental now: `swept_depth` wants two
 // prefix arguments, and everything else here is a reading of the same pair.
+// The ramp is applied *here*, after the interpolation, for the reason `ramp_apply`
+// gives: the varyings above are affine in canvas position on a straight sweep and the
+// correction is not, so the strip carries the reference frame and the fragment
+// re-denominates it. A segment whose tip does not ramp takes `ramp_apply`'s identity
+// branch and reads exactly the interpolated values, bit for bit.
 fn sweep_of(in: VsOut) -> Sweep {
     var out: Sweep;
     out.local = vec2<f32>(in.range.y, in.frame.x);
     out.lr = in.range.y - in.range.x;
     out.warp = in.frame.y;
     out.turn = in.frame.z;
-    return out;
+    out.radius = in.geom.x;
+    return ramp_apply(out, in.geom.z);
 }
 
 // The brush's color channels (per the color space) at this fragment: the
@@ -345,10 +421,12 @@ fn brush_color(in: VsOut, sw: Sweep) -> vec3<f32> {
     if all(xf.noise_amp.xyz == vec3<f32>(0.0, 0.0, 0.0)) {
         return xf.color.xyz;
     }
-    let radius = in.geom.x;
-    // Brush-local y is in radius units; the noise domain is px on both axes, so
-    // the pattern keeps one scale whatever size the tip is.
-    let lateral = sw.local.y * radius;
+    // Brush-local y is in units of the radius **in force here**, so it converts back
+    // through that one and not the segment's reference — they differ on a ramping tip,
+    // and the product is the fragment's true lateral offset either way. The noise
+    // domain is px on both axes, so the pattern keeps one scale whatever size the tip
+    // is.
+    let lateral = sw.local.y * sw.radius;
     let jitter = color_jitter(
         noise_tex, noise_samp, vec2<f32>(lateral, stroke_arc(in, sw)),
         xf.noise_freq, xf.noise_amp.xyz, xf.noise_off.xy,
@@ -364,6 +442,11 @@ fn brush_color(in: VsOut, sw: Sweep) -> vec3<f32> {
 // The same value comes out whichever segment is being drawn — segment `i` starts at
 // `dᵢ` and sees this fragment at `(arc − dᵢ)/radius`, which adds back to `arc` — and
 // that is the whole point of measuring the paint rates against it.
+//
+// Through the segment's **reference** radius, not the tip in force (`Sweep::radius`).
+// The travel axis is conjugate to it — `local.x` was denominated in the reference when
+// the frame was built, and `lr` with it — so converting back through anything else
+// would not return the px the fragment actually sits at.
 fn stroke_arc(in: VsOut, sw: Sweep) -> f32 {
     return in.extra.y + sw.local.x * in.geom.x;
 }
@@ -452,6 +535,21 @@ fn prefix_slice(xl: f32, yl: f32, zi: i32) -> f32 {
 // trailing edge. A single-slice (round) volume collapses to that one slice for every `w`.
 fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
     if xl <= -1.0 {
+        return 0.0;
+    }
+    // Outside the footprint's own square there is no shape to integrate: every mask is
+    // swept over brush-local `|x| ≤ 1, |y| ≤ 1` and is zero beyond it by construction
+    // (`segments::tip_reach`). Stated rather than left to the mask's border row,
+    // because `bilerp_taps` **clamps** — so a lateral tap past the edge silently reads
+    // the outermost row instead, and that row is not quite zero: the round tip's
+    // `κ = (h/π)·acos(r)/r` is still small-but-positive at the last texel's `r ≈ 0.996`.
+    //
+    // It cost nothing while every fragment the sweep rasterized sat inside the square,
+    // which is how it survived. A segment whose tip *ramps* is drawn over a strip built
+    // on its widest radius (`sweep_vertex`), so on its narrow half there is now a band
+    // of real fragments out past `|y| = 1` — and all of them were differencing the same
+    // clamped row into a faint, hard-edged rectangle of paint the width of the quad.
+    if abs(yl) >= 1.0 {
         return 0.0;
     }
     let nz = i32(textureNumLayers(prefix_tex));
