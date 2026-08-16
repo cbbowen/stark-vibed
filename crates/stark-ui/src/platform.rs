@@ -30,10 +30,11 @@ pub async fn sleep_ms(_ms: i32) {}
 /// neighbour's box in silence, because a box is a plausible box whichever element it
 /// came from (§11).
 ///
-/// The two callers are the two drags that reorder a column by dropping a thing into
-/// it: the panel stack ([`panel_boxes`]) and the layer tree ([`layer_boxes`]). Both
-/// measure once at grab time and derive everything after from the live pointer, so
-/// there is no cached geometry to fall out of date.
+/// The three callers are the three drags that reorder a column by dropping a thing
+/// into it: the panel stack ([`panel_boxes`]), the layer tree ([`layer_boxes`]) and
+/// the guide list ([`guide_boxes`]). All three go through one gesture
+/// (`panels::reorder`), which measures once at grab time and derives everything
+/// after from the live pointer, so there is no cached geometry to fall out of date.
 #[cfg(target_arch = "wasm32")]
 fn element_boxes(selector: &str, attr: &str) -> Vec<(String, f32, f32)> {
     use wasm_bindgen::JsCast;
