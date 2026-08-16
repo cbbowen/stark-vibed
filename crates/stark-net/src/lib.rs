@@ -15,6 +15,11 @@
 //!   bundles referenced brush assets — over a dedicated ALPN, then rides the
 //!   gossip tail. Brush blobs a later stroke references are fetched over the
 //!   same ALPN on demand (content-addressed, §6.6).
+//! - **Repair**: gossip is a flood, not a delivery guarantee, so members
+//!   periodically compare logs with a neighbour and fetch back whatever the flood
+//!   dropped (§12.5). Without it a lost `CommitStroke` is a stroke that exists on
+//!   some canvases and not others, forever, with both sides believing they are in
+//!   sync — see [`reconcile`].
 //!
 //! The UI glue is a small pump: drain [`Engine::take_outbox`](stark_core::Engine::take_outbox)
 //! into [`CollabSession::broadcast`], and feed the [`RemoteEvent`]s the session's
@@ -54,6 +59,10 @@ pub enum NetError {
     Write(#[from] iroh::endpoint::WriteError),
     #[error("stream read failed: {0}")]
     Read(#[from] iroh::endpoint::ReadToEndError),
+    #[error("stream ended early: {0}")]
+    Truncated(#[from] iroh::endpoint::ReadExactError),
+    #[error("stream closed: {0}")]
+    Closed(#[from] iroh::endpoint::ClosedStream),
     #[error("encode/decode failed: {0}")]
     Codec(#[from] postcard::Error),
     #[error("gossip: {0}")]
@@ -70,9 +79,31 @@ pub enum NetError {
     #[error("that session member is still joining; ask another")]
     NotReady,
     #[error("bad ticket: {0}")]
-    Ticket(String),
+    Ticket(#[from] TicketError),
     #[error("{0}")]
     Other(String),
+}
+
+/// Why a pasted link could not be read.
+///
+/// Typed rather than a string, because every one of these reaches a person who
+/// pasted something and needs to know which of four different things went wrong —
+/// and because the frontend shows the text verbatim.
+#[derive(Debug, thiserror::Error)]
+pub enum TicketError {
+    #[error("that is not a Stark link — a link starts with the prefix `stark`")]
+    NoPrefix,
+    #[error("the link is damaged: {0}")]
+    Encoding(#[from] data_encoding::DecodeError),
+    #[error("the link is damaged or cut short: {0}")]
+    Malformed(#[from] postcard::Error),
+    /// Named rather than guessed at: past the version byte the fields are a
+    /// different shape, so anything else this could say about them would be about
+    /// the wrong shape.
+    #[error(
+        "this link is version {found}; this build speaks {expected} —          both ends need the same version of Stark"
+    )]
+    Version { found: u8, expected: u8 },
 }
 
 pub type Result<T, E = NetError> = std::result::Result<T, E>;

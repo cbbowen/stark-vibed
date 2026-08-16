@@ -1,8 +1,9 @@
 //! A live shared-drawing session over iroh (§12.4).
 //!
 //! One [`CollabSession`] per shared document. The engine stays on the UI
-//! thread; the session runs the network side (the gossip receive loop, catch-up
-//! server) on spawned tasks and talks to the engine through two thin streams:
+//! thread; the session runs the network side on spawned tasks — the gossip
+//! receive loop, the send queue, the catch-up server, the reconciler — and talks
+//! to the engine through two thin streams:
 //!
 //! ```text
 //! engine.take_outbox() ──────────► session.broadcast(action) ──► gossip
@@ -15,6 +16,10 @@
 //! `webrtc` feature, with the WebRTC custom transport that gives browsers
 //! direct paths (each new gossip neighbor triggers a channel bootstrap; see
 //! [`transport::direct`](crate::transport)).
+//!
+//! *Once*, but not *reliably*: a flood can drop a message, and what it drops
+//! [`reconcile`](crate::reconcile) fetches back. Nothing in here treats gossip as
+//! a delivery guarantee.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};

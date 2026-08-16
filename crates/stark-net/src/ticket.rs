@@ -15,6 +15,8 @@ use iroh::EndpointAddr;
 use iroh_gossip::proto::TopicId;
 use serde::{Deserialize, Serialize};
 
+use crate::TicketError;
+
 /// Human-pasteable prefix so tickets are recognizable in the wild.
 const PREFIX: &str = "stark";
 
@@ -44,27 +46,17 @@ impl fmt::Display for SessionTicket {
 }
 
 impl FromStr for SessionTicket {
-    type Err = crate::NetError;
+    type Err = TicketError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bad = |m: &str| crate::NetError::Ticket(m.to_string());
-        let s = s.trim();
-        let encoded = s
-            .strip_prefix(PREFIX)
-            .ok_or_else(|| bad("missing 'stark' prefix"))?;
-        let bytes = data_encoding::BASE32_NOPAD
-            .decode(encoded.to_ascii_uppercase().as_bytes())
-            .map_err(|e| bad(&e.to_string()))?;
-        let (version, ticket): (u8, Self) =
-            postcard::from_bytes(&bytes).map_err(|e| bad(&e.to_string()))?;
-        if version != VERSION {
-            // Named rather than guessed at: past the version byte the fields are
-            // a different shape, so anything else this could say about them would
-            // be about the wrong shape.
-            return Err(bad(&format!(
-                "ticket is version {version}; this build speaks {VERSION} — \
-                 both ends need the same version of Stark"
-            )));
+        let encoded = s.trim().strip_prefix(PREFIX).ok_or(TicketError::NoPrefix)?;
+        let bytes = data_encoding::BASE32_NOPAD.decode(encoded.to_ascii_uppercase().as_bytes())?;
+        let (found, ticket): (u8, Self) = postcard::from_bytes(&bytes)?;
+        if found != VERSION {
+            return Err(TicketError::Version {
+                found,
+                expected: VERSION,
+            });
         }
         Ok(ticket)
     }
@@ -112,6 +104,11 @@ mod tests {
         let err = format!("{PREFIX}{encoded}")
             .parse::<SessionTicket>()
             .expect_err("a version this build does not speak");
+        assert!(
+            matches!(err, TicketError::Version { found: 1, .. }),
+            "{err}"
+        );
+        // And it says which, because the person reading it pasted a link.
         assert!(err.to_string().contains("version 1"), "{err}");
     }
 
@@ -120,6 +117,6 @@ mod tests {
         let err = "not-a-ticket"
             .parse::<SessionTicket>()
             .expect_err("no prefix");
-        assert!(err.to_string().contains("prefix"), "{err}");
+        assert!(matches!(err, TicketError::NoPrefix), "{err}");
     }
 }

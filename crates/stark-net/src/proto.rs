@@ -453,12 +453,9 @@ mod iroh_wire {
     pub(crate) async fn request(conn: &Connection, req: Request) -> crate::Result<Vec<u8>> {
         let (mut send, mut recv) = conn.open_bi().await?;
         send.write_all(&postcard::to_allocvec(&req)?).await?;
-        send.finish()
-            .map_err(|e| crate::NetError::Other(e.to_string()))?;
+        send.finish()?;
         let mut tag = [0u8; 1];
-        recv.read_exact(&mut tag)
-            .await
-            .map_err(|e| crate::NetError::Other(format!("response header: {e}")))?;
+        recv.read_exact(&mut tag).await?;
         match tag[0] {
             Tag::OK => Ok(recv.read_to_end(MAX_RESPONSE).await?),
             Tag::NOT_READY => Err(crate::NetError::NotReady),

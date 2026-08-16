@@ -29,23 +29,68 @@ wrong picture with no error anywhere. They are the ones worth doing first.
 
 | | Finding | Kind | Size | Status |
 |---|---|---|---|---|
-| [N1](#n1-there-is-no-anti-entropy) | There is no anti-entropy | correctness | large | open |
-| [N2](#n2-a-joining-peer-serves-an-empty-document-as-if-it-were-complete) | A joining peer serves an empty document as if it were complete | correctness | small | open |
-| [N3](#n3-nothing-checks-the-stamped-origin-against-the-actions-author) | Nothing checks the stamped origin against the action's author | correctness | small | open |
-| [N4](#n4-a-ground-can-wait-forever-on-two-peers-who-have-left) | A ground can wait forever on two peers who have left | correctness | small | open |
-| [N5](#n5-a-failed-join-leaks-its-endpoint) | A failed join leaks its endpoint | correctness | small | open |
-| [N6](#n6-the-snapshot-clones-the-whole-log-under-the-receive-loops-lock) | The snapshot clones the whole log under the receive loop's lock | performance | medium | open |
-| [N7](#n7-every-join-copies-every-asset-twice-and-re-encodes-the-document) | Every join copies every asset twice and re-encodes the document | performance | small | open |
-| [N8](#n8-one-send-task-per-dispatch-makes-wire-order-accidental) | One send task per dispatch makes wire order accidental | structure | small | open |
-| [N9](#n9-dialer-is-the-missing-seam) | `Dialer` is the missing seam | test health | medium | open |
-| [N10](#n10-the-session-spawns-tasks-it-cannot-stop) | The session spawns tasks it cannot stop | structure | medium | open |
-| [N11](#n11-smaller-things) | Smaller things | mixed | small | open |
+| [N1](#n1-there-is-no-anti-entropy) | There is no anti-entropy | correctness | large | **done** |
+| [N2](#n2-a-joining-peer-serves-an-empty-document-as-if-it-were-complete) | A joining peer serves an empty document as if it were complete | correctness | small | **done** |
+| [N3](#n3-nothing-checks-the-stamped-origin-against-the-actions-author) | Nothing checks the stamped origin against the action's author | correctness | small | **done** |
+| [N4](#n4-a-ground-can-wait-forever-on-two-peers-who-have-left) | A ground can wait forever on two peers who have left | correctness | small | **done** |
+| [N5](#n5-a-failed-join-leaks-its-endpoint) | A failed join leaks its endpoint | correctness | small | **done** |
+| [N6](#n6-the-snapshot-clones-the-whole-log-under-the-receive-loops-lock) | The snapshot clones the whole log under the receive loop's lock | performance | medium | **done** |
+| [N7](#n7-every-join-copies-every-asset-twice-and-re-encodes-the-document) | Every join copies every asset twice and re-encodes the document | performance | small | **done** |
+| [N8](#n8-one-send-task-per-dispatch-makes-wire-order-accidental) | One send task per dispatch makes wire order accidental | structure | small | **done** |
+| [N9](#n9-dialer-is-the-missing-seam) | `Dialer` is the missing seam | test health | medium | **done** |
+| [N10](#n10-the-session-spawns-tasks-it-cannot-stop) | The session spawns tasks it cannot stop | structure | medium | **done** |
+| [N11](#n11-smaller-things) | Smaller things | mixed | small | **part** |
 
-Suggested order: **N2**, **N3**, **N5** first — each is a contained change and
-two of them close a silent-divergence path. Then **N9**, because the fake it
-introduces is what makes **N1** and **N4** testable at all. Then **N1**, which is
-the large one and wants the reconciliation request that **N4** also uses. **N6**
-and **N7** are independent and can go any time.
+### What landed, and what is left
+
+- **N1** — `Request::Ids` / `Request::Actions` and a `reconcile` module. Members
+  compare logs on a slow sweep, and promptly (after a pause, so what is still in
+  flight can land) when the swarm says it outran this peer. Pull-only, which
+  covers both directions: a member whose own broadcast failed is still holding the
+  action, because broadcasting mirrors before it sends. A recovered action carries
+  the transfer hash for its content and goes through the same door as one off the
+  flood — `Admission`, factored out of the receive loop, so a recovered
+  `SetSurface` cannot be applied against the flat stand-in (§6.4). The gossip
+  ceiling went 256 KiB → 1 MiB; crossing it is now a delay rather than a loss.
+- **N2** — `Served`: a mirror the catch-up protocol can only reach once it has been
+  *published*, which `finish` does when the session is real and its blobs are
+  seeded. A response opens with a tag byte so a refusal has somewhere to live that
+  an empty payload cannot occupy; the ALPN went to 6. Joining no longer builds a
+  placeholder mirror and mutates it into the real one.
+- **N3** — one comparison in the receive loop, and the mismatch is dropped.
+- **N4** — the search widens to the gossip neighbours from the second round,
+  re-read per round so a member who joins mid-retry becomes a candidate.
+- **N5** — `closing_on_error` around the fallible tail of `host` / `join`;
+  `Shutdown` is `Clone` and idempotent so setup can hold one.
+- **N6** — the log is `rpds::RedBlackTreeMapSync`, so a snapshot is a refcount bump
+  and the per-action copy happens off the lock. Two clones went with it: the
+  broadcast path encodes from a borrow (`StampedRef`) and then moves the action into
+  the mirror, and the receive path copies only what is new.
+- **N7** — the encoding is remembered under (revision, promise), and an encode that
+  finishes after the log has moved declines to install itself.
+- **N8** — one queue, one send task; `broadcast` is no longer async, which is what
+  removed the per-dispatch spawn from the frontend rather than relocating it.
+- **N9** — `content.rs`, behind a `ContentSource` trait, with six tests against a
+  scripted source on a paused clock. They cover the branches two real endpoints
+  cannot reach: giving up after exactly the allowed rounds, outlasting four times
+  that many, the widening search, shutdown ending an unbounded retry, and a promise
+  kept or ignored.
+- **N10** — `Cancel`, held by the session and checked by everything it spawned. Its
+  sleep wakes on it, so a ground mid-backoff stops now rather than up to half a
+  minute later. Cancelling deliberately does *not* release what was parked.
+- **N11, part** — blob connections are reused per provider and dropped on error;
+  `Snapshot::without` is a set lookup; `TicketError` is a typed enum (four things a
+  person who pasted a link needs told apart) and the two stream errors have their
+  own variants instead of `Other(String)`.
+  **Left:** nothing exercises `presets::N0`, the configuration that ships. Doing it
+  properly needs `bind` to accept a test relay, and adding a production option that
+  only tests use is the inert scaffolding CLAUDE.md rules out — so this wants either
+  a `#[cfg(test)]` seam on `bind` or a dev-only builder, and is a real design
+  decision rather than a missing test.
+
+The counts: 16 unit tests before, 23 after, plus the 10 integration tests
+unchanged. Nothing in `tests/` needed rewriting for behaviour, only for
+`broadcast` no longer being `async`.
 
 ---
 
@@ -599,11 +644,19 @@ strongly: `waitlist.rs`'s module doc, the `LOCAL_GRACE` rationale, the
 announce before attach" are all better than any design doc that could have been
 written for them. **Do not cut them.**
 
-The drift risk is live in three places, all of them findings above:
+The drift risk was live in three places, all of them findings above:
 `Mirror::snapshot`'s "the caller's lock covers the log and nothing else"
 ([N6](#n6-the-snapshot-clones-the-whole-log-under-the-receive-loops-lock)), the
 `Lagged` arm's "peers converge again on the next snapshot fetch"
 ([N1](#n1-there-is-no-anti-entropy)), and `is_live`'s "cannot outlive the session"
-([N10](#n10-the-session-spawns-tasks-it-cannot-stop)). Each asserts a mechanism
-that does not exist. The antidote is the one the workspace already uses — turn the
-claim into an assertion — and for the first of those, a bench is the assertion.
+([N10](#n10-the-session-spawns-tasks-it-cannot-stop)). Each asserted a mechanism
+that did not exist.
+
+All three were fixed by building the mechanism rather than softening the sentence,
+which is the right way round but not the durable one. Two are now pinned by tests
+(`a_sweep_recovers_what_the_flood_dropped`,
+`shutting_down_stops_a_ground_that_would_retry_forever`). The first is not: nothing
+measures that the mirror's lock stays cheap, and `rpds` makes it cheap by
+construction only until someone adds a field that is not persistent. A criterion
+bench over `Mirror::snapshot` at 1k / 10k / 100k actions would be the assertion, and
+is the one piece of this review that is still a comment taking itself on trust.
