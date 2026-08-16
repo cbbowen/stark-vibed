@@ -884,25 +884,27 @@ fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
     snapshot_at(gid.x, gid.y);
 }
 
-// How many sub-steps `exchange` walks its texel's track in. The canvas side gets its
-// sweep exactly, from the prefix-τ; the tool side has no prefix to difference — the
-// canvas under it is an arbitrary evolving field — so it is a quadrature, and this is
-// how fine.
+// (**There is no sub-step count here, and its absence is the measurement.** The canvas
+// side gets its sweep exactly, from the prefix-τ; the tool side has no prefix to
+// difference — the canvas under it is an arbitrary evolving field — so its exposure is a
+// quadrature, and the question was how fine. An `EXCHANGE_STEPS` constant stood here at
+// 1, with a loop and a divide that could not move a pixel until someone raised it.
 //
-// **Pinned at 1, and free to raise.** The sliding kernel puts no obstacle in the way:
-// each direction is a plain exponential in exposure, and `exp(−k·e/N)^N = exp(−k·e)`
-// exactly, so splitting the exposure changes the tool's own arithmetic not at all.
-// (A closed-pair kernel would forbid it outright — over each sub-step the tool lifts
-// its share of a canvas held fixed, N times over, while the `deposit` gives up a
+// The sliding kernel puts no obstacle in the way of raising it: each direction is a
+// plain exponential in exposure, and `exp(−k·e/N)^N = exp(−k·e)` exactly, so splitting
+// the exposure changes the tool's own arithmetic not at all. All N > 1 buys is sampling
+// the canvas at several points along the texel's track instead of at its midpoint, and
+// that is measured — both as sub-steps and as an average over the track — at less than
+// the 8-bit noise floor. The midpoint tap is simply not where the error is;
+// `RESERVOIR_EXCHANGE_STEP` is. So the loop is gone rather than pinned, and this is the
+// note that says what it would take to bring it back: a per-sub-step share of the
+// exposure, the tip's frame re-evaluated at each one, and a reason.
+//
+// A closed-pair kernel would forbid the split outright — over each sub-step the tool
+// lifts its share of a canvas held fixed, N times over, while the `deposit` gives up a
 // single share of the whole exposure, so the two halves stop being complements of one
-// solution and the transfer stops balancing.)
-//
-// All N > 1 buys is sampling the canvas at several points along the texel's track
-// instead of one, and that is measured — both as sub-steps and as an average over the
-// track — at less than the 8-bit noise floor. The midpoint tap is simply not where
-// the error is; see `RESERVOIR_EXCHANGE_STEP`, which is. So it stays at 1 because the
-// taps are not worth paying for.
-const EXCHANGE_STEPS: u32 = 1u;
+// solution and the transfer stops balancing. That the sliding form permits it is worth
+// recording even while nothing uses it.)
 
 // `sin(x)` and `1 − cos(x)` as the same truncated Maclaurin series `path::arc_at` uses,
 // and for the same reason it does: the turn across one segment is *tiny* — the host
@@ -984,11 +986,11 @@ fn tip_at(f: f32) -> vec4<f32> {
 // band of paint, the same 300px stroke drawn with 2, 6, 20 and 80 pointer samples came
 // out up to 11 levels apart, and 15% away from the converged answer.
 //
-// So the track is walked in [`EXCHANGE_STEPS`] sub-steps, each with its own canvas tap
-// and its own share of the exposure. The kernel composes exactly, so splitting the
-// exposure changes nothing on its own — what the sub-steps buy is the *canvas* being
-// read where the texel actually was, which is the whole error term. The tip's frame is
-// re-evaluated at each one, so a curved sweep turns under the tool as it goes.
+// So the canvas is read where the texel actually **is** — at the midpoint of the track
+// it is dragged along this segment, with the tip's frame evaluated there, so a curved
+// sweep turns under the tool as it goes. Reading it at the segment's *start* instead is
+// the error that measurement found; splitting the track finer than its midpoint is not
+// (see the note above `exchange_at`'s callers).
 // **The segment's `snapshot` rides in the tail of this dispatch.** The two are
 // independent — the snapshot only reads the region, which the previous segment's
 // `deposit` last wrote, and writes the `under` scratch; the exchange reads that same
@@ -1068,10 +1070,9 @@ fn exchange(
     // reciprocal — the two are opposite sides of one substitution, and it is what makes
     // the books balance: a stretch multiplies the canvas's total exposure by `s` and
     // the area each reservoir texel answers for by the same `s`.
-    let e_step = tau_of(coverage_at(local * st.frame_scale))
-        * st.travel_radii * st.stretch.x * st.frame_scale * st.tooth_bearing
-        / f32(EXCHANGE_STEPS);
-    let ex = exchange_at(e_step);
+    let e = tau_of(coverage_at(local * st.frame_scale))
+        * st.travel_radii * st.stretch.x * st.frame_scale * st.tooth_bearing;
+    let ex = exchange_at(e);
     let rdim = vec2<f32>(textureDimensions(region_color));
     // Where this reservoir texel rides, in the tip's own reference frame — the two
     // steps `bake` takes to get here, run backwards. The reservoir is stored in the
@@ -1088,9 +1089,9 @@ fn exchange(
         st.stretch,
     );
 
-    for (var i = 0u; i < EXCHANGE_STEPS; i = i + 1u) {
-        // Midpoint of this sub-step's stretch of the track.
-        let f = (f32(i) + 0.5) / f32(EXCHANGE_STEPS);
+    {
+        // The midpoint of the track this texel is dragged along.
+        let f = 0.5;
         let tip = tip_at(f);
         let dir = tip.zw;
         let world = tip.xy + (seat.x * dir + seat.y * vec2<f32>(-dir.y, dir.x)) * st.frame_radius;

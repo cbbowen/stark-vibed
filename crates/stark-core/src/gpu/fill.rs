@@ -35,6 +35,34 @@ use crate::gpu::uniforms::UniformSlots;
 // Generated from `fill.wesl`'s own declarations (§6.7).
 use stark_shaders::mirror::fill::Fill as FillUniform;
 use stark_shaders::mirror::fill::Tile as TileUniform;
+use stark_shaders::mirror::fill::binding as f;
+use stark_shaders::mirror::fill::decl as fd;
+
+/// Which bindings `fill.wesl` reads, in layout order (§6.10).
+///
+/// One list, read by both sides — the layout and the group are built from it, so
+/// neither can disagree with the other. The residual sits beside the base color it
+/// rides with, its `@if(resid)` gate carried on the declaration, where the
+/// `if resid { push }` this replaces had to restate it.
+///
+/// `TILE` is the one slot whose *binding* the shader does not decide: `f` and `tile`
+/// are both `var<uniform>` in the WESL, and the difference is that the first is one
+/// buffer for the whole fill while the second is a per-tile slot of one
+/// (`UniformSlots`). That is what [`desc::Slot::dynamic`] says.
+const FILL_SLOTS: &[desc::Slot] = &[
+    desc::Slot::at(fd::F),
+    desc::Slot::at(fd::BASE_COLOR),
+    desc::Slot::at(fd::BASE_AUX),
+    desc::Slot::at(fd::REGION),
+    desc::Slot::at(fd::GATE),
+    desc::Slot::at(fd::BASE_RESID),
+    desc::Slot::dynamic(fd::TILE),
+];
+
+/// A texture view as the resource a bind-group entry takes.
+fn tex(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
+    wgpu::BindingResource::TextureView(v)
+}
 
 // The shader's stop capacity is the fitter's (§22.1) — asserted rather than
 // commented, since a gradient with more stops than the uniform holds would
@@ -74,21 +102,13 @@ impl FillRenderer {
             source: wgpu::ShaderSource::Wgsl(stark_shaders::fill(formats.has_resid()).into()),
         });
         let frag = wgpu::ShaderStages::FRAGMENT;
-        let mut entries = vec![
-            desc::uniform(0, frag),
-            desc::load_tex(1, frag), // base color
-            desc::load_tex(2, frag), // base aux (height)
-            desc::load_tex(3, frag), // the shape's coverage
-            desc::load_tex(4, frag), // the author's selection
-        ];
-        if formats.has_resid() {
-            entries.push(desc::load_tex(5, frag)); // base residual (§6.7)
-        }
-        // The tile's canvas origin — per tile, where binding 0 is per fill, so it
-        // is a dynamic-offset slot rather than a buffer each (`UniformSlots`). Bound
-        // unconditionally at 6 so its index does not move with the resid feature.
-        entries.push(UniformSlots::<TileUniform>::layout(6, frag));
-        let bgl = desc::bind_group_layout(device, "stark fill bgl", &entries);
+        let bgl = desc::layout_for(
+            device,
+            "stark fill bgl",
+            FILL_SLOTS,
+            frag,
+            formats.has_resid(),
+        );
         let layout = desc::pipeline_layout(device, "stark fill layout", &[Some(&bgl)]);
         let targets = formats.targets();
         let pipeline = desc::fullscreen_pipeline(
@@ -216,25 +236,25 @@ impl FillRenderer {
             let region_mask = self.selection.mask_for(&region, *coord);
             let gate_mask = self.selection.mask_for(gate, *coord);
             let dst = Channels::acquire(pool, self.formats, AllocSource::FillDestination);
-            let mut entries = vec![
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: ubuf.as_entire_binding(),
+            let bg = desc::bind_group_for(
+                device,
+                "stark fill bg",
+                &self.bgl,
+                FILL_SLOTS,
+                self.formats.has_resid(),
+                |b| match b {
+                    f::F => ubuf.as_entire_binding(),
+                    f::BASE_COLOR => tex(&base_color),
+                    f::BASE_AUX => tex(&base_aux),
+                    f::REGION => tex(&region_mask),
+                    f::GATE => tex(&gate_mask),
+                    f::BASE_RESID => tex(base_resid
+                        .as_ref()
+                        .expect("a residual build has a base residual")),
+                    f::TILE => tile_slots.resource(),
+                    other => unreachable!("`FILL_SLOTS` lists no binding {other}"),
                 },
-                desc::tex(1, &base_color),
-                desc::tex(2, &base_aux),
-                desc::tex(3, &region_mask),
-                desc::tex(4, &gate_mask),
-            ];
-            if let Some(view) = &base_resid {
-                entries.push(desc::tex(5, view));
-            }
-            entries.push(tile_slots.binding(6));
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark fill bg"),
-                layout: &self.bgl,
-                entries: &entries,
-            });
+            );
             scope.fullscreen_pass(
                 "stark fill tile",
                 &self.pipeline,

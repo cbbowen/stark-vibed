@@ -126,17 +126,37 @@ pub(crate) fn bind_group_layout(
 
 // ---- shader-declared binding lists (§6.10) --------------------------------------
 
-/// One binding an entry point reads, as the **host** has to name it: the shader's own
-/// declaration, plus the one thing that declaration cannot decide.
+/// The **two** things a `@binding` declaration does not decide, so that a slot list
+/// says only these and reads everything else off the shader.
 ///
-/// Everything about a slot — whether it is a uniform and how wide, a sampler, a
+/// Both are properties of how the host *binds*, not of what the shader declares, and
+/// each has a case in this codebase that proves it:
+///
+/// * **Filterability.** `dynamics.wesl`'s `region_color` is `textureLoad`ed by
+///   `snapshot` and `textureSample`d by `exchange` — the same slot, non-filterable in
+///   one layout and filterable in the next.
+/// * **Dynamic offset.** `fill.wesl` declares `f` and `tile` both `var<uniform>`; the
+///   first is one buffer for the whole fill and the second is a per-tile slot of one
+///   (`UniformSlots`). The WGSL is identical either way.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum How {
+    /// `textureLoad`ed, or a uniform bound whole — the common case.
+    Plain,
+    /// Read through a sampler, which makes its texture required to be filterable and
+    /// its sampler a filtering one.
+    Sampled,
+    /// A uniform bound as one **dynamic-offset slot** of a larger buffer, which is how
+    /// both render paths vary a uniform across the draws or dispatches of a pass.
+    Dynamic,
+}
+
+/// One binding an entry point reads, as the **host** has to name it: the shader's own
+/// declaration, plus [`How`] the host binds it.
+///
+/// Everything else about a slot — whether it is a uniform and how wide, a sampler, a
 /// texture, or a storage texture of a particular format, and whether it exists at all
 /// in a build without the residual — rides in the generated
-/// [`Binding`](stark_shaders::Binding). What is left here is **filterability**, which
-/// is genuinely a property of the (entry point, binding) pair rather than of the
-/// declaration: `dynamics.wesl`'s `region_color` is `textureLoad`ed by `snapshot` and
-/// `textureSample`d by `exchange`, so the same slot is non-filterable in one layout and
-/// filterable in the next.
+/// [`Binding`](stark_shaders::Binding).
 ///
 /// **The declaration is carried, not looked up.** A slot list names
 /// `decl::REGION_COLOR`, so there is no index to resolve against a table — which is
@@ -146,17 +166,16 @@ pub(crate) fn bind_group_layout(
 #[derive(Clone, Copy)]
 pub(crate) struct Slot {
     decl: stark_shaders::Binding,
-    /// Whether this entry point reads the slot through a sampler.
-    filtering: bool,
+    how: How,
 }
 
 impl Slot {
-    /// A slot this entry point reads with `textureLoad` — or that has no filterability
-    /// to speak of (a uniform, a storage texture).
+    /// A slot this entry point reads with `textureLoad`, or a whole-buffer uniform —
+    /// anything with no filterability and no dynamic offset to speak of.
     pub(crate) const fn at(decl: stark_shaders::Binding) -> Self {
         Self {
             decl,
-            filtering: false,
+            how: How::Plain,
         }
     }
 
@@ -165,7 +184,15 @@ impl Slot {
     pub(crate) const fn sampled(decl: stark_shaders::Binding) -> Self {
         Self {
             decl,
-            filtering: true,
+            how: How::Sampled,
+        }
+    }
+
+    /// A uniform bound as one **dynamic-offset slot** ([`uniform_slot`]).
+    pub(crate) const fn dynamic(decl: stark_shaders::Binding) -> Self {
+        Self {
+            decl,
+            how: How::Dynamic,
         }
     }
 
@@ -202,9 +229,16 @@ fn slot_entry(
     }
     let decl = slot.decl();
     Some(match decl.kind {
-        stark_shaders::BindKind::Uniform { min_size } => uniform_slot(decl.index, vis, min_size),
+        // `min_binding_size` is the declared struct's own WGSL size either way — free
+        // validation against a truncated write, against the size the shader reads.
+        stark_shaders::BindKind::Uniform { min_size } => match slot.how {
+            How::Dynamic => uniform_slot(decl.index, vis, min_size),
+            _ => buffer_entry(decl.index, vis, false, wgpu::BufferSize::new(min_size)),
+        },
         stark_shaders::BindKind::Sampler => sampler(decl.index, vis),
-        stark_shaders::BindKind::Texture { dim } => tex_entry(decl.index, vis, slot.filtering, dim),
+        stark_shaders::BindKind::Texture { dim } => {
+            tex_entry(decl.index, vis, slot.how == How::Sampled, dim)
+        }
         stark_shaders::BindKind::Storage { dim, format } => wgpu::BindGroupLayoutEntry {
             binding: decl.index,
             visibility: vis,

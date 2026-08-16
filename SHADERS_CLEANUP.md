@@ -22,14 +22,14 @@ mistake into a build failure at the struct it got wrong.
 | # | Finding | Status |
 |---|---|---|
 | 1 | [`Binding` carries no `@group`](#1-binding-carries-no-group) | **done** |
-| 2 | [The generator is enumerated where it should be exhaustive](#2-the-generator-is-enumerated-where-it-should-be-exhaustive) | **generator done**; ~10 host layouts still hand-written |
+| 2 | [The generator is enumerated where it should be exhaustive](#2-the-generator-is-enumerated-where-it-should-be-exhaustive) | **generator + ABI codes + 3 host layouts done**; ~8 layouts left |
 | 3 | [`BindKind` pays for a `wgpu` dependency it already has](#3-bindkind-pays-for-a-wgpu-dependency-it-already-has) | **done** |
 | 4 | [`Stamp`'s twelve anonymous lanes defeat the mirror](#4-stamps-twelve-anonymous-lanes-defeat-the-mirror) | **done** |
 | 5 | [`deposit` and `deposit_coarse` are held together by a comment](#5-deposit-and-deposit_coarse-are-held-together-by-a-comment) | **done** |
 | 6 | [The group-0 index space is partitioned by comment](#6-the-group-0-index-space-is-partitioned-by-comment) | **done** |
 | 7 | [The bleed ladder recomputes its neighbours ~36× over](#7-performance-the-bleed-ladder-recomputes-its-neighbours-36-over) | **the per-texel wins done**; the scratch pass open |
 | 8 | [The `@if(resid)` tax is 128 sites](#8-the-ifresid-tax-is-128-sites) | open |
-| 9 | [Smaller items](#9-smaller-items) | **three done**, two open |
+| 9 | [Smaller items](#9-smaller-items) | **four done**, one open |
 
 **One thing the work found that the review did not.** wesl 0.4's `validate: true`
 resolves names, counts call arguments and rejects cycles — it does **not** typecheck.
@@ -83,14 +83,19 @@ are unaffected — they are already unambiguous, since the name is the WESL vari
 > The ABI codes are done: `blend_code` and selection's kind/mode codes are the shaders'
 > own numbers now.
 >
-> **What is left** is the other side — the ~10 host layouts in `composite/{blend,
-> filter,media,overlay,resolve,tiles}.rs`, `fill.rs`, `merge.rs`, `selection.rs`,
-> `transform.rs` and `stroke/{swept,dynamics/kit}.rs` that still write
-> `desc::load_tex(3, frag)` and close with `if resid { entries.push(..) }`. Each needs
-> a slot list in `slots.rs`'s shape. Three of them (`blend`, `filter`, `media`) share
-> one layout across both color spaces while `blend_mixbox` declares its residual
-> bindings *unconditionally* — reached only by the space that has one — so those need a
-> `Slot::when_resid` for a gate the shader genuinely does not state.
+> **Three host layouts are migrated** — `merge.wesl`'s, `slab.wesl`'s and `fill.wesl`'s
+> — which retired three `if resid { entries.push(..) }` tails and proved the pattern
+> against both uniform flavours. `fill` is the one that showed `Slot` needed a second
+> host-only fact beside filterability: `f` and `tile` are both `var<uniform>` in the
+> WESL, and only the host knows the second is a dynamic-offset slot. `Slot::dynamic`
+> says it.
+>
+> **What is left** is `composite/{blend,filter,media,overlay,resolve,tiles}.rs`,
+> `selection.rs`, `transform.rs` and `stroke/{swept,dynamics/kit}.rs`. Each is the same
+> shape of change. Three of them (`blend`, `filter`, `media`) share one layout across
+> both color spaces while `blend_mixbox` declares its residual bindings
+> *unconditionally* — reached only by the space that has one — so those need a third
+> `Slot` flavour for a gate the shader genuinely does not state.
 
 Four hand-maintained lists in `build.rs` (`MIRRORS`, `CONSTS`, `VERTEX`, `BINDINGS`)
 name things the shader already declares. `MIRRORS` and `VERTEX` are currently
@@ -309,14 +314,14 @@ Prototype on `integrate.wesl` (10 sites) before touching `dynamics`.
 
 ## 9. Smaller items
 
-> **Three done.** `binding_of` is deleted with `Binding::lookup`. The nine copied
-> accessor paragraphs went with the `resid`-taking accessors' rewrite. And build-time
-> validation is now a real typecheck — see the note at the top, which is the one item
-> here that turned out not to be hypothetical.
+> **Four done.** `binding_of` is deleted with `Binding::lookup`. The nine copied
+> accessor paragraphs went with the `resid`-taking accessors' rewrite. `EXCHANGE_STEPS`
+> is gone — the loop that could not iterate twice is one midpoint tap now, with the
+> measurement and what it would take to bring the sub-steps back kept as prose. And
+> build-time validation is a real typecheck; see the note at the top.
 >
-> **Two open.** `dynamics.wesl` is down to ~2130 lines but still holds seven entry
-> points; the `*_common` split is unstarted. `EXCHANGE_STEPS` is still a loop that
-> cannot iterate twice.
+> **One open.** `dynamics.wesl` is down to ~2140 lines but still holds seven entry
+> points; the `*_common` split is unstarted.
 
 - **`dynamics.wesl` is 2228 lines with 7 entry points.** The `*_common` pattern already
   solves this: the `Stamp` struct, the bindings, the accessors and the kernels move to

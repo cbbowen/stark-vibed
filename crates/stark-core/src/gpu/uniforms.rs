@@ -130,12 +130,18 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
     pub(crate) fn binding(&self, binding: u32) -> wgpu::BindGroupEntry<'_> {
         wgpu::BindGroupEntry {
             binding,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &self.buf,
-                offset: 0,
-                size: wgpu::BufferSize::new(std::mem::size_of::<T>() as u64),
-            }),
+            resource: self.resource(),
         }
+    }
+
+    /// The same slot as a bare resource, for a group built from a shader-declared slot
+    /// list (`desc::bind_group_for`), which supplies the binding index itself.
+    pub(crate) fn resource(&self) -> wgpu::BindingResource<'_> {
+        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: &self.buf,
+            offset: 0,
+            size: wgpu::BufferSize::new(std::mem::size_of::<T>() as u64),
+        })
     }
 
     fn alloc(device: &wgpu::Device, label: &'static str, count: usize) -> wgpu::Buffer {

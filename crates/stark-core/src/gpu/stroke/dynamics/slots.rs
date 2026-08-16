@@ -13,10 +13,11 @@
 //! declaration itself (`stark_shaders::mirror::dynamics::decl`), carrying the slot's
 //! group, its index, its kind, its storage format, its uniform's `min_binding_size`
 //! and whether it is `@if(resid)`-gated. A list here is therefore *only* a membership
-//! statement, plus the one thing a declaration cannot decide: whether **this** entry
+//! statement, plus the two things a declaration cannot decide: whether **this** entry
 //! point reads a texture through a sampler ([`Slot::sampled`]) or with `textureLoad`
-//! ([`Slot::at`]). That really is per pair — `region_color` is loaded by `snapshot`
-//! and sampled by `exchange`.
+//! ([`Slot::at`]), and whether a uniform is bound whole or as one dynamic-offset slot
+//! ([`Slot::dynamic`]). The first really is per pair — `region_color` is loaded by
+//! `snapshot` and sampled by `exchange`.
 //!
 //! Naming the declaration rather than the index is also what makes the group
 //! unambiguous. `@binding(0)` means a different slot in each of a module's groups, and
@@ -35,7 +36,7 @@ use stark_shaders::mirror::dynamics::decl as d;
 /// The footprint copy that gives `deposit`/`settle` something to read while they
 /// storage-write the region.
 pub(super) const SNAPSHOT: &[Slot] = &[
-    Slot::at(d::ST),
+    Slot::dynamic(d::ST),
     Slot::at(d::REGION_COLOR),
     Slot::at(d::REGION_AUX),
     Slot::at(d::UNDER_COLOR_W),
@@ -50,7 +51,7 @@ pub(super) const SNAPSHOT: &[Slot] = &[
 /// from the tail of the `exchange` grid rather than from a dispatch of its own
 /// (`dynamics.wesl::exchange`), so its writes belong to this layout.
 pub(super) const EXCHANGE: &[Slot] = &[
-    Slot::at(d::ST),
+    Slot::dynamic(d::ST),
     // Bilinear, unlike `snapshot`'s load of the same two slots — the reservoir texel
     // asking sits over an arbitrary sub-pixel spot on the region.
     Slot::sampled(d::REGION_COLOR),
@@ -75,7 +76,7 @@ pub(super) const EXCHANGE: &[Slot] = &[
 /// Integrates the reservoir along the segment's travel axis so the deposit can read
 /// the whole pass instead of one mid-pass sample.
 pub(super) const BAKE: &[Slot] = &[
-    Slot::at(d::ST),
+    Slot::dynamic(d::ST),
     Slot::at(d::SAMP),
     Slot::sampled(d::BRUSH_SRC_COLOR),
     Slot::sampled(d::BRUSH_SRC_AUX),
@@ -87,7 +88,7 @@ pub(super) const BAKE: &[Slot] = &[
 
 /// The canvas's half of the transfer, exact per texel.
 pub(super) const DEPOSIT: &[Slot] = &[
-    Slot::at(d::ST),
+    Slot::dynamic(d::ST),
     Slot::at(d::SAMP),
     Slot::at(d::BAKE_LOAD),
     Slot::at(d::BAKE_LATM),
@@ -112,7 +113,7 @@ pub(super) const DEPOSIT: &[Slot] = &[
 /// `cell_hoist`: the exact deposit's front half — the baked prefixes in, the per-cell
 /// means out — plus the prefix-τ volume at group 1 (§6.2).
 pub(super) const HOIST: &[Slot] = &[
-    Slot::at(d::ST),
+    Slot::dynamic(d::ST),
     Slot::at(d::BAKE_LOAD),
     Slot::at(d::BAKE_LATM),
     Slot::at(d::BAKE_RLM),
@@ -125,7 +126,7 @@ pub(super) const HOIST: &[Slot] = &[
 /// means. It takes no prefix-τ tap and no bake tap of its own, which is the whole
 /// point, so neither appears here (nor does group 1).
 pub(super) const DEPOSIT_COARSE: &[Slot] = &[
-    Slot::at(d::ST),
+    Slot::dynamic(d::ST),
     Slot::at(d::UNDER_COLOR),
     Slot::at(d::UNDER_AUX),
     Slot::at(d::UNDER_RESID),
@@ -145,7 +146,7 @@ pub(super) const DEPOSIT_COARSE: &[Slot] = &[
 /// — the settle's parcel is the delivery integral of the remaining pass, which the
 /// settle slot's own `bake` dispatch stores (`dynamics.wesl::settle`).
 pub(super) const SETTLE: &[Slot] = &[
-    Slot::at(d::ST),
+    Slot::dynamic(d::ST),
     Slot::at(d::BAKE_LOAD),
     Slot::at(d::BAKE_LATM),
     Slot::at(d::BAKE_RLM),

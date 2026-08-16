@@ -37,7 +37,43 @@ use crate::gpu::uniforms::UNIFORM_SLOT;
 
 // Generated from the shaders' own declarations (§6.10).
 use stark_shaders::mirror::merge::Merge as MergeUniform;
+use stark_shaders::mirror::merge::binding as m;
+use stark_shaders::mirror::merge::decl as md;
 use stark_shaders::mirror::slab::Slab as SlabUniform;
+use stark_shaders::mirror::slab::binding as sl;
+use stark_shaders::mirror::slab::decl as sd;
+
+/// Which bindings `merge.wesl` reads, in layout order (§6.10).
+///
+/// One list, read by both sides: [`layout_for`](desc::layout_for) builds the layout
+/// from it and [`bind_group_for`](desc::bind_group_for) the group, so neither can
+/// disagree with the other about which slots are present or of what type. The two
+/// residual entries sit beside the colors they ride with rather than in a countable
+/// tail — the `@if(resid)` gate is on the declaration, so the `if resid { push }` this
+/// replaces had nothing left to say (§6.7).
+const MERGE_SLOTS: &[desc::Slot] = &[
+    desc::Slot::at(md::M),
+    desc::Slot::at(md::LOWER_COLOR),
+    desc::Slot::at(md::LOWER_AUX),
+    desc::Slot::at(md::UPPER_COLOR),
+    desc::Slot::at(md::UPPER_AUX),
+    desc::Slot::at(md::LOWER_RESID),
+    desc::Slot::at(md::UPPER_RESID),
+];
+
+/// Which bindings `slab.wesl` reads — one list for both directions, since they take
+/// the same shapes in and put the same shapes out, which is what makes them one module.
+const SLAB_SLOTS: &[desc::Slot] = &[
+    desc::Slot::at(sd::S),
+    desc::Slot::at(sd::IN_COLOR),
+    desc::Slot::at(sd::IN_AUX),
+    desc::Slot::at(sd::IN_RESID),
+];
+
+/// A texture view as the resource a bind-group entry takes.
+fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
+    wgpu::BindingResource::TextureView(v)
+}
 
 /// One side of a merge: a layer's tiles and the opacity slider that scales them.
 ///
@@ -125,18 +161,7 @@ impl MergeRenderer {
             label: Some("stark merge"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::merge(resid).into()),
         });
-        let mut entries = vec![
-            desc::uniform(0, frag),
-            desc::load_tex(1, frag), // the destination's color
-            desc::load_tex(2, frag), // …and its height
-            desc::load_tex(3, frag), // the source's color
-            desc::load_tex(4, frag), // …and its height
-        ];
-        if resid {
-            entries.push(desc::load_tex(5, frag)); // the two residuals (§6.7)
-            entries.push(desc::load_tex(6, frag));
-        }
-        let direct_bgl = desc::bind_group_layout(device, "stark merge bgl", &entries);
+        let direct_bgl = desc::layout_for(device, "stark merge bgl", MERGE_SLOTS, frag, resid);
         let direct = desc::fullscreen_pipeline(
             device,
             "stark merge pipeline",
@@ -152,15 +177,7 @@ impl MergeRenderer {
             label: Some("stark slab"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::slab(resid).into()),
         });
-        let mut entries = vec![
-            desc::uniform(0, frag),
-            desc::load_tex(1, frag),
-            desc::load_tex(2, frag),
-        ];
-        if resid {
-            entries.push(desc::load_tex(3, frag));
-        }
-        let slab_bgl = desc::bind_group_layout(device, "stark slab bgl", &entries);
+        let slab_bgl = desc::layout_for(device, "stark slab bgl", SLAB_SLOTS, frag, resid);
         let slab_layout = desc::pipeline_layout(device, "stark slab layout", &[Some(&slab_bgl)]);
         let slab = |label, fs| {
             desc::fullscreen_pipeline(
@@ -385,18 +402,23 @@ impl MergeRenderer {
         src: Option<&TilePairHandle>,
         out: &Channels,
     ) {
-        let mut entries = vec![
-            desc::uniform_entry(0, uniform),
-            desc::tex(1, self.color_of(dst)),
-            desc::tex(2, self.aux_of(dst)),
-            desc::tex(3, self.color_of(src)),
-            desc::tex(4, self.aux_of(src)),
-        ];
-        if self.formats.has_resid() {
-            entries.push(desc::tex(5, self.resid_of(dst)));
-            entries.push(desc::tex(6, self.resid_of(src)));
-        }
-        let bg = self.bind("stark merge bg", &self.direct_bgl, &entries);
+        let bg = desc::bind_group_for(
+            &self.ctx.device,
+            "stark merge bg",
+            &self.direct_bgl,
+            MERGE_SLOTS,
+            self.formats.has_resid(),
+            |b| match b {
+                m::M => uniform.as_entire_binding(),
+                m::LOWER_COLOR => view(self.color_of(dst)),
+                m::LOWER_AUX => view(self.aux_of(dst)),
+                m::UPPER_COLOR => view(self.color_of(src)),
+                m::UPPER_AUX => view(self.aux_of(src)),
+                m::LOWER_RESID => view(self.resid_of(dst)),
+                m::UPPER_RESID => view(self.resid_of(src)),
+                other => unreachable!("`MERGE_SLOTS` lists no binding {other}"),
+            },
+        );
         pass(scope, "stark merge tile", &self.direct, &bg, &[], out);
     }
 
@@ -439,15 +461,20 @@ impl MergeRenderer {
         input: Targets<'_>,
         out: &Channels,
     ) {
-        let mut entries = vec![
-            desc::uniform_entry(0, uniform),
-            desc::tex(1, input.color),
-            desc::tex(2, input.aux),
-        ];
-        if let Some(r) = input.resid {
-            entries.push(desc::tex(3, r));
-        }
-        let bg = self.bind("stark slab bg", &self.slab_bgl, &entries);
+        let bg = desc::bind_group_for(
+            &self.ctx.device,
+            "stark slab bg",
+            &self.slab_bgl,
+            SLAB_SLOTS,
+            input.resid.is_some(),
+            |b| match b {
+                sl::S => uniform.as_entire_binding(),
+                sl::IN_COLOR => view(input.color),
+                sl::IN_AUX => view(input.aux),
+                sl::IN_RESID => view(input.resid.expect("a residual build has one")),
+                other => unreachable!("`SLAB_SLOTS` lists no binding {other}"),
+            },
+        );
         pass(scope, "stark slab tile", pipeline, &bg, &[], out);
     }
 
