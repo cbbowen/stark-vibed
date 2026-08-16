@@ -9,6 +9,9 @@ pub mod gradient_bar;
 pub mod gradients;
 pub mod guides;
 pub mod layer;
+/// The Layers panel's arithmetic — the rows, and what a drop into them means.
+/// Split from the panel it serves because it is the half that can be tested.
+pub mod layer_tree;
 pub mod lighting;
 pub mod navigator;
 pub mod pick;
