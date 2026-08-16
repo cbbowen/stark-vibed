@@ -255,13 +255,29 @@ impl Engine {
         if matches!(content, Rendered::Live) {
             self.flush_live();
         }
+        // Cloned rather than borrowed — a handful of `Arc` bumps (§5.1) — because it
+        // buys back the borrow of `self`, and everything below wants that: the draw
+        // list is rebuilt through `&mut self`, and the compositor is borrowed mutably
+        // at the end. Owning the document once is cheaper than the two dances that
+        // paid for it piecemeal.
         let doc = match content {
-            Rendered::Live => self.presented(),
-            Rendered::Committed => self.timeline.current(),
+            Rendered::Live => self.presented().clone(),
+            Rendered::Committed => self.timeline.current().clone(),
         };
         // Only what this view can show (§6.3). The draw list is otherwise every
-        // populated tile of every visible layer, whatever the viewport.
-        let groups = self.composite_groups(doc, None, visible_tiles(view));
+        // populated tile of every visible layer, whatever the viewport — and it is
+        // rebuilt only when something it is a function of has moved ([`DrawKey`]).
+        self.refresh_draw_cache(
+            DrawKey {
+                doc_revision: self.doc_revision,
+                epoch: self.preview.epoch(),
+                fold: self.preview.fold(),
+                content,
+                only: None,
+                visible: visible_tiles(view),
+            },
+            &doc,
+        );
 
         // The substrate is document state now (§15.5), so the ground a
         // piece was painted on travels with it instead of living in whichever
@@ -276,11 +292,12 @@ impl Engine {
         // background — a substrate export is still an export, and tying the two
         // together silently leaked the outline into every opaque PNG.
         //
-        // Own the masks (a handful of `Arc` bumps) so the borrow of `doc` — and with
-        // it of `self` — ends before the compositor is borrowed mutably below.
+        // Read off the owned `doc` above rather than through `self`, which is what
+        // lets the compositor be borrowed mutably at the end without the list, the
+        // outlines and the guides each having to be copied out of the way first.
         let outlines: Vec<(crate::document::Selection, Option<[f32; 3]>)> = match chrome {
             Chrome::Hidden => Vec::new(),
-            Chrome::Shown => self.visible_selections(),
+            Chrome::Shown => self.visible_selections(&doc),
         };
         let outlines: Vec<SelectionOutline<'_>> = outlines
             .iter()
@@ -303,10 +320,19 @@ impl Engine {
                 .map(|g| g.scene())
                 .collect(),
         };
+        // Read as a **field**, not through an accessor: a `&self` method borrows the
+        // whole engine, and the compositor is borrowed mutably three lines down.
+        // Rust splits disjoint fields and not method calls, which is the whole of why
+        // this is written out — and the whole of what the "own the masks so the borrow
+        // of `self` ends" dance here used to be working around.
+        let groups: &[CompositeGroup] = self
+            .draw_cache
+            .as_ref()
+            .map_or(&[], |c| c.groups.as_slice());
         let scene = CompositeScene {
             background: bg_channels,
             background_resid: bg_resid,
-            groups: &groups,
+            groups,
             outlines: &outlines,
             transparent: background == Background::Transparent,
             guides: &guide_scenes,
@@ -577,6 +603,28 @@ impl Engine {
     /// the draw list. `None` culls nothing — see [`visible_tiles`].
     ///
     /// [`visible_tiles`]: fn@visible_tiles
+    /// Bring [`Engine::draw_cache`] level with `key`, rebuilding the list only if
+    /// something it is a function of has moved (C4).
+    ///
+    /// **Why this is worth a cache at all.** Building the list clones a
+    /// `TilePairHandle` per visible tile, per layer — an atomic increment in and a
+    /// decrement out — plus a `Vec` per layer. The visible tile count scales as
+    /// 1/zoom², so a zoomed-out multi-layer document was paying ~10⁵ of those every
+    /// frame to produce a list identical to the last one. A canvas nobody is editing
+    /// or panning now pays nothing.
+    ///
+    /// Takes the key rather than deriving it so the caller can compute it while it
+    /// still holds `doc` — and takes `doc` by value for the same reason. A `DocState`
+    /// is a handful of `Arc` bumps (§5.1), which buys the borrow of `self` back and
+    /// is what lets the built list live in a field instead of being returned.
+    pub(super) fn refresh_draw_cache(&mut self, key: DrawKey, doc: &DocState) {
+        if self.draw_cache.as_ref().is_some_and(|c| c.key == key) {
+            return;
+        }
+        let groups = self.composite_groups(doc, key.only, key.visible);
+        self.draw_cache = Some(DrawCache { key, groups });
+    }
+
     pub(super) fn composite_groups(
         &self,
         doc: &DocState,
@@ -928,8 +976,10 @@ impl Engine {
     /// decides what exists, presence decides what could be shown — and
     /// `show_peer_selections` decides whether it is, since a second contour over the
     /// artwork is a preference rather than a fact about the drawing.
-    fn visible_selections(&self) -> Vec<(crate::document::Selection, Option<[f32; 3]>)> {
-        let doc = self.presented();
+    fn visible_selections(
+        &self,
+        doc: &DocState,
+    ) -> Vec<(crate::document::Selection, Option<[f32; 3]>)> {
         let mut out = Vec::new();
         let mine = doc.selection_of(self.actor());
         if mine.is_active() {
@@ -984,6 +1034,48 @@ fn culled<V>(
         ),
         None => Box::new(map.iter().map(|(coord, v)| (*coord, v))),
     }
+}
+
+/// What a built draw list is a function of — the whole of it, which is what makes
+/// caching one sound (§6.3, C4).
+///
+/// Every term is already counted for another reason, and that is the point: nothing
+/// here is a new notion of "has it changed", only the existing ones read together.
+///
+/// - `doc_revision` moves on every **committed** change — a commit, an undo, a
+///   merged remote action, a load (`Engine::committed_changed`).
+/// - `epoch` moves on everything that replaces what is *shown* without committing:
+///   the unlogged drag preview, and every in-flight gesture's fold
+///   (`Preview::invalidate`). It is strictly wider than `doc_revision`, which is why
+///   both are here and neither is enough alone.
+/// - `fold` moves whenever the live fold is *rebuilt* — a stroke in flight commits
+///   nothing and replaces no document, so neither counter above stirs while one is
+///   being drawn, and a list keyed without this would hold the frame at the moment
+///   the pen went down.
+/// - `content` is which document is being drawn at all. `Live` and `Committed`
+///   differ by exactly the in-flight gesture, so at one instant they are two
+///   different lists — and the navigator's miniature asks for the second while the
+///   canvas asks for the first.
+/// - `only` and `visible` are the two arguments that shape the list.
+///
+/// **What is deliberately absent is the view.** A draw list is built against the
+/// *tile rect* a view can reach, not the view, so panning within one tile — or
+/// rotating, or supersampling — hits the same key. That is `visible_tiles`'
+/// conservatism paying for itself twice.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct DrawKey {
+    doc_revision: u64,
+    epoch: u64,
+    fold: u64,
+    content: Rendered,
+    only: Option<LayerId>,
+    visible: Option<TileRect>,
+}
+
+/// A built draw list and what it was built from.
+pub(super) struct DrawCache {
+    key: DrawKey,
+    groups: Vec<CompositeGroup>,
 }
 
 /// The tiles a render of `view` can show — the **view-AABB cull** (§6.3).

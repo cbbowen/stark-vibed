@@ -60,6 +60,17 @@ pub(super) struct Preview {
     /// Bumped whenever the document the previews are composited onto changes. A
     /// [`FrozenHead`] stamped with an older epoch is stale and discarded.
     epoch: u64,
+    /// Bumped every time the fold is **rebuilt** — a counter for "what is shown has
+    /// moved", where [`epoch`](Self::epoch) is "what is shown was *replaced*".
+    ///
+    /// The two cannot be one. `epoch` throws away every cached [`FrozenHead`], so
+    /// bumping it per fold would discard the settled head of every live stroke on
+    /// every pointer move and undo the whole incremental repaint. But a fold does
+    /// change what a renderer should draw, and nothing else moves when it does: a
+    /// stroke in flight commits nothing, so `doc_revision` is still, and it replaces
+    /// no document, so `epoch` is still. A draw list keyed on those two alone would
+    /// hold the frame at the moment the stroke began (C4).
+    fold: u64,
     /// Whether the fold no longer reflects the gestures and document it folds —
     /// set by [`Engine::mark_live_stale`], cleared by the [`Engine::flush_live`]
     /// that services it. The deferral is what turns N mutations per frame (every
@@ -121,6 +132,11 @@ impl Preview {
         self.epoch
     }
 
+    /// How many times the fold has been rebuilt — see [`fold`](Self::fold).
+    pub(super) fn fold(&self) -> u64 {
+        self.fold
+    }
+
     /// Rebuild the fold: `committed` (or the drag standing in for it) with every
     /// in-flight gesture composited over it, in ascending [`ActorId`] order (§17.6).
     ///
@@ -151,6 +167,10 @@ impl Preview {
     /// `DocState`'s worth of `Arc<GpuTile>` handles the pool cannot reclaim. Exactly
     /// while two people are painting, which is when there is least to spare.
     fn rebuild(&mut self, ctx: &ApplyCtx, committed: &DocState, gestures: Vec<GestureView>) {
+        // Before the early return as much as after it: dropping the fold is a change
+        // to what is shown exactly as building one is, and it is the transition a
+        // pen-up makes.
+        self.fold += 1;
         if gestures.is_empty() {
             self.live = None;
             self.heads.clear();

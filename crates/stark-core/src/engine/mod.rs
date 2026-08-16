@@ -481,6 +481,13 @@ pub struct Engine {
     /// Per-client and never logged, for the reason the command's doc gives: how much
     /// history a machine can afford is a fact about the machine.
     history_budget: u64,
+    /// The compositor's draw list and what it was built from (C4) — rebuilt only
+    /// when something it is a function of has moved ([`render::DrawKey`]).
+    ///
+    /// A cache with no invalidation call anywhere: the key *is* the invalidation, and
+    /// every term in it is a counter something else already maintains. A cache that
+    /// had to be told would be one a new mutation path could forget to tell.
+    draw_cache: Option<render::DrawCache>,
     /// Bumped whenever the **committed** document changes — a commit, an undo, a
     /// merged remote action, a load. Projected as
     /// [`ObservableState::doc_revision`], where it is what a frontend showing a
@@ -631,6 +638,7 @@ impl Engine {
             now: 0.0,
             preview: Default::default(),
             doc_revision: 0,
+            draw_cache: None,
             history_budget: DEFAULT_HISTORY_BUDGET,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
@@ -716,6 +724,7 @@ impl Engine {
             now: 0.0,
             preview: Default::default(),
             doc_revision: 0,
+            draw_cache: None,
             history_budget: DEFAULT_HISTORY_BUDGET,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),

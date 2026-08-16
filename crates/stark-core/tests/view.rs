@@ -11,7 +11,7 @@
 mod common;
 
 use common::*;
-use stark_core::command::{GestureCommand, InputSample, ViewCommand};
+use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{MattePaint, MatteRegion, Place, Tool};
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
@@ -297,4 +297,195 @@ fn mirroring_reflects_every_pixel_of_the_screen_path() {
         // Back to unmirrored for the next orientation — twice is the identity.
         engine.process(ViewCommand::MirrorH);
     }
+}
+
+/// **A cached draw list renders what a fresh one renders** (C4).
+///
+/// The list is rebuilt only when [`DrawKey`]'s terms move, so the risk the cache
+/// carries is a change that moves the picture without moving any of them — which
+/// would show as a frame that never updates. Every mutation kind is exercised here
+/// against the pixels, because pixels are the only thing that can tell a stale list
+/// from a fresh one: the key is *derived* from the same counters the cache is keyed
+/// on, so comparing keys would only restate the implementation.
+///
+/// The pan case is the one that matters most and is easiest to get wrong: the key
+/// holds the visible **tile rect**, not the view, so a pan within one tile
+/// deliberately hits the same entry — and must, because the draw list does not
+/// depend on where inside the tiles the viewport sits.
+#[test]
+fn a_cached_draw_list_shows_every_change() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let red = brush([0.9, 0.1, 0.1, 1.0], 6.0);
+    stroke_with(
+        &mut engine,
+        red,
+        &[Vec2::new(40.0, 40.0), Vec2::new(90.0, 90.0)],
+    );
+    let mut last = engine.render_to_image();
+
+    // Each of these must change what is on screen, through a different term of the
+    // key: a commit and an undo (doc_revision), a layer property (doc_revision), a
+    // pan far enough to move the tile rect (visible).
+    let blue = brush([0.1, 0.1, 0.9, 1.0], 6.0);
+    /// One change to the document or the view, named for the failure message.
+    type Mutation = (&'static str, Box<dyn Fn(&mut Engine)>);
+
+    let mutations: Vec<Mutation> = vec![
+        (
+            "a second stroke",
+            Box::new(move |e: &mut Engine| {
+                stroke_with(e, blue, &[Vec2::new(40.0, 90.0), Vec2::new(90.0, 40.0)]);
+            }) as Box<dyn Fn(&mut Engine)>,
+        ),
+        // The pan pair goes here, while there is paint on screen to move away from
+        // and back to. Ordered deliberately: run after the layer is hidden and both
+        // renders are blank, so the step would assert nothing.
+        (
+            "a pan across tiles",
+            Box::new(|e: &mut Engine| e.process(ViewCommand::CenterOn(Vec2::new(400.0, 400.0)))),
+        ),
+        (
+            "a pan back",
+            Box::new(|e: &mut Engine| e.process(ViewCommand::CenterOn(Vec2::ZERO))),
+        ),
+        (
+            "hiding the layer",
+            Box::new(|e: &mut Engine| {
+                let id = e.observe().active_layer;
+                e.process(DocCommand::SetLayerVisible(id, false));
+            }),
+        ),
+        (
+            "showing it again",
+            Box::new(|e: &mut Engine| {
+                let id = e.observe().active_layer;
+                e.process(DocCommand::SetLayerVisible(id, true));
+            }),
+        ),
+        (
+            "an undo",
+            Box::new(|e: &mut Engine| e.process(DocCommand::Undo)),
+        ),
+    ];
+
+    for (what, apply) in mutations {
+        apply(&mut engine);
+        let now = engine.render_to_image();
+        assert!(
+            now.pixels != last.pixels,
+            "{what} left the canvas unchanged — a stale draw list",
+        );
+        last = now;
+    }
+
+    // And rendering twice with nothing moved is idempotent, which is the other half:
+    // a cache that rebuilt every time would pass everything above and buy nothing.
+    let again = engine.render_to_image();
+    assert_eq!(
+        again.pixels, last.pixels,
+        "an unchanged document rendered differently",
+    );
+}
+
+/// **A stroke in flight moves the picture, and the cached list has to follow it**
+/// (C4).
+///
+/// The case my first key missed, and the suite caught: drawing commits nothing and
+/// replaces no document, so neither `doc_revision` nor the preview epoch stirs
+/// between pointer moves. A draw list keyed on those two alone holds the frame at
+/// the moment the pen went down — the stroke simply does not appear until release.
+///
+/// The epoch cannot be made to move here, either: it is what discards a stroke's
+/// cached [`FrozenHead`], so bumping it per fold would re-render the whole stroke
+/// every move. Hence a separate fold counter, and hence this test.
+#[test]
+fn a_live_stroke_reaches_a_cached_frame() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let blank = engine.render_to_image();
+
+    engine.process(ViewCommand::SetBrush(brush([0.9, 0.1, 0.1, 1.0], 8.0)));
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(30.0, 30.0)),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    engine.process(GestureCommand::To {
+        sample: InputSample::at(Vec2::new(60.0, 60.0)),
+    });
+    let mid = engine.render_to_image();
+    assert!(
+        mid.pixels != blank.pixels,
+        "the stroke in flight never reached the frame",
+    );
+
+    // And it keeps following: a second move must show more of it.
+    engine.process(GestureCommand::To {
+        sample: InputSample::at(Vec2::new(110.0, 110.0)),
+    });
+    let later = engine.render_to_image();
+    assert!(
+        later.pixels != mid.pixels,
+        "the stroke stopped growing mid-gesture",
+    );
+}
+
+/// **`Live` and `Committed` are two different lists at one instant**, and must not
+/// share a cache entry (C4).
+///
+/// The other case the suite caught. They differ by exactly the in-flight gesture,
+/// and both are asked for while one is in hand: the canvas renders `Live`, the
+/// navigator's miniature renders `Committed`.
+#[test]
+fn live_and_committed_do_not_share_a_cached_list() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let mut off = Offscreen::default();
+    let view = engine.view();
+
+    engine.process(ViewCommand::SetBrush(brush([0.9, 0.1, 0.1, 1.0], 8.0)));
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(30.0, 30.0)),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    engine.process(GestureCommand::To {
+        sample: InputSample::at(Vec2::new(110.0, 110.0)),
+    });
+
+    // Committed first, then live, then committed again — so a cache that ignored
+    // `content` would be caught whichever order it happened to fill in.
+    let committed = pollster::block_on(
+        engine
+            .export_view(&mut off, view, Background::Substrate, Rendered::Committed)
+            .expect("export"),
+    )
+    .expect("the readback completes");
+    let live = pollster::block_on(
+        engine
+            .export_view(&mut off, view, Background::Substrate, Rendered::Live)
+            .expect("export"),
+    )
+    .expect("the readback completes");
+    let committed_again = pollster::block_on(
+        engine
+            .export_view(&mut off, view, Background::Substrate, Rendered::Committed)
+            .expect("export"),
+    )
+    .expect("the readback completes");
+
+    assert!(
+        live.pixels != committed.pixels,
+        "the in-flight stroke appeared in a committed render",
+    );
+    assert_eq!(
+        committed_again.pixels, committed.pixels,
+        "a committed render changed after a live one shared its cache entry",
+    );
 }

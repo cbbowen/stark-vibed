@@ -527,6 +527,17 @@ impl Engine {
     fn replay_one(&mut self, action: Action) {
         let ctx = &mut self.shared.apply;
         self.timeline.push(action, ctx);
+        // A replayed action is a committed change like any other, and
+        // `doc_revision` says so in its own doc — "a commit, an undo, a merged
+        // remote action, **a load**". Pushing straight onto the timeline left that
+        // false for every action of every load and every timelapse frame.
+        //
+        // Invisible until something read the counter per frame rather than per edit:
+        // the timelapse renders after each action, and with the revision frozen every
+        // frame after the first drew the first one's list (C4). Cheap here —
+        // `repoint_active_layer` returns on its first line while the layer exists,
+        // which through a replay from an empty document it does.
+        self.committed_changed();
     }
 
     /// After loading, advance the id counters past everything in the log so new
