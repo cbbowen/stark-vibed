@@ -777,7 +777,6 @@ impl<'a> DynamicsRun<'a> {
         let kit = &r.dynamics;
         let device = &r.ctx.device;
         let resid = r.color_space.has_resid();
-        let table = stark_shaders::mirror::dynamics::BINDINGS;
 
         let params = wgpu::BindingResource::Buffer(wgpu::BufferBinding {
             buffer: stamp_buf,
@@ -823,7 +822,6 @@ impl<'a> DynamicsRun<'a> {
             "stark dynamics snapshot bg",
             &kit.snapshot_bgl,
             slots::SNAPSHOT,
-            table,
             resid,
             |s| match s {
                 b::REGION_COLOR => view(&region.color),
@@ -844,7 +842,6 @@ impl<'a> DynamicsRun<'a> {
                 "stark dynamics exchange bg",
                 &kit.exchange_bgl,
                 slots::EXCHANGE,
-                table,
                 resid,
                 |s| match s {
                     b::REGION_COLOR => view(&region.color),
@@ -877,7 +874,6 @@ impl<'a> DynamicsRun<'a> {
                 "stark dynamics bake bg",
                 &kit.bake_bgl,
                 slots::BAKE,
-                table,
                 resid,
                 |s| match s {
                     b::SAMP => samp(&kit.exchange_sampler),
@@ -898,7 +894,6 @@ impl<'a> DynamicsRun<'a> {
             "stark dynamics deposit bg",
             &kit.deposit_bgl,
             slots::DEPOSIT,
-            table,
             resid,
             |s| match s {
                 b::SAMP => samp(&kit.exchange_sampler),
@@ -912,7 +907,6 @@ impl<'a> DynamicsRun<'a> {
             "stark dynamics settle bg",
             &kit.settle_bgl,
             slots::SETTLE,
-            table,
             resid,
             |s| common(s).expect("settle lists no other binding"),
         );
@@ -926,7 +920,6 @@ impl<'a> DynamicsRun<'a> {
                 "stark dynamics cell hoist bg",
                 &kit.hoist_bgl,
                 slots::HOIST,
-                table,
                 resid,
                 |s| match s {
                     b::CELL_TOOL_W => view(&cl.tool),
@@ -940,7 +933,6 @@ impl<'a> DynamicsRun<'a> {
                 "stark dynamics deposit coarse bg",
                 &kit.deposit_coarse_bgl,
                 slots::DEPOSIT_COARSE,
-                table,
                 resid,
                 |s| match s {
                     b::CELL_TOOL => view(&cl.tool),

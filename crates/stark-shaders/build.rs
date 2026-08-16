@@ -13,72 +13,27 @@ mod mirror;
 // The one list, shared with `lib.rs` (see there).
 include!("src/entry_points.rs");
 
-/// The WESL structs the host fills in, and which are therefore generated into Rust
-/// rather than transcribed (`build/mirror.rs`).
+/// The structs **two or more modules declare identically** against one host type.
 ///
 /// The first module of each entry is where the mirror is generated from and what its
-/// Rust module is named after; any others declare the same struct for their own
-/// pipeline and are checked to agree with it. `View` is the reason that exists: three
-/// shaders write it out separately against one host type.
+/// Rust module is named after; the others are checked to agree with it, member for
+/// member and offset for offset, and then skipped so discovery does not emit a second
+/// copy. `View` is the reason this exists: three shaders write it out separately
+/// against one host type, and generating from one of them while ignoring the rest
+/// would move the drift rather than remove it.
 ///
-/// Kept sorted by module, like [`ENTRY_POINTS`], so a missing entry is visible at a
-/// glance.
-const MIRRORS: &[(&[&str], &str)] = &[
-    (&["blend_common"], "Blend"),
-    (&["composite", "matte", "overlay"], "View"),
-    (&["dynamics"], "Stamp"),
-    (&["fill"], "Fill"),
-    (&["fill"], "Tile"),
-    (&["filter_common"], "Filter"),
-    (&["guides"], "Guide"),
-    (&["mask_region"], "Region"),
-    (&["matte"], "Ramp"),
-    (&["media_common"], "Media"),
-    (&["merge"], "Merge"),
-    (&["resolve"], "Resolve"),
-    (&["selection"], "Params"),
-    (&["slab"], "Slab"),
-    (&["stamp_common"], "TileXform"),
-    (&["transform"], "Combine"),
-    (&["transform"], "Gated"),
-    (&["transform"], "Quad"),
-];
-
-/// The WESL constants the host also computes with, generated rather than
-/// transcribed (`build/mirror.rs`).
-///
-/// The other half of the same problem the mirrors solve, and the worse-behaved half:
-/// a struct that disagrees is usually a wgpu validation error, while a constant that
-/// disagrees leaves both sides rendering perfectly plausible pixels that no longer
-/// add up. The tooth's three are the sharpest case — the CPU averages the gate over
-/// the ground's rise distribution for the *tool's* half of a transfer and the shader
-/// evaluates it per texel for the *canvas* half, so drift is a conservation leak
-/// proportional to how far they moved (§6.4).
-const CONSTS: &[(&str, &str)] = &[
-    ("dynamics", "BAKE_RES"),
-    ("dynamics", "BLEED_LADDER_TAPS"),
-    ("dynamics", "BLEED_SHARE_LADDER"),
-    ("dynamics", "BLEED_SHARE_NEAR"),
-    ("fill", "MAX_GRADIENT_STOPS"),
-    ("filter_common", "CA_CAUCHY_SPAN"),
-    ("filter_common", "CA_LAMBDA_BLUE"),
-    ("filter_common", "CA_LAMBDA_RED"),
-    ("filter_common", "CONTRAST_PIVOT"),
-    ("filter_common", "FILTER_CHROMATIC"),
-    ("filter_common", "FILTER_COLOR"),
-    ("filter_common", "FILTER_GRADIENT_MAP"),
-    ("lib/paint_common", "RISE_LIMIT"),
-    ("lib/paint_common", "TOOTH_RISE"),
-    ("lib/paint_common", "TOOTH_SOFTNESS"),
-    ("stamp_common", "SWEEP_SLICES"),
-    ("stamp_common", "SWEEP_VERTS"),
-];
+/// Every *other* uniform struct is discovered — see `mirror::generate`. This list is
+/// only about which declarations are claimed to be the same declaration.
+const SHARED: &[(&[&str], &str)] = &[(&["composite", "matte", "overlay"], "View")];
 
 /// The per-instance records a vertex entry point's `@location` parameters describe,
 /// as `(module, entry point, Rust name)`.
 ///
 /// The name is the one thing here the shader cannot supply — a parameter list has no
 /// name of its own — so it is written down once, next to the declaration it names.
+/// The *membership* is not a choice: `mirror::generate` fails the build for any
+/// `@vertex` entry point taking `@location` parameters that is missing here, so the
+/// list cannot go stale by the tree gaining one.
 ///
 /// `composite`'s record is generated once and used twice: pass A draws the layer
 /// stack with it and the brush-dynamics loop composites its working region through
@@ -91,13 +46,6 @@ const VERTEX: &[(&str, &str, &str)] = &[
     ("overlay", "vs_main", "OverlayInstance"),
     ("stamp", "vs_main", "SegmentInstance"),
 ];
-
-/// The WESL modules whose `@binding` indices are generated as named consts
-/// (`build/mirror.rs::emit_bindings`) — the third transcription of the host/shader
-/// boundary after the structs and the constants. `dynamics` is here because it has
-/// the most to lose: ~37 indices reaching both the bind-group layouts and the
-/// bind-group entries, which a margin comment is no way to keep aligned.
-const BINDINGS: &[&str] = &["dynamics"];
 
 /// The vendored Mixbox shader (git submodule), source of the pigment-mixing
 /// polynomial. Licensed CC BY-NC 4.0 — see `vendor/mixbox/LICENSE`.
@@ -137,10 +85,8 @@ fn main() {
     mirror::generate(
         Path::new(SHADER_DIR),
         &out_dir.join("mirror.rs"),
-        MIRRORS,
-        CONSTS,
+        SHARED,
         VERTEX,
-        BINDINGS,
     );
 
     // Generated modules resolve out of `OUT_DIR`; everything else out of the tree.
@@ -207,20 +153,92 @@ fn main() {
     }
 }
 
-/// Link `module` with its imports and deposit the WGSL under `artifact`.
+/// Link `module` with its imports, check the result's bindings, and deposit the WGSL
+/// under `artifact`.
 ///
 /// The two names differ only for a residual variant (`stamp` → `stamp_resid`), which
-/// is the whole reason this is a function: `build_artifact` takes the artifact name
-/// separately, so the module a variant links and the file it lands in are stated
-/// independently at the one call site that needs them to differ.
+/// is the whole reason this is a function: the artifact name is stated separately, so
+/// the module a variant links and the file it lands in are stated independently at the
+/// one call site that needs them to differ.
 fn build_one(compiler: &wesl::Wesl<impl wesl::Resolver>, module: &str, artifact: &str) {
     let path = format!("package::{module}");
-    compiler.build_artifact(
-        &path
-            .parse()
-            .unwrap_or_else(|e| panic!("`{path}` is not a module path: {e}")),
-        artifact,
-    );
+    let root = path
+        .parse()
+        .unwrap_or_else(|e| panic!("`{path}` is not a module path: {e}"));
+    let compiled = compiler.compile(&root).unwrap_or_else(|e| {
+        panic!("failed to build WESL shader `{path}`.\n{e}");
+    });
+    bindings_do_not_collide(&compiled.syntax, artifact);
+    compiled.write_artifact(artifact);
+}
+
+/// Fail unless the modules a pipeline links agree about where each one's share of a
+/// group's index space stops.
+///
+/// A pipeline's bindings come from several files — `blend_mixbox` takes 0–4 from
+/// `blend_common`, 5–6 from `mixbox_lut` and 7–8 from itself — and that partition is
+/// held by nothing but a comment in each. `mixbox_lut.wesl` says so on its face: *"If
+/// `blend_common` ever grows a sixth binding, it collides here, and the error will name
+/// a mangled identifier rather than any of the files."* This is that check, taken where
+/// the answer is: the linked artifact holds exactly the declarations one pipeline
+/// compiles, post-`@if`, imports resolved — so the collision is arithmetic here, in
+/// terms of the two *files*, rather than a `naga` error naming
+/// `package__1mixbox_lut_pigment_lut` at pipeline creation.
+///
+/// **Only collisions between two different modules are a fault**, and that is the
+/// distinction the hazard is actually about rather than a tolerance. A module may
+/// deliberately declare two things at one slot when no entry point reaches both:
+/// `transform.wesl` puts `Quad` and `Gated` at `@group(0) @binding(0)` because the
+/// affine and the rect-scoped maps are different pipelines, and its header carries the
+/// rule that keeps it sound ("if a fourth map is added, give it its own module rather
+/// than a fourth struct here"). One file can state that about itself; two files
+/// splitting a group cannot, which is why one is checked and the other is not.
+fn bindings_do_not_collide(linked: &wesl::syntax::TranslationUnit, artifact: &str) {
+    use wesl::syntax::{Attribute, GlobalDeclaration};
+    use wesl::{EscapeMangler, Mangler};
+
+    // An `ExpressionNode` renders back to its source text, which for the literal every
+    // one of these is *is* the number. A const-evaluated `@binding` would need the eval
+    // context the linker has already discharged, so it is passed over rather than
+    // guessed at — and there are none in this tree.
+    let literal = |e: &wesl::syntax::ExpressionNode| e.to_string().trim().parse::<u32>().ok();
+    // The root module's own declarations are not mangled, so `unmangle` returning
+    // `None` *is* the answer "this one is the root's".
+    let source = |name: &str| {
+        EscapeMangler
+            .unmangle(name)
+            .map_or_else(|| artifact.to_string(), |(path, _)| path.to_string())
+    };
+
+    let mut seen: Vec<(u32, u32, String, String)> = Vec::new();
+    for d in &linked.global_declarations {
+        let GlobalDeclaration::Declaration(decl) = &**d else {
+            continue;
+        };
+        let g = decl.attributes.iter().find_map(|a| match &**a {
+            Attribute::Group(e) => literal(e),
+            _ => None,
+        });
+        let b = decl.attributes.iter().find_map(|a| match &**a {
+            Attribute::Binding(e) => literal(e),
+            _ => None,
+        });
+        let (Some(g), Some(b)) = (g, b) else { continue };
+        let name = decl.ident.name().to_string();
+        let from = source(&name);
+        if let Some((_, _, other, other_from)) = seen
+            .iter()
+            .find(|(sg, sb, _, sf)| *sg == g && *sb == b && *sf != from)
+        {
+            panic!(
+                "`{artifact}` links `{other_from}`'s `{other}` and `{from}`'s `{name}` \
+                 at the same `@group({g}) @binding({b})`. The modules a pipeline links \
+                 partition a group's index space between them (see `mixbox_lut.wesl`), \
+                 and two of them have claimed one slot."
+            );
+        }
+        seen.push((g, b, name, from));
+    }
 }
 
 /// Read `mixbox_eval_polynomial` out of the vendored Mixbox GLSL and emit an

@@ -58,9 +58,10 @@ macro_rules! resid_variant {
 /// entry, the uniform's `min_binding_size` written out again — with nothing checking
 /// either.
 ///
-/// `wgpu` is deliberately not a dependency of this crate, so the kind is spelled
-/// structurally here and turned into a `BindingType` by the one consumer that has
-/// `wgpu` in scope (`stark_core::gpu::desc`).
+/// The `wgpu` types are carried directly rather than their WGSL spellings. This crate
+/// depends on `wgpu` anyway (the generated vertex buffer layouts are `wgpu`'s), and a
+/// `&'static str` here bought only a pair of string matches on the host, each with a
+/// runtime panic for a fact the generator knew at build time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindKind {
     /// `var<uniform> x: T` — carries `T`'s WGSL size, which is the layout's
@@ -69,14 +70,13 @@ pub enum BindKind {
     /// `sampler`. Whether it is *filtering* is a property of how an entry point uses
     /// it rather than of the declaration, so it is not here — see [`Binding`].
     Sampler,
-    /// `texture_2d<f32>` and friends: `dim` is the WGSL type's suffix (`2d`,
-    /// `2d_array`, `3d`).
-    Texture { dim: &'static str },
-    /// `texture_storage_2d<format, access>` — `format` is the WGSL storage format
-    /// name, e.g. `"rgba16float"`.
+    /// `texture_2d<f32>` and friends.
+    Texture { dim: wgpu::TextureViewDimension },
+    /// `texture_storage_2d<format, access>`. The access mode is not here: it is
+    /// implied by the layout entry the host builds.
     Storage {
-        dim: &'static str,
-        format: &'static str,
+        dim: wgpu::TextureViewDimension,
+        format: wgpu::TextureFormat,
     },
 }
 
@@ -88,12 +88,25 @@ pub enum BindKind {
 /// `textureSample`d by another (`region_color`, between `snapshot` and `exchange`), so
 /// it is a property of the pair and not of the slot. The host says it, once, in the
 /// list that names the entry point's bindings.
+///
+/// **A host names a slot by taking the whole declaration**, from the generated `decl`
+/// module, rather than by looking one up by index. There was a `lookup(table, index)`
+/// here, and it was correct only for a module declaring a single group: `@binding(0)`
+/// means a different slot in each of a module's groups, and more than half the tree
+/// declares two or three (`stamp_common` has `xf` at `@group(0)`, `prefix_tex` at
+/// `@group(1)` and `noise_tex` at `@group(2)`, all at index 0). Carrying the
+/// declaration instead removes the question rather than answering it — and takes a
+/// panicking lookup out of the layout path with it.
 #[derive(Clone, Copy, Debug)]
 pub struct Binding {
-    /// The `@binding` index.
+    /// The `@group` this slot is in. A bind group layout is for exactly one group, so
+    /// this is what lets the host check that a slot list names one.
+    pub group: u32,
+    /// The `@binding` index — unique within [`group`](Self::group), and what a
+    /// bind-group entry is keyed on.
     pub index: u32,
-    /// The WESL variable's name, uppercased — the same spelling as the `binding::`
-    /// constant, so a diagnostic can name the slot the shader names.
+    /// The WESL variable's name, uppercased — the same spelling as the `binding::` and
+    /// `decl::` constants, so a diagnostic can name the slot the shader names.
     pub name: &'static str,
     pub kind: BindKind,
     /// Whether the declaration is `@if(resid)`-gated, i.e. exists only in the
@@ -106,27 +119,26 @@ pub struct Binding {
     pub resid: bool,
 }
 
-impl Binding {
-    /// The declaration at `index` in `table`.
-    ///
-    /// Panics rather than returning an `Option`, because every caller is a host layout
-    /// naming a slot of the very module the table came from: an index that is not there
-    /// is a typo in that list, at build-configuration time, and a loud one is what a
-    /// caller would write anyway.
-    pub fn lookup(table: &'static [Binding], index: u32) -> &'static Binding {
-        table
-            .iter()
-            .find(|b| b.index == index)
-            .unwrap_or_else(|| panic!("no `@binding({index})` in this shader module"))
-    }
-}
-
-/// Rust mirrors of the WESL structs the host fills in, generated from the shader
-/// sources at build time (`build/mirror.rs`).
+/// Rust mirrors of what the WESL declares — the uniform structs the host fills in,
+/// the constants both sides compute with, the `@binding` declarations, and the
+/// per-instance vertex records — generated from the shader sources at build time
+/// (`build/mirror.rs`).
 ///
 /// The shader decides how the lanes are read, so the shader's declaration is the
 /// only one: these are not transcriptions to be kept in step, and the lane
 /// documentation on each field is the WESL comment itself.
+///
+/// **Everything the tree declares is here, not a chosen subset.** The generator
+/// discovers rather than being given a list, so a new uniform, constant or binding
+/// arrives mirrored — which means some of what follows has no caller. That is the
+/// trade and it is the right way round: an unused mirror costs a few lines of
+/// generated code, while a *missing* one costs a hand-written second declaration that
+/// nothing checks. `mirror.rs`'s header names anything discovery could not spell.
+///
+/// The lint waiver is what "generated" means here rather than a suppression: WESL
+/// writes `const PI: f32 = 3.14159265359`, and `approx_constant` is advice to an
+/// author about a literal this module has no author for.
+#[allow(clippy::approx_constant)]
 pub mod mirror {
     include!(concat!(env!("OUT_DIR"), "/mirror.rs"));
 }

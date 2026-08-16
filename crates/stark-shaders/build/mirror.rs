@@ -42,90 +42,171 @@ use wesl::syntax::{
     AddressSpace, Attribute, DeclarationKind, GlobalDeclaration, Struct, TranslationUnit,
 };
 
-/// Generate mirrors for `wanted` into `dest`.
+/// One module of the shader tree, read once.
 ///
-/// Each entry is `(modules, name)`. The **first** module is where the struct is
-/// declared for the host's purposes and what the generated Rust module is named
-/// after; any further modules declare the same struct for their own pipeline and are
-/// checked to agree with it, member for member and offset for offset.
+/// The *unlinked* source, always. The linker mangles `Stamp` to
+/// `package__1dynamics_Stamp`, emits it once per artifact that reaches it, and strips
+/// whatever no entry point uses — the reason the check this replaces could not see a
+/// constant that survived only in prose (the retired wick's `WICK_RATE` was the case
+/// that proved it). And it drops the comments that are half of what is generated here.
+pub struct Module {
+    /// The WESL path — `dynamics`, or `lib/paint_common`. How a diagnostic names it.
+    path: String,
+    /// The Rust module the mirrors land in: the file's own name, without the
+    /// directory. `lib` holds the binding-free leaves and is a placement rule rather
+    /// than a namespace, so it does not reach the generated paths.
+    rust: String,
+    src: String,
+    tu: TranslationUnit,
+}
+
+/// Read every `.wesl` in the tree, sorted by path so the generated file is
+/// deterministic (`read_dir` order is not).
+fn read_tree(shader_dir: &Path) -> Vec<Module> {
+    let mut out = Vec::new();
+    let mut claimed: Vec<(String, String)> = Vec::new();
+    for dir in ["", "lib"] {
+        let at = if dir.is_empty() {
+            shader_dir.to_path_buf()
+        } else {
+            shader_dir.join(dir)
+        };
+        let mut paths: Vec<_> = std::fs::read_dir(&at)
+            .unwrap_or_else(|e| panic!("read {}: {e}", at.display()))
+            .map(|e| e.expect("shader dir entry").path())
+            .filter(|p| p.extension().is_some_and(|e| e == "wesl"))
+            .collect();
+        paths.sort();
+        for p in paths {
+            let stem = p
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .expect("a shader file has a name")
+                .to_string();
+            let path = if dir.is_empty() {
+                stem.clone()
+            } else {
+                format!("{dir}/{stem}")
+            };
+            // Two shaders with the same file name in different directories would land
+            // in one Rust module and silently merge their items. Refused rather than
+            // merged — the mirror's whole job is that one declaration answers for one
+            // thing.
+            if let Some((other, _)) = claimed.iter().find(|(_, r)| *r == stem) {
+                panic!("`{other}.wesl` and `{path}.wesl` would both mirror as `{stem}`");
+            }
+            claimed.push((path.clone(), stem.clone()));
+            let src = std::fs::read_to_string(&p)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()));
+            let tu: TranslationUnit = src
+                .parse()
+                .unwrap_or_else(|e| panic!("cannot parse {}: {e}", p.display()));
+            out.push(Module {
+                path,
+                rust: stem,
+                src,
+                tu,
+            });
+        }
+    }
+    out
+}
+
+/// Generate the host mirrors of everything the shader tree declares, into `dest`.
 ///
-/// That second part is not a nicety. `View` is written out three times in the shader
-/// tree — `composite`, `matte` and `overlay` each declare their own — against one
-/// `ViewUniform` on the host. Generating from one of them and ignoring the rest would
-/// move the drift rather than remove it.
+/// **Discovered, not listed.** Every `@binding`, every `const` with a Rust spelling,
+/// and every struct a `var<uniform>` names is mirrored, for every module in the tree.
+/// That is the rule the four hand-kept lists this replaces were converging on: a list
+/// makes "the host transcribed something the shader already says" an instance to
+/// notice rather than a class that cannot arise, and it was already half-kept — the
+/// filter's kind codes were generated while the blend's were transcribed, and the
+/// binding tables covered one module of twenty-one.
 ///
-/// An explicit list rather than "every struct reachable from a binding", which is the
-/// rule this should end at: entries are added as each hand-written mirror is retired,
-/// so nothing is generated that nothing uses.
+/// Two things are still named, because the shader does not say them:
+///
+/// * `shared` — the structs **two or more modules declare identically** against one
+///   host type. `View` is written out three times (`composite`, `matte`, `overlay`)
+///   and there is one `ViewUniform`; the first module named is where it is generated
+///   from, the rest are checked to agree member for member and offset for offset, and
+///   then skipped so discovery does not emit a second copy. Generating from one and
+///   ignoring the others would move the drift rather than remove it.
+/// * `vertex` — the **name** of a per-instance record, since a parameter list has no
+///   name of its own. Every `@vertex` entry point that takes `@location` parameters
+///   must be named here; one that is not is a build failure rather than a record the
+///   host would then write by hand.
+///
+/// Anything discovery cannot spell in Rust — a nested struct, a non-scalar const — is
+/// **skipped with a note in the generated file** rather than failing the build. It has
+/// to be: discovery reaches declarations no host has ever asked for, and one of them
+/// being unmirrorable is not a reason to stop. A caller that needed it still fails, at
+/// its own use site.
 pub fn generate(
     shader_dir: &Path,
     dest: &Path,
-    wanted: &[(&[&str], &str)],
-    consts: &[(&str, &str)],
+    shared: &[(&[&str], &str)],
     vertex: &[(&str, &str, &str)],
-    bindings: &[&str],
 ) {
+    let modules = read_tree(shader_dir);
+    let find_module = |path: &str| {
+        modules
+            .iter()
+            .find(|m| m.path == path)
+            .unwrap_or_else(|| panic!("`{path}.wesl` is not in the shader tree"))
+    };
+
     // Grouped by the module a declaration is emitted under, in first-seen order.
     // One struct name can be declared by two modules with *different* members
     // (`selection.wesl`'s `Params` and `slice.wesl`'s once were exactly that), so
     // the WESL module has to be part of the Rust path.
-    let mut modules: Vec<(String, TokenStream)> = Vec::new();
-    let mut push = |module: &str, item: TokenStream| {
-        // A module under `lib/` is named for its file, not its path: `lib` holds the
-        // binding-free leaves and is a placement rule rather than a namespace. Two
-        // shaders with the same file name in different directories would collide, so
-        // the assertion below refuses rather than silently merging them.
-        let rust = module.rsplit('/').next().expect("a module has a name");
-        match modules.iter_mut().find(|(m, _)| m == rust) {
-            Some((_, items)) => items.extend(item),
-            None => modules.push((rust.to_string(), item)),
-        }
-    };
-    let read = |module: &str| {
-        let path = shader_dir.join(format!("{module}.wesl"));
-        let src = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-        // The *unlinked* source. The linker mangles `Stamp` to
-        // `package__1dynamics_Stamp`, emits it once per artifact that reaches it, and
-        // strips whatever no entry point uses — the reason the check this replaces
-        // could not see a constant that survived only in prose (the retired wick's
-        // `WICK_RATE` was the case that proved it). And it drops the comments that
-        // are half of what is being generated here.
-        let tu: TranslationUnit = src
-            .parse()
-            .unwrap_or_else(|e| panic!("cannot parse {}: {e}", path.display()));
-        (src, tu)
-    };
+    let mut items: Vec<(String, TokenStream)> = Vec::new();
 
-    for (sources, name) in wanted {
+    // `(module path, struct name)` pairs discovery must not emit, because the loop
+    // below has already emitted them: every module of a `shared` entry, the canonical
+    // one included — it is generated here, with the doc naming the modules it answers
+    // for, and discovery reaching it again would be a second definition of one type.
+    let mut aliased: Vec<(String, String)> = Vec::new();
+    for (sources, name) in shared {
         let (canonical, others) = sources.split_first().expect("a mirror names a module");
-        let (src, tu) = read(canonical);
-        let laid = lay_out(find(&tu, canonical, name), &src, canonical, &tu);
-
+        let cm = find_module(canonical);
+        let laid = lay_out(find(cm, name), cm).unwrap_or_else(|e| panic!("{e}"));
         for other in others {
-            let (o_src, o_tu) = read(other);
-            let o_laid = lay_out(find(&o_tu, other, name), &o_src, other, &o_tu);
+            let om = find_module(other);
+            let o_laid = lay_out(find(om, name), om).unwrap_or_else(|e| panic!("{e}"));
             agrees(name, canonical, &laid, other, &o_laid);
         }
-        push(canonical, emit(name, sources, &laid));
+        aliased.extend(
+            sources
+                .iter()
+                .map(|s| ((*s).to_string(), (*name).to_string())),
+        );
+        push(&mut items, &cm.rust, emit(name, sources, &laid));
     }
 
-    for (module, name) in consts {
-        let (src, tu) = read(module);
-        push(module, emit_const(&tu, &src, module, name));
+    for m in &modules {
+        push(&mut items, &m.rust, emit_consts(m));
+        push(&mut items, &m.rust, emit_bindings(m));
+        push(&mut items, &m.rust, emit_uniform_structs(m, &aliased));
     }
 
     for (module, entry, name) in vertex {
-        let (src, tu) = read(module);
-        push(module, emit_vertex(&tu, &src, module, entry, name));
+        let m = find_module(module);
+        push(&mut items, &m.rust, emit_vertex(m, entry, name));
+    }
+    // The other half of that list being a name and not a membership statement: an
+    // entry point the host would have to write a record for by hand is a build
+    // failure here instead.
+    for m in &modules {
+        for entry in instanced_vertex_entries(m) {
+            assert!(
+                vertex.iter().any(|(md, e, _)| *md == m.path && *e == entry),
+                "`{}.wesl`'s `@vertex fn {entry}` takes `@location` parameters but is \
+                 not named in `VERTEX`, so nothing generates the record it reads",
+                m.path,
+            );
+        }
     }
 
-    for module in bindings {
-        let (src, tu) = read(module);
-        push(module, emit_bindings(&tu, &src, module));
-    }
-
-    let items = modules.iter().map(|(module, items)| {
+    let items = items.iter().map(|(module, items)| {
         let ident = format_ident!("{module}");
         let doc = format!(" Host mirrors of what `{module}.wesl` declares.");
         quote! {
@@ -137,11 +218,72 @@ pub fn generate(
     });
 
     let file = syn::parse2(quote!(#(#items)*)).expect("the generator emits a parseable file");
+    let skipped = SKIPPED.with_borrow(|s| {
+        if s.is_empty() {
+            String::new()
+        } else {
+            // In the header rather than beside the item, because the item is exactly
+            // what is *not* there: a reader hunting a mirror that does not exist finds
+            // the reason at the top of the file it looked in.
+            format!(
+                "//\n// Declarations discovery reached and could not spell in Rust:\n{}",
+                s.iter().map(|n| format!("//   {n}\n")).collect::<String>(),
+            )
+        }
+    });
     let text = format!(
-        "// @generated by `build/mirror.rs` from the WESL sources — do not edit.\n\n{}",
+        "// @generated by `build/mirror.rs` from the WESL sources — do not edit.\n\
+         {skipped}\n{}",
         prettyplease::unparse(&file),
     );
     std::fs::write(dest, text).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+}
+
+thread_local! {
+    /// What discovery could not spell, reported in the generated file's header.
+    ///
+    /// A thread-local rather than a parameter threaded through eight emitters: a skip
+    /// is a diagnostic about the *run*, not a value any caller acts on, and the build
+    /// script is single-threaded.
+    static SKIPPED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn skipped(note: String) {
+    SKIPPED.with_borrow_mut(|s| s.push(note));
+}
+
+/// Add `item` to the Rust module `rust`'s bag, in first-seen order.
+fn push(items: &mut Vec<(String, TokenStream)>, rust: &str, item: TokenStream) {
+    if item.is_empty() {
+        return;
+    }
+    match items.iter_mut().find(|(m, _)| m == rust) {
+        Some((_, bag)) => bag.extend(item),
+        None => items.push((rust.to_string(), item)),
+    }
+}
+
+/// Every `@vertex` entry point in `m` that takes at least one `@location` parameter —
+/// i.e. that reads a per-instance record the host has to lay out.
+fn instanced_vertex_entries(m: &Module) -> Vec<String> {
+    m.tu.global_declarations
+        .iter()
+        .filter_map(|d| match &**d {
+            GlobalDeclaration::Function(f)
+                if f.attributes
+                    .iter()
+                    .any(|a| matches!(**a, Attribute::Vertex))
+                    && f.parameters.iter().any(|p| {
+                        p.attributes
+                            .iter()
+                            .any(|a| matches!(**a, Attribute::Location(_)))
+                    }) =>
+            {
+                Some(f.ident.name().to_string())
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Emit the per-instance record `entry`'s `@location` parameters describe, as a Rust
@@ -161,13 +303,8 @@ pub fn generate(
 /// which for these types is also exactly what `#[repr(C)]` does (every one is
 /// 4-byte-aligned and a multiple of 4 in size). The emitted `offset_of` assertions
 /// are what say those two rules still agree.
-fn emit_vertex(
-    tu: &TranslationUnit,
-    src: &str,
-    module: &str,
-    entry: &str,
-    name: &str,
-) -> TokenStream {
+fn emit_vertex(m: &Module, entry: &str, name: &str) -> TokenStream {
+    let (tu, src, module) = (&m.tu, m.src.as_str(), m.path.as_str());
     let (func, body) = tu
         .global_declarations
         .iter()
@@ -327,8 +464,9 @@ fn emit_vertex(
     }
 }
 
-/// Emit `pub mod binding` holding one `u32` const per `@binding` declaration in
-/// `module` — the indices the host's bind-group layouts and bind-group entries name.
+/// Emit the `@binding` declarations of `m` three ways: `binding::NAME` (the index, for
+/// a `match` arm), `decl::NAME` (the whole declaration, for a slot list), and
+/// `BINDINGS` (all of them, for a structural check).
 ///
 /// The third transcription of the same boundary, and the one with the least
 /// redundancy to catch it: a binding number was written in the WESL declaration, in
@@ -337,14 +475,21 @@ fn emit_vertex(
 /// the same for the *slots*, so a renumbering in the shader is a one-file change
 /// that the host follows by name.
 ///
+/// **`decl::` is what makes the group unambiguous.** A slot list naming
+/// `decl::REGION_COLOR` carries the declaration itself, so nothing looks a binding up
+/// by index — which it could not do correctly anyway, since `@binding(0)` means a
+/// different slot in each of a module's groups and half the tree declares more than
+/// one (`stamp_common` has three).
+///
 /// Every declaration is emitted, `@if`-gated ones included — the unlinked source
 /// keeps them, and a host that binds one does so exactly when the matching feature
 /// build declares it. The name is the WESL variable's, uppercased; two declarations
 /// that collide there are a build failure rather than a silent shadowing.
-fn emit_bindings(tu: &TranslationUnit, src: &str, module: &str) -> TokenStream {
-    let mut ctx = Context::new(tu);
+fn emit_bindings(m: &Module) -> TokenStream {
+    let (tu, src, module) = (&m.tu, m.src.as_str(), m.path.as_str());
     let mut names: Vec<String> = Vec::new();
-    let mut consts = Vec::new();
+    let mut indices = Vec::new();
+    let mut decls = Vec::new();
     let mut table = Vec::new();
     for d in &tu.global_declarations {
         let GlobalDeclaration::Declaration(decl) = &**d else {
@@ -357,15 +502,34 @@ fn emit_bindings(tu: &TranslationUnit, src: &str, module: &str) -> TokenStream {
             continue;
         };
         let member = decl.ident.name();
-        let index = match expr.eval_value(&mut ctx).ok().and_then(|i| match i {
-            Instance::Literal(LiteralInstance::AbstractInt(n)) => u32::try_from(n).ok(),
-            Instance::Literal(LiteralInstance::U32(n)) => Some(n),
-            Instance::Literal(LiteralInstance::I32(n)) => u32::try_from(n).ok(),
-            _ => None,
-        }) {
-            Some(n) => n,
-            None => panic!("`{module}.wesl`'s `{member}` has a `@binding` that is not a number"),
+        let at = |what: &str, e: &wesl::syntax::ExpressionNode| -> u32 {
+            match e
+                .eval_value(&mut Context::new(tu))
+                .ok()
+                .and_then(|i| match i {
+                    Instance::Literal(LiteralInstance::AbstractInt(n)) => u32::try_from(n).ok(),
+                    Instance::Literal(LiteralInstance::U32(n)) => Some(n),
+                    Instance::Literal(LiteralInstance::I32(n)) => u32::try_from(n).ok(),
+                    _ => None,
+                }) {
+                Some(n) => n,
+                None => panic!("`{module}.wesl`'s `{member}` has a `@{what}` that is not a number"),
+            }
         };
+        let index = at("binding", expr);
+        // The group the slot is in. A bind group layout is for exactly one group, so
+        // this is what lets the host assert that a slot list names one — and what a
+        // table keyed on the index alone could never have said.
+        let group = decl
+            .attributes
+            .iter()
+            .find_map(|a| match &**a {
+                Attribute::Group(e) => Some(at("group", e)),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!("`{module}.wesl`'s `{member}` has a `@binding` but no `@group`")
+            });
         let name = member.to_uppercase();
         assert!(
             !names.contains(&name),
@@ -374,8 +538,8 @@ fn emit_bindings(tu: &TranslationUnit, src: &str, module: &str) -> TokenStream {
         names.push(name.clone());
         let docs = doc_lines(&src[..d.span().range().start]);
         let ident = format_ident!("{name}");
-        let index_lit = lit(index);
-        consts.push(quote! {
+        let (group_lit, index_lit) = (lit(group), lit(index));
+        indices.push(quote! {
             #(#[doc = #docs])*
             pub const #ident: u32 = #index_lit;
         });
@@ -390,33 +554,42 @@ fn emit_bindings(tu: &TranslationUnit, src: &str, module: &str) -> TokenStream {
             Attribute::If(e) => src[e.span().range()].trim() == "resid",
             _ => false,
         });
-        // No doc comment here: an element of an array expression is not an item, so a
-        // `///` on one is inert (and a warning). The prose lives on the `binding::`
-        // constant above, which is the name a reader looks the slot up by anyway.
-        table.push(quote! {
-            Binding {
+        let decl_doc =
+            format!(" `@group({group}) @binding({index}) var {member}` — see [`binding::{name}`].");
+        decls.push(quote! {
+            #[doc = #decl_doc]
+            pub const #ident: Binding = Binding {
+                group: #group_lit,
                 index: #index_lit,
                 name: #name,
                 kind: #kind,
                 resid: #resid,
-            }
+            };
         });
+        table.push(quote!(decl::#ident));
     }
-    assert!(
-        !consts.is_empty(),
-        "`{module}.wesl` declares no `@binding`s, so there is nothing to mirror"
-    );
+    if indices.is_empty() {
+        // Every module under `lib/` and every leaf that owns no pipeline. Not an
+        // error: discovery reaches the whole tree, and a binding-free module is the
+        // rule there rather than an omission (§2).
+        return TokenStream::new();
+    }
     let index_doc = format!(
         " The `@binding` indices `{module}.wesl` declares, named for their WESL\n \
-         variables — the shader's declarations are the only ones.",
+         variables — the shader's declarations are the only ones.\n\n \
+         The index alone does **not** identify a slot when a module declares more than\n \
+         one group; it is what a bind-group entry is keyed on once the group is fixed.\n \
+         To *name* a slot, use [`decl`].",
     );
-    let table_doc = format!(
-        " Every `@binding` `{module}.wesl` declares, in declaration order: its index,\n \
-         what kind of thing occupies it, and whether it is `@if(resid)`-gated.\n\n \
+    let decl_doc = format!(
+        " Every `@binding` `{module}.wesl` declares, whole: its group and index, what\n \
+         kind of thing occupies it, and whether it is `@if(resid)`-gated.\n\n \
          The host builds both its bind-group **layouts** and its bind **groups** from\n \
-         this, so the two cannot disagree about a slot's type, its storage format, or\n \
-         whether the residual build has it. Look up a slot with [`binding_of`].",
+         these, so the two cannot disagree about a slot's type, its storage format, or\n \
+         whether the residual build has it.",
     );
+    let table_doc = " Every declaration in [`decl`], in declaration order — for the checks that ask\n \
+         about the set rather than about one slot.";
     quote! {
         // The descriptor types are hand-written in `lib.rs` — they are the host's
         // vocabulary, not the shader's — and this generated module sits two levels
@@ -425,18 +598,17 @@ fn emit_bindings(tu: &TranslationUnit, src: &str, module: &str) -> TokenStream {
 
         #[doc = #index_doc]
         pub mod binding {
-            #(#consts)*
+            #(#indices)*
+        }
+
+        #[doc = #decl_doc]
+        pub mod decl {
+            use super::{BindKind, Binding};
+            #(#decls)*
         }
 
         #[doc = #table_doc]
         pub const BINDINGS: &[Binding] = &[#(#table),*];
-
-        /// The declaration at `index`, or `None` if this module declares no such
-        /// binding — which for a host naming its own layout is a typo, and worth a
-        /// loud one.
-        pub fn binding_of(index: u32) -> Option<&'static Binding> {
-            BINDINGS.iter().find(|b| b.index == index)
-        }
     }
 }
 
@@ -447,6 +619,12 @@ fn emit_bindings(tu: &TranslationUnit, src: &str, module: &str) -> TokenStream {
 /// `texture_storage_2d<rgba32float, write>` is a storage texture of that format, and
 /// the host had been choosing between `stor` and `stor32` by hand at every layout that
 /// named one.
+///
+/// **The `wgpu` types are emitted, not their WGSL spellings.** `stark-shaders` depends
+/// on `wgpu` anyway — the generated vertex layouts need it — so a `BindKind` carrying
+/// `&'static str` bought nothing but a pair of string matches on the host, each with a
+/// runtime panic for a fact known here. Now an unmapped format stops *this* build,
+/// naming the declaration.
 fn bind_kind(
     decl: &wesl::syntax::Declaration,
     module: &str,
@@ -473,22 +651,63 @@ fn bind_kind(
     if name == "sampler" {
         return quote!(BindKind::Sampler);
     }
+    let at = || format!("`{module}.wesl`'s `{member}`");
     if let Some(dim) = name.strip_prefix("texture_storage_") {
         // `<format, access>`; only the format reaches the host's descriptor, the
         // access mode being implied by the layout entry the host builds.
         let args = ty
             .template_args
             .as_ref()
-            .unwrap_or_else(|| panic!("`{module}.wesl`'s `{member}` has no storage format"));
-        let format = expr_ident(&args[0].expression).unwrap_or_else(|| {
-            panic!("`{module}.wesl`'s `{member}` has a storage format that is not a name")
-        });
+            .unwrap_or_else(|| panic!("{} has no storage format", at()));
+        let format = expr_ident(&args[0].expression)
+            .unwrap_or_else(|| panic!("{} has a storage format that is not a name", at()));
+        let format = texture_format(&format, &at());
+        let dim = view_dimension(dim, &at());
         return quote!(BindKind::Storage { dim: #dim, format: #format });
     }
     if let Some(dim) = name.strip_prefix("texture_") {
+        let dim = view_dimension(dim, &at());
         return quote!(BindKind::Texture { dim: #dim });
     }
-    panic!("`{module}.wesl`'s `{member}` has type `{name}`, which is not a binding kind");
+    panic!("{} has type `{name}`, which is not a binding kind", at());
+}
+
+/// A WGSL storage-format name as a `wgpu::TextureFormat` path.
+///
+/// Only the formats the shader tree declares. A new one is a deliberate addition here
+/// — the two spellings are close but not mechanically derivable (`rg11b10ufloat` is
+/// `Rg11b10Ufloat`), and guessing is how a host ends up binding a format the shader
+/// does not write.
+fn texture_format(wgsl: &str, at: &str) -> TokenStream {
+    let ident = match wgsl {
+        "rgba8unorm" => "Rgba8Unorm",
+        "rgba8snorm" => "Rgba8Snorm",
+        "r8unorm" => "R8Unorm",
+        "r16float" => "R16Float",
+        "rg16float" => "Rg16Float",
+        "rgba16float" => "Rgba16Float",
+        "r32float" => "R32Float",
+        "rg32float" => "Rg32Float",
+        "rgba32float" => "Rgba32Float",
+        other => panic!("{at} declares storage format `{other}`, which has no `wgpu` mapping here"),
+    };
+    let ident = format_ident!("{ident}");
+    quote!(wgpu::TextureFormat::#ident)
+}
+
+/// A WGSL texture type's dimension suffix as a `wgpu::TextureViewDimension` path.
+fn view_dimension(wgsl: &str, at: &str) -> TokenStream {
+    let ident = match wgsl {
+        "1d" => "D1",
+        "2d" => "D2",
+        "2d_array" => "D2Array",
+        "3d" => "D3",
+        "cube" => "Cube",
+        "cube_array" => "CubeArray",
+        other => panic!("{at} is a `texture_{other}`, which has no `wgpu` mapping here"),
+    };
+    let ident = format_ident!("{ident}");
+    quote!(wgpu::TextureViewDimension::#ident)
 }
 
 /// The identifier a template argument names, e.g. `rgba16float`.
@@ -551,100 +770,153 @@ fn vertex_format(ty: &Type) -> Option<(TokenStream, u32)> {
 /// decimal literal out of the *linked* source and could do neither: a derived
 /// constant is not a literal, and the linker had already stripped anything no entry
 /// point reached.
-fn emit_const(tu: &TranslationUnit, src: &str, module: &str, name: &str) -> TokenStream {
-    let decl = tu
-        .global_declarations
-        .iter()
-        .find_map(|d| match &**d {
-            GlobalDeclaration::Declaration(decl)
-                if decl.kind.is_const() && decl.ident.name().as_str() == name =>
-            {
-                Some((decl, d.span().range()))
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("`{module}.wesl` declares no `const {name}`"));
-    let (decl, span) = decl;
-
-    let init = decl
-        .initializer
-        .as_ref()
-        .unwrap_or_else(|| panic!("`{module}.wesl`'s `const {name}` has no value"));
-    let mut ctx = Context::new(tu);
-    let value = init
-        .eval_value(&mut ctx)
-        .unwrap_or_else(|e| panic!("`{module}.wesl`'s `const {name}` does not evaluate: {e}"));
-
-    // An explicit type is required rather than inferred from the value. WGSL's
-    // *abstract* numerics have no Rust counterpart to pick — `const N = 4` could
-    // honestly become an `i32`, a `u32` or an `f32` — and guessing is how a host
-    // constant ends up a different type from the one the shader computes with.
-    let declared = decl.ty.as_ref().unwrap_or_else(|| {
-        panic!(
-            "`{module}.wesl`'s `const {name}` has no declared type, so there is no \
-             Rust type to generate. Write one (`const {name}: f32 = …`)."
-        )
-    });
-    let ty = ty_eval_ty(declared, &mut ctx)
-        .unwrap_or_else(|e| panic!("`{module}.wesl`'s `const {name}` has no type: {e}"));
-
-    // `2` evaluates to an *abstract* int, and `4.0` to an abstract float — WGSL
-    // defers the choice of a concrete type to the declaration. Converting to the
-    // declared type is what the shader itself does, and doing it here is why the
-    // generated constant is the type the shader computes with rather than whichever
-    // one the literal happened to look like.
-    let value = value.convert_to(&ty).unwrap_or_else(|| {
-        panic!("`{module}.wesl`'s `const {name}` is a `{value}`, which is not a `{ty}`")
-    });
-    let Instance::Literal(lit) = &value else {
-        panic!(
-            "`{module}.wesl`'s `const {name}` is not a scalar, which is all a host constant can be"
-        )
-    };
-    let (rust, literal) = match (&ty, lit) {
-        (Type::F32, LiteralInstance::F32(v)) => {
-            assert!(
-                v.is_finite(),
-                "`{module}.wesl`'s `const {name}` is {v}, which no Rust literal spells"
-            );
-            // `{:?}` on an `f32` prints the shortest decimal that reads back to the
-            // same bits, so the generated literal *is* this value — which is the whole
-            // difficulty the check this replaces documented, having compared the
-            // host's rounded `0.06f32` against the source's exact decimal as `f64`.
-            (quote!(f32), format!("{v:?}"))
+fn emit_consts(m: &Module) -> TokenStream {
+    let (tu, src, module) = (&m.tu, m.src.as_str(), m.path.as_str());
+    let mut out = TokenStream::new();
+    for d in &tu.global_declarations {
+        let GlobalDeclaration::Declaration(decl) = &**d else {
+            continue;
+        };
+        if !decl.kind.is_const() {
+            continue;
         }
-        (Type::U32, LiteralInstance::U32(v)) => (quote!(u32), format!("{v}")),
-        (Type::I32, LiteralInstance::I32(v)) => (quote!(i32), format!("{v}")),
-        (Type::Bool, LiteralInstance::Bool(v)) => (quote!(bool), format!("{v}")),
-        _ => panic!(
-            "`{module}.wesl`'s `const {name}` is a `{ty}` holding `{value}`, which has \
-             no host constant. Scalars only."
-        ),
-    };
-    let literal: TokenStream = literal.parse().expect("a scalar literal is one token");
+        let name = decl.ident.name();
+        let name = name.as_str();
 
-    let ident = format_ident!("{name}");
-    let mut docs = doc_lines(&src[..span.start]);
-    docs.push(String::new());
-    docs.push(format!(
-        " Generated from `{module}.wesl`'s `const {name}` — the shader's declaration is",
-    ));
-    docs.push(" the only one.".to_string());
-    quote! {
-        #(#[doc = #docs])*
-        pub const #ident: #rust = #literal;
+        // An explicit type is required rather than inferred from the value. WGSL's
+        // *abstract* numerics have no Rust counterpart to pick — `const N = 4` could
+        // honestly become an `i32`, a `u32` or an `f32` — and guessing is how a host
+        // constant ends up a different type from the one the shader computes with.
+        //
+        // Passed over in silence rather than noted: an untyped const is the shader
+        // deferring the choice, not a mirror that failed. `dynamics.wesl`'s
+        // `BLEED_OFFS` is one, and no host wants it.
+        let Some(declared) = decl.ty.as_ref() else {
+            continue;
+        };
+        let Some(init) = decl.initializer.as_ref() else {
+            continue;
+        };
+        let mut ctx = Context::new(tu);
+        let at = || format!("`{module}.wesl`'s `const {name}`");
+        let Ok(value) = init.eval_value(&mut ctx) else {
+            skipped(format!("{} does not const-evaluate", at()));
+            continue;
+        };
+        let Ok(ty) = ty_eval_ty(declared, &mut ctx) else {
+            skipped(format!("{} has no resolvable type", at()));
+            continue;
+        };
+        // `2` evaluates to an *abstract* int, and `4.0` to an abstract float — WGSL
+        // defers the choice of a concrete type to the declaration. Converting to the
+        // declared type is what the shader itself does, and doing it here is why the
+        // generated constant is the type the shader computes with rather than whichever
+        // one the literal happened to look like.
+        let Some(value) = value.convert_to(&ty) else {
+            skipped(format!("{} is a `{value}`, which is not a `{ty}`", at()));
+            continue;
+        };
+        let Instance::Literal(lit) = &value else {
+            // An array, a matrix, a struct: real declarations that a host constant
+            // cannot be. `BLEED_OFFS`'s stencil offsets are the case, and the host
+            // derives its own from `BLEED_LADDER_TAPS` beside it.
+            skipped(format!("{} is not a scalar", at()));
+            continue;
+        };
+        let (rust, literal) = match (&ty, lit) {
+            (Type::F32, LiteralInstance::F32(v)) => {
+                assert!(
+                    v.is_finite(),
+                    "{} is {v}, which no Rust literal spells",
+                    at()
+                );
+                // `{:?}` on an `f32` prints the shortest decimal that reads back to the
+                // same bits, so the generated literal *is* this value — which is the whole
+                // difficulty the check this replaces documented, having compared the
+                // host's rounded `0.06f32` against the source's exact decimal as `f64`.
+                (quote!(f32), format!("{v:?}"))
+            }
+            (Type::U32, LiteralInstance::U32(v)) => (quote!(u32), format!("{v}")),
+            (Type::I32, LiteralInstance::I32(v)) => (quote!(i32), format!("{v}")),
+            (Type::Bool, LiteralInstance::Bool(v)) => (quote!(bool), format!("{v}")),
+            _ => {
+                skipped(format!("{} is a `{ty}`, which has no host constant", at()));
+                continue;
+            }
+        };
+        let literal: TokenStream = literal.parse().expect("a scalar literal is one token");
+
+        let ident = format_ident!("{name}");
+        let mut docs = doc_lines(&src[..d.span().range().start]);
+        docs.push(String::new());
+        docs.push(format!(
+            " Generated from `{module}.wesl`'s `const {name}` — the shader's declaration is",
+        ));
+        docs.push(" the only one.".to_string());
+        out.extend(quote! {
+            #(#[doc = #docs])*
+            pub const #ident: #rust = #literal;
+        });
     }
+    out
 }
 
-/// The `struct name` declared in `tu`.
-fn find<'a>(tu: &'a TranslationUnit, module: &str, name: &str) -> &'a Struct {
-    tu.global_declarations
-        .iter()
-        .find_map(|d| match &**d {
-            GlobalDeclaration::Struct(s) if s.ident.name().as_str() == name => Some(s),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("`{module}.wesl` declares no `struct {name}`"))
+/// Emit a mirror for every struct a `var<uniform>` in `m` names — the boundary the
+/// host writes across, discovered rather than listed (§2).
+///
+/// `aliased` holds the `(module, struct)` pairs a `shared` entry already generated
+/// under another module, so the two do not both emit one.
+fn emit_uniform_structs(m: &Module, aliased: &[(String, String)]) -> TokenStream {
+    let mut out = TokenStream::new();
+    let mut done: Vec<String> = Vec::new();
+    for d in &m.tu.global_declarations {
+        let GlobalDeclaration::Declaration(decl) = &**d else {
+            continue;
+        };
+        if !matches!(
+            &decl.kind,
+            DeclarationKind::Var(Some((AddressSpace::Uniform, _)))
+        ) {
+            continue;
+        }
+        let Some(ty) = decl.ty.as_ref() else { continue };
+        let name = ty.ident.name();
+        let name = name.as_str();
+        // The same struct can be named by two uniforms of one module; and a `shared`
+        // entry has already generated this one somewhere else.
+        if done.iter().any(|n| n == name)
+            || aliased
+                .iter()
+                .any(|(md, n)| md == &m.path && n.as_str() == name)
+        {
+            continue;
+        }
+        // Not a struct at all — a `var<uniform> x: vec4<f32>` is legal WGSL and needs
+        // no mirror, since the host already has the type.
+        let Some(s) = find_opt(m, name) else { continue };
+        done.push(name.to_string());
+        match lay_out(s, m) {
+            Ok(laid) => out.extend(emit(name, &[m.path.as_str()], &laid)),
+            // The reason discovery must not panic: it reaches every uniform in the
+            // tree, and one that a host has never asked for being unmirrorable is not
+            // a reason to stop. A caller that needed it fails at its own use site.
+            Err(why) => skipped(why),
+        }
+    }
+    out
+}
+
+/// The `struct name` declared in `m`, if it declares one.
+fn find_opt<'a>(m: &'a Module, name: &str) -> Option<&'a Struct> {
+    m.tu.global_declarations.iter().find_map(|d| match &**d {
+        GlobalDeclaration::Struct(s) if s.ident.name().as_str() == name => Some(s),
+        _ => None,
+    })
+}
+
+/// [`find_opt`] where the caller named the struct and a miss is its typo.
+fn find<'a>(m: &'a Module, name: &str) -> &'a Struct {
+    find_opt(m, name).unwrap_or_else(|| panic!("`{}.wesl` declares no `struct {name}`", m.path))
 }
 
 /// Fail unless two shader modules lay `name` out identically.
@@ -798,9 +1070,18 @@ fn lit_u64(n: u32) -> proc_macro2::Literal {
 }
 
 /// Place `s`'s members at their WGSL offsets.
-fn lay_out(s: &Struct, src: &str, module: &str, tu: &TranslationUnit) -> Laid {
+///
+/// Fallible rather than panicking, because discovery calls it on every uniform in the
+/// tree (`emit_uniform_structs`) and one it cannot spell has to be skipped with a
+/// note, not stop the build. A member it *can* reach but cannot place is still fatal
+/// to the struct as a whole — every member after it would land at the wrong offset —
+/// which is what the error says.
+fn lay_out(s: &Struct, module: &Module) -> Result<Laid, String> {
+    let (src, tu, path) = (module.src.as_str(), &module.tu, module.path.as_str());
     let name = s.ident.name();
-    assert!(!s.members.is_empty(), "`{module}::{name}` has no members");
+    if s.members.is_empty() {
+        return Err(format!("`{path}::{name}` has no members"));
+    }
     let mut ctx = Context::new(tu);
 
     let (mut fields, mut offset, mut align) = (Vec::new(), 0u32, 1u32);
@@ -812,21 +1093,22 @@ fn lay_out(s: &Struct, src: &str, module: &str, tu: &TranslationUnit) -> Laid {
 
     for m in &s.members {
         let member = m.ident.name();
-        let fail = |what: &str| -> ! {
-            panic!(
-                "`{module}::{name}.{member}` is a `{}`, which {what}. Every member \
-                 after it would be placed at the wrong offset, so this is a build \
-                 failure rather than a skipped field.",
+        let fail = |what: &str| -> String {
+            format!(
+                "`{path}::{name}.{member}` is a `{}`, which {what}, so `{name}` is not \
+                 mirrored",
                 m.ty,
             )
         };
-        let ty =
-            ty_eval_ty(&m.ty, &mut ctx).unwrap_or_else(|e| fail(&format!("did not resolve: {e}")));
+        let ty = match ty_eval_ty(&m.ty, &mut ctx) {
+            Ok(ty) => ty,
+            Err(e) => return Err(fail(&format!("did not resolve: {e}"))),
+        };
         let (Some(m_size), Some(m_align)) = (ty.size_of(), ty.align_of()) else {
-            fail("is not host-shareable")
+            return Err(fail("is not host-shareable"));
         };
         let Some(spelling) = rust_ty(&ty, m_size) else {
-            fail("has no Rust spelling")
+            return Err(fail("has no Rust spelling"));
         };
 
         // WGSL places a member at the next offset meeting its alignment.
@@ -856,11 +1138,11 @@ fn lay_out(s: &Struct, src: &str, module: &str, tu: &TranslationUnit) -> Laid {
     if size != offset {
         fields.push(pad(fields.len(), offset, size - offset, align));
     }
-    Laid {
+    Ok(Laid {
         fields,
         size,
         align,
-    }
+    })
 }
 
 fn pad(index: usize, offset: u32, width: u32, align: u32) -> Field {

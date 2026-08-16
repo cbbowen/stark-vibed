@@ -118,14 +118,25 @@ pub enum SelectionMode {
 }
 
 impl SelectionMode {
-    /// The mode's discriminant as the mask shader sees it (`selection.wesl`).
+    /// The mode's discriminant as the mask shader sees it.
+    ///
+    /// The numbers are `selection.wesl`'s own, generated from its declarations
+    /// (§6.10) rather than transcribed: which `u32` a mode is numbered is a fact
+    /// about the shader, and a `match` writing `0.0, 1.0, 2.0, 3.0` beside it was a
+    /// second declaration of it with nothing checking the correspondence.
+    ///
+    /// `f32` because the lane it lands in is one — `Params::c` packs the kind, the
+    /// mode, the edge count and the opacity into one `vec4<f32>`, and the shader
+    /// compares them as floats.
     fn code(self) -> f32 {
-        match self {
-            Self::Replace => 0.0,
-            Self::Union => 1.0,
-            Self::Subtract => 2.0,
-            Self::Intersect => 3.0,
-        }
+        use stark_shaders::mirror::selection as sel;
+        let code = match self {
+            Self::Replace => sel::MODE_REPLACE,
+            Self::Union => sel::MODE_UNION,
+            Self::Subtract => sel::MODE_SUBTRACT,
+            Self::Intersect => sel::MODE_INTERSECT,
+        };
+        code as f32
     }
 
     /// Combine two coverages under this mode — the CPU twin of the shader's algebra,
@@ -204,15 +215,22 @@ impl SelectionOp {
     /// carries the analytic shape's parameters and `c` the kind/mode/edge
     /// count/opacity.
     pub(crate) fn shader_params(&self, edges: usize) -> ([f32; 4], [f32; 4]) {
+        // The kind codes are `selection.wesl`'s, generated from its declarations
+        // (§6.10) — see `SelectionMode::code` for why they are not written here.
+        use stark_shaders::mirror::selection as sel;
         let (kind, b) = match &self.shape {
-            SelectionShape::All => (0.0, [0.0; 4]),
-            SelectionShape::Rect { min, max } => (1.0, [min.x, min.y, max.x, max.y]),
-            SelectionShape::Ellipse { center, radii } => {
-                (2.0, [center.x, center.y, radii.x.abs(), radii.y.abs()])
-            }
-            SelectionShape::Lasso(_) => (3.0, [0.0; 4]),
+            SelectionShape::All => (sel::KIND_ALL, [0.0; 4]),
+            SelectionShape::Rect { min, max } => (sel::KIND_RECT, [min.x, min.y, max.x, max.y]),
+            SelectionShape::Ellipse { center, radii } => (
+                sel::KIND_ELLIPSE,
+                [center.x, center.y, radii.x.abs(), radii.y.abs()],
+            ),
+            SelectionShape::Lasso(_) => (sel::KIND_LASSO, [0.0; 4]),
         };
-        (b, [kind, self.mode.code(), edges as f32, self.opacity])
+        (
+            b,
+            [kind as f32, self.mode.code(), edges as f32, self.opacity],
+        )
     }
 }
 

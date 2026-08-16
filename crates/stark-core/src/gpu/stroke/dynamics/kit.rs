@@ -188,14 +188,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // (`[..12 + 4 * usize::from(resid)]`, recounted by hand on every edit) — that gate
     // is the `@if(resid)` on the declaration itself.
     let bgl = |label: &str, list: &[desc::Slot]| {
-        desc::layout_for(
-            device,
-            label,
-            list,
-            wgpu::ShaderStages::COMPUTE,
-            stark_shaders::mirror::dynamics::BINDINGS,
-            resid,
-        )
+        desc::layout_for(device, label, list, wgpu::ShaderStages::COMPUTE, resid)
     };
     let snapshot_bgl = bgl("stark dynamics snapshot bgl", slots::SNAPSHOT);
     let exchange_bgl = bgl("stark dynamics exchange bgl", slots::EXCHANGE);

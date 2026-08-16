@@ -25,15 +25,21 @@ pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
 /// The shader ABI for [`BlendMode`], kept here rather than on the enum: which `u32`
 /// a mode is numbered is a fact about `blend_common.wesl`, not about the document.
 ///
+/// And it is that shader's own number, generated from its declaration (§6.10). The
+/// four literals that stood here were the thing the mirror exists to prevent — a
+/// second declaration of the ABI, three files from the first, with a comment in
+/// `blend_common.wesl` claiming they were "mirrored" when they were transcribed.
+///
 /// `Normal` reaches the pass only when the group is **clipped** or carries an
 /// opacity of its own (§14.4); an ordinary normal layer is the
 /// absence of a pass.
 pub(crate) fn blend_code(mode: BlendMode) -> u32 {
+    use stark_shaders::mirror::blend_common as bc;
     match mode {
-        BlendMode::Normal => 0,
-        BlendMode::Reinhard => 1,
-        BlendMode::Drago { .. } => 2,
-        BlendMode::Multiply => 3,
+        BlendMode::Normal => bc::MODE_NORMAL,
+        BlendMode::Reinhard => bc::MODE_REINHARD,
+        BlendMode::Drago { .. } => bc::MODE_DRAGO,
+        BlendMode::Multiply => bc::MODE_MULTIPLY,
     }
 }
 

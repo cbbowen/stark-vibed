@@ -39,8 +39,10 @@ use stark_shaders::mirror::selection::Params as MaskUniform;
 use stark_shaders::mirror::mask_region::MaskInstance;
 
 /// The mode code `selection.wesl` reads for an inversion. Not a [`SelectionMode`] —
-/// inverting is not a way of combining a shape, it is its own edit.
-const MODE_INVERT: f32 = 4.0;
+/// inverting is not a way of combining a shape, it is its own edit — which is why it
+/// is named here rather than in `SelectionMode::code`, and why it is still the
+/// shader's own number (§6.10) rather than a `4.0` written twice.
+const MODE_INVERT: f32 = stark_shaders::mirror::selection::MODE_INVERT as f32;
 
 #[derive(Clone)]
 pub struct SelectionRenderer {

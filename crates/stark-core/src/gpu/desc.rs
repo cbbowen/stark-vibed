@@ -126,20 +126,26 @@ pub(crate) fn bind_group_layout(
 
 // ---- shader-declared binding lists (§6.10) --------------------------------------
 
-/// One binding an entry point reads, as the **host** has to name it: the slot, plus
-/// the one thing the shader's declaration cannot decide.
+/// One binding an entry point reads, as the **host** has to name it: the shader's own
+/// declaration, plus the one thing that declaration cannot decide.
 ///
-/// Everything else about a slot — whether it is a uniform and how wide, a sampler, a
+/// Everything about a slot — whether it is a uniform and how wide, a sampler, a
 /// texture, or a storage texture of a particular format, and whether it exists at all
-/// in a build without the residual — is read out of the generated
-/// [`Binding`](stark_shaders::Binding) table. What is left here is **filterability**,
-/// which is genuinely a property of the (entry point, binding) pair rather than of the
+/// in a build without the residual — rides in the generated
+/// [`Binding`](stark_shaders::Binding). What is left here is **filterability**, which
+/// is genuinely a property of the (entry point, binding) pair rather than of the
 /// declaration: `dynamics.wesl`'s `region_color` is `textureLoad`ed by `snapshot` and
 /// `textureSample`d by `exchange`, so the same slot is non-filterable in one layout and
 /// filterable in the next.
+///
+/// **The declaration is carried, not looked up.** A slot list names
+/// `decl::REGION_COLOR`, so there is no index to resolve against a table — which is
+/// what makes a multi-group module safe to describe at all: `@binding(0)` means a
+/// different slot in each of a module's groups, and a lookup keyed on the index alone
+/// silently answered with whichever came first.
 #[derive(Clone, Copy)]
 pub(crate) struct Slot {
-    binding: u32,
+    decl: stark_shaders::Binding,
     /// Whether this entry point reads the slot through a sampler.
     filtering: bool,
 }
@@ -147,29 +153,41 @@ pub(crate) struct Slot {
 impl Slot {
     /// A slot this entry point reads with `textureLoad` — or that has no filterability
     /// to speak of (a uniform, a storage texture).
-    pub(crate) const fn at(binding: u32) -> Self {
+    pub(crate) const fn at(decl: stark_shaders::Binding) -> Self {
         Self {
-            binding,
+            decl,
             filtering: false,
         }
     }
 
     /// A slot this entry point reads **through a sampler**, which makes its texture
     /// required to be filterable and its sampler a filtering one.
-    pub(crate) const fn sampled(binding: u32) -> Self {
+    pub(crate) const fn sampled(decl: stark_shaders::Binding) -> Self {
         Self {
-            binding,
+            decl,
             filtering: true,
         }
     }
 
-    /// The slot's `@binding` index.
+    /// The slot's `@binding` index — what a bind-group entry is keyed on, once the
+    /// group is fixed.
     pub(crate) const fn binding(&self) -> u32 {
-        self.binding
+        self.decl.index
+    }
+
+    /// The shader's declaration of this slot.
+    pub(crate) const fn decl(&self) -> &stark_shaders::Binding {
+        &self.decl
+    }
+
+    /// Whether this build has the slot at all: a `@if(resid)` declaration exists only
+    /// in a color space that carries a residual (§6.7).
+    const fn present(&self, resid: bool) -> bool {
+        resid || !self.decl.resid
     }
 }
 
-/// The layout entry for one slot, resolved against the shader's own declaration.
+/// The layout entry for one slot, from the shader's own declaration.
 ///
 /// Returns `None` for a slot the shader declares `@if(resid)` when this build has no
 /// residual, so a layout never restates that gate as an element count
@@ -177,63 +195,27 @@ impl Slot {
 fn slot_entry(
     slot: Slot,
     vis: wgpu::ShaderStages,
-    table: &'static [stark_shaders::Binding],
     resid: bool,
 ) -> Option<wgpu::BindGroupLayoutEntry> {
-    let decl = stark_shaders::Binding::lookup(table, slot.binding());
-    if decl.resid && !resid {
+    if !slot.present(resid) {
         return None;
     }
+    let decl = slot.decl();
     Some(match decl.kind {
         stark_shaders::BindKind::Uniform { min_size } => uniform_slot(decl.index, vis, min_size),
         stark_shaders::BindKind::Sampler => sampler(decl.index, vis),
-        stark_shaders::BindKind::Texture { dim } => tex_entry(
-            decl.index,
-            vis,
-            slot.filtering,
-            view_dimension(dim, decl.name),
-        ),
+        stark_shaders::BindKind::Texture { dim } => tex_entry(decl.index, vis, slot.filtering, dim),
         stark_shaders::BindKind::Storage { dim, format } => wgpu::BindGroupLayoutEntry {
             binding: decl.index,
             visibility: vis,
             ty: wgpu::BindingType::StorageTexture {
                 access: wgpu::StorageTextureAccess::WriteOnly,
-                format: storage_format(format, decl.name),
-                view_dimension: view_dimension(dim, decl.name),
+                format,
+                view_dimension: dim,
             },
             count: None,
         },
     })
-}
-
-/// The WGSL storage format name as a `wgpu::TextureFormat`.
-///
-/// Only the formats the shader tree actually declares. A new one is a deliberate
-/// addition here rather than a silent mismatch — which is the point of reading the
-/// format off the declaration at all, instead of having the host pick between helpers
-/// (`stor` / `stor32`) at every layout that names a storage slot.
-fn storage_format(wgsl: &str, name: &str) -> wgpu::TextureFormat {
-    match wgsl {
-        "rgba16float" => wgpu::TextureFormat::Rgba16Float,
-        "rgba32float" => wgpu::TextureFormat::Rgba32Float,
-        "r16float" => wgpu::TextureFormat::R16Float,
-        "r32float" => wgpu::TextureFormat::R32Float,
-        other => panic!(
-            "binding `{name}` declares storage format `{other}`, which the host has no mapping for"
-        ),
-    }
-}
-
-/// The WGSL texture type's dimension suffix as a `wgpu::TextureViewDimension`.
-fn view_dimension(wgsl: &str, name: &str) -> wgpu::TextureViewDimension {
-    match wgsl {
-        "2d" => wgpu::TextureViewDimension::D2,
-        "2d_array" => wgpu::TextureViewDimension::D2Array,
-        "3d" => wgpu::TextureViewDimension::D3,
-        other => {
-            panic!("binding `{name}` is a `texture_{other}`, which the host has no mapping for")
-        }
-    }
 }
 
 /// A bind group layout for the `slots` one entry point reads, typed from the shader's
@@ -244,17 +226,34 @@ fn view_dimension(wgsl: &str, name: &str) -> wgpu::TextureViewDimension {
 /// group cannot disagree about which bindings are present, in what order, or of what
 /// type. Two hand-kept arrays per entry point joined by a magic element count — seven
 /// pairs of them for `dynamics.wesl` alone — is what that saves.
+///
+/// A bind group layout describes exactly one `@group`, so a list spanning two is a
+/// mistake in the list rather than a layout with a meaning: the assertion below is what
+/// says so, and it is only sayable because the declaration carries its group.
 pub(crate) fn layout_for(
     device: &wgpu::Device,
     label: &str,
     slots: &[Slot],
     vis: wgpu::ShaderStages,
-    table: &'static [stark_shaders::Binding],
     resid: bool,
 ) -> wgpu::BindGroupLayout {
+    if let Some(first) = slots.first() {
+        for s in slots {
+            assert_eq!(
+                s.decl().group,
+                first.decl().group,
+                "`{label}` lists `{}` from @group({}) beside `{}` from @group({}); one \
+                 layout describes one group",
+                s.decl().name,
+                s.decl().group,
+                first.decl().name,
+                first.decl().group,
+            );
+        }
+    }
     let entries: Vec<_> = slots
         .iter()
-        .filter_map(|s| slot_entry(*s, vis, table, resid))
+        .filter_map(|s| slot_entry(*s, vis, resid))
         .collect();
     bind_group_layout(device, label, &entries)
 }
@@ -269,13 +268,12 @@ pub(crate) fn bind_group_for<'a>(
     label: &str,
     layout: &wgpu::BindGroupLayout,
     slots: &[Slot],
-    table: &'static [stark_shaders::Binding],
     resid: bool,
     mut resource: impl FnMut(u32) -> wgpu::BindingResource<'a>,
 ) -> wgpu::BindGroup {
     let entries: Vec<_> = slots
         .iter()
-        .filter(|s| resid || !stark_shaders::Binding::lookup(table, s.binding()).resid)
+        .filter(|s| s.present(resid))
         .map(|s| wgpu::BindGroupEntry {
             binding: s.binding(),
             resource: resource(s.binding()),
