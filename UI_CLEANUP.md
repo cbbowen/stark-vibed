@@ -41,11 +41,11 @@ reads it nowhere.
 
 ## Ranked
 
-Seven of the nine are **done**; what is left is U8 and the halves of U1 and U6 that
-are decisions rather than work. Each section below carries a **Landed** note saying
-what was actually done — and where the finding turned out to be wrong the note says
-so rather than quietly dropping it. Two were: U9's `update_brush` item, and U5's
-proposal to move the base64 codec. U1 also turned up a latent bug that the
+Eight of the nine are **done**. What is left is the half of U1 and the half of U6
+that are decisions rather than work. Each section below carries a **Landed** note
+saying what was actually done — and where the finding turned out to be wrong the
+note says so rather than quietly dropping it. Two were: U9's `update_brush` item,
+and U5's proposal to move the base64 codec. U1 also turned up a latent bug that the
 over-subscription had been hiding.
 
 | | Finding | Kind | Size | Status |
@@ -57,19 +57,22 @@ over-subscription had been hiding.
 | [U5](#u5-six-copies-of-the-localstorage-layer) | Six copies of the localStorage layer | structure | small | **done** |
 | [U6](#u6-there-is-no-compile-time-boundary-between-browser-glue-gesture-math-and-chrome) | No compile-time boundary between browser glue, gesture math and chrome | structure | large | **partly** — `gesture.rs` is out; the boundary is a decision |
 | [U7](#u7-canvas-gesture-state-has-no-owner) | Canvas gesture state has no owner | structure | medium | **done** |
-| [U8](#u8-the-previewcommit-bargain-is-stated-11-times-and-implemented-5-ways) | The preview→commit bargain is stated 11 times and implemented 5 ways | structure | medium | open |
+| [U8](#u8-the-previewcommit-bargain-is-stated-11-times-and-implemented-5-ways) | The preview→commit bargain is stated 11 times and implemented 5 ways | structure | medium | **done** |
 | [U9](#u9-smaller-items) | Smaller items | mixed | small | **done** |
 
 ## What is left, and why
 
-- **U8** is untouched, and it is the one remaining finding that is plain work.
+Nothing here is work waiting to be picked up; both are calls to make.
+
 - **U1's structural half** — splitting the projection by cadence — is what stops
   `observe()` walking the layer tree for a pan, and half of it is in `stark-core`.
   The frontend half landed and takes most of the cost off; what remains is a core
   API decision.
 - **U6's real half** — *decide what the host build is for* — is a decision, not a
   task. The cheap half, getting the testable code out of the modules that cannot be
-  tested, landed.
+  tested, landed. One tidy-up rides on whichever way it goes: the same extraction
+  for `panels::layer.rs`'s tree logic, which is 10 tests still inside 1500 lines of
+  rsx.
 
 ---
 
@@ -452,6 +455,30 @@ it and the `DocCommand` that commits it — so `settle` and `modes::leave` are e
 line, and a control that can preview cannot be written without saying how it is
 dropped. This is the same move `reorder.rs` made for the drag: the subtleties are
 real, so state them once.
+
+> **Landed.** `crate::preview` is a table of eight `const` pairs — one per
+> previewing control — and three verbs: `show`, `commit`, `clear`. Every
+> `ViewCommand::Preview*` dispatch in the crate now goes through one, and
+> `widgets::settle` is `Preview::settle`, keeping the idempotence note that was the
+> valuable part of it.
+>
+> **The gradient bar is where it paid most**, and more than this section expected.
+> Its target/payload pairing was written out *four* times — twice inside
+> `gradient_bar` as a `match` over a payload enum crossed with the target it came
+> from, and again in `modes::leave` — and two of the four arms at each site were
+> cases that could not happen. `Laid` carries the layer and the payload together,
+> so the mismatch stops being a case to handle and becomes a value that cannot be
+> built; each site is two arms, and `modes::leave` asks the module that composes the
+> ramp rather than keeping a fifth copy of the answer.
+>
+> `panels::transform` now dispatches nothing directly — every mutation it makes is
+> one of the three verbs, which is the shape this section predicted.
+>
+> Two tests pin the claim: that each pair's halves carry the same value, and that
+> dropping a preview is the showing command with nothing in it rather than a
+> separate command or a commit of some neutral the artist never chose. `abandon`
+> was written and then deleted before commit — it had no caller, and an unused verb
+> on this type is exactly the inert scaffolding CLAUDE.md rules out.
 
 ## U9. Smaller items
 
