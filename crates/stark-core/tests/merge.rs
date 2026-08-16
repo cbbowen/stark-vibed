@@ -61,7 +61,7 @@ fn add_layer(engine: &mut Engine) -> LayerId {
 }
 
 fn info(engine: &Engine, id: LayerId) -> Option<LayerInfo> {
-    engine.observe().layers.into_iter().find(|l| l.id == id)
+    engine.observe().layers.iter().find(|l| l.id == id).cloned()
 }
 
 /// What the panel would offer on this row: the layer it merges down onto.

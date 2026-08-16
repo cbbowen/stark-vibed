@@ -130,6 +130,55 @@ fn normalize_name<T: From<String>>(name: Option<impl AsRef<str>>) -> Option<T> {
     (!capped.is_empty()).then(|| T::from(capped))
 }
 
+/// The layer list [`ObservableState`] carries: the whole tree flattened in
+/// composite order, shared rather than copied.
+///
+/// **Shared because the walk that builds it is the expensive half of `observe()`,
+/// and most observations do not need a new one.** Producing it visits every layer,
+/// clones every name and asks [`merge::plan_at`](crate::document::merge::plan_at)
+/// per row, while a projection is taken after *every* command — including the pan,
+/// zoom and brush-tuning commands that arrive at pointer rate and cannot move a
+/// layer. `Engine` keeps the last one against the counters it is a function of
+/// ([`Engine::projected_layers`]), so those observations hand out this `Arc` and
+/// walk nothing.
+///
+/// Derefs to `[LayerInfo]`, so it is read exactly as the `Vec` it replaced was.
+#[derive(Clone, Debug, Default)]
+pub struct Layers(Arc<[LayerInfo]>);
+
+impl std::ops::Deref for Layers {
+    type Target = [LayerInfo];
+
+    fn deref(&self) -> &[LayerInfo] {
+        &self.0
+    }
+}
+
+impl From<Vec<LayerInfo>> for Layers {
+    fn from(layers: Vec<LayerInfo>) -> Self {
+        Self(layers.into())
+    }
+}
+
+impl PartialEq for Layers {
+    /// **Structural equality, with identity as a fast path.**
+    ///
+    /// The fast path is the whole point of sharing the list: two projections taken
+    /// while the document stood still hold the *same* `Arc`, so the frontend's
+    /// "did this slice move?" — asked per memo, per command — is one pointer
+    /// comparison instead of a walk of every layer and every name.
+    ///
+    /// The fall-through keeps the answer exact. Identity alone would be sound
+    /// (same `Arc` ⇒ same contents, since the contents are immutable once shared)
+    /// but conservative: a rebuild that changed nothing would report a change, and
+    /// a commit that leaves the tree alone happens on every stroke. Comparing the
+    /// contents when the pointers differ costs that walk only where the old code
+    /// paid it anyway.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+    }
+}
+
 /// A layer's presentation properties, for the UI's layer panel (§11).
 ///
 /// `Clone` but not `Copy` since it carries the name — an `Arc<str>` bump, so
@@ -272,8 +321,8 @@ pub struct ObservableState {
     /// better. Compare `is_stroking`, which is exactly the in-flight question.
     pub doc_revision: u64,
     pub active_layer: LayerId,
-    /// Layers bottom-to-top.
-    pub layers: Vec<LayerInfo>,
+    /// Layers bottom-to-top. Shared rather than copied — see [`Layers`].
+    pub layers: Layers,
     /// Whether a selection is masking the canvas (§6.8) — drives the
     /// "Deselect"/"Invert" affordances and the selection indicator.
     pub has_selection: bool,
@@ -488,6 +537,14 @@ pub struct Engine {
     /// every term in it is a counter something else already maintains. A cache that
     /// had to be told would be one a new mutation path could forget to tell.
     draw_cache: Option<render::DrawCache>,
+    /// The layer projection and the counters it was built from — the same bargain
+    /// as `draw_cache` above, for the same reason and against the same terms (see
+    /// [`Engine::projected_layers`]).
+    ///
+    /// `RefCell` because [`Engine::observe`] takes `&self`: a projection is a
+    /// *read*, and making it `&mut` to let it memoize would put a mutable borrow of
+    /// the whole engine on the path every panel takes to draw itself.
+    layer_cache: std::cell::RefCell<Option<((u64, u64), Layers)>>,
     /// Bumped whenever the **committed** document changes — a commit, an undo, a
     /// merged remote action, a load. Projected as
     /// [`ObservableState::doc_revision`], where it is what a frontend showing a
@@ -639,6 +696,7 @@ impl Engine {
             preview: Default::default(),
             doc_revision: 0,
             draw_cache: None,
+            layer_cache: std::cell::RefCell::new(None),
             history_budget: DEFAULT_HISTORY_BUDGET,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
@@ -725,6 +783,7 @@ impl Engine {
             preview: Default::default(),
             doc_revision: 0,
             draw_cache: None,
+            layer_cache: std::cell::RefCell::new(None),
             history_budget: DEFAULT_HISTORY_BUDGET,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
@@ -1226,6 +1285,42 @@ impl Engine {
     }
 
     /// A snapshot of UI-facing state (§7).
+    /// The layer list for `shown`, **rebuilt only when the document it describes
+    /// has moved**.
+    ///
+    /// The walk below is a pure function of `shown`, and `shown` is the previewed
+    /// document if one is in flight and the committed document otherwise. So the
+    /// two counters that key it are the two that already say those moved:
+    ///
+    /// - `doc_revision` advances whenever the committed document does
+    ///   ([`Engine::committed_changed`]);
+    /// - the preview's `epoch` advances whenever the stand-in document is
+    ///   installed, replaced or dropped — `Preview::set_doc` is the only way to
+    ///   move that slot, and it invalidates.
+    ///
+    /// **Nothing new is being counted**, which is what makes this sound rather than
+    /// merely plausible: `render::DrawKey` already keys the compositor's draw list
+    /// on the same two terms, and every golden in the suite depends on that key
+    /// being complete. A document that could move without moving them would be
+    /// rendering the wrong picture long before it projected a stale layer list.
+    ///
+    /// The epoch is *wider* than this needs — an in-flight gesture's fold bumps it
+    /// too, and a stroke is not in `shown` — so a stroke's samples rebuild a list
+    /// that has not changed. Wider is the safe direction, and the frontend absorbs
+    /// it: the rebuilt list compares equal, so nothing re-renders ([`Layers`]).
+    fn projected_layers(&self, build: impl FnOnce() -> Vec<LayerInfo>) -> Layers {
+        let key = (self.doc_revision, self.preview.epoch());
+        let mut cache = self.layer_cache.borrow_mut();
+        if let Some((cached, layers)) = cache.as_ref()
+            && *cached == key
+        {
+            return layers.clone();
+        }
+        let layers = Layers::from(build());
+        *cache = Some((key, layers.clone()));
+        layers
+    }
+
     pub fn observe(&self) -> ObservableState {
         /// Whether `l`'s **own content** puts anything into the accumulator: a
         /// matte always covers, paint only once painted, a filter never — it
@@ -1286,85 +1381,92 @@ impl Engine {
             /// bottom — `LayerSite::index` without the search for it.
             index: usize,
         }
-        let mut layers: Vec<LayerInfo> = Vec::new();
-        // The carrier chain down to the current row: the layer (whose id
-        // `LayerInfo::carrier` reports) and whether its own content draws anything —
-        // the seed for the stack its carries open, since a base composites at the
-        // bottom of its group (§14.1).
-        let mut carriers: Vec<(&Layer, bool)> = Vec::new();
-        let mut stack: Vec<Cursor> = Vec::new();
-        shown.visit(&mut |l, depth| {
-            carriers.truncate(depth);
-            if stack.len() > depth {
-                stack.truncate(depth + 1);
-            } else {
-                let filled = carriers.last().is_some_and(|&(_, draws)| draws);
-                stack.push(Cursor {
-                    filled,
-                    below: None,
-                    index: 0,
+        // Rebuilt only when the document it describes has moved; every other
+        // observation hands out the last one (see [`Engine::projected_layers`]).
+        let layers = self.projected_layers(|| {
+            let mut layers: Vec<LayerInfo> = Vec::new();
+            // The carrier chain down to the current row: the layer (whose id
+            // `LayerInfo::carrier` reports) and whether its own content draws anything —
+            // the seed for the stack its carries open, since a base composites at the
+            // bottom of its group (§14.1).
+            let mut carriers: Vec<(&Layer, bool)> = Vec::new();
+            let mut stack: Vec<Cursor> = Vec::new();
+            shown.visit(&mut |l, depth| {
+                carriers.truncate(depth);
+                if stack.len() > depth {
+                    stack.truncate(depth + 1);
+                } else {
+                    let filled = carriers.last().is_some_and(|&(_, draws)| draws);
+                    stack.push(Cursor {
+                        filled,
+                        below: None,
+                        index: 0,
+                    });
+                }
+                let has_underlay = stack[depth].filled;
+                stack[depth].filled = stack[depth].filled || contributes(l);
+                layers.push(LayerInfo {
+                    id: l.id,
+                    blend: l.composite.blend,
+                    clip: l.composite.clip,
+                    opacity: l.composite.opacity,
+                    visible: l.visible,
+                    carrier: carriers.last().map(|&(c, _)| c.id),
+                    depth,
+                    is_group: l.is_group(),
+                    // Read straight off the traversal: composite order visits the
+                    // bottom of the root stack first, and that is the *only* layer
+                    // with nothing beneath it (§14.4.3) — every other one has either
+                    // a lower sibling or the content of the layer carrying it. So
+                    // "has a backdrop" is "is not the first row", and asking the tree
+                    // per layer was a search for an answer the walk already gave.
+                    has_backdrop: !layers.is_empty(),
+                    name: l.name.clone(),
+                    matte: match &l.content {
+                        LayerContent::Matte { region, paint } => Some(MatteInfo {
+                            rect: region.rect(),
+                            paint: paint.clone(),
+                        }),
+                        LayerContent::Paint(_) | LayerContent::Filter(_) => None,
+                    },
+                    filter: l.filter(),
+                    has_underlay,
+                    // Asked of the *shown* document, like everything else on this row, so
+                    // the control tracks a drag preview rather than the value behind it.
+                    //
+                    // **Read off the walk**, which already knows the two things the
+                    // question needs: the lower sibling it visited a moment ago, and the
+                    // carrier it descended through. Asking `merge::plan` per row instead
+                    // spent a `site_of` — a walk of the whole tree — per layer, which made
+                    // this projection quadratic in the layer count (79 µs at 60 layers
+                    // against 1.3 µs at 4). That is the search `has_backdrop` above
+                    // already refuses to make, for the same reason.
+                    merge_down: stack[depth]
+                        .below
+                        .map(|d| (d, false))
+                        .or_else(|| carriers.last().map(|&(c, _)| (c, true)))
+                        .and_then(|(dest, dest_is_carrier)| {
+                            crate::document::merge::plan_at(&crate::document::merge::MergeSite {
+                                source: l,
+                                dest,
+                                // The destination is the whole backdrop where it carries
+                                // the source, and — in the root stack — where the source
+                                // sits second from the foot over an unclipped layer, whose
+                                // accumulator starts cleared (§14.11.2).
+                                backdrop_is_dest: dest_is_carrier
+                                    || (depth == 0
+                                        && stack[depth].index == 1
+                                        && !dest.composite.clip),
+                                dest_is_carrier,
+                            })
+                            .map(|p| p.dest)
+                        }),
                 });
-            }
-            let has_underlay = stack[depth].filled;
-            stack[depth].filled = stack[depth].filled || contributes(l);
-            layers.push(LayerInfo {
-                id: l.id,
-                blend: l.composite.blend,
-                clip: l.composite.clip,
-                opacity: l.composite.opacity,
-                visible: l.visible,
-                carrier: carriers.last().map(|&(c, _)| c.id),
-                depth,
-                is_group: l.is_group(),
-                // Read straight off the traversal: composite order visits the
-                // bottom of the root stack first, and that is the *only* layer
-                // with nothing beneath it (§14.4.3) — every other one has either
-                // a lower sibling or the content of the layer carrying it. So
-                // "has a backdrop" is "is not the first row", and asking the tree
-                // per layer was a search for an answer the walk already gave.
-                has_backdrop: !layers.is_empty(),
-                name: l.name.clone(),
-                matte: match &l.content {
-                    LayerContent::Matte { region, paint } => Some(MatteInfo {
-                        rect: region.rect(),
-                        paint: paint.clone(),
-                    }),
-                    LayerContent::Paint(_) | LayerContent::Filter(_) => None,
-                },
-                filter: l.filter(),
-                has_underlay,
-                // Asked of the *shown* document, like everything else on this row, so
-                // the control tracks a drag preview rather than the value behind it.
-                //
-                // **Read off the walk**, which already knows the two things the
-                // question needs: the lower sibling it visited a moment ago, and the
-                // carrier it descended through. Asking `merge::plan` per row instead
-                // spent a `site_of` — a walk of the whole tree — per layer, which made
-                // this projection quadratic in the layer count (79 µs at 60 layers
-                // against 1.3 µs at 4). That is the search `has_backdrop` above
-                // already refuses to make, for the same reason.
-                merge_down: stack[depth]
-                    .below
-                    .map(|d| (d, false))
-                    .or_else(|| carriers.last().map(|&(c, _)| (c, true)))
-                    .and_then(|(dest, dest_is_carrier)| {
-                        crate::document::merge::plan_at(&crate::document::merge::MergeSite {
-                            source: l,
-                            dest,
-                            // The destination is the whole backdrop where it carries
-                            // the source, and — in the root stack — where the source
-                            // sits second from the foot over an unclipped layer, whose
-                            // accumulator starts cleared (§14.11.2).
-                            backdrop_is_dest: dest_is_carrier
-                                || (depth == 0 && stack[depth].index == 1 && !dest.composite.clip),
-                            dest_is_carrier,
-                        })
-                        .map(|p| p.dest)
-                    }),
+                stack[depth].below = Some(l);
+                stack[depth].index += 1;
+                carriers.push((l, draws_content(l)));
             });
-            stack[depth].below = Some(l);
-            stack[depth].index += 1;
-            carriers.push((l, draws_content(l)));
+            layers
         });
         ObservableState {
             can_undo: self.timeline.can_undo(),

@@ -51,7 +51,7 @@ fn add_layer(engine: &mut Engine) -> LayerId {
 
 /// Every layer, flattened in composite order (the projection's own order).
 fn layers(engine: &Engine) -> Vec<LayerInfo> {
-    engine.observe().layers
+    engine.observe().layers.to_vec()
 }
 
 fn info(engine: &Engine, id: LayerId) -> LayerInfo {

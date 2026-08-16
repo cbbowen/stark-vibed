@@ -783,7 +783,27 @@ pub fn with_engine<R>(state: AppState, f: impl FnOnce(&mut Renderer) -> R) -> Op
         // Inside the guard, as `dispatch` has always done it: `obs.set` marks
         // subscribers dirty but renders nothing synchronously, so no reader can
         // observe the renderer mid-borrow.
-        obs.set(Some(r.observe()));
+        //
+        // **Published only when it moved.** A `Signal` write dirties every
+        // subscriber whether or not the value changed, so a command the engine
+        // declined — a slider dragged back to the value the document already
+        // holds, a rename to the name a layer already has, a selection command
+        // with nothing to select — would otherwise wake every memo in the chrome
+        // to report the answer they are already showing. `ObservableState` is
+        // `PartialEq` for exactly this, and the comparison is cheap: the layer
+        // list is shared, so the expensive field answers by pointer
+        // (`stark_core::Layers`).
+        //
+        // The comparison is bound to a local before the `if` rather than written
+        // inline in its condition. A guard held in a condition outliving the body
+        // is the shape that has borrow-panicked in this crate before — the reason
+        // `modes::leave` takes its `write().take()` into a local — and inline here
+        // it would be a read of `obs` live across the write below.
+        let snapshot = r.observe();
+        let moved = obs.peek().as_ref() != Some(&snapshot);
+        if moved {
+            obs.set(Some(snapshot));
+        }
         out
     };
     request_paint(state);
@@ -828,7 +848,13 @@ pub fn with_engine_quiet<R>(state: AppState, f: impl FnOnce(&mut Renderer) -> R)
 /// (§17.5), so *which* event happened decides, not the fact of holding the engine.
 pub fn publish_observation(state: AppState) {
     let mut obs = state.obs;
-    if let Some(snapshot) = state.renderer.peek().as_ref().map(Renderer::observe) {
+    let Some(snapshot) = state.renderer.peek().as_ref().map(Renderer::observe) else {
+        return;
+    };
+    // Only when it moved, on [`with_engine`]'s argument and by the same
+    // comparison — one rule for publishing rather than two.
+    let moved = obs.peek().as_ref() != Some(&snapshot);
+    if moved {
         obs.0.set(Some(snapshot));
     }
 }

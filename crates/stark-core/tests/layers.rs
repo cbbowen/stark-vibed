@@ -608,3 +608,78 @@ fn layer_state_survives_save_load() {
     );
     assert_eq!(loaded.observe().layers.len(), 2);
 }
+
+/// The layer projection is **the same list** for as long as the document it
+/// describes stands still — the property that lets a frontend take a projection
+/// after every command, including the pan and brush commands that arrive at
+/// pointer rate and cannot move a layer (`Engine::projected_layers`).
+///
+/// Asserted on *identity* rather than on equality, because equality was always
+/// true: what this pins is that the walk did not run again. `Layers` derefs to a
+/// slice, so `as_ptr` is the address of the shared buffer — two projections
+/// sharing one is exactly the cache having answered.
+#[test]
+fn a_still_document_projects_the_same_layer_list() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+
+    let first = engine.observe().layers;
+    // Every command here is one a frontend sends at pointer rate, and none of them
+    // is a change to the document.
+    engine.process(ViewCommand::Pan {
+        delta: Vec2::new(13.0, -7.0),
+    });
+    engine.process(ViewCommand::Zoom {
+        anchor: Vec2::ZERO,
+        factor: 1.25,
+    });
+    let after = engine.observe().layers;
+    assert!(
+        std::ptr::eq(first.as_ptr(), after.as_ptr()),
+        "a view command rebuilt the layer projection"
+    );
+    assert_eq!(first, after, "and it is still the same list");
+}
+
+/// …and a **new** list whenever the document does move, by either of the two
+/// routes the cache is keyed on: a committed edit, and an unlogged preview.
+///
+/// The second is the one worth a test. A preview replaces the *shown* document
+/// without committing anything, so `doc_revision` does not stir — the preview's
+/// own epoch is what says so, and a cache keyed on the revision alone would hand
+/// back a list describing the document behind the drag.
+#[test]
+fn a_moved_document_projects_a_fresh_layer_list() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+
+    // A commit: the opacity really changes, so the list must too.
+    let before = engine.observe().layers;
+    engine.process(DocCommand::SetLayerOpacity(TOP, 0.5));
+    let committed = engine.observe().layers;
+    assert_ne!(before, committed, "a commit must project the new opacity");
+
+    // A preview: nothing is logged, `doc_revision` stands, and the projection
+    // still has to report what is on screen (§14.6).
+    let revision = engine.observe().doc_revision;
+    engine.process(ViewCommand::PreviewLayerOpacity(Some((TOP, 0.125))));
+    let previewed = engine.observe();
+    assert_eq!(
+        previewed.doc_revision, revision,
+        "a preview commits nothing"
+    );
+    let shown = previewed
+        .layers
+        .iter()
+        .find(|l| l.id == TOP)
+        .expect("the top layer")
+        .opacity;
+    assert!(
+        (shown - 0.125).abs() < 1e-6,
+        "the projection reported {shown}, not the preview"
+    );
+}

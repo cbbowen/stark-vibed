@@ -84,7 +84,7 @@ pub use content::{AssetNeed, action_content};
 pub use document::{LayerId, Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use engine::{
     Background, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan, ExportScale, LayerInfo,
-    MatteInfo, ObservableState, PickOptions, PickSource, PresenceTick, Rendered,
+    Layers, MatteInfo, ObservableState, PickOptions, PickSource, PresenceTick, Rendered,
 };
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};
