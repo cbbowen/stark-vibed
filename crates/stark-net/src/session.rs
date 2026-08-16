@@ -35,7 +35,7 @@ use tokio::sync::mpsc;
 use crate::Result;
 use crate::backend::{self, Bound, Dialer, Shutdown};
 use crate::mirror::{Mirror, Served};
-use crate::proto::{Request, Stamped, Wire};
+use crate::proto::{Request, Stamped, StampedRef, Wire, WireRef};
 use crate::ticket::SessionTicket;
 use crate::waitlist::{Admit, Waitlist};
 
@@ -527,9 +527,13 @@ pub struct Broadcaster {
 impl Broadcaster {
     /// See [`CollabSession::broadcast`].
     pub async fn broadcast(&self, action: Action) -> Result<()> {
-        self.waitlist.published(action.clone());
-        let asset = stark_core::action_content(&action);
-        self.publish_wire(Wire::Action(action), asset).await
+        let need = stark_core::action_content(&action);
+        let bytes = self.encode(WireRef::Action(&action), need)?;
+        // Mirrored after encoding and before sending, which is what lets the action
+        // be moved rather than duplicated — and mirrored whether or not the send
+        // works, since a joiner this peer serves later needs it either way.
+        self.waitlist.published(action);
+        Ok(self.sender.broadcast(bytes).await?)
     }
 
     /// Publish this client's presence (§17.4).
@@ -539,11 +543,14 @@ impl Broadcaster {
     /// best-effort — a frame that cannot be sent is dropped rather than retried,
     /// because the next one supersedes it anyway.
     pub async fn publish(&self, frame: PeerFrame) -> Result<()> {
-        let asset = referenced_presence_asset(&frame);
-        self.publish_wire(Wire::Presence(frame), asset).await
+        let need = referenced_presence_asset(&frame);
+        let bytes = self.encode(WireRef::Presence(&frame), need)?;
+        Ok(self.sender.broadcast(bytes).await?)
     }
 
-    async fn publish_wire(&self, wire: Wire, need: Option<AssetNeed>) -> Result<()> {
+    /// Stamp and encode one payload, attaching the transfer hash for whatever
+    /// content it references.
+    fn encode(&self, wire: WireRef<'_>, need: Option<AssetNeed>) -> Result<Bytes> {
         // Attach the blob hash for the referenced content, so receivers that lack
         // it know what to fetch. `add_content` accompanies the import, for a
         // ground as for a brush, so a registered lookup is the normal case and a
@@ -568,13 +575,12 @@ impl Broadcaster {
             }
             hash
         });
-        let stamped = Stamped {
+        let stamped = StampedRef {
             origin: self.local_id,
             asset,
             wire,
         };
-        let bytes = postcard::to_allocvec(&stamped)?;
-        Ok(self.sender.broadcast(bytes.into()).await?)
+        Ok(postcard::to_allocvec(&stamped)?.into())
     }
 
     /// See [`CollabSession::add_content`].

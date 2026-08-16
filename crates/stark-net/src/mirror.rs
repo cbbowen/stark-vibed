@@ -8,14 +8,22 @@
 //! and remote actions from gossip — so any peer can bootstrap any other.
 //!
 //! Content is held as [`Bytes`], which is what lets the mirror's copy, the blob
-//! store's and the one handed to the engine be the same allocation, and what
-//! keeps [`Mirror::snapshot`] off the lock for longer than the log takes.
+//! store's and the one handed to the engine be the same allocation.
+//!
+//! **Nothing expensive happens under the lock.** The receive loop takes it for
+//! every arriving action and every broadcast takes it to look up a transfer hash,
+//! so a joiner arriving mid-session must not stall this peer's painting for the
+//! size of the session. The log is persistent, so taking a [`Snapshot`] is a
+//! refcount bump; copying the actions out of it, copying the asset payloads into a
+//! [`DocumentFile`] and encoding the result all happen off the lock, and the result
+//! is remembered so the next joiner asking the same question pays for none of it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::Bytes;
 use iroh_blobs::Hash;
+use rpds::RedBlackTreeMapSync;
 use stark_core::document::{Action, ActionId};
 use stark_core::{AssetId, BuildId, CanvasMeta, DocumentFile, SurfaceId};
 
@@ -58,7 +66,17 @@ pub(crate) struct Mirror {
     build: BuildId,
     canvas: CanvasMeta,
     /// Sorted by [`ActionId`] — iteration yields the total order.
-    actions: BTreeMap<ActionId, Action>,
+    ///
+    /// Persistent (`rpds`) for the reason `DocState`'s maps are (CLAUDE.md): the
+    /// whole purpose of keeping the log here is to hand it to a joiner, and the
+    /// lock it is kept behind is one the receive loop takes per action. Cloning
+    /// the handle is a refcount bump, so a snapshot costs the lock nothing that
+    /// grows; the per-action copy happens off it, in [`Snapshot::into_file`].
+    ///
+    /// The `Sync` flavour, unlike `DocState`'s maps: those live on the UI thread and
+    /// spend `Rc`, while this one is shared between the receive loop, the catch-up
+    /// server and every resolver.
+    actions: RedBlackTreeMapSync<ActionId, Action>,
     assets: HashMap<AssetId, Bytes>,
     /// The canvas grounds the log names, as canonical height maps (§6.4).
     ///
@@ -74,19 +92,44 @@ pub(crate) struct Mirror {
     /// as they move. Held beside the content rather than in a map of its own, so
     /// there is one thing to keep in step with an import instead of two.
     hashes: HashMap<AssetId, Hash>,
+    /// Bumped by every change a snapshot would show, so [`Encoded`] can tell
+    /// whether it is still the answer.
+    revision: u64,
+    encoded: Option<Encoded>,
 }
 
-/// A session snapshot's parts, cloned out of the mirror. Every clone here is a
-/// refcount bump or a `BTreeMap` walk, so the caller's lock covers the log and
-/// nothing else; turning it into the save-format container — which copies the
-/// bytes, since [`DocumentFile`] owns its payloads — happens off the lock in
-/// [`Snapshot::into_file`].
+/// The last snapshot this peer encoded, and what it was encoded for.
+///
+/// Encoding one is the most expensive thing the mirror does: [`DocumentFile`] owns
+/// its payloads, so every asset is copied out of the [`Bytes`] holding it, and the
+/// whole container is then postcarded into a third buffer — megabytes twice over
+/// for a session with imported grounds, on a peer that is also painting.
+///
+/// Most joins in a session ask the identical question. Peers running the same build
+/// send the same `resolvable` list, and the log has usually not moved in the seconds
+/// between two people opening the same link.
+#[derive(Debug)]
+struct Encoded {
+    revision: u64,
+    have: Vec<AssetId>,
+    bytes: Bytes,
+}
+
+/// A session snapshot's parts, taken out of the mirror under its lock.
+///
+/// Every field is a refcount bump: the log is persistent and the payloads are
+/// [`Bytes`]. Copying the actions out, copying the payloads into the save-format
+/// container — which owns them — and encoding the result all happen afterwards, in
+/// [`Snapshot::into_file`], with the lock released.
 pub(crate) struct Snapshot {
     build: BuildId,
     canvas: CanvasMeta,
-    actions: Vec<Action>,
+    actions: RedBlackTreeMapSync<ActionId, Action>,
     assets: Vec<(AssetId, Bytes)>,
     surfaces: Vec<(AssetId, Bytes)>,
+    /// What the mirror stood at when this was taken — the key its encoding is
+    /// remembered under.
+    pub revision: u64,
 }
 
 impl Snapshot {
@@ -113,7 +156,7 @@ impl Snapshot {
     }
 
     pub fn into_file(self) -> DocumentFile {
-        let mut file = DocumentFile::new(self.actions);
+        let mut file = DocumentFile::new(self.actions.iter().map(|(_, a)| a.clone()).collect());
         file.app_build = self.build;
         file.canvas = self.canvas;
         file.assets = self
@@ -150,6 +193,8 @@ impl Mirror {
                 .filter_map(|(id, b)| Some((ground_content_id(*id)?, Bytes::from(b.clone()))))
                 .collect(),
             hashes: HashMap::new(),
+            revision: 0,
+            encoded: None,
         }
     }
 
@@ -159,19 +204,63 @@ impl Mirror {
         Snapshot {
             build: self.build.clone(),
             canvas: self.canvas.clone(),
-            actions: self.actions.values().cloned().collect(),
+            actions: self.actions.clone(),
             assets: self.assets.iter().map(|(id, b)| (*id, b.clone())).collect(),
             surfaces: self
                 .surfaces
                 .iter()
                 .map(|(id, b)| (*id, b.clone()))
                 .collect(),
+            revision: self.revision,
         }
     }
 
-    /// Record an action; returns whether it was new.
+    /// The encoding of the snapshot `have` asks for, if the one remembered is
+    /// still the answer.
+    pub fn encoded_for(&self, have: &[AssetId]) -> Option<Bytes> {
+        let cached = self.encoded.as_ref()?;
+        (cached.revision == self.revision && cached.have == have).then(|| cached.bytes.clone())
+    }
+
+    /// Remember an encoding for the next joiner to ask the same question.
+    ///
+    /// Dropped if the log moved while it was being encoded — off the lock, which is
+    /// the point, so it can. The bytes are still right for the revision they were
+    /// taken at; they are just not right for the one anyone will ask about next.
+    pub fn remember(&mut self, revision: u64, have: &[AssetId], bytes: Bytes) {
+        if revision == self.revision {
+            self.encoded = Some(Encoded {
+                revision,
+                have: have.to_vec(),
+                bytes,
+            });
+        }
+    }
+
+    /// Record an action this peer holds the only copy of — a local commit already
+    /// encoded onto the wire. Returns whether it was new.
     pub fn insert(&mut self, action: Action) -> bool {
-        self.actions.insert(action.id, action).is_none()
+        if self.actions.contains_key(&action.id) {
+            return false;
+        }
+        self.actions.insert_mut(action.id, action);
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    /// The same, for a caller that keeps its own copy — the receive loop, which
+    /// has to hand the action to the engine after mirroring it.
+    ///
+    /// Cloned only when the action is new. Gossip delivers duplicates as a matter
+    /// of course (it is a flood), and a duplicate's clone would be dropped by the
+    /// line after the one that made it.
+    pub fn insert_cloned(&mut self, action: &Action) -> bool {
+        if self.actions.contains_key(&action.id) {
+            return false;
+        }
+        self.actions.insert_mut(action.id, action.clone());
+        self.revision = self.revision.wrapping_add(1);
+        true
     }
 
     /// Record content a peer may ask for, under the id that names it and the
@@ -186,6 +275,8 @@ impl Mirror {
             }
         }
         self.hashes.insert(need.content(), hash);
+        // A snapshot bundles payloads, so this moves what one would say.
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Whether this peer already holds what `need` names — the test that decides

@@ -15,6 +15,7 @@
 
 use std::sync::Mutex;
 
+use bytes::Bytes;
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
 use stark_core::AssetId;
@@ -75,6 +76,30 @@ pub(crate) struct Stamped {
     pub wire: Wire,
 }
 
+/// [`Stamped`], borrowing what it sends.
+///
+/// Postcard writes fields in declaration order and an enum by variant index, and a
+/// reference writes what it points at — so this produces byte-identical output to
+/// [`Stamped`] and is decoded by it. **The field and variant order of the two pairs
+/// must stay in step**; `the_borrowed_encoding_is_the_owned_one` is what says so.
+///
+/// It exists so that publishing an action does not duplicate it. The mirror keeps
+/// the action (a joiner needs it whether or not the send succeeds) and the wire
+/// encodes it, and without this those are two copies of a stroke's control points.
+#[derive(Debug, Serialize)]
+pub(crate) struct StampedRef<'a> {
+    pub origin: EndpointId,
+    pub asset: Option<iroh_blobs::Hash>,
+    pub wire: WireRef<'a>,
+}
+
+/// [`Wire`], borrowing its payload. See [`StampedRef`].
+#[derive(Debug, Serialize)]
+pub(crate) enum WireRef<'a> {
+    Action(&'a Action),
+    Presence(&'a PeerFrame),
+}
+
 /// A live-wire message. Postcard-encoded, inside [`Stamped`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum Wire {
@@ -117,7 +142,7 @@ pub(crate) enum Request {
 /// still joining and has no session of its own to serve (see [`Served`]).
 ///
 /// This is the whole protocol; the transports below only move the bytes.
-pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Vec<u8>>> {
+pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Bytes>> {
     let Some(mirror) = served.get() else {
         return Ok(None);
     };
@@ -128,13 +153,27 @@ pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Vec<
 }
 
 /// Encode the session snapshot, leaving out any content in `have`.
-fn snapshot_bytes(mirror: &Mutex<Mirror>, have: &[AssetId]) -> crate::Result<Vec<u8>> {
-    // Cloned under the lock, materialized and encoded outside it: asset payloads
-    // are refcounted handles in the mirror, so the only real work the lock covers
-    // is the log — and a joiner arriving mid-session does not stall this peer's
-    // receive loop for the size of its own brush library.
-    let snapshot = mirror.lock().expect("mirror poisoned").snapshot();
-    Ok(snapshot.without(have).into_file().to_bytes()?)
+///
+/// Three phases, and the lock covers only the first and last. Taking the snapshot
+/// is a handful of refcount bumps — the log is persistent — while turning it into
+/// a [`DocumentFile`] copies every asset payload (the container owns its bytes) and
+/// postcards the lot. A joiner arriving mid-session must not stall this peer's
+/// receive loop for the length of that, and the next joiner should not repeat it.
+fn snapshot_bytes(mirror: &Mutex<Mirror>, have: &[AssetId]) -> crate::Result<Bytes> {
+    let snapshot = {
+        let mirror = mirror.lock().expect("mirror poisoned");
+        match mirror.encoded_for(have) {
+            Some(bytes) => return Ok(bytes),
+            None => mirror.snapshot(),
+        }
+    };
+    let revision = snapshot.revision;
+    let bytes = Bytes::from(snapshot.without(have).into_file().to_bytes()?);
+    mirror
+        .lock()
+        .expect("mirror poisoned")
+        .remember(revision, have, bytes.clone());
+    Ok(bytes)
 }
 
 /// Decode a request received over any transport.
@@ -179,6 +218,103 @@ mod tests {
         answer
     }
 
+    fn action(lamport: u64) -> Action {
+        Action {
+            id: ActionId {
+                lamport,
+                actor: ActorId(1),
+            },
+            kind: ActionKind::SetBackground([0.0; 3]),
+        }
+    }
+
+    /// [`StampedRef`] is a second spelling of [`Stamped`], and the only thing that
+    /// makes a second spelling safe is that postcard cannot tell them apart. A
+    /// field or variant reordered in one and not the other is a wire break whose
+    /// first symptom is a decode failure on somebody else's machine.
+    #[test]
+    fn the_borrowed_encoding_is_the_owned_one() {
+        let origin = iroh::SecretKey::from_bytes(&[5u8; 32]).public();
+        let asset = Some(iroh_blobs::Hash::new(b"a brush"));
+        let action = action(7);
+        let frame = PeerFrame {
+            boot: 3,
+            seq: 9,
+            name: Some("someone".into()),
+            active_layer: stark_core::document::LayerId(0),
+            cursor: Some(stark_core::Vec2::new(1.0, 2.0)),
+            gesture: None,
+            leaving: false,
+        };
+
+        let owned = |wire| {
+            postcard::to_allocvec(&Stamped {
+                origin,
+                asset,
+                wire,
+            })
+            .expect("encode")
+        };
+        let borrowed = |wire| {
+            postcard::to_allocvec(&StampedRef {
+                origin,
+                asset,
+                wire,
+            })
+            .expect("encode")
+        };
+
+        // Both variants, so the *indices* are pinned and not just the field order.
+        let bytes = borrowed(WireRef::Action(&action));
+        assert_eq!(bytes, owned(Wire::Action(action.clone())));
+        assert_eq!(
+            borrowed(WireRef::Presence(&frame)),
+            owned(Wire::Presence(frame))
+        );
+
+        let back: Stamped = postcard::from_bytes(&bytes).expect("decode the borrowed form");
+        assert_eq!(back.origin, origin);
+        assert!(matches!(back.wire, Wire::Action(a) if a.id == action.id));
+    }
+
+    /// The encode cache answers the question it was asked, or none at all. Serving
+    /// a snapshot from a stale key would be the same defect as serving an empty
+    /// one: a document that is wrong and says nothing about it.
+    #[test]
+    fn a_remembered_snapshot_is_dropped_the_moment_the_log_moves() {
+        let mut mirror = Mirror::from_file(&DocumentFile::new(vec![action(1)]));
+        let have = [AssetId([3; 32])];
+
+        let snapshot = mirror.snapshot();
+        let revision = snapshot.revision;
+        let bytes = Bytes::from(
+            snapshot
+                .without(&have)
+                .into_file()
+                .to_bytes()
+                .expect("encode"),
+        );
+        mirror.remember(revision, &have, bytes.clone());
+
+        assert_eq!(mirror.encoded_for(&have), Some(bytes));
+        assert_eq!(
+            mirror.encoded_for(&[]),
+            None,
+            "a different promise is a different snapshot"
+        );
+
+        mirror.insert(action(2));
+        assert_eq!(
+            mirror.encoded_for(&have),
+            None,
+            "the log moved; the remembered bytes are not what this session is"
+        );
+
+        // And an encode that finished after the log moved does not install itself.
+        mirror.remember(revision, &have, Bytes::from_static(b"stale"));
+        assert_eq!(mirror.encoded_for(&have), None);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_member_still_joining_refuses_rather_than_serving_an_empty_session() {
         let asker = bound(Served::default()).await;
@@ -196,13 +332,7 @@ mod tests {
         // published this time.
         let served = Served::default();
         let member = bound(served.clone()).await;
-        let file = DocumentFile::new(vec![Action {
-            id: ActionId {
-                lamport: 1,
-                actor: ActorId(1),
-            },
-            kind: ActionKind::SetBackground([0.0; 3]),
-        }]);
+        let file = DocumentFile::new(vec![action(1)]);
         served.publish(std::sync::Arc::new(Mutex::new(Mirror::from_file(&file))));
         let bytes = ask(&asker, &member)
             .await

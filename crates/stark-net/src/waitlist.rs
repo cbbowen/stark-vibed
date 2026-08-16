@@ -212,7 +212,7 @@ impl Waitlist {
                 .mirror
                 .lock()
                 .expect("mirror poisoned")
-                .insert(action.clone());
+                .insert_cloned(&action);
             if fresh && self.events.send(RemoteEvent::Action(action)).is_err() {
                 return;
             }

@@ -6566,6 +6566,7 @@ dependencies = [
  "png",
  "pollster",
  "postcard",
+ "rpds",
  "serde",
  "stark-assetid",
  "stark-core",

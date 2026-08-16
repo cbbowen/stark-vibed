@@ -36,6 +36,9 @@ iroh-gossip = { version = "0.101", default-features = false, features = ["net"] 
 iroh-blobs = { version = "0.103", default-features = false }
 # Gossip broadcast takes `Bytes`.
 bytes = "1"
+# The session log, so that handing it to a joiner is a refcount bump rather than a
+# deep clone under the lock the receive loop takes per action (see `mirror`).
+rpds = { workspace = true }
 # The upstream package kept the name of an unrelated earlier project (see
 # vendor/iroh-webrtc-transport/VENDORING.md); the `2` disambiguates in code.
 iroh-webrtc-transport = { path = "../../vendor/iroh-webrtc-transport", optional = true }
