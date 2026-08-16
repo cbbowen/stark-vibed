@@ -1455,12 +1455,35 @@ impl CollabState {
 /// snapshot, and painting the latest state once per frame shows exactly what
 /// painting it per event would have — minus the queue.
 pub fn request_paint(state: AppState) {
+    if gpu_lost(state) {
+        return;
+    }
     let mut queued = state.paint_queued;
     if *queued.peek() {
         return;
     }
     queued.set(true);
     schedule_paint(state);
+}
+
+/// Whether the GPU has died and the app has therefore stopped painting and
+/// dispatching (§5).
+///
+/// **Asked of the projection, not of the engine**, though both can answer
+/// ([`Renderer::gpu_healthy`]). The projection is what the report is mounted on
+/// (`crate::failure`), so keying the shutdown on the same field makes "the app has
+/// stopped" and "the artist has been told" one fact rather than two that could
+/// disagree — a stop with no dialog is a frozen canvas, and a dialog over a running
+/// app is a lie.
+///
+/// `peek`: called from the doors below, which are not renders, and from event
+/// handlers. Nothing here should widen what a pointer move wakes.
+pub fn gpu_lost(state: AppState) -> bool {
+    state
+        .obs
+        .peek()
+        .as_ref()
+        .is_some_and(|o| o.gpu_failure.is_some())
 }
 
 /// One animation-frame hop of [`request_paint`]: paint, unless the GPU has
@@ -1494,8 +1517,26 @@ fn schedule_paint(state: AppState) {
         }
         let mut queued = state.paint_queued;
         queued.set(false);
-        if let Some(r) = guard.as_mut() {
-            r.paint();
+        // A device that has died renders nothing, and **this** is where that has to
+        // be noticed (§5): painting is the one thing that goes on happening when no
+        // command is being dispatched, so a failure suffered between commands — a
+        // driver reset while the artist is looking at their work — would otherwise
+        // sit undiscovered until they next touched something. Publishing is what
+        // raises the report (`crate::failure`); after it [`gpu_lost`] is true, and
+        // nothing asks for another frame or dispatches another command.
+        let failed = match guard.as_mut() {
+            Some(r) if !r.gpu_healthy() => true,
+            Some(r) => {
+                r.paint();
+                false
+            }
+            None => false,
+        };
+        // Before the publish, which reads the renderer to take its snapshot while
+        // this closure is holding it as `&mut`.
+        drop(guard);
+        if failed {
+            publish_observation(state);
         }
     });
 }
@@ -1513,7 +1554,19 @@ fn schedule_paint(state: AppState) {
 ///
 /// For engine entry points that are not commands — opening a document, joining a
 /// session. A command goes through [`dispatch`], which is this plus the broadcast.
+///
+/// **`None` also once the GPU has died** ([`gpu_lost`], §5), which is the same
+/// answer callers already handle for "the renderer is not up yet" — deliberately,
+/// because it is the same fact from the caller's side: there is no engine to move.
+/// Both doors are guarded rather than the call sites, so "stop dispatching after a
+/// device failure" is a property of the seam and not a rule 82 of them could
+/// forget. The command that *causes* the failure still runs and still publishes,
+/// since the health is only set while `f` is executing — which is what makes the
+/// report appear at all.
 pub fn with_engine<R>(state: AppState, f: impl FnOnce(&mut Renderer) -> R) -> Option<R> {
+    if gpu_lost(state) {
+        return None;
+    }
     let (mut renderer, mut obs) = (state.renderer.0, state.obs.0);
     let out = {
         let mut guard = renderer.write();
@@ -1542,7 +1595,18 @@ pub fn with_engine<R>(state: AppState, f: impl FnOnce(&mut Renderer) -> R) -> Op
 /// If a closure here calls `Renderer::process`, it is in the wrong door — that is a
 /// command, and commands publish. Callers wanting the frame but not the publish ask
 /// for it with [`request_paint`], which several below do.
+///
+/// Guarded by [`gpu_lost`] exactly as [`with_engine`] is, and for its reason: the
+/// readbacks, the collaboration pumps and the presence tick all come through here,
+/// and none of them can produce anything on a device that has stopped answering.
+/// **Saving is unaffected**, because saving is not a GPU operation and does not use
+/// this door — `files::save_document` reads the renderer directly and serializes an
+/// action log that lives in ordinary memory (§8). That is the whole reason the
+/// report is worth raising rather than merely logging.
 pub fn with_engine_quiet<R>(state: AppState, f: impl FnOnce(&mut Renderer) -> R) -> Option<R> {
+    if gpu_lost(state) {
+        return None;
+    }
     let mut renderer = state.renderer.0;
     let mut guard = renderer.write();
     let r = guard.as_mut()?;

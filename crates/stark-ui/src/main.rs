@@ -20,6 +20,7 @@ mod builtins;
 mod collab;
 mod components;
 mod credits;
+mod failure;
 mod files;
 mod gradients;
 mod grounds;
@@ -398,6 +399,14 @@ fn app() -> Element {
                     }
                 }
             }
+
+            // Last, and over everything: the GPU has died and the canvas is showing
+            // its final frame (§5, `crate::failure`). It gates on its own read of
+            // the projection rather than on a condition here, because the same read
+            // is what stops the engine doors — one field, so the app cannot be
+            // stopped without saying so or say so while still running. Empty and
+            // free on a healthy device, which is every ordinary session.
+            failure::GpuFailureModal {}
         }
     }
 }

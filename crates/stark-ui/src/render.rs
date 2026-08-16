@@ -639,6 +639,16 @@ impl Renderer {
         self.resize(width, height);
     }
 
+    /// Whether the device is still usable — the `&self` request form of what
+    /// [`ObservableState::gpu_failure`] projects (§5).
+    ///
+    /// For the one caller that has no projection to hand: the paint loop
+    /// (`state::schedule_paint`). Everything else asks the projection, which is
+    /// what the chrome mounts its report on — see [`crate::failure`].
+    pub fn gpu_healthy(&self) -> bool {
+        self.engine.gpu().health().is_ok()
+    }
+
     /// Whether the GPU still owes the work of [`MAX_FRAMES_IN_FLIGHT`] painted
     /// frames — the signal for [`request_paint`](crate::state::request_paint) to
     /// skip a frame rather than deepen the queue. Because submissions on one
