@@ -25,7 +25,7 @@ exhaustive on purpose. What follows is the edges.
 | [C2](#c2-non-finite-input-reaches-a-guaranteed-panic) | Non-finite input reaches a guaranteed panic | correctness | small | **done** |
 | [C3](#c3-the-fitters-per-sample-cost-is-linear-in-stroke-length) | The fitter's per-sample cost is linear in stroke length | performance | medium | **part** |
 | [C4](#c4-the-draw-list-is-rebuilt-from-scratch-every-frame) | The draw list is rebuilt from scratch every frame | performance | medium | **part** |
-| [C5](#c5-nothing-ever-retires-history) | Nothing ever retires history | correctness | medium | **corrected — blocked** |
+| [C5](#c5-nothing-ever-retires-history) | Nothing ever retires history | correctness | medium | **done** |
 | [C6](#c6-every-integration-test-builds-its-own-device) | Every integration test builds its own device | build health | small | **done** |
 | [C7](#c7-engine-is-the-crates-one-god-object) | `Engine` is the crate's one god object | structure | large | open |
 | [C8](#c8-smaller-things) | Smaller things | mixed | small | open |
@@ -56,20 +56,18 @@ exhaustive on purpose. What follows is the edges.
   `composite_groups` cannot hold behind `&self` today — it is the same borrow
   problem [C7](#c7-engine-is-the-crates-one-god-object) is about, and is probably
   best done after it rather than around it.
+- **C5** — done, and *not* the way the correction below concluded. See the note
+  at the head of that section: checkpoints are not needed, because
+  `forget_actions` hands back what it folded and `LinearTimeline` keeps it. Undo
+  depth is given up under a settable memory budget
+  (`ViewCommand::SetHistoryBudget`, default 1 GiB of resident tiles), half at a
+  time, never below 32 steps; a shared session declines structurally.
 - **C6** — one `GpuContext` per test binary. A fresh `headless_engine` is ~338 ms
   against ~22 ms on an existing device, so this removes about
   (386 − 34) × 316 ms of construction; the warm suite is now 111 s.
 
-- **C5** — **not implemented, and the finding is corrected above.** Trimming the
-  log would silently drop early strokes from every saved file and from every
-  joining peer's log, because the log *is* the document; retention is gated on
-  §8's `checkpoints`, which `io.rs` defers. The leak is also smaller than first
-  written: `history`'s snapshots are geometrically spaced, so retention is
-  `O(log n)` states rather than `O(n)`.
-
 Suggested order for what remains: **C7** (which also unblocks the rest of C4),
 then **C8**, then the rest of **C3**, which is independent and can go any time.
-**C5** waits on checkpoints.
 
 ---
 
@@ -287,11 +285,23 @@ and would be a useful gate to keep.
 
 ## C5. Nothing ever retires history
 
-> **Corrected while implementing.** The finding as first written proposed a
-> `Timeline::trim` mapping to `history::forget_actions`. **That would silently
-> corrupt saved documents**, and the severity of the leak was overstated. Both
-> halves are set out below, because the original is the more obvious reading and
-> someone will have it again.
+> **Implemented — after a correction that was itself half wrong.** Read this
+> section as a record of three passes, because the middle one is the instructive
+> failure.
+>
+> 1. The finding proposed a `Timeline::trim` mapping straight to
+>    `history::forget_actions`. That would have corrupted saves.
+> 2. The correction concluded retention was therefore *blocked* on §8's
+>    `checkpoints`. **That was wrong**, and wrong by stopping one step early:
+>    `forget_actions` **returns the actions it folded**, precisely so a caller can
+>    keep them. Keeping them is the whole fix — the *log* loses nothing, only the
+>    reach of undo does.
+> 3. Implemented on that basis. `LinearTimeline` keeps a `forgotten` prefix and
+>    `clone_actions()` reports it ahead of the live history, so the file, the
+>    timelapse and a joining peer all still get the whole painting.
+>
+> The overstated-severity half of the correction stands: `history` spaces its
+> snapshots geometrically, so retention is `O(log n)` states, not `O(n)`.
 
 `history::forget_actions` exists upstream and is called nowhere in the workspace.
 `LinearTimeline` keeps every action for the session's life. CLAUDE.md says:
