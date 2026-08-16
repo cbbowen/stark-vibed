@@ -147,10 +147,17 @@ fn app() -> Element {
     // is there to show. Generation needs the main renderer, so this watches the
     // renderer signal alongside the two libraries: whichever lands last kicks it
     // off, and a slot tuned under a hold re-runs it on the release that stores it.
+    //
+    // The renderer is watched through `renderer_ready` rather than by asking the
+    // renderer signal whether it holds one: reading that signal subscribes to every
+    // *write* of it, and every door into the engine takes it as `&mut` — so this
+    // effect used to re-run on every command and every pointer sample of a stroke,
+    // rescanning the whole library each time, to learn a boolean that moves once
+    // (U2, `state::renderer_ready`).
     use_effect(move || {
         let _ = state.presets.read().len();
         let _ = state.slots.brushes.read().len();
-        let _ = state.renderer.read().is_some();
+        let _ = (state.renderer_ready)();
         thumbs::refresh(state);
     });
 

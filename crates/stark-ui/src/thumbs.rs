@@ -23,10 +23,10 @@
 //! Thumbnails render on the flat ground under the neutral light at default media
 //! parameters — never the current canvas's look. A thumbnail is the *brush's*
 //! identity card, not a preview of today's lighting; pinning the look is what
-//! lets the cache key be the brush snapshot alone ([`key`]), so a library's
-//! thumbnails survive every lighting, ground and background change without
-//! regenerating. (The brush editor's live preview is the opposite choice, made
-//! for the opposite reason.)
+//! lets the cache be keyed on the brush snapshot alone ([`lookup`]), so a
+//! library's thumbnails survive every lighting, ground and background change
+//! without regenerating. (The brush editor's live preview is the opposite
+//! choice, made for the opposite reason.)
 //!
 //! The cache is per-session, in memory: with generation this cheap, re-rendering
 //! a library at startup is a few frames of background GPU work, which is less
@@ -35,9 +35,6 @@
 //! Like the brush editor's preview engine, the rig's engine deliberately skips
 //! `state::with_engine`: it has no observable projection and no chrome reading
 //! one back, so there is no publish to pair a mutation with.
-
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
@@ -78,8 +75,9 @@ const DARK_PAINT: [f32; 3] = [0.28, 0.28, 0.28];
 /// generation runs in `spawn_forever` tasks that outlive whichever panel asked.
 #[derive(Clone, Copy)]
 pub struct ThumbState {
-    /// Finished thumbnails: a `data:image/png` URL per brush snapshot digest.
-    pub cache: Signal<HashMap<u64, String>>,
+    /// Finished thumbnails: a `data:image/png` URL per brush snapshot, found by
+    /// comparing the snapshot itself ([`lookup`]).
+    pub cache: Signal<Vec<(Wearable, String)>>,
     /// The kept engine + offscreen attachments; `None` until first use.
     pub rig: Signal<Option<Rig>>,
     /// The device and compiled pipelines to build that rig on, published once the
@@ -105,23 +103,36 @@ pub struct Rig {
     off: Offscreen,
 }
 
-/// The cache key: a digest of the whole brush snapshot — parameters and feel —
-/// via its JSON encoding, which `crate::presets` already maintains as the stable
-/// wire form of a stored brush. Session-local (the hasher is `std`'s, unkeyed
-/// only within one run), which matches the cache being session-local.
-pub fn key(w: &Wearable) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    serde_json::to_string(&w.params)
-        .unwrap_or_default()
-        .hash(&mut h);
-    w.smoothing.to_bits().hash(&mut h);
-    h.finish()
+/// The cached entry for `w`, found by **comparing the brush snapshot itself**.
+///
+/// There is no digest, and that is the point. A cache key has one job — say
+/// whether two brushes would render the same picture — and `Wearable` already
+/// answers it exactly, by a derived `PartialEq` the compiler extends whenever
+/// `BrushParams` gains a field. Every alternative is a second, hand-maintained
+/// opinion about what a brush *is*: a hand-written hash silently ignores the new
+/// field and serves a stale thumbnail for a brush that has changed, which is a
+/// wrong picture with nothing anywhere to say so.
+///
+/// It was a digest of the JSON encoding, which had the drift ruled out but cost a
+/// `serde_json::to_string` **per brush per call** — paid, before U2, on every
+/// engine write. A linear scan of `PartialEq` over a library of a few dozen `Copy`
+/// structs is cheaper than one of those serializations, so nothing was bought with
+/// it. `Renderer::builtins` is a `Vec` looked up the same way and for the same
+/// reason.
+fn lookup(state: AppState, w: &Wearable) -> Option<String> {
+    state
+        .thumbs
+        .cache
+        .read()
+        .iter()
+        .find(|(cached, _)| cached == w)
+        .map(|(_, url)| url.clone())
 }
 
 /// The thumbnail for `w`, if it has been generated. Subscribes, so a row showing
 /// a placeholder re-renders when its image lands.
 pub fn url(state: AppState, w: &Wearable) -> Option<String> {
-    state.thumbs.cache.read().get(&key(w)).cloned()
+    lookup(state, w)
 }
 
 /// Make sure every brush that has a picture to show has a thumbnail, generating
@@ -142,6 +153,21 @@ pub fn refresh(state: AppState) {
             if !generate(state, w).await {
                 // No engine to render with (startup, or a lost device). The
                 // library effect calls `refresh` again when the renderer lands.
+                break;
+            }
+            // Generation just cached an entry for `w`, so the cache must now answer
+            // for it — and if it does not, `next_missing` will hand back the same
+            // brush forever and this loop will never end. That is reachable in
+            // exactly one way, since the lookup is `PartialEq`: a brush holding a
+            // parameter that is not equal to itself, which is to say a NaN. Nothing
+            // in the app can produce one (sliders clamp, and JSON cannot even carry
+            // it), so this is a guarantee of termination rather than a case that
+            // happens — the loop cannot spin, whatever is in the library.
+            if lookup(state, &w).is_none() {
+                tracing::warn!(
+                    "a brush parameter does not compare equal to itself; \
+                                skipping the rest of the thumbnails"
+                );
                 break;
             }
         }
@@ -168,7 +194,7 @@ fn next_missing(state: AppState) -> Option<Wearable> {
         .iter()
         .map(|e| e.brush)
         .chain(rack.iter().flatten().copied())
-        .find(|w| !cache.contains_key(&key(w)))
+        .find(|w| !cache.iter().any(|(cached, _)| cached == w))
 }
 
 /// Render one thumbnail and put it in the cache. `false` when there is no main
@@ -176,7 +202,6 @@ fn next_missing(state: AppState) -> Option<Wearable> {
 /// a preset whose render fails for its own reasons is skipped by caching a blank
 /// entry rather than retried forever.
 async fn generate(state: AppState, w: Wearable) -> bool {
-    let k = key(&w);
     // Everything up to the readback happens under the rig borrow, which must end
     // before the await — the same borrow bargain as `Engine::export` itself.
     let readback = {
@@ -263,7 +288,7 @@ async fn generate(state: AppState, w: Wearable) -> bool {
         Err(_) => String::new(),
     };
     let mut cache = state.thumbs.cache;
-    cache.write().insert(k, url);
+    cache.write().push((w, url));
     true
 }
 

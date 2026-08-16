@@ -107,6 +107,18 @@ pub struct AppState {
     /// UI-facing engine projection, refreshed after each command — by
     /// [`with_engine`], which is the only thing that can write it.
     pub obs: ReadOnly<Option<ObservableState>>,
+    /// Whether WebGPU init has finished and [`publish_renderer`] has handed the
+    /// engine over. Set once, never cleared.
+    ///
+    /// **A separate signal because `renderer.read().is_some()` is not the same
+    /// question.** Reading the renderer subscribes to *every write of it*, and
+    /// every door into the engine takes it as `&mut` — so an effect that asked the
+    /// `Option` re-ran on every command, every pointer sample of a stroke included,
+    /// to learn a `bool` that changes once in the life of the page. That is what
+    /// the root's thumbnail effect was doing (U2). A signal that only ever moves
+    /// false → true wakes its readers exactly when they asked to be woken, and it
+    /// says what it means at the site that reads it.
+    pub renderer_ready: Signal<bool>,
     /// Whether the user is holding space.
     pub space_down: Signal<bool>,
     /// Whether a canvas gesture is in flight (a stroke, a selection drag, a pan,
@@ -356,6 +368,7 @@ impl AppState {
         Self {
             renderer: ReadOnly(root_signal(|| None)),
             obs: ReadOnly(root_signal(|| None)),
+            renderer_ready: root_signal(|| false),
             space_down: root_signal(|| false),
             canvas_active: root_signal(|| false),
             brush_editor_open: root_signal(|| false),
@@ -406,7 +419,7 @@ impl AppState {
             },
             presets: root_signal(Vec::new),
             thumbs: crate::thumbs::ThumbState {
-                cache: root_signal(std::collections::HashMap::new),
+                cache: root_signal(Vec::new),
                 rig: root_signal(|| None),
                 shared: root_signal(|| None),
                 busy: root_signal(|| false),
@@ -1641,6 +1654,12 @@ pub fn publish_renderer(state: AppState, r: Renderer) {
     let mut shared = state.thumbs.shared;
     shared.set(Some(r.engine_shared()));
     renderer.0.set(Some(r));
+    // Last, and the announcement everything else waits on: the readiness flag is
+    // set only once the renderer is in the signal and the chrome can already
+    // describe it, so a reader woken by it finds the whole arrangement in place
+    // (see [`AppState::renderer_ready`]).
+    let mut ready = state.renderer_ready;
+    ready.set(true);
 }
 
 /// Apply a command, request a repaint, and refresh the observable snapshot.
