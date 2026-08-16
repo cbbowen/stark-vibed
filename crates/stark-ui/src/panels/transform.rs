@@ -36,13 +36,14 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use super::frame::{content_rect, view_rect};
+use crate::gesture::{
+    MeshRegion, PerspectiveUi, QuadRegion, TransformRegion, TransformState, TransformUi, WARP_GRID,
+    WarpUi,
+};
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
-use crate::state::{
-    AppState, MeshRegion, PerspectiveUi, QuadRegion, TransformRegion, TransformState, TransformUi,
-    WARP_GRID, WarpUi, dispatch,
-};
+use crate::state::{AppState, dispatch};
 use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::document::TransformMap;
 use stark_core::geom::{Vec2, ViewTransform};

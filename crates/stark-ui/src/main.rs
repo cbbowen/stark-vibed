@@ -22,6 +22,7 @@ mod components;
 mod credits;
 mod failure;
 mod files;
+mod gesture;
 mod gradients;
 mod grounds;
 mod icons;
