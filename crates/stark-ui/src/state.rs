@@ -440,6 +440,39 @@ impl AppState {
     }
 }
 
+/// Subscribe to **one slice** of the projection instead of to all of it.
+///
+/// [`AppState::obs`] is a single signal carrying everything from the view — which
+/// moves at pointer rate — to the history budget, which moves about once a session.
+/// A `Signal` write marks every subscriber dirty with no equality check, so a
+/// component that calls `state.obs.read()` in its body re-renders on **every**
+/// command: a pan, a brush-size drag, a transform preview, each sample of an
+/// eyedropper drag. Most of the chrome does not depend on any of those.
+///
+/// A memo is the seam. It recomputes when `obs` moves, but only *propagates* when
+/// the slice it selected actually changed (`Memo::recompute` compares before it
+/// writes), so a panel reading its layer list through one is woken by commits and
+/// slept through pans. `panels::navigator` and `panels::timeline` already did this
+/// by hand; this is the same move, named, so a panel gets it by reading the
+/// projection the ordinary way rather than by remembering to.
+///
+/// A hook: call unconditionally, like any `use_*`. `slice` runs against the whole
+/// projection, so a component wanting several fields should take **one** memo of a
+/// tuple rather than one memo each — the fields it reads change together far more
+/// often than not, and one memo is one comparison.
+///
+/// `None` before WebGPU init has published a projection, which every caller may
+/// simply let fall through — the same shape they already handle.
+pub fn use_obs<T>(
+    state: AppState,
+    slice: impl Fn(&ObservableState) -> T + 'static,
+) -> Memo<Option<T>>
+where
+    T: Clone + PartialEq + 'static,
+{
+    use_memo(move || state.obs.read().as_ref().map(&slice))
+}
+
 /// The gradient gesture being composed on the shared gradient bar (§22.4):
 /// what the ramp lands on, how the composing drag is read, and the drag itself.
 ///

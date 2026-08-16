@@ -45,7 +45,7 @@ use crate::panels::frame::AddFrameButton;
 use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, layer_boxes, select_all};
 use crate::render::PeerInfo;
-use crate::state::{AppState, dispatch};
+use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::settle;
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_core::document::{BlendMode, DRAGO_K_RANGE, Place};
@@ -242,15 +242,26 @@ pub fn LayerPanel() -> Element {
     // at commit time, off the very projection the preview is feeding.
     let mut bending = use_signal(|| None::<BlendMode>);
 
-    let obs = state.obs.read();
-    let layers = obs.as_ref().map(|o| o.layers.clone()).unwrap_or_default();
+    // The tree and which row is selected, through **one** memo (`state::use_obs`).
+    // Both move on a commit; nothing here has anything to say about a pan or a
+    // stroke in flight. Read straight off `obs` this panel re-rendered on every
+    // engine write, and each of those re-renders cloned the whole layer list — with
+    // every layer's name — to redraw rows that had not changed.
+    //
+    // One memo rather than two because the pair is compared together: a selection
+    // change moves `active_layer` while the list stands, and a commit usually moves
+    // both, so splitting them would buy one extra comparison and no extra sleep.
+    //
     // The properties that belong to *whichever* layer is selected live here, once,
     // rather than being repeated per row and again in the frame bar. A frame is a
     // layer, so it needs no copies of its own (§15.7).
-    let selected = obs
-        .as_ref()
-        .and_then(|o| o.layers.iter().find(|l| l.id == o.active_layer).cloned());
-    drop(obs);
+    let tree = use_obs(state, |o| {
+        (
+            o.layers.clone(),
+            o.layers.iter().find(|l| l.id == o.active_layer).cloned(),
+        )
+    });
+    let (layers, selected) = tree().unwrap_or_default();
     let shut = collapsed.read().clone();
     let rows = rows(&layers, &shut);
     // The rows as the panel actually shows them: top of the document first, with
@@ -345,6 +356,7 @@ pub fn LayerPanel() -> Element {
                 // because it is a fact about the landing's meaning, which is this
                 // panel's alone — a flat roster has no such row.
                 carrying: land.is_some_and(|l| l.carrier == Some(row.info.id)),
+                active: selected_id == Some(row.info.id),
                 drag,
                 ontoggle: move |id| {
                     let mut shut = collapsed.write();
@@ -770,6 +782,12 @@ pub fn LayerRow(
     row: Row,
     motion: Motion,
     carrying: bool,
+    /// Whether this is the selected row. A prop rather than a read of the
+    /// projection, for the reason `motion` and `carrying` are: the panel has
+    /// already resolved it, and a row that asked for itself would subscribe every
+    /// row in the tree to every engine write — one selection change re-rendering
+    /// the whole list, and a stroke doing it per sample.
+    active: bool,
     drag: Signal<Option<Grab>>,
     ontoggle: EventHandler<LayerId>,
     onland: EventHandler<LayerId>,
@@ -810,12 +828,10 @@ pub fn LayerRow(
     // layer is (§15.7) — selecting it raises the frame bar and its
     // on-canvas handles, and the brush simply has nowhere to go until a paint layer
     // is selected again. Because there is only one thing to highlight, "exactly one
-    // row is highlighted" is a consequence rather than a rule to keep.
-    let active = state
-        .obs
-        .read()
-        .as_ref()
-        .is_some_and(|o| o.active_layer == id);
+    // row is highlighted" is a consequence rather than a rule to keep — and because
+    // `active` arrives as a prop resolved once by the panel, it is a consequence of
+    // one comparison rather than of one per row.
+    //
     // Three kinds of row, and the two that are not paint wear their own ground: a
     // frame is dashed (§15.7) and a filter is ruled (§21.6), because in both cases
     // "the brush has nowhere to go here" is the thing to see before reaching for it.

@@ -73,7 +73,8 @@ fn matched_aspect((w, h): (f32, f32)) -> &'static str {
         .map_or(CUSTOM, |(label, _)| label)
 }
 
-/// The frame being composed, if the **selected layer** is one.
+/// The frame being composed, if the **selected layer** is one — the rule itself,
+/// asked of a projection already in hand.
 ///
 /// There is deliberately no separate frame-selection state. `active_layer` is the
 /// selected layer and a matte may be it (§15.7), so the frame bar and
@@ -81,13 +82,25 @@ fn matched_aspect((w, h): (f32, f32)) -> &'static str {
 /// is what makes exactly one row highlighted at a time a *consequence* rather than
 /// a rule to enforce — and it means a frame that is removed, undone, or replaced
 /// by a document load stops being composed with no invalidation to remember.
-pub fn selected_frame(state: AppState) -> Option<(LayerInfo, MatteInfo)> {
-    let obs = state.obs.read();
-    let o = obs.as_ref()?;
+pub fn selected_frame_of(o: &stark_core::ObservableState) -> Option<(LayerInfo, MatteInfo)> {
     o.layers
         .iter()
         .find(|l| l.id == o.active_layer)
         .and_then(|l| l.matte.clone().map(|m| (l.clone(), m)))
+}
+
+/// [`selected_frame_of`] asked of the app, **through a memo** — so a component
+/// mounted on it wakes when the selected frame changes and sleeps through every
+/// pan, stroke sample and slider preview that merely rewrites the projection
+/// (`state::use_obs`).
+///
+/// A hook: call unconditionally, and above any early return. All three callers are
+/// components; there is no handler-side form because nothing needs one, and a peek
+/// version with no caller would be a second spelling waiting to disagree with this
+/// one (compare [`selected_filter`](super::filter::selected_filter), which has both
+/// because it has callers of both kinds).
+pub fn use_selected_frame(state: AppState) -> Memo<Option<(LayerInfo, MatteInfo)>> {
+    use_memo(move || state.obs.read().as_ref().and_then(selected_frame_of))
 }
 
 /// Stop composing: select the topmost paint layer instead. Used by the frame bar's
@@ -210,12 +223,17 @@ pub fn AddFrameButton() -> Element {
 /// Whether the document already carries a ground. A ground is the one region
 /// defined against no rect (§15.5), so "is there one" is asked of the projection
 /// the bar already reads rather than of a flag some other control has to keep.
-fn has_background(state: AppState) -> bool {
-    let obs = state.obs.read();
-    obs.as_ref().is_some_and(|o| {
-        o.layers
-            .iter()
-            .any(|l| l.matte.as_ref().is_some_and(|m| m.rect.is_none()))
+///
+/// A hook, through a memo, for [`use_selected_frame`]'s reason — asked of `obs`
+/// directly it would subscribe the bar to the whole projection and undo the memo
+/// standing right above it. Call it unconditionally, and above the early returns.
+fn use_has_background(state: AppState) -> Memo<bool> {
+    use_memo(move || {
+        state.obs.read().as_ref().is_some_and(|o| {
+            o.layers
+                .iter()
+                .any(|l| l.matte.as_ref().is_some_and(|m| m.rect.is_none()))
+        })
     })
 }
 
@@ -257,7 +275,11 @@ pub fn FrameBar() -> Element {
     // Whether the color pop-out is open. **Before** the early return, because a hook
     // that runs only when a frame is selected is a hook that runs sometimes.
     let mut show_picker = use_signal(|| false);
-    let Some((info, matte)) = selected_frame(state) else {
+    // Both of these are hooks and both are here for that same reason — the bar has
+    // two early returns below, and a hook that runs only sometimes is not a hook.
+    let frame = use_selected_frame(state);
+    let has_background = use_has_background(state);
+    let Some((info, matte)) = frame() else {
         return rsx! {};
     };
     // While a mode is composing, its own bar stands in for this one — two bars
@@ -291,7 +313,7 @@ pub fn FrameBar() -> Element {
     // Offered only while there is no ground to make. Once there is one it is a
     // row in the Layers panel like any other layer, and a second could not mean
     // anything — "the whole plane" admits no second.
-    let offer_background = !has_background(state);
+    let offer_background = !has_background();
     let paint_for_begin = matte.paint.clone();
     let gradient_title = if is_gradient {
         "Recompose the gradient's axis"
@@ -589,7 +611,7 @@ pub fn FrameOverlay() -> Element {
     let state = use_context::<AppState>();
     let mut drag = use_signal(|| None::<FrameDrag>);
 
-    let Some((info, matte)) = selected_frame(state) else {
+    let Some((info, matte)) = use_selected_frame(state)() else {
         return rsx! {};
     };
     // No rect, no handles: an `Everything` matte (§15.5) has nothing

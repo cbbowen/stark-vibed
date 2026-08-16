@@ -17,7 +17,7 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use crate::icons::{self, icon};
-use crate::panels::frame::{piece_frame, selected_frame};
+use crate::panels::frame::{piece_frame, use_selected_frame};
 use crate::platform::{download_bytes, pick_file};
 use crate::state::AppState;
 use stark_core::command::ViewCommand;
@@ -187,7 +187,7 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
     // falls back to the painted bounds, §15.6). Only mattes **with a rect**
     // count: a background (§15.5) frames nothing, so it must not make
     // the dialog claim a frame it is not using.
-    let frame: Option<LayerId> = selected_frame(state)
+    let frame: Option<LayerId> = use_selected_frame(state)()
         .filter(|(_, m)| m.rect.is_some())
         .map(|(l, _)| l.id)
         .or_else(|| state.obs.read().as_ref().and_then(piece_frame));

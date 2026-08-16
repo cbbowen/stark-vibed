@@ -60,7 +60,7 @@ use crate::icons::{self, icon, label};
 use crate::layout::{PanelId, PanelLayout, chrome_class};
 use crate::panels::color::ab_field_data_url;
 use crate::platform::capture_pointer;
-use crate::state::{AppState, dispatch};
+use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::settle;
 use stark_core::color::{dispersion_weight, linear_to_srgb};
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
@@ -161,13 +161,29 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
 /// selected layer and a filter may be it, so the bar keys off the same thing the
 /// Layers panel highlights — and a filter that is removed, undone, or replaced by a
 /// document load stops being tuned with no invalidation to remember.
-pub fn selected_filter(state: AppState) -> Option<(LayerInfo, Filter)> {
-    let obs = state.obs.read();
-    let o = obs.as_ref()?;
+/// The rule itself, asked of a projection already in hand.
+fn selected_filter_of(o: &stark_core::ObservableState) -> Option<(LayerInfo, Filter)> {
     o.layers
         .iter()
         .find(|l| l.id == o.active_layer)
         .and_then(|l| l.filter.clone().map(|f| (l.clone(), f)))
+}
+
+/// [`selected_filter_of`] asked from an **event handler** — `peek`, so a handler
+/// does not subscribe the scope it happens to run under to the whole projection.
+/// The handler-time half, exactly as [`modes::is_composing`](crate::modes::is_composing)
+/// is to `modes::composing`.
+pub fn selected_filter(state: AppState) -> Option<(LayerInfo, Filter)> {
+    state.obs.peek().as_ref().and_then(selected_filter_of)
+}
+
+/// [`selected_filter_of`] asked from a **component** — a memo, so the bar wakes
+/// when the selected filter changes and sleeps through every pan and stroke sample
+/// that merely rewrites the projection (`state::use_obs`). The render-time half.
+///
+/// A hook: call unconditionally, and above any early return.
+fn use_selected_filter(state: AppState) -> Memo<Option<(LayerInfo, Filter)>> {
+    use_memo(move || state.obs.read().as_ref().and_then(selected_filter_of))
 }
 
 /// Hand the library's current ramp to the selected **gradient map** filter — the
@@ -257,12 +273,13 @@ pub fn AddFilterButton() -> Element {
     let mut open = use_signal(|| false);
     // Where it goes, read out here rather than in the handler: the same pair
     // `LayerPanel` computes for "+ Layer", for the same reason.
-    let at = state.obs.read().as_ref().and_then(|o| {
+    let at = use_obs(state, |o| {
         o.layers
             .iter()
             .find(|l| l.id == o.active_layer)
             .map(|l| (l.carrier, Some(l.id)))
-    });
+    })()
+    .flatten();
     rsx! {
         div {
             class: "filter-add",
@@ -1092,7 +1109,7 @@ pub fn FilterBar() -> Element {
     // The panel layout, for the gradient map's "Gradients" chip — a hook, so it is
     // read whether or not that kind is selected, for the reason every hook above is.
     let layout = use_context::<PanelLayout>();
-    let Some((info, filter)) = selected_filter(state) else {
+    let Some((info, filter)) = use_selected_filter(state)() else {
         return rsx! {};
     };
     // A filter with nothing composited beneath it in its own stack does nothing at

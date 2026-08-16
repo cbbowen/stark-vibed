@@ -6,7 +6,7 @@ use dioxus::prelude::*;
 
 use crate::icons::{self, icon, icon_tinted, label};
 use crate::layout::chrome_class;
-use crate::state::{AppState, dispatch};
+use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::Slider;
 use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::document::{FillOp, SelectionMode, SelectionOp, ShapeAction, Tool};
@@ -41,20 +41,21 @@ use stark_core::document::{FillOp, SelectionMode, SelectionOp, ShapeAction, Tool
 #[component]
 pub fn SelectPanel() -> Element {
     let state = use_context::<AppState>();
-    let obs = state.obs.read();
-    let (tool, action, feather, opacity, brush_color) = obs
-        .as_ref()
-        .map(|o| {
-            (
-                o.tool,
-                o.shape_action,
-                o.selection_feather,
-                o.shape_opacity,
-                o.brush.color,
-            )
-        })
-        .unwrap_or((Tool::Brush, ShapeAction::default(), 0.0, 1.0, [0.0; 4]));
-    drop(obs);
+    // One memo over everything the panel shows (`state::use_obs`). All five are
+    // *tool* state — what the next gesture will do — so they move together and
+    // never at pointer rate; read straight off `obs` the panel re-rendered on
+    // every pan and every sample of the stroke it is describing.
+    let arm = use_obs(state, |o| {
+        (
+            o.tool,
+            o.shape_action,
+            o.selection_feather,
+            o.shape_opacity,
+            o.brush.color,
+        )
+    });
+    let (tool, action, feather, opacity, brush_color) =
+        arm().unwrap_or((Tool::Brush, ShapeAction::default(), 0.0, 1.0, [0.0; 4]));
 
     let chip = |on: bool| if on { "chip active" } else { "chip" };
     const TOOLS: [(Tool, &str, &str); 3] = [
@@ -185,13 +186,17 @@ pub fn SelectionBar() -> Element {
     let state = use_context::<AppState>();
     // The committed selection, not the in-flight preview — so the bar does not flicker
     // in and out under a drag that has not been released yet.
-    let obs = state.obs.read();
-    let active = obs.as_ref().is_some_and(|o| o.has_selection);
+    //
+    // Through a memo (`state::use_obs`): whether there is a selection changes on a
+    // commit, and the bar is mounted on it — so re-rendering per pointer sample of
+    // the very marquee drag it is waiting on would be to re-diff a bar that is not
+    // there yet.
+    //
     // The bar's Fill lays the same paint the panel's Fill chip does, so it carries the
     // same loaded bucket: the brush's color is a property of the *act*, not of the
     // panel that happens to host the control.
-    let brush_color = obs.as_ref().map_or([0.0; 4], |o| o.brush.color);
-    drop(obs);
+    let shown = use_obs(state, |o| (o.has_selection, o.brush.color));
+    let (active, brush_color) = shown().unwrap_or((false, [0.0; 4]));
     // While any mode is composing, its own bar stands in for this one: the
     // whole-selection commands would fight the gesture (deselecting mid-transform
     // would move the wrong region on "Done"). Every mode, not the two that hold a

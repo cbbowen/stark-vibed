@@ -4,11 +4,11 @@
 use dioxus::prelude::*;
 
 use crate::panels::color::OklabPicker;
-use crate::state::{AppState, dispatch, with_engine_quiet};
+use crate::state::{AppState, dispatch, use_obs, with_engine_quiet};
 use crate::widgets::Slider;
 use dioxus::dioxus_core::spawn_forever;
 use stark_core::command::{DocCommand, ViewCommand};
-use stark_core::{EnvironmentId, MediaParams};
+use stark_core::{EnvironmentId, MediaParams, SurfaceId};
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
 /// stay out of the wasm binary (§6.6). The engine is handed the bytes.
@@ -50,19 +50,24 @@ pub fn LightingPanel() -> Element {
     let state = use_context::<AppState>();
     // Read off the engine's own projection rather than a local copy: a shadow seeded
     // from `Default` goes stale the moment anything else changes these (§4).
-    let obs = state.obs.read();
-    let p = obs.as_ref().map(|o| o.media).unwrap_or_default();
-    let surf = obs.as_ref().map(|o| o.surface).unwrap_or_default();
-    let env = obs.as_ref().map(|o| o.environment).unwrap_or_default();
-    // The canvas substrate color (straight sRGB), shown as a swatch that pops out an
-    // Oklab picker. Read from the engine's projection rather than a local signal:
-    // it is document state now (§15.5), so a copy here would go stale
-    // the moment an undo or a document load moved it (§4).
-    let c = obs
-        .as_ref()
-        .map(|o| o.background)
-        .unwrap_or(stark_core::document::DEFAULT_BACKGROUND);
-    drop(obs);
+    // …and through a memo, so the panel wakes when one of these moves and sleeps
+    // through the strokes and pans that merely rewrite the projection
+    // (`state::use_obs`). These are the slowest-moving values in it — a light and a
+    // ground are chosen between passages, not during one.
+    //
+    // The canvas substrate color (straight sRGB) is shown as a swatch that pops out
+    // an Oklab picker. Read from the projection rather than a local signal for the
+    // same reason as the rest: it is document state now (§15.5), so a copy here
+    // would go stale the moment an undo or a document load moved it (§4).
+    let scene = use_obs(state, |o| (o.media, o.surface, o.environment, o.background));
+    let (p, surf, env, c) = scene().unwrap_or_else(|| {
+        (
+            MediaParams::default(),
+            SurfaceId::default(),
+            EnvironmentId::default(),
+            stark_core::document::DEFAULT_BACKGROUND,
+        )
+    });
     // Each catalog ground with the id it resolved to — `None` while its height map
     // is still unfetched. `read`, so a row settles the moment a fetch lands.
     let catalog = crate::grounds::resolved(state);

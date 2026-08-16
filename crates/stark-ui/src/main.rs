@@ -72,7 +72,7 @@ use slots::SlotOverlay;
 use stark_core::ColorSpaceId;
 use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
 use stark_core::document::{SelectionOp, ShapeAction};
-use state::{AppState, dispatch, dispatch_quiet, dispatch_sample, resize, update_brush};
+use state::{AppState, dispatch, dispatch_quiet, dispatch_sample, resize, update_brush, use_obs};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
 /// every component class referenced below. Linked once by [`app`] so the rsx!
@@ -441,24 +441,39 @@ fn Canvas() -> Element {
     // chrome out of the way. Pointer gestures clear it on release (`end_interaction`).
     let mut canvas_active = state.canvas_active;
 
-    // The selected layer may be a frame, which takes no paint (§15.7).
-    // Rather than block the gesture, say so in the cursor: the brush crosshair
-    // becomes "not-allowed", so the canvas explains itself before the user draws a
-    // stroke that would go nowhere. Panning still works, so the pan cursor wins
-    // while space is held.
-    let paintable = state.obs.read().as_ref().is_some_and(|o| {
-        o.layers
+    // Everything this component reads off the projection, in **one** memo — so the
+    // canvas is re-rendered when its cursor would change and not when the engine is
+    // merely touched (`state::use_obs`). It is the component that can least afford
+    // the difference: it is the surface a stroke is being made on, and every sample
+    // of that stroke writes the engine.
+    //
+    // The two facts are:
+    //
+    // - **Whether the selected layer takes paint.** A frame does not (§15.7).
+    //   Rather than block the gesture, say so in the cursor: the brush crosshair
+    //   becomes "not-allowed", so the canvas explains itself before the user draws a
+    //   stroke that would go nowhere. Panning still works, so the pan cursor wins
+    //   while space is held.
+    // - **The tool**, for the eyedropper cursor below. It has to be *read* here
+    //   rather than peeked as the handlers do (`current_tool`): a peek would leave
+    //   the canvas wearing the wrong cursor until some other change happened to
+    //   re-render it, which is precisely what subscribing to the whole projection
+    //   was accidentally covering up.
+    let look = use_obs(state, |o| {
+        let paintable = o
+            .layers
             .iter()
-            .any(|l| l.id == o.active_layer && l.is_paintable())
+            .any(|l| l.id == o.active_layer && l.is_paintable());
+        (paintable, o.tool)
     });
+    let (paintable, tool) = look().unwrap_or((false, stark_core::document::Tool::Brush));
     // Alt arms the eyedropper over the brush, and the cursor says so before it is
     // used — the only thing that makes a modifier binding discoverable. Not over a
     // selection tool, where alt already means "subtract from the selection"
     // (§6.8), so the cursor promises the pick exactly where a press would
     // take one. It beats `no-paint`, because a layer that takes no paint can still
     // be sampled.
-    let sampling =
-        (state.pick.alt_down)() && !(state.space_down)() && !current_tool(state).is_selection();
+    let sampling = (state.pick.alt_down)() && !(state.space_down)() && !tool.is_selection();
     let canvas_class = if sampling {
         "paint-canvas picking"
     } else if paintable || (state.space_down)() {
@@ -847,12 +862,12 @@ fn CommandRail() -> Element {
     let mut show_settings = use_signal(|| false);
     let mut show_credits = use_signal(|| false);
     let live = (state.collab.phase)() == collab::CollabPhase::Shared;
-    let (can_undo, can_redo, has_selection) = state
-        .obs
-        .read()
-        .as_ref()
-        .map(|o| (o.can_undo, o.can_redo, o.has_selection))
-        .unwrap_or((false, false, false));
+    // Through a memo: all three move on a commit and the rail is a menu of
+    // commands, so re-rendering it per pointer sample of a stroke would be to
+    // re-diff two dropdowns to enable the Undo entry that was already enabled
+    // (`state::use_obs`).
+    let flags = use_obs(state, |o| (o.can_undo, o.can_redo, o.has_selection));
+    let (can_undo, can_redo, has_selection) = flags().unwrap_or((false, false, false));
     let hidden = (layout.hidden)();
     let timeline_open = (state.timeline.open)();
     let rack_pinned = (state.slots.pinned)();
