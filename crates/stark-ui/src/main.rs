@@ -54,14 +54,13 @@ use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, Men
 use credits::CreditsModal;
 use icons::{icon, icon_large};
 use input::{
-    Nav, Tune, abandon_gesture, bind_context_menu, bind_pen, bind_shortcuts, elem_xy,
-    end_interaction, input_rope, input_tolerance, pick_color, pointer_moved, refresh_tow, sample,
-    samples, watch_for_hold,
+    Nav, Paint, Tune, bind_context_menu, bind_pen, bind_shortcuts, end_interaction, pick_color,
+    sample,
 };
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, resize_end, resize_move};
 use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
-use panels::select::{current_action, current_tool, modifier_mode};
+use panels::select::current_tool;
 use panels::{
     FilterBar, FrameBar, FrameOverlay, GradientBar, GradientBarOverlay, GradientTraceOverlay,
     GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar, TimelineBar, TransformBar,
@@ -72,9 +71,9 @@ use render::CANVAS_ID;
 use settings::SettingsModal;
 use slots::SlotOverlay;
 use stark_core::ColorSpaceId;
-use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
-use stark_core::document::{SelectionOp, ShapeAction};
-use state::{AppState, dispatch, dispatch_quiet, dispatch_sample, resize, update_brush, use_obs};
+use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
+use stark_core::document::SelectionOp;
+use state::{AppState, dispatch, dispatch_quiet, resize, update_brush, use_obs};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
 /// every component class referenced below. Linked once by [`app`] so the rsx!
@@ -424,7 +423,12 @@ fn app() -> Element {
 #[component]
 fn Canvas() -> Element {
     let state = use_context::<AppState>();
-    let mut drawing = use_signal(|| false);
+    // The paint gesture itself — the stroke or marquee, from the press that opens
+    // one to the release that commits it (`input::Paint`). It owns whether one is
+    // in flight and the shape action a modifier overrode, so this component is
+    // left with the part that is genuinely its own: deciding, on a press, which of
+    // the four bindings it is.
+    let paint = Paint::use_paint(state);
     // The shared pan/zoom bindings (`input::Nav`) — the same instance the
     // transform overlay makes for itself, so navigation means one thing.
     let nav = Nav::use_nav(state);
@@ -436,9 +440,6 @@ fn Canvas() -> Element {
     // it (§18.0.2). Shared rather than local, unlike the two above,
     // because the options bar is mounted on *armed but not dragging*.
     let mut picking = state.pick.dragging;
-    // The panel's selection mode, stashed while a gesture's modifier keys override it
-    // (§6.8) and restored when the gesture ends.
-    let mut action_restore = use_signal(|| None::<ShapeAction>);
     // Set for as long as the canvas is the thing being used, which fades the floating
     // chrome out of the way. Pointer gestures clear it on release (`end_interaction`).
     let mut canvas_active = state.canvas_active;
@@ -507,7 +508,7 @@ fn Canvas() -> Element {
                     // Whatever was being drawn was never meant to be paint — it was
                     // the opening half of a pinch (§18.1.7). Cancelled rather
                     // than committed, so reaching for the canvas leaves no mark.
-                    abandon_gesture(state, &mut drawing, &mut action_restore);
+                    paint.abandon();
                     canvas_active.set(true);
                     return;
                 }
@@ -523,7 +524,7 @@ fn Canvas() -> Element {
                     // A stroke was in flight only if some *other* pointer opened
                     // one; it can no longer be finished by this press, and a
                     // gesture the hand has walked away from must leave no mark.
-                    abandon_gesture(state, &mut drawing, &mut action_restore);
+                    paint.abandon();
                     return;
                 }
                 // Nothing may be *committed* while the playhead is moving: a
@@ -563,60 +564,11 @@ fn Canvas() -> Element {
                         return;
                     }
                     canvas_active.set(true);
-                    // A press before WebGPU init has finished has no canvas
-                    // space to land in, so it starts no gesture (and `drawing`
-                    // stays false, which is what keeps the moves after it inert
-                    // too).
-                    if let Some(sample) = sample(state, &e)
-                        && let Some(tolerance) = input_tolerance(state, &e)
-                    {
-                        // The eraser end's brush is already in force by now — it
-                        // holds its slot from a window-level binding that runs
-                        // ahead of every handler in the tree (`input::bind_pen`,
-                        // §18.1.8). This press only has to *draw*, with whatever
-                        // brush the engine is holding, which is what it always
-                        // did.
-
-                        // The marquee modifiers override the *combine mode*, so
-                        // they apply only while the panel's action is a selecting
-                        // one: under Fill there is nothing to combine, and letting
-                        // shift quietly turn a fill into a union-select would be
-                        // the worst kind of surprise (§18.0.4).
-                        let action = current_action(state);
-                        if tool.is_selection()
-                            && action.is_select()
-                            && let Some(m) = modifier_mode(e.modifiers())
-                        {
-                            action_restore.set(Some(action));
-                            dispatch(state, ViewCommand::SetShapeAction(ShapeAction::Select(m)));
-                        }
-                        dispatch(state, GestureCommand::Start {
-                            tool,
-                            sample,
-                            // What this device and this zoom level actually
-                            // resolve to, which is what the fit prices against.
-                            tolerance,
-                            // The brush's smoothing as a canvas-px string
-                            // (§6.11); zero for the selection tools, which
-                            // fit no curve.
-                            rope: if tool.is_selection() {
-                                0.0
-                            } else {
-                                input_rope(state)
-                            },
-                        });
-                        drawing.set(true);
-                        // Seed the string overlay; a ropeless gesture leaves it
-                        // `None` and the per-move refresh below stays gated off.
-                        refresh_tow(state);
-                        // Watch for the pen being held still, which snaps the
-                        // stroke to the shape it resembles (§6.9). Painting
-                        // only: a marquee is already an exact shape, so there
-                        // is nothing for a hold to improve.
-                        if !tool.is_selection() {
-                            watch_for_hold(state, elem_xy(&e));
-                        }
-                    }
+                    // From here the press is paint, and what it does with itself is
+                    // the gesture's business rather than this handler's — including
+                    // the case where there is no view to land in yet, which opens
+                    // nothing and leaves the moves after it inert (`input::Paint`).
+                    paint.begin(&e, tool);
                 }
             },
             onpointermove: move |e| {
@@ -653,7 +605,7 @@ fn Canvas() -> Element {
                 // taking paint the moment the mode took it, so the gesture must
                 // leave no mark.
                 if modes::is_composing(state) {
-                    abandon_gesture(state, &mut drawing, &mut action_restore);
+                    paint.abandon();
                     // And the canvas is no longer what is in hand — the mode is.
                     // Unlike the pinch, which goes on using it, so `nav` sets
                     // this the other way. Left dimmed, the mode's own bar would
@@ -671,30 +623,11 @@ fn Canvas() -> Element {
                         // Alt+drag keeps sampling; `pick_color` drops a move that
                         // arrives while the last sample is still settling.
                         pick_color(state, s.pos);
-                    } else if drawing() {
-                        // In screen px, before the sample is mapped: whether the
-                        // hand is holding still is a fact about the hand
-                        // (§6.9). Once the stroke has snapped this stops
-                        // watching and the same `To` steers the shape instead.
-                        pointer_moved(state, elem_xy(&e));
-                        // Every report the browser folded into this event reaches
-                        // the fitter (`input::samples`), not just the one it chose
-                        // to deliver. `dispatch_sample`, not `dispatch`: a sample
-                        // changes pixels, not chrome, and the full dispatch's
-                        // observable refresh re-diffs the chrome per pointer move.
-                        // The preview fold is rebuilt once per painted frame
-                        // either way, so extra samples cost a fit push each, not
-                        // a render.
-                        for s in samples(state, &e).unwrap_or_default() {
-                            dispatch_sample(state, GestureCommand::To { sample: s });
-                        }
-                        // The string overlay tracks the tow (§6.11). Gated on
-                        // its own signal so a plain brush pays nothing here:
-                        // only a gesture that started with a rope ever reads
-                        // the engine or dirties the overlay's scope per move.
-                        if state.tow.peek().is_some() {
-                            refresh_tow(state);
-                        }
+                    } else {
+                        // The paint gesture takes it if it has one in flight, and
+                        // says so — a move with no gesture behind it is only a
+                        // cursor to report below (`input::Paint::advance`).
+                        paint.advance(&e);
                     }
                     // Where collaborators see this client's pointer
                     // (§17.4). Quiet: it changes nothing *this* client renders — the
@@ -718,12 +651,12 @@ fn Canvas() -> Element {
             // finger the hand happened to raise first (§18.1.7).
             onpointerup: move |e| {
                 if !nav.release(&e) {
-                    end_interaction(state, &mut drawing, nav, tune, &mut action_restore);
+                    end_interaction(state, paint, nav, tune);
                 }
             },
             onpointercancel: move |e| {
                 if !nav.release(&e) {
-                    end_interaction(state, &mut drawing, nav, tune, &mut action_restore);
+                    end_interaction(state, paint, nav, tune);
                 }
             },
             onwheel: move |e| nav.wheel(e),

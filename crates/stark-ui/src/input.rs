@@ -12,6 +12,7 @@ use dioxus::prelude::*;
 
 use crate::collab::now_seconds;
 use crate::panels::brush::{MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
+use crate::panels::select::{current_action, modifier_mode};
 use crate::platform::{
     capture_pointer, on_window_blur, on_window_event, on_window_key, on_window_pointer, sleep_ms,
 };
@@ -20,7 +21,7 @@ use crate::state::{AppState, BrushRing, Dwell, PickScope, TowUi, dispatch, updat
 use stark_core::InputSample;
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_core::document::SelectionOp;
-use stark_core::document::ShapeAction;
+use stark_core::document::{ShapeAction, Tool};
 use stark_core::geom::{Vec2, ViewTransform};
 use stark_core::{PickOptions, PickSource};
 
@@ -728,6 +729,186 @@ impl Tune {
     }
 }
 
+/// The canvas's **paint** gesture: a stroke or a marquee, from the press that
+/// starts one to the release that commits it (§6.8, §6.9, §6.11).
+///
+/// A hook shaped like [`Nav`] and [`Tune`] and driven the same way, and it exists
+/// for the reason those two do — *one thing owns one gesture*. This one was
+/// spread over three places: the `drawing` flag and the stashed shape action were
+/// the `Canvas` component's, the tow string and the assist watcher were
+/// `AppState`'s, and the two teardown paths were free functions that took the
+/// component's halves by `&mut`. [`end_interaction`] therefore had five
+/// parameters and `abandon_gesture` had three, and between them they had to agree,
+/// by hand, about what "in flight" means — across four call sites.
+///
+/// What is *not* here is deliberate. Whether this press is navigation, brush
+/// tuning, an eyedropper sample or a stroke is **routing**, and routing stays at
+/// the canvas: it is the one place that can see all four bindings at once and put
+/// them in the order that makes space+Alt a pan and Ctrl+space a zoom. This owns
+/// only what happens once the press has turned out to be paint.
+///
+/// The signals that stay in [`AppState`] stay there for stated reasons and are
+/// unaffected: `pick.dragging` because the eyedropper's options bar reads it,
+/// `brush_ring` and `tow` because sibling overlays draw them, `canvas_active`
+/// because the whole chrome fades on it.
+#[derive(Clone, Copy)]
+pub struct Paint {
+    state: AppState,
+    /// Whether a gesture is in flight — the thing the three entry points below
+    /// keep in step with the engine, and the whole of what used to be passed
+    /// around as `&mut Signal<bool>`.
+    drawing: Signal<bool>,
+    /// The panel's shape action, stashed while a gesture's modifier keys override
+    /// it (§6.8) and put back when the gesture ends, however it ends.
+    restore: Signal<Option<ShapeAction>>,
+}
+
+impl Paint {
+    /// A hook: call unconditionally, like any `use_*`.
+    pub fn use_paint(state: AppState) -> Self {
+        Self {
+            state,
+            drawing: use_signal(|| false),
+            restore: use_signal(|| None),
+        }
+    }
+
+    /// Open a gesture at `e` with `tool`. `false` when there is nothing to open it
+    /// against — a press that arrives before WebGPU init has finished has no canvas
+    /// space to land in, and leaving `drawing` clear is what keeps the moves after
+    /// it inert too.
+    pub fn begin(self, e: &Event<PointerData>, tool: Tool) -> bool {
+        let state = self.state;
+        let (Some(sample), Some(tolerance)) = (sample(state, e), input_tolerance(state, e)) else {
+            return false;
+        };
+        // The eraser end's brush is already in force by now — it holds its slot
+        // from a window-level binding that runs ahead of every handler in the tree
+        // (`bind_pen`, §18.1.8). This press only has to *draw*, with whatever brush
+        // the engine is holding.
+
+        // The marquee modifiers override the *combine mode*, so they apply only
+        // while the panel's action is a selecting one: under Fill there is nothing
+        // to combine, and letting shift quietly turn a fill into a union-select
+        // would be the worst kind of surprise (§18.0.4).
+        let action = current_action(state);
+        if tool.is_selection()
+            && action.is_select()
+            && let Some(m) = modifier_mode(e.modifiers())
+        {
+            let mut restore = self.restore;
+            restore.set(Some(action));
+            dispatch(state, ViewCommand::SetShapeAction(ShapeAction::Select(m)));
+        }
+        dispatch(
+            state,
+            GestureCommand::Start {
+                tool,
+                sample,
+                // What this device and this zoom level actually resolve to, which
+                // is what the fit prices against.
+                tolerance,
+                // The brush's smoothing as a canvas-px string (§6.11); zero for the
+                // selection tools, which fit no curve.
+                rope: if tool.is_selection() {
+                    0.0
+                } else {
+                    input_rope(state)
+                },
+            },
+        );
+        let mut drawing = self.drawing;
+        drawing.set(true);
+        // Seed the string overlay; a ropeless gesture leaves it `None` and the
+        // per-move refresh stays gated off.
+        refresh_tow(state);
+        // Watch for the pen being held still, which snaps the stroke to the shape
+        // it resembles (§6.9). Painting only: a marquee is already an exact shape,
+        // so there is nothing for a hold to improve.
+        if !tool.is_selection() {
+            watch_for_hold(state, elem_xy(e));
+        }
+        true
+    }
+
+    /// Feed a move to the gesture in flight. `false` when there is none, which is
+    /// what leaves the caller's cursor reporting to run.
+    pub fn advance(self, e: &Event<PointerData>) -> bool {
+        if !(self.drawing)() {
+            return false;
+        }
+        let state = self.state;
+        // In screen px, before the sample is mapped: whether the hand is holding
+        // still is a fact about the hand (§6.9). Once the stroke has snapped this
+        // stops watching and the same `To` steers the shape instead.
+        pointer_moved(state, elem_xy(e));
+        // Every report the browser folded into this event reaches the fitter
+        // (`samples`), not just the one it chose to deliver. `dispatch_sample`, not
+        // `dispatch`: a sample changes pixels, not chrome, and the full dispatch's
+        // observable refresh re-diffs the chrome per pointer move. The preview fold
+        // is rebuilt once per painted frame either way, so extra samples cost a fit
+        // push each, not a render.
+        for s in samples(state, e).unwrap_or_default() {
+            crate::state::dispatch_sample(state, GestureCommand::To { sample: s });
+        }
+        // The string overlay tracks the tow (§6.11). Gated on its own signal so a
+        // plain brush pays nothing here: only a gesture that started with a rope
+        // ever reads the engine or dirties the overlay's scope per move.
+        if state.tow.peek().is_some() {
+            refresh_tow(state);
+        }
+        true
+    }
+
+    /// End the gesture, **committing** what it drew. Harmless when there is none.
+    ///
+    /// Unless a composing mode opened under the hand mid-gesture, in which case
+    /// this release belongs to a canvas that stopped taking paint the moment the
+    /// mode took it (`crate::modes`) — the canvas's own move handler abandons as
+    /// soon as the pointer stirs, and this is the hand that opened a transform and
+    /// then simply lifted, whose release would otherwise commit the press as a dot.
+    pub fn end(self) {
+        let composing = crate::modes::is_composing(self.state);
+        self.close(if composing {
+            GestureCommand::Cancel
+        } else {
+            GestureCommand::End
+        });
+    }
+
+    /// End the gesture **committing nothing** — what a press that turns out to be
+    /// navigation does to the stroke it interrupted (§18.1.7). Harmless when there
+    /// is none.
+    ///
+    /// [`GestureCommand::Cancel`] rather than `End`, and that is the whole point: a
+    /// second finger landing means the first was never drawing, it was opening a
+    /// pinch, so navigating must leave no mark. The same applies to a middle-drag
+    /// begun mid-stroke, which is the one other way [`Nav::begin`] can answer
+    /// `true` with a gesture already running.
+    pub fn abandon(self) {
+        self.close(GestureCommand::Cancel);
+    }
+
+    /// The one teardown both ends share, so "what a finished gesture leaves behind"
+    /// is stated once: the command, the shape action put back, the hold watcher
+    /// stopped, the string taken down. It was two copies that had to agree.
+    fn close(self, command: GestureCommand) {
+        let state = self.state;
+        let mut drawing = self.drawing;
+        if drawing() {
+            dispatch(state, command);
+            drawing.set(false);
+        }
+        let mut restore = self.restore;
+        if let Some(base) = restore.take() {
+            dispatch(state, ViewCommand::SetShapeAction(base));
+        }
+        stop_watching(state);
+        // The stroke the string belonged to is over, however it ended (§6.11).
+        refresh_tow(state);
+    }
+}
+
 /// `to` pulled onto the nearest quarter turn if it is within [`TURN_SNAP`] of one.
 pub fn snap_quarter(to: f32) -> f32 {
     let quarter = (to / std::f32::consts::FRAC_PI_2).round() * std::f32::consts::FRAC_PI_2;
@@ -1387,78 +1568,23 @@ pub fn samples(state: AppState, e: &Event<PointerData>) -> Option<Vec<InputSampl
     }
 }
 
-/// End any in-progress stroke, shape gesture, pan, brush-tuning drag or eyedropper
-/// drag, and put back the shape action a modifier key overrode for the gesture
-/// (§6.8). The canvas is no longer in hand once this returns, so the floating chrome
-/// fades back in.
-pub fn end_interaction(
-    mut state: AppState,
-    drawing: &mut Signal<bool>,
-    nav: Nav,
-    tune: Tune,
-    action_restore: &mut Signal<Option<ShapeAction>>,
-) {
-    if drawing() {
-        // A composing mode may have opened under the hand mid-gesture, in which
-        // case this release belongs to a canvas that stopped taking paint the
-        // moment the mode took it (`crate::modes`). The canvas's own move
-        // handler cancels the gesture as soon as the pointer stirs; this is the
-        // hand that opened a transform and then simply lifted, whose release
-        // would otherwise commit the press as a dot.
-        let command = if crate::modes::is_composing(state) {
-            GestureCommand::Cancel
-        } else {
-            GestureCommand::End
-        };
-        dispatch(state, command);
-        drawing.set(false);
-    }
-    restore_action(state, action_restore);
-    stop_watching(state);
-    // The stroke the string belonged to is over, however it ended (§6.11).
-    refresh_tow(state);
+/// End every gesture the canvas can have in hand at once — the paint gesture, the
+/// navigation, the brush-tuning drag and the eyedropper — and hand the canvas back,
+/// so the floating chrome fades in.
+///
+/// Four `Copy` values and no `&mut`: each of them owns its own state now, so this
+/// is the *order* they are put down in and nothing else. It used to take the paint
+/// gesture apart into two signals it borrowed from the component, which is what
+/// made "what counts as in flight" a thing two functions had to agree about
+/// (`Paint`).
+pub fn end_interaction(mut state: AppState, paint: Paint, nav: Nav, tune: Tune) {
+    paint.end();
     nav.stop();
     tune.stop();
-    // Not a parameter like the two above because the eyedropper's drag flag is shared
-    // state, not the canvas's own — the options bar reads it (see `PickState`).
-    // Nothing to undo, either: a sample already in flight is left to land, since it
-    // is the answer to a press the user made.
+    // Not a parameter like the three above because the eyedropper's drag flag is
+    // shared state, not a gesture object — the options bar reads it (see
+    // `PickState`). Nothing to undo, either: a sample already in flight is left to
+    // land, since it is the answer to a press the user made.
     state.pick.dragging.set(false);
     state.canvas_active.set(false);
-}
-
-/// Abandon the gesture in flight **without committing it** — what a press that turns
-/// out to be navigation does to the stroke it interrupted (§18.1.7). Harmless when
-/// there is none.
-///
-/// [`GestureCommand::Cancel`] rather than `End`, and that is the whole point: a
-/// second finger landing means the first was never drawing, it was opening a pinch,
-/// so navigating must leave no mark. The same applies to a middle-drag begun
-/// mid-stroke, which is the one other way [`Nav::begin`] can answer `true` with a
-/// gesture already running.
-///
-/// Not folded into [`end_interaction`]: that one is the *end* of the interaction and
-/// hands the canvas back (the chrome fades in, the pan stops). This one is the
-/// interaction changing its mind about what it is, mid-flight, and the canvas is
-/// still very much in hand.
-pub fn abandon_gesture(
-    state: AppState,
-    drawing: &mut Signal<bool>,
-    action_restore: &mut Signal<Option<ShapeAction>>,
-) {
-    if drawing() {
-        dispatch(state, GestureCommand::Cancel);
-        drawing.set(false);
-    }
-    restore_action(state, action_restore);
-    stop_watching(state);
-    // The cancelled stroke takes its string with it (§6.11).
-    refresh_tow(state);
-}
-
-/// Put back the shape action a gesture's modifier keys overrode (§6.8).
-fn restore_action(state: AppState, action_restore: &mut Signal<Option<ShapeAction>>) {
-    if let Some(base) = action_restore.take() {
-        dispatch(state, ViewCommand::SetShapeAction(base));
-    }
 }
