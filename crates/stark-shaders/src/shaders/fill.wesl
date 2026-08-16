@@ -24,7 +24,8 @@
 // *paint* mixes — a pigment ramp, which is the point of having pigments. Height
 // does not vary: the ramp is a transition in color, not in thickness.
 
-import package::lib::paint_common::{blend_latent, OPACITY_K, PAINT_EPS};
+import package::lib::latent::{Latent, latent_blend, latent_lerp, latent_of, latent_scale, latent_unpremult};
+import package::lib::paint_common::{OPACITY_K, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::ramp_common::{ramp_position};
 import package::lib::sample::{load1};
@@ -105,7 +106,17 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let bc = load1(base_color, c);
     let ba = load1(base_aux, c).x;
     let cov = load1(region, c).r * load1(gate, c).r;
-    @if(resid) let br = load1(base_resid, c);
+    // The base's color, both halves (§6.7, `lib::latent`). The gate is on the load —
+    // a residual texture exists only in a space that has one — and the arithmetic
+    // below is then written once.
+    var base = latent_of(bc.rgb, vec3<f32>(0.0));
+    // Kept whole for the passthrough, which must not recompute anything: the residual
+    // target carries its own copy of the alpha.
+    var br = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    @if(resid) {
+        br = load1(base_resid, c);
+        base.res = br.rgb;
+    }
 
     var out: FsOut;
     // Nothing lands here. An exact branch rather than the general arithmetic: a
@@ -124,13 +135,14 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // Resident paint, unchanged: a fill adds, it does not lift.
     let h0 = ba;
     let m0 = bc.a * h0;
-    let lat0 = bc.rgb / max(bc.a, PAINT_EPS);
+    let col0 = latent_unpremult(base, bc.a, PAINT_EPS);
 
     // The parcel at this texel: the solid lanes verbatim, or the ramp read from
     // canvas position. The solid path takes the exact values it always did, so
     // a solid fill cannot have moved by an ulp for the gradient existing.
-    var parcel_lat = f.c.rgb;
-    var parcel_res = f.r.rgb;
+    // The parcel's color. Both halves come off the uniform, which declares the
+    // residual whether or not the space uses it (§6.10) — so this needs no gate at all.
+    var parcel = latent_of(f.c.rgb, f.r.rgb);
     let stops = u32(f.p.y);
     if stops >= 2 {
         let pos = tile.origin.xy + frag.xy;
@@ -149,8 +161,11 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // earlier side, matching `Gradient::sample`.
         let span = max(b.w - a.w, 1e-6);
         let s = clamp((t - a.w) / span, 0.0, 1.0);
-        parcel_lat = mix(a.xyz, b.xyz, s);
-        parcel_res = mix(f.stop_r[j].xyz, f.stop_r[j + 1u].xyz, s);
+        parcel = latent_lerp(
+            latent_of(a.xyz, f.stop_r[j].xyz),
+            latent_of(b.xyz, f.stop_r[j + 1u].xyz),
+            s,
+        );
     }
 
     // What the fill asks for at this texel: its opacity through its own region and
@@ -177,12 +192,11 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let h = h0 + h1;
     let mm = m0 + m1;
     let op = mm / max(h, PAINT_EPS);
-    let lat = blend_latent(lat0, m0, parcel_lat, m1);
-    out.color = vec4<f32>(lat * op, op);
+    // The residual stacks through the same law on the same two masses — it is the rest
+    // of the same color (§6.7), and one call is what says so.
+    let merged = latent_scale(latent_blend(col0, m0, parcel, m1), op);
+    out.color = vec4<f32>(merged.lat, op);
     out.aux = vec4<f32>(h, 0.0, 0.0, 0.0);
-    // The residual stacks through the same law on the same two masses — it is the
-    // rest of the same color (§6.7).
-    @if(resid) let res0 = br.rgb / max(bc.a, PAINT_EPS);
-    @if(resid) out.resid = vec4<f32>(blend_latent(res0, m0, parcel_res, m1) * op, op);
+    @if(resid) out.resid = vec4<f32>(merged.res, op);
     return out;
 }

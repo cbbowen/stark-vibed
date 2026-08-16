@@ -34,6 +34,7 @@
 // space directly: that path needs no color conversion, keeps its exact
 // passthrough branches, and is what an ordinary merge-down takes.
 
+import package::lib::latent::{Latent, latent_of, latent_scale, latent_unpremult};
 import package::lib::paint_common::{COVERAGE_EPS, OPACITY_K, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
 
@@ -82,13 +83,17 @@ fn fs_expand(@builtin(position) frag: vec4<f32>) -> FsOut {
     // Coverage: per-unit opacity and thickness through the slab law, faded by the
     // layer's own slider — which scales the finished weight, not the mass.
     let w = (1.0 - exp(-OPACITY_K * c.a * h)) * opl;
-    let latent = c.rgb / max(c.a, PAINT_EPS);
+    // The stored color, both halves (§6.7, `lib::latent`) — un-premultiplied by the
+    // **color's** alpha, which is the whole of what the residual target's duplicate
+    // could get wrong, and re-premultiplied by the coverage this pass computed.
+    var stored = latent_of(c.rgb, vec3<f32>(0.0));
+    @if(resid) stored.res = textureLoad(in_resid, p, 0).rgb;
+    let out_col = latent_scale(latent_unpremult(stored, c.a, PAINT_EPS), w);
 
     var out: FsOut;
-    out.color = vec4<f32>(latent * w, w);
+    out.color = vec4<f32>(out_col.lat, w);
     out.aux = vec4<f32>(h * opl, 0.0, 0.0, 0.0);
-    @if(resid) let r = textureLoad(in_resid, p, 0);
-    @if(resid) out.resid = vec4<f32>(r.rgb / max(c.a, PAINT_EPS) * w, w);
+    @if(resid) out.resid = vec4<f32>(out_col.res, w);
     return out;
 }
 
@@ -108,14 +113,15 @@ fn fs_store(@builtin(position) frag: vec4<f32>) -> FsOut {
 
     let mass = -log(max(1.0 - w, PAINT_EPS)) / OPACITY_K;
     let opacity = mass / max(height, PAINT_EPS);
-    let latent = c.rgb / max(w, COVERAGE_EPS);
-
-    var out: FsOut;
-    out.color = vec4<f32>(latent * opacity, opacity);
-    out.aux = vec4<f32>(height, 0.0, 0.0, 0.0);
     // The residual un-premultiplies by the **color's** coverage and rides the same
     // opacity: it is the rest of the same color, not a second one (§6.7).
-    @if(resid) let r = textureLoad(in_resid, p, 0);
-    @if(resid) out.resid = vec4<f32>(r.rgb / max(w, COVERAGE_EPS) * opacity, opacity);
+    var stored = latent_of(c.rgb, vec3<f32>(0.0));
+    @if(resid) stored.res = textureLoad(in_resid, p, 0).rgb;
+    let out_col = latent_scale(latent_unpremult(stored, w, COVERAGE_EPS), opacity);
+
+    var out: FsOut;
+    out.color = vec4<f32>(out_col.lat, opacity);
+    out.aux = vec4<f32>(height, 0.0, 0.0, 0.0);
+    @if(resid) out.resid = vec4<f32>(out_col.res, opacity);
     return out;
 }

@@ -22,6 +22,7 @@
 // costs no tiles, and is a pure function of canvas position (the §6.4 seam
 // invariant, for free).
 
+import package::lib::latent::{Latent, latent_lerp, latent_of, latent_scale};
 import package::lib::paint_common::{OPACITY_K};
 import package::lib::ramp_common::{ramp_position};
 
@@ -162,8 +163,12 @@ fn fs_main(in: VsOut) -> FsOut {
     // the way the library strip previews, a Mixbox one the way pigment mixes.
     // The *thickness* never varies: a graded wash is a transition in color,
     // not in relief, so the slab stays the flat coat §15.4 requires.
-    var channels = in.channels.rgb;
-    @if(resid) var resd = in.resid.rgb;
+    // The matte's fill, both halves (§6.7, `lib::latent`). The gate is here and only
+    // here: unlike the *instance* lane it came from, the varying that carries it across
+    // the quad is itself `@if(resid)`, because a fragment input the space has no target
+    // for is a location nothing writes. Grading the wash below is then unconditional.
+    var fill = latent_of(in.channels.rgb, vec3<f32>(0.0));
+    @if(resid) fill.res = in.resid.rgb;
     let stops = u32(ramp.p.x);
     if stops >= 2 {
         let t = ramp_position(in.canvas, ramp.axis, ramp.p.y);
@@ -179,8 +184,11 @@ fn fs_main(in: VsOut) -> FsOut {
         let cb = ramp.stop_c[j + 1u];
         let span = max(cb.w - ca.w, 1e-6);
         let s = clamp((t - ca.w) / span, 0.0, 1.0);
-        channels = mix(ca.xyz, cb.xyz, s);
-        @if(resid) resd = mix(ramp.stop_r[j].xyz, ramp.stop_r[j + 1u].xyz, s);
+        fill = latent_lerp(
+            latent_of(ca.xyz, ramp.stop_r[j].xyz),
+            latent_of(cb.xyz, ramp.stop_r[j + 1u].xyz),
+            s,
+        );
     }
 
     // Premultiplied, for the `over` blend the pipeline declares on both targets.
@@ -192,10 +200,11 @@ fn fs_main(in: VsOut) -> FsOut {
     // still erases the relief beneath it.
     var out: FsOut;
     let w = a * (1.0 - exp(-OPACITY_K * MATTE_THICKNESS));
-    out.color = vec4<f32>(channels * w, w);
+    // The residual rides the same premultiply and the same `over` (§6.7): a matte is a
+    // flat coat of one color, and a color is both halves.
+    let laid = latent_scale(fill, w);
+    out.color = vec4<f32>(laid.lat, w);
     out.aux = vec4<f32>(MATTE_THICKNESS * a, 0.0, 0.0, a);
-    // The residual rides the same premultiply and the same `over` (§6.7):
-    // a matte is a flat coat of one color, and a color is both halves.
-    @if(resid) out.resid = vec4<f32>(resd * w, w);
+    @if(resid) out.resid = vec4<f32>(laid.res, w);
     return out;
 }

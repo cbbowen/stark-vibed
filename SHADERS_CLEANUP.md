@@ -28,7 +28,7 @@ mistake into a build failure at the struct it got wrong.
 | 5 | [`deposit` and `deposit_coarse` are held together by a comment](#5-deposit-and-deposit_coarse-are-held-together-by-a-comment) | **done** |
 | 6 | [The group-0 index space is partitioned by comment](#6-the-group-0-index-space-is-partitioned-by-comment) | **done** |
 | 7 | [The bleed ladder recomputes its neighbours ~36× over](#7-performance-the-bleed-ladder-recomputes-its-neighbours-36-over) | **the per-texel wins done**; the scratch pass open |
-| 8 | [The `@if(resid)` tax is 128 sites](#8-the-ifresid-tax-is-128-sites) | open |
+| 8 | [The `@if(resid)` tax is 128 sites](#8-the-ifresid-tax-is-128-sites) | **done** |
 | 9 | [Smaller items](#9-smaller-items) | **four done**, one open |
 
 **One thing the work found that the review did not.** wesl 0.4's `validate: true`
@@ -314,6 +314,33 @@ Smaller ones in the same kernel:
 Bracket any of these against `cargo bench -p stark-core --bench stroke`.
 
 ## 8. The `@if(resid)` tax is 128 sites
+
+> **Done.** `lib/latent.wesl` holds a `Latent` — the pair — and eleven operations on it.
+> 123 gates across ten modules become 83 at the call sites, but the count is not the
+> point: **no shared expression is written twice anywhere in the tree.** Every gate that
+> remains is a *declaration* (a binding, an `@location`, a struct member), a *load*, or a
+> *store* — which is the honest boundary, since a residual texture exists only in a space
+> that has one. Everything between a load and a store is unconditional.
+>
+> The strongest part is not the arithmetic. `paint_common::blend_latent` is now imported
+> by `lib/latent.wesl` and **nowhere else**, so the parcel law is reachable only on a
+> whole color. Before, every one of its eleven call sites paired it with a gated twin by
+> hand; forgetting one compiled, linked, rendered, and was invisible in the default space
+> — Oklab has no residual to drop — so it would have failed only in a pigment document,
+> as a color reproducing neither of the two that made it. That is now unwriteable.
+>
+> `@if` turns out to gate a **block**, not just a statement, which is what let each pass
+> collapse its residual reads into one gate rather than one per texture.
+>
+> `dynamics.wesl` went 61 → 32, and the two clusters that carried the most duplication —
+> `settle`'s delivery walk (13 gates) and `bake`'s scan (7) — are 4 and 3. `bake` no
+> longer has a third workgroup array: `ws_lm` is one `array<Latent, BAKE_RES>`, the same
+> bytes per lane, and the scan does not know there are two halves.
+>
+> The build-time typecheck earned itself again here: `matte.wesl`'s residual *varying* is
+> `@if`-gated where its instance lane is not, and reading `in.resid` unconditionally
+> stopped `cargo build` naming the field.
+>
 
 128 gated lines across 10 modules, 66 of them in `dynamics.wesl`. Every color statement
 is written twice.

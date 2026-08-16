@@ -26,7 +26,8 @@
 // names in the layer composite — covering by opacity rather than by
 // opacity × thickness — one level further down.
 
-import package::lib::paint_common::{blend_latent, PAINT_EPS};
+import package::lib::latent::{Latent, latent_blend, latent_of, latent_scale, latent_unpremult};
+import package::lib::paint_common::{PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
@@ -71,8 +72,21 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // stamp.wesl's fs_main for the channel-by-channel story.
     let s_c = textureLoad(scratch_color, c, 0);
     let s_a = textureLoad(scratch_aux, c, 0);
-    @if(resid) let base_r = load1(base_resid, c);
-    @if(resid) let s_r = textureLoad(scratch_resid, c, 0);
+    // The two colors, each as one value (§6.7, `lib::latent`). **The gate is on the
+    // load and nowhere else**: a residual *texture* exists only in a space that has
+    // one, so fetching it is an `@if` no bundle can absorb — but everything between
+    // here and the stores is then written once, for both halves.
+    var base_col = latent_of(base_c.rgb, vec3<f32>(0.0));
+    var s_col = latent_of(s_c.rgb, vec3<f32>(0.0));
+    // Kept whole for the passthrough below, which must not recompute *anything* — the
+    // residual target carries its own copy of the alpha, and reading the color's would
+    // be a recomputation however equal the two are today.
+    var base_r = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    @if(resid) {
+        base_r = load1(base_resid, c);
+        base_col.res = base_r.rgb;
+        s_col.res = textureLoad(scratch_resid, c, 0).rgb;
+    }
 
     var out: FsOut;
     // The stroke's footprint missed this texel. An exact branch rather than the
@@ -88,13 +102,14 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // Passed through whole, for the reason above: the residual goes through the
         // same `m/h` round trip below and would drift by an ulp per stroke too.
         @if(resid) out.resid = base_r;
+
         return out;
     }
 
     // Resident paint: height, optical mass (per-unit opacity × height), latent.
     let h0 = base_a.x;
     let m0 = base_c.a * h0;
-    let lat0 = base_c.rgb / max(base_c.a, PAINT_EPS);
+    let col0 = latent_unpremult(base_col, base_c.a, PAINT_EPS);
     // The stroke's parcel, accumulated across the overlapping segment quads. `.a` is
     // already its visible alpha (the segments' `1 − exp(−K·m)` over-blend multiplies
     // out to `1 − exp(−K·Σm)`), which is what recovers the latent; the mass itself
@@ -102,7 +117,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // a saturated total cannot answer that.
     let h1 = s_a.x;
     let m1 = s_a.y;
-    let lat1 = s_c.rgb / max(s_c.a, PAINT_EPS);
+    let col1 = latent_unpremult(s_col, s_c.a, PAINT_EPS);
 
     // Stack the parcel on the resident paint (§6.1): height and mass are conserved
     // sums, the per-unit opacity is what the two together imply, and the latent
@@ -110,14 +125,13 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let h = h0 + h1;
     let mm = m0 + m1;
     let op = mm / max(h, PAINT_EPS);
-    let merged_c = vec4<f32>(blend_latent(lat0, m0, lat1, m1) * op, op);
+    // The residual stacks through the *same* law on the *same* masses — it is the rest
+    // of the same color, so anything that weighted it differently would have the merged
+    // paint reproduce neither of the two colors that made it (§6.7). One call, so "the
+    // same law" is a fact about the code rather than a claim about two lines.
+    let merged = latent_scale(latent_blend(col0, m0, col1, m1), op);
+    let merged_c = vec4<f32>(merged.lat, op);
     let merged_a = vec4<f32>(h, 0.0, 0.0, 0.0);
-    // The residual stacks through the *same* law on the *same* masses — it is the
-    // rest of the same color, so anything that weighted it differently would have
-    // the merged paint reproduce neither of the two colors that made it (§6.7).
-    @if(resid) let res0 = base_r.rgb / max(base_c.a, PAINT_EPS);
-    @if(resid) let res1 = s_r.rgb / max(s_c.a, PAINT_EPS);
-    @if(resid) let merged_r = vec4<f32>(blend_latent(res0, m0, res1, m1) * op, op);
 
     // Gate by the selection: the tile keeps its base value where the mask is 0 and
     // takes the stroke where it is 1 (§6.8). A *lerp of the result*, not a scaling of
@@ -128,6 +142,6 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
 
     out.color = mix(base_c, merged_c, sel);
     out.aux = mix(vec4<f32>(base_a.x, 0.0, 0.0, 0.0), merged_a, sel);
-    @if(resid) out.resid = mix(base_r, merged_r, sel);
+    @if(resid) out.resid = mix(base_r, vec4<f32>(merged.res, op), sel);
     return out;
 }

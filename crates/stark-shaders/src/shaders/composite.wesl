@@ -23,6 +23,7 @@
 //     opacity — corrupting every smeared texel, differently on each side of a
 //     piece or freeze cut, which is how the preview stops matching the commit.
 
+import package::lib::latent::{Latent, latent_of, latent_scale, latent_unpremult};
 import package::lib::paint_common::{OPACITY_K, PAINT_EPS};
 
 struct View {
@@ -88,17 +89,21 @@ fn fs_main(in: VsOut) -> FsOut {
     // The layer's visible alpha, scaled by layer opacity: coverage fades
     // linearly with the layer slider, and the latent color is untouched.
     let w = (1.0 - exp(-OPACITY_K * c.a * h.x)) * in.opacity;
-    var out: FsOut;
-    // Re-premultiplied by coverage, so the fixed-function "over" both weighs the
-    // color and accumulates the stack's total coverage in alpha.
-    out.color = vec4<f32>(c.rgb / max(c.a, PAINT_EPS) * w, w);
-    out.aux = h * in.opacity;
     // Un-premultiplied by the *color's* alpha, not the residual target's own: that
     // target's alpha is a duplicate of the same per-unit opacity, carried only because
     // the fixed-function "over" reads each target's own alpha, and one of the two has
-    // to be the source of truth.
-    @if(resid) let r = textureSample(tile_resid, samp, in.uv);
-    @if(resid) out.resid = vec4<f32>(r.rgb / max(c.a, PAINT_EPS) * w, w);
+    // to be the source of truth. `latent_unpremult` takes that alpha as its argument,
+    // so the choice is made once for both halves rather than restated (`lib::latent`).
+    var tile = latent_of(c.rgb, vec3<f32>(0.0));
+    @if(resid) tile.res = textureSample(tile_resid, samp, in.uv).rgb;
+    // Re-premultiplied by coverage, so the fixed-function "over" both weighs the
+    // color and accumulates the stack's total coverage in alpha.
+    let lit = latent_scale(latent_unpremult(tile, c.a, PAINT_EPS), w);
+
+    var out: FsOut;
+    out.color = vec4<f32>(lit.lat, w);
+    out.aux = h * in.opacity;
+    @if(resid) out.resid = vec4<f32>(lit.res, w);
     return out;
 }
 

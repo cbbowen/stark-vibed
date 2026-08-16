@@ -36,7 +36,8 @@
 // tiles of the same coordinate, and either may be the 1×1 zero where its layer has no
 // tile there (§6.8's pattern, `lib/sample.wesl`).
 
-import package::lib::paint_common::{blend_latent, OPACITY_K, PAINT_EPS};
+import package::lib::latent::{Latent, latent_blend, latent_lerp, latent_of, latent_scale, latent_unpremult};
+import package::lib::paint_common::{OPACITY_K, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
@@ -102,8 +103,19 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let la = load1(lower_aux, c).x;
     let uc = load1(upper_color, c);
     let ua = load1(upper_aux, c).x;
-    @if(resid) let lr = load1(lower_resid, c);
-    @if(resid) let ur = load1(upper_resid, c);
+    // The two colors, each as one value (§6.7, `lib::latent`); the raw pair is kept
+    // whole for the two exact passthroughs below. One gate covers every residual read
+    // in the pass, and nothing after it is written twice.
+    var lower = latent_of(lc.rgb, vec3<f32>(0.0));
+    var upper = latent_of(uc.rgb, vec3<f32>(0.0));
+    var lr = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    var ur = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    @if(resid) {
+        lr = load1(lower_resid, c);
+        ur = load1(upper_resid, c);
+        lower.res = lr.rgb;
+        upper.res = ur.rgb;
+    }
 
     let opl0 = m.p.x;
     let opl1 = m.p.y;
@@ -147,10 +159,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         return out;
     }
 
-    let lat0 = lc.rgb / max(lc.a, PAINT_EPS);
-    let lat1 = uc.rgb / max(uc.a, PAINT_EPS);
-    @if(resid) let res0 = lr.rgb / max(lc.a, PAINT_EPS);
-    @if(resid) let res1 = ur.rgb / max(uc.a, PAINT_EPS);
+    let col0 = latent_unpremult(lower, lc.a, PAINT_EPS);
+    let col1 = latent_unpremult(upper, uc.a, PAINT_EPS);
 
     if m.p.z > 0.5 {
         // **Clipped** (§14.4): the upper layer exists only where the lower one does,
@@ -168,11 +178,12 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         let v1 = 1.0 - exp(-OPACITY_K * m1);
         let h = h0 + h1 * v0;
         let op = m0 / max(h, PAINT_EPS);
-        out.color = vec4<f32>(mix(lat0, lat1, v1) * op, op);
-        out.aux = vec4<f32>(h, 0.0, 0.0, 0.0);
         // The residual rides the same lerp on the same weight — it is the rest of the
-        // same color (§6.7).
-        @if(resid) out.resid = vec4<f32>(mix(res0, res1, v1) * op, op);
+        // same color (§6.7), which one call states.
+        let clipped = latent_scale(latent_lerp(col0, col1, v1), op);
+        out.color = vec4<f32>(clipped.lat, op);
+        out.aux = vec4<f32>(h, 0.0, 0.0, 0.0);
+        @if(resid) out.resid = vec4<f32>(clipped.res, op);
         return out;
     }
 
@@ -181,8 +192,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let h = h0 + h1;
     let mass = m0 + m1;
     let op = mass / max(h, PAINT_EPS);
-    out.color = vec4<f32>(blend_latent(lat0, m0, lat1, m1) * op, op);
+    let merged = latent_scale(latent_blend(col0, m0, col1, m1), op);
+    out.color = vec4<f32>(merged.lat, op);
     out.aux = vec4<f32>(h, 0.0, 0.0, 0.0);
-    @if(resid) out.resid = vec4<f32>(blend_latent(res0, m0, res1, m1) * op, op);
+    @if(resid) out.resid = vec4<f32>(merged.res, op);
     return out;
 }

@@ -46,7 +46,8 @@
 //   group 1 binding 0–2 the source tile being carried — both quad paths
 //   group 1 binding 3  the source tile's residual — both quad paths, resid only
 
-import package::lib::paint_common::{blend_latent, PAINT_EPS};
+import package::lib::latent::{Latent, latent_blend, latent_of, latent_scale, latent_unpremult};
+import package::lib::paint_common::{PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1, box_coverage};
 
@@ -345,8 +346,19 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     }
     let pc = load1(parcel_color, c);
     let ph = load1(parcel_aux, c).x;
-    @if(resid) let br = load1(base_resid, c);
-    @if(resid) let pr = load1(parcel_resid, c);
+    // The base's color and the parcel's, each as one value (§6.7, `lib::latent`); the
+    // raw pair is kept whole for the two exact branches below, which must not
+    // recompute anything. One gate covers every residual read here.
+    var base = latent_of(bc.rgb, vec3<f32>(0.0));
+    var parcel = latent_of(pc.rgb, vec3<f32>(0.0));
+    var br = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    var pr = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    @if(resid) {
+        br = load1(base_resid, c);
+        pr = load1(parcel_resid, c);
+        base.res = br.rgb;
+        parcel.res = pr.rgb;
+    }
 
     var out: FsOut;
     // The two ends of the coverage ramp take **exact** branches rather than the
@@ -391,21 +403,20 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     // opacity are untouched (the lift law, §6.1).
     let h0 = ba.x * (1.0 - m);
     let m0 = bc.a * h0;
-    let lat0 = bc.rgb / max(bc.a, PAINT_EPS);
+    let col0 = latent_unpremult(base, bc.a, PAINT_EPS);
     // The parcel: (latent, op, height) as fs_parcel wrote it.
     let h1 = ph;
     let m1 = pc.a * h1;
-    let lat1 = pc.rgb / max(pc.a, PAINT_EPS);
+    let col1 = latent_unpremult(parcel, pc.a, PAINT_EPS);
 
     let h = h0 + h1;
     let mm = m0 + m1;
     let op = mm / max(h, PAINT_EPS);
-    let lat = blend_latent(lat0, m0, lat1, m1);
-    out.color = vec4<f32>(lat * op, op);
+    // The residual stacks through the same law on the same two masses (§6.7) — which
+    // is now one call rather than a claim about two lines.
+    let merged = latent_scale(latent_blend(col0, m0, col1, m1), op);
+    out.color = vec4<f32>(merged.lat, op);
     out.aux = vec4<f32>(h, 0.0, 0.0, 0.0);
-    // The residual stacks through the same law on the same two masses (§6.7).
-    @if(resid) let res0 = br.rgb / max(bc.a, PAINT_EPS);
-    @if(resid) let res1 = pr.rgb / max(pc.a, PAINT_EPS);
-    @if(resid) out.resid = vec4<f32>(blend_latent(res0, m0, res1, m1) * op, op);
+    @if(resid) out.resid = vec4<f32>(merged.res, op);
     return out;
 }
