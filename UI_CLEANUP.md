@@ -41,17 +41,19 @@ reads it nowhere.
 
 ## Ranked
 
-Eight of the nine are **done**. What is left is the half of U1 and the half of U6
-that are decisions rather than work. Each section below carries a **Landed** note
-saying what was actually done — and where the finding turned out to be wrong the
-note says so rather than quietly dropping it. Two were: U9's `update_brush` item,
-and U5's proposal to move the base64 codec. U1 also turned up a latent bug that the
+All nine are **done**, and what remains open is one decision: U6's real half.
+Each section below carries a **Landed** note saying what was actually done — and
+where the finding turned out to be wrong, or the fix it proposed turned out not to
+be the right one, the note says so rather than quietly dropping it. Three did:
+U9's `update_brush` item, U5's proposal to move the base64 codec, and U1's
+structural fix, which named a mechanism that would have cost a hundred-site API
+break to buy what caching bought for none. U1 also turned up a latent bug that the
 over-subscription had been hiding.
 
 | | Finding | Kind | Size | Status |
 |---|---|---|---|---|
 | [U3](#u3-gpu_failure-is-projected-by-core-and-read-by-nothing) | `gpu_failure` is projected by core and read by nothing | correctness | medium | **done** |
-| [U1](#u1-observablestate-is-one-signal-the-whole-chrome-subscribes-to) | `ObservableState` is one signal the whole chrome subscribes to | performance | large | **partly** — the seam and the panels; the split is open |
+| [U1](#u1-observablestate-is-one-signal-the-whole-chrome-subscribes-to) | `ObservableState` is one signal the whole chrome subscribes to | performance | large | **done** |
 | [U2](#u2-the-root-effect-subscribes-to-the-renderer-so-every-engine-touch-runs-a-json-serializing-thumbnail-scan) | The root effect subscribes to the *renderer* | performance | small | **done** |
 | [U4](#u4-layoutrs-is-a-third-untested-copy-of-the-reorder-gesture) | `layout.rs` is a third, untested copy of the reorder gesture | test health | medium | **done** |
 | [U5](#u5-six-copies-of-the-localstorage-layer) | Six copies of the localStorage layer | structure | small | **done** |
@@ -62,17 +64,15 @@ over-subscription had been hiding.
 
 ## What is left, and why
 
-Nothing here is work waiting to be picked up; both are calls to make.
+One entry, and it is a call to make rather than work to pick up.
 
-- **U1's structural half** — splitting the projection by cadence — is what stops
-  `observe()` walking the layer tree for a pan, and half of it is in `stark-core`.
-  The frontend half landed and takes most of the cost off; what remains is a core
-  API decision.
-- **U6's real half** — *decide what the host build is for* — is a decision, not a
-  task. The cheap half, getting the testable code out of the modules that cannot be
-  tested, landed. One tidy-up rides on whichever way it goes: the same extraction
-  for `panels::layer.rs`'s tree logic, which is 10 tests still inside 1500 lines of
-  rsx.
+- **U6's real half** — *decide what the host build is for.* Either commit to a
+  platform boundary so the pure half is genuinely platform-free, or cfg-gate the
+  browser dependencies and stop paying for `web-sys` in a build that cannot use
+  them. The cheap half — getting the testable code out of the modules that cannot
+  be tested — landed. One tidy-up rides on whichever way it goes: the same
+  extraction for `panels::layer.rs`'s tree logic, which is 10 tests still inside
+  1500 lines of rsx.
 
 ---
 
@@ -146,9 +146,49 @@ or simply that the layer panel's row `key`s stop churning during a pan.
 > took its tool from a `peek`, so its eyedropper cursor was only ever correct because
 > something else happened to re-render the component. It reads it now.
 >
-> **Still open:** the structural half. `observe()` still walks the layer tree for a
-> pan, and `update_brush` still pays for one per pointer move of a tuning drag (see
-> U9). Nothing but splitting the projection in core removes that.
+> **Landed (structural half), by a different mechanism than this section named.**
+> The goal was right — a pan must not walk the layer tree — but splitting
+> `ObservableState` into four values and four signals is not what achieves it, and
+> it would have cost an API break at every one of the ~100 sites that read the
+> projection.
+>
+> What the walk actually needs is not to *run*. It is a pure function of the shown
+> document, so `Engine::projected_layers` keys it on the two counters that already
+> say the shown document moved: `doc_revision`, and the preview's `epoch`. **Nothing
+> new is counted** — `render::DrawKey` caches the compositor's draw list on the same
+> two terms, and every golden in the suite depends on that key being complete, so a
+> document that could move without moving them would be rendering the wrong picture
+> long before it projected a stale layer list. That is a far stronger argument for
+> soundness than a fresh invalidation scheme could have had.
+>
+> The list is handed out as `stark_core::Layers`, an `Arc<[LayerInfo]>` that derefs
+> to the slice — so `stark-ui` needed **no change at all**, and neither did the 58
+> read sites across the core tests. Its `PartialEq` is structural with identity as a
+> fast path, which is what makes the frontend's side cheap too: two projections
+> taken while the document stood still hold the same `Arc`, so "did this slice
+> move?" — asked per memo, per command — is one pointer comparison. The
+> fall-through keeps the answer exact, so a rebuild that changed nothing still
+> compares equal.
+>
+> `with_engine` also publishes only when the projection moved, which is this
+> section's *other* clause and worth having on its own: a signal write dirties every
+> subscriber regardless, so a command the engine declined — a slider dragged back to
+> where it started — was waking the whole chrome to report what it already showed.
+>
+> With the walk gone the four-signal split buys almost nothing: a pan now costs a
+> cheap `observe`, a dozen trivial memo recomputes and a dozen pointer compares. It
+> is recorded here as considered and declined rather than left as a to-do.
+>
+> Two tests pin the cache: that a view command projects the *same list* — asserted
+> on identity, since equality was always true and what needs pinning is that the
+> walk did not run — and that both routes to a moved document project a fresh one.
+> The preview route is the one that matters, since `doc_revision` does not stir for
+> it and a cache keyed on the revision alone would hand back a list describing the
+> document behind the drag.
+>
+> **Not done, and deliberately:** `guides` is still cloned per observation. It is a
+> `Vec` of at most a few, usually none — and cloning an empty `Vec` allocates
+> nothing — while making it shared would ripple into four tests that `push` to it.
 
 ## U2. The root effect subscribes to the *renderer*, so every engine touch runs a JSON-serializing thumbnail scan
 
