@@ -35,7 +35,7 @@ use crate::state::{AppState, dispatch};
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_core::document::{MattePaint, MatteRegion, Place};
 use stark_core::geom::Vec2;
-use stark_core::{LayerInfo, MatteInfo};
+use stark_core::{LayerId, LayerInfo, MatteInfo};
 
 /// The frame's default fill: a near-black mat board. Dark reads as "not the
 /// piece" against almost any painting, which is what a crop scrim is for.
@@ -114,6 +114,27 @@ fn default_rect(state: AppState) -> (Vec2, Vec2) {
         return (Vec2::new(-256.0, -256.0), Vec2::new(256.0, 256.0));
     };
     content_rect(o).unwrap_or_else(|| view_rect(o))
+}
+
+/// **The frame that says where the piece ends**: the topmost matte layer with a
+/// rect, or `None` in a document with none (§15.6).
+///
+/// Only a matte *with a rect* frames anything — a background (§15.5) is under the
+/// piece, not a statement of where it stops — and the topmost of them wins, on the
+/// same reading that puts the newest work on top.
+///
+/// One rule with three askers, because they are all asking the same question and an
+/// answer that differed between them would put a file, its miniature and the view
+/// onto three different rects: the export dialog when nothing framing is selected
+/// (`crate::files`), the navigator's overview, and the framing a document load does.
+/// Each still supplies its own *policy* around it — the dialog prefers whatever
+/// frame the artist has selected, since that is the one being composed.
+pub(crate) fn piece_frame(o: &stark_core::ObservableState) -> Option<LayerId> {
+    o.layers
+        .iter()
+        .rev()
+        .find(|l| l.matte.as_ref().is_some_and(|m| m.rect.is_some()))
+        .map(|l| l.id)
 }
 
 /// The painted content's canvas-space bounds, inset to the populated tiles.

@@ -404,6 +404,24 @@ pub enum ViewCommand {
     /// view state in the frontend and a round trip through it, to say something the
     /// engine can do in one assignment.
     CenterOn(Vec2),
+    /// Put the whole piece on screen: the canvas-space rect an export of `frame`
+    /// would write (§15.6), centred and fitted to the viewport with the easel
+    /// straightened ([`ViewTransform::show_rect`](crate::geom::ViewTransform::show_rect)).
+    ///
+    /// `frame` names a matte layer whose rect is the piece, exactly as
+    /// [`Engine::export_plan`](crate::Engine::export_plan) takes it, and the rect is
+    /// worked out by the same rule — so what you are looking at and what a file would
+    /// hold cannot come to disagree about where the piece ends. With no frame it fits
+    /// the painted bounds; with neither there is nothing to show and the view stays
+    /// where it is (an export, which must write *something*, falls back to the
+    /// viewport instead).
+    ///
+    /// Absolute, like [`CenterOn`](Self::CenterOn) and for its reason: the caller
+    /// knows exactly what it wants shown and nothing about where the view was.
+    /// **Opening a document is that caller** (§8): a painting arrives framed, rather
+    /// than at the pan and zoom the last one happened to be left at — which on an
+    /// unbounded canvas can be nowhere near the paint that just loaded.
+    ShowPiece(Option<LayerId>),
     /// The viewport changed size (window/canvas resize).
     Resize(Extent2),
 

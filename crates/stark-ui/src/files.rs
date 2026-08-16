@@ -17,9 +17,10 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use crate::icons::{self, icon};
-use crate::panels::frame::selected_frame;
+use crate::panels::frame::{piece_frame, selected_frame};
 use crate::platform::{download_bytes, pick_file};
 use crate::state::AppState;
+use stark_core::command::ViewCommand;
 use stark_core::{Background, ExportScale, LayerId, Rendered};
 
 /// Extension for the native (replayable) document format.
@@ -139,6 +140,17 @@ fn open_bytes(state: AppState, bytes: Vec<u8>) {
                 tracing::error!("could not open that painting: {e}");
                 return false;
             }
+            // Frame what has just arrived. A view is per-client session state and
+            // so is not in the file (§18.1.2) — without this the painting opens at
+            // whatever pan and zoom the *last* one was left at, which on an
+            // unbounded canvas is routinely an empty stretch nowhere near it.
+            //
+            // Asked of the loaded document's own projection: the frame that says
+            // where the piece ends belongs to the document that just replaced the
+            // one on screen. And asked *before* the paint below, so the first frame
+            // drawn is already the framed one rather than a flash of the old view.
+            let frame = piece_frame(&r.observe());
+            r.process(ViewCommand::ShowPiece(frame));
             r.paint();
             true
         });
@@ -171,21 +183,14 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
 
     // Export frames against a *matte layer*, which need not be the selected one —
     // the dialog is opened from a menu, and the user may be on a paint layer.
-    // Prefer whatever is selected, else the topmost frame, else nothing (which
+    // Prefer whatever is selected, else the piece's own frame, else nothing (which
     // falls back to the painted bounds, §15.6). Only mattes **with a rect**
     // count: a background (§15.5) frames nothing, so it must not make
     // the dialog claim a frame it is not using.
-    let framing = |l: &stark_core::LayerInfo| l.matte.as_ref().is_some_and(|m| m.rect.is_some());
     let frame: Option<LayerId> = selected_frame(state)
         .filter(|(_, m)| m.rect.is_some())
         .map(|(l, _)| l.id)
-        .or_else(|| {
-            state
-                .obs
-                .read()
-                .as_ref()
-                .and_then(|o| o.layers.iter().rev().find(|l| framing(l)).map(|l| l.id))
-        });
+        .or_else(|| state.obs.read().as_ref().and_then(piece_frame));
 
     // What we are about to produce, reported by the engine rather than recomputed
     // here — so the number on screen cannot drift from the render.

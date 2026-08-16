@@ -1110,6 +1110,37 @@ layer into the frame's rect and the right thing happens by construction:
 - a matte whose visibility is off still defines the rect, because geometry and
   presentation are separate properties of the same layer.
 
+**The rect an export writes is also the rect the view is framed to.** Opening a
+document puts the whole piece on screen — `ViewCommand::ShowPiece`, dispatched by
+`files::open_bytes` between the replay and the first paint — and it reaches that
+rect through the same code, `Engine::piece_rect`: the named frame, else the painted
+bounds. A view is per-client session state and so is *not* in the file (§18.1.2), so
+without this a painting opens at whatever pan and zoom the last one was left at,
+which on an unbounded canvas is routinely an empty stretch nowhere near the paint
+that just arrived. The navigator's miniature (§11) is the third asker of the same
+question, which is what makes "what a file would hold", "what the overview shows"
+and "where you are when it opens" one answer rather than three that agree until one
+of them is edited. Which frame *is* the piece stays the frontend's (`piece_frame`:
+the topmost matte with a rect), exactly as it is for the export dialog, whose only
+difference is that it prefers a selected frame — the one being composed.
+
+Two deliberate differences, both about where the **last resort** is:
+
+- **A document with neither paint nor frame does not move the view.** An export
+  must write something and so falls back to the viewport; framing the view that
+  way would zoom the window onto itself. The shared rule therefore answers
+  `Option`, and each caller supplies its own fallback rather than inheriting one
+  that only suits the other.
+- **The view keeps a margin; the file does not.** A file is the piece and nothing
+  else, while a view of it is a thing on an easel — a piece flush with all four
+  window edges reads as one that carries on past them.
+
+The easel is also straightened: `ViewTransform::show_rect` fits upright and
+unmirrored, on the same reading that has `ExportPlan::view` write a file upright at
+whatever angle the canvas is being worked at (§18.1.2). It is a different question
+at an angle in any case, since the rect's screen footprint is then a larger, turned
+box.
+
 Export renders through an **explicit view**: centred on the frame, at
 `zoom = scale`, into a target sized `frame.rect × scale`. That view-taking entry
 point is **private** — the screen has no reason to render through anything but

@@ -25,6 +25,7 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_core::SurfaceId;
+use stark_core::command::ViewCommand;
 use stark_core::peer::Identity;
 use stark_net::{
     AssetNeed, Broadcaster, CollabSession, Events, Joined, LinkKind, NetOptions, RemoteEvent,
@@ -156,6 +157,13 @@ pub fn join(state: AppState, ticket_text: String) {
                         crate::builtin_ids::install(r, *need, bytes);
                     }
                     r.join_collaboration(&file, Identity::new(session.actor_id(), id.boot));
+                    // Frame what arrived, the same as opening a file does
+                    // (`files::open_bytes`): a view is per-client and never sent
+                    // (§18.1.2), so a joiner starts at the origin at 1:1 while the
+                    // drawing they came to see can be anywhere on an unbounded
+                    // canvas — including entirely off their screen.
+                    let frame = crate::panels::frame::piece_frame(&r.observe());
+                    r.process(ViewCommand::ShowPiece(frame));
                     r.paint();
                     r.all_asset_bytes()
                 }) else {

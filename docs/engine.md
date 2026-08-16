@@ -140,7 +140,10 @@ collaboration log: opening it, painting, and later sharing it with a peer all us
 the same records. A solo file simply has a single actor.
 
 - **Load** = replay the actions through `apply` to rebuild `DocState`, then the
-  whole undo timeline is immediately available — undo-after-load, for free.
+  whole undo timeline is immediately available — undo-after-load, for free. What
+  a file does *not* carry is where you were looking at it from: the view is
+  per-client session state (§18.1.2), so the frontend frames the piece it just
+  replayed, by the rule an export frames one with (§15.6).
 - **Timelapse** = replay in order, presenting after each (or each Nth) commit.
   Shipped as **Timeline mode** (§18.2.4), and *not* as a separate replay path:
   `Timeline::seek` moves the applied/withheld boundary the undo stack already

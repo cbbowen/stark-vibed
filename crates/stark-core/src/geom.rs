@@ -504,6 +504,48 @@ impl ViewTransform {
         });
     }
 
+    /// Frame the canvas-space rect `min..max` on screen whole: centred, upright and
+    /// unmirrored, at the largest zoom that leaves `margin` of the viewport — a
+    /// fraction of each axis, on each side — clear around it.
+    ///
+    /// **The easel is straightened, deliberately**, which is what makes this "show me
+    /// the piece" rather than "zoom to fit". A turn and a mirror are ways of *looking*
+    /// at a painting (§18.1.2), so the caller here is a piece arriving rather than a
+    /// hand adjusting one — the same reading that has [`ExportPlan::view`] write a
+    /// file upright at whatever angle the canvas is being worked at. It is also the
+    /// only fit this asks: at an angle the rect's *screen* footprint is a larger,
+    /// turned box, so fitting one and fitting the other are two questions with two
+    /// answers.
+    ///
+    /// [`ExportPlan::view`]: crate::ExportPlan::view
+    ///
+    /// Refused, like every mutator here, when handed a rect no view could be fitted
+    /// to: an inverted or empty one leaves the view exactly as it was rather than
+    /// storing a zoom worked out from a negative width.
+    pub fn show_rect(&mut self, min: Vec2, max: Vec2, margin: f32) {
+        let size = max - min;
+        // Also the NaN gate: every comparison against one is false, so a rect with a
+        // NaN corner is refused here rather than reaching the clamp below, which
+        // would pass it straight through (see the note on the type).
+        if !(size.x > 0.0 && size.y > 0.0) {
+            return;
+        }
+        let room = Vec2::new(self.viewport.width as f32, self.viewport.height as f32)
+            * (1.0 - 2.0 * margin.clamp(0.0, 0.4));
+        self.commit(Self {
+            center: (min + max) * 0.5,
+            // The smaller of the two scales is the one that fits *both* axes — the
+            // binding one. Clamped like a pinch's, because how far this view can be
+            // zoomed is a property of the view and not of whoever asked it to move.
+            zoom: (room / size)
+                .min_element()
+                .clamp(Self::MIN_ZOOM, Self::MAX_ZOOM),
+            rotation: 0.0,
+            flip_h: false,
+            ..*self
+        });
+    }
+
     /// Note that the target surface is now `viewport` pixels.
     ///
     /// Nothing to refuse — a pixel size is `u32` — but it goes through the same door
@@ -705,11 +747,20 @@ mod tests {
         let poison = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -0.0];
         // Every way the view can be moved. `f` is the poisoned number under test;
         // each mutation puts it wherever that mutation can take one.
-        let mutations: [Mutation; 7] = [
+        let mutations: [Mutation; 10] = [
             ("pan_by.x", |v, f| v.pan_by(Vec2::new(f, 3.0))),
             ("pan_by.y", |v, f| v.pan_by(Vec2::new(3.0, f))),
             ("center_on", |v, f| v.center_on(Vec2::new(f, f))),
             ("set_rotation", |v, f| v.set_rotation(f)),
+            ("show_rect.min", |v, f| {
+                v.show_rect(Vec2::splat(f), Vec2::splat(100.0), 0.04)
+            }),
+            ("show_rect.max", |v, f| {
+                v.show_rect(Vec2::ZERO, Vec2::splat(f), 0.04)
+            }),
+            ("show_rect.margin", |v, f| {
+                v.show_rect(Vec2::ZERO, Vec2::splat(100.0), f)
+            }),
             ("zoom_about.factor", |v, f| {
                 v.zoom_about(Vec2::new(40.0, 30.0), f)
             }),
@@ -1050,5 +1101,53 @@ mod tests {
             upright.visible_bounds(),
             (Vec2::new(-100.0, -75.0), Vec2::new(100.0, 75.0))
         );
+    }
+
+    /// "Show me the piece" (§15.6): the whole rect on screen, centred, with the easel
+    /// straightened — and *snug* on the axis that binds, since a fit that came in
+    /// under the box on both axes would be quietly wasting the window it was given.
+    #[test]
+    fn show_rect_frames_the_whole_rect_upright() {
+        // 400 × 200, nowhere near where the view is looking — the case a document
+        // load is, on a canvas with no edges to have been near in the first place.
+        let (min, max) = (Vec2::new(-300.0, 40.0), Vec2::new(100.0, 240.0));
+        let turned = ViewTransform {
+            center: Vec2::splat(9000.0),
+            zoom: 7.0,
+            rotation: 0.9,
+            flip_h: true,
+            viewport: Extent2::new(800, 600),
+        };
+
+        let mut v = turned;
+        v.show_rect(min, max, 0.0);
+        assert_eq!(v.center, (min + max) * 0.5);
+        assert_eq!(
+            (v.rotation, v.flip_h),
+            (0.0, false),
+            "the easel should be straightened"
+        );
+        // 800/400 = 2 binds before 600/200 = 3.
+        assert!((v.zoom - 2.0).abs() < 1e-6, "zoom is {}", v.zoom);
+        let (lo, hi) = v.visible_bounds();
+        assert!(lo.x <= min.x + 1e-3 && hi.x >= max.x - 1e-3, "cropped");
+        assert!(lo.y <= min.y + 1e-3 && hi.y >= max.y - 1e-3, "cropped");
+
+        // The margin is a fraction of each axis on each side, so it comes off the
+        // binding axis rather than off the rect: 800 × 0.9 = 720 usable px.
+        let mut m = turned;
+        m.show_rect(min, max, 0.05);
+        assert!((m.zoom - 1.8).abs() < 1e-6, "zoom is {}", m.zoom);
+        let (lo, hi) = m.visible_bounds();
+        assert!(
+            lo.x < min.x && hi.x > max.x && lo.y < min.y && hi.y > max.y,
+            "the piece should have room around it on every side"
+        );
+
+        // A rect that is not one — inverted here, empty in the poison list above —
+        // leaves the view exactly as it was rather than fitting a negative width.
+        let mut bad = turned;
+        bad.show_rect(max, min, 0.05);
+        assert_eq!(bad, turned, "an inverted rect should be refused whole");
     }
 }

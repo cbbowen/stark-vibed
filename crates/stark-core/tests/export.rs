@@ -368,6 +368,92 @@ fn export_without_a_frame_falls_back() {
     assert!(plan.size.height >= stark_core::TILE_SIZE);
 }
 
+/// **Showing the piece frames what an export would write** (§15.6): the same rect,
+/// asked of the same rule, so the view and a file cannot come to disagree about where
+/// the piece ends. This is the framing a document load does — a view is per-client
+/// session state and so is not in the file, and without it a painting opens at
+/// whatever pan and zoom the last one was left at.
+///
+/// Stated against `export_plan` rather than against numbers of its own: a test that
+/// wrote the expected rect out by hand would be a second copy of the rule, and would
+/// go on passing if the two implementations drifted apart, which is the only failure
+/// worth catching here.
+#[test]
+fn showing_the_piece_frames_what_an_export_would_write() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    /// Turned, mirrored, zoomed in and looking somewhere else entirely — a session
+    /// left where the *previous* document had it.
+    fn look_elsewhere(engine: &mut Engine) {
+        engine.process(ViewCommand::CenterOn(Vec2::splat(9000.0)));
+        engine.process(ViewCommand::SetRotation(0.9));
+        engine.process(ViewCommand::MirrorH);
+        engine.process(ViewCommand::Zoom {
+            anchor: Vec2::ZERO,
+            factor: 8.0,
+        });
+    }
+
+    /// Frame the piece from over there, and check it against the export's own plan.
+    fn frames_like_an_export(engine: &mut Engine, frame: Option<LayerId>) {
+        look_elsewhere(engine);
+        let plan = engine
+            .export_plan(frame, ExportScale::Factor(1.0))
+            .expect("plan");
+        engine.process(ViewCommand::ShowPiece(frame));
+        let view = engine.observe().view;
+
+        assert_eq!(
+            view.center,
+            (plan.min + plan.max) * 0.5,
+            "{frame:?}: centred on a different rect than the export's"
+        );
+        assert_eq!(
+            (view.rotation, view.flip_h),
+            (0.0, false),
+            "{frame:?}: the easel should be straightened, as a file is written upright"
+        );
+        // Every corner of what a file would hold is on screen, with room to spare —
+        // the margin, which is the whole difference between framing a piece and
+        // cropping to it.
+        let (lo, hi) = view.visible_bounds();
+        assert!(
+            lo.x < plan.min.x && lo.y < plan.min.y && hi.x > plan.max.x && hi.y > plan.max.y,
+            "{frame:?}: {lo:?}..{hi:?} does not show {:?}..{:?} whole",
+            plan.min,
+            plan.max
+        );
+        // And snug: the piece fills the window but for that margin, rather than
+        // sitting as a speck in the middle of it.
+        let (shown, piece) = (hi - lo, plan.max - plan.min);
+        assert!(
+            (shown.x / piece.x).min(shown.y / piece.y) < 1.2,
+            "{frame:?}: zoomed out to {shown:?} for a {piece:?} piece"
+        );
+    }
+
+    // Nothing painted and no frame: there is no piece to show, so the view holds
+    // still rather than framing the window onto itself — which is where an *export*
+    // falls back to, and the one place the two part company.
+    look_elsewhere(&mut engine);
+    let held = engine.observe().view;
+    engine.process(ViewCommand::ShowPiece(None));
+    assert_eq!(
+        engine.observe().view,
+        held,
+        "an empty document has nothing to frame"
+    );
+
+    // Painted and unframed, the piece is the painted bounds...
+    paint(&mut engine, RED, 30.0, WIDE);
+    frames_like_an_export(&mut engine, None);
+    // ...and once there is a frame, it is the frame — a stroke running well past it
+    // on both sides, so a fit that took the paint instead would come out wider.
+    let frame = add_frame(&mut engine);
+    frames_like_an_export(&mut engine, Some(frame));
+}
+
 /// A frame too small to have any pixels, or a scale that would ask the device for
 /// an absurd texture, is an error rather than a wgpu validation panic.
 #[test]

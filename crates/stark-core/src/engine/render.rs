@@ -163,6 +163,16 @@ fn max_export_dim(gpu: &GpuContext) -> u32 {
     gpu.device.limits().max_texture_dimension_2d
 }
 
+/// How much of the viewport [`Engine::show_piece`] leaves clear around the piece, as
+/// a fraction of each axis on each side.
+///
+/// Not zero, unlike the fit an *export* makes: a file is the piece and nothing else,
+/// while a view of it is a thing on an easel, and a piece flush with all four window
+/// edges reads as one that carries on past them. Small enough that the margin is a
+/// breath rather than a mount — the picture is still what the window is mostly
+/// showing.
+const SHOW_PIECE_MARGIN: f32 = 0.04;
+
 impl Engine {
     /// Render the current canvas (preview if stroking, else committed) into
     /// `target`, through the session's own pan/zoom (§6.4).
@@ -853,6 +863,29 @@ impl Engine {
     /// The canvas-space rect an export covers: the named frame, else the painted
     /// bounds, else the viewport.
     fn export_rect(&self, frame: Option<LayerId>) -> (crate::geom::Vec2, crate::geom::Vec2) {
+        self.piece_rect(frame).unwrap_or_else(|| {
+            // Everything the viewport shows — a *bound* under rotation, which is the
+            // safe direction: an export with nothing painted and no frame should not
+            // crop tighter than what the artist is looking at.
+            self.session.view.visible_bounds()
+        })
+    }
+
+    /// The canvas-space rect that **is the piece**: the named frame's, else the
+    /// painted bounds, else `None` (§15.6).
+    ///
+    /// The rule itself, without the last resort, because its two askers want
+    /// different last resorts and only one of them is "the viewport". An export has
+    /// to write *something*, so it frames what you are looking at; framing the view
+    /// on a document with neither paint nor frame has nothing to frame and should
+    /// leave the view alone — falling back the same way would zoom the window onto
+    /// itself. Shared so that what a file would hold and what
+    /// [`ViewCommand::ShowPiece`](crate::command::ViewCommand::ShowPiece) puts on
+    /// screen cannot come to disagree about where the piece ends.
+    pub(super) fn piece_rect(
+        &self,
+        frame: Option<LayerId>,
+    ) -> Option<(crate::geom::Vec2, crate::geom::Vec2)> {
         let doc = self.timeline.current();
         // An `Everything` matte has no rect and so defines no frame: naming one
         // falls through to the painted bounds, the same answer as no frame at
@@ -863,19 +896,26 @@ impl Engine {
                 .and_then(|l| l.matte_region())
                 .and_then(|r| r.rect())
         {
-            return rect;
+            return Some(rect);
         }
-        if let Some((min, max)) = doc.bounds().tile_range() {
-            let t = crate::geom::TILE_SIZE as f32;
-            return (
-                crate::geom::Vec2::new(min.x as f32 * t, min.y as f32 * t),
-                crate::geom::Vec2::new((max.x + 1) as f32 * t, (max.y + 1) as f32 * t),
-            );
+        let (min, max) = doc.bounds().tile_range()?;
+        let t = crate::geom::TILE_SIZE as f32;
+        Some((
+            crate::geom::Vec2::new(min.x as f32 * t, min.y as f32 * t),
+            crate::geom::Vec2::new((max.x + 1) as f32 * t, (max.y + 1) as f32 * t),
+        ))
+    }
+
+    /// Put the whole piece on screen: the rect an export of `frame` would write,
+    /// centred and fitted to the viewport (§15.6) —
+    /// [`ViewCommand::ShowPiece`](crate::command::ViewCommand::ShowPiece).
+    ///
+    /// A document with nothing painted and no frame does not move the view: there is
+    /// no piece to show yet, and the honest answer to "show me it" is to stay put.
+    pub(super) fn show_piece(&mut self, frame: Option<LayerId>) {
+        if let Some((min, max)) = self.piece_rect(frame) {
+            self.session.view.show_rect(min, max, SHOW_PIECE_MARGIN);
         }
-        // Everything the viewport shows — a *bound* under rotation, which is the
-        // safe direction: an export with nothing painted and no frame should not
-        // crop tighter than what the artist is looking at.
-        self.session.view.visible_bounds()
     }
 
     /// The selection masks to outline, and whose each is (§17.3).

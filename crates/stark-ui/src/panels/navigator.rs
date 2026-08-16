@@ -46,11 +46,12 @@ use dioxus::prelude::*;
 // (§18.1.7): "how square is square enough" has to mean one thing however the canvas
 // is being turned.
 use crate::input::{elem_xy, shortest_turn, snap_quarter};
+use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch};
 use stark_core::command::ViewCommand;
 use stark_core::geom::{Extent2, Vec2};
-use stark_core::{ExportScale, LayerId, ObservableState};
+use stark_core::{ExportScale, LayerId};
 
 /// The largest miniature, in CSS px. The width is the panel's inner width (see
 /// `.panel-stack` / `.panel` in `stark.css`), so a landscape piece reaches both
@@ -80,28 +81,6 @@ struct Overview {
     /// like the painting canvas, which ignores `devicePixelRatio` too.
     width: u32,
     height: u32,
-}
-
-/// The frame the overview is taken against: the **topmost** matte layer, or `None`
-/// when the document has none, which is what asks the engine for the painted
-/// bounds instead (see the module docs).
-///
-/// Topmost rather than *selected*, unlike the export dialog: the export dialog is
-/// framing one picture and the selected frame is the one being composed, while this
-/// is a permanent readout of where you are in the piece — and "the piece" is what
-/// the frame on top says it is.
-///
-/// Only the id is taken from the projection, which is why reading it from a
-/// possibly-previewed layer list is safe: a frame handle drag moves a matte's rect,
-/// never its identity.
-fn overview_frame(o: &ObservableState) -> Option<LayerId> {
-    // Only mattes with a rect frame anything: a background (§15.5)
-    // is under the piece, not a statement of where it ends.
-    o.layers
-        .iter()
-        .rev()
-        .find(|l| l.matte.as_ref().is_some_and(|m| m.rect.is_some()))
-        .map(|l| l.id)
 }
 
 /// Draw the miniature: one render of the committed document into the panel's own
@@ -239,7 +218,13 @@ pub fn NavigatorPanel() -> Element {
     let subject = use_memo(move || {
         let obs = state.obs.read();
         let o = obs.as_ref()?;
-        let frame = overview_frame(o);
+        // The **topmost** frame rather than the *selected* one, unlike the export
+        // dialog: that dialog is framing one picture and the selected frame is the
+        // one being composed, while this is a permanent readout of where you are in
+        // the piece — and "the piece" is what the frame on top says it is. Only the
+        // id is taken, which is what makes reading it from a possibly-previewed
+        // layer list safe: a handle drag moves a matte's rect, never its identity.
+        let frame = piece_frame(o);
         // Nothing painted and no frame: the rect the engine would fall back to is
         // the *viewport* (§15.6), which for an overview would be a
         // picture of the window presented as the piece — and, since panning is not a

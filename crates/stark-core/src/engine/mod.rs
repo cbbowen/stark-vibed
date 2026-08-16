@@ -996,6 +996,7 @@ impl Engine {
             ViewCommand::SetRotation(radians) => self.session.view.set_rotation(radians),
             ViewCommand::MirrorH => self.session.view.mirror_screen_h(),
             ViewCommand::CenterOn(point) => self.session.view.center_on(point),
+            ViewCommand::ShowPiece(frame) => self.show_piece(frame),
             ViewCommand::Zoom { anchor, factor } => {
                 self.session.view.zoom_about(anchor, factor);
             }

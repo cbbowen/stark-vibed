@@ -260,6 +260,8 @@ pub enum ViewCommand {             // never logged, never sent
     Pan { delta: Vec2 }, Zoom { anchor: Vec2, factor: f32 },
     Pinch { anchor: Vec2, to: Vec2, scale: f32, turn: f32 },  // two fingers (§18.1.7)
     SetRotation(f32), MirrorH,     // §18.1.2
+    CenterOn(Vec2),                // absolute — the navigator's click
+    ShowPiece(Option<LayerId>),    // §15.6 — frame the whole piece, e.g. on load
     Resize(Extent2),
     SetSelectionMode(SelectionMode), SetSelectionFeather(f32),
     SetShapeOpacity(f32),          // §6.8 — how strongly the next gesture lands
