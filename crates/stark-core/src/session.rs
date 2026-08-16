@@ -589,7 +589,13 @@ impl Session {
             fitter,
             tolerance,
             assist: None,
-            tow: (rope.is_finite() && rope > 0.0).then(|| Tow::new(rope, sample)),
+            // A non-finite first report anchors nothing: the tip would park on it
+            // and no later report could pull the string off it, so the gesture runs
+            // untowed rather than towed from nowhere. The fitter drops the same
+            // report on its own account, so the stroke is the one its finite reports
+            // describe either way.
+            tow: (rope.is_finite() && rope > 0.0 && sample.is_finite())
+                .then(|| Tow::new(rope, sample)),
         });
     }
 
@@ -599,7 +605,22 @@ impl Session {
     /// One entry point for both halves of the gesture, so the frontend goes on sending
     /// the same `To` for every pointer move and nothing about the dwell has to be
     /// mirrored on that side. What the drag means changed; how it arrives did not.
+    ///
+    /// A report carrying a non-finite number is dropped here, before it reaches any
+    /// of the three things that would *remember* it. The fitter refuses one on its
+    /// own account too ([`PathFitter::push`]), but it is not the only state a report
+    /// enters: [`Tow`] keeps the tip and the target across reports, so one NaN parks
+    /// the string somewhere no later report can pull it back from, and
+    /// [`Assist::steer`] folds the position into a snapped shape that outlives it.
+    /// Refusing at the door is what makes the drop cost one report rather than the
+    /// rest of the gesture.
+    ///
+    /// [`PathFitter::push`]: crate::path::PathFitter::push
+    /// [`Assist::steer`]: crate::assist::Assist::steer
     pub fn stroke_to(&mut self, sample: InputSample) {
+        if !sample.is_finite() {
+            return;
+        }
         if let Some(b) = self.in_flight.as_mut() {
             let StrokeBuilder {
                 assist,

@@ -385,9 +385,22 @@ impl PathFitter {
         }
     }
 
-    /// Feed one pointer report. Ignored once the stroke is [`finish`](Self::finish)ed.
+    /// Feed one pointer report. Ignored once the stroke is [`finish`](Self::finish)ed,
+    /// and ignored if any of its numbers is non-finite
+    /// ([`InputSample::is_finite`]) — the same "this report carries nothing" answer
+    /// the zero-length step below gives, for a report that carries nothing usable.
+    ///
+    /// **Dropping it is the only total answer.** A NaN position spreads into `arc`,
+    /// out of `arc` into every sample's curve parameter, and from there into the
+    /// normal equations, which are then singular at every ridge — a state
+    /// [`spline`](crate::spline)'s solve reports by panicking, because for finite
+    /// input it cannot arise. Repairing the sample instead would mean inventing a
+    /// position the hand never visited; refusing it means the stroke is exactly the
+    /// stroke the finite reports describe.
+    ///
+    /// [`InputSample::is_finite`]: crate::command::InputSample::is_finite
     pub fn push(&mut self, s: InputSample) {
-        if self.finished {
+        if self.finished || !s.is_finite() {
             return;
         }
         match self.pts.last() {
@@ -1454,6 +1467,96 @@ mod tests {
         }
         f.finish();
         (f, snaps)
+    }
+
+    /// **A non-finite report is dropped, not fitted** — and the stroke that comes out
+    /// is the one its finite reports describe, exactly as if the bad report had never
+    /// arrived.
+    ///
+    /// Both halves matter and the second is the sharper claim. Merely not panicking
+    /// would be satisfied by a fitter that swallowed the whole stroke; what has to
+    /// hold is that one bad report costs one report.
+    ///
+    /// The panic this rules out was real and three subsystems downstream: `arc`
+    /// accumulates the step to the bad sample, every curve parameter is derived from
+    /// `arc`, so `m_step`'s normal equations go NaN — and they are then singular at
+    /// every ridge, which its solve reports with `unreachable!` because for finite
+    /// input it genuinely cannot happen.
+    #[test]
+    fn a_non_finite_report_is_dropped_rather_than_fitted() {
+        let clean: Vec<InputSample> = (0..24)
+            .map(|i| {
+                let t = i as f32;
+                sample(t * 7.0, (t * 0.4).sin() * 30.0)
+            })
+            .collect();
+
+        /// One way a report can be unusable: a name for the failure message, and the
+        /// channel it poisons.
+        type Poison = (&'static str, fn(InputSample) -> InputSample);
+
+        // Every channel a report has, and every way one can be unusable.
+        let poisons: [Poison; 5] = [
+            ("pos.x", |mut s| {
+                s.pos.x = f32::NAN;
+                s
+            }),
+            ("pos.y", |mut s| {
+                s.pos.y = f32::INFINITY;
+                s
+            }),
+            ("pressure", |mut s| {
+                s.pressure = f32::NAN;
+                s
+            }),
+            ("tilt", |mut s| {
+                s.tilt = Vec2::splat(f32::NAN);
+                s
+            }),
+            ("time", |mut s| {
+                s.time = f64::NAN;
+                s
+            }),
+        ];
+
+        let reference = {
+            let mut f = PathFitter::new();
+            for s in &clean {
+                f.push(*s);
+            }
+            f.finish();
+            f.path()
+        };
+
+        for (name, poison) in poisons {
+            // Injected mid-stroke, where the fitter has state to corrupt, and again
+            // as the very first report, which is the case that seeds `t0` and the
+            // arc origin.
+            for at in [0usize, 12] {
+                let mut f = PathFitter::new();
+                for (i, s) in clean.iter().enumerate() {
+                    if i == at {
+                        f.push(poison(*s));
+                    }
+                    f.push(*s);
+                }
+                f.finish();
+                let got = f.path();
+                assert_eq!(
+                    got.len(),
+                    reference.len(),
+                    "{name} at {at} changed the fitted path's shape",
+                );
+                for (a, b) in got.iter().zip(&reference) {
+                    assert!(
+                        (a.pos - b.pos).length() < 1e-4
+                            && a.pressure.is_finite()
+                            && a.tilt.is_finite(),
+                        "{name} at {at} moved a control point: {a:?} vs {b:?}",
+                    );
+                }
+            }
+        }
     }
 
     /// The load-bearing link between the two halves of this module: the span form

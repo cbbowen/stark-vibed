@@ -492,7 +492,11 @@ impl Engine {
         background: Background,
         content: Rendered,
     ) -> Result<impl std::future::Future<Output = RgbaImage> + use<>> {
-        if !(view.zoom.is_finite() && view.zoom > 0.0 && view.center.is_finite()) {
+        // The same question the view's own mutators ask before storing anything
+        // ([`ViewTransform::usable`]), rather than a second spelling of it here: a
+        // caller-supplied view has not passed through them, so it is asked once, at
+        // the door it comes in by.
+        if !view.usable() {
             return Err(EngineError::Export("view must be finite".into()));
         }
         let size = view.viewport;

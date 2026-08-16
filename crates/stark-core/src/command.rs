@@ -60,6 +60,31 @@ impl InputSample {
             ..Default::default()
         }
     }
+
+    /// Whether every number here is finite — the gate a report has to pass before
+    /// anything stateful is allowed to remember it.
+    ///
+    /// **A sample arrives from outside and one NaN in it is a panic**, which is why
+    /// this is a property of the sample rather than a check at each consumer. A
+    /// pointer position is the frontend's `screen_to_canvas` of a pointer event, so
+    /// it inherits whatever the view transform is — and a non-finite one used to be
+    /// reachable ([`ViewTransform`](crate::geom::ViewTransform), whose mutators now
+    /// refuse to store one). Downstream, `PathFitter` parameterizes its samples by
+    /// arc length, a NaN spreads from `arc` into every curve parameter, and the
+    /// normal equations it builds are then unsolvable at *any* ridge — which
+    /// `spline`'s solve reports by panicking, because for finite input it genuinely
+    /// cannot happen.
+    ///
+    /// Every channel, not just the position. `time` seeds the fitter's epoch, so a
+    /// NaN there makes every later report's relative time NaN; `pressure` and `tilt`
+    /// ride the same least-squares solve the geometry does and reach it through the
+    /// same matrix.
+    pub fn is_finite(&self) -> bool {
+        self.pos.is_finite()
+            && self.pressure.is_finite()
+            && self.tilt.is_finite()
+            && self.time.is_finite()
+    }
 }
 
 impl Default for InputSample {

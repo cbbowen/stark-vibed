@@ -910,19 +910,17 @@ impl Engine {
                 self.session.brush = brush;
                 self.mark_live_stale();
             }
-            ViewCommand::Pan { delta } => {
-                // Grab-and-drag: content follows the cursor, so the view center moves
-                // opposite by the drag delta, carried into canvas units — through the
-                // whole map, since a turned or mirrored canvas sends a screen-space
-                // drag somewhere else entirely.
-                let delta = self.session.view.canvas_delta(delta);
-                self.session.view.center -= delta;
-            }
+            // Grab-and-drag: content follows the cursor, so the view center moves
+            // opposite by the drag delta, carried into canvas units — through the
+            // whole map, since a turned or mirrored canvas sends a screen-space drag
+            // somewhere else entirely. Spelled out here until it was one of three
+            // arms writing a view field directly; every arm now names a mutator, so
+            // a command carrying a non-finite number is refused by the view rather
+            // than stored by whichever arm forgot to ask (see [`ViewTransform`]).
+            ViewCommand::Pan { delta } => self.session.view.pan_by(delta),
             ViewCommand::SetRotation(radians) => self.session.view.set_rotation(radians),
             ViewCommand::MirrorH => self.session.view.mirror_screen_h(),
-            ViewCommand::CenterOn(point) => {
-                self.session.view.center = point;
-            }
+            ViewCommand::CenterOn(point) => self.session.view.center_on(point),
             ViewCommand::Zoom { anchor, factor } => {
                 self.session.view.zoom_about(anchor, factor);
             }
@@ -932,9 +930,7 @@ impl Engine {
                 scale,
                 turn,
             } => self.session.view.pinch(anchor, to, scale, turn),
-            ViewCommand::Resize(viewport) => {
-                self.session.view.viewport = viewport;
-            }
+            ViewCommand::Resize(viewport) => self.session.view.resize(viewport),
             ViewCommand::SetShapeAction(action) => self.session.shape_action = action,
             ViewCommand::SetSelectionFeather(feather) => {
                 self.session.selection_feather = feather.max(0.0)

@@ -250,6 +250,24 @@ impl Extent2 {
 /// the same kind of act as panning: per-client, never logged, never sent, and
 /// invisible to replay (§18.1.2). Two people sharing a drawing can
 /// have it at different angles.
+/// **Mutation goes through the methods below, and every one of them is total**: an
+/// argument that would leave the view unusable ([`usable`](Self::usable)) is refused
+/// and the view is left exactly as it was.
+///
+/// That is a rule about a *class*, and it is the only thing standing between a
+/// frontend's arithmetic and a panic three subsystems away. `f32::clamp` passes NaN
+/// straight through — both of its comparisons are false — so
+/// `pinch(.., scale: NaN, ..)` used to store a NaN zoom despite the clamp, and the
+/// next `screen_to_canvas` then handed NaN canvas coordinates to the stroke fitter,
+/// whose normal equations are unsolvable at any ridge and whose solve says so by
+/// panicking. Every guard that existed caught it *downstream* — `export_view`
+/// refusing to render, `footprint` refusing a control point — so the view stayed
+/// poisoned and export failed for the rest of the session with no way back.
+///
+/// The fields stay public because reading them is the whole point (a frontend maps
+/// pointer events through this on every report). Writing one directly bypasses the
+/// rule; there is no such write in the workspace, and `a_view_never_stores_a_number_it_cannot_use`
+/// is what keeps the mutators honest.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ViewTransform {
     /// Canvas-space point shown at the center of the viewport.
@@ -426,7 +444,73 @@ impl ViewTransform {
     /// Turn the canvas to `radians`, normalised to one revolution so the value stays
     /// bounded however many turns it is given.
     pub fn set_rotation(&mut self, radians: f32) {
-        self.rotation = radians.rem_euclid(TAU);
+        self.commit(Self {
+            rotation: radians.rem_euclid(TAU),
+            ..*self
+        });
+    }
+
+    /// Whether this view can be rendered and inverted through: finite everywhere,
+    /// and with a zoom that can actually be divided by.
+    ///
+    /// **One definition, asked by the mutators and by the render path alike.**
+    /// [`export_view`](crate::Engine::export_view) spelled the same predicate out
+    /// inline, which is how a view could be refused at the render and still be
+    /// sitting in the session — the check said what was wrong without stopping it
+    /// being stored. Now the store is what refuses, and the render's check is the
+    /// same question asked of a value that has already passed it.
+    ///
+    /// The viewport is absent because it is `u32`: there is no unusable one, and
+    /// `canvas_to_ndc` floors it at 1 rather than dividing by zero.
+    pub fn usable(self) -> bool {
+        self.center.is_finite() && self.rotation.is_finite() && self.zoom.is_finite()
+            // Not merely finite: `inverse_linear` divides by it, so a zoom of zero
+            // sends every screen→canvas map to infinity just as surely as a NaN does.
+            && self.zoom > 0.0
+    }
+
+    /// Adopt `candidate` if it is one this view could be used as — the funnel every
+    /// mutator here ends in, and the whole of the rule stated on the type.
+    ///
+    /// Whole-view rather than per-field, because the fields are not independent: a
+    /// pinch derives its centre *from* the zoom it just set, so a NaN scale reaches
+    /// the centre too and refusing one field would store half a poisoned view. This
+    /// way a refused mutation is a no-op rather than a partial one.
+    fn commit(&mut self, candidate: Self) {
+        if candidate.usable() {
+            *self = candidate;
+        }
+    }
+
+    /// Pan by a **screen-pixel** drag: content follows the cursor, so the centre
+    /// moves opposite, carried into canvas units through the whole map (a turned or
+    /// mirrored canvas sends a screen drag somewhere else entirely).
+    ///
+    /// A method rather than `view.center -= view.canvas_delta(d)` at the call site,
+    /// so that the one door onto the centre is a total one — see the type's note.
+    pub fn pan_by(&mut self, screen_delta: Vec2) {
+        let delta = self.canvas_delta(screen_delta);
+        self.commit(Self {
+            center: self.center - delta,
+            ..*self
+        });
+    }
+
+    /// Put `point` (canvas space) at the middle of the viewport.
+    pub fn center_on(&mut self, point: Vec2) {
+        self.commit(Self {
+            center: point,
+            ..*self
+        });
+    }
+
+    /// Note that the target surface is now `viewport` pixels.
+    ///
+    /// Nothing to refuse — a pixel size is `u32` — but it goes through the same door
+    /// as the rest, so "the view is mutated through its methods" has no exceptions to
+    /// remember.
+    pub fn resize(&mut self, viewport: Extent2) {
+        self.commit(Self { viewport, ..*self });
     }
 
     /// Mirror what is **on screen**, left↔right — the flip an artist means when they
@@ -444,8 +528,14 @@ impl ViewTransform {
     /// toggle the mirror — and doing it twice is exactly the identity, which is what
     /// makes it a toggle rather than a setting.
     pub fn mirror_screen_h(&mut self) {
-        self.set_rotation(-self.rotation);
-        self.flip_h = !self.flip_h;
+        // One commit rather than a `set_rotation` and a toggle: the pair *is* the
+        // reflection (`M·R(θ) = R(−θ)·M`), so a refused half would leave a view that
+        // is neither the one before nor the one after.
+        self.commit(Self {
+            rotation: (-self.rotation).rem_euclid(TAU),
+            flip_h: !self.flip_h,
+            ..*self
+        });
     }
 
     /// Scale the zoom by `factor` while keeping the canvas point under `anchor`
@@ -471,15 +561,28 @@ impl ViewTransform {
     /// clockwise on the screen at any angle and either handedness — the same
     /// screen-relative sense [`mirror_screen_h`](Self::mirror_screen_h) is defined in.
     /// (`R(δ)·R(θ)·M = R(θ+δ)·M`, so it stays a rotation-and-a-mirror.)
+    /// Refused whole when any of its four arguments is non-finite, which is what the
+    /// clamp below cannot do on its own: `f32::clamp` compares, and every comparison
+    /// against NaN is false, so `(zoom * NaN).clamp(MIN, MAX)` is NaN and not `MAX`.
+    /// A refused pinch leaves the view exactly as the hand found it — see the note on
+    /// the type for what a stored NaN used to cost.
     pub fn pinch(&mut self, anchor: Vec2, to: Vec2, scale: f32, turn: f32) {
         // The canvas point the gesture is holding, read through the view as it stands.
         let held = self.screen_to_canvas(anchor);
-        self.set_rotation(self.rotation + turn);
-        self.zoom = (self.zoom * scale).clamp(Self::MIN_ZOOM, Self::MAX_ZOOM);
+        // Built as a candidate rather than applied in three steps, because the three
+        // are not independent: the centre is solved *through* the new angle and zoom,
+        // so a NaN in either reaches it, and committing as they were computed would
+        // store a view that was poisoned two assignments ago.
+        let mut next = Self {
+            rotation: (self.rotation + turn).rem_euclid(TAU),
+            zoom: (self.zoom * scale).clamp(Self::MIN_ZOOM, Self::MAX_ZOOM),
+            ..*self
+        };
         // ...and put back under the hand, through the view as it now is. Solving
         // `screen_to_canvas(to) == held` for the centre, which is the one degree of
         // freedom left once the angle and the zoom are set.
-        self.center = held - self.canvas_delta(to - self.half());
+        next.center = held - next.canvas_delta(to - next.half());
+        self.commit(next);
     }
 
     const MIN_ZOOM: f32 = 0.05;
@@ -577,6 +680,106 @@ mod tests {
             zoom,
             ..ViewTransform::identity(size)
         }
+    }
+
+    /// **No mutator may store a number the view cannot be used with**, whatever it is
+    /// handed — the rule stated on [`ViewTransform`], asked of every mutator there is.
+    ///
+    /// This is the guard that was missing, and its absence was not theoretical: the
+    /// clamp in `pinch` looks like it bounds the zoom, and `f32::clamp` passes NaN
+    /// through both of its comparisons, so a NaN scale stored a NaN zoom. From there
+    /// `screen_to_canvas` fed NaN canvas positions to the stroke fitter and the
+    /// spline solve panicked — and nothing in between could put the view back,
+    /// because every other check in the codebase asks at the *render*, by which point
+    /// the bad value is already resident.
+    ///
+    /// Driven off a list of mutations rather than one test each, so that a mutator
+    /// added later has somewhere obvious to be added and no way to be quietly
+    /// exempt.
+    #[test]
+    fn a_view_never_stores_a_number_it_cannot_use() {
+        /// One way the view can be moved: a name for the failure message, and the
+        /// mutation with the number under test threaded into it.
+        type Mutation = (&'static str, fn(&mut ViewTransform, f32));
+
+        let poison = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -0.0];
+        // Every way the view can be moved. `f` is the poisoned number under test;
+        // each mutation puts it wherever that mutation can take one.
+        let mutations: [Mutation; 7] = [
+            ("pan_by.x", |v, f| v.pan_by(Vec2::new(f, 3.0))),
+            ("pan_by.y", |v, f| v.pan_by(Vec2::new(3.0, f))),
+            ("center_on", |v, f| v.center_on(Vec2::new(f, f))),
+            ("set_rotation", |v, f| v.set_rotation(f)),
+            ("zoom_about.factor", |v, f| {
+                v.zoom_about(Vec2::new(40.0, 30.0), f)
+            }),
+            ("zoom_about.anchor", |v, f| {
+                v.zoom_about(Vec2::splat(f), 1.5)
+            }),
+            ("pinch.turn", |v, f| {
+                v.pinch(Vec2::splat(10.0), Vec2::splat(20.0), 1.5, f)
+            }),
+        ];
+        for (name, apply) in mutations {
+            for f in poison {
+                let before = view(Vec2::new(10.0, 20.0), 2.0, Extent2::new(800, 600));
+                let mut after = before;
+                apply(&mut after, f);
+                assert!(
+                    after.usable(),
+                    "{name} stored {f} and left the view unusable: {after:?}",
+                );
+                // **NaN is the value that must be refused whole**, and it is the only
+                // one. An infinite or zero *scale* is a request the clamp can honour —
+                // it means "as far as this goes", and `MIN_ZOOM`/`MAX_ZOOM` are where
+                // it goes — so those legitimately take effect. NaN cannot be clamped
+                // into range (every comparison against it is false, which is the bug
+                // this whole rule exists for), so the only total answer is to leave
+                // the view alone.
+                //
+                // Whole, not merely refused: `zoom_about` with a NaN *anchor* has a
+                // perfectly good zoom and an unusable centre, and committing the
+                // first while dropping the second would leave a view the hand never
+                // asked for. That case is in the list above for exactly this reason.
+                if f.is_nan() {
+                    assert_eq!(
+                        after, before,
+                        "{name} partly applied a mutation carrying NaN",
+                    );
+                }
+            }
+        }
+        // A mirror is two changes that are one act, so it must not half-apply either.
+        let mut v = view(Vec2::ZERO, 1.0, Extent2::new(800, 600));
+        v.mirror_screen_h();
+        v.mirror_screen_h();
+        assert_eq!(
+            v,
+            view(Vec2::ZERO, 1.0, Extent2::new(800, 600)),
+            "not a toggle"
+        );
+    }
+
+    /// The clamp in `pinch` really is load-bearing for *finite* input — the test
+    /// above would pass on a `pinch` that refused every scale.
+    #[test]
+    fn a_pinch_still_zooms_and_stays_in_range() {
+        let mut v = view(Vec2::ZERO, 1.0, Extent2::new(800, 600));
+        v.zoom_about(Vec2::new(400.0, 300.0), 4.0);
+        assert_eq!(v.zoom, 4.0);
+        // Past the ceiling clamps rather than refusing: a finite request is honoured
+        // as far as it can be.
+        v.zoom_about(Vec2::new(400.0, 300.0), 1e6);
+        assert_eq!(v.zoom, ViewTransform::MAX_ZOOM);
+        v.zoom_about(Vec2::new(400.0, 300.0), 1e-9);
+        assert_eq!(v.zoom, ViewTransform::MIN_ZOOM);
+        // The two ends of "as far as this goes", which the rule above deliberately
+        // lets through rather than refusing: they are answerable, and answering them
+        // is what keeps a zoom of zero from becoming a division by zero downstream.
+        v.zoom_about(Vec2::new(400.0, 300.0), f32::INFINITY);
+        assert_eq!(v.zoom, ViewTransform::MAX_ZOOM);
+        v.zoom_about(Vec2::new(400.0, 300.0), 0.0);
+        assert_eq!(v.zoom, ViewTransform::MIN_ZOOM);
     }
 
     #[test]
