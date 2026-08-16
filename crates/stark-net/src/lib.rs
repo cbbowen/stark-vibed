@@ -62,6 +62,11 @@ pub enum NetError {
     BlobRead(#[from] iroh_blobs::api::ExportBaoError),
     #[error("document error: {0}")]
     Document(#[from] stark_core::EngineError),
+    /// The member asked has no session to serve yet — it is still fetching its
+    /// own snapshot. Every member is an entry point (§12.4), so the answer is to
+    /// ask a different one, not to give up.
+    #[error("that session member is still joining; ask another")]
+    NotReady,
     #[error("bad ticket: {0}")]
     Ticket(String),
     #[error("{0}")]

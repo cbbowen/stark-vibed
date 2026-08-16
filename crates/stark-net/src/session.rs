@@ -34,7 +34,7 @@ use tokio::sync::mpsc;
 
 use crate::Result;
 use crate::backend::{self, Bound, Dialer, Shutdown};
-use crate::mirror::Mirror;
+use crate::mirror::{Mirror, Served};
 use crate::proto::{Request, Stamped, Wire};
 use crate::ticket::SessionTicket;
 use crate::waitlist::{Admit, Waitlist};
@@ -294,14 +294,10 @@ impl CollabSession {
     /// [`SecretKey`] first and pass it in `opts` so the actor id is known
     /// before binding.
     pub async fn host(doc: DocumentFile, opts: NetOptions) -> Result<(Self, Events)> {
-        let mirror = Arc::new(Mutex::new(Mirror::from_file(&doc)));
-        let bound = backend::bind(mirror.clone(), &opts).await?;
-        // A fresh random 32-byte topic — a secret key is a convenient CSPRNG.
-        let topic = TopicId::from_bytes(SecretKey::generate().to_bytes());
-        // The first member starts the swarm alone; joiners bootstrap from it.
-        let sub = bound.gossip.subscribe(topic, Vec::new()).await?;
-        let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
-        Self::finish(bound, topic, sub, mirror, ticket_addr, &opts.resolvable)
+        let served = Served::default();
+        let bound = backend::bind(served.clone(), &opts).await?;
+        let shutdown = bound.shutdown.clone();
+        closing_on_error(shutdown, Self::hosting(bound, served, doc, &opts)).await
     }
 
     /// Join an existing session from a ticket.
@@ -310,11 +306,43 @@ impl CollabSession {
     /// anyone; the host leaves it out of the snapshot, and [`Joined::owed`] is the
     /// bill for that.
     pub async fn join(ticket: &SessionTicket, opts: NetOptions) -> Result<Joined> {
-        let mirror = Arc::new(Mutex::new(Mirror::from_file(
-            &DocumentFile::new(Vec::new()),
-        )));
-        let bound = backend::bind(mirror.clone(), &opts).await?;
+        let served = Served::default();
+        let bound = backend::bind(served.clone(), &opts).await?;
+        let shutdown = bound.shutdown.clone();
+        closing_on_error(shutdown, Self::joining(bound, served, ticket, &opts)).await
+    }
 
+    /// Everything about hosting that can fail after the endpoint exists.
+    async fn hosting(
+        bound: Bound,
+        served: Served,
+        doc: DocumentFile,
+        opts: &NetOptions,
+    ) -> Result<(Self, Events)> {
+        let mirror = Arc::new(Mutex::new(Mirror::from_file(&doc)));
+        // A fresh random 32-byte topic — a secret key is a convenient CSPRNG.
+        let topic = TopicId::from_bytes(SecretKey::generate().to_bytes());
+        // The first member starts the swarm alone; joiners bootstrap from it.
+        let sub = bound.gossip.subscribe(topic, Vec::new()).await?;
+        let ticket_addr = bound.dialer.ticket_addr(opts).await?;
+        Self::finish(
+            bound,
+            served,
+            topic,
+            sub,
+            mirror,
+            ticket_addr,
+            &opts.resolvable,
+        )
+    }
+
+    /// Everything about joining that can fail after the endpoint exists.
+    async fn joining(
+        bound: Bound,
+        served: Served,
+        ticket: &SessionTicket,
+        opts: &NetOptions,
+    ) -> Result<Joined> {
         // Open the catch-up connection first: this also teaches the endpoint
         // the peer's address, so gossip can dial it by bare id below.
         let catchup = bound.dialer.open(ticket.addr.clone()).await?;
@@ -349,11 +377,12 @@ impl CollabSession {
         // the same question loading a document off disk asks, and one definition
         // of "what does this log need" is what stops the two drifting.
         let owed = file.unbundled_content();
-        *mirror.lock().expect("mirror poisoned") = Mirror::from_file(&file);
+        let mirror = Arc::new(Mutex::new(Mirror::from_file(&file)));
 
-        let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
+        let ticket_addr = bound.dialer.ticket_addr(opts).await?;
         let (session, events) = Self::finish(
             bound,
+            served,
             ticket.topic,
             sub,
             mirror,
@@ -368,8 +397,10 @@ impl CollabSession {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish(
         bound: Bound,
+        served: Served,
         topic: TopicId,
         sub: iroh_gossip::api::GossipTopic,
         mirror: Arc<Mutex<Mirror>>,
@@ -397,6 +428,10 @@ impl CollabSession {
             .lock()
             .expect("mirror poisoned")
             .seed_blobs(|bytes| dialer.add_blob(bytes));
+        // Only now is there a session to serve, and only now does the catch-up
+        // protocol have anything to answer with: seeded, so what a snapshot names
+        // can also be fetched piecemeal afterwards.
+        served.publish(mirror.clone());
         let (tx, rx) = mpsc::unbounded_channel();
         let presence = Arc::new(PresenceQuota::default());
         let waitlist = Arc::new(Waitlist::new(mirror, tx.clone(), resolvable));
@@ -581,6 +616,29 @@ impl Broadcaster {
     }
 }
 
+/// Run the fallible tail of session setup, closing the stack if it does not
+/// finish.
+///
+/// Every step that can fail — dialling the ticket's peer, subscribing, fetching
+/// and decoding the snapshot, minting the ticket address — happens *after* the
+/// endpoint exists, and dropping [`Bound`] closes none of it: the endpoint keeps
+/// its relay connection and the gossip, blob and router actors keep running. The
+/// expected failures are the ones that repeat (a link from another build, a host
+/// that has gone), so without this a user retrying accumulates a stack per
+/// attempt — in a browser tab with a hard ceiling.
+async fn closing_on_error<T>(
+    shutdown: Shutdown,
+    setup: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    match setup.await {
+        Ok(ready) => Ok(ready),
+        Err(e) => {
+            shutdown.run().await;
+            Err(e)
+        }
+    }
+}
+
 /// The gossip receive loop: decode, park what is waiting on content, mirror,
 /// forward to the engine. Also maintains the neighbor set and kicks off the
 /// WebRTC bootstrap for every new neighbor.
@@ -678,6 +736,25 @@ async fn recv_loop(
                 continue;
             }
         };
+
+        // Two identities travel with every action and nothing upstream ties them
+        // together: `origin` picks who to fetch its content from, while
+        // `id.actor` owns its undo scope (§12.3) and half the total order key.
+        // Gossip reports only the delivering neighbour, so `origin` is
+        // self-declared — the same trust the payload already carries (§12.5) —
+        // which makes this a consistency check and not authentication.
+        //
+        // Dropped rather than accepted, because an action whose author is wrong
+        // is one whose undo scope is wrong: applying it puts something in the log
+        // that the peer who appears to have written it cannot take back.
+        if actor_from_endpoint_id(origin) != action.id.actor {
+            tracing::warn!(
+                origin = %origin.fmt_short(),
+                actor = ?action.id.actor,
+                "dropping an action whose author does not match its sender"
+            );
+            continue;
+        }
 
         // Whatever the action references has to reach the engine first, so the
         // engine can apply it faithfully. The action waits for it — parked, not

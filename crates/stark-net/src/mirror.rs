@@ -12,6 +12,7 @@
 //! keeps [`Mirror::snapshot`] off the lock for longer than the log takes.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::Bytes;
 use iroh_blobs::Hash;
@@ -19,6 +20,38 @@ use stark_core::document::{Action, ActionId};
 use stark_core::{AssetId, BuildId, CanvasMeta, DocumentFile, SurfaceId};
 
 use crate::session::AssetNeed;
+
+/// The mirror as the catch-up server sees it: absent until this peer is a session
+/// member.
+///
+/// A peer binds its endpoint — and with it the catch-up protocol — *before* it has
+/// anything to serve. A joiner has not fetched its own snapshot yet; a host has not
+/// seeded its blob store. An empty [`Mirror`] and a complete one are the same value,
+/// so a request arriving in that window would be answered with a well-formed, empty,
+/// silently-wrong document, and the joiner that got it would ride the gossip tail
+/// believing it had the painting.
+///
+/// So publishing is a step of its own, taken once the session is real, and until it
+/// is taken there is nothing here to mistake for a session. The joiner turned away
+/// asks another member — every one of them is an entry point (§12.4).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Served(Arc<OnceLock<Arc<Mutex<Mirror>>>>);
+
+impl Served {
+    /// Hand the session's mirror to the catch-up server — the moment this peer
+    /// starts being a member rather than becoming one.
+    pub fn publish(&self, mirror: Arc<Mutex<Mirror>>) {
+        assert!(
+            self.0.set(mirror).is_ok(),
+            "one session, one published mirror"
+        );
+    }
+
+    /// The mirror to answer from, or `None` while this peer is still joining.
+    pub fn get(&self) -> Option<&Mutex<Mirror>> {
+        self.0.get().map(|mirror| &**mirror)
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct Mirror {

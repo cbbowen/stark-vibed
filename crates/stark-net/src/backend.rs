@@ -14,7 +14,8 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, Mutex};
+#[cfg(feature = "webrtc")]
+use std::sync::Arc;
 use std::time::Duration;
 
 use iroh::endpoint::{Connection, presets};
@@ -25,7 +26,7 @@ use iroh_blobs::{BlobsProtocol, Hash};
 use iroh_gossip::net::Gossip;
 
 use crate::Result;
-use crate::mirror::Mirror;
+use crate::mirror::Served;
 use crate::proto::{self, CollabProto, Request};
 use crate::session::NetOptions;
 
@@ -43,7 +44,7 @@ pub(crate) struct Bound {
     pub shutdown: Shutdown,
 }
 
-pub(crate) async fn bind(mirror: Arc<Mutex<Mirror>>, opts: &NetOptions) -> Result<Bound> {
+pub(crate) async fn bind(served: Served, opts: &NetOptions) -> Result<Bound> {
     let secret = opts.secret.clone().unwrap_or_else(SecretKey::generate);
     // The WebRTC custom transport rides the same endpoint; peers derive
     // its addr from our endpoint id (see transport::direct).
@@ -69,7 +70,7 @@ pub(crate) async fn bind(mirror: Arc<Mutex<Mirror>>, opts: &NetOptions) -> Resul
     let router = Router::builder(endpoint.clone())
         .accept(iroh_gossip::ALPN, gossip.clone())
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, None))
-        .accept(proto::ALPN, CollabProto { mirror });
+        .accept(proto::ALPN, CollabProto { served });
     #[cfg(feature = "webrtc")]
     let router = router.accept(
         crate::transport::direct::SIGNALING_ALPN,
@@ -227,13 +228,22 @@ impl Catchup {
     }
 }
 
+/// Closing the stack down, from either end of a session's life.
+///
+/// `Clone` and idempotent (`Router::shutdown` and `Endpoint::close` both no-op
+/// once run) so that the *setup* path can hold one too: every fallible step of
+/// `host` / `join` happens after the endpoint exists, and dropping the pieces
+/// closes none of them — the endpoint keeps its relay connection and the gossip,
+/// blob and router actors keep running. A user retrying a bad link would
+/// accumulate one of each per attempt.
+#[derive(Clone)]
 pub(crate) struct Shutdown {
     endpoint: Endpoint,
     router: Router,
 }
 
 impl Shutdown {
-    pub async fn run(self) {
+    pub async fn run(&self) {
         if let Err(e) = self.router.shutdown().await {
             tracing::warn!("router shutdown: {e}");
         }
