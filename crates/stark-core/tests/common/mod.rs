@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushParams, BrushShape, Tool};
-use stark_core::engine::{headless_engine, headless_engine_with};
 use stark_core::geom::{Extent2, Vec2};
 use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::{Engine, RgbaImage};
@@ -56,22 +55,71 @@ fn env_flag(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| v == "1")
 }
 
-/// `None` if this machine has no usable adapter *and* [`ALLOW_NO_GPU`] permits the
-/// skip; panics otherwise, so a missing adapter is a failure by default. The engine
-/// comes back on whatever environment it booted with — the procedural `Neutral`.
-fn or_skip(built: stark_core::Result<Engine>) -> Option<Engine> {
-    match built {
+/// The device every engine in this test binary is built on.
+///
+/// **One device per process, not one per test**, which is where this suite's time
+/// went. Measured on the machine that wrote this: a fresh `headless_engine` — request
+/// an adapter, request a device, then compile ~19 shaders and ~30 pipelines — is
+/// ~338 ms, while building an engine on a device that already exists is ~22 ms,
+/// because the driver has the compiled shaders. At 386 construction sites the
+/// difference is minutes of wall clock, and "the test suite is slow — run it once"
+/// was a rule contributors had to remember in place of fixing it.
+///
+/// A `OnceLock` rather than a `thread_local`: libtest runs each test on a thread of
+/// its own, so a per-thread donor would be a per-test donor again. `GpuContext` is
+/// `Send + Sync` on native — wgpu's handles are, and the health cell is an
+/// `Arc<Mutex<..>>` — and tests are native by construction, so the lock is all the
+/// sharing needs.
+///
+/// **What is *not* shared is as important.** Each engine still builds its own
+/// `TilePool`, its own renderers and its own document, because `Engine::new` does; so
+/// a test that counts pooled textures (`tests/tile_pool.rs`) or paints on a document
+/// sees nothing of any other test. What is shared is the device and the driver's
+/// shader cache, neither of which any test asserts on.
+///
+/// Two things to know if a test ever behaves oddly because of this. Tests in one
+/// binary now run concurrently against a *single* device rather than one each, which
+/// is less driver stress rather than more, but is a different shape of it. And the
+/// device's health cell (§5) is shared, so a test that deliberately provoked a wgpu
+/// validation error would leave every later test in that binary observing a failed
+/// GPU — no test does, and one that wants to should build its own context.
+fn shared_context() -> Option<&'static stark_core::GpuContext> {
+    static CTX: std::sync::OnceLock<Option<stark_core::GpuContext>> = std::sync::OnceLock::new();
+    CTX.get_or_init(
+        || match pollster::block_on(stark_core::GpuContext::headless()) {
+            Ok(ctx) => Some(ctx),
+            Err(e) if env_flag(ALLOW_NO_GPU) => {
+                eprintln!("skipping GPU tests ({ALLOW_NO_GPU}=1): {e}");
+                None
+            }
+            Err(e) => panic!("no usable GPU adapter: {e}\nset {ALLOW_NO_GPU}=1 to skip GPU tests"),
+        },
+    )
+    .as_ref()
+}
+
+/// An engine of `size` in `space`, on this binary's shared device — or `None` where
+/// there is no adapter and [`ALLOW_NO_GPU`] permits the skip.
+///
+/// The one constructor every helper below funnels through, so what "a test engine is"
+/// is stated once. The engine comes back on whatever environment it booted with — the
+/// procedural `Neutral`.
+fn build(size: Extent2, space: ColorSpaceId) -> Option<Engine> {
+    let ctx = shared_context()?;
+    match Engine::new_with_color_space(ctx.clone(), TARGET, size, space) {
         Ok(e) => Some(e),
-        Err(e) if env_flag(ALLOW_NO_GPU) => {
-            eprintln!("skipping GPU test ({ALLOW_NO_GPU}=1): {e}");
+        // Not an adapter problem — the device is already up. A space this build does
+        // not carry (Mixbox without the feature) is the only way here, and it is a
+        // legitimate skip rather than a failure.
+        Err(e) => {
+            eprintln!("skipping: {e}");
             None
         }
-        Err(e) => panic!("no usable GPU adapter: {e}\nset {ALLOW_NO_GPU}=1 to skip GPU tests"),
     }
 }
 
 /// Build a headless engine, or `None` if this machine has no usable adapter and
-/// skipping is permitted (see [`or_skip`]).
+/// skipping is permitted (see [`shared_context`]).
 ///
 /// **On the procedural `Neutral` environment** — the reference light (§6.3), whose
 /// exposure is 1.0 and whose whole purpose is to be the identity a color can be
@@ -83,13 +131,13 @@ fn or_skip(built: stark_core::Result<Engine>) -> Option<Engine> {
 /// reference light what a test reads back is what the pipeline produced.
 /// [`engine_or_skip_studio`] keeps the image-based path covered.
 pub fn engine_or_skip() -> Option<Engine> {
-    or_skip(pollster::block_on(headless_engine(TARGET, SIZE)))
+    build(SIZE, ColorSpaceId::Oklab)
 }
 
 /// A headless engine with a chosen viewport, for tests whose stroke has to be far
 /// wider than the default [`SIZE`] window shows.
 pub fn engine_or_skip_sized(size: Extent2) -> Option<Engine> {
-    or_skip(pollster::block_on(headless_engine(TARGET, size)))
+    build(size, ColorSpaceId::Oklab)
 }
 
 /// A headless engine on the **blue** ground ([`BG`]) rather than the default
@@ -125,12 +173,14 @@ pub fn on_blue(mut engine: Engine) -> Engine {
 /// browser surface is usually `Bgra8Unorm` — a difference no single-format test
 /// can see, and one that silently swapped red and blue in exported PNGs.
 pub fn engine_or_skip_in_format(format: wgpu::TextureFormat) -> Option<Engine> {
-    or_skip(pollster::block_on(headless_engine(format, SIZE)))
+    // Not through `build`, which pins [`TARGET`] — the whole point here is a
+    // different one. Same shared device.
+    Some(Engine::new(shared_context()?.clone(), format, SIZE))
 }
 
 /// A headless engine in a chosen color space (§6.7).
 pub fn engine_or_skip_with(id: ColorSpaceId) -> Option<Engine> {
-    or_skip(pollster::block_on(headless_engine_with(TARGET, SIZE, id)))
+    build(SIZE, id)
 }
 
 /// A headless engine lit by the real studio HDR: image-based lighting from an
