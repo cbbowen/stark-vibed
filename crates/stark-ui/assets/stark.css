@@ -3415,15 +3415,47 @@ button.layer-remove:hover {
   cursor: pointer;
 }
 
+/* A row whose control is not a checkbox still owes the gutter its width, so every
+   row's text starts at the same place. The dialog is read down its labels, and a
+   ragged left edge is exactly what a shared gutter prevents. Sized off the check
+   rather than guessed at: 13px is the UA checkbox box, plus its 2px nudge. */
+.setting-check-spacer {
+  flex: none;
+  width: 13px;
+}
+
 /* The whole text column is the `<label>`, so clicking any of it toggles. */
 .setting-text {
   cursor: pointer;
   user-select: none;
 }
 
+/* Flex so a row that carries a readout (`SettingSlider`) can push it to the far
+   edge. The toggles are a single text child, for which this lays out identically. */
 .setting-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   font-size: 13px;
   color: #e8e8ea;
+}
+
+/* The chosen notch's name, at the end of the label line — where the eye lands
+   after reading what the setting is, and far enough from the words that it reads
+   as the *value* rather than as part of the name. Tabular figures so it does not
+   jitter horizontally as the slider moves through them. */
+.setting-value {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+/* The track sits under the description, indented with it, and stops short of the
+   note so the caveat still reads as attached to the setting rather than to the
+   slider. */
+.setting-slider {
+  margin-top: 8px;
 }
 
 .setting-desc {

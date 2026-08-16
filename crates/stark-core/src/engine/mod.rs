@@ -69,14 +69,22 @@ const ROOT_LAYER: LayerId = LayerId(0);
 ///
 /// **This is a bound on a cost that has not been measured**, in the sense
 /// [`MAX_RELEASE_PER_EPOCH`](crate::gpu::TilePool) and the compositor's flush cadence
-/// are: 1 GiB is about 1600 tile pairs, which is a large painting's working set and
-/// several times over what an ordinary session reaches. Raising it costs memory and
+/// are: 2 GiB is about 3200 tile pairs, comfortably past a large painting's working
+/// set and well past what an ordinary session reaches. Raising it costs memory and
 /// buys undo depth; the honest way to change it is to measure a session and say so.
+///
+/// The **default**, not the value — a frontend that knows what it is running on
+/// sets its own ([`ViewCommand::SetHistoryBudget`](crate::command::ViewCommand)), and
+/// Stark's own offers it as a slider. A default has to be safe on the smallest
+/// machine that will meet it and generous on the largest, and where those disagree
+/// it errs generous: reaching this at all takes a long session on a big canvas, and
+/// the cost of being wrong upwards is memory pressure the browser reports, where
+/// being wrong downwards is undo steps silently gone.
 ///
 /// It is a *ceiling on retention*, not on the document. Paint that is on the canvas
 /// now is held by the current state and no amount of trimming frees it — see
 /// [`Engine::trim_history`] for why that is what [`MIN_UNDO_DEPTH`] guards.
-const HISTORY_TILE_BUDGET: u64 = 1 << 30;
+pub const DEFAULT_HISTORY_BUDGET: u64 = 2 << 30;
 
 /// Undo steps the engine will not trim below, however tight memory is.
 ///
@@ -85,9 +93,9 @@ const HISTORY_TILE_BUDGET: u64 = 1 << 30;
 /// layers can exceed any budget with almost no history at all — and there, folding
 /// the undo stack away frees nothing and costs the user every step they might want
 /// back. A floor makes that failure bounded: the worst case is a document that sits
-/// over budget with 32 steps of undo, which is the true answer rather than an
-/// unbounded march to zero.
-const MIN_UNDO_DEPTH: usize = 32;
+/// over budget with [`MIN_UNDO_DEPTH`] steps of undo, which is the true answer rather
+/// than an unbounded march to zero.
+const MIN_UNDO_DEPTH: usize = 10;
 
 /// Longest name that will be recorded, in `char`s. Not a taste limit but a bound
 /// on the log: a layer's name is replicated to every peer and saved with the
@@ -283,6 +291,16 @@ pub struct ObservableState {
     pub shape_opacity: f32,
     /// Whether collaborators' selection outlines are drawn (§17.3).
     pub show_peer_selections: bool,
+    /// How much resident tile memory history retention may hold before undo depth
+    /// is given up, in bytes (§5) — what
+    /// [`ViewCommand::SetHistoryBudget`](crate::command::ViewCommand) sets.
+    ///
+    /// Projected for the reason `tool` and `brush` are: a frontend that has to read
+    /// this back off the engine keeps a copy of its own, and a copy seeded from a
+    /// default rather than from the engine goes stale the moment anything else moves
+    /// it (§4). Stark's own settings dialog reads its slider off this, and its
+    /// stored preference is captured from it.
+    pub history_budget: u64,
     /// The drawing guides (§20.5) — projected so the Drawing Guides panel and
     /// the edit bar read the engine's list rather than a shadow of their own.
     pub guides: Vec<crate::guides::PerspectiveGuide>,
@@ -393,7 +411,7 @@ pub struct Engine {
     preview: live::Preview,
     /// How much resident tile memory history retention may hold before undo depth
     /// is given up (§5) — [`ViewCommand::SetHistoryBudget`], defaulting to
-    /// [`HISTORY_TILE_BUDGET`].
+    /// [`DEFAULT_HISTORY_BUDGET`].
     ///
     /// Per-client and never logged, for the reason the command's doc gives: how much
     /// history a machine can afford is a fact about the machine.
@@ -548,7 +566,7 @@ impl Engine {
             now: 0.0,
             preview: Default::default(),
             doc_revision: 0,
-            history_budget: HISTORY_TILE_BUDGET,
+            history_budget: DEFAULT_HISTORY_BUDGET,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
             authoring: Authoring::solo(),
@@ -622,7 +640,7 @@ impl Engine {
             now: 0.0,
             preview: Default::default(),
             doc_revision: 0,
-            history_budget: HISTORY_TILE_BUDGET,
+            history_budget: DEFAULT_HISTORY_BUDGET,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
             authoring: Authoring::solo(),
@@ -1262,6 +1280,7 @@ impl Engine {
             selection_feather: self.session.selection_feather,
             shape_opacity: self.session.shape_opacity,
             show_peer_selections: self.session.show_peer_selections,
+            history_budget: self.history_budget,
             guides: self.session.guides.clone(),
             media: self.compositor_pipeline.media(),
             environment: self.environment.id(),
@@ -1419,7 +1438,7 @@ impl Engine {
     }
 
     /// Give up the oldest undo steps if history retention is holding more tile
-    /// memory than [`HISTORY_TILE_BUDGET`] allows (§5).
+    /// memory than [`DEFAULT_HISTORY_BUDGET`] allows (§5).
     ///
     /// **Half of what is left, not down to a target.** Halving converges in a few
     /// commits and leaves a cushion, where trimming to exactly the budget would fold

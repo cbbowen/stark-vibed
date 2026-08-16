@@ -67,8 +67,8 @@ pub use command::{InputCommand, InputSample};
 pub use content::{AssetNeed, action_content};
 pub use document::{LayerId, Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use engine::{
-    Background, Engine, ExportPlan, ExportScale, LayerInfo, MatteInfo, ObservableState,
-    PickOptions, PickSource, PresenceTick, Rendered,
+    Background, DEFAULT_HISTORY_BUDGET, Engine, ExportPlan, ExportScale, LayerInfo, MatteInfo,
+    ObservableState, PickOptions, PickSource, PresenceTick, Rendered,
 };
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};

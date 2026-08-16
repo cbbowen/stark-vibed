@@ -66,6 +66,10 @@ pub struct Prefs {
     pub minimal: bool,
     /// Whether collaborators' selections are outlined alongside your own (§17.3).
     pub show_peer_selections: bool,
+    /// How much GPU memory undo history may hold before the oldest steps are given
+    /// up, in bytes (§5) — the one preference that is about the *machine* rather
+    /// than about how Stark behaves, which is why it is the one with a slider.
+    pub history_budget: u64,
 }
 
 impl Default for Prefs {
@@ -83,6 +87,12 @@ impl Default for Prefs {
             // Off, because a second contour over the artwork is paid for on every
             // frame you look at it (§17.3).
             show_peer_selections: false,
+            // The engine's own default, not a second opinion about it: a value
+            // written here would be the one that actually applies, and then there
+            // would be two answers to what Stark does out of the box. `load_engine`
+            // pushes this back in at startup, so the engine's constant has to be
+            // what a browser that has never stored anything gets.
+            history_budget: stark_core::DEFAULT_HISTORY_BUDGET,
         }
     }
 }
@@ -101,6 +111,16 @@ impl Prefs {
                 .peek()
                 .as_ref()
                 .is_some_and(|o| o.show_peer_selections),
+            // Read off the engine's projection rather than off a signal of our own,
+            // for the reason the projection exists: a second copy is one that can
+            // disagree. Before the renderer is up there is nothing to read, and the
+            // default is the honest answer — `save` only ever runs from the dialog,
+            // which cannot be open without one.
+            history_budget: state
+                .obs
+                .peek()
+                .as_ref()
+                .map_or(stark_core::DEFAULT_HISTORY_BUDGET, |o| o.history_budget),
         }
     }
 
@@ -119,6 +139,7 @@ impl Prefs {
             state,
             ViewCommand::SetShowPeerSelections(self.show_peer_selections),
         );
+        dispatch(state, ViewCommand::SetHistoryBudget(self.history_budget));
     }
 }
 
