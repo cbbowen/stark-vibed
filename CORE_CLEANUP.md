@@ -25,7 +25,7 @@ exhaustive on purpose. What follows is the edges.
 | [C2](#c2-non-finite-input-reaches-a-guaranteed-panic) | Non-finite input reaches a guaranteed panic | correctness | small | **done** |
 | [C3](#c3-the-fitters-per-sample-cost-is-linear-in-stroke-length) | The fitter's per-sample cost is linear in stroke length | performance | medium | **part** |
 | [C4](#c4-the-draw-list-is-rebuilt-from-scratch-every-frame) | The draw list is rebuilt from scratch every frame | performance | medium | **part** |
-| [C5](#c5-nothing-ever-retires-history) | Nothing ever retires history | correctness | medium | open |
+| [C5](#c5-nothing-ever-retires-history) | Nothing ever retires history | correctness | medium | **corrected — blocked** |
 | [C6](#c6-every-integration-test-builds-its-own-device) | Every integration test builds its own device | build health | small | **done** |
 | [C7](#c7-engine-is-the-crates-one-god-object) | `Engine` is the crate's one god object | structure | large | open |
 | [C8](#c8-smaller-things) | Smaller things | mixed | small | open |
@@ -60,9 +60,16 @@ exhaustive on purpose. What follows is the edges.
   against ~22 ms on an existing device, so this removes about
   (386 − 34) × 316 ms of construction; the warm suite is now 111 s.
 
-Suggested order for what remains: **C5** (a real unbounded-memory gap, and the
-policy question is the only hard part), then **C7** (which unblocks the rest of
-C4), then **C8**. The rest of C3 is independent and can go any time.
+- **C5** — **not implemented, and the finding is corrected above.** Trimming the
+  log would silently drop early strokes from every saved file and from every
+  joining peer's log, because the log *is* the document; retention is gated on
+  §8's `checkpoints`, which `io.rs` defers. The leak is also smaller than first
+  written: `history`'s snapshots are geometrically spaced, so retention is
+  `O(log n)` states rather than `O(n)`.
+
+Suggested order for what remains: **C7** (which also unblocks the rest of C4),
+then **C8**, then the rest of **C3**, which is independent and can go any time.
+**C5** waits on checkpoints.
 
 ---
 
@@ -280,44 +287,65 @@ and would be a useful gate to keep.
 
 ## C5. Nothing ever retires history
 
-`history::forget_actions` exists upstream and is called nowhere in the workspace.
-`LinearTimeline` keeps every action for the session's life, and `history`'s
-geometrically-spaced snapshot cache keeps ~log₂(n) full `DocState`s — each
-pinning `Arc<GpuTex>` handles for tile versions that can never be shown again.
+> **Corrected while implementing.** The finding as first written proposed a
+> `Timeline::trim` mapping to `history::forget_actions`. **That would silently
+> corrupt saved documents**, and the severity of the leak was overstated. Both
+> halves are set out below, because the original is the more obvious reading and
+> someone will have it again.
 
-CLAUDE.md says:
+`history::forget_actions` exists upstream and is called nowhere in the workspace.
+`LinearTimeline` keeps every action for the session's life. CLAUDE.md says:
 
 > **`DocState` is cheap to clone** … Tiles are copy-on-write, so history
 > retention drives GPU memory reclamation for free.
 
-That is true and it is the elegant part of the design. But it only reclaims if
-something *retires* history, and nothing does. `TilePool::tick` can only trim
-textures that are already on the free list, and a texture a retained snapshot
-holds never reaches it — so the pool's careful peak-demand policy is measuring a
-working set it cannot shrink past.
+That is true, and it only reclaims if something *retires* history. Nothing does.
 
-**The shape of the fix.** A retention policy belongs on the `Timeline` trait,
-beside `seek` and `scrub_range`, because it is the same question they ask: how
-far back can this document travel.
+### Why the obvious fix is unsafe
 
-- `fn trim(&mut self, keep_recent: usize) -> usize` — default `0`, so
-  `ReplicatedTimeline` (whose log is not this client's to truncate, §12) declines
-  by construction, exactly as it declines `seek`.
-- `LinearTimeline::trim` maps to `History::forget_actions`.
-- Driven by a budget the engine can already measure: `TilePool` knows its own
-  `capacity` per format, so "trim when resident tile textures exceed N" is
-  answerable without a new counter.
+**The log is the document** (§1, §8). `Engine::save_bytes` writes
+`timeline.clone_actions()` and the file is replayed onto an *empty* document;
+`engine/collab.rs` sends that same log to a joining peer. `forget_actions(k)`
+folds the oldest `k` actions into `History`'s initial state and drops them from
+`actions()` — which is exactly what the save format and the join path read.
 
-**What has to be said out loud when this lands**, because it is a real change to
-a promise §5 currently makes without qualification: undo depth becomes bounded by
-memory. The *file* still holds the whole log, so nothing is lost from the
-document — only from the live undo stack. That is the honest trade and it belongs
-in §5 rather than only here.
+So a trimmed session would save a file **missing its early strokes entirely**,
+and hand a joining peer a log that can never converge. Not a degraded save: a
+wrong one, and one nothing on screen would reveal, because the in-memory state
+still shows the whole painting.
 
-**How you would know.** A test that commits N strokes over disjoint tiles, trims,
-and asserts `TilePool` capacity falls — which needs the free-list to actually
-receive the textures, so it doubles as a check that snapshot retention was what
-was holding them.
+The initial state a trim folds into is pixels, and the only place the format has
+for pixels is `checkpoints`, which §8 lists and `io.rs` defers ("the advisory
+raster `checkpoints` of §8 are deferred"). **Retention is therefore gated on
+checkpoints**, not on a `Timeline` method — the method is the last step, not the
+first.
+
+### And the leak is smaller than it looked
+
+Worth correcting because it changes the priority. `history` keeps its snapshots
+**geometrically spaced**, so the retained `DocState`s are `O(log n)` and not
+`O(n)` — and each pins only the tiles that later changed, since copy-on-write
+shares the rest. The action log itself does grow linearly, but a `CommitStroke`
+is a fitted control-point list: hundreds of bytes, so tens of thousands of
+strokes are tens of megabytes of CPU memory.
+
+That is a real cost for a long session on a tab with a hard ceiling, and it is
+still worth fixing. It is not the unbounded GPU growth the original text implied.
+
+### What to do instead
+
+1. Land `checkpoints` (§8) — a cached raster of the folded-in initial state, and
+   the format's own answer to this question.
+2. *Then* add `Timeline::trim`, defaulting to a no-op so `ReplicatedTimeline`
+   declines by construction, exactly as it declines `seek`.
+3. Say out loud in §5 what it costs: undo depth becomes bounded by memory. With
+   checkpoints the *file* still opens to the same picture, so nothing is lost
+   from the document — only from the live undo stack.
+
+**How you would know.** A round-trip test is the one that matters and the one
+that would have caught the unsafe version: commit N strokes, trim, save, load
+into a fresh engine, and assert the picture is identical. A pool-capacity test
+measures the win; this measures whether the win cost the document.
 
 ---
 
