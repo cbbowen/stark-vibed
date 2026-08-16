@@ -22,8 +22,7 @@
 
 use dioxus::prelude::*;
 
-use crate::state::{AppState, GradientTarget, dispatch};
-use stark_core::command::ViewCommand;
+use crate::state::AppState;
 
 /// The composing mode in flight.
 ///
@@ -100,7 +99,7 @@ pub fn leave(state: AppState) {
     let mut transform = state.transform;
     let dropped = transform.write().take();
     if dropped.is_some() {
-        dispatch(state, ViewCommand::PreviewTransform(None));
+        crate::preview::TRANSFORM.clear(state);
     }
 
     // View state, previewed by being live: there is nothing to drop, only the
@@ -117,14 +116,12 @@ pub fn leave(state: AppState) {
         armed.set(false);
     }
 
-    // Which preview the fill was showing depends on what it was aimed at, so
-    // the abandoned mode is what says which to drop (§22.4).
+    // Which preview the fill was showing depends on what it was aimed at (§22.4)
+    // — and the module that composes it is the one that answers, rather than a
+    // second `match` here that had to be kept in step with the two over there.
     let mut gradient_bar = state.gradient_bar;
     let abandoned = gradient_bar.write().take();
     if let Some(ui) = abandoned {
-        match ui.target {
-            GradientTarget::Fill { .. } => dispatch(state, ViewCommand::PreviewFill(None)),
-            GradientTarget::Matte { .. } => dispatch(state, ViewCommand::PreviewMattePaint(None)),
-        }
+        crate::panels::gradient_bar::clear_preview(state, &ui.target);
     }
 }

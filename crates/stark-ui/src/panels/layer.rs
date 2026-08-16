@@ -44,10 +44,10 @@ use crate::panels::filter::AddFilterButton;
 use crate::panels::frame::AddFrameButton;
 use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, layer_boxes, select_all};
+use crate::preview;
 use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch, use_obs};
-use crate::widgets::settle;
-use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
+use stark_core::command::{DocCommand, PeerCommand};
 use stark_core::document::{BlendMode, DRAGO_K_RANGE, Place};
 use stark_core::{LayerId, LayerInfo};
 
@@ -235,12 +235,12 @@ pub fn LayerPanel() -> Element {
     // same browser gesture. It is the *value*, not a flag, so the commit says what the
     // last preview showed rather than reading it back off a projection that the
     // in-flight preview is itself feeding (§14.6).
-    let mut fading = use_signal(|| None::<f32>);
+    let fading = use_signal(|| None::<(LayerId, f32)>);
     // The blend mode being previewed by a Bend drag, on `fading`'s pattern and for its
     // reasons. The whole mode rather than the number, because that is what
     // `SetLayerBlend` takes — a parameter alone would have to be put back into a mode
     // at commit time, off the very projection the preview is feeding.
-    let mut bending = use_signal(|| None::<BlendMode>);
+    let bending = use_signal(|| None::<(LayerId, BlendMode)>);
 
     // The tree and which row is selected, through **one** memo (`state::use_obs`).
     // Both move on a commit; nothing here has anything to say about a pan or a
@@ -442,17 +442,15 @@ pub fn LayerPanel() -> Element {
                     // both follow the pointer.
                     oninput: move |e| {
                         if let Ok(v) = e.value().parse::<f32>() {
-                            let opacity = v / 100.0;
-                            fading.set(Some(opacity));
-                            dispatch(state, ViewCommand::PreviewLayerOpacity(Some((l.id, opacity))));
+                            preview::LAYER_OPACITY.during(state, fading, (l.id, v / 100.0));
                         }
                     },
                     // Three ways to end, because a range control has three — see
-                    // `widgets::settle`, which holds the why (and is idempotent, so
+                    // `Preview::settle`, which holds the why (and is idempotent, so
                     // arriving twice is free).
-                    onchange: move |_| settle(state, fading, |v| DocCommand::SetLayerOpacity(l.id, v)),
-                    onpointerup: move |_| settle(state, fading, |v| DocCommand::SetLayerOpacity(l.id, v)),
-                    onpointercancel: move |_| settle(state, fading, |v| DocCommand::SetLayerOpacity(l.id, v)),
+                    onchange: move |_| preview::LAYER_OPACITY.settle(state, fading),
+                    onpointerup: move |_| preview::LAYER_OPACITY.settle(state, fading),
+                    onpointercancel: move |_| preview::LAYER_OPACITY.settle(state, fading),
                 }
             }
             div { class: "slider-row marked",
@@ -551,19 +549,18 @@ pub fn LayerPanel() -> Element {
                         // Inert with its mode: a bend over nothing bends nothing.
                         disabled: blend_inert,
                         // Previewed per sample, committed once when the drag settles —
-                        // the same bargain, through the same `settle`. The whole mode
+                        // the same bargain, through the same pair. The whole mode
                         // travels rather than the number, because that is what both
                         // ends of the bargain take.
                         oninput: move |e| {
                             if let Ok(stops) = e.value().parse::<f32>() {
                                 let next = BlendMode::Drago { k: stops.exp2() };
-                                bending.set(Some(next));
-                                dispatch(state, ViewCommand::PreviewLayerBlend(Some((l.id, next))));
+                                preview::LAYER_BLEND.during(state, bending, (l.id, next));
                             }
                         },
-                        onchange: move |_| settle(state, bending, |m| DocCommand::SetLayerBlend(l.id, m)),
-                        onpointerup: move |_| settle(state, bending, |m| DocCommand::SetLayerBlend(l.id, m)),
-                        onpointercancel: move |_| settle(state, bending, |m| DocCommand::SetLayerBlend(l.id, m)),
+                        onchange: move |_| preview::LAYER_BLEND.settle(state, bending),
+                        onpointerup: move |_| preview::LAYER_BLEND.settle(state, bending),
+                        onpointercancel: move |_| preview::LAYER_BLEND.settle(state, bending),
                     }
                 }
             }

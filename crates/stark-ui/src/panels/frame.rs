@@ -31,8 +31,9 @@ use crate::icons::{self, icon, label};
 use crate::input::page_xy;
 use crate::layout::chrome_class;
 use crate::panels::color::OklabPicker;
+use crate::preview;
 use crate::state::{AppState, dispatch};
-use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
+use stark_core::command::{DocCommand, PeerCommand};
 use stark_core::document::{MattePaint, MatteRegion, Place};
 use stark_core::geom::Vec2;
 use stark_core::{LayerId, LayerInfo, MatteInfo};
@@ -436,14 +437,12 @@ pub fn FrameBar() -> Element {
                             // undo step — and one replicated action — rather than one
                             // per color the pointer crossed on the way (§15.7).
                             onchange: move |rgb: [f32; 3]| {
-                                dispatch(state, ViewCommand::PreviewMattePaint(
-                                    Some((info.id, MattePaint::Solid(rgb))),
-                                ));
+                                preview::MATTE_PAINT
+                                    .show(state, (info.id, MattePaint::Solid(rgb)));
                             },
                             oncommit: move |rgb: [f32; 3]| {
-                                dispatch(state, DocCommand::SetMattePaint(
-                                    info.id, MattePaint::Solid(rgb),
-                                ));
+                                preview::MATTE_PAINT
+                                    .commit(state, (info.id, MattePaint::Solid(rgb)));
                             },
                         }
                     }
@@ -692,21 +691,21 @@ pub fn FrameOverlay() -> Element {
                                 let (min, max) =
                                     d.grip.apply(d.start, to_canvas(page_xy(&e), d.origin));
                                 // Previewed, not committed: one undo step per drag,
-                                // not one per pointer move (§15.7).
-                                dispatch(
-                                    state,
-                                    ViewCommand::PreviewMatteRect(Some((info.id, min, max))),
-                                );
+                                // not one per pointer move (§15.7). The release
+                                // below lays it through the same pair, so the two
+                                // cannot come to describe different rects
+                                // (`crate::preview`).
+                                preview::MATTE_RECT.show(state, (info.id, min, max));
                             },
                             onpointerup: move |e| {
                                 let Some(d) = drag.take() else { return };
                                 let (min, max) =
                                     d.grip.apply(d.start, to_canvas(page_xy(&e), d.origin));
-                                dispatch(state, DocCommand::SetMatteRect(info.id, min, max));
+                                preview::MATTE_RECT.commit(state, (info.id, min, max));
                             },
                             onpointercancel: move |_| {
                                 if drag.take().is_some() {
-                                    dispatch(state, ViewCommand::PreviewMatteRect(None));
+                                    preview::MATTE_RECT.clear(state);
                                 }
                             },
                         }

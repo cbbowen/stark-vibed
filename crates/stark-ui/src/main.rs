@@ -34,6 +34,7 @@ mod panels;
 mod platform;
 mod prefs;
 mod presets;
+mod preview;
 mod render;
 mod settings;
 mod shapes;

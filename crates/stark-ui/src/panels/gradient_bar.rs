@@ -26,9 +26,9 @@ use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
 use crate::platform::capture_pointer;
-use crate::state::{AppState, GradientAxisKind, GradientTarget, GradientUi, dispatch};
+use crate::preview;
+use crate::state::{AppState, GradientAxisKind, GradientTarget, GradientUi};
 use stark_core::Gradient;
-use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::document::{FillOp, GradientAxis, GradientParcel, MattePaint};
 use stark_core::geom::Vec2;
 
@@ -123,19 +123,18 @@ fn default_axis_rect(state: AppState, layer: stark_core::LayerId) -> (Vec2, Vec2
 /// Update the gesture and show its consequence — every mutation funnels through
 /// here, so the preview can never lag the state (the transform's rule).
 fn update(state: AppState, ui: GradientUi) {
-    let command = match (&ui.target, preview_payload(state, &ui)) {
-        (GradientTarget::Fill { layer, .. }, Payload::Fill(op)) => {
-            ViewCommand::PreviewFill(Some((*layer, op)))
-        }
-        (GradientTarget::Fill { .. }, _) => ViewCommand::PreviewFill(None),
-        (GradientTarget::Matte { layer, .. }, Payload::Matte(paint)) => {
-            ViewCommand::PreviewMattePaint(Some((*layer, paint)))
-        }
-        (GradientTarget::Matte { .. }, _) => ViewCommand::PreviewMattePaint(None),
-    };
+    // Resolved against `ui` before it moves into the signal.
+    let laid = compose(state, &ui);
+    if laid.is_none() {
+        // Nothing composed yet — drop whatever this target was showing. Order is
+        // free here, unlike the show below: there is no preview to lag the state.
+        clear_preview(state, &ui.target);
+    }
     let mut mode = state.gradient_bar;
     mode.set(Some(ui));
-    dispatch(state, command);
+    if let Some(laid) = laid {
+        laid.show(state);
+    }
 }
 
 /// Re-preview the composing gesture, if one is composing — how a gradient
@@ -153,30 +152,69 @@ pub fn refresh(state: AppState) {
     update(state, ui);
 }
 
-/// What the current gesture would commit, by target.
-enum Payload {
-    Fill(FillOp),
-    Matte(MattePaint),
-    Nothing,
+/// A composed ramp, ready to go: **which layer, and the paint it lays there**.
+///
+/// The layer and the payload travel together, and that is the point. They used to
+/// be resolved apart — a payload enum matched against the target it came from —
+/// so every site had to spell out two arms that could not happen (a fill payload
+/// on a matte target) alongside the two that could. Carried together the mismatch
+/// is not a case to handle; it is a value that cannot be built.
+enum Laid {
+    Fill(stark_core::LayerId, FillOp),
+    Matte(stark_core::LayerId, MattePaint),
 }
 
-fn preview_payload(state: AppState, ui: &GradientUi) -> Payload {
-    let Some(axis) = ui.axis() else {
-        return Payload::Nothing;
-    };
-    match &ui.target {
-        GradientTarget::Fill { .. } => match gradients::current(state) {
-            Some(gradient) => Payload::Fill(FillOp::gradient_of_selection(GradientParcel {
-                gradient,
-                axis,
-            })),
-            None => Payload::Nothing,
-        },
-        GradientTarget::Matte { gradient, .. } => Payload::Matte(MattePaint::Gradient {
-            gradient: gradient.clone(),
-            axis,
-        }),
+impl Laid {
+    /// Show it on the canvas, logging nothing.
+    fn show(self, state: AppState) {
+        match self {
+            Laid::Fill(layer, op) => preview::FILL.show(state, (layer, op)),
+            Laid::Matte(layer, paint) => preview::MATTE_PAINT.show(state, (layer, paint)),
+        }
     }
+
+    /// Lay it down — one undo step. The engine refuses an unchanged matte paint,
+    /// so re-opening a gradient matte and pressing Done spends none.
+    fn commit(self, state: AppState) {
+        match self {
+            Laid::Fill(layer, op) => preview::FILL.commit(state, (layer, op)),
+            Laid::Matte(layer, paint) => preview::MATTE_PAINT.commit(state, (layer, paint)),
+        }
+    }
+}
+
+/// Drop whichever preview a gesture aimed at `target` is showing.
+///
+/// The one place that answers "which preview does this target use" for the case
+/// where there is no [`Laid`] to ask — nothing composed yet, or the mode abandoned
+/// (`crate::modes`). Public for that second caller.
+pub fn clear_preview(state: AppState, target: &GradientTarget) {
+    match target {
+        GradientTarget::Fill { .. } => preview::FILL.clear(state),
+        GradientTarget::Matte { .. } => preview::MATTE_PAINT.clear(state),
+    }
+}
+
+/// What the current gesture would lay, or `None` before the drag has composed an
+/// axis (or with no ramp in the library to lay).
+fn compose(state: AppState, ui: &GradientUi) -> Option<Laid> {
+    let axis = ui.axis()?;
+    Some(match &ui.target {
+        GradientTarget::Fill { layer } => Laid::Fill(
+            *layer,
+            FillOp::gradient_of_selection(GradientParcel {
+                gradient: gradients::current(state)?,
+                axis,
+            }),
+        ),
+        GradientTarget::Matte { layer, gradient } => Laid::Matte(
+            *layer,
+            MattePaint::Gradient {
+                gradient: gradient.clone(),
+                axis,
+            },
+        ),
+    })
 }
 
 /// Leave the mode: commit the composed result, or just drop the preview when
@@ -187,19 +225,9 @@ fn preview_payload(state: AppState, ui: &GradientUi) -> Payload {
 fn finish(state: AppState) {
     let ui = state.gradient_bar.peek().clone();
     if let Some(ui) = ui {
-        match (&ui.target, preview_payload(state, &ui)) {
-            (GradientTarget::Fill { layer, .. }, Payload::Fill(op)) => {
-                dispatch(state, DocCommand::Fill { layer: *layer, op });
-            }
-            (GradientTarget::Matte { layer, .. }, Payload::Matte(paint)) => {
-                // The engine refuses an unchanged paint, so re-opening a
-                // gradient matte and pressing Done spends no undo step.
-                dispatch(state, DocCommand::SetMattePaint(*layer, paint));
-            }
-            (GradientTarget::Fill { .. }, _) => dispatch(state, ViewCommand::PreviewFill(None)),
-            (GradientTarget::Matte { .. }, _) => {
-                dispatch(state, ViewCommand::PreviewMattePaint(None));
-            }
+        match compose(state, &ui) {
+            Some(laid) => laid.commit(state),
+            None => clear_preview(state, &ui.target),
         }
     }
     let mut mode = state.gradient_bar;

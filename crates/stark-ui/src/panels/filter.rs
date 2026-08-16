@@ -60,10 +60,10 @@ use crate::icons::{self, icon, label};
 use crate::layout::{PanelId, PanelLayout, chrome_class};
 use crate::panels::color::ab_field_data_url;
 use crate::platform::capture_pointer;
+use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
-use crate::widgets::settle;
 use stark_core::color::{dispersion_weight, linear_to_srgb};
-use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
+use stark_core::command::{DocCommand, PeerCommand};
 use stark_core::document::{CONTRAST_PIVOT, ChromaticAberration, ColorAdjust, Filter};
 use stark_core::gradient::Gradient;
 use stark_core::{LayerId, LayerInfo};
@@ -336,7 +336,7 @@ fn knob_rows<F: Copy + 'static>(
     current: F,
     knobs: &'static [Knob<F>],
     wrap: fn(F) -> Filter,
-    mut tuning: Signal<Option<Filter>>,
+    tuning: Signal<Option<(LayerId, Filter)>>,
 ) -> Element {
     rsx! {
         for knob in knobs {
@@ -366,16 +366,15 @@ fn knob_rows<F: Copy + 'static>(
                     oninput: move |e| {
                         if let Ok(v) = e.value().parse::<f32>() {
                             let next = wrap((knob.set)(current, v * knob.scale));
-                            tuning.set(Some(next.clone()));
-                            dispatch(state, ViewCommand::PreviewFilter(Some((id, next))));
+                            preview::FILTER.during(state, tuning, (id, next));
                         }
                     },
                     // Three ways to end, because a range control has three — see
-                    // `widgets::settle`, which holds the why (and is idempotent,
+                    // `Preview::settle`, which holds the why (and is idempotent,
                     // so arriving twice is free).
-                    onchange: move |_| settle(state, tuning, move |f| DocCommand::SetFilter(id, f)),
-                    onpointerup: move |_| settle(state, tuning, move |f| DocCommand::SetFilter(id, f)),
-                    onpointercancel: move |_| settle(state, tuning, move |f| DocCommand::SetFilter(id, f)),
+                    onchange: move |_| preview::FILTER.settle(state, tuning),
+                    onpointerup: move |_| preview::FILTER.settle(state, tuning),
+                    onpointercancel: move |_| preview::FILTER.settle(state, tuning),
                 }
             }
         }
@@ -502,7 +501,7 @@ fn drag_dial(
     state: AppState,
     id: LayerId,
     c: ColorAdjust,
-    mut tuning: Signal<Option<Filter>>,
+    tuning: Signal<Option<(LayerId, Filter)>>,
     grab: Grab,
     e: &Event<PointerData>,
 ) {
@@ -546,8 +545,7 @@ fn drag_dial(
     // preview a setting the commit would then clamp: at the stops the canvas, the
     // readout and the log all say the same number.
     let next = Filter::Color(next).sanitized();
-    tuning.set(Some(next.clone()));
-    dispatch(state, ViewCommand::PreviewFilter(Some((id, next))));
+    preview::FILTER.during(state, tuning, (id, next));
 }
 
 /// The color filter's `hue`, `saturation` and `tint` as the one thing they are: the
@@ -569,7 +567,7 @@ fn chroma_dial(
     state: AppState,
     id: LayerId,
     c: ColorAdjust,
-    tuning: Signal<Option<Filter>>,
+    tuning: Signal<Option<(LayerId, Filter)>>,
     mut grabbed: Signal<Option<Grab>>,
 ) -> Element {
     let (ox, oy) = dial_xy([0.0, 0.0]);
@@ -605,7 +603,7 @@ fn chroma_dial(
             ],
         }
     };
-    let commit = move |_| settle(state, tuning, move |f| DocCommand::SetFilter(id, f));
+    let commit = move |_| preview::FILTER.settle(state, tuning);
 
     rsx! {
         div { class: "filter-dial",
@@ -630,7 +628,7 @@ fn chroma_dial(
                         drag_dial(state, id, c, tuning, grab, &e);
                     }
                 },
-                // Three ways to end, for `widgets::settle`'s reasons; clearing the grab
+                // Three ways to end, for `Preview::settle`'s reasons; clearing the grab
                 // is what makes a stray move afterwards not a drag.
                 onpointerup: move |e| { grabbed.set(None); commit(e); },
                 onpointercancel: move |e| { grabbed.set(None); commit(e); },
@@ -820,7 +818,7 @@ fn drag_fringe(
     state: AppState,
     id: LayerId,
     c: ChromaticAberration,
-    mut tuning: Signal<Option<Filter>>,
+    tuning: Signal<Option<(LayerId, Filter)>>,
     e: &Event<PointerData>,
 ) {
     let p = e.element_coordinates();
@@ -846,8 +844,7 @@ fn drag_fringe(
         },
     })
     .sanitized();
-    tuning.set(Some(next.clone()));
-    dispatch(state, ViewCommand::PreviewFilter(Some((id, next))));
+    preview::FILTER.during(state, tuning, (id, next));
 }
 
 /// The chromatic filter's `spread` and `angle` as the one thing they are: the vector
@@ -869,7 +866,7 @@ fn fringe_pad(
     state: AppState,
     id: LayerId,
     c: ChromaticAberration,
-    tuning: Signal<Option<Filter>>,
+    tuning: Signal<Option<(LayerId, Filter)>>,
     mut pulling: Signal<bool>,
 ) -> Element {
     let (bx, by) = pad_xy(c);
@@ -881,7 +878,7 @@ fn fringe_pad(
     // of "no wavelength moves" — but the *stops* still have to describe a real line,
     // so the bar is simply omitted rather than degenerating.
     let dispersed = c.spread > 0.0;
-    let commit = move |_| settle(state, tuning, move |f| DocCommand::SetFilter(id, f));
+    let commit = move |_| preview::FILTER.settle(state, tuning);
 
     rsx! {
         div { class: "filter-fringe",
@@ -1095,7 +1092,7 @@ pub fn FilterBar() -> Element {
     //
     // **Before** the early return, because a hook that runs only when a filter is
     // selected is a hook that runs sometimes.
-    let tuning = use_signal(|| None::<Filter>);
+    let tuning = use_signal(|| None::<(LayerId, Filter)>);
     // The dial's half of the same story: which handle a drag has hold of, `None`
     // between drags. Here rather than inside [`chroma_dial`] for the reason above —
     // the dial is mounted for one kind of filter, and a hook that runs for one kind

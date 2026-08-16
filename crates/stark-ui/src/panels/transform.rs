@@ -22,7 +22,7 @@
 //! lossy carry would silently change what "Done" produces.
 //!
 //! Everything before "Done" is a **lossless preview**: every change previews
-//! through `ViewCommand::PreviewTransform` — the same renderer the commit
+//! through `preview::TRANSFORM` — the same renderer the commit
 //! runs, over the committed tiles, so what is on screen is exactly what "Done"
 //! will produce. "Done" commits a single `DocCommand::Transform`: one undo
 //! step per gesture, like the frame drag (§15.7).
@@ -43,8 +43,8 @@ use crate::gesture::{
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
-use crate::state::{AppState, dispatch};
-use stark_core::command::{DocCommand, ViewCommand};
+use crate::preview;
+use crate::state::AppState;
 use stark_core::document::TransformMap;
 use stark_core::geom::{Vec2, ViewTransform};
 
@@ -124,10 +124,7 @@ fn inflate(rect: (Vec2, Vec2), min: f32) -> (Vec2, Vec2) {
 fn update(state: AppState, ui: TransformUi) {
     let mut mode = state.transform;
     mode.set(Some(ui));
-    dispatch(
-        state,
-        ViewCommand::PreviewTransform(Some((ui.layer(), ui.map()))),
-    );
+    preview::TRANSFORM.show(state, (ui.layer(), ui.map()));
 }
 
 /// The three chips on the bar. A selector enum of its own (rather than
@@ -235,7 +232,7 @@ fn switch_family(state: AppState, ui: TransformUi, to: Family) {
         TransformMap::Perspective(p) => p.image_aabb(),
         TransformMap::Warp(w) => w.image_aabb().unwrap_or((w.min, w.max)),
     };
-    dispatch(state, DocCommand::Transform { layer, map });
+    preview::TRANSFORM.commit(state, (layer, map));
     let next = fresh(moved, zoom);
     let mut mode = state.transform;
     mode.set(Some(next));
@@ -324,14 +321,11 @@ pub fn TransformBar() -> Element {
                     if ui.is_identity() {
                         // Nothing changed: just drop the preview rather than
                         // spending an undo step on a no-op.
-                        dispatch(state, ViewCommand::PreviewTransform(None));
+                        preview::TRANSFORM.clear(state);
                     } else {
                         // The commit clears the preview itself, so there is no
                         // intermediate frame showing the untransformed document.
-                        dispatch(state, DocCommand::Transform {
-                            layer: ui.layer(),
-                            map: ui.map(),
-                        });
+                        preview::TRANSFORM.commit(state, (ui.layer(), ui.map()));
                     }
                     let mut mode = state.transform;
                     mode.set(None);

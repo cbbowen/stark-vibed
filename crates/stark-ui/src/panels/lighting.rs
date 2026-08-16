@@ -4,10 +4,11 @@
 use dioxus::prelude::*;
 
 use crate::panels::color::OklabPicker;
+use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, with_engine_quiet};
 use crate::widgets::Slider;
 use dioxus::dioxus_core::spawn_forever;
-use stark_core::command::{DocCommand, ViewCommand};
+use stark_core::command::ViewCommand;
 use stark_core::{EnvironmentId, MediaParams, SurfaceId};
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
@@ -109,8 +110,8 @@ pub fn LightingPanel() -> Element {
                     // the substrate color is document state, so one drag has to cost
                     // one undo step (and one replicated action) rather than one per
                     // pointer sample — the same bargain the frame drag makes.
-                    onchange: move |rgb: [f32; 3]| preview_background(state, rgb),
-                    oncommit: move |rgb: [f32; 3]| update_background(state, rgb),
+                    onchange: move |rgb: [f32; 3]| preview::BACKGROUND.show(state, rgb),
+                    oncommit: move |rgb: [f32; 3]| preview::BACKGROUND.commit(state, rgb),
                 }
             }
         }
@@ -164,20 +165,6 @@ fn update_media(state: AppState, f: impl FnOnce(&mut MediaParams)) {
         .unwrap_or_default();
     f(&mut p);
     dispatch(state, ViewCommand::SetMediaParams(p));
-}
-
-/// Show a substrate color without logging it — every sample of a picker drag
-/// (§15.5). The engine renders it and reports it back through
-/// `observe`, so the canvas and the swatch both track the pointer.
-fn preview_background(state: AppState, rgb: [f32; 3]) {
-    dispatch(state, ViewCommand::PreviewBackground(Some(rgb)));
-}
-
-/// Commit the canvas substrate color (straight sRGB) — once, when the pick ends.
-/// A logged document edit, not a view setting: the ground a piece was painted on is
-/// part of what it is, and it is saved with it (§15.5).
-fn update_background(state: AppState, rgb: [f32; 3]) {
-    dispatch(state, DocCommand::SetBackground(rgb));
 }
 
 /// The bundled HDR behind an image-backed environment (`None` for the procedural
