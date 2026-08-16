@@ -1073,19 +1073,22 @@ fn CommandRail() -> Element {
 #[component]
 fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
-    let current = state
-        .renderer
-        .read()
-        .as_ref()
-        .map(|r| r.color_space())
-        .unwrap_or(ColorSpaceId::Oklab);
+    // Off the projection, not off the renderer. Both facts are in `obs`, and
+    // reading the renderer signal in a render body subscribes the dialog to every
+    // engine write — so it re-rendered on every command for the whole time it was
+    // open, to re-seed two `use_signal`s that are seeded once (U9, and `PeerCursors`
+    // carries the same warning).
+    let document = use_obs(state, |o| (o.color_space, o.surface));
+    let (current, current_surface) = match document() {
+        Some((space, surface)) => (space, Some(surface)),
+        None => (ColorSpaceId::Oklab, None),
+    };
     let choice = use_signal(|| current);
 
     // The ground is chosen by catalog *name*, not by id: an id is the hash of a
     // height map, so it is not knowable until that map has been fetched — and this
     // dialog runs before any of them have (§6.4, `crate::grounds`). The name is
     // resolved to an id at Create, once the bytes are in hand.
-    let current_surface = state.renderer.read().as_ref().map(|r| r.surface());
     let current_ground = grounds::resolved(state)
         .into_iter()
         .find(|(_, id)| *id == current_surface)

@@ -606,10 +606,27 @@ pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), St
     Ok((bytes, false))
 }
 
+/// The standard base64 alphabet, and its inverse.
+///
+/// The inverse is built **at compile time**: [`base64_decode`] used to fill a
+/// 256-byte table on every call, which is once per stored entry every time a
+/// library is loaded — a table that is the same table each time, from an alphabet
+/// that is a constant.
+const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const INVERSE: [u8; 256] = {
+    let mut table = [255u8; 256];
+    let mut i = 0;
+    while i < ALPHABET.len() {
+        table[ALPHABET[i] as usize] = i as u8;
+        i += 1;
+    }
+    table
+};
+
 /// Standard base64 (with padding) — small, so data URLs and `localStorage`
 /// blobs stay dependency-free.
 pub fn base64_encode(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const T: &[u8; 64] = ALPHABET;
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let n = (chunk[0] as u32) << 16
@@ -634,18 +651,13 @@ pub fn base64_encode(data: &[u8]) -> String {
 /// Standard-alphabet base64 → bytes, the inverse of [`base64_encode`].
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut lookup = [255u8; 256];
-    for (i, &c) in ALPHABET.iter().enumerate() {
-        lookup[c as usize] = i as u8;
-    }
     let mut out = Vec::with_capacity(text.len() / 4 * 3);
     let (mut acc, mut bits) = (0u32, 0u32);
     for &c in text.as_bytes() {
         if c == b'=' {
             break;
         }
-        let v = lookup[c as usize];
+        let v = INVERSE[c as usize];
         if v == 255 {
             return Err("invalid base64".to_string());
         }

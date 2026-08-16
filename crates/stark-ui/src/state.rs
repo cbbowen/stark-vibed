@@ -1757,6 +1757,16 @@ pub fn resize(state: AppState, width: u32, height: u32) {
 
 /// Read the current brush, mutate a copy, and commit it (releasing the `obs`
 /// read guard before `dispatch` writes — avoids an AlreadyBorrowed panic).
+///
+/// **The loud door, deliberately, even though this runs at pointer rate** — the
+/// brush-tuning drag and the eyedropper both come through here on every move.
+/// [`dispatch_sample`] would be wrong: a tune drag's whole answer is read off the
+/// Brush panel's sliders (`input::Tune`), and the eyedropper's off the Color
+/// panel's swatch, so the publish is not overhead here but the point of the
+/// gesture. What made it expensive was that *every* panel woke for it; that is
+/// [`use_obs`]'s business, and the panels that do not show a brush now sleep
+/// through this. What is left is `observe`'s own walk of the layer tree, which
+/// only splitting the projection by cadence can remove (U1).
 pub fn update_brush(state: AppState, f: impl FnOnce(&mut BrushParams)) {
     let brush = state.obs.read().as_ref().map(|o| o.brush);
     if let Some(mut brush) = brush {
