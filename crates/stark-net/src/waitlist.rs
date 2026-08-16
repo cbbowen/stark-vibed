@@ -34,6 +34,11 @@
 //! that locks both mutexes, so the order it locks them in — parked, then mirror
 //! — is a fact about one file instead of a convention every call site could
 //! break.
+//!
+//! What this file does *not* decide is how hard to try. Whether an action waits is
+//! here; how long the fetch it waits on keeps going, and who it asks, is
+//! [`content`](crate::content) — the two halves of one question, split where the
+//! brush and the ground stop behaving alike.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};

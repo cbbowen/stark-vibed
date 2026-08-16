@@ -14,8 +14,8 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-#[cfg(feature = "webrtc")]
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use iroh::endpoint::{Connection, presets};
@@ -24,8 +24,10 @@ use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use iroh_blobs::store::mem::MemStore;
 use iroh_blobs::{BlobsProtocol, Hash};
 use iroh_gossip::net::Gossip;
+use tokio::sync::Notify;
 
 use crate::Result;
+use crate::content::ContentSource;
 use crate::mirror::Served;
 use crate::proto::{self, CollabProto, Request};
 use crate::session::NetOptions;
@@ -165,20 +167,6 @@ impl Dialer {
         hash
     }
 
-    /// Fetch one blob from `provider`, hash-verified into the local store
-    /// (so this peer can serve it onward), and return its bytes.
-    pub async fn fetch_blob(&self, provider: EndpointId, hash: Hash) -> Result<bytes::Bytes> {
-        let conn = self
-            .endpoint
-            .connect(
-                self.dial_addr(EndpointAddr::new(provider)),
-                iroh_blobs::ALPN,
-            )
-            .await?;
-        self.blobs.remote().fetch(conn, hash).await?;
-        Ok(self.blobs.get_bytes(hash).await?)
-    }
-
     /// With public infrastructure, wait (bounded) for the relay handshake so
     /// the ticket carries a relay URL; local-only tickets carry the bound
     /// sockets, loopback-normalized.
@@ -214,6 +202,25 @@ impl Dialer {
     }
 }
 
+/// The real content source: hash-verified blob fetches over the session's
+/// endpoint. See [`ContentSource`] for why the resolver names the trait and not
+/// this.
+impl ContentSource for Dialer {
+    /// Fetched into the local store as well as returned, so this peer can serve
+    /// the content onward.
+    async fn fetch_blob(&self, provider: EndpointId, hash: Hash) -> Result<bytes::Bytes> {
+        let conn = self
+            .endpoint
+            .connect(
+                self.dial_addr(EndpointAddr::new(provider)),
+                iroh_blobs::ALPN,
+            )
+            .await?;
+        self.blobs.remote().fetch(conn, hash).await?;
+        Ok(self.blobs.get_bytes(hash).await?)
+    }
+}
+
 pub(crate) struct Catchup {
     conn: Connection,
 }
@@ -225,6 +232,60 @@ impl Catchup {
 
     pub async fn close(self) {
         self.conn.close(0u8.into(), b"done");
+    }
+}
+
+/// A session's stop signal, held by everything it spawned.
+///
+/// What this replaces is an inference. The unbounded retries used to key off
+/// `Waitlist::is_live` — "does the UI still hold the `Events` receiver" — which is
+/// a frontend convention standing in for a session fact, and left
+/// [`CollabSession::shutdown`](crate::CollabSession::shutdown) cancelling nothing
+/// it had spawned. Both facts are real and either one ends the work, so the
+/// resolver now asks both; this is the one that shutting down actually controls.
+///
+/// [`sleep`](Cancel::sleep) is the reason it carries a `Notify` rather than being
+/// a bare flag: a ground's backoff widens to half a minute, and a session that has
+/// ended should not wait out the rest of one.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Cancel(Arc<CancelInner>);
+
+#[derive(Debug, Default)]
+struct CancelInner {
+    stopped: AtomicBool,
+    woken: Notify,
+}
+
+impl Cancel {
+    /// End the session's background work. Idempotent.
+    pub fn stop(&self) {
+        self.0.stopped.store(true, Ordering::Relaxed);
+        self.0.woken.notify_waiters();
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.0.stopped.load(Ordering::Relaxed)
+    }
+
+    /// Sleep, unless the session ends first — `false` if it did.
+    pub async fn sleep(&self, duration: Duration) -> bool {
+        // Registered before the check, so a `stop` racing this cannot slip between
+        // the two and leave the sleeper waiting on a notification already sent.
+        let woken = self.0.woken.notified();
+        if self.stopped() {
+            return false;
+        }
+        n0_future::future::race(
+            async {
+                n0_future::time::sleep(duration).await;
+                true
+            },
+            async {
+                woken.await;
+                false
+            },
+        )
+        .await
     }
 }
 

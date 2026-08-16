@@ -57,7 +57,9 @@ data-encoding = "2"
 [dev-dependencies]
 # `test-utils` provides the local relay server for the webrtc migration test.
 iroh = { version = "1", features = ["test-utils"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+# `test-util` pauses the clock: the asset retry backoff widens to half a minute,
+# so `content`'s tests would otherwise measure tokio rather than the policy.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
 pollster = { workspace = true }
 wgpu = { workspace = true }
 glam = { workspace = true }

@@ -33,7 +33,8 @@ use stark_core::{AssetId, DocumentFile};
 use tokio::sync::mpsc;
 
 use crate::Result;
-use crate::backend::{self, Bound, Dialer, Shutdown};
+use crate::backend::{self, Bound, Cancel, Dialer, Shutdown};
+use crate::content::Resolver;
 use crate::mirror::{Mirror, Served};
 use crate::proto::{Request, Stamped, StampedRef, Wire, WireRef};
 use crate::ticket::SessionTicket;
@@ -53,25 +54,6 @@ const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// enough to ride out a slow frame and short enough that what does arrive is
 /// still current.
 const PRESENCE_QUEUE: usize = 64;
-
-/// Rounds spent fetching a *brush* image before giving up and letting the stroke
-/// draw with the round tip. A ground is never given up on — see
-/// [`resolve_asset`].
-const BRUSH_ATTEMPTS: u32 = 5;
-/// The first delay between fetch rounds — a source may still be fetching the
-/// blob itself. It doubles up to the cap, so an unbounded retry settles into an
-/// occasional poll rather than a busy one.
-const ASSET_RETRY_DELAY: Duration = Duration::from_millis(300);
-const ASSET_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
-
-/// How long a resolver waits for the frontend to make good on
-/// [`RemoteEvent::ResolveLocally`] before dialling a peer anyway.
-///
-/// Generous, because the cost of being early is a transfer this whole mechanism
-/// exists to avoid, while the cost of being late is a wait on an action that is
-/// parked regardless — and a read from the app's own bundle that takes longer
-/// than this is one that was probably never going to arrive.
-const LOCAL_GRACE: Duration = Duration::from_secs(3);
 
 /// Map an iroh endpoint identity to the engine's author id (§12.4:
 /// "an iroh node id *is* the `ActorId`"). `ActorId` is 8 bytes to keep every
@@ -282,6 +264,9 @@ pub struct CollabSession {
     /// four — so the session holds one rather than assembling one per call.
     broadcaster: Broadcaster,
     shutdown: Shutdown,
+    /// Stops what the session spawned. Held here because this is what owns the
+    /// session's lifetime; see [`Cancel`].
+    cancel: Cancel,
     topic: TopicId,
     ticket_addr: EndpointAddr,
 }
@@ -437,11 +422,19 @@ impl CollabSession {
         let waitlist = Arc::new(Waitlist::new(mirror, tx.clone(), resolvable));
         // The receive loop is the only thing that dials afterwards (to fetch
         // brush assets and bootstrap WebRTC), so it takes the dialer with it.
+        let cancel = Cancel::default();
+        let resolver = Resolver::new(
+            dialer.clone(),
+            neighbors.clone(),
+            waitlist.clone(),
+            cancel.clone(),
+        );
         task::spawn(recv_loop(
             dialer.clone(),
             receiver,
             neighbors.clone(),
             waitlist.clone(),
+            resolver,
             presence.clone(),
             tx,
         ));
@@ -454,6 +447,7 @@ impl CollabSession {
                 waitlist,
             },
             shutdown,
+            cancel,
             topic,
             ticket_addr,
         };
@@ -507,7 +501,11 @@ impl CollabSession {
     }
 
     /// Leave the session gracefully.
+    ///
+    /// The stop signal goes first and the stack second: a resolver mid-backoff has
+    /// to be told the session is over, not discover it by failing to dial.
     pub async fn shutdown(self) {
+        self.cancel.stop();
         self.shutdown.run().await;
     }
 }
@@ -657,6 +655,7 @@ async fn recv_loop(
     mut gossip: GossipReceiver,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
     waitlist: Arc<Waitlist>,
+    resolver: Resolver<Dialer>,
     presence: Arc<PresenceQuota>,
     tx: mpsc::UnboundedSender<RemoteEvent>,
 ) {
@@ -717,13 +716,7 @@ async fn recv_loop(
                     && let Some(hash) = hash_or_warn(need, asset_hash)
                     && waitlist.claim_detached(need)
                 {
-                    task::spawn(resolve_asset(
-                        dialer.clone(),
-                        asset_sources(origin, from),
-                        need,
-                        hash,
-                        waitlist.clone(),
-                    ));
+                    task::spawn(resolver.clone().resolve(need, hash, origin, from));
                 }
                 // Dropped rather than queued when the engine is already
                 // `PRESENCE_QUEUE` frames behind: a frame the UI would reach
@@ -779,13 +772,7 @@ async fn recv_loop(
                 Admit::Ready => {}
                 Admit::Waiting => continue,
                 Admit::Fetch => {
-                    task::spawn(resolve_asset(
-                        dialer.clone(),
-                        asset_sources(origin, from),
-                        need,
-                        hash,
-                        waitlist.clone(),
-                    ));
+                    task::spawn(resolver.clone().resolve(need, hash, origin, from));
                     continue;
                 }
             }
@@ -796,16 +783,6 @@ async fn recv_loop(
             return;
         }
     }
-}
-
-/// Who to ask for a brush image: its author first, then whoever delivered the
-/// action (which may have it cached, and is known to be reachable).
-fn asset_sources(origin: EndpointId, from: EndpointId) -> Vec<EndpointId> {
-    let mut ids = vec![origin];
-    if from != origin {
-        ids.push(from);
-    }
-    ids
 }
 
 /// The transfer hash for referenced content, or a warning: without it the bytes
@@ -830,92 +807,6 @@ fn referenced_presence_asset(frame: &PeerFrame) -> Option<AssetNeed> {
             BrushShape::Round { .. } => None,
         },
         _ => None,
-    }
-}
-
-/// Fetch missing content over blobs, mirror it and record its transfer hash (so
-/// this peer can serve and announce it onward), surface it to the engine, and
-/// release every action parked behind it.
-///
-/// How long it tries is the one place the two kinds differ, and the difference
-/// is §6.4's. An unresolved **brush** degrades to the round tip and the stroke
-/// is still visibly a stroke, so after [`BRUSH_ATTEMPTS`] it gives up and lets
-/// the action through. An unresolved **ground** has no acceptable fallback:
-/// applying the `SetSurface` against `Flat` bakes a smooth deposit into stored
-/// tiles that no later arrival un-bakes. So it never gives up — the action
-/// simply waits, and nothing else waits with it. Strokes that merged ahead of it
-/// are replayed against the real ground when it lands, because an action
-/// arriving out of order is exactly what makes the timeline resync (§12.6).
-async fn resolve_asset(
-    dialer: Dialer,
-    sources: Vec<EndpointId>,
-    need: AssetNeed,
-    hash: Hash,
-    waitlist: Arc<Waitlist>,
-) {
-    // First refusal to the frontend, when it said it ships with this content: a
-    // ground the app bundles is a read from its own files, not megabytes off a
-    // peer (§12.4). Asking costs one event and a wait on an action that is parked
-    // either way; being ignored costs `LOCAL_GRACE` and then behaves exactly as it
-    // would have.
-    if waitlist.is_local(need) {
-        waitlist.ask_locally(need);
-        n0_future::time::sleep(LOCAL_GRACE).await;
-        if waitlist.holds(need) {
-            // `add_content` recorded it and released whatever was parked; there is
-            // nothing left for this resolver to do.
-            tracing::debug!(?need, "resolved from the frontend's own bundle");
-            return;
-        }
-        tracing::debug!(?need, "local resolution did not arrive; asking a peer");
-    }
-
-    let attempts = match need {
-        AssetNeed::Brush(_) => Some(BRUSH_ATTEMPTS),
-        AssetNeed::Ground(_) => None,
-    };
-    let Some(bytes) = fetch_asset(&dialer, &sources, hash, attempts, &waitlist).await else {
-        // Only a brush gives up (a ground retries until the session ends), so
-        // releasing here is releasing to the round-tip fallback.
-        tracing::warn!("{need:?} unavailable; the stroke will draw with the round tip");
-        waitlist.abandoned(need);
-        return;
-    };
-    // Recording the transfer hash with the bytes is what lets this peer announce
-    // the content onward on its own actions.
-    waitlist.resolved(need, bytes, hash);
-}
-
-/// Fetch one content blob, trying each source in turn on a widening backoff (a
-/// source may still be fetching it itself). `attempts` caps the rounds; `None`
-/// retries until the content arrives or the session ends. The transfer is
-/// hash-verified by blobs.
-async fn fetch_asset(
-    dialer: &Dialer,
-    sources: &[EndpointId],
-    hash: Hash,
-    attempts: Option<u32>,
-    waitlist: &Waitlist,
-) -> Option<Bytes> {
-    let mut delay = ASSET_RETRY_DELAY;
-    let mut round = 0u32;
-    loop {
-        for &source in sources {
-            match dialer.fetch_blob(source, hash).await {
-                Ok(bytes) => return Some(bytes),
-                Err(e) => tracing::debug!("asset fetch round {round} failed: {e}"),
-            }
-        }
-        round = round.saturating_add(1);
-        if attempts.is_some_and(|max| round >= max) {
-            return None;
-        }
-        // The engine is gone; an uncapped retry would otherwise outlive it.
-        if !waitlist.is_live() {
-            return None;
-        }
-        n0_future::time::sleep(delay).await;
-        delay = (delay * 2).min(ASSET_RETRY_MAX_DELAY);
     }
 }
 
