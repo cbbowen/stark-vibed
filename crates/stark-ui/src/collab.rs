@@ -511,24 +511,11 @@ fn start_presence_pump(state: AppState) {
     }
 }
 
-/// Seconds on a **monotonic** clock — the clock `stark-core` deliberately does not
-/// own.
-///
-/// `performance.now()` rather than `Date.now()`, because every use of this is a
-/// *duration*: `PEER_TIMEOUT`, `HEARTBEAT`, `GESTURE_TIMEOUT`, `GESTURE_RESYNC`.
-/// Nothing compares it across clients, and nothing needs an epoch. A wall clock
-/// stepping — an NTP correction, a user changing the system time — broke those
-/// durations in both directions: backwards, `now - pub_at` went negative, the
-/// heartbeat stopped coming due and every peer dropped this client after six seconds
-/// of apparent silence; forwards, the whole roster expired in a single tick.
-///
-/// `performance.now()` is missing only in environments with no `performance` at all,
-/// where `Date.now()` is the best available answer.
+/// Seconds on the monotonic clock `stark-core` deliberately does not own — see
+/// [`platform::now_seconds`](crate::platform::now_seconds), which holds the whole
+/// argument for which clock and why.
 pub(crate) fn now_seconds() -> f64 {
-    web_sys::window()
-        .and_then(|w| w.performance())
-        .map_or_else(js_sys::Date::now, |p| p.now())
-        / 1000.0
+    crate::platform::now_seconds()
 }
 
 fn set_phase(state: AppState, phase: CollabPhase) {
@@ -555,9 +542,8 @@ fn fail(state: AppState, message: String) {
 
 /// The session ticket in the current page URL, if any.
 pub fn url_ticket() -> Option<String> {
-    let hash = web_sys::window()?.location().hash().ok()?;
-    let ticket = hash.strip_prefix('#').unwrap_or(&hash);
-    ticket.starts_with("stark").then(|| ticket.to_string())
+    let fragment = crate::platform::url_fragment()?;
+    fragment.starts_with("stark").then_some(fragment)
 }
 
 /// The invitation to hand out: this page's address with `ticket` in the fragment.
@@ -566,50 +552,13 @@ pub fn url_ticket() -> Option<String> {
 /// dialog re-renders when the ticket signal changes — `location` is not reactive,
 /// and reading it during a render that beat `replaceState` would show the old URL.
 fn invite_url(ticket: &str) -> String {
-    let Some(location) = web_sys::window().map(|w| w.location()) else {
-        return format!("#{ticket}");
-    };
-    format!(
-        "{}{}{}#{ticket}",
-        location.origin().unwrap_or_default(),
-        location.pathname().unwrap_or_default(),
-        location.search().unwrap_or_default()
-    )
-}
-
-/// Put `text` on the system clipboard. Fire-and-forget: the returned promise is
-/// dropped, and a browser that denies the permission just leaves the readonly
-/// field on screen to select by hand.
-fn copy_to_clipboard(text: &str) {
-    if let Some(window) = web_sys::window() {
-        let _ = window.navigator().clipboard().write_text(text);
-    }
+    crate::platform::url_with_fragment(ticket)
 }
 
 /// Reflect (or clear) the live session's ticket in the URL bar. Uses
 /// `replaceState` so joining/leaving doesn't pollute tab history.
 fn set_url_ticket(ticket: Option<&str>) {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let url = match ticket {
-        Some(t) => format!("#{t}"),
-        // Rebuild path + query without a fragment (an empty replaceState URL
-        // would keep the current one, hash included).
-        None => {
-            let location = window.location();
-            format!(
-                "{}{}",
-                location.pathname().unwrap_or_default(),
-                location.search().unwrap_or_default()
-            )
-        }
-    };
-    if let Ok(history) = window.history()
-        && let Err(e) = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url))
-    {
-        tracing::warn!("failed to update URL fragment: {e:?}");
-    }
+    crate::platform::set_url_fragment(ticket);
 }
 
 /// The label and style for how a peer's connection reaches us, from the link
@@ -689,7 +638,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                                     button {
                                         class: "btn btn-primary",
                                         onclick: move |_| {
-                                            copy_to_clipboard(&to_copy);
+                                            crate::platform::copy_to_clipboard(&to_copy);
                                             copied.set(true);
                                             // Back to "Copy" after a beat, so the
                                             // button reads as a button again.

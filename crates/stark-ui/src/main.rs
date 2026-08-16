@@ -67,7 +67,7 @@ use panels::{
     GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar, TimelineBar, TransformBar,
     TransformOverlay,
 };
-use platform::capture_pointer;
+use platform::{canvas_by_id, capture_pointer};
 use render::CANVAS_ID;
 use settings::SettingsModal;
 use slots::SlotOverlay;
@@ -165,7 +165,7 @@ fn app() -> Element {
 
     use_hook(|| {
         spawn(async move {
-            let mut r = render::init(render::canvas_element(CANVAS_ID)).await;
+            let mut r = render::init(canvas_by_id(CANVAS_ID)).await;
             // Fetch the bundled brush shapes at runtime (kept out of the wasm
             // binary) and import them once, so the gallery's built-in cards are
             // ready — and so the default presets have ids to name

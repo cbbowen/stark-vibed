@@ -10,6 +10,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use crate::platform::Canvas;
 use stark_core::AssetNeed;
 use stark_core::command::ViewCommand;
 use stark_core::document::Tool;
@@ -18,7 +19,6 @@ use stark_core::{
     ColorSpaceId, Engine, EnvironmentId, GpuContext, InputCommand, InputSample, ObservableState,
     SurfaceId, ViewTransform,
 };
-use wasm_bindgen::JsCast;
 
 pub const CANVAS_ID: &str = "stark-canvas";
 
@@ -42,7 +42,7 @@ const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
 /// Owns the canvas surface and the painting engine.
 pub struct Renderer {
-    canvas: web_sys::HtmlCanvasElement,
+    canvas: Canvas,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     engine: Engine,
@@ -91,7 +91,7 @@ pub struct Renderer {
 struct Overview {
     /// Kept so the drawing buffer can be resized with the surface: the miniature's
     /// pixel size follows the piece's aspect, not the window's.
-    canvas: web_sys::HtmlCanvasElement,
+    canvas: Canvas,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     /// Pass A's attachments, kept between refreshes — see [`stark_core::Offscreen`].
@@ -365,9 +365,9 @@ impl Renderer {
     /// second surface that chose differently would fail validation rather than merely
     /// look wrong. The format the main canvas settled on is available here (both
     /// surfaces are canvases on the same adapter, so it is in this one's caps too).
-    pub fn attach_overview(&mut self, canvas: web_sys::HtmlCanvasElement) {
+    pub fn attach_overview(&mut self, canvas: Canvas) {
         let gpu = self.engine.gpu();
-        let surface = match gpu.instance.create_surface(canvas_target(canvas.clone())) {
+        let surface = match gpu.instance.create_surface(canvas.surface_target()) {
             Ok(surface) => surface,
             Err(e) => {
                 tracing::warn!("navigator surface unavailable: {e}");
@@ -414,8 +414,7 @@ impl Renderer {
         };
         let size = plan.size;
         if (ov.config.width, ov.config.height) != (size.width, size.height) {
-            ov.canvas.set_width(size.width);
-            ov.canvas.set_height(size.height);
+            ov.canvas.set_buffer_size(size.width, size.height);
             ov.config.width = size.width;
             ov.config.height = size.height;
             ov.surface.configure(&self.engine.gpu().device, &ov.config);
@@ -605,8 +604,7 @@ impl Renderer {
         {
             return;
         }
-        self.canvas.set_width(width);
-        self.canvas.set_height(height);
+        self.canvas.set_buffer_size(width, height);
         self.config.width = width;
         self.config.height = height;
         self.surface
@@ -635,7 +633,7 @@ impl Renderer {
     /// first moment a resize could no longer be missed — the statement immediately
     /// before the renderer is published, with no `await` between the two.
     pub fn sync_to_canvas(&mut self) {
-        let (width, height) = canvas_size(&self.canvas);
+        let (width, height) = self.canvas.laid_out_size();
         self.resize(width, height);
     }
 
@@ -684,65 +682,15 @@ impl Renderer {
     }
 }
 
-/// The canvas element's laid-out size in CSS pixels (≥1). Measures the element
-/// itself — no full-window assumption — so an embedded/sub-window canvas works.
-fn canvas_size(canvas: &web_sys::HtmlCanvasElement) -> (u32, u32) {
-    (
-        canvas.client_width().max(1) as u32,
-        canvas.client_height().max(1) as u32,
-    )
-}
-
-/// Await one animation frame, so a layout pass (and any just-applied stylesheet)
-/// is reflected before we measure the canvas.
-pub(crate) async fn next_frame() {
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        web_sys::window()
-            .expect("window")
-            .request_animation_frame(&resolve)
-            .expect("request_animation_frame");
-    });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-}
-
-/// Look up a canvas element the app rendered into the DOM (the main painting
-/// canvas, or the brush editor's preview canvas).
-pub fn canvas_element(id: &str) -> web_sys::HtmlCanvasElement {
-    web_sys::window()
-        .expect("window")
-        .document()
-        .expect("document")
-        .get_element_by_id(id)
-        .expect("canvas element present")
-        .dyn_into::<web_sys::HtmlCanvasElement>()
-        .expect("element is a canvas")
-}
-
-/// stark-ui is a web app (§11), so the surface is always the page's
-/// canvas. The crate still *compiles* for the host — that is what `cargo test
-/// --workspace` and clippy exercise — but there is no native windowing backend
-/// behind it, and reaching here off the web is a bug rather than a fallback.
-fn canvas_target<'a>(canvas: web_sys::HtmlCanvasElement) -> wgpu::SurfaceTarget<'a> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wgpu::SurfaceTarget::Canvas(canvas)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = canvas;
-        unimplemented!("stark-ui targets the web; there is no native surface backend")
-    }
-}
-
 /// Asynchronously create the WebGPU device, configure the surface to the
 /// canvas's current size, and build the engine (§7).
-pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
+pub async fn init(canvas: Canvas) -> Renderer {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = wgpu::Backends::BROWSER_WEBGPU;
     let instance = wgpu::Instance::new(desc);
 
     let surface: wgpu::Surface<'static> = instance
-        .create_surface(canvas_target(canvas.clone()))
+        .create_surface(canvas.surface_target())
         .expect("create canvas surface");
 
     let adapter = instance
@@ -782,7 +730,8 @@ impl Renderer {
     ///
     /// Synchronous, and callable only once this renderer exists — which is also the
     /// only time it makes sense: a preview is a preview *of* this canvas. The caller
-    /// should await a layout frame ([`next_frame`]) before this, so the canvas
+    /// should await a layout frame ([`platform::next_frame`](crate::platform::next_frame))
+    /// before this, so the canvas
     /// measures as laid out rather than at its 300×150 intrinsic size; the measure
     /// here is still only a seed, corrected by [`Renderer::sync_to_canvas`] before
     /// anything is placed against it.
@@ -792,14 +741,13 @@ impl Renderer {
     /// [`attach_overview`](Self::attach_overview) is and for the same reason: the
     /// shared pipelines are built for one format, and a second surface that chose
     /// differently would fail validation rather than merely look wrong.
-    pub fn shared(&self, canvas: web_sys::HtmlCanvasElement) -> Renderer {
-        let (width, height) = canvas_size(&canvas);
-        canvas.set_width(width);
-        canvas.set_height(height);
+    pub fn shared(&self, canvas: Canvas) -> Renderer {
+        let (width, height) = canvas.laid_out_size();
+        canvas.set_buffer_size(width, height);
         let gpu = self.engine.gpu();
         let surface: wgpu::Surface<'static> = gpu
             .instance
-            .create_surface(canvas_target(canvas.clone()))
+            .create_surface(canvas.surface_target())
             .expect("create preview canvas surface");
         let caps = surface.get_capabilities(&gpu.adapter);
         let config = wgpu::SurfaceConfiguration {
@@ -847,11 +795,7 @@ impl Renderer {
 /// Tail of [`init`]: size the drawing buffer, pick the surface format, configure,
 /// and build the engine. (A *second* renderer never comes through here — it is built
 /// synchronously by [`Renderer::shared`], on the first engine's format and state.)
-async fn finish_init(
-    canvas: web_sys::HtmlCanvasElement,
-    surface: wgpu::Surface<'static>,
-    gpu: GpuContext,
-) -> Renderer {
+async fn finish_init(canvas: Canvas, surface: wgpu::Surface<'static>, gpu: GpuContext) -> Renderer {
     // Size the drawing buffer to the canvas's laid-out size (CSS pixels). We
     // measure the *element*, not the window, so an embedded/sub-window canvas
     // works too, and we do it here — after the async device setup and a layout
@@ -863,10 +807,9 @@ async fn finish_init(
     // answer: the caller re-reads the element with `Renderer::sync_to_canvas` just
     // before publishing the renderer, which is where the guarantee actually is.
     // Everything after that is handled by `onresize`.
-    next_frame().await;
-    let (width, height) = canvas_size(&canvas);
-    canvas.set_width(width);
-    canvas.set_height(height);
+    crate::platform::next_frame().await;
+    let (width, height) = canvas.laid_out_size();
+    canvas.set_buffer_size(width, height);
 
     // Pick a non-sRGB format: the media pass already encodes display sRGB, so an
     // sRGB surface would double-encode (§6.5).

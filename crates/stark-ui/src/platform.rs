@@ -1,8 +1,220 @@
-//! The two places the frontend touches the browser directly, each with an off-wasm
-//! no-op so the crate still compiles for the host (which is what `cargo test` and
-//! clippy exercise — see `render::canvas_target`).
+//! **The only module that touches the browser**, each call with an off-wasm
+//! counterpart so the crate still compiles for the host — which is what
+//! `cargo test` and `cargo clippy --workspace --all-targets` exercise.
+//!
+//! "The only module" is a claim the compiler now checks. `web-sys`, `js-sys`,
+//! `wasm-bindgen` and `wasm-bindgen-futures` are declared under
+//! `[target.'cfg(target_arch = "wasm32")'.dependencies]`, and a crate that is not a
+//! *direct* dependency is not in the extern prelude — so off wasm, `web_sys::` does
+//! not resolve anywhere, in this file or any other. It used to be prose, and four
+//! other modules had quietly stopped obeying it: `render` held an
+//! `HtmlCanvasElement`, `input` downcast to `PointerEvent` and `KeyboardEvent`,
+//! `collab` read `window()` five times, `storage` opened the store itself.
+//!
+//! That is the whole of what gating buys, and it is worth being exact about: it
+//! does **not** make the host build cheaper, because `dioxus` pulls `web-sys` in
+//! transitively whatever this crate declares. What it buys is that the boundary
+//! cannot rot — a browser call written into a panel stops the host build, at the
+//! line that wrote it, instead of being found later by someone reading for it.
+//!
+//! # What crosses the boundary
+//!
+//! Types the browser's own vocabulary would otherwise leak through: [`Canvas`],
+//! [`KeyEvent`], [`WindowEvent`], [`RawPointer`], [`Coalesced`]. Each is the
+//! smallest thing its callers actually use, so the *policy* stays with them — this
+//! module says what the browser reported, never what the app should do about it.
+//! [`RawPointer`] is the clearest case: it carries the two button fields and the
+//! pointer type, and `input::is_eraser_event` is what reads a pen's tail out of
+//! them (§18.1.8).
 
 use dioxus::prelude::*;
+
+// --- what crosses the boundary ---------------------------------------------
+
+/// The page's painting surface, as everything outside this module sees it.
+///
+/// `render::Renderer` held a `web_sys::HtmlCanvasElement` and reached for its
+/// methods directly; this is the three things it actually did with one. Off wasm
+/// it is a unit, which is honest — there is no canvas, and [`Self::surface_target`]
+/// says so the way `render` always did.
+#[derive(Clone)]
+#[cfg(target_arch = "wasm32")]
+pub struct Canvas(web_sys::HtmlCanvasElement);
+#[derive(Clone)]
+#[cfg(not(target_arch = "wasm32"))]
+pub struct Canvas;
+
+impl Canvas {
+    /// The element's laid-out size in CSS pixels (≥1). Measures the *element*, not
+    /// the window, so an embedded or sub-window canvas works.
+    #[cfg(target_arch = "wasm32")]
+    pub fn laid_out_size(&self) -> (u32, u32) {
+        (
+            self.0.client_width().max(1) as u32,
+            self.0.client_height().max(1) as u32,
+        )
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn laid_out_size(&self) -> (u32, u32) {
+        (1, 1)
+    }
+
+    /// Resize the drawing buffer — the pixels behind the element, which the
+    /// stylesheet's layout size does not set.
+    #[cfg(target_arch = "wasm32")]
+    pub fn set_buffer_size(&self, width: u32, height: u32) {
+        self.0.set_width(width);
+        self.0.set_height(height);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_buffer_size(&self, _width: u32, _height: u32) {}
+
+    /// What `wgpu` binds a surface to.
+    ///
+    /// stark-ui is a web app (§11), so the surface is always the page's canvas. The
+    /// crate still *compiles* for the host — that is what `cargo test` and clippy
+    /// exercise — but there is no native windowing backend behind it, and reaching
+    /// here off the web is a bug rather than a fallback.
+    #[cfg(target_arch = "wasm32")]
+    pub fn surface_target(&self) -> wgpu::SurfaceTarget<'static> {
+        wgpu::SurfaceTarget::Canvas(self.0.clone())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn surface_target(&self) -> wgpu::SurfaceTarget<'static> {
+        unimplemented!("stark-ui targets the web; there is no native surface backend")
+    }
+}
+
+/// A key press or release at the window, as `input::bind_shortcuts` reads it.
+///
+/// The translation into the app's own vocabulary — dioxus's [`Key`] and
+/// [`Modifiers`] — happens here rather than at the call site, because it is a fact
+/// about the DOM event and not about what the shortcut means.
+#[cfg(target_arch = "wasm32")]
+pub struct KeyEvent(web_sys::KeyboardEvent);
+#[cfg(not(target_arch = "wasm32"))]
+pub struct KeyEvent;
+
+impl KeyEvent {
+    /// The pressed key, in the same typed vocabulary the rsx! handlers read.
+    #[cfg(target_arch = "wasm32")]
+    pub fn key(&self) -> Key {
+        use std::str::FromStr;
+        Key::from_str(&self.0.key()).unwrap_or(Key::Unidentified)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn key(&self) -> Key {
+        Key::Unidentified
+    }
+
+    /// The physical key, layout-independent — what the quick-brush rack reads, so a
+    /// digit is a digit whatever the layout types on it (§18.1.8).
+    #[cfg(target_arch = "wasm32")]
+    pub fn code(&self) -> String {
+        self.0.code()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn code(&self) -> String {
+        String::new()
+    }
+
+    /// The modifier set held during the event.
+    #[cfg(target_arch = "wasm32")]
+    pub fn modifiers(&self) -> Modifiers {
+        let mut m = Modifiers::empty();
+        if self.0.alt_key() {
+            m.insert(Modifiers::ALT);
+        }
+        if self.0.ctrl_key() {
+            m.insert(Modifiers::CONTROL);
+        }
+        if self.0.meta_key() {
+            m.insert(Modifiers::META);
+        }
+        if self.0.shift_key() {
+            m.insert(Modifiers::SHIFT);
+        }
+        m
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn modifiers(&self) -> Modifiers {
+        Modifiers::empty()
+    }
+
+    /// Whether this went to a control that owns its own keystrokes — see
+    /// [`on_text_entry`].
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_text_entry(&self) -> bool {
+        self.0.target().is_some_and(|t| on_text_entry(&t))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_text_entry(&self) -> bool {
+        false
+    }
+
+    /// Take the browser's own action away from this event.
+    #[cfg(target_arch = "wasm32")]
+    pub fn prevent_default(&self) {
+        self.0.prevent_default();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn prevent_default(&self) {}
+}
+
+/// A window event this app only wants to refuse — today the context menu, whose
+/// two questions are "was it over a text field" and "stop it".
+#[cfg(target_arch = "wasm32")]
+pub struct WindowEvent(web_sys::Event);
+#[cfg(not(target_arch = "wasm32"))]
+pub struct WindowEvent;
+
+impl WindowEvent {
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_text_entry(&self) -> bool {
+        self.0.target().is_some_and(|t| on_text_entry(&t))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_text_entry(&self) -> bool {
+        false
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn prevent_default(&self) {
+        self.0.prevent_default();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn prevent_default(&self) {}
+}
+
+/// A pointer event's raw button fields — everything `input::is_eraser_event`
+/// needs, and nothing it does not.
+///
+/// The two button fields are both here because the two halves of a press report
+/// differently, and the policy that reads them is the caller's (§18.1.8).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct RawPointer {
+    /// Whether the device is a stylus. A `bool` rather than the DOM's
+    /// `pointerType` string, because a pen is the only kind anything here asks
+    /// about and a `String` would allocate on every window pointer event.
+    pub pen: bool,
+    /// The button that *changed*, per Pointer Events; −1 on a move.
+    pub button: i16,
+    /// The buttons still down.
+    pub buttons: u16,
+}
+
+/// One report the browser folded into a delivered `pointermove`, in the target
+/// element's own CSS pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct Coalesced {
+    pub x: f32,
+    pub y: f32,
+    pub pressure: f32,
+    pub tilt_x: f32,
+    pub tilt_y: f32,
+    /// `performance.now()`'s clock, in seconds.
+    pub time: f64,
+}
 
 /// Resolve after `ms` milliseconds (so a settle animation can finish before the order is
 /// committed). Browser `setTimeout` on web; a no-op off-wasm.
@@ -107,19 +319,19 @@ pub fn guide_boxes() -> Vec<(String, f32, f32)> {
 /// so the closure is `forget`ten rather than kept around for removal — the same
 /// bargain [`pick_file`] makes.
 #[cfg(target_arch = "wasm32")]
-pub fn on_window_key(kind: &str, handler: impl FnMut(web_sys::KeyboardEvent) + 'static) {
+pub fn on_window_key(kind: &str, mut handler: impl FnMut(KeyEvent) + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
 
     let Some(window) = web_sys::window() else {
         return;
     };
-    let cb = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(handler);
+    let cb = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e| handler(KeyEvent(e)));
     let _ = window.add_event_listener_with_callback(kind, cb.as_ref().unchecked_ref());
     cb.forget();
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub fn on_window_key(_kind: &str, _handler: impl FnMut(web_sys::KeyboardEvent) + 'static) {}
+pub fn on_window_key(_kind: &str, _handler: impl FnMut(KeyEvent) + 'static) {}
 
 /// Route the window's `kind` events to `handler` in the **capture** phase, as the
 /// base [`web_sys::Event`].
@@ -135,14 +347,14 @@ pub fn on_window_key(_kind: &str, _handler: impl FnMut(web_sys::KeyboardEvent) +
 /// with `stopPropagation` is one that stops working the day something downstream
 /// does.
 #[cfg(target_arch = "wasm32")]
-pub fn on_window_event(kind: &str, handler: impl FnMut(web_sys::Event) + 'static) {
+pub fn on_window_event(kind: &str, mut handler: impl FnMut(WindowEvent) + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
 
     let Some(window) = web_sys::window() else {
         return;
     };
-    let cb = Closure::<dyn FnMut(web_sys::Event)>::new(handler);
+    let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |e| handler(WindowEvent(e)));
     let _ = window.add_event_listener_with_callback_and_bool(
         kind,
         cb.as_ref().unchecked_ref(),
@@ -151,7 +363,7 @@ pub fn on_window_event(kind: &str, handler: impl FnMut(web_sys::Event) + 'static
     cb.forget();
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub fn on_window_event(_kind: &str, _handler: impl FnMut(web_sys::Event) + 'static) {}
+pub fn on_window_event(_kind: &str, _handler: impl FnMut(WindowEvent) + 'static) {}
 
 /// Route the window's `kind` pointer events ("pointerdown", "pointerup", …) to
 /// `handler`, in the **capture** phase.
@@ -170,14 +382,14 @@ pub fn on_window_event(_kind: &str, _handler: impl FnMut(web_sys::Event) + 'stat
 /// prevent something that has already run, which matters most for the release,
 /// where a listener that could be skipped would leave the brush swapped.
 #[cfg(target_arch = "wasm32")]
-pub fn on_window_pointer(kind: &str, handler: impl FnMut(web_sys::PointerEvent) + 'static) {
+pub fn on_window_pointer(kind: &str, mut handler: impl FnMut(RawPointer) + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
 
     let Some(window) = web_sys::window() else {
         return;
     };
-    let cb = Closure::<dyn FnMut(web_sys::PointerEvent)>::new(handler);
+    let cb = Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e| handler(raw_of(&e)));
     let _ = window.add_event_listener_with_callback_and_bool(
         kind,
         cb.as_ref().unchecked_ref(),
@@ -186,7 +398,131 @@ pub fn on_window_pointer(kind: &str, handler: impl FnMut(web_sys::PointerEvent) 
     cb.forget();
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub fn on_window_pointer(_kind: &str, _handler: impl FnMut(web_sys::PointerEvent) + 'static) {}
+pub fn on_window_pointer(_kind: &str, _handler: impl FnMut(RawPointer) + 'static) {}
+
+/// The button fields of a raw pointer event.
+#[cfg(target_arch = "wasm32")]
+fn raw_of(e: &web_sys::PointerEvent) -> RawPointer {
+    RawPointer {
+        pen: e.pointer_type() == "pen",
+        button: e.button(),
+        buttons: e.buttons(),
+    }
+}
+
+/// The same, off a **dioxus** pointer event — the one the tree's own handlers get.
+///
+/// `None` off wasm, where there is no raw event to unwrap; every caller reads that
+/// as "not a pen", which is the right answer on a platform with no pens.
+#[cfg(target_arch = "wasm32")]
+pub fn raw_pointer(e: &Event<PointerData>) -> Option<RawPointer> {
+    use dioxus::web::WebEventExt;
+    e.try_as_web_event().map(|raw| raw_of(&raw))
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn raw_pointer(_e: &Event<PointerData>) -> Option<RawPointer> {
+    None
+}
+
+/// A pointer event's own timestamp in seconds — `performance.now()`'s clock,
+/// monotonic and shared by every event on the page, which is what
+/// [`InputSample::time`](stark_core::InputSample::time) needs.
+///
+/// Zero when the raw event is out of reach (off wasm), matching the field's
+/// default. The fitter keys its time channel to the first sample it sees, so only
+/// differences matter and the origin is free.
+#[cfg(target_arch = "wasm32")]
+pub fn event_time(e: &Event<PointerData>) -> f64 {
+    use dioxus::web::WebEventExt;
+    e.try_as_web_event()
+        .map(|raw| raw.time_stamp() / 1000.0)
+        .unwrap_or(0.0)
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn event_time(_e: &Event<PointerData>) -> f64 {
+    0.0
+}
+
+/// Every report the browser folded into a delivered `pointermove`, oldest first,
+/// in the target element's own CSS pixels.
+///
+/// The browser delivers roughly one `pointermove` per animation frame and folds
+/// the reports it withheld — most of what a 120–240 Hz pen produces — into the
+/// delivered event's *coalesced* list. Reading that list is what gets the full
+/// input rate to the fitter; reading only the event caps every stroke at display
+/// rate, whatever the device resolved.
+///
+/// Mapped through the target's bounding rect (measured once per delivered event)
+/// because the entries' client coordinates are the ones the spec guarantees. The
+/// delivered event's own data equals the list's last entry, so nothing is reported
+/// twice. `None` where there is no list — off wasm, or a synthetic event — and the
+/// caller falls back to the event itself.
+#[cfg(target_arch = "wasm32")]
+pub fn coalesced(e: &Event<PointerData>) -> Option<Vec<Coalesced>> {
+    use dioxus::web::WebEventExt;
+    use wasm_bindgen::JsCast;
+
+    let raw = e.try_as_web_event()?;
+    let rect = raw
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())?
+        .get_bounding_client_rect();
+    let list = raw.get_coalesced_events();
+    (list.length() > 0).then(|| {
+        list.iter()
+            .filter_map(|v| v.dyn_into::<web_sys::PointerEvent>().ok())
+            .map(|c| Coalesced {
+                x: (c.client_x() as f64 - rect.left()) as f32,
+                y: (c.client_y() as f64 - rect.top()) as f32,
+                pressure: c.pressure(),
+                tilt_x: c.tilt_x() as f32,
+                tilt_y: c.tilt_y() as f32,
+                time: c.time_stamp() / 1000.0,
+            })
+            .collect()
+    })
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn coalesced(_e: &Event<PointerData>) -> Option<Vec<Coalesced>> {
+    None
+}
+
+/// Whether `target` is a control that owns its own keystrokes — a text field, a
+/// `<select>`, a contenteditable region.
+///
+/// Asked of the *event's target*, which for a key event is what has focus, rather
+/// than of a flag the fields set on focus and clear on blur: a field that unmounts
+/// while focused — commit-and-close on a rename — never fires its blur, and a flag
+/// left stuck on would kill every shortcut for the rest of the session. The DOM is
+/// asked at the moment of the keystroke, so it cannot fall out of step.
+///
+/// Two events ask it, which is why it is one function: the keyboard stands aside
+/// for a field so the browser's own editing bindings work there (Ctrl+Z undoes the
+/// *text*, purely because nothing calls `prevent_default` on it), and the context
+/// menu stands aside for the same field because the browser's menu is the only cut,
+/// copy and paste this app offers.
+#[cfg(target_arch = "wasm32")]
+fn on_text_entry(target: &web_sys::EventTarget) -> bool {
+    use wasm_bindgen::JsCast;
+
+    let Some(el) = target.dyn_ref::<web_sys::HtmlElement>() else {
+        return false;
+    };
+    el.is_content_editable()
+        || match el.tag_name().as_str() {
+            "TEXTAREA" | "SELECT" => true,
+            // Sliders, checkboxes and color wells are not text entry. They want
+            // arrows and space from the browser, but Ctrl+Z over one still means
+            // the document — there is no text there for it to mean anything else.
+            "INPUT" => !matches!(
+                el.unchecked_ref::<web_sys::HtmlInputElement>()
+                    .type_()
+                    .as_str(),
+                "button" | "checkbox" | "color" | "file" | "radio" | "range" | "reset" | "submit"
+            ),
+            _ => false,
+        }
+}
 
 /// Call `handler` whenever the window loses focus.
 ///
@@ -221,7 +557,7 @@ pub fn on_window_blur(_handler: impl FnMut() + 'static) {}
 /// Run `handler` **inside** the next animation-frame callback.
 ///
 /// This is not the same as a task awaiting a promise the rAF resolves
-/// ([`crate::render::next_frame`]): a woken task only resumes in the microtask
+/// ([`next_frame`]): a woken task only resumes in the microtask
 /// drain, behind the scheduler's other work — for a dioxus task that includes a
 /// VDOM render of whatever scopes are dirty by then. The callback itself runs in
 /// the frame's animation phase, ahead of the browser's rendering steps by
@@ -289,21 +625,216 @@ pub fn select_all(_e: &Event<MountedData>) {}
 /// — the navigator's miniature (`panels::navigator`).
 ///
 /// Off the event rather than by id through the document, unlike
-/// [`crate::render::canvas_element`]: this element's whole significance is that it
+/// [`canvas_by_id`]: this element's whole significance is that it
 /// has *just* appeared and a surface has to be bound to this one rather than to
 /// whichever element an id happens to resolve to. A panel that closes and reopens
 /// mounts a new canvas, and binding the new surface to the old element would leave
 /// the miniature blank with nothing to say why.
 #[cfg(target_arch = "wasm32")]
-pub fn canvas_of(e: &Event<MountedData>) -> Option<web_sys::HtmlCanvasElement> {
+pub fn canvas_of(e: &Event<MountedData>) -> Option<Canvas> {
     use dioxus::web::WebEventExt;
     use wasm_bindgen::JsCast;
     e.try_as_web_event()
         .and_then(|el| el.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+        .map(Canvas)
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub fn canvas_of(_e: &Event<MountedData>) -> Option<web_sys::HtmlCanvasElement> {
+pub fn canvas_of(_e: &Event<MountedData>) -> Option<Canvas> {
     None
+}
+
+/// The canvas the app rendered into the DOM under `id` — the main painting
+/// canvas, or the brush editor's preview canvas.
+///
+/// By id through the document, unlike [`canvas_of`]: these two are placed by the
+/// app itself and are looked up once, where a mounted element's whole significance
+/// is that it has *just* appeared.
+///
+/// Panics if it is not there, which is a bug in the markup rather than a state to
+/// handle. Off wasm there is no document, and reaching here is the same bug — see
+/// [`Canvas::surface_target`].
+#[cfg(target_arch = "wasm32")]
+pub fn canvas_by_id(id: &str) -> Canvas {
+    use wasm_bindgen::JsCast;
+    Canvas(
+        web_sys::window()
+            .expect("window")
+            .document()
+            .expect("document")
+            .get_element_by_id(id)
+            .expect("canvas element present")
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .expect("element is a canvas"),
+    )
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn canvas_by_id(_id: &str) -> Canvas {
+    Canvas
+}
+
+/// Await one animation frame, so a layout pass (and any just-applied stylesheet)
+/// is reflected before the canvas is measured.
+///
+/// Not the same as [`on_animation_frame`]: this *suspends* until the frame, where
+/// that one runs work inside the callback. A task woken here resumes in the
+/// microtask drain, which is the right place for setup and the wrong one for a
+/// paint (see that function's note).
+#[cfg(target_arch = "wasm32")]
+pub async fn next_frame() {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        web_sys::window()
+            .expect("window")
+            .request_animation_frame(&resolve)
+            .expect("request_animation_frame");
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn next_frame() {}
+
+/// How many physical pixels the display packs into a CSS pixel — what
+/// `input::input_resolution` prices a pointer's grain against.
+///
+/// `1.0` where it cannot be read, and where it is not finite or not positive: a
+/// resolution is a divisor, and a bad one would make the fitting tolerance
+/// meaningless rather than merely wrong.
+#[cfg(target_arch = "wasm32")]
+pub fn device_pixel_ratio() -> f32 {
+    web_sys::window()
+        .map(|w| w.device_pixel_ratio() as f32)
+        .filter(|r| r.is_finite() && *r > 0.0)
+        .unwrap_or(1.0)
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn device_pixel_ratio() -> f32 {
+    1.0
+}
+
+/// Seconds on a **monotonic** clock — the clock `stark-core` deliberately does not
+/// own (§17.5).
+///
+/// `performance.now()` rather than `Date.now()`, because every use of this is a
+/// *duration*: `PEER_TIMEOUT`, `HEARTBEAT`, `GESTURE_TIMEOUT`, `GESTURE_RESYNC`.
+/// Nothing compares it across clients, and nothing needs an epoch. A wall clock
+/// stepping — an NTP correction, a user changing the system time — broke those
+/// durations in both directions: backwards, `now - pub_at` went negative, the
+/// heartbeat stopped coming due and every peer dropped this client after six
+/// seconds of apparent silence; forwards, the whole roster expired in a single
+/// tick.
+///
+/// `performance.now()` is missing only in environments with no `performance` at
+/// all, where `Date.now()` is the best available answer.
+#[cfg(target_arch = "wasm32")]
+pub fn now_seconds() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map_or_else(js_sys::Date::now, |p| p.now())
+        / 1000.0
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn now_seconds() -> f64 {
+    0.0
+}
+
+/// The page URL's fragment, without its leading `#`.
+#[cfg(target_arch = "wasm32")]
+pub fn url_fragment() -> Option<String> {
+    let hash = web_sys::window()?.location().hash().ok()?;
+    Some(hash.strip_prefix('#').unwrap_or(&hash).to_string())
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn url_fragment() -> Option<String> {
+    None
+}
+
+/// This page's address with `fragment` after the `#`, or just the fragment where
+/// there is no location to read.
+#[cfg(target_arch = "wasm32")]
+pub fn url_with_fragment(fragment: &str) -> String {
+    let Some(location) = web_sys::window().map(|w| w.location()) else {
+        return format!("#{fragment}");
+    };
+    format!(
+        "{}{}{}#{fragment}",
+        location.origin().unwrap_or_default(),
+        location.pathname().unwrap_or_default(),
+        location.search().unwrap_or_default()
+    )
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn url_with_fragment(fragment: &str) -> String {
+    format!("#{fragment}")
+}
+
+/// Reflect (or, with `None`, clear) the page URL's fragment. `replaceState`, so
+/// joining and leaving a session do not pollute tab history.
+#[cfg(target_arch = "wasm32")]
+pub fn set_url_fragment(fragment: Option<&str>) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let url = match fragment {
+        Some(f) => format!("#{f}"),
+        // Rebuild path + query without a fragment (an empty replaceState URL
+        // would keep the current one, hash included).
+        None => {
+            let location = window.location();
+            format!(
+                "{}{}",
+                location.pathname().unwrap_or_default(),
+                location.search().unwrap_or_default()
+            )
+        }
+    };
+    if let Ok(history) = window.history()
+        && let Err(e) = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url))
+    {
+        tracing::warn!("failed to update URL fragment: {e:?}");
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_url_fragment(_fragment: Option<&str>) {}
+
+/// Put `text` on the system clipboard. Fire-and-forget: the returned promise is
+/// dropped, and a browser that denies the permission just leaves the readonly
+/// field on screen to select by hand.
+#[cfg(target_arch = "wasm32")]
+pub fn copy_to_clipboard(text: &str) {
+    if let Some(window) = web_sys::window() {
+        let _ = window.navigator().clipboard().write_text(text);
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn copy_to_clipboard(_text: &str) {}
+
+/// What this browser has stored under `key`, per origin — the raw half of
+/// [`crate::storage`], which is where the format and the failure policy live.
+#[cfg(target_arch = "wasm32")]
+pub fn local_get(key: &str) -> Option<String> {
+    web_sys::window()?
+        .local_storage()
+        .ok()
+        .flatten()?
+        .get_item(key)
+        .ok()
+        .flatten()
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn local_get(_key: &str) -> Option<String> {
+    None
+}
+
+/// Store `value` under `key`. `false` if it could not be written — no store, or
+/// no room in it.
+#[cfg(target_arch = "wasm32")]
+pub fn local_set(key: &str, value: &str) -> bool {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .is_some_and(|store| store.set_item(key, value).is_ok())
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn local_set(_key: &str, _value: &str) -> bool {
+    false
 }
 
 /// Hand `bytes` to the browser as a file download named `filename`.

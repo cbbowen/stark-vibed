@@ -2,8 +2,6 @@
 //! [`InputCommand`](stark_core::InputCommand)s
 //! (§4).
 
-use std::str::FromStr;
-
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::html::geometry::ElementPoint;
 use dioxus::html::input_data::MouseButton;
@@ -14,7 +12,8 @@ use crate::collab::now_seconds;
 use crate::panels::brush::{MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use crate::panels::select::{current_action, modifier_mode};
 use crate::platform::{
-    capture_pointer, on_window_blur, on_window_event, on_window_key, on_window_pointer, sleep_ms,
+    self, RawPointer, capture_pointer, on_window_blur, on_window_event, on_window_key,
+    on_window_pointer, sleep_ms,
 };
 use crate::slots::{self, Grip};
 use crate::state::{AppState, BrushRing, Dwell, PickScope, TowUi, dispatch, update_brush};
@@ -459,8 +458,7 @@ fn accel(m: Modifiers) -> bool {
 /// which is the right answer on a platform with no pens.
 ///
 pub fn is_eraser(e: &Event<PointerData>) -> bool {
-    e.downcast::<web_sys::PointerEvent>()
-        .is_some_and(is_eraser_event)
+    platform::raw_pointer(e).is_some_and(|raw| is_eraser_event(&raw))
 }
 
 /// [`is_eraser`] against a raw web event — what the window-level binding sees
@@ -471,14 +469,13 @@ pub fn is_eraser(e: &Event<PointerData>) -> bool {
 /// move between them names only what is still down (`buttons`, with `button` at
 /// −1). A test on either alone would arm on the press and then, one move later,
 /// disagree with itself.
-fn is_eraser_event(raw: &web_sys::PointerEvent) -> bool {
+fn is_eraser_event(raw: &RawPointer) -> bool {
     /// `button` for the eraser end, per Pointer Events.
     const ERASER_BUTTON: i16 = 5;
     /// The same, as its bit in `buttons`.
     const ERASER_BUTTONS: u16 = 32;
 
-    raw.pointer_type() == "pen"
-        && (raw.button() == ERASER_BUTTON || raw.buttons() & ERASER_BUTTONS != 0)
+    raw.pen && (raw.button == ERASER_BUTTON || raw.buttons & ERASER_BUTTONS != 0)
 }
 
 /// How far a tuning drag must travel before it commits to a knob, in page px
@@ -947,7 +944,7 @@ pub fn page_xy(e: &Event<PointerData>) -> Vec2 {
 /// cancel, since a character is inserted on the press.
 pub fn bind_shortcuts(state: AppState) {
     on_window_key("keydown", move |e| {
-        if !typing_into_a_field(&e) {
+        if !e.on_text_entry() {
             handle_keydown(state, &e);
         }
     });
@@ -991,11 +988,12 @@ pub fn bind_pen(state: AppState) {
             slots::hold(state, slots::ERASER, Grip::Eraser);
         }
     });
+
     // Both edges, because a cancel is a release the browser made on your behalf —
     // a gesture the system took over, a tab switched away from mid-stroke.
     for kind in ["pointerup", "pointercancel"] {
         on_window_pointer(kind, move |e| {
-            if e.pointer_type() == "pen" {
+            if e.pen {
                 slots::release(state, slots::ERASER, Grip::Eraser);
             }
         });
@@ -1003,6 +1001,7 @@ pub fn bind_pen(state: AppState) {
 }
 
 /// Refuse the browser's context menu, once, for the life of the page.
+///
 ///
 /// A pen held still is a **gesture** here, not a request for a menu: the drawing
 /// assist snaps a stroke to the shape it resembles after 0.45s of dwell (§6.9,
@@ -1020,91 +1019,32 @@ pub fn bind_pen(state: AppState) {
 ///
 /// The one exception is a text field, where the browser's menu is the only cut,
 /// copy and paste the app offers — the same carve-out the shortcuts make for the
-/// same reason ([`typing_into_a_field`]).
+/// same reason ([`platform::KeyEvent::on_text_entry`]).
 pub fn bind_context_menu() {
     on_window_event("contextmenu", |e| {
-        if !e.target().is_some_and(|t| is_text_entry(&t)) {
+        if !e.on_text_entry() {
             e.prevent_default();
         }
     });
 }
 
-/// Whether `e` was typed into a control that owns its own keystrokes — a text
-/// field, a `<select>`, a contenteditable region.
+/// Whether a key event went to a control that owns its own keystrokes — a text
+/// field, a `<select>`, a contenteditable region — is
+/// [`platform::KeyEvent::on_text_entry`], asked of the DOM at the moment of the
+/// keystroke so it cannot fall out of step with focus.
 ///
-/// Read off the event's target, which for a key event *is* what has focus, rather
-/// than off a flag the fields set on focus and clear on blur. A field that unmounts
-/// while focused — commit-and-close on a rename — never fires its blur, and a flag
-/// left stuck on would kill every shortcut for the rest of the session. The DOM is
-/// asked at the moment of the keystroke, so it cannot fall out of step.
+/// Declining a keystroke there is what hands the field the browser's own editing
+/// bindings: Ctrl+Z undoes the *text* rather than the document, and Ctrl+A selects
+/// the text rather than the canvas, purely because nothing calls `prevent_default`
+/// on them.
 ///
-/// Declining here is also what hands the field the browser's own editing bindings:
-/// Ctrl+Z undoes the *text* rather than the document, and Ctrl+A selects the text
-/// rather than the canvas, purely because nothing calls `prevent_default` on them.
-///
-/// This is the *only* place a widget can opt out. `e.stop_propagation()` in an
+/// That is the *only* way a widget can opt out. `e.stop_propagation()` in an
 /// element's own `onkeydown` will not do it: dioxus-web reads `prevent_default`
 /// off a handled event but never calls `stopPropagation` on the underlying DOM
 /// event, so propagation is halted inside the virtual tree only and the real event
 /// reaches the window regardless.
-fn typing_into_a_field(e: &web_sys::KeyboardEvent) -> bool {
-    e.target().is_some_and(|t| is_text_entry(&t))
-}
-
-/// Whether `target` is a control that owns its own keystrokes — a text field, a
-/// `<select>`, a contenteditable region.
-///
-/// Split out from [`typing_into_a_field`] because the *menu* asks the same
-/// question of a different event ([`bind_context_menu`]): the one place the
-/// browser's own editing bindings are wanted is the one place its own menu is,
-/// and two lists of which elements those are would be one list too many.
-fn is_text_entry(target: &web_sys::EventTarget) -> bool {
-    use wasm_bindgen::JsCast;
-
-    let Some(el) = target.dyn_ref::<web_sys::HtmlElement>() else {
-        return false;
-    };
-    el.is_content_editable()
-        || match el.tag_name().as_str() {
-            "TEXTAREA" | "SELECT" => true,
-            // Sliders, checkboxes and color wells are not text entry. They want
-            // arrows and space from the browser, but Ctrl+Z over one still means
-            // the document — there is no text there for it to mean anything else.
-            "INPUT" => !matches!(
-                el.unchecked_ref::<web_sys::HtmlInputElement>()
-                    .type_()
-                    .as_str(),
-                "button" | "checkbox" | "color" | "file" | "radio" | "range" | "reset" | "submit"
-            ),
-            _ => false,
-        }
-}
-
-/// The pressed key, in the same typed vocabulary the rsx! handlers read.
-fn key_of(e: &web_sys::KeyboardEvent) -> Key {
-    Key::from_str(&e.key()).unwrap_or(Key::Unidentified)
-}
-
-/// The modifier set held during `e`.
-fn modifiers_of(e: &web_sys::KeyboardEvent) -> Modifiers {
-    let mut m = Modifiers::empty();
-    if e.alt_key() {
-        m.insert(Modifiers::ALT);
-    }
-    if e.ctrl_key() {
-        m.insert(Modifiers::CONTROL);
-    }
-    if e.meta_key() {
-        m.insert(Modifiers::META);
-    }
-    if e.shift_key() {
-        m.insert(Modifiers::SHIFT);
-    }
-    m
-}
-
-fn handle_keydown(mut state: AppState, e: &web_sys::KeyboardEvent) {
-    match key_of(e) {
+fn handle_keydown(mut state: AppState, e: &platform::KeyEvent) {
+    match e.key() {
         Key::Character(c) if c.eq_ignore_ascii_case(" ") => {
             state.space_down.set(true);
             e.prevent_default();
@@ -1115,7 +1055,7 @@ fn handle_keydown(mut state: AppState, e: &web_sys::KeyboardEvent) {
         _ => {}
     }
 
-    let m = modifiers_of(e);
+    let m = e.modifiers();
     track_alt(state, m);
     if !accel(m) {
         // Unmodified keys: the view bindings and the quick-brush rack. Checked
@@ -1132,7 +1072,7 @@ fn handle_keydown(mut state: AppState, e: &web_sys::KeyboardEvent) {
         if let Some(slot) = slots::of_code(&e.code()) {
             slots::hold(state, slot, Grip::Key);
             e.prevent_default();
-        } else if let Key::Character(c) = key_of(e)
+        } else if let Key::Character(c) = e.key()
             && c.eq_ignore_ascii_case("h")
         {
             // Screen-relative, so it swaps the left of the screen with the right
@@ -1142,7 +1082,7 @@ fn handle_keydown(mut state: AppState, e: &web_sys::KeyboardEvent) {
         }
         return;
     }
-    match key_of(e) {
+    match e.key() {
         Key::Character(c) if c.eq_ignore_ascii_case("z") => {
             let cmd = if m.contains(Modifiers::SHIFT) {
                 DocCommand::Redo
@@ -1210,8 +1150,8 @@ fn edit_history(state: AppState, command: DocCommand) {
     dispatch(state, command);
 }
 
-fn handle_keyup(mut state: AppState, e: &web_sys::KeyboardEvent) {
-    match key_of(e) {
+fn handle_keyup(mut state: AppState, e: &platform::KeyEvent) {
+    match e.key() {
         Key::Character(c) if c.eq_ignore_ascii_case(" ") => {
             state.space_down.set(false);
             e.prevent_default();
@@ -1220,13 +1160,13 @@ fn handle_keyup(mut state: AppState, e: &web_sys::KeyboardEvent) {
     }
     // The rack's release, named by the slot it lets go of — so a hand rolling
     // from 3 to 4 and off 4 first does not end the hold 3 still has (§18.1.8).
-    // Unguarded by `typing_into_a_field` like the two above, and for the same
+    // Unguarded by `KeyEvent::on_text_entry` like the two above, and for the same
     // reason: focus can move between a press and its release, and a release that
     // never arrived would leave the brush swapped.
     if let Some(slot) = slots::of_code(&e.code()) {
         slots::release(state, slot, Grip::Key);
     }
-    track_alt(state, modifiers_of(e));
+    track_alt(state, e.modifiers());
 }
 
 /// Record whether Alt is held, so the canvas can wear the eyedropper cursor while it
@@ -1422,10 +1362,7 @@ pub fn elem_xy(e: &Event<PointerData>) -> Vec2 {
 /// half a physical pixel is a deliberate under-estimate — too fine only costs a few
 /// extra control points, while too coarse rounds off detail that was really there.
 fn input_resolution(e: &Event<PointerData>) -> f32 {
-    let dpr = web_sys::window()
-        .map(|w| w.device_pixel_ratio() as f32)
-        .filter(|r| r.is_finite() && *r > 0.0)
-        .unwrap_or(1.0);
+    let dpr = platform::device_pixel_ratio();
     let physical = match e.pointer_type().as_str() {
         "pen" | "touch" => 0.5,
         _ => 1.0,
@@ -1506,20 +1443,8 @@ pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {
         // palette knife's deposit reads its component along the stroke direction
         // (§6.2); a mouse reports (0, 0), so the deposit falls back to its constant rate.
         tilt: Vec2::new(e.tilt_x() as f32, e.tilt_y() as f32) / 90.0,
-        time: event_time(e),
+        time: platform::event_time(e),
     })
-}
-
-/// The event's own timestamp in seconds — `performance.now()`'s clock, monotonic
-/// and shared by every event on the page, which is what [`InputSample::time`]
-/// ("for velocity and timelapse") needs. The fitter keys its time channel to the
-/// *first* sample it sees, so only differences matter and the origin is free.
-/// Zero when the raw event is out of reach (off-wasm), matching the field's
-/// default.
-fn event_time(e: &Event<PointerData>) -> f64 {
-    e.downcast::<web_sys::PointerEvent>()
-        .map(|raw| raw.time_stamp() / 1000.0)
-        .unwrap_or(0.0)
 }
 
 /// Every canvas-space sample a `pointermove` carries, oldest first.
@@ -1532,37 +1457,24 @@ fn event_time(e: &Event<PointerData>) -> f64 {
 /// pressure, tilt and timestamp, so the samples land as the hand made them
 /// rather than as delivery batched them.
 ///
-/// Coalesced entries are mapped through the target's bounding rect (measured
-/// once per delivered event) because their client coordinates are the ones the
-/// spec guarantees; the delivered event's own data equals the list's last entry,
-/// so nothing is dispatched twice. Falls back to the event itself when there is
-/// no list (off-wasm, a synthetic event); `None` before the engine exists, like
+/// The reports come back from [`platform::coalesced`] in the element's own px;
+/// mapping them through the view is this side's business, since canvas space is
+/// what a sample is in. Falls back to the event itself when there is no list
+/// (off-wasm, a synthetic event); `None` before the engine exists, like
 /// [`sample`].
 pub fn samples(state: AppState, e: &Event<PointerData>) -> Option<Vec<InputSample>> {
     let view = view_of(state)?;
-    let coalesced = e.downcast::<web_sys::PointerEvent>().and_then(|raw| {
-        use wasm_bindgen::JsCast;
-        let rect = raw
-            .target()
-            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())?
-            .get_bounding_client_rect();
-        let list = raw.get_coalesced_events();
-        (list.length() > 0).then(|| {
-            list.iter()
-                .filter_map(|v| v.dyn_into::<web_sys::PointerEvent>().ok())
-                .map(|c| InputSample {
-                    pos: view.screen_to_canvas(Vec2::new(
-                        (c.client_x() as f64 - rect.left()) as f32,
-                        (c.client_y() as f64 - rect.top()) as f32,
-                    )),
-                    pressure: c.pressure(),
-                    tilt: Vec2::new(c.tilt_x() as f32, c.tilt_y() as f32) / 90.0,
-                    time: c.time_stamp() / 1000.0,
-                })
-                .collect::<Vec<_>>()
-        })
+    let folded = platform::coalesced(e).map(|list| {
+        list.into_iter()
+            .map(|c| InputSample {
+                pos: view.screen_to_canvas(Vec2::new(c.x, c.y)),
+                pressure: c.pressure,
+                tilt: Vec2::new(c.tilt_x, c.tilt_y) / 90.0,
+                time: c.time,
+            })
+            .collect::<Vec<_>>()
     });
-    match coalesced {
+    match folded {
         Some(list) if !list.is_empty() => Some(list),
         _ => sample(state, e).map(|s| vec![s]),
     }

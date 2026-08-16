@@ -20,11 +20,13 @@
 //!
 //! # What is deliberately not here
 //!
-//! **The base64 codec stays in [`crate::platform`]**, though this is its main
-//! caller. `platform` is the bottom layer — it is what this module opens the store
-//! through — and it needs base64 itself, to read the data URL the browser hands
-//! back when it re-encodes an imported brush image. A codec owned here would be a
-//! dependency pointing the wrong way down the stack.
+//! **The store itself, and the base64 codec**, both in [`crate::platform`]. That
+//! module is the only one allowed to name a browser type — the compiler checks it
+//! off wasm (U6) — so the two `localStorage` calls behind [`get`] and [`set`] live
+//! there, and this module is the *format* and the failure policy rather than the
+//! door. The codec is there for a second reason on top: `platform` needs base64
+//! itself, to read the data URL the browser hands back when it re-encodes an
+//! imported brush image, so owning it here would point a dependency up the stack.
 //!
 //! # Failure is silence, on purpose
 //!
@@ -39,22 +41,16 @@
 /// split on it and three build records with it — see [`record`].
 pub const FIELD: char = '|';
 
-/// The store, or `None` where the browser has none to offer.
-fn store() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
-}
-
 /// What is stored under `key`, or `None` if nothing is (or there is no store).
 pub fn get(key: &str) -> Option<String> {
-    store()?.get_item(key).ok().flatten()
+    crate::platform::local_get(key)
 }
 
 /// Store `value` under `key`. `what` names the thing for the one warning — "the
 /// gradient library", "the settings" — so the message says which of the six ran out
 /// of room.
 pub fn set(key: &str, what: &str, value: &str) {
-    let Some(store) = store() else { return };
-    if store.set_item(key, value).is_err() {
+    if !crate::platform::local_set(key, value) {
         // Quota, most likely. It still works for this session; only its durability
         // is lost.
         tracing::warn!("could not persist {what} (storage full or unavailable)");

@@ -45,7 +45,7 @@ use crate::panels::brush::{
     MAX_FLOW, MAX_RADIUS, MAX_TAPER, MIN_RADIUS, set_orientation, set_shape,
 };
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
-use crate::render::{self, Renderer};
+use crate::render::Renderer;
 use crate::state::{AppState, update_brush};
 use crate::widgets::Slider;
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
@@ -869,11 +869,11 @@ async fn init_preview(state: AppState, mut preview: Preview) {
     // One layout frame, so the freshly-mounted column measures as styled rather
     // than at the canvas's 300×150 intrinsic size. Still only a seed: the element
     // is re-read below, right before anything is placed against it.
-    render::next_frame().await;
+    crate::platform::next_frame().await;
     let built = {
         let renderer = state.renderer.peek();
         renderer.as_ref().map(|main| {
-            let mut r = main.shared(render::canvas_element(PREVIEW_CANVAS_ID));
+            let mut r = main.shared(crate::platform::canvas_by_id(PREVIEW_CANVAS_ID));
             r.process(DocCommand::SetBackground(main.observe().background));
             r
         })
