@@ -22,7 +22,7 @@ mistake into a build failure at the struct it got wrong.
 | # | Finding | Status |
 |---|---|---|
 | 1 | [`Binding` carries no `@group`](#1-binding-carries-no-group) | **done** |
-| 2 | [The generator is enumerated where it should be exhaustive](#2-the-generator-is-enumerated-where-it-should-be-exhaustive) | **generator + ABI codes + 3 host layouts done**; ~8 layouts left |
+| 2 | [The generator is enumerated where it should be exhaustive](#2-the-generator-is-enumerated-where-it-should-be-exhaustive) | **done** |
 | 3 | [`BindKind` pays for a `wgpu` dependency it already has](#3-bindkind-pays-for-a-wgpu-dependency-it-already-has) | **done** |
 | 4 | [`Stamp`'s twelve anonymous lanes defeat the mirror](#4-stamps-twelve-anonymous-lanes-defeat-the-mirror) | **done** |
 | 5 | [`deposit` and `deposit_coarse` are held together by a comment](#5-deposit-and-deposit_coarse-are-held-together-by-a-comment) | **done** |
@@ -83,21 +83,40 @@ are unaffected — they are already unambiguous, since the name is the WESL vari
 > The ABI codes are done: `blend_code` and selection's kind/mode codes are the shaders'
 > own numbers now.
 >
-> **Three host layouts are migrated** — `merge.wesl`'s, `slab.wesl`'s and `fill.wesl`'s
-> — which retired three `if resid { entries.push(..) }` tails and proved the pattern
-> against both uniform flavours. `fill` is the one that showed `Slot` needed a second
-> host-only fact beside filterability: `f` and `tile` are both `var<uniform>` in the
-> WESL, and only the host knows the second is a dynamic-offset slot. `Slot::dynamic`
-> says it.
+> **Done, both halves.** Every bind group layout and every bind group in the engine is
+> built from a slot list naming the generated declarations — the composite passes, the
+> filter, the media, the overlay, the resolve, the matte ramp, the guides, fill, merge,
+> slab, integrate, selection, transform, the stamp and the stamp loop. `desc::` no
+> longer exports a way to write a binding index at all: `load_tex`, `sample_tex`,
+> `load_tex_array`, `uniform`, `uniform_entry`, `tex`, `samp` and `bind_group` are
+> deleted, along with `UniformSlots::layout` and merge's `bind`. Every
+> `if resid { entries.push(..) }` tail and every `[..N + usize::from(resid)]` count is
+> gone with them.
 >
-> **What is left** is `composite/{blend,filter,media,overlay,resolve,tiles}.rs`,
-> `selection.rs`, `transform.rs` and `stroke/{swept,dynamics/kit}.rs`. Each is the same
-> shape of change. Three of them (`blend`, `filter`, `media`) share one layout across
-> both color spaces while `blend_mixbox` declares its residual bindings
-> *unconditionally* — reached only by the space that has one — so those need a third
-> `Slot` flavour for a gate the shader genuinely does not state.
-
-Four hand-maintained lists in `build.rs` (`MIRRORS`, `CONSTS`, `VERTEX`, `BINDINGS`)
+> A slot list states four things, and each is a host fact with a case in this codebase
+> that proves the declaration cannot supply it: **filterability** (`region_color` is
+> loaded by `snapshot` and sampled by `exchange`), **dynamic offset** (`fill.wesl`'s `f`
+> and `tile` are both `var<uniform>`), **visibility** (pass A's view uniform is the
+> vertex stage's, the sampler beside it the fragment's), and **residual-only** for a
+> slot whose declaration is unconditional because its whole module is reached only by a
+> pigment space (`blend_mixbox` 7–8).
+>
+> **Two real defects fell out of it**, which is the argument for the exercise:
+>
+> * `stroke/swept.rs` declared a filtering sampler at group 2 binding 3 and bound
+>   `surface.sampler` into it. `stamp_common.wesl` declares no such slot and says on its
+>   face that it does not — the ground is read nearest (§6.4). A layout may carry an
+>   entry no shader reads, so nothing ever failed; it was a sampler bound for a lookup
+>   that had stopped existing.
+> * `transform.wesl` puts `Quad` and `Gated` at `@group(0) @binding(0)`, and the host
+>   had described that slot once with `min_binding_size: None` — the only size that
+>   serves two structs, and therefore the one that checks neither. Naming a declaration
+>   means naming *which*, and there are now two layouts, each bounding the uniform its
+>   own pipelines read. One could not have covered both: wgpu requires the bound size to
+>   be at least what the shader needs, so `Quad`'s bound rejects the gated pipelines and
+>   `Gated`'s rejects the affine's buffer.
+>
+> Four hand-maintained lists in `build.rs` (`MIRRORS`, `CONSTS`, `VERTEX`, `BINDINGS`)
 name things the shader already declares. `MIRRORS` and `VERTEX` are currently
 complete — all 18 uniform structs and all 5 vertex entry points with `@location`
 parameters are covered. `CONSTS` and `BINDINGS` are not, and the gaps are exactly the

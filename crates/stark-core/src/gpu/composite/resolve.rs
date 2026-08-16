@@ -8,6 +8,13 @@
 use crate::geom::Extent2;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
+use crate::gpu::desc::Slot;
+use stark_shaders::mirror::resolve::binding as rb;
+use stark_shaders::mirror::resolve::decl as rd;
+
+/// The presentation resolve's bindings (§6.4): the box filter's extent, and the
+/// supersampled render it averages down.
+const RESOLVE_SLOTS: &[Slot] = &[Slot::at(rd::R), Slot::at(rd::SRC)];
 
 // Generated from `resolve.wesl`'s own declaration (§6.7).
 pub(super) use stark_shaders::mirror::resolve::Resolve as ResolveUniform;
@@ -131,14 +138,7 @@ impl ResolvePass {
             label: Some("stark resolve"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::resolve().into()),
         });
-        let bgl = desc::bind_group_layout(
-            device,
-            "stark resolve bgl",
-            &[
-                desc::uniform(0, frag),
-                desc::load_tex(1, frag), // the supersampled render
-            ],
-        );
+        let bgl = desc::layout_for(device, "stark resolve bgl", RESOLVE_SLOTS, frag, false);
         let layout = desc::pipeline_layout(device, "stark resolve layout", &[Some(&bgl)]);
         // The pass covers every texel and carries the alpha it averaged, so there is
         // nothing for a fixed-function blend to do.
@@ -219,11 +219,18 @@ impl Supersampled {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark resolve bg"),
-            layout: &pass.bgl,
-            entries: &[desc::uniform_entry(0, &buf), desc::tex(1, &view)],
-        });
+        let bg = desc::bind_group_for(
+            device,
+            "stark resolve bg",
+            &pass.bgl,
+            RESOLVE_SLOTS,
+            false,
+            |i| match i {
+                rb::R => buf.as_entire_binding(),
+                rb::SRC => wgpu::BindingResource::TextureView(&view),
+                other => unreachable!("`RESOLVE_SLOTS` lists no binding {other}"),
+            },
+        );
         Self { view, bg, buf }
     }
 }

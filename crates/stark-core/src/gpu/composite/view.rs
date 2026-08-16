@@ -10,6 +10,7 @@
 //! buffer holding *what this render is looking at*, and the groups over it).
 
 use crate::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, ViewTransform};
+use stark_shaders::mirror::composite::binding as cb;
 
 // Generated from `composite.wesl`'s declaration of `View`, which `matte.wesl` and
 // `overlay.wesl` declare identically — the generator checks all three agree (§6.7).
@@ -105,18 +106,28 @@ impl ViewBindings {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let group = |label, layout| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(label),
-                layout,
-                entries: &[
-                    crate::gpu::desc::uniform_entry(0, &buf),
-                    crate::gpu::desc::samp(1, &view.sampler),
-                ],
+        // Pass A's view group and the overlay's hold the same two things against two
+        // layouts, so one closure answers for both — but each names its *own* shader's
+        // declarations (§6.10), because "`composite.wesl` and `overlay.wesl` happen to
+        // number these alike" is exactly the kind of agreement this stops asserting by
+        // hand.
+        let group = |label, layout, slots| {
+            crate::gpu::desc::bind_group_for(device, label, layout, slots, false, |i| match i {
+                cb::VIEW => buf.as_entire_binding(),
+                cb::SAMP => wgpu::BindingResource::Sampler(&view.sampler),
+                other => unreachable!("a view group lists no binding {other}"),
             })
         };
-        let tiles = group("stark composite view bg", tile_view_bgl);
-        let overlay = group("stark overlay view bg", overlay_view_bgl);
+        let tiles = group(
+            "stark composite view bg",
+            tile_view_bgl,
+            super::tiles::VIEW_SLOTS,
+        );
+        let overlay = group(
+            "stark overlay view bg",
+            overlay_view_bgl,
+            super::overlay::VIEW_SLOTS,
+        );
         Self {
             buf,
             tiles,

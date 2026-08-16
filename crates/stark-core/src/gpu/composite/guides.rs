@@ -8,6 +8,21 @@
 use crate::geom::ViewTransform;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
+use crate::gpu::desc::Slot;
+use stark_shaders::mirror::guides::decl as gd;
+
+/// The guide overlay's one binding (§20.4).
+///
+/// One slot per visible guide in the frame, the stride derived from
+/// [`GuideUniform`] itself. It was a hand-written `GUIDE_SLOT = 512` for
+/// as long as this pass allocated its own buffer — and 512 is what
+/// `UniformSlots` computes, so the constant was *right* and would have
+/// stayed right only until the next time the uniform grew. It had
+/// already been widened once, when the fisheye brought the second set of
+/// poles (§20.8); a second such growth past 512 would have under-strided
+/// every slot, and two visible guides would have read each other's
+/// lanes with nothing to say so.
+const GUIDE_SLOTS: &[Slot] = &[Slot::dynamic(gd::GUIDE)];
 use crate::gpu::uniforms::UniformSlots;
 
 // Generated from `guides.wesl`'s own declaration — pass D, the drawing guides
@@ -89,20 +104,7 @@ impl GuidePass {
             label: Some("stark guides"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::guides().into()),
         });
-        let bgl = desc::bind_group_layout(
-            device,
-            "stark guides bgl",
-            // One slot per visible guide in the frame, the stride derived from
-            // [`GuideUniform`] itself. It was a hand-written `GUIDE_SLOT = 512` for
-            // as long as this pass allocated its own buffer — and 512 is what
-            // `UniformSlots` computes, so the constant was *right* and would have
-            // stayed right only until the next time the uniform grew. It had
-            // already been widened once, when the fisheye brought the second set of
-            // poles (§20.8); a second such growth past 512 would have under-strided
-            // every slot, and two visible guides would have read each other's
-            // lanes with nothing to say so.
-            &[UniformSlots::<GuideUniform>::layout(0, frag)],
-        );
+        let bgl = desc::layout_for(device, "stark guides bgl", GUIDE_SLOTS, frag, false);
         let layout = desc::pipeline_layout(device, "stark guides layout", &[Some(&bgl)]);
         let pipeline = desc::fullscreen_pipeline(
             device,

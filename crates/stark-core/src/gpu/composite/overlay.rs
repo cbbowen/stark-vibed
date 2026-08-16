@@ -6,7 +6,23 @@
 
 use crate::document::selection::Selection;
 use crate::gpu::context::GpuContext;
+use crate::gpu::desc::Slot;
 use crate::gpu::desc::{self, RenderPipe};
+use stark_shaders::mirror::overlay::decl as od;
+
+/// The overlay's **view** group — the same two things pass A's view group holds, from
+/// `overlay.wesl`'s own declarations (§6.10).
+///
+/// Its uniform is `VERTEX_FRAGMENT` where pass A's is vertex-only: the fragment stage
+/// reads the view here too, to convert a canvas-space dash length into screen px with
+/// the zoom.
+pub(super) const VIEW_SLOTS: &[Slot] = &[
+    Slot::at(od::VIEW).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT),
+    Slot::at(od::SAMP),
+];
+
+/// One selection mask tile, sampled to find the contour.
+const MASK_SLOTS: &[Slot] = &[Slot::sampled(od::MASK)];
 use crate::gpu::uniforms::InstanceStream;
 
 /// Per-mask-tile instance of the outline pass: where the tile is, and how to draw
@@ -49,19 +65,8 @@ impl OverlayPass {
         // Its own view bind group rather than pass A's: the fragment stage needs the
         // uniform too (it converts a canvas-space distance to screen px with the
         // zoom), and pass A declares it vertex-only.
-        let view_bgl = desc::bind_group_layout(
-            device,
-            "stark overlay view bgl",
-            &[
-                desc::uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
-                desc::sampler(1, frag),
-            ],
-        );
-        let tile_bgl = desc::bind_group_layout(
-            device,
-            "stark overlay tile bgl",
-            &[desc::sample_tex(0, frag)],
-        );
+        let view_bgl = desc::layout_for(device, "stark overlay view bgl", VIEW_SLOTS, frag, false);
+        let tile_bgl = desc::layout_for(device, "stark overlay tile bgl", MASK_SLOTS, frag, false);
         let layout = desc::pipeline_layout(
             device,
             "stark overlay layout",
@@ -133,11 +138,14 @@ impl OverlayPass {
                 // Kept on the mask tile, like pass A's on the paint tile: the ants
                 // redraw every frame a selection is live, and the mask is immutable.
                 mask_tiles.push(handle.overlay_bg(|| {
-                    ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("stark overlay tile bg"),
-                        layout: &self.tile_bgl,
-                        entries: &[desc::tex(0, handle.view())],
-                    })
+                    desc::bind_group_for(
+                        &ctx.device,
+                        "stark selection outline tile bg",
+                        &self.tile_bgl,
+                        MASK_SLOTS,
+                        false,
+                        |_| wgpu::BindingResource::TextureView(handle.view()),
+                    )
                 }));
             }
         }

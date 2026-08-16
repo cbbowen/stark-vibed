@@ -14,6 +14,7 @@ use crate::gpu::channels::Targets;
 use crate::gpu::composite::view_uniform;
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TileMap};
+use stark_shaders::mirror::composite::binding as cb;
 
 use super::super::region::{RegionRect, chunk_segments, cover};
 use super::super::scratch::{Key, SubmitScope};
@@ -232,11 +233,14 @@ impl<'a> DynamicsRun<'a> {
         // The brush's swept-footprint prefix-τ (shared with the fast path) and its
         // plain coverage mask (the reservoir texels' own footprint weights).
         let prefix_view = r.tips.prefix_view(scene.assets, &rec.brush);
-        let prefix_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark dynamics prefix bg"),
-            layout: &r.dynamics.prefix_bgl,
-            entries: &[desc::tex(0, &prefix_view)],
-        });
+        let prefix_bg = desc::bind_group_for(
+            device,
+            "stark dynamics prefix bg",
+            &r.dynamics.prefix_bgl,
+            super::kit::PREFIX_SLOTS,
+            false,
+            |_| wgpu::BindingResource::TextureView(&prefix_view),
+        );
         let cov = r.tips.coverage_view(scene.assets, &rec.brush);
         // Color dynamics for the brush's own `add` paint — the same field and
         // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
@@ -560,17 +564,18 @@ impl<'a> DynamicsRun<'a> {
                 usage: wgpu::BufferUsages::UNIFORM,
             },
         ));
-        let view_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark dynamics region view bg"),
-            layout: &kit.composite_view_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: view_buf.as_entire_binding(),
-                },
-                desc::samp(1, &kit.composite_sampler),
-            ],
-        });
+        let view_bg = desc::bind_group_for(
+            device,
+            "stark dynamics region view bg",
+            &kit.composite_view_bgl,
+            crate::gpu::composite::COMPOSITE_VIEW_SLOTS,
+            false,
+            |i| match i {
+                cb::VIEW => view_buf.as_entire_binding(),
+                cb::SAMP => wgpu::BindingResource::Sampler(&kit.composite_sampler),
+                other => unreachable!("the composite view group lists no binding {other}"),
+            },
+        );
         let mut tile_origins: Vec<TileInstance> = Vec::new();
         let mut tile_bgs: Vec<wgpu::BindGroup> = Vec::new();
         for coord in halo {
@@ -579,20 +584,25 @@ impl<'a> DynamicsRun<'a> {
                     origin: coord.origin().to_array(),
                     opacity: 1.0,
                 });
-                let mut entries = vec![
-                    desc::tex(0, tile.color_view()),
-                    desc::tex(1, tile.aux_view()),
-                ];
-                // Binding 2 is the tile's own residual. A resident tile in a pigment
-                // space always has one, so `Zeroes` never stands in here.
-                if let Some(v) = tile.resid_view() {
-                    entries.push(desc::tex(2, v));
-                }
-                tile_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark dynamics region tile bg"),
-                    layout: &kit.composite_tile_bgl,
-                    entries: &entries,
-                }));
+                // A resident tile in a pigment space always has a residual, so
+                // `Zeroes` never stands in here.
+                tile_bgs.push(desc::bind_group_for(
+                    device,
+                    "stark dynamics region tile bg",
+                    &kit.composite_tile_bgl,
+                    crate::gpu::composite::COMPOSITE_TILE_SLOTS,
+                    tile.resid_view().is_some(),
+                    |i| {
+                        wgpu::BindingResource::TextureView(match i {
+                            cb::TILE_COLOR => tile.color_view(),
+                            cb::TILE_AUX => tile.aux_view(),
+                            cb::TILE_RESID => {
+                                tile.resid_view().expect("a residual space's tile has one")
+                            }
+                            other => unreachable!("the tile group lists no binding {other}"),
+                        })
+                    },
+                ));
             }
         }
         let tile_inst = (!tile_origins.is_empty()).then(|| {
@@ -1113,11 +1123,14 @@ impl<'a> DynamicsRun<'a> {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             label: "stark dynamics narrow aux",
         });
-        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark dynamics slice bg"),
-            layout: &kit.slice_bgl,
-            entries: &[desc::tex(0, &region.aux)],
-        });
+        let bg = desc::bind_group_for(
+            device,
+            "stark dynamics slice bg",
+            &kit.slice_bgl,
+            super::kit::SLICE_SLOTS,
+            false,
+            |_| wgpu::BindingResource::TextureView(&region.aux),
+        );
         {
             let mut pass = self
                 .scope

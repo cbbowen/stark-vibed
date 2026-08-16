@@ -42,7 +42,73 @@ use crate::document::transform::{
 use crate::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use crate::gpu::channels::{ChannelFormats, Channels};
 use crate::gpu::context::GpuContext;
+use crate::gpu::desc::Slot;
 use crate::gpu::desc::{self, Zeroes};
+use stark_shaders::mirror::transform::binding as t;
+use stark_shaders::mirror::transform::decl as td;
+
+/// The affine's group: its map, and the bilinear clamp sampler.
+///
+/// **Two lists where there was one layout**, and that is the migration paying for
+/// itself. `transform.wesl` puts `Quad` (the affine) and `Gated` (perspective/warp) at
+/// `@group(0) @binding(0)` because no entry point reaches both — its header explains
+/// why that is sound. The host had described the slot once, with `min_binding_size:
+/// None`, which is the only size that serves two structs and therefore checks neither.
+///
+/// Naming the declaration means naming *which* struct, and a layout then bounds the
+/// uniform its own pipelines actually read. `wgpu` requires the bound size to be at
+/// least what the shader needs, so one layout genuinely could not have covered both:
+/// `Quad`'s bound rejects the gated pipelines at creation, and `Gated`'s rejects the
+/// affine's buffer at bind time. Two layouts is what the shader was saying all along.
+const QUAD_SLOTS: &[Slot] = &[
+    // The vertex stage places the quad through the forward map; the fragment stage
+    // taps the source through the inverse.
+    Slot::at(td::Q).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT),
+    Slot::at(td::SAMP),
+];
+
+/// The rect-scoped maps' group — the same two things [`QUAD_SLOTS`] holds, against
+/// `Gated` rather than `Quad`.
+const GATED_SLOTS: &[Slot] = &[
+    Slot::at(td::QG).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT),
+    Slot::at(td::SAMP),
+];
+
+/// The source tile being carried, at group 1 — its channels and the mask over it, all
+/// sampled, since the parcel resamples under the map (§16).
+const SRC_SLOTS: &[Slot] = &[
+    Slot::sampled(td::SRC_COLOR),
+    Slot::sampled(td::SRC_AUX),
+    Slot::sampled(td::SRC_MASK),
+    // The source tile's residual (§6.7): carried under the same map and sampled at the
+    // same uv as the color it belongs to.
+    Slot::sampled(td::SRC_RESID),
+];
+
+/// The mask pass reads only the source mask — the same group 1, one slot of it.
+const MASK_SRC_SLOTS: &[Slot] = &[Slot::sampled(td::SRC_MASK)];
+
+/// The combine's inputs, which claim group 0 from 2 up — the quad passes never see
+/// them, and no entry point reaches both sets (`transform.wesl`'s header).
+const COMBINE_SLOTS: &[Slot] = &[
+    Slot::at(td::BASE_COLOR),
+    Slot::at(td::BASE_AUX),
+    Slot::at(td::BASE_MASK),
+    Slot::at(td::PARCEL_COLOR),
+    Slot::at(td::PARCEL_AUX),
+    // The gate rect: zeroed for the affine's whole-plane cut, the source rect for
+    // perspective/warp.
+    Slot::at(td::QC),
+    // The base's and the parcel's residuals — past the gate rect because 7 was already
+    // taken when they were added, and the shader says the same.
+    Slot::at(td::BASE_RESID),
+    Slot::at(td::PARCEL_RESID),
+];
+
+/// A texture view as the resource a bind-group entry takes.
+fn tex(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
+    wgpu::BindingResource::TextureView(v)
+}
 use crate::gpu::selection::{SelectionRenderer, outside_clear};
 use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool};
@@ -209,6 +275,9 @@ pub struct TransformRenderer {
     mask_gated_pipeline: wgpu::RenderPipeline,
     mask_base_pipeline: wgpu::RenderPipeline,
     quad_bgl: wgpu::BindGroupLayout,
+    /// The rect-scoped maps' own group. Separate from [`Self::quad_bgl`] because their
+    /// uniform is a different, larger struct — see [`GATED_SLOTS`].
+    gated_bgl: wgpu::BindGroupLayout,
     src_bgl: wgpu::BindGroupLayout,
     mask_src_bgl: wgpu::BindGroupLayout,
     combine_bgl: wgpu::BindGroupLayout,
@@ -237,52 +306,41 @@ impl TransformRenderer {
         });
 
         let frag = wgpu::ShaderStages::FRAGMENT;
-        let quad_bgl = desc::bind_group_layout(
+        let quad_bgl =
+            desc::layout_for(device, "stark transform quad bgl", QUAD_SLOTS, frag, resid);
+        let gated_bgl = desc::layout_for(
             device,
-            "stark transform quad bgl",
-            &[
-                // The vertex stage places the quad through the forward affine; the
-                // fragment stage taps the source through the inverse.
-                desc::uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
-                desc::sampler(1, frag),
-            ],
+            "stark transform gated bgl",
+            GATED_SLOTS,
+            frag,
+            resid,
         );
-        let mut src_entries = vec![
-            desc::sample_tex(0, frag),
-            desc::sample_tex(1, frag),
-            desc::sample_tex(2, frag),
-        ];
-        // 3, the source tile's residual (§6.7): carried under the same map and
-        // sampled at the same uv as the color it belongs to.
-        if resid {
-            src_entries.push(desc::sample_tex(3, frag));
-        }
-        let src_bgl = desc::bind_group_layout(device, "stark transform src bgl", &src_entries);
-        // The mask pass reads only the source mask (binding 2).
-        let mask_src_bgl = desc::bind_group_layout(
+        let src_bgl = desc::layout_for(device, "stark transform src bgl", SRC_SLOTS, frag, resid);
+        let mask_src_bgl = desc::layout_for(
             device,
             "stark transform mask src bgl",
-            &[desc::sample_tex(2, frag)],
+            MASK_SRC_SLOTS,
+            frag,
+            resid,
         );
-        let mut combine_entries = vec![
-            desc::load_tex(2, frag),
-            desc::load_tex(3, frag),
-            desc::load_tex(4, frag),
-            desc::load_tex(5, frag),
-            desc::load_tex(6, frag),
-            // The gate rect (binding 7): zeroed for the affine's whole-plane cut,
-            // the source rect for perspective/warp.
-            desc::uniform(7, frag),
-        ];
-        // 8 and 9, the base's and the parcel's residuals — past the gate rect because
-        // 7 was already taken when they were added, and the shader says the same.
-        if resid {
-            combine_entries.push(desc::load_tex(8, frag));
-            combine_entries.push(desc::load_tex(9, frag));
-        }
-        let combine_bgl =
-            desc::bind_group_layout(device, "stark transform combine bgl", &combine_entries);
+        let combine_bgl = desc::layout_for(
+            device,
+            "stark transform combine bgl",
+            COMBINE_SLOTS,
+            frag,
+            resid,
+        );
 
+        let gated_layout = desc::pipeline_layout(
+            device,
+            "stark transform gated layout",
+            &[Some(&gated_bgl), Some(&src_bgl)],
+        );
+        let gated_mask_layout = desc::pipeline_layout(
+            device,
+            "stark transform gated mask layout",
+            &[Some(&gated_bgl), Some(&mask_src_bgl)],
+        );
         let quad_layout = desc::pipeline_layout(
             device,
             "stark transform quad layout",
@@ -358,14 +416,14 @@ impl TransformRenderer {
         );
         let parcel_gated_pipeline = quad(
             "stark transform parcel gated",
-            &quad_layout,
+            &gated_layout,
             "fs_parcel_gated",
             &paint,
             "vs_gated",
         );
         let mask_gated_pipeline = quad(
             "stark transform mask gated",
-            &mask_layout,
+            &gated_mask_layout,
             "fs_mask_gated",
             &mask_union,
             "vs_gated",
@@ -378,10 +436,12 @@ impl TransformRenderer {
             ("vs_fill", "fs_combine"),
             &paint,
         );
+        // The residue is a *gated* pass — it reads `qg`'s source rect (`fs_mask_base`)
+        // — so it takes the gated group, like the two pipelines it is drawn beside.
         let mask_base_pipeline = desc::fullscreen_pipeline(
             device,
             "stark transform mask base",
-            &mask_layout,
+            &gated_mask_layout,
             &shader,
             ("vs_fill", "fs_mask_base"),
             &mask,
@@ -406,6 +466,7 @@ impl TransformRenderer {
             mask_gated_pipeline,
             mask_base_pipeline,
             quad_bgl,
+            gated_bgl,
             src_bgl,
             mask_src_bgl,
             combine_bgl,
@@ -604,21 +665,24 @@ impl TransformRenderer {
                 .entry(unit.src)
                 .or_insert_with(|| {
                     let mask = self.selection.mask_for(from.selection, unit.src);
-                    device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("stark transform src bg"),
-                        layout: &self.src_bgl,
-                        entries: &{
-                            let mut e = vec![
-                                desc::tex(0, tile.color_view()),
-                                desc::tex(1, tile.aux_view()),
-                                desc::tex(2, &mask),
-                            ];
-                            if let Some(view) = tile.resid_view() {
-                                e.push(desc::tex(3, view));
-                            }
-                            e
+                    desc::bind_group_for(
+                        device,
+                        "stark transform src bg",
+                        &self.src_bgl,
+                        SRC_SLOTS,
+                        tile.resid_view().is_some(),
+                        |i| {
+                            tex(match i {
+                                t::SRC_COLOR => tile.color_view(),
+                                t::SRC_AUX => tile.aux_view(),
+                                t::SRC_MASK => &mask,
+                                t::SRC_RESID => {
+                                    tile.resid_view().expect("a residual space's tile has one")
+                                }
+                                other => unreachable!("`SRC_SLOTS` lists no binding {other}"),
+                            })
                         },
-                    })
+                    )
                 })
                 .clone();
             draws.push((self.gated_bg(scope, unit, g.inv, g.rect, dest), src_bg));
@@ -660,11 +724,14 @@ impl TransformRenderer {
     ) {
         let device = &self.ctx.device;
         let mask_bg = |view: &wgpu::TextureView| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark transform mask src bg"),
-                layout: &self.mask_src_bgl,
-                entries: &[desc::tex(2, view)],
-            })
+            desc::bind_group_for(
+                device,
+                "stark transform mask src bg",
+                &self.mask_src_bgl,
+                MASK_SRC_SLOTS,
+                false,
+                |_| tex(view),
+            )
         };
         // The residue reads the destination's *old* coverage — a real tile or
         // the outside constant, through the same clamped-read pattern.
@@ -736,17 +803,18 @@ impl TransformRenderer {
                 usage: wgpu::BufferUsages::UNIFORM,
             }),
         );
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark transform gated bg"),
-            layout: &self.quad_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: ubuf.as_entire_binding(),
-                },
-                desc::samp(1, &self.sampler),
-            ],
-        })
+        desc::bind_group_for(
+            device,
+            "stark transform gated bg",
+            &self.gated_bgl,
+            GATED_SLOTS,
+            false,
+            |i| match i {
+                t::QG => ubuf.as_entire_binding(),
+                t::SAMP => wgpu::BindingResource::Sampler(&self.sampler),
+                other => unreachable!("`GATED_SLOTS` lists no binding {other}"),
+            },
+        )
     }
 
     /// Rasterize the transformed source quads reaching `dest` into a fresh
@@ -778,21 +846,24 @@ impl TransformRenderer {
                 .entry(*src)
                 .or_insert_with(|| {
                     let mask = self.selection.mask_for(from.selection, *src);
-                    device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("stark transform src bg"),
-                        layout: &self.src_bgl,
-                        entries: &{
-                            let mut e = vec![
-                                desc::tex(0, tile.color_view()),
-                                desc::tex(1, tile.aux_view()),
-                                desc::tex(2, &mask),
-                            ];
-                            if let Some(view) = tile.resid_view() {
-                                e.push(desc::tex(3, view));
-                            }
-                            e
+                    desc::bind_group_for(
+                        device,
+                        "stark transform src bg",
+                        &self.src_bgl,
+                        SRC_SLOTS,
+                        tile.resid_view().is_some(),
+                        |i| {
+                            tex(match i {
+                                t::SRC_COLOR => tile.color_view(),
+                                t::SRC_AUX => tile.aux_view(),
+                                t::SRC_MASK => &mask,
+                                t::SRC_RESID => {
+                                    tile.resid_view().expect("a residual space's tile has one")
+                                }
+                                other => unreachable!("`SRC_SLOTS` lists no binding {other}"),
+                            })
                         },
-                    })
+                    )
                 })
                 .clone();
             draws.push((self.quad_bg(scope, affine, *src, dest), src_bg));
@@ -870,26 +941,24 @@ impl TransformRenderer {
             ),
             None => (None, None),
         };
-        let mut entries = vec![
-            desc::tex(2, &base_color),
-            desc::tex(3, &base_aux),
-            desc::tex(4, &base_mask),
-            desc::tex(5, &parcel_color),
-            desc::tex(6, &parcel_aux),
-            wgpu::BindGroupEntry {
-                binding: 7,
-                resource: ubuf.as_entire_binding(),
+        let bg = desc::bind_group_for(
+            device,
+            "stark transform combine bg",
+            &self.combine_bgl,
+            COMBINE_SLOTS,
+            base_resid.is_some() && parcel_resid.is_some(),
+            |i| match i {
+                t::BASE_COLOR => tex(&base_color),
+                t::BASE_AUX => tex(&base_aux),
+                t::BASE_MASK => tex(&base_mask),
+                t::PARCEL_COLOR => tex(&parcel_color),
+                t::PARCEL_AUX => tex(&parcel_aux),
+                t::QC => ubuf.as_entire_binding(),
+                t::BASE_RESID => tex(base_resid.as_ref().expect("a residual build has one")),
+                t::PARCEL_RESID => tex(parcel_resid.as_ref().expect("a residual build has one")),
+                other => unreachable!("`COMBINE_SLOTS` lists no binding {other}"),
             },
-        ];
-        if let (Some(b), Some(p)) = (&base_resid, &parcel_resid) {
-            entries.push(desc::tex(8, b));
-            entries.push(desc::tex(9, p));
-        }
-        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark transform combine bg"),
-            layout: &self.combine_bgl,
-            entries: &entries,
-        });
+        );
         scope.fullscreen_pass(
             "stark transform combine",
             &self.combine_pipeline,
@@ -917,11 +986,14 @@ impl TransformRenderer {
             let Some(handle) = selection.tile(*src) else {
                 continue;
             };
-            let src_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark transform mask src bg"),
-                layout: &self.mask_src_bgl,
-                entries: &[desc::tex(2, handle.view())],
-            });
+            let src_bg = desc::bind_group_for(
+                device,
+                "stark transform mask src bg",
+                &self.mask_src_bgl,
+                MASK_SRC_SLOTS,
+                false,
+                |_| tex(handle.view()),
+            );
             draws.push((self.quad_bg(scope, affine, *src, dest), src_bg));
         }
 
@@ -969,16 +1041,17 @@ impl TransformRenderer {
                 usage: wgpu::BufferUsages::UNIFORM,
             }),
         );
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark transform quad bg"),
-            layout: &self.quad_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: ubuf.as_entire_binding(),
-                },
-                desc::samp(1, &self.sampler),
-            ],
-        })
+        desc::bind_group_for(
+            device,
+            "stark transform quad bg",
+            &self.quad_bgl,
+            QUAD_SLOTS,
+            false,
+            |i| match i {
+                t::Q => ubuf.as_entire_binding(),
+                t::SAMP => wgpu::BindingResource::Sampler(&self.sampler),
+                other => unreachable!("`QUAD_SLOTS` lists no binding {other}"),
+            },
+        )
     }
 }

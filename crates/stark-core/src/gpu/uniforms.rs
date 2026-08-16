@@ -112,19 +112,6 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
         slot * Self::STRIDE as u32
     }
 
-    /// The **layout** entry a pass declares for these slots, and [`Self::binding`]
-    /// the bind-group entry that satisfies it — the two ends of one ABI, both
-    /// stated by the type rather than by each call site spelling `size_of::<T>()` out
-    /// for itself.
-    ///
-    /// Both sizes are the uniform's own, not [`Self::STRIDE`]: a slot is *padded* to
-    /// the alignment and what the shader reads is the struct. Getting that pair
-    /// wrong in the same direction cancels out and in opposite directions is a
-    /// validation error, which is exactly why neither should be written twice.
-    pub(crate) fn layout(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
-        crate::gpu::desc::uniform_slot(binding, vis, std::mem::size_of::<T>() as u64)
-    }
-
     /// This buffer as a dynamic-offset bind-group entry — one slot, at offset 0,
     /// which each draw then displaces by its own [`Self::offset`].
     pub(crate) fn binding(&self, binding: u32) -> wgpu::BindGroupEntry<'_> {

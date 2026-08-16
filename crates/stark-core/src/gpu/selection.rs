@@ -25,6 +25,24 @@ use crate::document::selection::{
 use crate::geom::{TileCoord, Vec2};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
+use crate::gpu::desc::Slot;
+use stark_shaders::mirror::mask_region::decl as mrd;
+use stark_shaders::mirror::selection::binding as sb;
+use stark_shaders::mirror::selection::decl as sd;
+
+/// One op's rasterize into a mask tile (§6.8): the shape, the mask it combines with,
+/// and the lasso's edge list (a 1×1 stand-in for the analytic shapes).
+const RASTERIZE_SLOTS: &[Slot] = &[
+    // Per tile, so a dynamic-offset slot rather than a buffer each.
+    Slot::dynamic(sd::P),
+    Slot::at(sd::PREV),
+    Slot::at(sd::EDGES),
+];
+
+/// The region gather's two groups (`mask_region.wesl`, §6.8/§6.2) — where the region
+/// sits, and one mask tile drawn into it.
+const REGION_VIEW_SLOTS: &[Slot] = &[Slot::at(mrd::R)];
+const REGION_TILE_SLOTS: &[Slot] = &[Slot::at(mrd::MASK)];
 use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
 use crate::gpu::uniforms::UniformSlots;
@@ -89,16 +107,8 @@ impl SelectionRenderer {
         // The mask targets take no blend: the shader does the combine and writes
         // straight through.
         let mask_target = [desc::target(MASK_FORMAT)];
-        let rasterize_bgl = desc::bind_group_layout(
-            device,
-            "stark selection bgl",
-            &[
-                // Per tile, so a dynamic-offset slot rather than a buffer each.
-                UniformSlots::<MaskUniform>::layout(0, frag),
-                desc::load_tex(1, frag), // previous mask
-                desc::load_tex(2, frag), // lasso edges
-            ],
-        );
+        let rasterize_bgl =
+            desc::layout_for(device, "stark selection bgl", RASTERIZE_SLOTS, frag, false);
         let layout =
             desc::pipeline_layout(device, "stark selection layout", &[Some(&rasterize_bgl)]);
         let rasterize_pipeline = desc::fullscreen_pipeline(
@@ -115,15 +125,19 @@ impl SelectionRenderer {
             label: Some("stark selection region"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::mask_region().into()),
         });
-        let region_view_bgl = desc::bind_group_layout(
+        let region_view_bgl = desc::layout_for(
             device,
             "stark selection region view bgl",
-            &[desc::uniform(0, wgpu::ShaderStages::VERTEX)],
+            REGION_VIEW_SLOTS,
+            wgpu::ShaderStages::VERTEX,
+            false,
         );
-        let region_tile_bgl = desc::bind_group_layout(
+        let region_tile_bgl = desc::layout_for(
             device,
             "stark selection region tile bgl",
-            &[desc::load_tex(0, frag)],
+            REGION_TILE_SLOTS,
+            frag,
+            false,
         );
         let region_layout = desc::pipeline_layout(
             device,
@@ -319,14 +333,14 @@ impl SelectionRenderer {
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let view_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark selection region view bg"),
-            layout: &self.region_view_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: ubuf.as_entire_binding(),
-            }],
-        });
+        let view_bg = desc::bind_group_for(
+            device,
+            "stark selection region view bg",
+            &self.region_view_bgl,
+            REGION_VIEW_SLOTS,
+            false,
+            |_| ubuf.as_entire_binding(),
+        );
 
         let mut origins: Vec<MaskInstance> = Vec::new();
         let mut tile_bgs: Vec<wgpu::BindGroup> = Vec::new();
@@ -338,11 +352,14 @@ impl SelectionRenderer {
             origins.push(MaskInstance {
                 origin: off.to_array(),
             });
-            tile_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark selection region tile bg"),
-                layout: &self.region_tile_bgl,
-                entries: &[desc::tex(0, handle.view())],
-            }));
+            tile_bgs.push(desc::bind_group_for(
+                device,
+                "stark selection region tile bg",
+                &self.region_tile_bgl,
+                REGION_TILE_SLOTS,
+                false,
+                |_| wgpu::BindingResource::TextureView(handle.view()),
+            ));
         }
         let instances = (!origins.is_empty()).then(|| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -427,15 +444,19 @@ impl SelectionRenderer {
         for (i, coord) in coords.iter().enumerate() {
             let dst = pool.acquire_mask(AllocSource::SelectionMask);
             let prev_view = self.mask_for(prev, *coord);
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark selection bg"),
-                layout: &self.rasterize_bgl,
-                entries: &[
-                    slots.binding(0),
-                    desc::tex(1, &prev_view),
-                    desc::tex(2, edges),
-                ],
-            });
+            let bg = desc::bind_group_for(
+                device,
+                "stark selection bg",
+                &self.rasterize_bgl,
+                RASTERIZE_SLOTS,
+                false,
+                |i| match i {
+                    sb::P => slots.resource(),
+                    sb::PREV => wgpu::BindingResource::TextureView(&prev_view),
+                    sb::EDGES => wgpu::BindingResource::TextureView(edges),
+                    other => unreachable!("`RASTERIZE_SLOTS` lists no binding {other}"),
+                },
+            );
             {
                 let mut pass = scope
                     .encoder()

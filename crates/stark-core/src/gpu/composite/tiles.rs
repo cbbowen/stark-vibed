@@ -7,7 +7,33 @@
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::{ChannelFormats, Targets};
+use crate::gpu::desc::Slot;
 use crate::gpu::desc::{self, RenderPipe};
+use stark_shaders::mirror::composite::decl as cd;
+use stark_shaders::mirror::matte::decl as md;
+
+/// Pass A's **view** group (§6.3) — the canvas→NDC map and the tile sampler, shared
+/// with the matte pass drawn inside it and with the overlay (§6.10).
+///
+/// The two slots differ in visibility, and that is what [`Slot::in_stages`] is for: the
+/// vertex stage places the quad from `view`, the fragment stage samples through `samp`,
+/// and neither wants the other's.
+pub(crate) const VIEW_SLOTS: &[Slot] = &[
+    Slot::at(cd::VIEW).in_stages(wgpu::ShaderStages::VERTEX),
+    Slot::at(cd::SAMP),
+];
+
+/// The matte's gradient ramp at group 1, per matte where the view is per pass (§22.4).
+/// Fragment-only — the vertex stage has no use for it.
+const RAMP_SLOTS: &[Slot] = &[Slot::dynamic(md::RAMP)];
+
+/// Pass A's **tile** group: one layer tile's channels, sampled through the view's
+/// sampler so the bilinear filter reaches into the apron at the edges (§6.4).
+pub(crate) const TILE_SLOTS: &[Slot] = &[
+    Slot::sampled(cd::TILE_COLOR),
+    Slot::sampled(cd::TILE_AUX),
+    Slot::sampled(cd::TILE_RESID),
+];
 use crate::gpu::uniforms::{InstanceStream, UniformSlots};
 
 use super::plan::Draw;
@@ -55,19 +81,10 @@ impl TilePass {
 
         // Vertex-only: the fragment stage gets canvas position as a varying, and the
         // zoom rides through `misc.w` for the matte's edge antialiasing width.
-        let view_bgl = desc::bind_group_layout(
-            device,
-            "stark composite view bgl",
-            &[
-                desc::uniform(0, wgpu::ShaderStages::VERTEX),
-                desc::sampler(1, frag),
-            ],
-        );
-        let mut tile_entries = vec![desc::sample_tex(0, frag), desc::sample_tex(1, frag)];
-        if resid {
-            tile_entries.push(desc::sample_tex(2, frag));
-        }
-        let tile_bgl = desc::bind_group_layout(device, "stark composite tile bgl", &tile_entries);
+        let view_bgl =
+            desc::layout_for(device, "stark composite view bgl", VIEW_SLOTS, frag, resid);
+        let tile_bgl =
+            desc::layout_for(device, "stark composite tile bgl", TILE_SLOTS, frag, resid);
         let layout = desc::pipeline_layout(
             device,
             "stark composite layout",
@@ -111,11 +128,7 @@ impl TilePass {
         });
         // Group 1: the gradient ramp, per matte where the view is per pass
         // (§22.4). Fragment-only — the vertex stage has no use for it.
-        let ramp_bgl = desc::bind_group_layout(
-            device,
-            "stark matte ramp bgl",
-            &[UniformSlots::<Ramp>::layout(0, frag)],
-        );
+        let ramp_bgl = desc::layout_for(device, "stark matte ramp bgl", RAMP_SLOTS, frag, resid);
         let matte_layout = desc::pipeline_layout(
             device,
             "stark matte layout",

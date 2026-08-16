@@ -7,6 +7,17 @@
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::desc;
+use crate::gpu::desc::Slot;
+use stark_shaders::mirror::slice::decl as sld;
+use stark_shaders::mirror::stamp_common::decl as scd;
+
+/// The prefix-τ volume at group 1, compute-visible — the same slot the fast path binds
+/// at fragment visibility (`stroke::swept`), from the same declaration (§6.6).
+pub(super) const PREFIX_SLOTS: &[Slot] = &[Slot::at(scd::PREFIX_TEX)];
+
+/// The write-back's aux narrowing (`slice.wesl`, §6.2/§6.4): the wide region aux in,
+/// the tile's one channel out.
+pub(super) const SLICE_SLOTS: &[Slot] = &[Slot::at(sld::REGION_AUX)];
 use crate::gpu::tile::SCRATCH_AUX_FORMAT;
 
 use super::slots;
@@ -98,44 +109,39 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         label: Some("stark dynamics composite"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(resid).into()),
     });
-    let composite_view_bgl = desc::bind_group_layout(
+    // The very layouts pass A builds, from the same declarations — this loop
+    // composites its working region through `composite.wesl` itself (§6.3).
+    let composite_view_bgl = desc::layout_for(
         device,
         "stark dynamics composite view bgl",
-        &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-        ],
+        crate::gpu::composite::COMPOSITE_VIEW_SLOTS,
+        frag,
+        resid,
     );
-    let composite_tile_bgl = desc::bind_group_layout(
+    let composite_tile_bgl = desc::layout_for(
         device,
         "stark dynamics composite tile bgl",
-        // Binding 2 is the tile's residual (§6.7) — the source tiles are composited
-        // into the region whole, so the channel rides in with the color it belongs to.
-        &[
-            desc::sample_tex(0, frag),
-            desc::sample_tex(1, frag),
-            desc::sample_tex(2, frag),
-        ][..2 + usize::from(resid)],
+        crate::gpu::composite::COMPOSITE_TILE_SLOTS,
+        frag,
+        resid,
     );
     let composite_layout = desc::pipeline_layout(
         device,
         "stark dynamics composite layout",
         &[Some(&composite_view_bgl), Some(&composite_tile_bgl)],
     );
+    // Not `ChannelFormats::blended`: the region's aux is the *wide* scratch format and
+    // takes the aux blend where the two color targets take the color's. Built rather
+    // than sliced to a hand-counted length (§6.7).
+    let mut composite_targets = vec![
+        desc::blended_target(color_space.color_format(), Some(color_space.color_blend())),
+        desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
+    ];
+    if let Some(f) = color_space.resid_format() {
+        // The region's residual, over-blended by the color's own rule because it is the
+        // rest of the same color (§6.7).
+        composite_targets.push(desc::blended_target(f, Some(color_space.color_blend())));
+    }
     let composite_pipeline = desc::render_pipeline(
         device,
         desc::RenderPipe {
@@ -152,15 +158,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             buffers: &[Some(stark_shaders::mirror::composite::instance_layout(
                 wgpu::VertexStepMode::Instance,
             ))],
-            targets: &[
-                desc::blended_target(color_space.color_format(), Some(color_space.color_blend())),
-                desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
-                // The region's residual, over-blended by the color's own rule
-                // because it is the rest of the same color (§6.7).
-                color_space
-                    .resid_format()
-                    .and_then(|f| desc::blended_target(f, Some(color_space.color_blend()))),
-            ][..2 + usize::from(resid)],
+            targets: &composite_targets,
         },
     );
     let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -199,19 +197,12 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     let deposit_coarse_bgl = bgl("stark dynamics deposit coarse bgl", slots::DEPOSIT_COARSE);
     // The deposit's prefix-τ volume (group 1) — same shape as the fast path's
     // prefix binding, but compute-visible.
-    let prefix_bgl = desc::bind_group_layout(
+    let prefix_bgl = desc::layout_for(
         device,
         "stark dynamics prefix bgl",
-        &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2Array,
-                multisampled: false,
-            },
-            count: None,
-        }],
+        PREFIX_SLOTS,
+        wgpu::ShaderStages::COMPUTE,
+        false,
     );
     let cpipe = |label: &str, entry: &str, bgls: &[Option<&wgpu::BindGroupLayout>]| {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -287,11 +278,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         label: Some("stark dynamics slice"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::slice().into()),
     });
-    let slice_bgl = desc::bind_group_layout(
-        device,
-        "stark dynamics slice bgl",
-        &[desc::load_tex(0, frag)],
-    );
+    let slice_bgl = desc::layout_for(device, "stark dynamics slice bgl", SLICE_SLOTS, frag, false);
     let slice_layout =
         desc::pipeline_layout(device, "stark dynamics slice layout", &[Some(&slice_bgl)]);
     let slice_pipeline = desc::fullscreen_pipeline(

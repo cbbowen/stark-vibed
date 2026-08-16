@@ -75,6 +75,25 @@ fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
     wgpu::BindingResource::TextureView(v)
 }
 
+/// The first dynamic-offset slot of `buffer`, sized by the struct that occupies it.
+///
+/// The two passes a merge borrows (§14.11) vary their uniform across a *frame* on the
+/// screen and are handed a one-slot buffer here, so the offset is always zero — but the
+/// layout is the screen's, and it declares a dynamic offset.
+fn slot_of<T>(buffer: &wgpu::Buffer) -> wgpu::BindingResource<'_> {
+    wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+        buffer,
+        offset: 0,
+        size: wgpu::BufferSize::new(std::mem::size_of::<T>() as u64),
+    })
+}
+
+use stark_shaders::mirror::blend_common::binding as bc;
+use stark_shaders::mirror::blend_mixbox::binding as bm;
+use stark_shaders::mirror::filter_common::binding as fc;
+use stark_shaders::mirror::filter_mixbox::binding as fm;
+use stark_shaders::mirror::mixbox_lut::binding as ml;
+
 /// One side of a merge: a layer's tiles and the opacity slider that scales them.
 ///
 /// The two travel together because neither means anything without the other here —
@@ -332,25 +351,26 @@ impl MergeRenderer {
         tile: Option<&TilePairHandle>,
         out: &Channels,
     ) {
-        let mut entries = vec![
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: uniform,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(std::mem::size_of::<FilterUniform>() as u64),
-                }),
+        // The filter pass's own slot list (§21), against its own layout: a merged
+        // filter runs the very pipeline the screen would (§14.11.7), so it binds the
+        // very group.
+        let bg = desc::bind_group_for(
+            &self.ctx.device,
+            "stark merge filter bg",
+            &self.filter.bgl,
+            crate::gpu::composite::FILTER_SLOTS,
+            self.formats.has_resid(),
+            |i| match i {
+                fc::F => slot_of::<FilterUniform>(uniform),
+                fc::BACK_COLOR => view(self.color_of(tile)),
+                fc::BACK_AUX => view(self.aux_of(tile)),
+                fc::BACK_SAMP => wgpu::BindingResource::Sampler(&self.filter.sampler),
+                ml::PIGMENT_LUT => view(&self.blend.pigment.view),
+                ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&self.blend.pigment.sampler),
+                fm::BACK_RESID => view(self.resid_of(tile)),
+                other => unreachable!("`FILTER_SLOTS` lists no binding {other}"),
             },
-            desc::tex(1, self.color_of(tile)),
-            desc::tex(2, self.aux_of(tile)),
-            desc::samp(3, &self.filter.sampler),
-            desc::tex(5, &self.blend.pigment.view),
-            desc::samp(6, &self.blend.pigment.sampler),
-        ];
-        if self.formats.has_resid() {
-            entries.push(desc::tex(7, self.resid_of(tile)));
-        }
-        let bg = self.bind("stark merge filter bg", &self.filter.bgl, &entries);
+        );
         pass(
             scope,
             "stark merge filter",
@@ -492,27 +512,33 @@ impl MergeRenderer {
         src: &Channels,
         out: &Channels,
     ) {
-        let mut entries = vec![
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: uniform,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(std::mem::size_of::<BlendUniform>() as u64),
-                }),
+        // The compositor's own blend group (§18.0.4), on tile-sized targets — which is
+        // the whole argument for merging through this pass rather than restating its
+        // algebra (§14.11).
+        let bg = desc::bind_group_for(
+            &self.ctx.device,
+            "stark merge blend bg",
+            &self.blend.bgl,
+            crate::gpu::composite::BLEND_SLOTS,
+            back.resid.is_some() && src.resid.is_some(),
+            |i| match i {
+                bc::B => slot_of::<BlendUniform>(uniform),
+                bc::BACK_COLOR => view(back.color.view()),
+                bc::BACK_AUX => view(back.aux.view()),
+                bc::SRC_COLOR => view(src.color.view()),
+                bc::SRC_AUX => view(src.aux.view()),
+                ml::PIGMENT_LUT => view(&self.blend.pigment.view),
+                ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&self.blend.pigment.sampler),
+                bm::BACK_RESID => view(
+                    back.resid
+                        .as_ref()
+                        .expect("a residual build has one")
+                        .view(),
+                ),
+                bm::SRC_RESID => view(src.resid.as_ref().expect("a residual build has one").view()),
+                other => unreachable!("`BLEND_SLOTS` lists no binding {other}"),
             },
-            desc::tex(1, back.color.view()),
-            desc::tex(2, back.aux.view()),
-            desc::tex(3, src.color.view()),
-            desc::tex(4, src.aux.view()),
-            desc::tex(5, &self.blend.pigment.view),
-            desc::samp(6, &self.blend.pigment.sampler),
-        ];
-        if let (Some(b), Some(s)) = (&back.resid, &src.resid) {
-            entries.push(desc::tex(7, b.view()));
-            entries.push(desc::tex(8, s.view()));
-        }
-        let bg = self.bind("stark merge blend bg", &self.blend.bgl, &entries);
+        );
         pass(
             scope,
             "stark merge blend",
@@ -553,21 +579,6 @@ impl MergeRenderer {
 
     fn acquire(&self, pool: &TilePool, source: AllocSource) -> Channels {
         Channels::acquire(pool, self.formats, source)
-    }
-
-    fn bind(
-        &self,
-        label: &str,
-        layout: &wgpu::BindGroupLayout,
-        entries: &[wgpu::BindGroupEntry<'_>],
-    ) -> wgpu::BindGroup {
-        self.ctx
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(label),
-                layout,
-                entries,
-            })
     }
 
     fn uniform<T: bytemuck::Pod>(&self, label: &str, value: &T) -> wgpu::Buffer {

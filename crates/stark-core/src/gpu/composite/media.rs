@@ -8,7 +8,33 @@
 use crate::colorspace::ColorSpace;
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
+use crate::gpu::desc::{self, Slot};
+use stark_shaders::mirror::media_common::binding as mc;
+use stark_shaders::mirror::media_common::decl as mcd;
+use stark_shaders::mirror::media_mixbox::binding as mm;
+use stark_shaders::mirror::media_mixbox::decl as mmd;
+
+/// Which bindings the media pass reads, in layout order (§6.10).
+const MEDIA_SLOTS: &[Slot] = &[
+    Slot::at(mcd::M),
+    Slot::at(mcd::COMP_COLOR),
+    Slot::at(mcd::COMP_AUX),
+    // The weave and the environment are read through samplers — the first filtered at
+    // canvas scale, the second mipped for the roughness lobe (§6.3).
+    Slot::sampled(mcd::SURFACE),
+    Slot::at(mcd::SURFACE_SAMP),
+    Slot::sampled(mcd::ENV),
+    Slot::at(mcd::ENV_SAMP),
+    // The composited residual, declared by `media_mixbox.wesl` itself rather than by
+    // the shared `media_common` — so a space with no residual gets a layout without it
+    // instead of a placeholder to bind (§6.7).
+    Slot::at(mmd::COMP_RESID).only_with_resid(),
+];
+
+/// A texture view as the resource a bind-group entry takes.
+fn tex(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
+    wgpu::BindingResource::TextureView(v)
+}
 use crate::gpu::environment::Environment;
 use crate::gpu::surface::Surface;
 
@@ -74,22 +100,13 @@ impl MediaPass {
             label: Some("stark media"),
             source: wgpu::ShaderSource::Wgsl(color_space.media_shader().into()),
         });
-        let mut entries = vec![
-            desc::uniform(0, frag),
-            desc::load_tex(1, frag),   // comp_color (textureLoad)
-            desc::load_tex(2, frag),   // comp_aux   (textureLoad)
-            desc::sample_tex(3, frag), // surface bump (filtered)
-            desc::sampler(4, frag),
-            desc::sample_tex(5, frag), // environment (filtered, mipped)
-            desc::sampler(6, frag),
-        ];
-        // 7, the composited residual — declared by `media_mixbox.wesl` itself rather
-        // than by the shared `media_common`, so a space with no residual gets a layout
-        // without it instead of a placeholder to bind (§6.7).
-        if color_space.has_resid() {
-            entries.push(desc::load_tex(7, frag));
-        }
-        let bgl = desc::bind_group_layout(device, "stark media bgl", &entries);
+        let bgl = desc::layout_for(
+            device,
+            "stark media bgl",
+            MEDIA_SLOTS,
+            frag,
+            color_space.has_resid(),
+        );
         let layout = desc::pipeline_layout(device, "stark media layout", &[Some(&bgl)]);
         let pipeline = desc::fullscreen_pipeline(
             device,
@@ -263,23 +280,26 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
         .resid
         .map(|f| super::offscreen_view(device, size, f, "stark comp resid"));
 
-    let mut entries = vec![
-        desc::uniform_entry(0, media_buf),
-        desc::tex(1, &color),
-        desc::tex(2, &aux),
-        desc::tex(3, &surface.view),
-        desc::samp(4, &surface.sampler),
-        desc::tex(5, &environment.view),
-        desc::samp(6, &environment.sampler),
-    ];
-    if let Some(view) = &resid {
-        entries.push(desc::tex(7, view));
-    }
-    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("stark media bg"),
-        layout: &media.bgl,
-        entries: &entries,
-    });
+    let bg = desc::bind_group_for(
+        device,
+        "stark media bg",
+        &media.bgl,
+        MEDIA_SLOTS,
+        resid.is_some(),
+        |i| match i {
+            mc::M => media_buf.as_entire_binding(),
+            mc::COMP_COLOR => tex(&color),
+            mc::COMP_AUX => tex(&aux),
+            mc::SURFACE => tex(&surface.view),
+            mc::SURFACE_SAMP => wgpu::BindingResource::Sampler(&surface.sampler),
+            mc::ENV => tex(&environment.view),
+            mc::ENV_SAMP => wgpu::BindingResource::Sampler(&environment.sampler),
+            mm::COMP_RESID => tex(resid
+                .as_ref()
+                .expect("a residual build has a composited residual")),
+            other => unreachable!("`MEDIA_SLOTS` lists no binding {other}"),
+        },
+    );
     Offscreen {
         color,
         aux,

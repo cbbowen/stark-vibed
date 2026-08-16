@@ -14,38 +14,19 @@
 //! beside it were *meant*. A shared descriptor makes the meant ones the only ones
 //! written down.
 //!
-//! The one judgement encoded here is in the pair [`load_tex`] / [`sample_tex`]: a
-//! texture read with `textureLoad` needs no filtering and so no `filterable`
-//! requirement on its format, while one read through a sampler does. Choosing the
-//! wrong one is a wgpu validation error rather than a wrong pixel, but the names
-//! say which is which, where `Float { filterable: false }` at ten call sites did
-//! not.
+//! **A layout is no longer written here at all**, it is read off the shader (§6.10).
+//! [`layout_for`] and [`bind_group_for`] take a list of [`Slot`]s naming the generated
+//! declarations, and everything a `desc::` call used to spell — the index, whether the
+//! slot is a uniform and how wide, a sampler, a texture, or a storage texture of a
+//! particular format, and whether the residual build has it — comes from the WESL. What
+//! a list still says is [`How`] the host binds: through a sampler, as a dynamic-offset
+//! slot, in which stages, and (once) that a slot exists only where the space has a
+//! residual. Each of those four is a fact about the *host*, and each has a case in this
+//! codebase that proves it cannot be read off the declaration.
 
 use crate::gpu::context::GpuContext;
 
 // ---- bind group layout entries -------------------------------------------------
-
-/// A texture read with `textureLoad` only.
-///
-/// No filtering, so the format need not be filterable and no sampler accompanies
-/// it. This is also what lets a 1×1 [`constant_texture`] stand in for a missing
-/// tile: a clamped load returns the constant for every texel, so the same shader
-/// reads a real tile and a stand-in without branching (§6.8).
-pub(crate) fn load_tex(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
-    tex_entry(binding, vis, false, wgpu::TextureViewDimension::D2)
-}
-
-/// A texture read through a sampler, and therefore required to be filterable.
-pub(crate) fn sample_tex(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
-    tex_entry(binding, vis, true, wgpu::TextureViewDimension::D2)
-}
-
-/// [`load_tex`] over a 2-D **array** view — the prefix-τ volume, whose layers are
-/// the brush shape's orientations (§6.6). Read with `textureLoad` so the shader can
-/// do its own trilinear lookup across them.
-pub(crate) fn load_tex_array(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
-    tex_entry(binding, vis, false, wgpu::TextureViewDimension::D2Array)
-}
 
 fn tex_entry(
     binding: u32,
@@ -73,11 +54,6 @@ pub(crate) fn sampler(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupL
         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         count: None,
     }
-}
-
-/// A whole uniform buffer, bound at offset 0.
-pub(crate) fn uniform(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
-    buffer_entry(binding, vis, false, None)
 }
 
 /// One **dynamic-offset slot** of a uniform buffer, `slot` bytes wide — how both
@@ -167,6 +143,12 @@ enum How {
 pub(crate) struct Slot {
     decl: stark_shaders::Binding,
     how: How,
+    /// Whether this slot exists only in a residual build **although its declaration is
+    /// unconditional** — see [`Slot::only_with_resid`].
+    resid_only: bool,
+    /// This slot's own visibility, where it differs from the layout's — see
+    /// [`Slot::in_stages`].
+    vis: Option<wgpu::ShaderStages>,
 }
 
 impl Slot {
@@ -176,6 +158,8 @@ impl Slot {
         Self {
             decl,
             how: How::Plain,
+            resid_only: false,
+            vis: None,
         }
     }
 
@@ -185,6 +169,8 @@ impl Slot {
         Self {
             decl,
             how: How::Sampled,
+            resid_only: false,
+            vis: None,
         }
     }
 
@@ -193,6 +179,8 @@ impl Slot {
         Self {
             decl,
             how: How::Dynamic,
+            resid_only: false,
+            vis: None,
         }
     }
 
@@ -207,10 +195,41 @@ impl Slot {
         &self.decl
     }
 
-    /// Whether this build has the slot at all: a `@if(resid)` declaration exists only
-    /// in a color space that carries a residual (§6.7).
+    /// A slot the shader declares **unconditionally** but that only a residual build
+    /// has, because the module declaring it is reached only by a space with a residual
+    /// (§6.7).
+    ///
+    /// The one thing about the residual the WESL cannot say. `blend_mixbox.wesl`
+    /// declares bindings 7 and 8 with no `@if`, past where `blend_common` (0–4) and
+    /// `mixbox_lut` (5–6) stop, and it is right not to gate them: that shader is *only*
+    /// compiled for the pigment space, so inside it they always exist. What varies is
+    /// which shader the document runs, and that is `colorspace.rs`'s business — so the
+    /// host states it, here, once per slot.
+    ///
+    /// Orthogonal to [`How`] rather than folded into it, because the two genuinely vary
+    /// independently: `filter_mixbox.wesl` **samples** its `back_resid` for the
+    /// chromatic gather (§21.10) where `blend_mixbox.wesl` loads its two.
+    pub(crate) const fn only_with_resid(mut self) -> Self {
+        self.resid_only = true;
+        self
+    }
+
+    /// The stages that read **this** slot, where they are not the whole layout's.
+    ///
+    /// Most layouts are one stage's, and pass it once. The two that are not are pass A's
+    /// view group and the overlay's: a `View` uniform is read by the vertex stage to
+    /// place the quad while the sampler beside it is the fragment's, so declaring the
+    /// pair `VERTEX_FRAGMENT` would ask for a visibility neither binding uses.
+    pub(crate) const fn in_stages(mut self, vis: wgpu::ShaderStages) -> Self {
+        self.vis = Some(vis);
+        self
+    }
+
+    /// Whether this build has the slot at all: a `@if(resid)` declaration, or one the
+    /// host has gated with [`Self::only_with_resid`], exists only in a color space that
+    /// carries a residual (§6.7).
     const fn present(&self, resid: bool) -> bool {
-        resid || !self.decl.resid
+        resid || !(self.decl.resid || self.resid_only)
     }
 }
 
@@ -228,6 +247,10 @@ fn slot_entry(
         return None;
     }
     let decl = slot.decl();
+    let vis = match slot.vis {
+        Some(v) => v,
+        None => vis,
+    };
     Some(match decl.kind {
         // `min_binding_size` is the declared struct's own WGSL size either way — free
         // validation against a truncated write, against the size the shader reads.
@@ -334,51 +357,6 @@ pub(crate) fn pipeline_layout(
 }
 
 // ---- bind group entries --------------------------------------------------------
-
-/// A texture-view binding.
-pub(crate) fn tex(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
-    wgpu::BindGroupEntry {
-        binding,
-        resource: wgpu::BindingResource::TextureView(view),
-    }
-}
-
-/// A whole-buffer uniform binding — the entry a [`uniform`] layout slot takes.
-///
-/// The one-liner it replaces was written out at a dozen call sites as a
-/// `BindGroupEntry` with an `as_entire_binding()` inside; a dynamic-offset slot needs
-/// the explicit [`wgpu::BufferBinding`] form instead and still says so where it is
-/// used, which is the difference worth seeing at a call site.
-pub(crate) fn uniform_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
-    wgpu::BindGroupEntry {
-        binding,
-        resource: buffer.as_entire_binding(),
-    }
-}
-
-/// A bind group over `entries`, satisfying `layout`. The mirror of
-/// [`bind_group_layout`], and the same saving: a descriptor whose four fields are the
-/// same four every time.
-pub(crate) fn bind_group(
-    device: &wgpu::Device,
-    label: &str,
-    layout: &wgpu::BindGroupLayout,
-    entries: &[wgpu::BindGroupEntry<'_>],
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(label),
-        layout,
-        entries,
-    })
-}
-
-/// A sampler binding.
-pub(crate) fn samp(binding: u32, sampler: &wgpu::Sampler) -> wgpu::BindGroupEntry<'_> {
-    wgpu::BindGroupEntry {
-        binding,
-        resource: wgpu::BindingResource::Sampler(sampler),
-    }
-}
 
 // ---- render pass attachments ---------------------------------------------------
 

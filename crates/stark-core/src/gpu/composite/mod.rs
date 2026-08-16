@@ -70,7 +70,18 @@ use media::MediaPass;
 use overlay::{OverlayInstance, OverlayPass};
 use plan::{Phase, Plan, Slot, Step};
 use resolve::{ResolvePass, Supersampled, supersample};
+use stark_shaders::mirror::composite::binding as cb;
 use tiles::{Instance, MatteInstance, Ramp, TilePass, TileStreams};
+
+/// The blend and filter passes' slot lists, re-exported for the **merge**, which runs
+/// those very pipelines on tile-sized targets (§14.11) — so it must bind the very
+/// groups, not a second description of them.
+pub(crate) use blend::BLEND_SLOTS;
+pub(crate) use filter::FILTER_SLOTS;
+/// Pass A's two slot lists, re-exported for the **stamp loop**, which composites its
+/// working region through the very same `composite.wesl` (§6.3, §6.10). One list, so
+/// the two callers cannot disagree about the group they both build.
+pub(crate) use tiles::{TILE_SLOTS as COMPOSITE_TILE_SLOTS, VIEW_SLOTS as COMPOSITE_VIEW_SLOTS};
 use view::{View, ViewBindings};
 
 pub use group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent, MatteDraw};
@@ -577,21 +588,27 @@ impl Compositor {
             .iter()
             .map(|handle| {
                 handle.composite_bg(|| {
-                    let mut entries = vec![
-                        desc::tex(0, handle.color_view()),
-                        desc::tex(1, handle.aux_view()),
-                    ];
-                    // The layout carries slot 2 exactly when the space has a residual
-                    // (§6.7), and every tile of such a document has one — the space
+                    // The layout carries the residual slot exactly when the space has
+                    // one (§6.7), and every tile of such a document has one — the space
                     // decides once, at `acquire_tile`.
-                    if let Some(view) = handle.resid_view() {
-                        entries.push(desc::tex(2, view));
-                    }
-                    device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("stark composite tile bg"),
-                        layout: &p.tiles.tile_bgl,
-                        entries: &entries,
-                    })
+                    desc::bind_group_for(
+                        device,
+                        "stark composite tile bg",
+                        &p.tiles.tile_bgl,
+                        tiles::TILE_SLOTS,
+                        handle.resid_view().is_some(),
+                        |i| {
+                            let v = match i {
+                                cb::TILE_COLOR => handle.color_view(),
+                                cb::TILE_AUX => handle.aux_view(),
+                                cb::TILE_RESID => handle
+                                    .resid_view()
+                                    .expect("a residual space's tile has one"),
+                                other => unreachable!("`TILE_SLOTS` lists no binding {other}"),
+                            };
+                            wgpu::BindingResource::TextureView(v)
+                        },
+                    )
                 })
             })
             .collect();
