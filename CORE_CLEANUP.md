@@ -24,10 +24,10 @@ exhaustive on purpose. What follows is the edges.
 | [C1](#c1-there-is-no-gpu-failure-path) | There is no GPU failure path | correctness | medium | **done** |
 | [C2](#c2-non-finite-input-reaches-a-guaranteed-panic) | Non-finite input reaches a guaranteed panic | correctness | small | **done** |
 | [C3](#c3-the-fitters-per-sample-cost-is-linear-in-stroke-length) | The fitter's per-sample cost is linear in stroke length | performance | medium | **part** |
-| [C4](#c4-the-draw-list-is-rebuilt-from-scratch-every-frame) | The draw list is rebuilt from scratch every frame | performance | medium | **part** |
+| [C4](#c4-the-draw-list-is-rebuilt-from-scratch-every-frame) | The draw list is rebuilt from scratch every frame | performance | medium | **done** |
 | [C5](#c5-nothing-ever-retires-history) | Nothing ever retires history | correctness | medium | **done** |
 | [C6](#c6-every-integration-test-builds-its-own-device) | Every integration test builds its own device | build health | small | **done** |
-| [C7](#c7-engine-is-the-crates-one-god-object) | `Engine` is the crate's one god object | structure | large | open |
+| [C7](#c7-engine-is-the-crates-one-god-object) | `Engine` is the crate's one god object | structure | large | **part — rest withdrawn** |
 | [C8](#c8-smaller-things) | Smaller things | mixed | small | **done** |
 
 ### What landed, and what is left
@@ -49,13 +49,11 @@ exhaustive on purpose. What follows is the edges.
   the fitter so `adopt` swaps the winner in and returns the loser's storage;
   `Fit` and `adopt` have to change shape for it. Worth doing, and worth measuring
   separately, since the numerics must not move.
-- **C4, part** — `culled` walks whichever of the layer or the viewport is
-  smaller, so a frame's cost follows the viewport rather than the painting.
-  **Left:** the draw list is still rebuilt every frame. Caching it on
-  `(doc_revision, preview epoch, visible)` needs a cache on `Engine`, which
-  `composite_groups` cannot hold behind `&self` today — it is the same borrow
-  problem [C7](#c7-engine-is-the-crates-one-god-object) is about, and is probably
-  best done after it rather than around it.
+- **C4** — done, both halves. `culled` walks whichever of the layer or the
+  viewport is smaller, and the draw list is cached on a `DrawKey` whose every term
+  is a counter something else already maintains. **It was not blocked on C7**, as
+  this list claimed: the obstacle was disjoint field borrows, which owning the
+  `DocState` for the call and reading the list as a field both solve.
 - **C5** — done, and *not* the way the correction below concluded. See the note
   at the head of that section: checkpoints are not needed, because
   `forget_actions` hands back what it folded and `LinearTimeline` keeps it. Undo
@@ -67,11 +65,18 @@ exhaustive on purpose. What follows is the edges.
   against ~22 ms on an existing device, so this removes about
   (386 − 34) × 316 ms of construction; the warm suite is now 111 s.
 
+- **C7, part** — `EngineShared` is the first facet: the device, compiled
+  pipelines, pool, renderers, assets and decoded caches, as a value a consumer can
+  *hold*. The preset thumbnails no longer borrow the live renderer to reach the
+  device. **The rest is withdrawn** — see the section, where the justification for
+  a presentation facet turned out not to survive checking.
 - **C8** — three of the four sub-items landed; the first was **wrong** and is
   corrected in place. See that section.
 
-Suggested order for what remains: **C7** (which also unblocks the rest of C4),
-then the rest of **C3**, which is independent and can go any time.
+What remains is the rest of **C3** — the fitter's four surviving `O(m)`
+allocations per report — which is independent and measurable, and the crate-root
+file grouping under [C8](#c8-smaller-things), which is a diff-shaped decision
+rather than a technical one.
 
 ---
 
@@ -400,6 +405,35 @@ harder.
 ---
 
 ## C7. `Engine` is the crate's one god object
+
+> **First facet landed; the rest withdrawn on inspection.** The framing below is
+> half right and the half that is wrong is the half this section leads with.
+>
+> **Right:** the facets could not be *named*, so a consumer wanting one had to take
+> the whole engine. `EngineShared` fixes that for the expensive half — the device,
+> the compiled pipelines, the pool, the renderers, the assets and the decoded
+> caches — as a value that clones for a few refcount bumps and outlives whoever it
+> came from. The preset thumbnails held a live `Renderer` purely to reach the
+> device; they now hold one of these.
+>
+> **Wrong:** that a *presentation* facet would let `export` be an ordinary
+> `async fn`. It would not. `export` returns `impl Future` because the **frontend**
+> holds its renderer in a Dioxus signal, and a `&mut` borrow held across an await
+> panics the UI's own re-render — a property of the caller, not of `Engine`'s
+> internal shape. Splitting `Engine` changes nothing about it, and the existing
+> "return a future that owns what it reads" is the correct fix, already in place
+> and already documented at length.
+>
+> **Also wrong:** that `Offscreen` was not already the per-target presentation
+> facet. It is, and both `render_into` and `export_view` take one.
+>
+> What was left were the mask clone and the disjointness comments, and those turned
+> out to belong to [C4](#c4-the-draw-list-is-rebuilt-from-scratch-every-frame) —
+> owning the `DocState` for a render deletes the clone as a side effect of caching
+> the draw list. So the remaining presentation split would be churn with nothing
+> left to buy, and it is not being done. **Keeping `Engine` as the single entry
+> point is right**: it is the UI's whole backend, and one door is the correct shape
+> for that. What it owed was named facets, and it owes one fewer.
 
 4,506 lines across `engine/`, 116 methods (66 public), 16 fields, `&mut self`
 throughout. The split by subject is good and the module doc is honest that it is
