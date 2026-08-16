@@ -10,6 +10,13 @@ than assumed.
 > (CLAUDE.md); a work list is neither stable nor citable. Where a finding
 > contradicts or extends a design section, it says so and cites it.
 
+> **Every finding below describes the code as it stood when it was written**, line
+> numbers and counts included; what happened to it is in the **Landed** note at the
+> end of its section. Read the two together — a finding whose note says *done* is
+> history, and the file it points at has moved on. This file goes when the last one
+> is closed, for the reason `SHADERS_CLEANUP.md` went: a review that outlives its
+> work becomes a second, staler account of the code.
+
 The crate does the hard part well. The [`dispatch`](crates/stark-ui/src/state.rs)
 seam is the best structural decision in it: `renderer` and `obs` are held in
 `ReadOnly` handles whose inner `Signal` is private to the module, so `&mut Renderer`
@@ -34,22 +41,35 @@ reads it nowhere.
 
 ## Ranked
 
-Do them in the order **U3, U2, U1 (incremental half), U4** — the first two are
-small and self-contained, the third is mechanical and per-panel, the fourth deletes
-code and gains tests. U1 (structural half) and U6 are the ones that decide what the
-next feature costs.
+Seven of the nine are **done**; what is left is U8 and the halves of U1 and U6 that
+are decisions rather than work. Each section below carries a **Landed** note saying
+what was actually done — and where the finding turned out to be wrong the note says
+so rather than quietly dropping it. Two were: U9's `update_brush` item, and U5's
+proposal to move the base64 codec. U1 also turned up a latent bug that the
+over-subscription had been hiding.
 
 | | Finding | Kind | Size | Status |
 |---|---|---|---|---|
-| [U3](#u3-gpu_failure-is-projected-by-core-and-read-by-nothing) | `gpu_failure` is projected by core and read by nothing | correctness | medium | open |
-| [U1](#u1-observablestate-is-one-signal-the-whole-chrome-subscribes-to) | `ObservableState` is one signal the whole chrome subscribes to | performance | large | open |
-| [U2](#u2-the-root-effect-subscribes-to-the-renderer-so-every-engine-touch-runs-a-json-serializing-thumbnail-scan) | The root effect subscribes to the *renderer* | performance | small | open |
-| [U4](#u4-layoutrs-is-a-third-untested-copy-of-the-reorder-gesture) | `layout.rs` is a third, untested copy of the reorder gesture | test health | medium | open |
-| [U5](#u5-six-copies-of-the-localstorage-layer) | Six copies of the localStorage layer | structure | small | open |
-| [U6](#u6-there-is-no-compile-time-boundary-between-browser-glue-gesture-math-and-chrome) | No compile-time boundary between browser glue, gesture math and chrome | structure | large | open |
-| [U7](#u7-canvas-gesture-state-has-no-owner) | Canvas gesture state has no owner | structure | medium | open |
+| [U3](#u3-gpu_failure-is-projected-by-core-and-read-by-nothing) | `gpu_failure` is projected by core and read by nothing | correctness | medium | **done** |
+| [U1](#u1-observablestate-is-one-signal-the-whole-chrome-subscribes-to) | `ObservableState` is one signal the whole chrome subscribes to | performance | large | **partly** — the seam and the panels; the split is open |
+| [U2](#u2-the-root-effect-subscribes-to-the-renderer-so-every-engine-touch-runs-a-json-serializing-thumbnail-scan) | The root effect subscribes to the *renderer* | performance | small | **done** |
+| [U4](#u4-layoutrs-is-a-third-untested-copy-of-the-reorder-gesture) | `layout.rs` is a third, untested copy of the reorder gesture | test health | medium | **done** |
+| [U5](#u5-six-copies-of-the-localstorage-layer) | Six copies of the localStorage layer | structure | small | **done** |
+| [U6](#u6-there-is-no-compile-time-boundary-between-browser-glue-gesture-math-and-chrome) | No compile-time boundary between browser glue, gesture math and chrome | structure | large | **partly** — `gesture.rs` is out; the boundary is a decision |
+| [U7](#u7-canvas-gesture-state-has-no-owner) | Canvas gesture state has no owner | structure | medium | **done** |
 | [U8](#u8-the-previewcommit-bargain-is-stated-11-times-and-implemented-5-ways) | The preview→commit bargain is stated 11 times and implemented 5 ways | structure | medium | open |
-| [U9](#u9-smaller-items) | Smaller items | mixed | small | open |
+| [U9](#u9-smaller-items) | Smaller items | mixed | small | **done** |
+
+## What is left, and why
+
+- **U8** is untouched, and it is the one remaining finding that is plain work.
+- **U1's structural half** — splitting the projection by cadence — is what stops
+  `observe()` walking the layer tree for a pan, and half of it is in `stark-core`.
+  The frontend half landed and takes most of the cost off; what remains is a core
+  API decision.
+- **U6's real half** — *decide what the host build is for* — is a decision, not a
+  task. The cheap half, getting the testable code out of the modules that cannot be
+  tested, landed.
 
 ---
 
@@ -112,6 +132,21 @@ showing the view. `cargo bench -p stark-core --bench stroke` will not see it (it
 frontend-side), so the check is a `tracing` counter on component renders per gesture,
 or simply that the layer panel's row `key`s stop churning during a pan.
 
+> **Landed (incremental half).** `state::use_obs` is the seam, and the canvas, the
+> command rail and the Layers, Select, Lighting, Frame and Filter chrome read through
+> it. `LayerRow` takes `active` as a prop rather than asking the projection per row.
+> `frame::selected_frame` and `filter::selected_filter` split into a render-time memo
+> and a handler-time peek over one shared rule, the way `modes::composing` and
+> `modes::is_composing` already do.
+>
+> That split turned up **a latent bug the over-subscription was hiding**: the canvas
+> took its tool from a `peek`, so its eyedropper cursor was only ever correct because
+> something else happened to re-render the component. It reads it now.
+>
+> **Still open:** the structural half. `observe()` still walks the layer tree for a
+> pan, and `update_brush` still pays for one per pointer move of a tuning drag (see
+> U9). Nothing but splitting the projection in core removes that.
+
 ## U2. The root effect subscribes to the *renderer*, so every engine touch runs a JSON-serializing thumbnail scan
 
 [main.rs:149-154](crates/stark-ui/src/main.rs#L149-L154):
@@ -157,6 +192,21 @@ protect. It also re-renders the root `app()` per sample.
 stroke: it should fire twice (library load, renderer publish), not sixty times a
 second.
 
+> **Landed.** `state::renderer_ready` is the boolean, set once by `publish_renderer`.
+>
+> The key is **gone** rather than made cheaper, which is not what this section
+> proposed. Its one job is to say whether two brushes render the same picture, and
+> `Wearable` already answers that exactly through a derived `PartialEq` the compiler
+> extends when `BrushParams` gains a field. A hand-written hash would have been fast
+> *and* would have silently ignored that field — a stale thumbnail for a changed
+> brush, with nothing anywhere to say so. A linear scan of a few dozen `Copy` structs
+> is cheaper than one of the serializations it replaces, so the key bought nothing.
+>
+> `PartialEq` makes non-termination expressible where a hash did not: a brush holding
+> a NaN is never found after being cached, and the generator loop would hand back the
+> same brush forever. Nothing can produce one, so the loop's progress check is a
+> guarantee rather than a case.
+
 ## U3. `gpu_failure` is projected by core and read by nothing
 
 `stark-core` projects `ObservableState::gpu_failure` and documents the contract at
@@ -190,6 +240,19 @@ only reads.
 **How you would know.** `Engine` can be made to report a synthetic failure in a test;
 failing that, the honest check is that the modal's mount condition is a plain read of
 the projection, so it cannot be reached by a path that does not also set the field.
+
+> **Landed.** `crate::failure::GpuFailureModal`, mounted at the root on its own read
+> of the projection, offering Save and nothing else — no ✕, because there is nothing
+> behind it to close onto.
+>
+> Both halves key off one field (`state::gpu_lost`), so the app cannot be stopped
+> without saying so, or say so while still running. The guard is on the two doors
+> rather than the 82 call sites; the command that *causes* the failure still runs and
+> still publishes, which is what makes the report appear at all.
+>
+> One thing this section did not anticipate: a failure suffered **between** commands
+> — a driver reset while the artist is looking at their work — is found by the paint
+> loop, which is the one thing that goes on happening when nothing is dispatched.
 
 ## U4. `layout.rs` is a third, untested copy of the reorder gesture
 
@@ -228,6 +291,19 @@ nothing with this.
 panel-specific part left over is the `data-panel` round trip, which
 `platform::panel_boxes` already keys on.
 
+> **Landed.** `start_drag` is 8 lines where it was 48, and `Panel` takes a `Motion`
+> where it took an offset and a flag — so the every-declaration-every-render rule is
+> now stated by the function that has the test pinning it.
+>
+> Two behaviours changed, both by inheriting rules the other two rosters already had:
+> a press must travel `GRAB_SLOP` before the panel moves, and a release this handler
+> never hears about ends the gesture instead of leaving a panel following an
+> unpressed pointer.
+>
+> `panel_key` is the one identity — the `data-panel` attribute, the grab's key and
+> the landing's list were `{id:?}` written out three times. layout.rs has four tests
+> where it had none.
+
 ## U5. Six copies of the localStorage layer
 
 `fn storage() -> Option<web_sys::Storage>` appears **verbatim** in `gradients`,
@@ -253,6 +329,20 @@ Move `base64_encode` / `base64_decode` out of
 browser glue, and sitting in the browser-glue module is where they will be
 overlooked — `platform.rs` is the file you read when something DOM-shaped is wrong,
 not when a stored entry fails to parse.
+
+> **Landed** — except the base64 move, which was **wrong**. `platform` is the bottom
+> layer: it is what `storage` opens the store through, and it needs base64 itself, to
+> read back the data URL the browser hands over for a re-encoded brush image. Owning
+> the codec in `storage` would point a dependency up the stack. It stays where it is,
+> with the reasoning recorded so it does not read as an oversight.
+>
+> `crate::storage` is the door and the format. `save_table`, `load_table`, `record`
+> and `FIELD` replace four `persist`/`read_storage` triples and **seven**
+> hand-written separators — one of them inside `presets::encode_wearable`, all of
+> which had to agree for a stored brush to be readable. The skip-a-damaged-line rule
+> is stated once and has the test. Each module keeps what is actually its own: why
+> the gradient stops are JSON, why a slot record is keyed by digit rather than by
+> position.
 
 ## U6. There is no compile-time boundary between browser glue, gesture math and chrome
 
@@ -294,6 +384,17 @@ paying for web-sys in a build that cannot use it. The present middle has the
 dependency cost of the browser everywhere and the testability of neither, and the
 `#[cfg]` pairs grow by two every time a new browser API is reached for.
 
+> **Landed (cheap half).** `crate::gesture` holds the transform, perspective and warp
+> algebra — 863 lines and 18 of the crate's tests, none of which knows about signals,
+> dioxus or the browser. `state.rs` went from 1650 lines to 938 and is now about what
+> its module comment says it is about. One import line changed, because
+> `panels::transform` was the only consumer — which is itself the evidence it was
+> never state's business.
+>
+> **Still open:** the same move for `panels::layer.rs`'s tree logic (`Row`,
+> `landing`, `rows`, 10 tests, still inside 1500 lines of rsx), and the real half —
+> the decision about the host build.
+
 ## U7. Canvas gesture state has no owner
 
 [`end_interaction`](crates/stark-ui/src/input.rs#L1394) takes five parameters and
@@ -321,6 +422,16 @@ the documentation is right.
 This also serves U1: a gesture that owns its own state is a gesture that can choose
 `dispatch_sample` for its samples without the choice being spread over four handlers.
 
+> **Landed.** `input::Paint`, shaped like `Nav` and `Tune` beside it.
+> `end_interaction` takes four `Copy` values and no `&mut`; `abandon_gesture` is
+> gone, folded into `Paint::abandon`. Both teardowns share one private `close`, so
+> what a finished gesture leaves behind is stated once instead of twice.
+>
+> The routing deliberately stayed in the component — which of navigation, tuning,
+> sampling or paint a press turns out to be is the one thing only the canvas can
+> decide, because it is the only place that sees all four bindings at once.
+> `onpointerdown` is now that decision and nothing else.
+
 ## U8. The preview→commit bargain is stated 11 times and implemented 5 ways
 
 [`widgets::settle`](crates/stark-ui/src/widgets.rs#L73) captures the subtle part
@@ -347,23 +458,31 @@ real, so state them once.
 - **`state::update_brush` takes the loud door.** It reads `obs`, mutates a copy and
   `dispatch`es — and it is called per pointer move by both the tuning drag and the
   eyedropper (U1). It should be `dispatch_sample`-shaped, or at least document why it
-  is not.
+  is not. — **This was wrong.** A tuning drag's whole answer is read off the Brush
+  panel's sliders and the eyedropper's off the Color panel's swatch, so the publish
+  *is* the point of those gestures rather than overhead on them; `dispatch_sample`
+  would break both readouts. What made it expensive was every *other* panel waking
+  too, which U1 fixed. Documented rather than changed.
 - **`NewDocumentModal` subscribes to the renderer.**
   [main.rs:1056](crates/stark-ui/src/main.rs#L1056) reads `state.renderer` in a render
   body, so the modal re-renders on every engine write while open. Harmless today (it
   is only open when idle), but it is U2's class, and
   [`PeerCursors`](crates/stark-ui/src/main.rs#L718) already peeks with a comment
   explaining exactly this hazard — so the convention exists and this is the deviation.
+  **Done**, and both facts were in the projection anyway, so it reads them there and
+  touches the renderer signal not at all.
 - **`Renderer` is ~25 one-line forwarders.** The seam that matters is `process` and
   `&mut` access, and [render.rs](crates/stark-ui/src/render.rs#L143) argues for it
   well. The `&self` readers — `observe`, `view`, `color_space`, `surface`,
   `scrub_range`, `peers_revision`, … — are not a decision, and each one added to core
   has to be transcribed here. A `fn engine(&self) -> &Engine` is safe for precisely
   the reason the design is careful (it cannot hand out `&mut`) and removes ~150 lines
-  that will otherwise drift.
+  that will otherwise drift. **Not done** — mechanical, ~60 call sites, and worth
+  doing the next time this file is open rather than on its own.
 - **`base64_decode` rebuilds a 256-byte lookup table per call**
   ([platform.rs:635](crates/stark-ui/src/platform.rs#L635)), once per stored entry at
-  load. Make it a `const`.
+  load. Make it a `const`. **Done** — built at compile time from the alphabet beside
+  it.
 - **Where a comment states an invariant, the invariant wants a test.** 36% of the
   crate's lines are comments and they are worth every one — they carry *why*, with
   dated scars, which is the thing that stops a fix being re-broken. The gap is that
