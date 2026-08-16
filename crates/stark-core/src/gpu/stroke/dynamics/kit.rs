@@ -47,6 +47,13 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// rather than merely sharing a consumer with it.)
     pub(in crate::gpu::stroke) snapshot_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) snapshot_bgl: wgpu::BindGroupLayout,
+    /// The bleed pair's mobility pass (§6.2) and its layout.
+    pub(in crate::gpu::stroke) bleed_weight_pipeline: wgpu::ComputePipeline,
+    pub(in crate::gpu::stroke) bleed_weight_bgl: wgpu::BindGroupLayout,
+    /// What a **painting** segment's deposit binds where a firing binds the scratch: a
+    /// 1×1 zero. Such a slot carries `lambda_bleed = 0` and never reads it, so this is
+    /// the §6.8 stand-in pattern rather than a case the shader has to branch on.
+    pub(in crate::gpu::stroke) bleed_placeholder: wgpu::TextureView,
     /// The tool's own side of one segment's transfer — the complement of every share
     /// the `deposit` after it hands the canvas (`dynamics.wesl::exchange`).
     pub(in crate::gpu::stroke) exchange_pipeline: wgpu::ComputePipeline,
@@ -90,9 +97,10 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
 /// Build the brush-dynamics stamp-loop kit (§6.2): the region
 /// composite, the loop's nine compute pipelines, and the region→tile slice.
 pub(in crate::gpu::stroke) fn build_dynamics_kit(
-    device: &wgpu::Device,
+    ctx: &crate::gpu::context::GpuContext,
     color_space: &dyn ColorSpace,
 ) -> DynamicsKit {
+    let device = &ctx.device;
     // The loop's storage-texture declarations are `rgba16float`; both color
     // spaces use that tile color format (§6.7), so the region can hold either.
     debug_assert_eq!(color_space.color_format(), wgpu::TextureFormat::Rgba16Float);
@@ -189,6 +197,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         desc::layout_for(device, label, list, wgpu::ShaderStages::COMPUTE, resid)
     };
     let snapshot_bgl = bgl("stark dynamics snapshot bgl", slots::SNAPSHOT);
+    let bleed_weight_bgl = bgl("stark dynamics bleed weight bgl", slots::BLEED_WEIGHT);
     let exchange_bgl = bgl("stark dynamics exchange bgl", slots::EXCHANGE);
     let bake_bgl = bgl("stark dynamics bake bgl", slots::BAKE);
     let settle_bgl = bgl("stark dynamics settle bgl", slots::SETTLE);
@@ -223,6 +232,14 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         "stark dynamics snapshot",
         "snapshot",
         &[Some(&snapshot_bgl)],
+    );
+    // The bleed ladder's mobility, hoisted (§6.2). It reads the prefix-τ volume, so it
+    // takes group 1 like every other pass that does — one `swept_pre` per texel is the
+    // whole of it.
+    let bleed_weight_pipeline = cpipe(
+        "stark dynamics bleed weight",
+        "bleed_weight",
+        &[Some(&bleed_weight_bgl), Some(&prefix_bgl)],
     );
     let exchange_pipeline = cpipe(
         "stark dynamics exchange",
@@ -290,6 +307,14 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         &[desc::target(color_space.aux_format())],
     );
 
+    // The 1×1 a painting segment binds where a firing binds the real scratch (§6.8's
+    // stand-in pattern): such a slot carries `lambda_bleed = 0` and never reads it.
+    let bleed_placeholder = desc::zero_texture(
+        ctx,
+        wgpu::TextureFormat::R32Float,
+        "stark dynamics bleed w 1x1",
+    );
+
     DynamicsKit {
         composite_pipeline,
         composite_view_bgl,
@@ -297,6 +322,9 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         composite_sampler,
         snapshot_pipeline,
         snapshot_bgl,
+        bleed_weight_pipeline,
+        bleed_weight_bgl,
+        bleed_placeholder,
         exchange_pipeline,
         exchange_bgl,
         bake_pipeline,

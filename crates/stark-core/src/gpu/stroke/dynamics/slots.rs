@@ -108,7 +108,16 @@ pub(super) const DEPOSIT: &[Slot] = &[
     // The canvas surface's height map — the deposition tooth (§6.4). Read nearest, so
     // it needs no sampler and is not filterable.
     Slot::at(d::SURFACE_TEX),
+    // The bleed pair's hoisted mobility (§6.2). Bound on every deposit, not only a
+    // firing's: a painting segment carries `lambda_bleed = 0` and never reads it, and a
+    // 1×1 stand-in is what it binds there — the same "one shader, one layout" the 1×1
+    // masks buy everywhere else (§6.8).
+    Slot::at(d::BLEED_W),
 ];
+
+/// `bleed_weight`: one thread per snapshot texel, writing the mobility the ladder reads
+/// back thirty-six times (§6.2). Its own uniform and its own target, and nothing else.
+pub(super) const BLEED_WEIGHT: &[Slot] = &[Slot::dynamic(d::ST), Slot::at(d::BLEED_W_W)];
 
 /// `cell_hoist`: the exact deposit's front half — the baked prefixes in, the per-cell
 /// means out — plus the prefix-τ volume at group 1 (§6.2).
@@ -218,7 +227,8 @@ mod tests {
     }
 
     /// The seven entry points' lists, named — every test here is about all of them.
-    const LISTS: [(&str, &[Slot]); 7] = [
+    const LISTS: [(&str, &[Slot]); 8] = [
+        ("bleed_weight", BLEED_WEIGHT),
         ("snapshot", SNAPSHOT),
         ("exchange", EXCHANGE),
         ("bake", BAKE),

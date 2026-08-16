@@ -27,9 +27,9 @@ mistake into a build failure at the struct it got wrong.
 | 4 | [`Stamp`'s twelve anonymous lanes defeat the mirror](#4-stamps-twelve-anonymous-lanes-defeat-the-mirror) | **done** |
 | 5 | [`deposit` and `deposit_coarse` are held together by a comment](#5-deposit-and-deposit_coarse-are-held-together-by-a-comment) | **done** |
 | 6 | [The group-0 index space is partitioned by comment](#6-the-group-0-index-space-is-partitioned-by-comment) | **done** |
-| 7 | [The bleed ladder recomputes its neighbours ~36× over](#7-performance-the-bleed-ladder-recomputes-its-neighbours-36-over) | **the per-texel wins done**; the scratch pass open |
+| 7 | [The bleed ladder recomputes its neighbours ~36× over](#7-performance-the-bleed-ladder-recomputes-its-neighbours-36-over) | **done** |
 | 8 | [The `@if(resid)` tax is 128 sites](#8-the-ifresid-tax-is-128-sites) | **done** |
-| 9 | [Smaller items](#9-smaller-items) | **four done**, one open |
+| 9 | [Smaller items](#9-smaller-items) | **four done**; the `dynamics_common` split deliberately left |
 
 **One thing the work found that the review did not.** wesl 0.4's `validate: true`
 resolves names, counts call arguments and rejects cycles — it does **not** typecheck.
@@ -283,10 +283,32 @@ but costs a group slot, and probably is not worth it.
 > keeps in R32Float precisely because that subtraction is where the digits go.
 > `f16_nearest4` is branch-free across all four channels.
 >
-> **What is left** is the `w_n` scratch pass — one thread per region texel writing the
-> neighbour blend the ladder reads 36 times. Still the right shape, and it would make
-> the pair antisymmetry structural rather than an argument about two threads deriving
-> identical floats.
+> **The scratch pass is done, and measured.** `bleed_weight` writes each texel's
+> mobility once; the ladder loads it 36 times instead of deriving a sweep frame, a rim
+> test and a prefix-τ difference per tap. On `commit/blender` — a new bench case, since
+> the file had no bleeding brush and the ladder was therefore unmeasured — it is worth
+> **12–15% of whole-commit time**:
+>
+> ```text
+>   radius     without      with     saved
+>      100    12.58 ms   11.11 ms    11.7%
+>      250    16.76 ms   14.30 ms    14.7%
+>      500    26.33 ms   22.93 ms    12.9%
+> ```
+>
+> all at p < 0.05. That is the *stroke*, not the pass: the bleed itself is a fraction of
+> a commit, and this takes a large bite out of that fraction.
+>
+> Two things came out better than expected. The pair's antisymmetry is now **structural**
+> — both threads read one texel, where the argument used to be that two derivations of
+> one formula land on the same float. And the *tooth-free* rule the flux depends on is
+> enforced rather than relied upon: `w_t` used to be computed from `e`, which carries
+> `surface_tooth`, and agreed with its neighbour's un-toothed `w_n` only because a
+> firing carries `tooth = 0` by construction. Both are now the same load.
+>
+> The pass covers the whole snapshot square rather than the firing's rect, because the
+> ladder clamps a tap into the scratch's own extent — a texel outside the rect can still
+> be read, and one this pass had not written would hold the *previous* firing's answer.
 
 `dynamics.wesl`'s bleed block runs 9 rungs × 4 offsets, and each tap calls
 `segment_frame(rtn)`, `outside_sweep(swn)` and `swept_pre(swn)`. That is two `prefix_at`

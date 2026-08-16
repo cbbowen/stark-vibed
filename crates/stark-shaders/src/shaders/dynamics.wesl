@@ -381,6 +381,22 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 // centre — one more channel of the same color, exactly as everywhere else.
 @if(resid) @group(0) @binding(35) var cell_res_w: texture_storage_2d<rgba32float, write>;
 @if(resid) @group(0) @binding(36) var cell_res: texture_2d<f32>;
+
+// ---- The bleed pair's mobility, hoisted (§6.2) -----------------------------------
+//
+// Written by `bleed_weight` — one thread per snapshot texel — and read by `deposit`'s
+// ladder, which asks for it thirty-six times a texel and, before this, *recomputed* it
+// thirty-six times: a sweep frame, a rim test and a prefix-τ difference per tap, each
+// of them the answer some neighbouring thread was deriving at the same moment for the
+// same texel. R32Float, because it is one number and the difference that makes it is
+// taken in the fp32 the prefix volume is kept in.
+//
+// **It also makes the pair's antisymmetry structural.** The flux is a difference two
+// threads must agree on to the bit, and the argument for that used to be that both
+// derive `w` from one uniform through one function — true, and an argument. Now both
+// *read the same texel*, so there is nothing left to argue about.
+@group(0) @binding(37) var bleed_w_w: texture_storage_2d<r32float, write>;
+@group(0) @binding(38) var bleed_w: texture_2d<f32>;
 // (The prefix-τ volume rides at group(1) binding(0) via the stamp_common import.)
 
 const TAU: f32 = 6.283185307179586;
@@ -1315,6 +1331,38 @@ const BLEED_OFFS = array<vec2<i32>, 4>(
     vec2<i32>(0, -1),
 );
 
+// One thread per snapshot texel: this texel's share of a bleed firing, for the ladder
+// to read back.
+//
+// **Dispatched over the whole snapshot square, not the firing's rect.** The ladder
+// clamps a tap into `[0, udim)` — the scratch's own extent — so a texel outside the
+// dispatched rect can still be read, and reading one this pass had not written would be
+// reading whatever the *previous* firing left there. Covering the square is what makes
+// that impossible rather than unlikely; the texels beyond the rect cost one rim test
+// each and store the exact zero they would have computed.
+//
+// The gate is deliberately not here. `w` is the *un-toothed* weight — a firing carries
+// `tooth = 0` by construction (`bleed_fires`), because bleed is wet paint spreading
+// sideways rather than a tip dragged over grain, and gating it would break the
+// antisymmetry outright: the two threads of a pair sit over different ground. Computing
+// it once, here, is what enforces that, where the deposit's own `w_t` used to be free to
+// pick up a tooth its neighbour's `w_n` never had.
+@compute @workgroup_size(8, 8)
+fn bleed_weight(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dim = textureDimensions(bleed_w_w);
+    if gid.x >= dim.x || gid.y >= dim.y {
+        return;
+    }
+    let t = vec2<i32>(gid.xy);
+    let sw = segment_frame(st.rect_origin + t);
+    let lk = segment_look(sw);
+    var w = 0.0;
+    if !outside_look(lk) {
+        w = 1.0 - exp(-bleed_rate() * swept_pre(lk) * sw.warp * stretch_gain(st.stretch));
+    }
+    textureStore(bleed_w_w, t, vec4<f32>(w, 0.0, 0.0, 0.0));
+}
+
 // ---- What the two deposit kernels share ------------------------------------------
 //
 // `deposit` and `deposit_coarse` are **one model at two resolutions** (§6.2): the exact
@@ -1602,7 +1650,11 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     var canvas = canvas_at(u);
     let kb = bleed_rate(); // the bleed rate; nonzero only on a dedicated bleed slot
     if kb > 0.0 {
-        let w_t = 1.0 - exp(-kb * e);
+        // This texel's own mobility, read from the same scratch its neighbours read it
+        // from (`bleed_weight`) rather than recomputed from `e`. Two threads of a pair
+        // now agree because they load one texel, not because two derivations of one
+        // formula are argued to land on the same float.
+        let w_t = textureLoad(bleed_w, t, 0).r;
         // Entering quantities in the mass-weighted form every flux moves (§6.1):
         // height, optical mass, latent·mass — the same formula both threads of a
         // pair evaluate, which is what makes the flux antisymmetric.
@@ -1618,8 +1670,6 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
         let reach = max(st.bleed_reach, 1);
         let rungs = BLEED_LADDER_TAPS + 1;
         let per_rung = BLEED_SHARE_LADDER / f32(BLEED_LADDER_TAPS);
-        // The one factor every neighbour's exposure carries, hoisted out of both loops.
-        let gain = stretch_gain(st.stretch);
         for (var k = 0; k < rungs; k = k + 1) {
             var dist = 1;
             var share = BLEED_SHARE_NEAR;
@@ -1641,19 +1691,12 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
                     continue; // a tiny tip's collapsed scale, or the wall itself
                 }
                 let rtn = st.rect_origin + tn;
-                // The neighbour's own exposure, from the same uniform its own thread
-                // reads it — same floats, same verdict, so the pair agrees on its flux.
-                // One `segment_look` for the rim test and the exposure both, where the
-                // two used to build one each: this runs thirty-six times a texel.
-                let swn = segment_frame(rtn);
-                let lkn = segment_look(swn);
-                var w_n = 0.0;
-                if !outside_look(lkn) {
-                    // The same exposure its own thread computes, through the same
-                    // function — including the stretch, without which a pair would
-                    // disagree about its own flux (`swept_pre`).
-                    w_n = 1.0 - exp(-kb * swept_pre(lkn) * swn.warp * gain);
-                }
+                // The neighbour's mobility — **the very texel its own thread reads for
+                // itself**, so the pair computes one number by construction. This is
+                // where the ladder used to spend a sweep frame, a rim test and a
+                // prefix-τ difference, thirty-six times over, on an answer the thread
+                // one tap away was deriving at the same moment (`bleed_weight`).
+                let w_n = textureLoad(bleed_w, tn, 0).r;
                 let seln = load1(sel_mask, rtn).r;
                 let c = share * min(w_t, w_n) * seln;
                 if c > 0.0 {

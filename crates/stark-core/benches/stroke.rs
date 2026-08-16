@@ -84,6 +84,19 @@ fn smear(radius: f32) -> BrushParams {
     b
 }
 
+/// [`smear`] with the **bleed** axis on — the blender, and the one brush that fires the
+/// lateral flux (§6.2).
+///
+/// Its own case because bleed is the loop's only pass whose cost is a *stencil*: a
+/// firing reads nine rungs × four offsets per texel, where every other pass reads a
+/// fixed handful. Without a bleeding brush in this file the whole ladder was
+/// unmeasured, and the one number anybody had for it came from a hand-timed replay.
+fn blender(radius: f32) -> BrushParams {
+    let mut b = smear(radius);
+    b.dynamics.bleed = 0.9;
+    b
+}
+
 /// The same brush with dynamics off, which is what puts it on the swept path: one
 /// instanced draw over the whole stroke instead of a dispatch chain per segment.
 /// The control the dynamics numbers are read against.
@@ -148,11 +161,21 @@ fn commit(c: &mut Criterion) {
         .measurement_time(Duration::from_secs(12));
 
     for radius in [8.0f32, 30.0, 100.0, 250.0, 500.0] {
-        for (mode, brush) in [("dynamics", smear(radius)), ("swept", plain(radius))] {
+        for (mode, brush) in [
+            ("dynamics", smear(radius)),
+            ("blender", blender(radius)),
+            ("swept", plain(radius)),
+        ] {
             // r=500 on the swept path is one enormous instanced draw with nothing to
             // learn from — the interesting extreme radius is the dynamics one, where
             // the loop flips from dispatch-bound to texel-bound.
             if mode == "swept" && radius > 100.0 {
+                continue;
+            }
+            // The bleed's cost is the stencil, which is per texel — so it is read at
+            // the two radii where the loop is texel-bound, and skipped where the
+            // dispatch chain dominates and the firing count is what little there is.
+            if mode == "blender" && radius < 100.0 {
                 continue;
             }
             engine.process(ViewCommand::SetBrush(brush));

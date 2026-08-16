@@ -181,7 +181,7 @@ impl StrokeRenderer {
         // caches. What is left here is the pair of them plus the scene-independent
         // things a renderer is handed.
         let swept = build_swept_kit(&ctx.device, color_space.as_ref());
-        let dynamics = build_dynamics_kit(&ctx.device, color_space.as_ref());
+        let dynamics = build_dynamics_kit(ctx, color_space.as_ref());
 
         Self {
             ctx: ctx.clone(),

@@ -490,10 +490,17 @@ impl<'a> DynamicsRun<'a> {
             .iter()
             .any(|d| d.cell_groups.is_some())
             .then(|| self.cell_scratch(plan.dsize));
+        // The bleed pair's mobility scratch (§6.2), only when some slot is a firing —
+        // a brush that does not bleed allocates nothing and binds the 1×1 stand-in.
+        let bleed = plan
+            .slots
+            .iter()
+            .any(|d| matches!(d.kind, SlotKind::Bleed))
+            .then(|| self.bleed_scratch(plan.dsize));
         let stamp_buf = self.upload_plan(&plan.slots);
-        let bind = self.bind_piece(&region, &under, &stamp_buf, cells.as_ref());
+        let bind = self.bind_piece(&region, &under, &stamp_buf, cells.as_ref(), bleed.as_ref());
 
-        self.record_loop(&plan.slots, &bind);
+        self.record_loop(&plan.slots, plan.dsize, &bind);
         self.write_back(base, coords, lo, &region)
     }
 
@@ -703,6 +710,25 @@ impl<'a> DynamicsRun<'a> {
         }
     }
 
+    /// The bleed pair's mobility scratch (§6.2): where `bleed_weight` leaves the weight
+    /// the ladder reads back thirty-six times a texel.
+    ///
+    /// The **snapshot square**, not a firing's rect, and that is what makes the read
+    /// safe: the ladder clamps a tap into the scratch's own extent, so a texel outside
+    /// the dispatched rect can still be read, and one this pass had not written would
+    /// hold the previous firing's answer. Covering the square is the same
+    /// structural-fit argument the snapshot and the cells make, with the same `dsize`.
+    fn bleed_scratch(&mut self, dsize: u32) -> wgpu::TextureView {
+        self.scope
+            .take_piece(Key {
+                size: (dsize, dsize),
+                format: wgpu::TextureFormat::R32Float,
+                usage: LOOP_USAGE,
+                label: "stark dynamics bleed w",
+            })
+            .1
+    }
+
     /// The footprint-cell scratch (§6.2): where `cell_hoist` leaves the per-cell
     /// means for `deposit_coarse` to read back. Sized by the same structural-fit
     /// relation the snapshot scratch uses — [`cell_scratch_size`] of the piece's own
@@ -782,6 +808,7 @@ impl<'a> DynamicsRun<'a> {
         under: &'p Snapshot,
         stamp_buf: &'p wgpu::Buffer,
         cells: Option<&'p Cells>,
+        bleed: Option<&'p wgpu::TextureView>,
     ) -> PieceBindings {
         let r = self.r;
         let kit = &r.dynamics;
@@ -821,6 +848,9 @@ impl<'a> DynamicsRun<'a> {
                 b::REGION_RESID_W => opt(region.resid.as_ref(), "region"),
                 b::SEL_MASK => view(&region.sel_mask),
                 b::SURFACE_TEX => view(&self.scene.surface.view),
+                // The real scratch on a piece that fires, the kit's 1×1 otherwise — a
+                // painting segment carries `lambda_bleed = 0` and never reads it.
+                b::BLEED_W => view(bleed.unwrap_or(&kit.bleed_placeholder)),
                 b::DYN_NOISE_TEX => view(&self.noise),
                 b::DYN_NOISE_SAMP => samp(&r.tips.noise_sampler),
                 _ => return None,
@@ -899,6 +929,20 @@ impl<'a> DynamicsRun<'a> {
                 },
             )
         });
+        // The mobility pass, on a piece that has one to run.
+        let bleed_weight = bleed.map(|w| {
+            desc::bind_group_for(
+                device,
+                "stark dynamics bleed weight bg",
+                &kit.bleed_weight_bgl,
+                slots::BLEED_WEIGHT,
+                resid,
+                |sl| match sl {
+                    b::BLEED_W_W => view(w),
+                    other => common(other).expect("bleed_weight lists no other binding"),
+                },
+            )
+        });
         let deposit = desc::bind_group_for(
             device,
             "stark dynamics deposit bg",
@@ -958,6 +1002,7 @@ impl<'a> DynamicsRun<'a> {
             exchange,
             bake,
             deposit,
+            bleed_weight,
             coarse,
             settle,
         }
@@ -975,10 +1020,13 @@ impl<'a> DynamicsRun<'a> {
     /// `self.cur` outlives the pass: it names the reservoir texture holding the
     /// tool's state, so after the last dispatch it names the state this piece ends
     /// in — which is what the next piece, or the next range, resumes from.
-    fn record_loop(&mut self, plan: &[LoopDispatch], bind: &PieceBindings) {
+    fn record_loop(&mut self, plan: &[LoopDispatch], dsize: u32, bind: &PieceBindings) {
         let kit = &self.r.dynamics;
         let mut cur = self.cur;
         let prefix_bg = &self.prefix_bg;
+        // The mobility pass covers the snapshot square, where every other dispatch
+        // covers its own slot's rect — see the note at its `set_pipeline` below.
+        let square_groups = dsize.div_ceil(8);
         let mut cpass = self
             .scope
             .encoder()
@@ -1001,6 +1049,20 @@ impl<'a> DynamicsRun<'a> {
                     cpass.set_pipeline(&kit.snapshot_pipeline);
                     cpass.set_bind_group(0, &bind.snapshot, &[off]);
                     cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                    // The pair's mobility, once per texel, for the ladder to read back
+                    // (§6.2). Over the **whole snapshot square** rather than the
+                    // firing's rect: the ladder clamps a tap into the scratch's extent,
+                    // so every texel it can reach has to have been written this firing.
+                    cpass.set_pipeline(&kit.bleed_weight_pipeline);
+                    cpass.set_bind_group(
+                        0,
+                        bind.bleed_weight
+                            .as_ref()
+                            .expect("a firing's piece allocated a bleed scratch"),
+                        &[off],
+                    );
+                    cpass.set_bind_group(1, prefix_bg, &[]);
+                    cpass.dispatch_workgroups(square_groups, square_groups, 1);
                     cpass.set_pipeline(&kit.deposit_pipeline);
                     cpass.set_bind_group(0, &bind.deposit, &[off]);
                     cpass.set_bind_group(1, prefix_bg, &[]);
@@ -1277,6 +1339,9 @@ struct PieceBindings {
     exchange: [wgpu::BindGroup; 2],
     bake: [wgpu::BindGroup; 2],
     deposit: wgpu::BindGroup,
+    /// The mobility pass's group — `Some` exactly when the piece allocated a bleed
+    /// scratch, i.e. when some slot is a firing.
+    bleed_weight: Option<wgpu::BindGroup>,
     /// The coarse pair's groups — `Some` exactly when the piece allocated a cell
     /// scratch, i.e. when some slot's [`footprint_cell`](super::plan) beat 1.
     coarse: Option<CoarseBindings>,
