@@ -14,10 +14,10 @@
 //! the level the whole feature lives at.
 
 use glam::Quat;
+use stark_core::PerspectiveGuide;
 use stark_core::command::InputSample;
 use stark_core::document::{LayerId, Tool};
 use stark_core::geom::{Ellipse, Extent2, Vec2, ViewTransform};
-use stark_core::guides::PerspectiveGuide;
 use stark_core::path::{DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, flatten};
 use stark_core::session::Session;
 

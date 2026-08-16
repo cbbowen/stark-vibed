@@ -1133,6 +1133,78 @@ mod tests {
         assert_eq!(culled(&map, None).count(), map.size());
     }
 
+    /// **"An ordinary document is one `Run`"**, which `composite_groups` claims and
+    /// nothing checked.
+    ///
+    /// It is the whole argument for cutting the draw list into groups at all: a
+    /// document that uses no blend modes, no clipping and no groups must cost the
+    /// compositor exactly what it did before groups existed, or the feature is a tax
+    /// on everyone who does not use it. That is measurable, so it is measured — the
+    /// habit `a_trim_never_drops_below_the_epochs_peak_demand` and
+    /// `a_scope_hands_its_scratch_back_as_it_goes` already keep, extended to a
+    /// *performance* claim rather than a correctness one (C8).
+    ///
+    /// Asked of the grouping rule directly rather than through an `Engine`, so it
+    /// needs no GPU: what decides a run boundary is `CompositeGroup::leaf` plus the
+    /// merge in `composite_stack`, and both are functions of `CompositeParams`.
+    #[test]
+    fn plain_layers_merge_into_one_run() {
+        use crate::document::{BlendMode, CompositeParams};
+
+        // A stand-in item; what is being tested is how many groups the merge
+        // leaves, not what is in them.
+        let items = || {
+            vec![CompositeItem::Matte(MatteDraw {
+                rect: [0.0; 4],
+                flags: 1.0,
+                channels: [0.0; 4],
+                resid: [0.0; 4],
+                opacity: 1.0,
+                ramp: None,
+            })]
+        };
+        let plain = CompositeParams::IDENTITY;
+
+        // Six ordinary layers, merged pairwise the way `composite_stack` does.
+        let mut groups: Vec<CompositeGroup> = Vec::new();
+        for _ in 0..6 {
+            let mut g = CompositeGroup::leaf(plain, items());
+            let merged = match (
+                groups
+                    .last_mut()
+                    .and_then(CompositeGroup::as_direct_run_mut),
+                g.as_direct_run_mut(),
+            ) {
+                (Some(into), Some(more)) => {
+                    into.append(more);
+                    true
+                }
+                _ => false,
+            };
+            if !merged {
+                groups.push(g);
+            }
+        }
+        assert_eq!(
+            groups.len(),
+            1,
+            "plain layers did not collapse into one run"
+        );
+
+        // And a layer that *does* need isolating breaks the run — otherwise the
+        // test above would pass on a rule that merged everything unconditionally,
+        // which would composite blend modes against the wrong backdrop.
+        let isolating = CompositeParams {
+            blend: BlendMode::Multiply,
+            ..plain
+        };
+        let mut g = CompositeGroup::leaf(isolating, items());
+        assert!(
+            g.as_direct_run_mut().is_none(),
+            "a blended layer offered itself for merging into the run below",
+        );
+    }
+
     #[test]
     fn the_cull_keeps_every_tile_the_viewport_shows() {
         let ts = TILE_SIZE as f32;

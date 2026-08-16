@@ -469,19 +469,45 @@ impl DocState {
         self.with_layers(layers.expect("restore always produces a stack"))
     }
 
+    /// Rewrite a layer's **content**, where `f` accepts it — the shape every content
+    /// setter below takes.
+    ///
+    /// `f` answers `None` for content this edit does not apply to, which is what
+    /// makes "which kinds accept this edit" a *parameter* rather than a pattern
+    /// repeated per setter. Four of them spelled out the same match arm, the same
+    /// `Layer { content, ..l.clone() }`, and the same "every other kind is left
+    /// alone" — so a new [`LayerContent`] variant had to be visited four times to
+    /// say the same nothing.
+    ///
+    /// Deliberately narrower than [`map_layer`](Self::map_layer): a setter that can
+    /// only change `content` cannot reach `composite`, `visible` or `name` by
+    /// accident. `set_layer_blend` and its neighbours are *not* written through this,
+    /// and that is the distinction rather than an omission — they write
+    /// `composite`, and read `content` only to refuse (§21.4).
+    fn map_content(
+        &self,
+        id: LayerId,
+        f: impl FnOnce(&LayerContent) -> Option<LayerContent>,
+    ) -> Self {
+        self.map_layer(id, |l| match f(&l.content) {
+            Some(content) => Layer {
+                content,
+                ..l.clone()
+            },
+            None => l.clone(),
+        })
+    }
+
     /// Move a matte layer's rect (the frame drag's commit). A no-op on a paint
     /// layer, an absent id — or a region that has no rect to move
     /// ([`MatteRegion::with_rect`]).
     pub fn set_matte_rect(&self, id: LayerId, min: Vec2, max: Vec2) -> Self {
-        self.map_layer(id, |l| match &l.content {
-            LayerContent::Matte { region, paint } => Layer {
-                content: LayerContent::Matte {
-                    region: region.with_rect(min, max),
-                    paint: paint.clone(),
-                },
-                ..l.clone()
-            },
-            LayerContent::Paint(_) | LayerContent::Filter(_) => l.clone(),
+        self.map_content(id, |c| match c {
+            LayerContent::Matte { region, paint } => Some(LayerContent::Matte {
+                region: region.with_rect(min, max),
+                paint: paint.clone(),
+            }),
+            LayerContent::Paint(_) | LayerContent::Filter(_) => None,
         })
     }
 
@@ -490,30 +516,24 @@ impl DocState {
     /// *value* rather than route through a rect the region may not have. A
     /// no-op on a paint layer or an absent id, like every setter here.
     pub(crate) fn set_matte_region(&self, id: LayerId, region: MatteRegion) -> Self {
-        self.map_layer(id, |l| match &l.content {
-            LayerContent::Matte { paint, .. } => Layer {
-                content: LayerContent::Matte {
-                    region,
-                    paint: paint.clone(),
-                },
-                ..l.clone()
-            },
-            LayerContent::Paint(_) | LayerContent::Filter(_) => l.clone(),
+        self.map_content(id, |c| match c {
+            LayerContent::Matte { paint, .. } => Some(LayerContent::Matte {
+                region,
+                paint: paint.clone(),
+            }),
+            LayerContent::Paint(_) | LayerContent::Filter(_) => None,
         })
     }
 
     /// Set a matte layer's paint — a flat color or a gradient ramp (§15.4,
     /// §22.4). A no-op on a paint layer or an absent id.
     pub fn set_matte_paint(&self, id: LayerId, paint: MattePaint) -> Self {
-        self.map_layer(id, |l| match &l.content {
-            LayerContent::Matte { region, .. } => Layer {
-                content: LayerContent::Matte {
-                    region: *region,
-                    paint: paint.clone(),
-                },
-                ..l.clone()
-            },
-            LayerContent::Paint(_) | LayerContent::Filter(_) => l.clone(),
+        self.map_content(id, |c| match c {
+            LayerContent::Matte { region, .. } => Some(LayerContent::Matte {
+                region: *region,
+                paint: paint.clone(),
+            }),
+            LayerContent::Paint(_) | LayerContent::Filter(_) => None,
         })
     }
 
@@ -534,12 +554,9 @@ impl DocState {
     /// the frame. Idempotent for any log this engine wrote, so replay still puts
     /// back exactly what was applied.
     pub fn set_filter(&self, id: LayerId, filter: Filter) -> Self {
-        self.map_layer(id, |l| match &l.content {
-            LayerContent::Filter(_) => Layer {
-                content: LayerContent::Filter(filter.sanitized()),
-                ..l.clone()
-            },
-            LayerContent::Paint(_) | LayerContent::Matte { .. } => l.clone(),
+        self.map_content(id, |c| match c {
+            LayerContent::Filter(_) => Some(LayerContent::Filter(filter.sanitized())),
+            LayerContent::Paint(_) | LayerContent::Matte { .. } => None,
         })
     }
 

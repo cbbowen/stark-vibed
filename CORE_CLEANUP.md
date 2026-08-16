@@ -28,7 +28,7 @@ exhaustive on purpose. What follows is the edges.
 | [C5](#c5-nothing-ever-retires-history) | Nothing ever retires history | correctness | medium | **done** |
 | [C6](#c6-every-integration-test-builds-its-own-device) | Every integration test builds its own device | build health | small | **done** |
 | [C7](#c7-engine-is-the-crates-one-god-object) | `Engine` is the crate's one god object | structure | large | open |
-| [C8](#c8-smaller-things) | Smaller things | mixed | small | open |
+| [C8](#c8-smaller-things) | Smaller things | mixed | small | **done** |
 
 ### What landed, and what is left
 
@@ -60,14 +60,18 @@ exhaustive on purpose. What follows is the edges.
   at the head of that section: checkpoints are not needed, because
   `forget_actions` hands back what it folded and `LinearTimeline` keeps it. Undo
   depth is given up under a settable memory budget
-  (`ViewCommand::SetHistoryBudget`, default 1 GiB of resident tiles), half at a
+  (`ViewCommand::SetHistoryBudget`, default 2 GiB of resident tiles, with a
+  slider in the ⚙ dialog), half at a
   time, never below 32 steps; a shared session declines structurally.
 - **C6** — one `GpuContext` per test binary. A fresh `headless_engine` is ~338 ms
   against ~22 ms on an existing device, so this removes about
   (386 − 34) × 316 ms of construction; the warm suite is now 111 s.
 
+- **C8** — three of the four sub-items landed; the first was **wrong** and is
+  corrected in place. See that section.
+
 Suggested order for what remains: **C7** (which also unblocks the rest of C4),
-then **C8**, then the rest of **C3**, which is independent and can go any time.
+then the rest of **C3**, which is independent and can go any time.
 
 ---
 
@@ -447,19 +451,37 @@ unit can wait.
 
 ## C8. Smaller things
 
-### `rpds::Vector<Layer>` buys nothing
+### ~~`rpds::Vector<Layer>` buys nothing~~ — **wrong, and not changed**
 
-`DocState::layers` is a persistent vector, but every structural op rebuilds it
-element-by-element: `insert_at` and `remove_in` both `push_back` the whole stack,
-allocating trie nodes rather than one buffer. Clone cost is identical to
-`Arc<Vec<Layer>>` (one refcount bump); edit cost is worse.
-`Arc::make_mut(&mut layers).insert(i, layer)` is cheaper and simpler, and the
-`IN_RANGE` `expect`s that exist to explain `Vector::set`'s `Option` go with it.
+> The finding claimed `Arc<Vec<Layer>>` would be cheaper because "edit cost is
+> worse" for `rpds::Vector`. That is true of one operation and false of the one
+> that actually runs often, so making the swap would have traded a hot path for a
+> cold one. Left as it is; recorded because the argument is plausible and someone
+> will make it again.
 
-`HashTrieMap` for the tile map genuinely earns its keep — thousands of entries,
-real structural sharing between versions. `Vector` for dozens of layers does not.
+The claim rests on `insert_at` and `remove_in`, which rebuild the stack
+element-by-element because `rpds::Vector` has no insert or remove. That much is
+real — but those are *structural* layer edits, which happen at human rate.
 
-### The crate root has none of the discipline `document/` and `gpu/` have
+The operation that runs often is `map_layer`, and it goes through `Vector::set`,
+which is `assoc`: a **path copy down the trie**, `O(log n)`, sharing every node off
+the path. `Arc::make_mut` on a `Vec` is a full `O(n)` clone, because the previous
+`DocState` in the history always holds the other reference — so the Arc is always
+shared and `make_mut` always copies.
+
+And `map_layer` is not cold. It is the tail of `CommitStroke`'s apply, of `Fill`,
+of every transform — and of `render_span_range` (`engine/live.rs`), which runs
+**per pointer move** while a stroke is live.
+
+So the swap would make the pointer-rate path `O(n)` in layers to make a
+human-rate path allocate once instead of `n` times. At dozens of layers both are
+microseconds and neither is worth a diff, but the direction of the trade is the
+wrong one, and the finding had it backwards.
+
+`HashTrieMap` for the tile map earns its keep for the same reason, more so:
+thousands of entries and real sharing between versions.
+
+### The crate root has none of the discipline `document/` and `gpu/` have — **done, narrowly**
 
 Both of those declare `pub(crate) mod` plus a curated `pub use` list, each with a
 doc comment saying *why* — `gpu/mod.rs`:
@@ -467,24 +489,48 @@ doc comment saying *why* — `gpu/mod.rs`:
 > what leaves this module should be a decision, not a consequence of how a file
 > happened to be split.
 
-The root is a flat namespace of 20 files with four unrelated roles: pure-CPU
+The root was a flat namespace of 20 files with four unrelated roles: pure-CPU
 geometry (`geom`, `path`, `spline`, `tow`, `assist` at 1,846 lines, `guides` at
 1,841, `noise`), session and presence (`session`, `peer`, `presence`, `command`),
 persistence (`io`, `assets`, `content`, `image`), and color (`color`,
-`colorspace`, `gradient`). Grouping them with the same curated surface applies
-the crate's own stated rule to the one place it is not applied — and makes the
-wasm-size story legible, since `assist` + `guides` are ~3,700 lines of CPU-only
-code a headless replay never reaches.
+`colorspace`, `gradient`).
 
-### `DocState`'s content setters repeat one shape five times
+**What was done, and what was not.** Grouping the files into `geometry/`,
+`persist/` and so on would change every import path in the workspace and both
+halves of the public API, for an organizational gain — the review rated this
+"small", which was right about the idea and wrong about the diff.
 
-`set_matte_rect`, `set_matte_region`, `set_matte_paint`, `set_filter` and
-`set_layer_blend` each spell out
+The part that is *unambiguous* is the visibility, and that is what landed. Eight
+root modules had no caller outside the crate at all — `error`, `image` and
+`content` were reached only through the root re-exports, `assist`, `noise` and
+`spline` not at all, and `guides` and `tow` for exactly two names the re-export
+list already carried. All eight are now `pub(crate)`, so each of their types has
+**one** public path instead of two, which is the whole of what the rule asks
+(`stark_core::RgbaImage`, not `stark_core::image::RgbaImage`).
+
+Worth noting what tightening flushed out, because it is the argument for doing
+it: three methods that were dead the moment they stopped being public API
+(`SplineIndex::num_control_points`, `CubicBSpline::num_control_points`,
+`Tow::tip`), and a `wrong_self_convention` lint on `assist::Shape::to_path` that
+clippy had been suppressing because the item was exported. A public module is a
+place lints and dead-code analysis stop looking.
+
+Moving the files remains open, and is a separate change with a separate argument.
+
+### `DocState`'s content setters repeat one shape five times — **done**
+
+`set_matte_rect`, `set_matte_region`, `set_matte_paint` and `set_filter` each
+spelled out
 `map_layer(id, |l| match &l.content { … => Layer { content: …, ..l.clone() }, _ => l.clone() })`.
-Each is a place a new `LayerContent` variant must be visited, and the "which
-content kinds accept this edit" decision is made five times. One helper that
-takes that decision as its argument would make the answer a parameter rather than
-a pattern.
+
+`DocState::map_content` now takes the decision as a parameter: `f` answers `None`
+for content the edit does not apply to. It is also *narrower* than `map_layer` —
+a setter that can only change `content` cannot reach `composite`, `visible` or
+`name` by accident.
+
+**Four, not five.** `set_layer_blend` was in the list and does not belong: it
+writes `composite`, and reads `content` only in order to refuse a filter (§21.4).
+Folding it in would have hidden that difference rather than removed it.
 
 ### The documentation
 
@@ -496,8 +542,8 @@ quarantine, "where the layer's composite params go" — are better than any desi
 doc that could have been written for them. **Do not cut them.**
 
 The risk is drift, and [C3](#c3-the-fitters-per-sample-cost-is-linear-in-stroke-length)
-is a live instance: "the work per sample is constant" is asserted in a doc
-comment, is false, and nothing checks it.
+was a live instance: "the work per sample is constant" was asserted in a doc
+comment, was false, and nothing checked it.
 
 The antidote is already in the codebase, in several places — a comment turned
 into an assertion:
@@ -507,7 +553,15 @@ into an assertion:
 - `tests/seam.rs`
 - `a_census_slot_belongs_to_the_source_that_indexes_it`
 
-Extending that habit to the **performance** claims specifically is the cheap fix:
-the fitter's constant-work claim, `composite_stack`'s "an ordinary document is
-one group", and the pool's working-set claim are all measurable, and none of them
-is measured.
+Three **performance** claims were named as measurable and unmeasured. On
+checking, that was two:
+
+- the fitter's constant-work claim — the comment now says which half is constant
+  and which is not (C3);
+- `composite_stack`'s "an ordinary document is one `Run`" — now
+  `plain_layers_merge_into_one_run`, which also pins the other half, that a
+  blended layer *does* break the run;
+- the pool's working-set claim — **already measured**, by
+  `a_pool_at_its_working_set_releases_nothing`. The review listed it as an
+  example of the antidote *and* as an instance of the problem, which cannot both
+  be true.

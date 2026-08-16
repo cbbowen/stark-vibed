@@ -105,11 +105,6 @@ impl SplineIndex {
         Ok(Self { m })
     }
 
-    /// Number of control points.
-    pub fn num_control_points(self) -> usize {
-        self.m
-    }
-
     /// Number of polynomial spans; the spline is parameterized over `[0, num_spans()]`.
     pub fn num_spans(self) -> usize {
         // The clamped view repeats each endpoint knot `DEGREE` times (that is,
@@ -454,11 +449,6 @@ impl<'a, const D: usize> CubicBSpline<'a, D> {
         self.index.num_spans()
     }
 
-    /// Number of control points.
-    pub fn num_control_points(&self) -> usize {
-        self.index.num_control_points()
-    }
-
     /// The point on the curve at parameter `t`.
     pub fn evaluate(&self, t: f32) -> SVector<f32, D> {
         // De Boor's algorithm. Only the `DEGREE + 1` conceptual control points
@@ -605,7 +595,7 @@ mod tests {
     fn channel_fitting_recovers_an_exact_channel() {
         let c = wiggle_pts();
         let s = index_of(&c);
-        let m = s.num_control_points();
+        let m = c.nrows();
         let truth = OMatrix::<f32, Dyn, Const<1>>::from_fn_generic(Dyn(m), Const::<1>, |j, _| {
             0.3 + 0.7 * (j as f32 * 1.7).sin()
         });
@@ -636,7 +626,7 @@ mod tests {
     fn a_solve_with_no_points_returns_the_prior() {
         let c = wiggle_pts();
         let s = index_of(&c);
-        let m = s.num_control_points();
+        let m = c.nrows();
         let prior = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
             (j * 2 + d) as f32
         });
@@ -650,7 +640,7 @@ mod tests {
     fn frozen_channel_rows_come_back_untouched() {
         let c = wiggle_pts();
         let s = index_of(&c);
-        let m = s.num_control_points();
+        let m = c.nrows();
         let ts = spread(s, 40);
         let values: Vec<[f32; 2]> = (0..ts.len())
             .map(|i| [i as f32 / ts.len() as f32, (i as f32 * 0.3).cos()])
@@ -680,7 +670,7 @@ mod tests {
     fn a_held_tail_comes_back_untouched() {
         let c = wiggle_pts();
         let s = index_of(&c);
-        let m = s.num_control_points();
+        let m = c.nrows();
         let ts = spread(s, 30);
         let values: Vec<[f32; 2]> = ts.iter().map(|&t| [t, -t]).collect();
         let prior = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {

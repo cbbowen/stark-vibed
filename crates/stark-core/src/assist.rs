@@ -510,8 +510,8 @@ impl AssistShape {
     /// their own control points, so control points placed analytically on the ellipse
     /// leave an `O(Δ²)` bulge exactly at the seam, and a solve is what places the end
     /// rows to cancel it. The pen channels are fitted either way.
-    pub fn to_path(&self, pen: &PenProfile, knots: usize) -> Vec<ControlPoint> {
-        let (seed, targets, fit_geometry) = match *self {
+    pub fn to_path(self, pen: &PenProfile, knots: usize) -> Vec<ControlPoint> {
+        let (seed, targets, fit_geometry) = match self {
             Self::Line { a, b, .. } => {
                 let m = knots.clamp(2, MAX_KNOTS);
                 let along = |f: f32| a.lerp(b, f);

@@ -84,11 +84,6 @@ impl Tow {
         }
     }
 
-    /// Where the mark is being laid.
-    pub fn tip(&self) -> Vec2 {
-        self.tip
-    }
-
     /// The string as the overlay draws it.
     pub fn string(&self) -> TowString {
         TowString {
@@ -201,7 +196,7 @@ mod tests {
         let (tow, out) = run(40.0, &[Vec2::ZERO, Vec2::new(400.0, 0.0)]);
         // Far from the start the bend has decayed and the tip trails the
         // target by exactly the rope, dead astern.
-        let tip = tow.tip();
+        let tip = tow.string().tip;
         assert!(
             (tip - Vec2::new(360.0, 0.0)).length() < 0.1,
             "tip at {tip} after a long straight tow with rope 40"
@@ -223,7 +218,7 @@ mod tests {
         let a = Vec2::ZERO;
         let b = Vec2::new(300.0, 0.0);
         let c = Vec2::new(300.0, 300.0);
-        let coarse = run(50.0, &[a, b, c]).0.tip();
+        let coarse = run(50.0, &[a, b, c]).0.string().tip;
         // The same path delivered in many short reports.
         let mut fine_pts = vec![a];
         for i in 1..=30 {
@@ -232,7 +227,7 @@ mod tests {
         for i in 1..=30 {
             fine_pts.push(b.lerp(c, i as f32 / 30.0));
         }
-        let fine = run(50.0, &fine_pts).0.tip();
+        let fine = run(50.0, &fine_pts).0.string().tip;
         assert!(
             (coarse - fine).length() < 1e-2,
             "report cadence moved the tip: {coarse} vs {fine}"
@@ -250,7 +245,7 @@ mod tests {
             .collect();
         let (tow, out) = run(40.0, &jitter);
         assert!(out.is_empty(), "a slack string moved the tip: {out:?}");
-        assert_eq!(tow.tip(), jitter[0], "the tip left its park");
+        assert_eq!(tow.string().tip, jitter[0], "the tip left its park");
     }
 
     /// The pen-up parks the tip (§6.11): the mark ends where the rope had towed
@@ -262,7 +257,7 @@ mod tests {
         let lift = Vec2::new(100.0, 30.0);
         let (tow, out) = run(40.0, &[Vec2::ZERO, lift]);
         let end = *out.last().expect("a run well past the rope tows");
-        assert_eq!(tow.tip(), end, "the last emission is not the tip");
+        assert_eq!(tow.string().tip, end, "the last emission is not the tip");
         // Straight tow, so the tip lies on the target's own line, a rope behind.
         let gap = (lift - end).length();
         assert!(
@@ -283,7 +278,11 @@ mod tests {
             &[Vec2::ZERO, Vec2::new(20.0, 8.0), Vec2::new(35.0, 14.0)],
         );
         assert!(out.is_empty(), "a flick inside the rope towed: {out:?}");
-        assert_eq!(tow.tip(), Vec2::ZERO, "the pen-up moved a parked tip");
+        assert_eq!(
+            tow.string().tip,
+            Vec2::ZERO,
+            "the pen-up moved a parked tip"
+        );
     }
 
     /// The string is an invariant, not a tendency: at every emission the tip
@@ -334,9 +333,9 @@ mod tests {
         assert_eq!(path[0].pos, Vec2::ZERO);
         let end = path.last().unwrap().pos;
         assert!(
-            (end - tow.tip()).length() < 1e-3,
+            (end - tow.string().tip).length() < 1e-3,
             "fitted end {end} is not the towed tip {}",
-            tow.tip()
+            tow.string().tip
         );
         let lift = Vec2::new(240.0, (6.0f32).sin() * 3.0);
         assert!(

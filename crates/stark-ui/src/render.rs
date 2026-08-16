@@ -190,7 +190,7 @@ impl Renderer {
     }
 
     /// The in-flight tow, for the string overlay (§6.11).
-    pub fn tow_string(&self) -> Option<stark_core::tow::TowString> {
+    pub fn tow_string(&self) -> Option<stark_core::TowString> {
         self.engine.tow_string()
     }
 
