@@ -19,7 +19,7 @@ use bytes::Bytes;
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
 use stark_core::AssetId;
-use stark_core::document::Action;
+use stark_core::document::{Action, ActionId};
 use stark_core::peer::PeerFrame;
 
 use crate::mirror::{Mirror, Served};
@@ -135,7 +135,29 @@ pub(crate) enum Request {
     /// have these loaded". The joiner has to make it good before replaying, and
     /// the blob fetch is what catches it if it cannot.
     SnapshotWithout(Vec<AssetId>),
+    /// Every action id this member holds, in total order — the digest half of
+    /// reconciliation (see [`reconcile`](crate::reconcile)). Answered with a
+    /// postcard `Vec<ActionId>`.
+    ///
+    /// The whole list, rather than a summary. A per-actor high-water mark would be
+    /// a sixteenth the size and would not work: `ActionId` is `(lamport, actor)`
+    /// and a lamport clock jumps when its owner observes someone else, so an
+    /// actor's ids are sparse and a mark cannot see a hole in the middle of them.
+    /// At 16 bytes each a hundred thousand actions is 1.6 MB, sent rarely.
+    Ids,
+    /// The named actions, for the ids a reconciling member found it was missing.
+    /// Answered with a postcard `Vec<`[`Recovered`]`>`.
+    Actions(Vec<ActionId>),
 }
+
+/// An action as it travels during reconciliation: the action, and the transfer
+/// hash for whatever content it names.
+///
+/// The hash has to come with it. A recovered action goes through the same door as
+/// one off the flood, and that door needs to know what to fetch — without it a
+/// recovered `SetSurface` would be applied against the flat stand-in, which is the
+/// divergence reconciliation exists to undo (§6.4).
+pub(crate) type Recovered = (Action, Option<iroh_blobs::Hash>);
 
 /// Answer one request from the shared [`Mirror`] — every peer is a provider, so
 /// the session survives the original sharer leaving. `None` while this peer is
@@ -149,6 +171,16 @@ pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Byte
     Ok(Some(match req {
         Request::Snapshot => snapshot_bytes(mirror, &[])?,
         Request::SnapshotWithout(have) => snapshot_bytes(mirror, &have)?,
+        // Both cheap enough to answer under the lock: one walks the log's keys,
+        // the other looks up as many actions as the asker found it was missing.
+        Request::Ids => {
+            let ids = mirror.lock().expect("mirror poisoned").action_ids();
+            postcard::to_allocvec(&ids)?.into()
+        }
+        Request::Actions(ids) => {
+            let actions = mirror.lock().expect("mirror poisoned").recover(&ids);
+            postcard::to_allocvec(&actions)?.into()
+        }
     }))
 }
 

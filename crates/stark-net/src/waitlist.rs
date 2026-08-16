@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 use bytes::Bytes;
 use iroh_blobs::Hash;
 use stark_core::AssetId;
-use stark_core::document::Action;
+use stark_core::document::{Action, ActionId};
 use tokio::sync::mpsc;
 
 use crate::mirror::Mirror;
@@ -189,6 +189,17 @@ impl Waitlist {
     /// it to the engine, unless it has been seen before.
     pub fn accept(&self, action: Action) {
         self.release(vec![action]);
+    }
+
+    /// Which of `theirs` this peer does not hold — what a reconciliation sweep is
+    /// asking (see [`reconcile`](crate::reconcile)). Routed through here rather
+    /// than off a second mirror handle, so this file stays the only one holding
+    /// one and the lock order stays a fact about one file.
+    pub fn missing_from(&self, theirs: &[ActionId]) -> Vec<ActionId> {
+        self.mirror
+            .lock()
+            .expect("mirror poisoned")
+            .missing_from(theirs)
     }
 
     /// A locally-committed action on its way out to the swarm: mirror it so this

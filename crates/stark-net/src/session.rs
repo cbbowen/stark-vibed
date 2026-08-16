@@ -37,6 +37,7 @@ use crate::backend::{self, Bound, Cancel, Dialer, Shutdown};
 use crate::content::Resolver;
 use crate::mirror::{Mirror, Served};
 use crate::proto::{Request, Stamped, StampedRef, Wire, WireRef};
+use crate::reconcile::{Prompt, Reconciler};
 use crate::ticket::SessionTicket;
 use crate::waitlist::{Admit, Waitlist};
 
@@ -423,21 +424,24 @@ impl CollabSession {
         // The receive loop is the only thing that dials afterwards (to fetch
         // brush assets and bootstrap WebRTC), so it takes the dialer with it.
         let cancel = Cancel::default();
-        let resolver = Resolver::new(
-            dialer.clone(),
-            neighbors.clone(),
-            waitlist.clone(),
-            cancel.clone(),
-        );
-        task::spawn(recv_loop(
-            dialer.clone(),
-            receiver,
-            neighbors.clone(),
-            waitlist.clone(),
-            resolver,
-            presence.clone(),
-            tx,
-        ));
+        let wiring = Wiring {
+            resolver: Resolver::new(
+                dialer.clone(),
+                neighbors.clone(),
+                waitlist.clone(),
+                cancel.clone(),
+            ),
+            dialer: dialer.clone(),
+            neighbors: neighbors.clone(),
+            waitlist: waitlist.clone(),
+            cancel: cancel.clone(),
+            // Anti-entropy, for what the flood loses. Raised by the receive loop
+            // when the swarm reports it outran this peer, and swept on a slow
+            // cadence regardless, since most losses announce themselves to nobody.
+            prompt: Prompt::default(),
+        };
+        task::spawn(Reconciler::new(wiring.clone()).run());
+        task::spawn(recv_loop(wiring, receiver, presence.clone(), tx));
         let session = Self {
             broadcaster: Broadcaster {
                 local_id,
@@ -620,6 +624,19 @@ impl Broadcaster {
     }
 }
 
+/// The handles a session's background work runs on — what the receive loop and the
+/// reconciler both need, assembled once by `finish` instead of threaded to each of
+/// them a field at a time.
+#[derive(Clone)]
+pub(crate) struct Wiring {
+    pub dialer: Dialer,
+    pub neighbors: Arc<Mutex<HashSet<EndpointId>>>,
+    pub waitlist: Arc<Waitlist>,
+    pub resolver: Resolver<Dialer>,
+    pub cancel: Cancel,
+    pub prompt: Prompt,
+}
+
 /// Run the fallible tail of session setup, closing the stack if it does not
 /// finish.
 ///
@@ -651,23 +668,31 @@ async fn closing_on_error<T>(
 /// content this peer lacks is parked on the [`Waitlist`] and released by the
 /// resolver that fetches it; everything else keeps flowing past.
 async fn recv_loop(
-    dialer: Dialer,
+    wiring: Wiring,
     mut gossip: GossipReceiver,
-    neighbors: Arc<Mutex<HashSet<EndpointId>>>,
-    waitlist: Arc<Waitlist>,
-    resolver: Resolver<Dialer>,
     presence: Arc<PresenceQuota>,
     tx: mpsc::UnboundedSender<RemoteEvent>,
 ) {
+    let Wiring {
+        dialer,
+        neighbors,
+        waitlist,
+        resolver,
+        prompt,
+        ..
+    } = wiring;
     while let Some(event) = gossip.next().await {
         let message = match event {
             Ok(GossipEvent::Received(message)) => message,
             Ok(GossipEvent::Lagged) => {
-                // Dropped messages: peers converge again on the next snapshot
-                // fetch; flag it loudly for now (§12.5). A lagged
+                // The swarm outran this peer and skipped the rest. Which actions
+                // went is not knowable from here, so this is one of the two things
+                // reconciliation exists for: compare logs with a neighbour shortly,
+                // once what is still in flight has landed (§12.5). A lagged
                 // *presence* stream needs no recovery at all — the author re-sends
                 // its whole gesture on the next resync frame (§17.5).
-                tracing::warn!("gossip lagged; some remote actions may be missing");
+                tracing::warn!("gossip lagged; reconciling to recover what was missed");
+                prompt.raise();
                 continue;
             }
             Ok(GossipEvent::NeighborUp(peer)) => {
@@ -760,25 +785,14 @@ async fn recv_loop(
         // awaited here, so nothing else in the session waits with it. The origin
         // authored the action and so definitely holds the content; the neighbour
         // that forwarded it may not.
-        //
-        // Falling through the `if` applies the action now, which covers both an
-        // action that references nothing and one whose sender attached no
-        // transfer hash: there is nothing to fetch, so parking would be parking
-        // forever, and the kind's fallback is the best that is available.
-        if let Some(need) = stark_core::action_content(&action)
-            && let Some(hash) = hash_or_warn(need, asset_hash)
-        {
-            match waitlist.claim(need, &action) {
-                Admit::Ready => {}
-                Admit::Waiting => continue,
-                Admit::Fetch => {
-                    task::spawn(resolver.clone().resolve(need, hash, origin, from));
-                    continue;
-                }
+        match Admission::of(&action, asset_hash, &waitlist) {
+            Admission::Ready => waitlist.accept(action),
+            Admission::Waiting => continue,
+            Admission::Fetching { need, hash } => {
+                task::spawn(resolver.clone().resolve(need, hash, origin, from));
+                continue;
             }
         }
-
-        waitlist.accept(action);
         if !waitlist.is_live() {
             return;
         }
@@ -793,6 +807,46 @@ fn hash_or_warn(need: AssetNeed, hash: Option<Hash>) -> Option<Hash> {
         tracing::warn!("missing {need:?} arrived without a transfer hash");
     }
     hash
+}
+
+/// What has to happen before an arriving action can be applied.
+///
+/// One place decides, because two ways in must not decide differently. An action
+/// off the gossip flood and one recovered by
+/// [`reconcile`](crate::reconcile) need the same thing: a `SetSurface` applied
+/// before its ground has landed bakes a smooth deposit into stored tiles that no
+/// later arrival un-bakes (§6.4), and it does not matter which door it came
+/// through.
+pub(crate) enum Admission {
+    /// Nothing is missing — apply it. The caller keeps the action, the way
+    /// [`Admit`] leaves it with them.
+    Ready,
+    /// Parked behind a fetch already in flight; it is released with that one.
+    Waiting,
+    /// Parked, and the caller must start the fetch.
+    Fetching { need: AssetNeed, hash: Hash },
+}
+
+impl Admission {
+    /// Decide, parking the action if it has to wait.
+    ///
+    /// [`Ready`](Admission::Ready) covers both an action that references nothing
+    /// and one that arrived without a transfer hash: there is nothing to fetch, so
+    /// parking would be parking forever, and the kind's fallback is the best
+    /// available.
+    pub fn of(action: &Action, hash: Option<Hash>, waitlist: &Waitlist) -> Self {
+        let Some(need) = stark_core::action_content(action) else {
+            return Self::Ready;
+        };
+        let Some(hash) = hash_or_warn(need, hash) else {
+            return Self::Ready;
+        };
+        match waitlist.claim(need, action) {
+            Admit::Ready => Self::Ready,
+            Admit::Waiting => Self::Waiting,
+            Admit::Fetch => Self::Fetching { need, hash },
+        }
+    }
 }
 
 /// The brush image a *live* remote gesture depends on, if any: a stroke's head

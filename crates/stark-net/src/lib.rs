@@ -26,6 +26,7 @@ mod backend;
 mod content;
 mod mirror;
 mod proto;
+mod reconcile;
 mod session;
 mod ticket;
 mod transport;

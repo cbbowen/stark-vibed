@@ -263,6 +263,36 @@ impl Mirror {
         true
     }
 
+    /// Every action id held, in total order — this peer's half of a
+    /// reconciliation digest.
+    pub fn action_ids(&self) -> Vec<ActionId> {
+        self.actions.keys().copied().collect()
+    }
+
+    /// Which of `theirs` this peer does not hold — the answer reconciliation is
+    /// looking for, worked out against the digest a member sent.
+    pub fn missing_from(&self, theirs: &[ActionId]) -> Vec<ActionId> {
+        theirs
+            .iter()
+            .filter(|id| !self.actions.contains_key(id))
+            .copied()
+            .collect()
+    }
+
+    /// The named actions, each with the hash its content transfers under, for a
+    /// member recovering what the flood dropped. Ids not held are skipped — the
+    /// asker's digest may be older than this peer's own trimming of it.
+    pub fn recover(&self, ids: &[ActionId]) -> Vec<(Action, Option<Hash>)> {
+        ids.iter()
+            .filter_map(|id| self.actions.get(id))
+            .map(|action| {
+                let hash = stark_core::action_content(action)
+                    .and_then(|need| self.transfer_hash(need.content()));
+                (action.clone(), hash)
+            })
+            .collect()
+    }
+
     /// Record content a peer may ask for, under the id that names it and the
     /// hash it transfers under.
     pub fn insert_content(&mut self, need: AssetNeed, bytes: Bytes, hash: Hash) {

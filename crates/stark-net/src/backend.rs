@@ -38,7 +38,15 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 /// A long stroke's fitted control points can be sizeable, so the gossip
 /// message ceiling sits well past any plausible single action (paths are
 /// RDP-simplified; pixels never ride gossip).
-const MAX_MESSAGE_SIZE: usize = 256 * 1024;
+///
+/// It was a quarter of this, which is close enough to a long stroke at a fine
+/// tolerance to be worth widening — and crossing it used to mean the action was
+/// gone from every peer that was watching, permanently, because a failed broadcast
+/// had nowhere to be retried from. It is survivable now: the sender mirrors before
+/// it sends, so [`reconcile`](crate::reconcile) hands the action to whoever sweeps
+/// next. A ceiling that a legal document action can cross is still a ceiling that
+/// will be crossed, so this is a delay to avoid rather than a loss to prevent.
+const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 
 pub(crate) struct Bound {
     pub dialer: Dialer,
