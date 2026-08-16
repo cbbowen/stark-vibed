@@ -44,6 +44,7 @@ use crate::builtins;
 use crate::platform::{base64_decode, base64_encode};
 use crate::slots;
 use crate::state::{AppState, update_brush};
+use crate::storage;
 
 /// One key, namespaced like the shape library's; versioned so a future format
 /// change can migrate rather than mis-parse.
@@ -582,11 +583,10 @@ pub(crate) fn encode_wearable(w: &Wearable) -> Option<String> {
         smoothing: w.smoothing,
     })
     .ok()?;
-    Some(format!(
-        "{}|{}",
-        base64_encode(brush.as_bytes()),
-        base64_encode(feel.as_bytes())
-    ))
+    Some(storage::record([
+        base64_encode(brush.as_bytes()).as_str(),
+        base64_encode(feel.as_bytes()).as_str(),
+    ]))
 }
 
 /// Read a [`Wearable`] back off a line's remaining fields. The feel field is
@@ -602,37 +602,30 @@ pub(crate) fn decode_wearable<'a>(fields: &mut impl Iterator<Item = &'a str>) ->
 }
 
 fn persist(entries: &[PresetEntry]) {
-    let Some(store) = storage() else { return };
-    let text: Vec<String> = entries
-        .iter()
-        .filter(|e| !e.builtin)
-        .filter_map(|e| {
-            Some(format!(
-                "{}|{}",
-                base64_encode(e.name.as_bytes()),
-                encode_wearable(&e.brush)?
-            ))
-        })
-        .collect();
-    if store.set_item(KEY_PRESETS, &text.join("\n")).is_err() {
-        // Quota, most likely. The library still works for this session.
-        tracing::warn!("could not persist the brush presets (storage full or unavailable)");
-    }
+    storage::save_table(
+        KEY_PRESETS,
+        "the brush presets",
+        entries.iter().filter(|e| !e.builtin).filter_map(|e| {
+            Some(storage::record([
+                base64_encode(e.name.as_bytes()).as_str(),
+                encode_wearable(&e.brush)?.as_str(),
+            ]))
+        }),
+    );
 }
 
 /// What this browser has saved, or `None` where it has saved nothing (or
 /// storage is unavailable). Either way the app's own presets arrive separately,
 /// so there is no "never seeded" state left to tell apart from an empty one.
 fn read_storage() -> Option<Vec<PresetEntry>> {
-    let text = storage()?.get_item(KEY_PRESETS).ok()??;
-    Some(text.lines().filter_map(parse_entry).collect())
+    storage::load_table(KEY_PRESETS, parse_entry)
 }
 
 /// One stored line. Everything storage holds is the user's by definition — the
 /// app's own are never written — so provenance is settled here rather than
 /// carried in the line and trusted.
 fn parse_entry(line: &str) -> Option<PresetEntry> {
-    let mut fields = line.split('|');
+    let mut fields = line.split(storage::FIELD);
     let name = String::from_utf8(base64_decode(fields.next()?).ok()?).ok()?;
     let brush = decode_wearable(&mut fields)?;
     Some(PresetEntry {
@@ -641,10 +634,6 @@ fn parse_entry(line: &str) -> Option<PresetEntry> {
         slot: None,
         builtin: false,
     })
-}
-
-fn storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
 }
 
 #[cfg(test)]

@@ -25,6 +25,7 @@ use stark_core::document::BrushShape;
 
 use crate::platform::{base64_decode, base64_encode, normalize_shape_image};
 use crate::state::{AppState, update_brush};
+use crate::storage;
 
 /// One key, namespaced like `identity`'s; versioned so a future format change
 /// can migrate rather than mis-parse.
@@ -246,49 +247,38 @@ fn display_name(file_name: &str) -> String {
 
 // --- persistence ----------------------------------------------------------
 //
-// One storage key holding one line per entry: `b64(name)|hex(id)|b64(png)`.
-// Line-oriented and field-delimited so a single damaged entry is skipped
-// rather than poisoning the whole library; dependency-free like `identity`.
+// One `crate::storage` table, a line per entry: `b64(name)|hex(id)|b64(png)`.
+// The format and the skip-a-damaged-line rule live there; the id is hex rather
+// than base64 because it is read by eye in a storage inspector more often than
+// the two blobs beside it, and both encodings are dependency-free.
 
 fn persist(entries: &[ShapeEntry]) {
-    let Some(store) = storage() else { return };
-    let text: Vec<String> = entries
-        .iter()
-        .map(|e| {
-            format!(
-                "{}|{}|{}",
-                base64_encode(e.name.as_bytes()),
-                hex_encode(&e.id.0),
-                base64_encode(&e.png)
-            )
-        })
-        .collect();
-    if store.set_item(KEY_SHAPES, &text.join("\n")).is_err() {
-        // Quota, most likely. The library still works for this session.
-        tracing::warn!("could not persist the shape library (storage full or unavailable)");
-    }
+    storage::save_table(
+        KEY_SHAPES,
+        "the shape library",
+        entries.iter().map(|e| {
+            storage::record([
+                base64_encode(e.name.as_bytes()).as_str(),
+                hex_encode(&e.id.0).as_str(),
+                base64_encode(&e.png).as_str(),
+            ])
+        }),
+    );
 }
 
+/// What this browser has stored. An empty library and a browser that has stored
+/// nothing are the same thing here — unlike the preset rack, nothing is seeded —
+/// so the two answers are folded into one.
 fn read_storage() -> Vec<ShapeEntry> {
-    let Some(store) = storage() else {
-        return Vec::new();
-    };
-    let Ok(Some(text)) = store.get_item(KEY_SHAPES) else {
-        return Vec::new();
-    };
-    text.lines().filter_map(parse_entry).collect()
+    storage::load_table(KEY_SHAPES, parse_entry).unwrap_or_default()
 }
 
 fn parse_entry(line: &str) -> Option<ShapeEntry> {
-    let mut fields = line.split('|');
+    let mut fields = line.split(storage::FIELD);
     let name = String::from_utf8(base64_decode(fields.next()?).ok()?).ok()?;
     let id = AssetId(hex_decode(fields.next()?)?);
     let png = base64_decode(fields.next()?).ok()?;
     Some(ShapeEntry { name, png, id })
-}
-
-fn storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

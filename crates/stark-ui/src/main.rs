@@ -38,6 +38,7 @@ mod settings;
 mod shapes;
 mod slots;
 mod state;
+mod storage;
 mod thumbs;
 mod widgets;
 

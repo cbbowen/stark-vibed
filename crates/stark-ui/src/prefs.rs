@@ -158,27 +158,17 @@ pub fn load_engine(state: AppState) {
 /// Persist the app's current preferences. Called after every change made through
 /// the settings dialog, so no row has to remember to.
 pub fn save(state: AppState) {
-    let Some(store) = storage() else { return };
     let Ok(json) = serde_json::to_string(&Prefs::capture(state)) else {
         return;
     };
-    if store.set_item(KEY_PREFS, &json).is_err() {
-        // Quota or a storage-less browser. The settings still hold for this
-        // session; only their durability is lost.
-        tracing::warn!("could not persist the settings (storage full or unavailable)");
-    }
+    crate::storage::set(KEY_PREFS, "the settings", &json);
 }
 
 /// What this browser has stored, or the defaults — a browser that has never
 /// stored anything and one whose stored value is damaged are the same case, and
 /// both want the defaults rather than a half-applied read.
 fn stored() -> Prefs {
-    storage()
-        .and_then(|store| store.get_item(KEY_PREFS).ok().flatten())
+    crate::storage::get(KEY_PREFS)
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default()
-}
-
-fn storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
 }

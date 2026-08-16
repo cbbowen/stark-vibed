@@ -54,6 +54,7 @@ use crate::icons::{self, icon};
 use crate::layout::chrome_class;
 use crate::presets::{self, Wearable};
 use crate::state::AppState;
+use crate::storage;
 
 /// One key, namespaced like the shape and preset libraries'; versioned so a
 /// future format change can migrate rather than mis-parse.
@@ -473,31 +474,29 @@ pub fn seed_defaults(state: AppState) {
 
 // --- persistence ----------------------------------------------------------
 //
-// One storage key holding one line per **assigned** slot: `digit|b64(json)`.
-// Line-oriented and field-delimited like the shape and preset libraries, so one
-// damaged entry costs one slot rather than the rack; keyed by digit rather than
-// positional, so a rack with holes in it stores as the few lines it has and a
-// line whose digit is out of range is skipped instead of shifting its
-// neighbours. JSON for the reason the presets give: `localStorage` outlives app
-// versions, and a `BrushParams` field added later still reads every stored slot.
+// One `crate::storage` table, a line per **assigned** slot: `digit|b64(json)`.
+// The format and the skip-a-damaged-line rule live there, so what is this
+// module's own is that the record is keyed by digit rather than positional: a
+// rack with holes stores as the few lines it has, and a line whose digit is out
+// of range is skipped instead of shifting its neighbours. JSON for the reason
+// the presets give: `localStorage` outlives app versions, and a `BrushParams`
+// field added later still reads every stored slot.
 // The brush fields themselves are the preset library's own wire shape
 // (`presets::encode_wearable`), so the two libraries cannot come to disagree
 // about what a stored brush is — including the trailing feel field (§6.11),
 // optional there and optional here.
 
 fn persist(rack: &Rack) {
-    let Some(store) = storage() else { return };
-    let text: Vec<String> = rack
-        .iter()
-        .enumerate()
-        .filter_map(|(slot, brush)| {
-            Some(format!("{slot}|{}", presets::encode_wearable(&(*brush)?)?))
-        })
-        .collect();
-    if store.set_item(KEY_SLOTS, &text.join("\n")).is_err() {
-        // Quota, most likely. The rack still works for this session.
-        tracing::warn!("could not persist the quick brushes (storage full or unavailable)");
-    }
+    storage::save_table(
+        KEY_SLOTS,
+        "the quick brushes",
+        rack.iter().enumerate().filter_map(|(slot, brush)| {
+            Some(storage::record([
+                slot.to_string().as_str(),
+                presets::encode_wearable(&(*brush)?)?.as_str(),
+            ]))
+        }),
+    );
 }
 
 /// `None` when this browser has never set a slot (or storage is unavailable) —
@@ -505,25 +504,20 @@ fn persist(rack: &Rack) {
 /// slot is overwritten, never cleared), so unlike the preset library there is no
 /// emptied-versus-absent case to tell apart.
 fn read_storage() -> Option<Rack> {
-    let text = storage()?.get_item(KEY_SLOTS).ok()??;
     let mut rack: Rack = [None; COUNT];
-    for (slot, brush) in text.lines().filter_map(parse_entry) {
+    for (slot, brush) in storage::load_table(KEY_SLOTS, parse_entry)? {
         rack[slot] = Some(brush);
     }
     Some(rack)
 }
 
 fn parse_entry(line: &str) -> Option<(usize, Wearable)> {
-    let mut fields = line.split('|');
+    let mut fields = line.split(storage::FIELD);
     let slot: usize = fields.next()?.parse().ok()?;
     if slot >= COUNT {
         return None;
     }
     Some((slot, presets::decode_wearable(&mut fields)?))
-}
-
-fn storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
 }
 
 #[cfg(test)]

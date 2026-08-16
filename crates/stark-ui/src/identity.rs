@@ -30,6 +30,7 @@
 //! degrades to the previous behaviour of a new identity per run, which costs the two
 //! properties above and breaks nothing.
 
+use crate::storage;
 use stark_net::SecretKey;
 
 /// Storage keys. Namespaced because `localStorage` is shared per origin.
@@ -57,40 +58,31 @@ pub fn get() -> ClientIdentity {
 }
 
 fn resolve() -> ClientIdentity {
-    let Some(store) = storage() else {
-        // No storage to be durable in, so a fresh key per run — safe precisely
-        // because the id is new: nothing can be stale against it.
-        return ClientIdentity {
-            secret: SecretKey::generate(),
-            boot: 0,
-        };
-    };
-    let secret = store
-        .get_item(KEY_SECRET)
-        .ok()
-        .flatten()
+    // A browser with no storage reads as one that has stored nothing, so this
+    // mints a fresh key per run — safe precisely because the id is new: nothing
+    // can be stale against it. The writes below then warn and carry on, and the
+    // whole arrangement degrades to what it was before any of this was persisted
+    // (`crate::storage`).
+    let secret = storage::get(KEY_SECRET)
         .as_deref()
         .and_then(decode_secret)
         .unwrap_or_else(|| {
             let fresh = SecretKey::generate();
-            let _ = store.set_item(KEY_SECRET, &encode_secret(&fresh));
+            storage::set(
+                KEY_SECRET,
+                "this browser's identity",
+                &encode_secret(&fresh),
+            );
             fresh
         });
     // Count this run. Wrapping is unreachable in practice and harmless if reached:
     // a peer that saw the old value drops us for `PEER_TIMEOUT` and re-adds us.
-    let boot = store
-        .get_item(KEY_BOOT)
-        .ok()
-        .flatten()
+    let boot = storage::get(KEY_BOOT)
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(0)
         .wrapping_add(1);
-    let _ = store.set_item(KEY_BOOT, &boot.to_string());
+    storage::set(KEY_BOOT, "this browser's identity", &boot.to_string());
     ClientIdentity { secret, boot }
-}
-
-fn storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
 }
 
 fn encode_secret(secret: &SecretKey) -> String {

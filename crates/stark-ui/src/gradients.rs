@@ -31,6 +31,7 @@ use stark_core::{PickOptions, PickSource};
 
 use crate::platform::{base64_decode, base64_encode};
 use crate::state::AppState;
+use crate::storage;
 
 /// One key, namespaced and versioned like the preset library's.
 const KEY_GRADIENTS: &str = "stark.gradients.v1";
@@ -242,46 +243,37 @@ pub fn css_strip(g: &Gradient) -> String {
 
 // --- persistence ----------------------------------------------------------
 //
-// One storage key holding one line per entry: `b64(name)|b64(json(stops))`.
-// Line-oriented and field-delimited like the preset and shape libraries, so a
-// single damaged entry is skipped rather than poisoning the whole library; the
-// stops are JSON rather than postcard because localStorage outlives app
-// versions, and deserialization funnels through `Gradient`'s own gate, so a
-// tampered line becomes a skipped line rather than an unsampleable ramp.
+// One `crate::storage` table, a line per entry: `b64(name)|b64(json(stops))`.
+// The format and the rule it exists for — one damaged entry is skipped rather
+// than poisoning the library — are stated there, once, for all four libraries.
+// What is this module's own is the *fields*: the stops are JSON rather than
+// postcard because `localStorage` outlives app versions, and deserialization
+// funnels through `Gradient`'s own gate, so a tampered line becomes a skipped
+// line rather than an unsampleable ramp.
 
 fn persist(entries: &[GradientEntry]) {
-    let Some(store) = storage() else { return };
-    let text: Vec<String> = entries
-        .iter()
-        .filter_map(|e| {
+    storage::save_table(
+        KEY_GRADIENTS,
+        "the gradient library",
+        entries.iter().filter_map(|e| {
             let json = serde_json::to_string(&e.gradient).ok()?;
-            Some(format!(
-                "{}|{}",
-                base64_encode(e.name.as_bytes()),
-                base64_encode(json.as_bytes())
-            ))
-        })
-        .collect();
-    if store.set_item(KEY_GRADIENTS, &text.join("\n")).is_err() {
-        // Quota, most likely. The library still works for this session.
-        tracing::warn!("could not persist the gradient library (storage full or unavailable)");
-    }
+            Some(storage::record([
+                base64_encode(e.name.as_bytes()).as_str(),
+                base64_encode(json.as_bytes()).as_str(),
+            ]))
+        }),
+    );
 }
 
 fn read_storage() -> Option<Vec<GradientEntry>> {
-    let text = storage()?.get_item(KEY_GRADIENTS).ok()??;
-    Some(text.lines().filter_map(parse_entry).collect())
+    storage::load_table(KEY_GRADIENTS, parse_entry)
 }
 
 fn parse_entry(line: &str) -> Option<GradientEntry> {
-    let mut fields = line.split('|');
+    let mut fields = line.split(storage::FIELD);
     let name = String::from_utf8(base64_decode(fields.next()?).ok()?).ok()?;
     let gradient = serde_json::from_slice(&base64_decode(fields.next()?).ok()?).ok()?;
     Some(GradientEntry { name, gradient })
-}
-
-fn storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
 }
 
 /// Arc length of a traced polyline, for the "was that a trace or a click"
