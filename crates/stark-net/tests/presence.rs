@@ -97,7 +97,6 @@ async fn presence_never_enters_the_snapshot() {
         },
         kind: ActionKind::SetLayerVisible(LayerId(0), true),
     })
-    .await
     .expect("broadcast action");
     for seq in 6..=10 {
         tx.publish(frame(seq, "Ada")).await.expect("publish");

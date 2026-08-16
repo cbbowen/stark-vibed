@@ -440,12 +440,15 @@ impl CollabSession {
             // cadence regardless, since most losses announce themselves to nobody.
             prompt: Prompt::default(),
         };
+        let (outgoing, queue) = mpsc::unbounded_channel();
+        task::spawn(send_loop(sender.clone(), queue));
         task::spawn(Reconciler::new(wiring.clone()).run());
         task::spawn(recv_loop(wiring, receiver, presence.clone(), tx));
         let session = Self {
             broadcaster: Broadcaster {
                 local_id,
                 sender,
+                outgoing,
                 dialer,
                 neighbors,
                 waitlist,
@@ -480,8 +483,14 @@ impl CollabSession {
 
     /// Broadcast one locally-committed action (from
     /// [`Engine::take_outbox`](stark_core::Engine::take_outbox)) to the swarm.
-    pub async fn broadcast(&self, action: Action) -> Result<()> {
-        self.broadcaster.broadcast(action).await
+    ///
+    /// Returns once the action is mirrored and queued; the session's one send task
+    /// puts it on the wire. That task is what makes the wire order the order things
+    /// were committed in — a caller spawning a send per dispatch raced two of them
+    /// onto the same sender, and every inversion cost a timeline resync on every
+    /// receiver.
+    pub fn broadcast(&self, action: Action) -> Result<()> {
+        self.broadcaster.broadcast(action)
     }
 
     /// Register content so joiners can be served and peers can fetch it — a brush
@@ -520,7 +529,12 @@ impl CollabSession {
 #[derive(Clone)]
 pub struct Broadcaster {
     local_id: EndpointId,
+    /// Presence goes straight out: it is best-effort by design and on its own
+    /// cadence, so it must not queue behind a long stroke.
     sender: GossipSender,
+    /// Committed actions go through one queue drained by one task, which is what
+    /// makes their wire order the order they were committed in.
+    outgoing: mpsc::UnboundedSender<Bytes>,
     dialer: Dialer,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
     waitlist: Arc<Waitlist>,
@@ -528,14 +542,18 @@ pub struct Broadcaster {
 
 impl Broadcaster {
     /// See [`CollabSession::broadcast`].
-    pub async fn broadcast(&self, action: Action) -> Result<()> {
+    pub fn broadcast(&self, action: Action) -> Result<()> {
         let need = stark_core::action_content(&action);
         let bytes = self.encode(WireRef::Action(&action), need)?;
-        // Mirrored after encoding and before sending, which is what lets the action
-        // be moved rather than duplicated — and mirrored whether or not the send
-        // works, since a joiner this peer serves later needs it either way.
+        // Mirrored after encoding and before queueing, which is what lets the action
+        // be moved rather than duplicated — and mirrored whether or not it ever goes
+        // out, since that is what lets `reconcile` hand it to a peer that missed it.
         self.waitlist.published(action);
-        Ok(self.sender.broadcast(bytes).await?)
+        // Queued, not sent. The caller returns immediately and the session's one
+        // send task puts it on the wire; a closed queue means the session is over,
+        // which is not this caller's problem.
+        let _ = self.outgoing.send(bytes);
+        Ok(())
     }
 
     /// Publish this client's presence (§17.4).
@@ -656,6 +674,21 @@ async fn closing_on_error<T>(
         Err(e) => {
             shutdown.run().await;
             Err(e)
+        }
+    }
+}
+
+/// The session's one send task: committed actions reach the wire in the order they
+/// were queued, which is the order they were committed in.
+///
+/// A failed send is not retried here. The action is already in this peer's mirror,
+/// so the next member to sweep collects it ([`reconcile`](crate::reconcile)) — and
+/// retrying in place would hold every action behind it up for a peer that is about
+/// to ask for it anyway.
+async fn send_loop(sender: GossipSender, mut queue: mpsc::UnboundedReceiver<Bytes>) {
+    while let Some(bytes) = queue.recv().await {
+        if let Err(e) = sender.broadcast(bytes).await {
+            tracing::warn!("broadcast failed: {e}; a peer's sweep will recover it");
         }
     }
 }

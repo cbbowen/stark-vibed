@@ -287,13 +287,15 @@ pub fn flush_outbox(state: AppState) {
     else {
         return;
     };
-    spawn_forever(async move {
-        for action in actions {
-            if let Err(e) = tx.broadcast(action).await {
-                tracing::warn!("broadcast failed: {e}");
-            }
+    // Inline, not spawned. Broadcasting queues; the session's one send task puts
+    // things on the wire. A task per dispatch used to mean two dispatches in the
+    // same frame raced onto the same sender, and every inversion bought a timeline
+    // resync on every receiver.
+    for action in actions {
+        if let Err(e) = tx.broadcast(action) {
+            tracing::warn!("broadcast failed: {e}");
         }
-    });
+    }
 }
 
 /// Store the live session and start the incoming pump.

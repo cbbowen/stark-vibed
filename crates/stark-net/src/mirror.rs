@@ -144,6 +144,7 @@ impl Snapshot {
         if have.is_empty() {
             return self;
         }
+        let have: std::collections::HashSet<&AssetId> = have.iter().collect();
         let omit = |id: &AssetId| have.contains(id);
         let before = self.assets.len() + self.surfaces.len();
         self.assets.retain(|(id, _)| !omit(id));

@@ -12,10 +12,11 @@
 //! channel is bootstrapped (see [`transport::direct`](crate::transport::direct))
 //! — which is what gives the *web* direct connections.
 
+use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iroh::endpoint::{Connection, presets};
@@ -92,6 +93,7 @@ pub(crate) async fn bind(served: Served, opts: &NetOptions) -> Result<Bound> {
         dialer: Dialer {
             endpoint: endpoint.clone(),
             blobs,
+            blob_conns: Arc::default(),
             #[cfg(feature = "webrtc")]
             webrtc,
         },
@@ -104,6 +106,16 @@ pub(crate) async fn bind(served: Served, opts: &NetOptions) -> Result<Bound> {
 pub(crate) struct Dialer {
     endpoint: Endpoint,
     blobs: iroh_blobs::api::Store,
+    /// Live blob connections, by provider.
+    ///
+    /// A resolver's retry loop asks the same provider on every round, and a
+    /// ground's rounds are unbounded — so without this, one 20 KB PNG could cost a
+    /// QUIC handshake per round, forever. The retry exists for the case where the
+    /// provider is slow, which is exactly when handshaking again costs most.
+    ///
+    /// A connection that errors is dropped rather than kept: the next round should
+    /// re-establish it, not keep asking down a path that has already failed.
+    blob_conns: Arc<Mutex<HashMap<EndpointId, Connection>>>,
     #[cfg(feature = "webrtc")]
     webrtc: Arc<iroh_webrtc_transport::WebRtcTransport>,
 }
@@ -217,6 +229,31 @@ impl ContentSource for Dialer {
     /// Fetched into the local store as well as returned, so this peer can serve
     /// the content onward.
     async fn fetch_blob(&self, provider: EndpointId, hash: Hash) -> Result<bytes::Bytes> {
+        let conn = self.blob_conn(provider).await?;
+        if let Err(e) = self.blobs.remote().fetch(conn, hash).await {
+            self.blob_conns
+                .lock()
+                .expect("blob connections poisoned")
+                .remove(&provider);
+            return Err(e.into());
+        }
+        Ok(self.blobs.get_bytes(hash).await?)
+    }
+}
+
+impl Dialer {
+    /// The blob connection to `provider`, reused if one is still open.
+    async fn blob_conn(&self, provider: EndpointId) -> Result<Connection> {
+        let cached = self
+            .blob_conns
+            .lock()
+            .expect("blob connections poisoned")
+            .get(&provider)
+            .filter(|conn| conn.close_reason().is_none())
+            .cloned();
+        if let Some(conn) = cached {
+            return Ok(conn);
+        }
         let conn = self
             .endpoint
             .connect(
@@ -224,8 +261,11 @@ impl ContentSource for Dialer {
                 iroh_blobs::ALPN,
             )
             .await?;
-        self.blobs.remote().fetch(conn, hash).await?;
-        Ok(self.blobs.get_bytes(hash).await?)
+        self.blob_conns
+            .lock()
+            .expect("blob connections poisoned")
+            .insert(provider, conn.clone());
+        Ok(conn)
     }
 }
 

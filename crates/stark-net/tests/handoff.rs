@@ -53,7 +53,7 @@ async fn a_newcomer_can_join_through_any_member_after_the_founder_leaves() {
             .await
             .expect("host session");
     let marker = action(host.actor_id(), 1);
-    host.broadcast(marker.clone()).await.expect("broadcast");
+    host.broadcast(marker.clone()).expect("broadcast");
 
     // A second peer joins the founder, the normal way.
     let Joined {
@@ -88,7 +88,7 @@ async fn a_newcomer_can_join_through_any_member_after_the_founder_leaves() {
 
     // And the newcomer is a full participant, not just a reader.
     let fresh = action(newcomer.actor_id(), 2);
-    newcomer.broadcast(fresh.clone()).await.expect("broadcast");
+    newcomer.broadcast(fresh.clone()).expect("broadcast");
     assert_eq!(next_action(&mut peer_events).await.id, fresh.id);
 
     newcomer.shutdown().await;

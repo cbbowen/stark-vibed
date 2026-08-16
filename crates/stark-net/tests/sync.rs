@@ -106,7 +106,7 @@ fn drain_events(events: &mut Events, engine: &mut Engine) -> usize {
 /// Broadcast everything the engine committed since the last pump.
 async fn flush_outbox(engine: &mut Engine, session: &CollabSession) {
     for action in engine.take_outbox() {
-        session.broadcast(action).await.expect("broadcast");
+        session.broadcast(action).expect("broadcast");
     }
 }
 
