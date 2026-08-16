@@ -45,6 +45,7 @@ use crate::document::{
 };
 use crate::error::EngineError;
 use crate::geom::{Extent2, ViewTransform};
+use crate::gpu::MediaParams;
 use crate::gpu::desc::Zeroes;
 use crate::gpu::{
     BlendPass, Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer,
@@ -344,26 +345,94 @@ pub struct ObservableState {
     pub gpu_failure: Option<Arc<crate::gpu::DeviceFailure>>,
 }
 
-pub struct Engine {
+/// The expensive half of an engine: everything a second engine on the same device
+/// reuses rather than rebuilding (§11).
+///
+/// **What "shared" means here is exactly what [`Registry`] means by it** — *the store
+/// is shared; the choice is not*. The maps of registered bytes, the decoded grounds
+/// and environments, the tile pool, the compiled pipelines and the content-addressed
+/// brush assets all sit behind `Arc`s and are genuinely one copy. The *choices* that
+/// ride along — which ground is in use, which environment, the media parameters —
+/// are per-engine values that a clone merely **seeds** from the donor, so a sibling
+/// opens mirroring the canvas it came from and is free to move from there. That
+/// seeding is deliberate and is what lets the brush editor's preview open on the
+/// document's own ground with nothing re-fetched (`CompositorPipeline::sharing`).
+///
+/// **Why it is a type rather than a constructor's argument list.** `Engine::new_sharing`
+/// used to assemble this field by field, and that had already gone wrong once in the
+/// way such lists do: a renderer added to [`ApplyCtx`] was shared by every engine
+/// except the one that constructor built, and nothing said so until a preview canvas
+/// used it. `ApplyCtx` fixed that one level down by being cloned whole; this is the
+/// same move one level up. A thing added here is shared by construction, on every
+/// path — the new engine, the sibling, and the color-space rebuild.
+///
+/// It is also what a consumer can *hold*. A preset thumbnail wants the device and the
+/// pipelines and nothing else; before this it had to borrow the whole live
+/// [`Renderer`]-equivalent to reach them, which meant it could not exist without one
+/// and had to be built lazily inside the loop that used it. This clones for a handful
+/// of refcount bumps and outlives whoever it came from.
+///
+/// [`Renderer`]: crate::Engine
+#[derive(Clone)]
+pub struct EngineShared {
     gpu: GpuContext,
+    /// The format every pipeline in `passes` was compiled against. A sibling must
+    /// present to the same one — a second surface that chose differently would fail
+    /// validation rather than merely look wrong.
     target_format: wgpu::TextureFormat,
+    /// The document's color space (§6.7). Shared because the pipelines below were
+    /// built for it: a sibling in a *different* space is not a sibling at all, it is
+    /// a rebuild (`rebuild_gpu_for`), which replaces this whole value.
     color_space: Arc<dyn ColorSpace>,
-    /// The GPU subsystems an action needs in order to apply itself — the tile
-    /// pool, the stroke renderer, the asset store and the selection rasterizer —
-    /// held as the `history::Action::Context` (§5).
+    /// The GPU subsystems an action needs in order to apply itself — the tile pool,
+    /// the stroke renderer, the asset store, the selection rasterizer, and the canvas
+    /// grounds — held as the `history::Action::Context` (§5).
     ///
-    /// Stored rather than built per call. `history`'s `Context` is an owned
-    /// associated type, so there is nothing to hand it a borrow of — and building it
-    /// per call means cloning all four on *every* commit, undo, redo and remote merge:
-    /// tens of `Arc` bumps plus a `HashMap` allocation each time, for a value that only
-    /// changes when the color space is rebuilt.
+    /// Stored rather than built per call. `history`'s `Context` is an owned associated
+    /// type, so there is nothing to hand it a borrow of — and building it per call
+    /// means cloning all of it on *every* commit, undo, redo and remote merge: tens of
+    /// `Arc` bumps plus a `HashMap` allocation each time, for a value that only changes
+    /// when the color space is rebuilt.
     ///
-    /// They live only here: the engine reaches them through `self.apply` too, so
-    /// there is one copy rather than the engine's plus the context's.
-    /// `selection` is color-space independent (a mask is one coverage channel
-    /// whatever the paint is), so unlike the pool and the stroke renderer it
-    /// survives a rebuild.
+    /// `selection` is color-space independent (a mask is one coverage channel whatever
+    /// the paint is), so unlike the pool and the stroke renderer it survives a rebuild.
     apply: ApplyCtx,
+    /// The compiled compositing passes — the ~19 shaders and ~30 pipelines that make
+    /// building an engine expensive. A sibling's [`CompositorPipeline`] is built over
+    /// these ([`CompositorPipeline::sharing`]), so it pays for its own three view
+    /// settings and nothing else.
+    passes: Arc<crate::gpu::composite::CompositorPasses>,
+    /// The HDR lighting environment and its registered bytes (§6.3). A view setting,
+    /// so it is the *store* that is shared and the current id that is seeded.
+    environment: Registry<EnvironmentId>,
+    /// The media/lighting parameters a sibling opens with (§6.3) — a seed, not a
+    /// shared value; see the note on the type.
+    media: MediaParams,
+}
+
+impl EngineShared {
+    /// The device these engines draw with.
+    pub fn gpu(&self) -> &GpuContext {
+        &self.gpu
+    }
+
+    /// The texture format every pipeline here was compiled against. A surface a
+    /// sibling presents to has to be configured for it.
+    pub fn target_format(&self) -> wgpu::TextureFormat {
+        self.target_format
+    }
+
+    /// The color space these pipelines were built for (§6.7).
+    pub fn color_space(&self) -> ColorSpaceId {
+        self.color_space.id()
+    }
+}
+
+pub struct Engine {
+    /// Everything a sibling engine reuses (§11). Held as one value so that a thing
+    /// added to it is shared on every path rather than on the paths somebody
+    /// remembered — see [`EngineShared`].
+    shared: EngineShared,
     /// Compositing state for the **surface**: the attachments a screen frame is
     /// built through, kept from frame to frame (`gpu::composite`). Anything drawn
     /// beside the screen — an export, the navigator's miniature — gets a
@@ -380,10 +449,6 @@ pub struct Engine {
     /// describes the empty document that the log is replayed onto, and is not
     /// itself a logged change.
     initial_surface: SurfaceId,
-    /// The HDR lighting environment (image-based lighting) and its registered
-    /// bytes. A *view* setting — not historized, color-space-independent — so it
-    /// survives rebuilds and switching it never touches the document (§6.3).
-    environment: Registry<EnvironmentId>,
     timeline: Box<dyn Timeline>,
     session: crate::session::Session,
     /// Everyone else in the session (§17.4). Empty when solo.
@@ -531,19 +596,23 @@ impl Engine {
         let surfaces = Registry::<SurfaceId>::new(&gpu, SurfaceId::default());
         // Lighting starts on the procedural neutral environment; image HDRs are
         // registered later by the frontend (§6.3).
-        let environment = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
+        let environments = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
         let surface = surfaces.current();
+        // Read out before the registry moves into the keep — the live object, not the
+        // registry, is what the media pass binds.
+        let environment = environments.current();
         let built = build_gpu(GpuBuild {
             keep: GpuKeep {
                 assets: AssetStore::new(gpu.clone()),
                 selection: SelectionRenderer::new(&gpu),
                 gpu: gpu.clone(),
                 surfaces,
+                environments,
             },
             target_format,
             cs: &color_space,
             surface: &surface,
-            environment: &environment.current(),
+            environment: &environment,
         });
 
         let initial = DocState::with_layer(ROOT_LAYER);
@@ -552,14 +621,10 @@ impl Engine {
         let session = crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER);
 
         let mut engine = Self {
-            gpu,
-            target_format,
-            color_space,
-            apply: built.apply,
+            shared: built.shared,
             compositor: built.compositor,
             compositor_pipeline: built.compositor_pipeline,
             initial_surface,
-            environment,
             timeline,
             session,
             peers: Peers::new(),
@@ -607,33 +672,44 @@ impl Engine {
     /// space rebuilds it an unshared set (`rebuild_gpu_for`), and the donor doing
     /// the same simply stops feeding the shared caches this engine keeps using.
     pub fn new_sharing(donor: &Engine, viewport: Extent2) -> Self {
-        let gpu = donor.gpu.clone();
-        let initial_surface = donor.document().surface;
+        Self::on_shared(donor.shared(), viewport)
+    }
+
+    /// Build an engine on an already-built [`EngineShared`] — the general form of
+    /// [`new_sharing`](Self::new_sharing), for a caller that holds the shared half
+    /// without holding an engine.
+    ///
+    /// That is the difference worth having. A preset thumbnail wants the device and
+    /// the pipelines; asking it to produce a *donor engine* meant borrowing whichever
+    /// live one happened to exist — with its surface, its document and its in-flight
+    /// gesture — for the length of the call, so the thumbnail rig could not be built
+    /// until one did and had to be created lazily inside the loop that used it. An
+    /// `EngineShared` clones for a handful of refcount bumps and outlives whoever it
+    /// came from.
+    ///
+    /// The document opens on `shared`'s current ground, so a preview needs no
+    /// `SetSurface` step — and no ground bytes handed across, which is the point.
+    pub fn on_shared(shared: EngineShared, viewport: Extent2) -> Self {
+        let initial_surface = shared.apply.surfaces.id();
         let timeline: Box<dyn Timeline> = Box::new(LinearTimeline::new(
             DocState::with_layer(ROOT_LAYER).with_surface(initial_surface),
         ));
         let session = crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER);
+        // Its own three view settings over the shared passes — the whole of what a
+        // sibling's compositor costs ([`CompositorPipeline::sharing`]), seeded from
+        // `shared` so it opens mirroring the canvas it came from.
         let compositor_pipeline = CompositorPipeline::sharing(
-            donor.compositor_pipeline.passes(),
-            donor.apply.surfaces.current(),
-            donor.environment.current(),
-            donor.compositor_pipeline.media(),
+            shared.passes.clone(),
+            shared.apply.surfaces.current(),
+            shared.environment.current(),
+            shared.media,
         );
         let compositor = Compositor::new(&compositor_pipeline);
         let mut engine = Self {
-            target_format: donor.target_format,
-            color_space: donor.color_space.clone(),
-            // The context **whole**, which is what "shares everything expensive and
-            // immutable" means and is now what it says: cloned field-by-field, a
-            // renderer added to `ApplyCtx` was shared by every engine except the one
-            // this constructor built, and nothing about that would show up until a
-            // preview canvas used it.
-            apply: donor.apply.clone(),
-            gpu,
+            shared,
             compositor,
             compositor_pipeline,
             initial_surface,
-            environment: donor.environment.clone(),
             timeline,
             session,
             peers: Peers::new(),
@@ -646,10 +722,27 @@ impl Engine {
             authoring: Authoring::solo(),
         };
         // Park the sibling registry on the document's ground — a no-op here, since
-        // both were just seeded from the donor's current one, but stated so this
-        // constructor upholds the invariant the same way `new_with_color_space` does.
+        // both were just seeded from the same place, but stated so this constructor
+        // upholds the invariant the same way `new_with_color_space` does.
         engine.apply_document_surface();
         engine
+    }
+
+    /// The expensive half of this engine, for building another on the same device
+    /// (§11) — see [`EngineShared`].
+    ///
+    /// The three view settings ride along as the look a sibling **opens** on, read
+    /// live rather than from when this engine was built, so a preview of the canvas
+    /// mirrors the canvas as it stands.
+    pub fn shared(&self) -> EngineShared {
+        debug_assert!(
+            Arc::ptr_eq(&self.shared.passes, &self.compositor_pipeline.passes()),
+            "the shared passes and this engine's pipeline have come apart",
+        );
+        EngineShared {
+            media: self.compositor_pipeline.media(),
+            ..self.shared.clone()
+        }
     }
 
     /// Apply one input command (§4).
@@ -780,7 +873,7 @@ impl Engine {
             }
             DocCommand::Seek(to) => {
                 self.preview.set_doc(None);
-                if self.timeline.seek(to, &mut self.apply) {
+                if self.timeline.seek(to, &mut self.shared.apply) {
                     // A scrub crosses layer additions wholesale — dragging to the
                     // start of the log withdraws every one of them — so the selected
                     // layer routinely stops existing here. `committed_changed`
@@ -1284,11 +1377,11 @@ impl Engine {
             history_budget: self.history_budget,
             guides: self.session.guides.clone(),
             media: self.compositor_pipeline.media(),
-            environment: self.environment.id(),
-            color_space: self.color_space.id(),
+            environment: self.shared.environment.id(),
+            color_space: self.shared.color_space.id(),
             surface: doc.surface,
             background: shown.background,
-            gpu_failure: self.gpu.health().failure().map(Arc::new),
+            gpu_failure: self.shared.gpu.health().failure().map(Arc::new),
         }
     }
 
@@ -1300,7 +1393,7 @@ impl Engine {
     /// without taking an observation each time (§17.5), and a device that has died is
     /// exactly the thing that should stop it applying anything further.
     pub fn gpu_failure(&self) -> Option<crate::gpu::DeviceFailure> {
-        self.gpu.health().failure()
+        self.shared.gpu.health().failure()
     }
 
     /// The current committed document state.
@@ -1329,7 +1422,7 @@ impl Engine {
 
     /// The GPU context this engine renders with (for surface/readback setup).
     pub fn gpu(&self) -> &GpuContext {
-        &self.gpu
+        self.shared.gpu()
     }
 
     /// The current pan/zoom view (for mapping pointer input to canvas space).
@@ -1345,7 +1438,7 @@ impl Engine {
     /// Import a brush-shape image (PNG bytes), returning its content id for use
     /// in `BrushParams::shape = BrushShape::Stamp(id)` (§6.6).
     pub fn import_brush(&self, png_bytes: &[u8]) -> Result<AssetId> {
-        self.apply.assets.import(png_bytes)
+        self.shared.apply.assets.import(png_bytes)
     }
 
     /// Note that the **committed** document has been replaced: every cached
@@ -1394,7 +1487,7 @@ impl Engine {
         if let Some(target) = as_action(self.timeline.as_ref()) {
             self.commit(ActionKind::Undo(target));
         } else {
-            step(self.timeline.as_mut(), &mut self.apply);
+            step(self.timeline.as_mut(), &mut self.shared.apply);
             self.committed_changed();
         }
         // A step across a `SetSurface` moves the document's ground (§6.4).
@@ -1421,7 +1514,7 @@ impl Engine {
         // in the log — and a solo session was duplicating one per commit to drop it
         // an instruction later.
         let broadcast = self.is_shared().then(|| action.clone());
-        let ctx = &mut self.apply;
+        let ctx = &mut self.shared.apply;
         self.timeline.push(action, ctx);
         // The committed document is what every in-flight preview is drawn over, so
         // every cached head built against the old one is now stale.
@@ -1458,7 +1551,7 @@ impl Engine {
     /// whole log (§12.2), so nothing there is foldable. Nothing about this call site
     /// has to know that.
     fn trim_history(&mut self) {
-        if self.apply.pool.resident_bytes() <= self.history_budget {
+        if self.shared.apply.pool.resident_bytes() <= self.history_budget {
             return;
         }
         // How far back undo can currently travel. `None` is a timeline whose history
@@ -1475,7 +1568,7 @@ impl Engine {
             tracing::debug!(
                 forgotten,
                 remaining = applied - forgotten,
-                resident_mb = self.apply.pool.resident_bytes() / (1 << 20),
+                resident_mb = self.shared.apply.pool.resident_bytes() / (1 << 20),
                 "gave up undo depth to release retained tiles",
             );
         }
@@ -1553,7 +1646,7 @@ impl Engine {
 
     /// The document's color space id (§6.7).
     pub fn color_space(&self) -> ColorSpaceId {
-        self.color_space.id()
+        self.shared.color_space.id()
     }
 
     fn next_action_id(&mut self) -> ActionId {
@@ -1602,18 +1695,27 @@ struct GpuKeep {
     /// The canvas grounds and their registered bytes: a height map, likewise
     /// nothing to do with how color is represented (§6.4).
     surfaces: Registry<SurfaceId>,
+    /// The lighting environments and their registered bytes — a *view* setting, and
+    /// color-space independent, so a rebuild carries it rather than re-decoding the
+    /// HDR and its whole mip chain (§6.3).
+    environments: Registry<EnvironmentId>,
 }
 
 /// Everything a build hands back, in the shape the engine stores it.
 ///
-/// The whole [`ApplyCtx`] rather than the renderers loose, which is the point: a
-/// rebuild is then `self.apply = built.apply` and a renderer added to the context
+/// The whole [`EngineShared`] rather than its parts loose, which is the point: a
+/// rebuild is then `self.shared = built.shared` and anything added to the shared half
 /// is rebuilt by construction. Assigned field-by-field, `TransformRenderer` and
-/// `FillRenderer` and `MergeRenderer` each had to be remembered in three places —
-/// the tuple, the constructor and the rebuild — and the rebuild is the one whose
-/// omission shows up only in a document that changed color space.
+/// `FillRenderer` and `MergeRenderer` each had to be remembered in three places — the
+/// tuple, the constructor and the rebuild — and the rebuild is the one whose omission
+/// shows up only in a document that changed color space.
+///
+/// The two compositor values come back beside it rather than inside it because they
+/// are **per-engine**: the attachments are this target's, and the pipeline carries
+/// this engine's three view settings. What `shared` keeps of them is the compiled
+/// `passes`, read off the pipeline built here so the two cannot come apart.
 struct GpuBuilt {
-    apply: ApplyCtx,
+    shared: EngineShared,
     compositor_pipeline: CompositorPipeline,
     compositor: Compositor,
 }
@@ -1626,6 +1728,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
                 assets,
                 selection,
                 surfaces,
+                environments,
             },
         target_format,
         cs,
@@ -1666,7 +1769,17 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
     let transform = TransformRenderer::new(&gpu, cs.as_ref(), selection.clone(), zeroes.clone());
     let fill = FillRenderer::new(&gpu, cs.clone(), selection.clone(), zeroes.clone());
     let merge = MergeRenderer::new(&gpu, cs.as_ref(), zeroes, blend, filter);
-    GpuBuilt {
+    // `passes` and `media` are read off the pipeline that was just built, never
+    // assembled beside it: they are the two things `EngineShared` keeps *of* the
+    // compositor, and a second source for either is how a rebuild leaves a sibling
+    // holding pipelines that no longer exist.
+    let shared = EngineShared {
+        passes: compositor_pipeline.passes(),
+        media: compositor_pipeline.media(),
+        gpu: gpu.clone(),
+        target_format,
+        color_space: cs.clone(),
+        environment: environments,
         apply: ApplyCtx {
             pool,
             stroke,
@@ -1678,6 +1791,9 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
             gpu,
             surfaces,
         },
+    };
+    GpuBuilt {
+        shared,
         compositor_pipeline,
         compositor,
     }

@@ -76,7 +76,7 @@ impl Engine {
         // default — same base state `reset_document` builds, so re-hosting a document
         // that was created on a non-default canvas doesn't silently move it.
         let initial = DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface);
-        let ctx = &mut self.apply;
+        let ctx = &mut self.shared.apply;
         self.timeline = Box::new(ReplicatedTimeline::from_log(actor, initial, log, ctx));
         self.authoring.actor = actor;
         self.session.adopt_identity(identity);
@@ -100,7 +100,7 @@ impl Engine {
         // joiner replays the whole painting, so this is where getting it wrong costs
         // the most.
         self.adopt(file);
-        let ctx = &mut self.apply;
+        let ctx = &mut self.shared.apply;
         let initial = DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface);
         self.timeline = Box::new(ReplicatedTimeline::from_log(
             actor,
@@ -141,7 +141,7 @@ impl Engine {
     pub fn merge_remote(&mut self, action: Action) -> bool {
         self.authoring.clock = self.authoring.clock.max(action.id.lamport + 1);
         let author = action.id.actor;
-        let ctx = &mut self.apply;
+        let ctx = &mut self.shared.apply;
         let merged = self.timeline.merge(action, ctx);
         if merged {
             // Replaces the document every frozen head was composited onto — and

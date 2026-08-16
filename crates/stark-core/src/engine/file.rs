@@ -41,7 +41,7 @@ impl Engine {
     /// which cannot be bundled because it was never held.
     pub fn document_file(&self) -> DocumentFile {
         let mut file = DocumentFile::new(self.timeline.clone_actions());
-        file.canvas.color_space = self.color_space.id();
+        file.canvas.color_space = self.shared.color_space.id();
         // Before the scan below, which reads it: the ground the log *starts* on is
         // named by the container rather than by any action, and is otherwise the one
         // piece of content nothing asks for.
@@ -127,7 +127,7 @@ impl Engine {
     pub(super) fn adopt(&mut self, file: &DocumentFile) {
         self.initial_surface = file.canvas.surface;
         self.reset_document();
-        if file.canvas.color_space != self.color_space.id() {
+        if file.canvas.color_space != self.shared.color_space.id() {
             // A `DocumentFile` reaches here from exactly two places, and both have
             // already settled this: one decoded from bytes was refused by
             // [`DocumentFile::from_bytes`] if this build cannot honour its space, and
@@ -142,7 +142,7 @@ impl Engine {
             self.rebuild_gpu_for(cs);
         }
         for (_, bytes) in &file.assets {
-            if let Err(e) = self.apply.assets.insert_bytes(bytes) {
+            if let Err(e) = self.shared.apply.assets.insert_bytes(bytes) {
                 tracing::warn!("skipping unreadable brush asset: {e}");
             }
         }
@@ -242,18 +242,18 @@ impl Engine {
     /// transport session's asset mirror so peers can fetch any brush a future
     /// stroke references (§12.4).
     pub fn all_asset_bytes(&self) -> Vec<(AssetId, Vec<u8>)> {
-        self.apply.assets.all_bytes()
+        self.shared.apply.assets.all_bytes()
     }
 
     /// The canonical PNG bytes of one imported brush asset, if loaded — for
     /// seeding a live session's mirror or a second (preview) engine.
     pub fn asset_bytes(&self, id: AssetId) -> Option<Vec<u8>> {
-        self.apply.assets.bytes(id)
+        self.shared.apply.assets.bytes(id)
     }
 
     /// Whether a brush asset is loaded in this engine.
     pub fn has_asset(&self, id: AssetId) -> bool {
-        self.apply.assets.contains(id)
+        self.shared.apply.assets.contains(id)
     }
 
     /// Whether this engine already holds what `need` names, in whichever of the
@@ -326,7 +326,7 @@ impl Engine {
     /// The canonical PNG bytes of a loaded image ground — what a save file bundles
     /// and what a live session serves to a joining peer (§8, §12.4).
     pub fn surface_bytes(&self, id: SurfaceId) -> Option<Vec<u8>> {
-        self.apply.surfaces.bytes(id)
+        self.shared.apply.surfaces.bytes(id)
     }
 
     /// What share of a ground a tip with this `tooth`, travelling along `dir`, stands
@@ -341,9 +341,10 @@ impl Engine {
     /// direction crossing it together. Builds the surface if this is the first time
     /// it has been asked for.
     pub fn surface_bearing(&self, id: SurfaceId, tooth: f32, dir: crate::geom::Vec2) -> f32 {
-        self.apply
+        self.shared
+            .apply
             .surfaces
-            .get(&self.gpu, id)
+            .get(&self.shared.gpu, id)
             .bearing(tooth, dir.to_array())
     }
 
@@ -364,7 +365,12 @@ impl Engine {
     /// If it is the ground in use, it is rebuilt so the bytes take effect at once.
     pub fn import_surface(&mut self, png_bytes: &[u8]) -> Result<SurfaceId> {
         let (id, canonical) = crate::gpu::surface::canonicalize(png_bytes)?;
-        if self.apply.surfaces.register(&self.gpu, id, canonical) {
+        if self
+            .shared
+            .apply
+            .surfaces
+            .register(&self.shared.gpu, id, canonical)
+        {
             self.apply_surface();
         }
         Ok(id)
@@ -391,9 +397,10 @@ impl Engine {
             )));
         }
         if self
+            .shared
             .apply
             .surfaces
-            .register(&self.gpu, actual, png_bytes.to_vec())
+            .register(&self.shared.gpu, actual, png_bytes.to_vec())
         {
             self.apply_surface();
         }
@@ -408,7 +415,7 @@ impl Engine {
     /// (§6.4), so it changes by logging an action like anything else.
     pub(super) fn apply_document_surface(&mut self) {
         let id = self.document().surface;
-        if self.apply.surfaces.set(&self.gpu, id) {
+        if self.shared.apply.surfaces.set(&self.shared.gpu, id) {
             self.apply_surface();
         }
     }
@@ -417,24 +424,28 @@ impl Engine {
     /// it. No pipeline or pool rebuild, no document reset.
     fn apply_surface(&mut self) {
         self.compositor_pipeline
-            .set_surface(self.apply.surfaces.current());
+            .set_surface(self.shared.apply.surfaces.current());
     }
 
     /// The current lighting environment (§6.3).
     pub fn environment(&self) -> EnvironmentId {
-        self.environment.id()
+        self.shared.environment.id()
     }
 
     /// Whether `id` is ready — `Neutral` always is; an HDR environment is ready once
     /// its bytes have been [`register_environment`](Self::register_environment)ed.
     pub fn environment_loaded(&self, id: EnvironmentId) -> bool {
-        self.environment.is_loaded(id)
+        self.shared.environment.is_loaded(id)
     }
 
     /// Provide (frontend-fetched) HDR bytes for an environment. If it's the one in
     /// use, it's rebuilt so the bytes take effect immediately.
     pub fn register_environment(&mut self, id: EnvironmentId, hdr_bytes: Vec<u8>) {
-        if self.environment.register(&self.gpu, id, hdr_bytes) {
+        if self
+            .shared
+            .environment
+            .register(&self.shared.gpu, id, hdr_bytes)
+        {
             self.apply_environment();
         }
     }
@@ -446,7 +457,7 @@ impl Engine {
     /// Private: reached through
     /// [`crate::command::ViewCommand::SetEnvironment`].
     pub(super) fn set_environment(&mut self, id: EnvironmentId) {
-        if self.environment.set(&self.gpu, id) {
+        if self.shared.environment.set(&self.shared.gpu, id) {
             self.apply_environment();
         }
     }
@@ -454,7 +465,7 @@ impl Engine {
     /// Rebind the current environment in the media pass.
     fn apply_environment(&mut self) {
         self.compositor_pipeline
-            .set_environment(self.environment.current());
+            .set_environment(self.shared.environment.current());
     }
 
     /// Rebuild the GPU subsystems (pool/stroke/compositor) for `id`. Assumes the
@@ -463,29 +474,33 @@ impl Engine {
     /// infallible: every caller has already had to obtain one, so there is no
     /// "unsupported space" case left to handle here or to forget.
     fn rebuild_gpu_for(&mut self, cs: Arc<dyn ColorSpace>) {
-        // Cloned out before the rebuild: the registry lives on `self.apply`, which is
+        // Cloned out before the rebuild: the registry lives on `self.shared.apply`, which is
         // replaced below, and a `Surface` is two reference-counted wgpu handles.
-        let surface = self.apply.surfaces.current();
-        let environment = self.environment.current();
+        let surface = self.shared.apply.surfaces.current();
+        let environment = self.shared.environment.current();
         let built = build_gpu(GpuBuild {
             // What a rebuild does not touch, moved through into the new context —
             // stated as a list rather than as four arguments, because "what survives
             // a color-space change" is the interesting half of this function.
             keep: GpuKeep {
-                gpu: self.gpu.clone(),
-                assets: self.apply.assets.clone(),
-                selection: self.apply.selection.clone(),
-                surfaces: self.apply.surfaces.clone(),
+                gpu: self.shared.gpu.clone(),
+                assets: self.shared.apply.assets.clone(),
+                selection: self.shared.apply.selection.clone(),
+                surfaces: self.shared.apply.surfaces.clone(),
+                environments: self.shared.environment.clone(),
             },
-            target_format: self.target_format,
+            target_format: self.shared.target_format,
             cs: &cs,
             surface: &surface,
             environment: &environment,
         });
-        self.color_space = cs;
-        // Whole, not renderer by renderer: a subsystem added to `ApplyCtx` is rebuilt
-        // here by construction rather than by somebody remembering this line.
-        self.apply = built.apply;
+        // Whole, not field by field: anything added to the shared half is rebuilt
+        // here by construction rather than by somebody remembering this line — which
+        // now includes the compiled `passes`, and that one matters. Assigned
+        // piecemeal, a rebuild left `shared.passes` naming the pipelines it had just
+        // replaced, so the next sibling built off `shared()` would have taken the old
+        // ones. `Engine::shared`'s `debug_assert` is the guard on exactly that.
+        self.shared = built.shared;
         self.compositor = built.compositor;
         self.compositor_pipeline = built.compositor_pipeline;
     }
@@ -510,7 +525,7 @@ impl Engine {
 
     /// Commit one already-built action onto the timeline (replays its GPU work).
     fn replay_one(&mut self, action: Action) {
-        let ctx = &mut self.apply;
+        let ctx = &mut self.shared.apply;
         self.timeline.push(action, ctx);
     }
 

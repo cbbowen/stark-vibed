@@ -274,8 +274,8 @@ impl Engine {
         let ground = matches!(options.source, PickSource::CompositeOverSubstrate).then(|| {
             let bg = self.presented().background;
             (
-                self.color_space.rgb_to_channels(bg),
-                self.color_space.rgb_to_resid(bg),
+                self.shared.color_space.rgb_to_channels(bg),
+                self.shared.color_space.rgb_to_resid(bg),
             )
         });
 
@@ -358,8 +358,8 @@ impl Engine {
         // Captured, not read through `self`: the future deliberately does not borrow
         // the engine (see `export`). The color space is an `Arc`, so carrying the
         // channels→RGB conversion into it costs a refcount bump.
-        let gpu = self.gpu.clone();
-        let color_space = self.color_space.clone();
+        let gpu = self.shared.gpu.clone();
+        let color_space = self.shared.color_space.clone();
         async move {
             // A readback that fails is the GPU failing underneath it (§5), and a
             // pick has somewhere to put that already: "nothing here" is what this

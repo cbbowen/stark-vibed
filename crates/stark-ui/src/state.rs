@@ -408,6 +408,7 @@ impl AppState {
             thumbs: crate::thumbs::ThumbState {
                 cache: root_signal(std::collections::HashMap::new),
                 rig: root_signal(|| None),
+                shared: root_signal(|| None),
                 busy: root_signal(|| false),
             },
             gradients: crate::gradients::GradientsState {
@@ -1569,6 +1570,12 @@ pub fn publish_renderer(state: AppState, r: Renderer) {
     let mut renderer = state.renderer;
     let mut obs = state.obs;
     obs.0.set(Some(r.observe()));
+    // The thumbnail generator's half of the engine, published here rather than
+    // fetched from the renderer signal on demand: it needs the device and the
+    // pipelines, not the canvas, and holding those directly is what keeps it from
+    // borrowing a live renderer to make a picture of a brush (`crate::thumbs`).
+    let mut shared = state.thumbs.shared;
+    shared.set(Some(r.engine_shared()));
     renderer.0.set(Some(r));
 }
 

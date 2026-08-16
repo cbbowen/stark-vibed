@@ -820,12 +820,17 @@ impl Renderer {
         }
     }
 
-    /// A second engine sharing this one's GPU state, with no surface of its own —
-    /// for offscreen work: the preset thumbnails render through one
-    /// (`crate::thumbs`), reading back over `Engine::export_view` instead of
-    /// presenting.
-    pub fn shared_engine(&self, viewport: Extent2) -> Engine {
-        Engine::new_sharing(&self.engine, viewport)
+    /// The expensive half of this renderer's engine, on its own
+    /// (`stark_core::EngineShared`) — the device, the compiled pipelines, the brush
+    /// assets and the decoded grounds.
+    ///
+    /// **It outlives this renderer's borrow, which is the point.** A consumer that
+    /// only wants to *render* something — a preset thumbnail — previously had to hold
+    /// the whole live `Renderer` to reach these, so it could not be built until one
+    /// existed and had to be created lazily inside the loop that used it. This clones
+    /// for a handful of refcount bumps and can simply be kept.
+    pub fn engine_shared(&self) -> stark_core::EngineShared {
+        self.engine.shared()
     }
 }
 

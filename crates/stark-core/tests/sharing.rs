@@ -190,3 +190,61 @@ fn gray_png(w: u32, h: u32, level: u8) -> Vec<u8> {
     }
     out
 }
+
+/// **An engine built from a held `EngineShared` is the same engine
+/// `new_sharing` builds** — the point of exposing the facet at all.
+///
+/// The value outlives the engine it came from, which is what a consumer wanted:
+/// the preset thumbnails held a live renderer purely to reach the device, so they
+/// could not run before one existed. Here the donor is *dropped* before the
+/// sibling is built, which is the strongest form of that claim and one
+/// `new_sharing(&donor, ..)` cannot make at all.
+#[test]
+fn a_held_shared_half_outlives_the_engine_it_came_from() {
+    let Some(mut donor) = engine_or_skip() else {
+        return;
+    };
+    diagonal(&mut donor);
+    let reference = donor.render_to_image();
+
+    let shared = donor.shared();
+    drop(donor);
+
+    let mut sibling = Engine::on_shared(shared, SIZE);
+    diagonal(&mut sibling);
+    let got = sibling.render_to_image();
+
+    assert_eq!((got.width, got.height), (reference.width, reference.height),);
+    assert_eq!(
+        got.pixels, reference.pixels,
+        "an engine on a held shared half painted a different stroke",
+    );
+}
+
+/// The shared half can seed **many** siblings, and each keeps its own document.
+///
+/// The isolation claim above, made once the shared half is a value that can be
+/// cloned freely rather than a donor that has to be borrowed one call at a time.
+#[test]
+fn one_shared_half_seeds_independent_engines() {
+    let Some(donor) = engine_or_skip() else {
+        return;
+    };
+    let shared = donor.shared();
+
+    let mut a = Engine::on_shared(shared.clone(), SIZE);
+    let b = Engine::on_shared(shared, SIZE);
+    diagonal(&mut a);
+
+    // `b` never saw a stroke, so it must still be bare canvas — and `a`'s paint
+    // must not have reached it through the shared pool.
+    assert!(
+        a.document().bounds().tile_range().is_some(),
+        "the painted engine has no extent",
+    );
+    assert_eq!(
+        b.document().bounds().tile_range(),
+        None,
+        "a sibling picked up the other's paint",
+    );
+}

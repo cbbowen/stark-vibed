@@ -224,7 +224,7 @@ impl Engine {
     /// The texture format this engine's pipelines render to. A frontend configuring a
     /// second surface for [`render_into`](Self::render_into) has to match it.
     pub fn target_format(&self) -> wgpu::TextureFormat {
-        self.target_format
+        self.shared.target_format
     }
 
     /// Render through an **explicit** view rather than the session's, choosing what
@@ -266,9 +266,9 @@ impl Engine {
         // The substrate is document state now (§15.5), so the ground a
         // piece was painted on travels with it instead of living in whichever
         // frontend happened to render it.
-        let bg_channels = self.color_space.rgb_to_channels(doc.background);
+        let bg_channels = self.shared.color_space.rgb_to_channels(doc.background);
         let bg_resid = {
-            let r = self.color_space.rgb_to_resid(doc.background);
+            let r = self.shared.color_space.rgb_to_resid(doc.background);
             [r[0], r[1], r[2], 0.0]
         };
         // Chrome never reaches a file: an exported image gets no selection outline
@@ -342,8 +342,8 @@ impl Engine {
             Chrome::Shown,
             Rendered::Live,
         );
-        let pixels = crate::gpu::readback::read_rgba8_blocking(&self.gpu, &target, size);
-        RgbaImage::from_target_bytes(size.width, size.height, pixels, self.target_format)
+        let pixels = crate::gpu::readback::read_rgba8_blocking(&self.shared.gpu, &target, size);
+        RgbaImage::from_target_bytes(size.width, size.height, pixels, self.shared.target_format)
     }
 
     /// Render through an explicit view into an offscreen texture, ready to be read
@@ -360,7 +360,7 @@ impl Engine {
         let size = view.viewport;
         let target = self.offscreen_target(
             "stark export target",
-            self.target_format,
+            self.shared.target_format,
             size,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
@@ -405,7 +405,7 @@ impl Engine {
             (w * zoom).round().max(1.0) as u32,
             (h * zoom).round().max(1.0) as u32,
         );
-        let limit = max_export_dim(&self.gpu);
+        let limit = max_export_dim(&self.shared.gpu);
         if size.width > limit || size.height > limit {
             return Err(EngineError::Export(format!(
                 "export is {} × {} px; this device's limit is {limit}",
@@ -518,7 +518,7 @@ impl Engine {
             return Err(EngineError::Export("view must be finite".into()));
         }
         let size = view.viewport;
-        let limit = max_export_dim(&self.gpu);
+        let limit = max_export_dim(&self.shared.gpu);
         if size.width == 0 || size.height == 0 || size.width > limit || size.height > limit {
             return Err(EngineError::Export(format!(
                 "render is {} × {} px; this device's limit is {limit}",
@@ -530,8 +530,8 @@ impl Engine {
         let (target, size) = self.render_offscreen(into, view, background, Chrome::Hidden, content);
         // Captured, not read through `self`: the future deliberately does not
         // borrow the engine.
-        let gpu = self.gpu.clone();
-        let format = self.target_format;
+        let gpu = self.shared.gpu.clone();
+        let format = self.shared.target_format;
         Ok(async move {
             let pixels = crate::gpu::readback::read_rgba8(&gpu, &target, size).await?;
             Ok(RgbaImage::from_target_bytes(
@@ -785,9 +785,9 @@ impl Engine {
                 // interpolates in the working space (§22.4).
                 let (channels, resid, ramp) = match paint {
                     crate::document::MattePaint::Solid(color) => (
-                        self.color_space.rgb_to_channels(*color),
+                        self.shared.color_space.rgb_to_channels(*color),
                         {
-                            let r = self.color_space.rgb_to_resid(*color);
+                            let r = self.shared.color_space.rgb_to_resid(*color);
                             [r[0], r[1], r[2], 0.0]
                         },
                         None,
@@ -806,8 +806,8 @@ impl Engine {
                             }
                         };
                         for (i, stop) in stops.iter().enumerate() {
-                            let c = self.color_space.rgb_to_channels(stop.color);
-                            let r = self.color_space.rgb_to_resid(stop.color);
+                            let c = self.shared.color_space.rgb_to_channels(stop.color);
+                            let r = self.shared.color_space.rgb_to_resid(stop.color);
                             ramp.stop_c[i] = [c[0], c[1], c[2], stop.t];
                             ramp.stop_r[i] = [r[0], r[1], r[2], 0.0];
                         }
@@ -844,20 +844,23 @@ impl Engine {
         size: Extent2,
         usage: wgpu::TextureUsages,
     ) -> wgpu::Texture {
-        self.gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d {
-                width: size.width,
-                height: size.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage,
-            view_formats: &[],
-        })
+        self.shared
+            .gpu
+            .device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: size.width,
+                    height: size.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
     }
 
     /// The canvas-space rect an export covers: the named frame, else the painted

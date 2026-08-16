@@ -82,6 +82,17 @@ pub struct ThumbState {
     pub cache: Signal<HashMap<u64, String>>,
     /// The kept engine + offscreen attachments; `None` until first use.
     pub rig: Signal<Option<Rig>>,
+    /// The device and compiled pipelines to build that rig on, published once the
+    /// main renderer lands (`state::publish_renderer`).
+    ///
+    /// **Held rather than fetched**, which is what `stark_core::EngineShared` is for.
+    /// The generator used to reach into `state.renderer` and borrow the whole live
+    /// renderer — its canvas surface, its document, its in-flight gesture — for the
+    /// length of building a thumbnail rig, purely to get at the device. So it could
+    /// not run before a renderer existed and had to check for one every time round
+    /// the loop. This is a handful of refcount bumps and outlives whoever published
+    /// it.
+    pub shared: Signal<Option<stark_core::EngineShared>>,
     /// Whether the generator task is running — at most one at a time.
     pub busy: Signal<bool>,
 }
@@ -172,11 +183,12 @@ async fn generate(state: AppState, w: Wearable) -> bool {
         let mut rig_signal = state.thumbs.rig;
         let mut guard = rig_signal.write();
         if guard.is_none() {
-            let renderer = state.renderer.peek();
-            let Some(main) = renderer.as_ref() else {
+            // The shared half, not the renderer: nothing here needs the canvas, the
+            // document or the gesture in flight.
+            let Some(shared) = state.thumbs.shared.peek().clone() else {
                 return false;
             };
-            let mut engine = main.shared_engine(Extent2::new(THUMB_W, THUMB_H));
+            let mut engine = Engine::on_shared(shared, Extent2::new(THUMB_W, THUMB_H));
             // Pin the look the module doc promises: flat ground, neutral light,
             // default media, white substrate (what an eraser's bite reveals).
             // The document opened on the donor's ground (`Engine::new_sharing`),

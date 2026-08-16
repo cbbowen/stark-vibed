@@ -375,10 +375,11 @@ impl Engine {
         let doc = self.timeline.current();
         let base = doc.layer(layer)?.tiles()?;
         let selection = doc.selection_of(self.actor());
-        let (tiles, moved) = self
-            .apply
-            .transform
-            .apply(&self.apply.pool, base, &selection, map)?;
+        let (tiles, moved) =
+            self.shared
+                .apply
+                .transform
+                .apply(&self.shared.apply.pool, base, &selection, map)?;
         Some(
             doc.map_layer(layer, |l| l.with_tiles(tiles))
                 .with_selection(self.actor(), moved),
@@ -400,9 +401,10 @@ impl Engine {
         let base = doc.layer(layer)?.tiles()?.clone();
         let selection = doc.selection_of(self.actor());
         let tiles = self
+            .shared
             .apply
             .fill
-            .apply(&self.apply.pool, &base, &selection, op)?;
+            .apply(&self.shared.apply.pool, &base, &selection, op)?;
         Some(doc.map_layer(layer, |l| l.with_tiles(tiles)))
     }
 
@@ -448,7 +450,7 @@ impl Engine {
         // Disjoint fields, so the fold reads the context and the committed document
         // while holding the preview mutably.
         self.preview
-            .rebuild(&self.apply, self.timeline.current(), gestures);
+            .rebuild(&self.shared.apply, self.timeline.current(), gestures);
     }
 
     /// Every gesture in flight, in ascending [`ActorId`] order.
