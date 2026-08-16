@@ -23,6 +23,8 @@
 //          deposit stays a pure function of the two and tile aprons remain
 //          bit-consistent (§6.4).
 //   freq:  per-axis frequency .xy, with 1/NOISE_TILE_PX pre-folded into .z.
+//          A `vec3` because that is what the lookup is: the fourth lane the two
+//          callers used to spend on it was never read.
 //   amp:   per color-channel amplitude (0 = that channel holds still).
 //   off:   the per-stroke lookup translation (derived from the stroke seed).
 // The sampler must wrap (repeat) on both axes.
@@ -30,7 +32,7 @@ fn color_jitter(
     tex: texture_2d<f32>,
     s: sampler,
     local: vec2<f32>,
-    freq: vec4<f32>,
+    freq: vec3<f32>,
     amp: vec3<f32>,
     off: vec2<f32>,
 ) -> vec3<f32> {

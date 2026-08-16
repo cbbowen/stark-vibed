@@ -524,7 +524,7 @@ fn brush_color(in: VsOut, sw: Sweep) -> vec3<f32> {
     let lateral = sw.local.y * sw.radius;
     let jitter = color_jitter(
         noise_tex, noise_samp, vec2<f32>(lateral, stroke_arc(in, sw)),
-        xf.noise_freq, xf.noise_amp.xyz, xf.noise_off.xy,
+        xf.noise_freq.xyz, xf.noise_amp.xyz, xf.noise_off.xy,
     );
     return xf.color.xyz + jitter;
 }

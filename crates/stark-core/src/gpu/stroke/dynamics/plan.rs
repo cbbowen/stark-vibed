@@ -288,52 +288,56 @@ impl Default for Slot {
 }
 
 impl Slot {
-    /// The lane packing — `dynamics.wesl`'s `struct Stamp`, read the other way round.
-    /// Every field above lands here exactly once.
+    /// This slot as the uniform `dynamics.wesl` reads.
+    ///
+    /// **A rename, not a packing.** `Stamp`'s members are named now, and the mirror
+    /// generates them from the shader's own declaration (§6.10), so the field names on
+    /// both sides of each line below are one name checked by the compiler. What stood
+    /// here was a lane map — `e: [self.add, self.curvature, self.bleed_reach,
+    /// self.frame_scale]` — whose correspondence to the shader's `st.e.z` nothing
+    /// could see: the sizes matched whatever order the four were written in.
+    ///
+    /// The casts are the members the shader declares **integral** because they are:
+    /// a rect origin, a cell edge, a stencil reach. They are `f32` in the plan because
+    /// the rect arithmetic around them is, and every one is a whole number by
+    /// construction — `rect.origin` is a texel corner, `cell` an edge in texels,
+    /// `reach` a tap count.
     fn pack(&self) -> Stamp {
         Stamp {
-            a: [self.start.x, self.start.y, self.dir.x, self.dir.y],
-            b: [
-                self.frame,
-                self.travel_radii,
-                self.lambda_lift,
-                self.lambda_deposit,
-            ],
-            c: self.channels,
-            d: [
-                self.rect_origin.x,
-                self.rect_origin.y,
-                self.orient,
-                self.drain,
-            ],
-            e: [self.add, self.curvature, self.bleed_reach, self.frame_scale],
-            f: self.noise_freq,
-            g: [
-                self.noise_amp[0],
-                self.noise_amp[1],
-                self.noise_amp[2],
-                self.dist,
-            ],
-            h: [
-                self.noise_off[0],
-                self.noise_off[1],
-                self.bearing,
-                self.lambda_bleed,
-            ],
-            i: [
-                self.tooth,
-                self.weave_scale,
-                self.weave_bias.x,
-                self.weave_bias.y,
-            ],
-            j: self.resid,
-            k: [self.cell, self.cell_anchor.x, self.cell_anchor.y, self.ramp],
-            l: [
+            start: self.start.to_array(),
+            dir: self.dir.to_array(),
+            frame_radius: self.frame,
+            travel_radii: self.travel_radii,
+            radius_ramp: self.ramp,
+            frame_scale: self.frame_scale,
+            lambda_lift: self.lambda_lift,
+            lambda_deposit: self.lambda_deposit,
+            lambda_bleed: self.lambda_bleed,
+            curvature: self.curvature,
+            brush_lat: [self.channels[0], self.channels[1], self.channels[2]],
+            brush_op: self.channels[3],
+            brush_res: [self.resid[0], self.resid[1], self.resid[2]],
+            add: self.add,
+            noise_freq: [self.noise_freq[0], self.noise_freq[1], self.noise_freq[2]],
+            arc_at_start: self.dist,
+            noise_amp: self.noise_amp,
+            drain: self.drain,
+            stretch: [
                 self.stretch.travel,
                 self.stretch.shear,
                 self.stretch.lateral,
-                0.0,
             ],
+            orientation: self.orient,
+            noise_off: self.noise_off,
+            weave_uv_bias: self.weave_bias.to_array(),
+            rect_origin: [self.rect_origin.x as i32, self.rect_origin.y as i32],
+            cell_anchor: [self.cell_anchor.x as i32, self.cell_anchor.y as i32],
+            tooth: self.tooth,
+            tooth_bearing: self.bearing,
+            weave_uv_scale: self.weave_scale,
+            cell_px: self.cell as i32,
+            bleed_reach: self.bleed_reach as i32,
+            ..Default::default()
         }
     }
 }
@@ -1160,17 +1164,24 @@ mod tests {
 
     // --- the slot's lane packing -------------------------------------------
 
-    /// [`Slot::pack`] is an **ABI**, not a convenience: the lanes it fills are read by
-    /// `dynamics.wesl`'s accessors, which name them from the other side. So every field
-    /// is pinned to the component it lands in, with a value that appears nowhere else —
-    /// a swap of two same-typed neighbours (`lambda_lift` for `lambda_deposit`, `orient`
-    /// for `drain`) is otherwise a silent wrong picture that no golden would attribute
-    /// to the right cause.
+    /// Every field of the plan's slot reaches the member of `Stamp` the shader reads
+    /// it from.
     ///
-    /// The generated `offset_of` assertions pin where a *lane* starts. This is what
-    /// pins what lives inside one.
+    /// **Much less is left to check than there was.** `Stamp`'s members are named now
+    /// (§6.10), so `pack` reads `lambda_lift: self.lambda_lift` and a swap of two
+    /// same-typed neighbours is a compile error rather than a wrong picture. What
+    /// survives is the handful of lines where the two sides spell one quantity
+    /// differently — `frame`/`frame_radius`, `orient`/`orientation`, `dist`/
+    /// `arc_at_start`, `ramp`/`radius_ramp`, `bearing`/`tooth_bearing` — and the three
+    /// that split a host array (`channels`, `resid`, `noise_freq`). Those are the
+    /// assertions below; the rest are the compiler's.
+    ///
+    /// It also stands behind `pack`'s `..Default::default()`, which exists to leave the
+    /// generated padding alone and would otherwise let a *forgotten* member zero
+    /// silently. Every value here is distinct, so a member that never got assigned
+    /// reads back 0 and fails.
     #[test]
-    fn every_slot_field_lands_in_the_lane_the_shader_reads_it_from() {
+    fn every_slot_field_lands_in_the_member_the_shader_reads_it_from() {
         let packed = Slot {
             start: Vec2::new(1.0, 2.0),
             dir: Vec2::new(3.0, 4.0),
@@ -1208,53 +1219,42 @@ mod tests {
         }
         .pack();
 
-        assert_eq!(packed.a, [1.0, 2.0, 3.0, 4.0], "a: start.xy, dir.zw");
+        // The pairs the two sides spell differently.
+        assert_eq!(packed.frame_radius, 5.0, "frame → frame_radius");
+        assert_eq!(packed.travel_radii, 6.0, "travel_radii");
+        assert_eq!(packed.orientation, 15.0, "orient → orientation");
+        assert_eq!(packed.arc_at_start, 29.0, "dist → arc_at_start");
+        assert_eq!(packed.radius_ramp, 44.0, "ramp → radius_ramp (§6.2)");
+        assert_eq!(packed.tooth_bearing, 30.0, "bearing → tooth_bearing (§6.4)");
+        assert_eq!(packed.weave_uv_scale, 33.0, "weave_scale → weave_uv_scale");
+        assert_eq!(packed.weave_uv_bias, [34.0, 35.0], "weave_bias");
+        assert_eq!(packed.cell_px, 40, "cell → cell_px, as an integer (§6.2)");
+        assert_eq!(packed.cell_anchor, [41, 42], "cell_anchor, as integers");
+        assert_eq!(packed.rect_origin, [13, 14], "rect_origin, as integers");
+        assert_eq!(packed.bleed_reach, 19, "bleed_reach, as an integer");
+        // The three the host keeps as one array and the shader splits.
+        assert_eq!(packed.brush_lat, [9.0, 10.0, 11.0], "channels → brush_lat");
+        assert_eq!(packed.brush_op, 12.0, "channels[3] → brush_op");
+        assert_eq!(packed.brush_res, [36.0, 37.0, 38.0], "resid (§6.7)");
+        assert_eq!(packed.noise_freq, [20.0, 21.0, 22.0], "noise_freq");
+        // And the ones whose names already match, so that a member never assigned at
+        // all — which `..Default::default()` would zero in silence — still fails here.
+        assert_eq!(packed.start, [1.0, 2.0]);
+        assert_eq!(packed.dir, [3.0, 4.0]);
+        assert_eq!(packed.frame_scale, 43.0);
+        assert_eq!(packed.lambda_lift, 7.0);
+        assert_eq!(packed.lambda_deposit, 8.0);
+        assert_eq!(packed.lambda_bleed, 31.0);
+        assert_eq!(packed.curvature, 18.0);
+        assert_eq!(packed.add, 17.0);
+        assert_eq!(packed.drain, 16.0);
+        assert_eq!(packed.noise_amp, [24.0, 25.0, 26.0]);
+        assert_eq!(packed.noise_off, [27.0, 28.0]);
+        assert_eq!(packed.tooth, 32.0);
         assert_eq!(
-            packed.b,
-            [5.0, 6.0, 7.0, 8.0],
-            "b: frame radius, travel, λ_lift, λ_dep"
-        );
-        assert_eq!(packed.c, [9.0, 10.0, 11.0, 12.0], "c: color + opacity");
-        assert_eq!(
-            packed.d,
-            [13.0, 14.0, 15.0, 16.0],
-            "d: rect.xy, orient, drain"
-        );
-        assert_eq!(
-            packed.e,
-            [17.0, 18.0, 19.0, 43.0],
-            "e: add, curvature, bleed reach, frame scale"
-        );
-        assert_eq!(packed.f, [20.0, 21.0, 22.0, 23.0], "f: noise frequency");
-        assert_eq!(
-            packed.g,
-            [24.0, 25.0, 26.0, 29.0],
-            "g: noise amplitude, dist"
-        );
-        assert_eq!(
-            packed.h,
-            [27.0, 28.0, 30.0, 31.0],
-            "h: noise off, bearing, λ_bleed"
-        );
-        assert_eq!(
-            packed.i,
-            [32.0, 33.0, 34.0, 35.0],
-            "i: tooth, weave scale + bias"
-        );
-        assert_eq!(
-            packed.j,
-            [36.0, 37.0, 38.0, 39.0],
-            "j: the color's residual (§6.7)"
-        );
-        assert_eq!(
-            packed.k,
-            [40.0, 41.0, 42.0, 44.0],
-            "k: the footprint cell + its canvas anchor, and the radius ramp (§6.2)"
-        );
-        assert_eq!(
-            packed.l,
-            [45.0, 46.0, 47.0, 0.0],
-            "l: the tip's stretch along its facing axis (§6.6)"
+            packed.stretch,
+            [45.0, 46.0, 47.0],
+            "the facing stretch (§6.6)"
         );
     }
 
@@ -1270,38 +1270,31 @@ mod tests {
     #[test]
     fn the_default_slot_is_neutral_rather_than_zeroed() {
         let d = Slot::default().pack();
-        assert_eq!(d.h[2], 1.0, "the default bearing must be 1, not 0");
-        assert_eq!(d.k[0], 1.0, "the default cell must be 1 — exact — not 0");
+        assert_eq!(d.tooth_bearing, 1.0, "the default bearing must be 1, not 0");
+        assert_eq!(d.cell_px, 1, "the default cell must be 1 — exact — not 0");
         assert_eq!(
-            d.e[3], 1.0,
+            d.frame_scale, 1.0,
             "the default frame scale must be 1 — unpadded — not 0"
         );
-        for (lane, name) in [
-            (d.a, "a"),
-            (d.b, "b"),
-            (d.c, "c"),
-            (d.d, "d"),
-            (d.f, "f"),
-            (d.g, "g"),
-            (d.i, "i"),
-        ] {
-            assert_eq!(lane, [0.0; 4], "lane {name} is not neutral by default");
-        }
         assert_eq!(
-            [d.e[0], d.e[1], d.e[2]],
-            [0.0; 3],
-            "lane e beyond the frame scale"
-        );
-        assert_eq!(
-            [d.h[0], d.h[1], d.h[3]],
-            [0.0; 3],
-            "lane h beyond the bearing"
-        );
-        assert_eq!([d.k[1], d.k[2], d.k[3]], [0.0; 3], "lane k beyond the cell");
-        assert_eq!(
-            d.l,
-            [1.0, 0.0, 1.0, 0.0],
+            d.stretch,
+            [1.0, 0.0, 1.0],
             "the default stretch must be the identity map, not zeroes"
+        );
+        // And everything else is zero, which for the rest of the slot *is* neutral —
+        // stated as the complement of the four above so a new member has to be
+        // classified rather than silently joining whichever list it was written near.
+        let z = Stamp {
+            tooth_bearing: 1.0,
+            cell_px: 1,
+            frame_scale: 1.0,
+            stretch: [1.0, 0.0, 1.0],
+            ..Default::default()
+        };
+        assert_eq!(
+            bytemuck::bytes_of(&d),
+            bytemuck::bytes_of(&z),
+            "a member of the default slot is neither zero nor one of the four scales",
         );
     }
 
