@@ -23,7 +23,7 @@ exhaustive on purpose. What follows is the edges.
 |---|---|---|---|---|
 | [C1](#c1-there-is-no-gpu-failure-path) | There is no GPU failure path | correctness | medium | **done** |
 | [C2](#c2-non-finite-input-reaches-a-guaranteed-panic) | Non-finite input reaches a guaranteed panic | correctness | small | **done** |
-| [C3](#c3-the-fitters-per-sample-cost-is-linear-in-stroke-length) | The fitter's per-sample cost is linear in stroke length | performance | medium | **part** |
+| [C3](#c3-the-fitters-per-sample-cost-is-linear-in-stroke-length) | The fitter's per-sample cost is linear in stroke length | performance | medium | **part — rest measured, not worth it** |
 | [C4](#c4-the-draw-list-is-rebuilt-from-scratch-every-frame) | The draw list is rebuilt from scratch every frame | performance | medium | **done** |
 | [C5](#c5-nothing-ever-retires-history) | Nothing ever retires history | correctness | medium | **done** |
 | [C6](#c6-every-integration-test-builds-its-own-device) | Every integration test builds its own device | build health | small | **done** |
@@ -44,11 +44,9 @@ exhaustive on purpose. What follows is the edges.
   the candidate (`SplineIndex::fit_into`), removing two `O(m)` copies per solve.
   Measured on `benches/path.rs`: −21% `fit/live/fast`, −13% `fit/batch/fast`, −9%
   spiral, −7% hairpin, −8% `fit/batch/loop`, all p < 0.05.
-  **Left:** four `O(m)` allocations per report remain — two candidate grows
-  (`grow_rows`) and two arc profiles. Removing them means a small buffer pool on
-  the fitter so `adopt` swaps the winner in and returns the loser's storage;
-  `Fit` and `adopt` have to change shape for it. Worth doing, and worth measuring
-  separately, since the numerics must not move.
+  **Left: measured, and not worth doing.** See the section — removing two of the
+  remaining allocations was built and benchmarked, and came out a wash (−3% on
+  hairpin, **+1.2%** on `batch/loop`). The remaining time is not in allocation.
 - **C4** — done, both halves. `culled` walks whichever of the layer or the
   viewport is smaller, and the draw list is cached on a `DrawKey` whose every term
   is a counter something else already maintains. **It was not blocked on C7**, as
@@ -236,7 +234,45 @@ fails rather than silently re-blessing.
 
 **Also fix the comment.** "The work per sample is constant" should say what is
 constant (the system being solved) and what is not, or become true. See the note
-under [C8](#the-documentation).
+under [C8](#the-documentation). *Done.*
+
+### What is left, and why it is not being done
+
+The first half landed and measured well (−21% to −7%). The second half — the
+surviving `O(m)` allocations — was **built and benchmarked, and reverted**.
+
+Two of them go easily: `arc_weights` is a pure function of `(pts, lo)` and was
+computed four times a report where two are distinct (both candidates are scored at
+the same `lo`, so `as_is`'s weights serve both), and the scoring pass's profile can
+be a scratch buffer threaded through the pair. Both are bit-identical by
+construction. Together, against a baseline on the same machine:
+
+| case | change |
+|---|---|
+| `fit/*/hairpin` | −2.6% to −2.9% |
+| `fit/*/spiral` | −1.0% to −2.3% |
+| `fit/live/fast` | −2.2% |
+| `fit/batch/loop` | **+1.2%** |
+| `fit/batch/fast`, `fit/live/loop` | no change |
+
+A wash, and a regression on the longest stroke. Reverted: it widens `Fit`, widens
+`mean_error`'s signature and threads a buffer through the call pair, and
+measurement says it buys nothing. "Do not add inert scaffolding" applies to
+optimizations that do not optimize.
+
+**The finding is the measurement.** The remaining per-report cost is *not*
+allocation, so the buffer pool this section originally proposed — which also does
+not work as written, since `OMatrix`'s `resize_vertically_mut` clones internally
+and the two candidates alternate between `m` and `m + 1` rows — would buy less
+still, for a much larger change.
+
+**And it cannot be found by ablation.** The obvious next probe is to stub out the
+profile's `O(m)` prefix copy and see what it costs. That measures nothing: the
+profile feeds the parameter map, the parameter map feeds the fit, and a corrupted
+one makes the growth rule buy control points to explain the damage — the ablated
+run came out **2.4× slower**, having done a different and much larger amount of
+work. Anything on this path is feedback-coupled to the fit, so the next attempt
+needs a real profiler rather than a hypothesis.
 
 ---
 
