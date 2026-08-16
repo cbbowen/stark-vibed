@@ -41,14 +41,18 @@ reads it nowhere.
 
 ## Ranked
 
-All nine are **done**, and what remains open is one decision: U6's real half.
-Each section below carries a **Landed** note saying what was actually done — and
-where the finding turned out to be wrong, or the fix it proposed turned out not to
-be the right one, the note says so rather than quietly dropping it. Three did:
-U9's `update_brush` item, U5's proposal to move the base64 codec, and U1's
+**All nine are done, and this file has done its work.** Each section keeps its
+finding as written and carries a **Landed** note saying what was actually done —
+and where the finding turned out to be wrong, or the fix it proposed turned out
+not to be the right one, the note says so rather than quietly dropping it. Three
+did: U9's `update_brush` item, U5's proposal to move the base64 codec, and U1's
 structural fix, which named a mechanism that would have cost a hundred-site API
 break to buy what caching bought for none. U1 also turned up a latent bug that the
 over-subscription had been hiding.
+
+By the standing rule this file now goes: *a review that outlives its work becomes
+a second, staler account of the code* (`SHADERS_CLEANUP.md`). It is kept only
+until the reasoning in it has been read.
 
 | | Finding | Kind | Size | Status |
 |---|---|---|---|---|
@@ -57,22 +61,10 @@ over-subscription had been hiding.
 | [U2](#u2-the-root-effect-subscribes-to-the-renderer-so-every-engine-touch-runs-a-json-serializing-thumbnail-scan) | The root effect subscribes to the *renderer* | performance | small | **done** |
 | [U4](#u4-layoutrs-is-a-third-untested-copy-of-the-reorder-gesture) | `layout.rs` is a third, untested copy of the reorder gesture | test health | medium | **done** |
 | [U5](#u5-six-copies-of-the-localstorage-layer) | Six copies of the localStorage layer | structure | small | **done** |
-| [U6](#u6-there-is-no-compile-time-boundary-between-browser-glue-gesture-math-and-chrome) | No compile-time boundary between browser glue, gesture math and chrome | structure | large | **partly** — `gesture.rs` is out; the boundary is a decision |
+| [U6](#u6-there-is-no-compile-time-boundary-between-browser-glue-gesture-math-and-chrome) | No compile-time boundary between browser glue, gesture math and chrome | structure | large | **done** |
 | [U7](#u7-canvas-gesture-state-has-no-owner) | Canvas gesture state has no owner | structure | medium | **done** |
 | [U8](#u8-the-previewcommit-bargain-is-stated-11-times-and-implemented-5-ways) | The preview→commit bargain is stated 11 times and implemented 5 ways | structure | medium | **done** |
 | [U9](#u9-smaller-items) | Smaller items | mixed | small | **done** |
-
-## What is left, and why
-
-One entry, and it is a call to make rather than work to pick up.
-
-- **U6's real half** — *decide what the host build is for.* Either commit to a
-  platform boundary so the pure half is genuinely platform-free, or cfg-gate the
-  browser dependencies and stop paying for `web-sys` in a build that cannot use
-  them. The cheap half — getting the testable code out of the modules that cannot
-  be tested — landed. One tidy-up rides on whichever way it goes: the same
-  extraction for `panels::layer.rs`'s tree logic, which is 10 tests still inside
-  1500 lines of rsx.
 
 ---
 
@@ -434,9 +426,34 @@ dependency cost of the browser everywhere and the testability of neither, and th
 > `panels::transform` was the only consumer — which is itself the evidence it was
 > never state's business.
 >
-> **Still open:** the same move for `panels::layer.rs`'s tree logic (`Row`,
-> `landing`, `rows`, 10 tests, still inside 1500 lines of rsx), and the real half —
-> the decision about the host build.
+> **Landed (real half).** The decision was to **gate**, not to abstract behind a
+> trait: `web-sys`, `js-sys`, `wasm-bindgen` and `wasm-bindgen-futures` now sit
+> under `[target.'cfg(target_arch = "wasm32")'.dependencies]`.
+>
+> **It does not make the host build cheaper, and the section was wrong to imply it
+> would.** `dioxus` pulls `web-sys` in transitively whatever this crate declares —
+> `cargo tree -i web-sys` shows it arriving through `dioxus-asset-resolver` and
+> `dioxus-web`. What gating buys is different and better: a crate that is not a
+> *direct* dependency is not in the extern prelude, so off wasm `web_sys::` does
+> not resolve **anywhere**. `platform.rs` has claimed since it was written to be
+> "the two places the frontend touches the browser directly"; that was prose, and
+> four modules had quietly stopped obeying it. It is a compile error now, at the
+> line that breaks it — which is exactly the job the section said the host build
+> was supposed to do and wasn't.
+>
+> What crosses the boundary is the smallest thing each caller actually uses:
+> `Canvas` (measure, size the drawing buffer, hand `wgpu` a target — the three
+> things `Renderer` did with an element), `KeyEvent`, `WindowEvent`, `RawPointer`,
+> `Coalesced`. **Policy stayed with the callers** rather than migrating into
+> `platform`: `RawPointer` carries the two button fields and whether the device is
+> a stylus, and `input::is_eraser_event` is still what reads a pen's tail out of
+> them. What did move is DOM-shaped by nature — "is this event on a text field" is
+> a question about the DOM, and its two askers, the shortcuts and the context menu,
+> now ask it once.
+>
+> `panels::layer_tree` is the parked tidy-up, landed with it: the rows, the drop
+> resolution and 10 tests, out of 1500 lines of rsx and into the file that can be
+> read for what it is.
 
 ## U7. Canvas gesture state has no owner
 
