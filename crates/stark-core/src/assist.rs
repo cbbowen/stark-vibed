@@ -44,7 +44,7 @@ use nalgebra::{Const, Dyn, OMatrix};
 use crate::geom::{Ellipse, Vec2, principal_axis};
 use crate::guides::{AxisPencil, AxisPlane, Scaffold};
 use crate::path::{ControlPoint, FLATTEN_TOLERANCE, arc_profile, clamp_tilt, flatten, param_at};
-use crate::spline::{CubicBSpline, Observations};
+use crate::spline::{CubicBSpline, Observations, SplineIndex};
 
 /// Reports below this many are not a shape, whatever they look like: a click, a
 /// twitch, or a two-sample flick has no trace to recognize and would snap to noise.
@@ -648,13 +648,18 @@ fn realize(
     let geom_seed = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
         if d == 0 { seed[j].x } else { seed[j].y }
     });
-    let Ok(spline) = CubicBSpline::from_control_points(geom_seed.clone()) else {
+    let Ok(index) = SplineIndex::new(m) else {
         // Fewer than two control points is not a curve; the caller's clamps rule it
         // out, and there is nothing to draw if they ever did not.
         return Vec::new();
     };
-    let spans = spline.num_spans() as f32;
-    let profile = arc_profile(&spline, &[]);
+    let spans = index.num_spans() as f32;
+    // The curve is read only to measure its arc profile, so the borrow ends here and
+    // `geom_seed` is free to be handed to the fit — or moved out of — below.
+    let profile = arc_profile(
+        &CubicBSpline::new(&geom_seed).expect("the index agreed there are enough"),
+        &[],
+    );
     let fractions = arc_fractions(targets);
     let ts: Vec<f32> = fractions
         .iter()
@@ -663,7 +668,7 @@ fn realize(
 
     let geom = if fit_geometry {
         let values: Vec<[f32; 2]> = targets.iter().map(|p| [p.x, p.y]).collect();
-        spline.fit_channels(Observations::even(&ts, &values), 0, 0, &geom_seed, 0.0)
+        index.fit_channels(Observations::even(&ts, &values), 0, 0, &geom_seed, 0.0)
     } else {
         geom_seed
     };
@@ -676,7 +681,7 @@ fn realize(
             pen.sample(j as f32 / (m - 1).max(1) as f32)[d]
         });
     let values: Vec<[f32; CHANNELS]> = fractions.iter().map(|&f| pen.sample(f)).collect();
-    let attr = spline.fit_channels(Observations::even(&ts, &values), 0, 0, &attr_seed, 0.0);
+    let attr = index.fit_channels(Observations::even(&ts, &values), 0, 0, &attr_seed, 0.0);
 
     (0..m)
         .map(|j| ControlPoint {

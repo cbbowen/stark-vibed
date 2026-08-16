@@ -282,9 +282,23 @@ const MAX_SUBDIVISION_DEPTH: u32 = 10;
 /// * **The stroke stops wobbling.** Only the last few control points can move at
 ///   all, so the settled part of a live stroke is pixel-stable rather than
 ///   re-solving under the pointer on every report.
-/// * **The work per sample is constant.** The system is
+/// * **The system being solved is a constant size.** It is
 ///   `FREE_CONTROL_POINTS × 2` unknowns however long the stroke is, and only the
-///   samples that can reach those rows take part.
+///   samples that can reach those rows take part. `spline::m_step` assembles the
+///   normal equations over that window too, so the *arithmetic* per report does not
+///   grow with the stroke.
+///
+///   The **work** per report is not quite constant, and saying so is worth more than
+///   the tidier claim that used to stand here. Each report solves two candidate
+///   polygons and scores both, and a candidate is a whole `m`-row matrix: growing one
+///   ([`grow_rows`]) and measuring its arc profile ([`arc_profile`]) are `O(m)`
+///   copies around an `O(1)` solve. Two of those copies per solve have since been
+///   removed — the curve is read through a borrow and the fit writes back into the
+///   candidate rather than returning a fresh one ([`spline::SplineIndex`]), worth
+///   3–21% on `benches/path.rs` — and the four that remain are the reason a long
+///   stroke's last report still costs more than its first.
+///
+///   [`spline::SplineIndex`]: crate::spline::SplineIndex
 ///
 /// Both ends are pinned to the samples they belong to — the clamped end condition
 /// makes the first and last control points the curve's endpoints, and least squares
@@ -618,11 +632,18 @@ impl PathFitter {
         // and quietly skew the timelapse (§8).
         attr[(m - 1, TIME_CHANNEL)] = last.channels[TIME_CHANNEL];
 
-        let spline: CubicBSpline<2> =
-            CubicBSpline::from_control_points(geom.clone()).expect("at least two control points");
-        let spans = spline.num_spans() as f32;
+        // The curve as the candidate polygon currently stands, borrowed rather than
+        // copied — it is read to measure arc length and then dropped, and the fits
+        // below write back into `geom`/`attr` themselves ([`SplineIndex`]).
+        let index = {
+            let spline: CubicBSpline<'_, 2> =
+                CubicBSpline::new(&geom).expect("at least two control points");
+            let spans = spline.num_spans() as f32;
+            let profile = arc_profile(&spline, &self.settled_profile);
+            (spline.index(), spans, profile)
+        };
+        let (index, spans, profile) = index;
         let total = self.arc.max(1e-6);
-        let profile = arc_profile(&spline, &self.settled_profile);
         let param = |a: f32| param_at(&profile, spans, a / total);
 
         // A cubic B-spline's basis is local, so a sample sitting under the frozen
@@ -653,15 +674,20 @@ impl PathFitter {
         // What each report stands for, so the solve minimizes over the *stroke* rather
         // than over the reporting clock ([`arc_weights`]).
         let qs = arc_weights(&self.pts, lo);
-        let geom = spline.fit_channels(
+        // Solved **into** the candidate polygon rather than into a fresh one: the
+        // prior and the result are the same buffer, which is sound because the solve
+        // reads every row it uses as a prior before it writes any
+        // ([`SplineIndex::fit_into`]). Returning an owned matrix instead meant a copy
+        // of the whole polygon per fit, four fits per pointer report.
+        index.fit_into(
             Observations {
                 ts: &ts,
                 values: &pos,
                 weights: &qs,
             },
+            &mut geom,
             frozen,
             1,
-            &geom,
             self.smoothing,
         );
 
@@ -670,15 +696,15 @@ impl PathFitter {
         // is not a shape and has no curvature to penalize. Its end is held (the `1`)
         // for the reason set out where that row is written, above.
         let vals: Vec<[f32; CHANNELS]> = live.iter().map(|s| s.channels).collect();
-        let attr = spline.fit_channels(
+        index.fit_into(
             Observations {
                 ts: &ts,
                 values: &vals,
                 weights: &qs,
             },
+            &mut attr,
             frozen,
             1,
-            &attr,
             0.0,
         );
         Fit {
@@ -701,8 +727,10 @@ impl PathFitter {
     /// total grows with the window, so a fixed price would mean something different
     /// at every length.
     fn mean_error(&self, fit: &Fit, lo: usize) -> f32 {
-        let spline = CubicBSpline::from_control_points(fit.geom.clone())
-            .expect("at least two control points");
+        // Borrowed, not copied: scoring a candidate reads its control points and
+        // never moves them, so the copy this used to make was a whole polygon per
+        // candidate per report to answer one number.
+        let spline = CubicBSpline::new(&fit.geom).expect("at least two control points");
         let spans = spline.num_spans() as f32;
         let total = self.arc.max(1e-6);
         let lo = lo.min(self.pts.len() - 1);
@@ -1581,7 +1609,7 @@ mod tests {
                 OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
                     if d == 0 { ctrl[j].x } else { ctrl[j].y }
                 });
-            let reference: CubicBSpline<2> = CubicBSpline::from_control_points(rows).unwrap();
+            let reference: CubicBSpline<'_, 2> = CubicBSpline::new(&rows).unwrap();
 
             assert_eq!(
                 span_count(m),
