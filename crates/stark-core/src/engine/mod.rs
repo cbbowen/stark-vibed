@@ -57,6 +57,38 @@ use crate::session::ShapeResult;
 /// The starting layer present in every new document.
 const ROOT_LAYER: LayerId = LayerId(0);
 
+/// How much resident tile memory the engine will let **history retention** hold
+/// before it starts giving up undo depth (§5).
+///
+/// `DocState` is cheap to clone and tiles are copy-on-write, so history retention
+/// drives GPU memory reclamation for free — but only if something ever retires
+/// history, and for a long time nothing did. `history` keeps its snapshots
+/// geometrically spaced, so what is retained is `O(log n)` states rather than
+/// `O(n)`; each still pins every tile version that has changed since, and on a large
+/// canvas a tile pair is ~640 KB.
+///
+/// **This is a bound on a cost that has not been measured**, in the sense
+/// [`MAX_RELEASE_PER_EPOCH`](crate::gpu::TilePool) and the compositor's flush cadence
+/// are: 1 GiB is about 1600 tile pairs, which is a large painting's working set and
+/// several times over what an ordinary session reaches. Raising it costs memory and
+/// buys undo depth; the honest way to change it is to measure a session and say so.
+///
+/// It is a *ceiling on retention*, not on the document. Paint that is on the canvas
+/// now is held by the current state and no amount of trimming frees it — see
+/// [`Engine::trim_history`] for why that is what [`MIN_UNDO_DEPTH`] guards.
+const HISTORY_TILE_BUDGET: u64 = 1 << 30;
+
+/// Undo steps the engine will not trim below, however tight memory is.
+///
+/// **The guard against trimming for nothing.** Resident tiles are held by the
+/// *current* document as much as by history, so a session with four full-canvas
+/// layers can exceed any budget with almost no history at all — and there, folding
+/// the undo stack away frees nothing and costs the user every step they might want
+/// back. A floor makes that failure bounded: the worst case is a document that sits
+/// over budget with 32 steps of undo, which is the true answer rather than an
+/// unbounded march to zero.
+const MIN_UNDO_DEPTH: usize = 32;
+
 /// Longest name that will be recorded, in `char`s. Not a taste limit but a bound
 /// on the log: a layer's name is replicated to every peer and saved with the
 /// document, and nothing about a text field stops a paste from being a megabyte.
@@ -359,6 +391,13 @@ pub struct Engine {
     /// dropped the drag preview without bumping it at all when the seek turned out
     /// to be a no-op. Now the slot cannot move without the epoch moving with it.
     preview: live::Preview,
+    /// How much resident tile memory history retention may hold before undo depth
+    /// is given up (§5) — [`ViewCommand::SetHistoryBudget`], defaulting to
+    /// [`HISTORY_TILE_BUDGET`].
+    ///
+    /// Per-client and never logged, for the reason the command's doc gives: how much
+    /// history a machine can afford is a fact about the machine.
+    history_budget: u64,
     /// Bumped whenever the **committed** document changes — a commit, an undo, a
     /// merged remote action, a load. Projected as
     /// [`ObservableState::doc_revision`], where it is what a frontend showing a
@@ -509,6 +548,7 @@ impl Engine {
             now: 0.0,
             preview: Default::default(),
             doc_revision: 0,
+            history_budget: HISTORY_TILE_BUDGET,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
             authoring: Authoring::solo(),
@@ -582,6 +622,7 @@ impl Engine {
             now: 0.0,
             preview: Default::default(),
             doc_revision: 0,
+            history_budget: HISTORY_TILE_BUDGET,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
             authoring: Authoring::solo(),
@@ -1008,6 +1049,7 @@ impl Engine {
             }
             ViewCommand::SetMediaParams(params) => self.compositor_pipeline.set_media(params),
             ViewCommand::SetEnvironment(id) => self.set_environment(id),
+            ViewCommand::SetHistoryBudget(bytes) => self.history_budget = bytes,
         }
     }
 
@@ -1368,6 +1410,54 @@ impl Engine {
             && let Some(outbox) = self.authoring.outbox.as_mut()
         {
             outbox.push(action);
+        }
+        // Committing is the only thing that grows the undo stack, so it is the only
+        // place retention has to be reconsidered. Deliberately not in
+        // `committed_changed`, which an undo also comes through — giving up undo
+        // depth *while the user is undoing* is the one moment it would be felt.
+        self.trim_history();
+    }
+
+    /// Give up the oldest undo steps if history retention is holding more tile
+    /// memory than [`HISTORY_TILE_BUDGET`] allows (§5).
+    ///
+    /// **Half of what is left, not down to a target.** Halving converges in a few
+    /// commits and leaves a cushion, where trimming to exactly the budget would fold
+    /// the whole stack away the moment one large layer pushed it over — the same
+    /// hysteresis argument, and the same arithmetic, as the tile pool's own surplus
+    /// policy (`surplus_to_release`).
+    ///
+    /// **Asked of the pool, answered by the pool.** What is measured is resident tile
+    /// bytes, and what a fold releases is the snapshots between here and there: the
+    /// handles they pinned drop, their textures return to the free list, and the
+    /// pool's epoch boundary hands the surplus back to the driver. So this does not
+    /// free memory itself — it stops history being the reason the pool cannot.
+    ///
+    /// A shared session declines by construction, because
+    /// [`Timeline::forget_oldest`] does: its document is re-materialized from the
+    /// whole log (§12.2), so nothing there is foldable. Nothing about this call site
+    /// has to know that.
+    fn trim_history(&mut self) {
+        if self.apply.pool.resident_bytes() <= self.history_budget {
+            return;
+        }
+        // How far back undo can currently travel. `None` is a timeline whose history
+        // is not this client's alone to walk, which is also one that cannot be
+        // trimmed — the same question, so the same answer.
+        let Some((applied, _)) = self.timeline.scrub_range() else {
+            return;
+        };
+        let Some(excess) = applied.checked_sub(MIN_UNDO_DEPTH).filter(|e| *e > 0) else {
+            return;
+        };
+        let forgotten = self.timeline.forget_oldest((applied / 2).min(excess));
+        if forgotten > 0 {
+            tracing::debug!(
+                forgotten,
+                remaining = applied - forgotten,
+                resident_mb = self.apply.pool.resident_bytes() / (1 << 20),
+                "gave up undo depth to release retained tiles",
+            );
         }
     }
 

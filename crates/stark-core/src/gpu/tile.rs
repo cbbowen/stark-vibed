@@ -643,6 +643,20 @@ fn surplus_to_release(capacity: usize, peak: usize, free: usize) -> usize {
 /// discover the cap by wondering why reclamation is slow.
 const MAX_RELEASE_PER_EPOCH: usize = 256;
 
+/// One `TILE_TEX` square of `format`, in bytes.
+///
+/// Asked of the format rather than tabulated, for [`bytes_per_texel`]'s reason one
+/// level up: a table would be a second statement of something wgpu already knows, and
+/// a wrong entry would under-report memory rather than fail. A format that cannot
+/// answer is counted at zero — it is telemetry, and telemetry degrading is the right
+/// failure for telemetry.
+///
+/// [`bytes_per_texel`]: crate::gpu::readback
+fn texture_bytes(format: wgpu::TextureFormat) -> u64 {
+    let texel = format.block_copy_size(None).unwrap_or(0) as u64;
+    texel * TILE_TEX as u64 * TILE_TEX as u64
+}
+
 /// Recycling allocator for tile textures (§6.1). Hands out one texture at a
 /// time, keyed by format, so `Rgba16Float` textures are shared across every consumer
 /// that needs one (persistent color, scratch color, the wide scratch aux).
@@ -717,6 +731,31 @@ impl TilePool {
             pool: Arc::downgrade(pool),
             source,
         }))
+    }
+
+    /// How many bytes of tile texture this pool **owns**, across every format:
+    /// what its consumers are holding plus what is idle on its free lists.
+    ///
+    /// The number a history-retention policy is measured against (§5). It is what
+    /// the pool owns rather than what is in use, deliberately: a texture on the free
+    /// list has been paid for and is not given back to the driver until an epoch
+    /// boundary decides the pool no longer needs it ([`PoolInner::tick`]), so from
+    /// the process's point of view it is resident either way.
+    ///
+    /// Derived rather than tracked, so it cannot drift from the capacity it is a
+    /// function of. `O(formats)` — four of them — under each format's lock in turn,
+    /// which is why it is safe to ask on a commit but not per tile.
+    pub fn resident_bytes(&self) -> u64 {
+        self.format_pools
+            .iter()
+            .map(|(format, pool)| {
+                let capacity = pool
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .capacity as u64;
+                capacity * texture_bytes(*format)
+            })
+            .sum()
     }
 
     /// How many recycled textures of `format` are idle — what the pool would serve

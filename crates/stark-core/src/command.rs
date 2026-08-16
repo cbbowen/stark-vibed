@@ -557,6 +557,27 @@ pub enum ViewCommand {
     SetMediaParams(MediaParams),
     /// Switch the HDR lighting environment (§6.3).
     SetEnvironment(EnvironmentId),
+
+    /// How much resident tile memory history retention may hold before the engine
+    /// starts giving up undo depth, in bytes (§5).
+    ///
+    /// **View state, and it belongs here rather than in the document**: how deep an
+    /// undo stack this machine can afford is a fact about the machine, not about the
+    /// painting. Two people sharing a drawing have different amounts of memory and
+    /// should keep different amounts of history, and neither answer belongs in the
+    /// file. It is also why this is a command at all rather than a setter — §4's
+    /// rule is that anything mutating state and returning nothing is one.
+    ///
+    /// The engine's own default is a bound on a cost that has not been measured (see
+    /// `HISTORY_TILE_BUDGET`), and it is one number for a range of devices that runs
+    /// from a phone to a workstation. A frontend that knows which it is on should say
+    /// so.
+    ///
+    /// Setting it does not itself trim; the next commit does, which is the only
+    /// moment the stack grows. `0` means "keep the minimum" — retention is still
+    /// floored at `MIN_UNDO_DEPTH` steps, because trimming below that frees nothing
+    /// when the memory is held by the current document rather than by history.
+    SetHistoryBudget(u64),
 }
 
 /// Mutations of **presence**: per-client and never logged — undo does not reach

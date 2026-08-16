@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use history::{History, Version};
+use history::History;
 
 use super::action::{Action, ActionId, ActionKind, ActorId, ApplyCtx};
 use super::footprint::footprint;
@@ -96,6 +96,31 @@ pub trait Timeline {
     fn stats(&self) -> TimelineStats {
         TimelineStats::default()
     }
+
+    /// Give up the ability to undo past the oldest `count` actions, folding them into
+    /// the base state, and report how many were actually folded (§5).
+    ///
+    /// **The log is not shortened — only the reach of undo is.** What is folded is
+    /// still returned by [`clone_actions`](Self::clone_actions), so the file, a
+    /// timelapse and a joining peer all still get the whole painting; what goes is
+    /// the retained *snapshots* between here and there, and with them the tile
+    /// handles they were pinning. That distinction is the whole of why this is safe:
+    /// the document is its log (§1, §8), so a timeline that dropped actions would be
+    /// saving a different painting, silently, with nothing on screen to say so.
+    ///
+    /// May fold **fewer** than asked, or none: `history` only folds as far as a
+    /// cached state it can reach without replaying, and its cache is geometrically
+    /// spaced. Asking repeatedly as the history grows is what keeps it to a size.
+    ///
+    /// Defaults to folding nothing, which is what a [`ReplicatedTimeline`] must do
+    /// and must be unable to forget to do. Its document is re-materialized from the
+    /// whole log on every arriving action (§12.2), so an action folded into a base
+    /// state is one the next merge cannot replay — the log is not this client's to
+    /// shorten in any sense at all. Declining here is the same structural refusal it
+    /// makes for [`seek`](Self::seek).
+    fn forget_oldest(&mut self, _count: usize) -> usize {
+        0
+    }
 }
 
 /// Counters for how the replicated timeline absorbed log changes
@@ -119,6 +144,22 @@ pub struct LinearTimeline {
     history: History<Action>,
     /// Actions popped by `undo`, awaiting `redo`. Cleared on a fresh `push`.
     redo: Vec<Action>,
+    /// Actions folded out of the undo stack by [`forget_oldest`], oldest first —
+    /// **still part of the document** (§5).
+    ///
+    /// This is what makes retention safe. `History::forget_actions` hands its
+    /// forgotten actions back precisely so a caller can keep them, and keeping them
+    /// is the difference between giving up undo depth and losing a painting: the log
+    /// *is* the document (§1, §8), so [`clone_actions`](Timeline::clone_actions) —
+    /// which is what the save file, a timelapse and a joining peer are built from —
+    /// goes on reporting every action ever committed. Only the snapshots between
+    /// them are gone, and with them the tile handles history retention was pinning.
+    ///
+    /// Grows without bound, and that is correct rather than an oversight: it is the
+    /// document, and a `CommitStroke` is a fitted control-point list of a few hundred
+    /// bytes. Tens of thousands of strokes are tens of megabytes of CPU memory, where
+    /// what this exists to reclaim is GPU tiles at ~640 KB apiece.
+    forgotten: Vec<Action>,
 }
 
 impl LinearTimeline {
@@ -126,11 +167,14 @@ impl LinearTimeline {
         Self {
             history: History::new(initial),
             redo: Vec::new(),
+            forgotten: Vec::new(),
         }
     }
 
+    /// Every action this timeline holds, oldest first — the folded prefix and then
+    /// the live history.
     pub fn actions(&self) -> impl Iterator<Item = &Action> {
-        self.history.actions()
+        self.forgotten.iter().chain(self.history.actions())
     }
 
     /// How many actions are currently applied — the playhead's position.
@@ -179,8 +223,18 @@ impl Timeline for LinearTimeline {
         }
     }
 
+    /// Compared against the history's **own** oldest version, not against
+    /// `Version::default()`.
+    ///
+    /// The two are the same thing right up until [`forget_oldest`](Timeline::forget_oldest)
+    /// folds anything: `History::initial_version` is `Version::default()` "until
+    /// `forget_actions` folds actions into the initial state, and the version of the
+    /// state it folded them into thereafter". Against the constant, a fully folded
+    /// history reports that it can undo and then does nothing when asked — an Undo
+    /// button that is lit and inert. Asking the history where its own floor is has no
+    /// such failure mode, and reads better besides.
     fn can_undo(&self) -> bool {
-        self.history.last_version() != Version::default()
+        self.history.last_version() != self.history.initial_version()
     }
 
     fn can_redo(&self) -> bool {
@@ -249,6 +303,26 @@ impl Timeline for LinearTimeline {
             // oldest-first throughout.
             .chain(self.redo.iter().rev().map(|a| a.kind.label()))
             .collect()
+    }
+
+    /// Folds through to `History::forget_actions`, keeping what it hands back.
+    ///
+    /// **The redo stack is deliberately untouched.** It holds actions that are *not*
+    /// applied, so they pin no snapshot and cost no tiles; folding them would give up
+    /// a redo the user can still see offered, for nothing.
+    ///
+    /// Reported in terms of the actions actually folded, which is not always the
+    /// number asked for — see [`Timeline::forget_oldest`].
+    fn forget_oldest(&mut self, count: usize) -> usize {
+        if count == 0 {
+            return 0;
+        }
+        let folded = self.history.forget_actions(count);
+        let n = folded.len();
+        // Oldest first out of `forget_actions`, and oldest first here, so the
+        // concatenation in `actions()` is the log in order.
+        self.forgotten.extend(folded);
+        n
     }
 }
 
