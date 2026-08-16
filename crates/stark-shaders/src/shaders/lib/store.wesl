@@ -30,47 +30,49 @@
 // The rewrite guards in `deposit` and `settle` are still worth their branch: they skip
 // the *traffic*, not just the rounding. This is what covers the stores that do happen.
 
-// The nearest binary16-representable value to `x`, ties to even — as an f32, since
-// that is what a `textureStore` takes.
+// The nearest binary16-representable value to each channel of `v`, ties to even — as
+// f32s, since that is what a `textureStore` takes.
 //
 // The rounding is done on the f32 bit pattern rather than by round-tripping through
 // `pack2x16float`, because that builtin's conversion is the same backend one this
 // exists to work around.
-fn f16_nearest(x: f32) -> f32 {
-    let a = abs(x);
-    // NaN, an infinity, or past binary16's largest finite value: there is no lattice
-    // point to snap to, and what the backend does with it is its own business. The
-    // NaN case is why this is written as a negated `<`.
-    if !(a < 65504.0) {
-        return x;
-    }
-    let u = bitcast<u32>(x);
-    let e = i32((u >> 23u) & 0xFFu) - 127;
+//
+// **Written across the four channels at once, and branch-free.** This runs on every
+// store of the loop's hottest kernels — the deposit writes three targets per footprint
+// texel — and as four scalar calls it was four copies of two branches, on a machine
+// whose lanes have to agree about which way each one goes. Every step below is the
+// scalar law componentwise: same bit pattern, same tie rule, same treatment of what has
+// no lattice point to snap to.
+fn f16_nearest4(v: vec4<f32>) -> vec4<f32> {
+    let a = abs(v);
+    let u = bitcast<vec4<u32>>(v);
+    let e = vec4<i32>((u >> vec4<u32>(23u)) & vec4<u32>(0xFFu)) - vec4<i32>(127);
     // How many bits of the f32 significand binary16 cannot keep: 13 throughout its
     // normal range, and one more for each binade below `2⁻¹⁴`, where the subnormals
-    // give up a bit at a time. Both branches are `−1 − e`, which meets 13 exactly at
-    // the normal/subnormal boundary.
-    let shift = max(13, -1 - e);
-    if shift > 23 {
-        // Under half the smallest subnormal step there is nothing left to keep: the
-        // neighbours are zero and `2⁻²⁴`, and an exact tie goes to the even one (zero).
-        // `x * 0.0` rather than a literal, to carry the sign of a negative latent.
-        return select(sign(x) * 5.9604645e-8, x * 0.0, a <= 2.9802322e-8);
-    }
+    // give up a bit at a time. `−1 − e` meets 13 exactly at the normal/subnormal
+    // boundary, so the `max` is the whole rule.
+    let shift = max(vec4<i32>(13), vec4<i32>(-1) - e);
+    // Held at 23 for the arithmetic below. A shift wider than the significand is
+    // undefined in WGSL, and the lanes that would want one are exactly the lanes
+    // `tiny` answers for — so this keeps the shared arithmetic well-defined rather
+    // than deciding anything.
+    let sh = vec4<u32>(min(shift, vec4<i32>(23)));
     // Round to nearest, ties to even, by biasing the discarded bits and masking. A
     // significand that carries out lands in the exponent field, which is exactly the
-    // increment that case wants; the guard above is what keeps it out of the sign bit.
-    let m = 1u << u32(shift);
-    let lsb = (u >> u32(shift)) & 1u;
-    return bitcast<f32>((u + (m >> 1u) - 1u + lsb) & ~(m - 1u));
-}
-
-// [`f16_nearest`] over the four channels a `textureStore` writes at once.
-fn f16_nearest4(v: vec4<f32>) -> vec4<f32> {
-    return vec4<f32>(
-        f16_nearest(v.x),
-        f16_nearest(v.y),
-        f16_nearest(v.z),
-        f16_nearest(v.w),
+    // increment that case wants.
+    let m = vec4<u32>(1u) << sh;
+    let lsb = (u >> sh) & vec4<u32>(1u);
+    let rounded = bitcast<vec4<f32>>(
+        (u + (m >> vec4<u32>(1u)) - vec4<u32>(1u) + lsb) & ~(m - vec4<u32>(1u)),
     );
+    // Under half the smallest subnormal step there is nothing left to keep: the
+    // neighbours are zero and `2⁻²⁴`, and an exact tie goes to the even one (zero).
+    // `v * 0.0` rather than a literal, to carry the sign of a negative latent.
+    let tiny = select(sign(v) * 5.9604645e-8, v * 0.0, a <= vec4<f32>(2.9802322e-8));
+    let snapped = select(rounded, tiny, shift > vec4<i32>(23));
+    // NaN, an infinity, or past binary16's largest finite value: there is no lattice
+    // point to snap to, and what the backend does with it is its own business. The
+    // NaN case is why the test is a negated `<` — here, a `select` that keeps `v`
+    // whenever `a < 65504` is *not* true.
+    return select(v, snapped, a < vec4<f32>(65504.0));
 }

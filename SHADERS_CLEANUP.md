@@ -17,23 +17,37 @@ Since there are no stability guarantees yet, none of this needs to be bit-identi
 where a fix moves a uniform's layout, the generator's `offset_of` assertions turn a
 mistake into a build failure at the struct it got wrong.
 
-## Order to do them in
+## Status
 
-| # | Finding | Why here |
+| # | Finding | Status |
 |---|---|---|
-| 1 | [`Binding` carries no `@group`](#1-binding-carries-no-group) | Unblocks 2 |
-| 2 | [The generator is enumerated where it should be exhaustive](#2-the-generator-is-enumerated-where-it-should-be-exhaustive) | The largest remaining hand-transcription surface |
-| 3 | [`BindKind` pays for a `wgpu` dependency it already has](#3-bindkind-pays-for-a-wgpu-dependency-it-already-has) | Falls out of 2; deletes host code |
-| 4 | [`Stamp`'s twelve anonymous lanes defeat the mirror](#4-stamps-twelve-anonymous-lanes-defeat-the-mirror) | Independent; largest correctness-of-meaning win |
-| 5 | [`deposit` and `deposit_coarse` are held together by a comment](#5-deposit-and-deposit_coarse-are-held-together-by-a-comment) | Independent |
-| 6 | [The group-0 index space is partitioned by comment](#6-the-group-0-index-space-is-partitioned-by-comment) | Closes cheaply once 2 lands |
-| 7 | [The bleed ladder recomputes its neighbours ~36× over](#7-performance-the-bleed-ladder-recomputes-its-neighbours-36-over) | When the stroke bench next matters |
-| 8 | [The `@if(resid)` tax is 128 sites](#8-the-ifresid-tax-is-128-sites) | Opportunistic; serves 5 |
-| 9 | [Smaller items](#9-smaller-items) | Opportunistic |
+| 1 | [`Binding` carries no `@group`](#1-binding-carries-no-group) | **done** |
+| 2 | [The generator is enumerated where it should be exhaustive](#2-the-generator-is-enumerated-where-it-should-be-exhaustive) | **generator done**; ~10 host layouts still hand-written |
+| 3 | [`BindKind` pays for a `wgpu` dependency it already has](#3-bindkind-pays-for-a-wgpu-dependency-it-already-has) | **done** |
+| 4 | [`Stamp`'s twelve anonymous lanes defeat the mirror](#4-stamps-twelve-anonymous-lanes-defeat-the-mirror) | **done** |
+| 5 | [`deposit` and `deposit_coarse` are held together by a comment](#5-deposit-and-deposit_coarse-are-held-together-by-a-comment) | **done** |
+| 6 | [The group-0 index space is partitioned by comment](#6-the-group-0-index-space-is-partitioned-by-comment) | **done** |
+| 7 | [The bleed ladder recomputes its neighbours ~36× over](#7-performance-the-bleed-ladder-recomputes-its-neighbours-36-over) | **the per-texel wins done**; the scratch pass open |
+| 8 | [The `@if(resid)` tax is 128 sites](#8-the-ifresid-tax-is-128-sites) | open |
+| 9 | [Smaller items](#9-smaller-items) | **three done**, two open |
+
+**One thing the work found that the review did not.** wesl 0.4's `validate: true`
+resolves names, counts call arguments and rejects cycles — it does **not** typecheck.
+Handing a `Sweep` to a parameter declared `vec3<f32>` linked cleanly, deposited an
+artifact, and failed at `create_shader_module`: at run time, on a GPU, in the half of
+the suite CI runs without comparing pixels. It cost eleven red tests and a bisect to
+find something the compiler knew. `build.rs` now runs `naga` — the same front end
+`wgpu` uses — over every linked artifact, so that class fails at `cargo build` with the
+line and the two types named. Finding 9 listed this as a hypothetical; it is not.
 
 ---
 
 ## 1. `Binding` carries no `@group`
+
+> **Done.** `Binding` carries `group`, and a host names a slot by taking the whole
+> declaration (`decl::REGION_COLOR`) rather than resolving an index against a table.
+> `Binding::lookup` is gone with the question it answered, and `desc::layout_for` can
+> now assert that a slot list is one group's worth.
 
 `build/mirror.rs::emit_bindings` walks every `@binding` declaration in a module and
 emits `Binding { index, name, kind, resid }`. It never reads `@group`.
@@ -56,6 +70,27 @@ either a per-group table or one table the host filters. The `binding::<NAME>` co
 are unaffected — they are already unambiguous, since the name is the WESL variable's.
 
 ## 2. The generator is enumerated where it should be exhaustive
+
+> **Generator done; the host layouts are the remainder.** `MIRRORS`, `CONSTS` and
+> `BINDINGS` are deleted: `build/mirror.rs` reads the whole tree and emits every
+> `@binding`, every `const` with a Rust spelling, and every struct a `var<uniform>`
+> names, across all 24 modules. What is still named is what the shader does not say —
+> `SHARED` (two modules, one host type) and `VERTEX` (the *name* of a record), and the
+> latter is now a build failure to omit rather than a list to remember. Anything
+> discovery cannot spell is skipped with a note in the generated file's header; five
+> `vec3` consts in `guides.wesl` are the whole of that.
+>
+> The ABI codes are done: `blend_code` and selection's kind/mode codes are the shaders'
+> own numbers now.
+>
+> **What is left** is the other side — the ~10 host layouts in `composite/{blend,
+> filter,media,overlay,resolve,tiles}.rs`, `fill.rs`, `merge.rs`, `selection.rs`,
+> `transform.rs` and `stroke/{swept,dynamics/kit}.rs` that still write
+> `desc::load_tex(3, frag)` and close with `if resid { entries.push(..) }`. Each needs
+> a slot list in `slots.rs`'s shape. Three of them (`blend`, `filter`, `media`) share
+> one layout across both color spaces while `blend_mixbox` declares its residual
+> bindings *unconditionally* — reached only by the space that has one — so those need a
+> `Slot::when_resid` for a gate the shader genuinely does not state.
 
 Four hand-maintained lists in `build.rs` (`MIRRORS`, `CONSTS`, `VERTEX`, `BINDINGS`)
 name things the shader already declares. `MIRRORS` and `VERTEX` are currently
@@ -99,6 +134,11 @@ binding, which is what ruling out the class means here.
 
 ## 3. `BindKind` pays for a `wgpu` dependency it already has
 
+> **Done.** `BindKind` carries `wgpu::TextureFormat` and `wgpu::TextureViewDimension`;
+> `desc.rs`'s `storage_format` and `view_dimension` are deleted with their runtime
+> panics, and an unmapped format now stops the build that generated it. The stale
+> `lib.rs` claim is rewritten.
+
 `src/lib.rs` states, on `BindKind`:
 
 > `wgpu` is deliberately not a dependency of this crate, so the kind is spelled
@@ -119,6 +159,13 @@ panic paths delete, and an unmapped format becomes a build error rather than a s
 one. Fix the `BindKind` doc either way.
 
 ## 4. `Stamp`'s twelve anonymous lanes defeat the mirror
+
+> **Done.** `Stamp` has 29 named members and no interior padding — the same 192 bytes.
+> Four that are integral by construction (`rect_origin`, `cell_anchor`, `cell_px`,
+> `bleed_reach`) say so in the type, which removes an `i32(...)` truncation from every
+> read. Twenty-six of the thirty accessors were pure renames and are gone; the four
+> that remain are arithmetic. `TileXform`'s milder version of the same thing is
+> untouched.
 
 `dynamics.wesl` declares `struct Stamp` as twelve bare `vec4<f32>` named `a`–`l`. The
 generator faithfully produces `pub a: [f32; 4]`, so the Rust side carries no semantics,
@@ -149,6 +196,12 @@ field names *are* the contract, checked by the compiler on both sides. `TileXfor
 
 ## 5. `deposit` and `deposit_coarse` are held together by a comment
 
+> **Done.** The shared tail is `lay_parcel`, over three bundles — `Under` (the three
+> snapshot texels), `ToolMean` (the front half's whole output) and `Canvas` (the state
+> the transfer acts on, plus the bleed's verdict). The two kernels are now what the
+> comment claimed: the same tail reached by two front halves, one differencing the bake
+> and one blending four cell centres. `dynamics.wesl` lost ~90 lines.
+
 `dynamics.wesl` says it outright, above `deposit_coarse`:
 
 > Everything else — the frame, the tooth, the selection, the arc, the jitter, the parcel
@@ -171,6 +224,13 @@ said structurally.
 
 ## 6. The group-0 index space is partitioned by comment
 
+> **Done.** `build.rs::bindings_do_not_collide` checks the **linked** artifact, where
+> the answer is, and reports the two *files*. Only cross-module collisions are a fault:
+> `transform.wesl` deliberately puts `Quad` and `Gated` at one slot because no entry
+> point reaches both, and one file can state that about itself where two splitting a
+> group cannot. (The check found that case on its first run, which is how the
+> distinction got drawn.)
+
 `mixbox_lut.wesl` states the problem better than a reviewer can:
 
 > **Bindings 5 and 6 of group 0, which is a claim on someone else's group.** … The three
@@ -188,6 +248,21 @@ into a build error naming both files, instead of a naga validation error naming
 but costs a group slot, and probably is not worth it.
 
 ## 7. Performance: the bleed ladder recomputes its neighbours ~36× over
+
+> **The per-texel wins are done; the scratch pass is open.** `segment_look` is built
+> once per texel instead of three times, and once per bleed neighbour instead of twice
+> — the ladder evaluates it 36 times a texel, so that alone halves its frame work.
+> `prefix_span` replaces the two `prefix_at` calls every swept-depth reading used to
+> make, so the lateral guard, `textureNumLayers` and the whole orientation-slice
+> selection happen once for a difference instead of twice; it also differences *inside*
+> the slice mix, which is the better-conditioned order on the one lookup this engine
+> keeps in R32Float precisely because that subtraction is where the digits go.
+> `f16_nearest4` is branch-free across all four channels.
+>
+> **What is left** is the `w_n` scratch pass — one thread per region texel writing the
+> neighbour blend the ladder reads 36 times. Still the right shape, and it would make
+> the pair antisymmetry structural rather than an argument about two threads deriving
+> identical floats.
 
 `dynamics.wesl`'s bleed block runs 9 rungs × 4 offsets, and each tap calls
 `segment_frame(rtn)`, `outside_sweep(swn)` and `swept_pre(swn)`. That is two `prefix_at`
@@ -233,6 +308,15 @@ five.
 Prototype on `integrate.wesl` (10 sites) before touching `dynamics`.
 
 ## 9. Smaller items
+
+> **Three done.** `binding_of` is deleted with `Binding::lookup`. The nine copied
+> accessor paragraphs went with the `resid`-taking accessors' rewrite. And build-time
+> validation is now a real typecheck — see the note at the top, which is the one item
+> here that turned out not to be hypothetical.
+>
+> **Two open.** `dynamics.wesl` is down to ~2130 lines but still holds seven entry
+> points; the `*_common` split is unstarted. `EXCHANGE_STEPS` is still a loop that
+> cannot iterate twice.
 
 - **`dynamics.wesl` is 2228 lines with 7 entry points.** The `*_common` pattern already
   solves this: the `Stamp` struct, the bindings, the accessors and the kernels move to

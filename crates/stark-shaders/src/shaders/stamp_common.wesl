@@ -622,6 +622,18 @@ fn prefix_slice(xl: f32, yl: f32, zi: i32) -> f32 {
     );
 }
 
+// One slice's reading at brush-local (xl, yl), with the travel axis's leading-edge
+// rule: 0 before the tip has reached the point at all.
+//
+// Split from [`prefix_at`] so that [`prefix_span`] can apply the lateral guard and the
+// slice selection once for the *pair* of readings it differences.
+fn prefix_edge(xl: f32, yl: f32, zi: i32) -> f32 {
+    if xl <= -1.0 {
+        return 0.0;
+    }
+    return prefix_slice(xl, yl, zi);
+}
+
 // Trilinear lookup of the prefix-τ volume at brush-local (xl, yl) ∈ [-1,1] and shape
 // orientation `w` (turns ∈ [0,1)). The orientation axis wraps (a full turn is periodic),
 // so the two bracketing slices are chosen modulo the slice count. The x,y bilinear is
@@ -629,9 +641,30 @@ fn prefix_slice(xl: f32, yl: f32, zi: i32) -> f32 {
 // boundary, fp32 precision); 0 before the leading edge, clamp-to-row-total past the
 // trailing edge. A single-slice (round) volume collapses to that one slice for every `w`.
 fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
-    if xl <= -1.0 {
-        return 0.0;
-    }
+    return prefix_span(xl, -2.0, yl, w);
+}
+
+// **The difference of two prefix readings across a stretch of travel** — the swept
+// depth, and what every caller of this volume actually wants: `prefix(x1) − prefix(x0)`
+// at one lateral offset on one orientation.
+//
+// Written as the span rather than as two lookups because everything except the travel
+// coordinate is shared between them, and paying for it twice was the shape of the
+// hottest lookup the dynamics loop has (`deposit` takes this difference at every
+// footprint texel, and the bleed ladder takes it thirty-six more times to read its
+// neighbours' exposure). The lateral guard, `textureNumLayers`, and the whole
+// orientation-slice selection now happen once.
+//
+// **Differencing inside the slice mix is also the better-conditioned order.**
+// `mix(a₁,b₁,t) − mix(a₀,b₀,t)` and `mix(a₁−a₀, b₁−b₀, t)` are the same number
+// exactly; in floats the second subtracts two readings that are close to each other
+// before they are scaled, where the first forms two large interpolants and differences
+// those. The whole reason this volume is R32Float is that this subtraction is where the
+// digits go (`prefix_slice`).
+//
+// `x0 <= -1` is the plain single lookup: nothing is subtracted, because the tip had not
+// reached the point when the span opened. `prefix_at` passes `-2` and means exactly that.
+fn prefix_span(x1: f32, x0: f32, yl: f32, w: f32) -> f32 {
     // Outside the footprint's own square there is no shape to integrate: every mask is
     // swept over brush-local `|x| ≤ 1, |y| ≤ 1` and is zero beyond it by construction
     // (`segments::tip_reach`). Stated rather than left to the mask's border row,
@@ -650,21 +683,19 @@ fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
     let nz = i32(textureNumLayers(prefix_tex));
     // A round tip's volume is one slice, and that slice is the answer at every
     // orientation. Worth a branch rather than letting the general path stand:
-    // that path reads the same slice twice — eight loads where four suffice, on
-    // the hottest lookup the dynamics loop has (`deposit` takes this difference
-    // at every footprint texel) — and its `mix(a, a, fw)` is not even the
-    // identity in floats (two roundings), so the collapse is the more exact
-    // reading as well as the cheaper one.
+    // that path reads the same slice twice — sixteen loads where eight suffice — and
+    // its `mix(a, a, fw)` is not even the identity in floats (two roundings), so the
+    // collapse is the more exact reading as well as the cheaper one.
     if nz == 1 {
-        return prefix_slice(xl, yl, 0);
+        return prefix_edge(x1, yl, 0) - prefix_edge(x0, yl, 0);
     }
     let fl = fract(w) * f32(nz);
     let l0f = floor(fl);
     let fw = fl - l0f;
     let z0 = (i32(l0f) % nz + nz) % nz;
     let z1 = (z0 + 1) % nz;
-    let a = prefix_slice(xl, yl, z0);
-    let b = prefix_slice(xl, yl, z1);
+    let a = prefix_edge(x1, yl, z0) - prefix_edge(x0, yl, z0);
+    let b = prefix_edge(x1, yl, z1) - prefix_edge(x0, yl, z1);
     return mix(a, b, fw);
 }
 
@@ -687,6 +718,6 @@ fn swept_depth(in: VsOut, sw: Sweep) -> f32 {
     // and only the lookup into the mask is re-coordinated, which is also what keeps
     // `stroke_arc` measuring canvas px rather than the lookup frame's own units.
     let l = stretch_look(sw, in.stretch);
-    let depth = prefix_at(l.x, l.z, w) - prefix_at(l.y, l.z, w);
+    let depth = prefix_span(l.x, l.y, l.z, w);
     return max(depth, 0.0) * sw.warp * stretch_gain(in.stretch);
 }

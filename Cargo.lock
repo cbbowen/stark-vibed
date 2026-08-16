@@ -6582,6 +6582,7 @@ name = "stark-shaders"
 version = "0.0.0"
 dependencies = [
  "bytemuck",
+ "naga",
  "prettyplease",
  "proc-macro2",
  "quote",

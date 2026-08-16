@@ -76,8 +76,8 @@
 // Replay and live == committed hold.
 
 import package::stamp_common::{
-    prefix_at, ramp_apply, stretch_gain, stretch_look, stretch_unlook, Sweep, sweep_at,
-    sweep_tangent,
+    prefix_at, prefix_span, ramp_apply, stretch_gain, stretch_look, stretch_unlook, Sweep,
+    sweep_at, sweep_tangent,
 };
 import package::lib::noise::{color_jitter};
 import package::lib::paint_common::{blend_latent, ground_at, rise_ahead, tooth_gate, PAINT_EPS};
@@ -807,19 +807,20 @@ fn segment_look(sw: Sweep) -> vec3<f32> {
 //
 // One function because four callers want exactly this number and would each have had
 // to apply the stretch: `deposit`, its coarse hoist, the bleed flux's neighbour tap,
-// and `snapshot` by way of `outside_sweep`. A stretch applied in three places out of
+// and `snapshot` by way of `outside_look`. A stretch applied in three places out of
 // four is a footprint whose flux is antisymmetric with itself and not with its
 // neighbour — the one property the bleed pair's conservation rests on.
 //
 // `stretch_gain` is deliberately *not* folded in: this measure is the one the bake was
 // integrated in, so the ratios `deposit` takes against it cancel rather than square.
 // Its callers apply the gain where they want the tip's own measure instead.
-fn swept_pre(sw: Sweep) -> f32 {
-    let l = segment_look(sw);
-    return max(
-        prefix_at(l.x, l.z, st.orientation) - prefix_at(l.y, l.z, st.orientation),
-        0.0,
-    );
+//
+// **It takes the look, not the frame**, so a caller that also tests the rim computes
+// `segment_look` once. `deposit` used to build it three times per texel — inside the
+// rim test, inside here, and again for the bake rows — and the bleed ladder built two
+// more for each of its thirty-six neighbours.
+fn swept_pre(l: vec3<f32>) -> f32 {
+    return max(prefix_span(l.x, l.y, l.z, st.orientation), 0.0);
 }
 
 // Whether a region texel is provably outside the segment's sweep — the span
@@ -830,18 +831,23 @@ fn swept_pre(sw: Sweep) -> f32 {
 // spend proving e = 0. `snapshot` may skip exactly the same texels because
 // `deposit` reads the snapshot only after its own e > 0 check, and the two compute
 // the identical frame from the identical uniform — same floats, same verdict.
-fn outside_sweep(sw: Sweep) -> bool {
-    // Beyond the lateral edges the prefix rows are the footprint's own zero
-    // border; past the trailing edge both taps clamp to the row total. Either
-    // way the difference is exactly 0. The lateral test comes first because it is
-    // also what rejects a texel near a tight arc's centre of curvature, where the
-    // travel coordinate has no meaning to test.
-    //
-    // Tested in the **lookup** frame, which is where those rims are: a stretched tip
-    // paints out past the rim its own radius names, and a rejection keyed on the
-    // reference frame would cut the mark off along a straight line exactly there.
-    let l = segment_look(sw);
+//
+// Taken in the **lookup** frame, which is where those rims are: a stretched tip paints
+// out past the rim its own radius names, and a rejection keyed on the reference frame
+// would cut the mark off along a straight line exactly there.
+//
+// Beyond the lateral edges the prefix rows are the footprint's own zero border; past
+// the trailing edge both taps clamp to the row total. Either way the difference is
+// exactly 0. The lateral test comes first because it is also what rejects a texel near
+// a tight arc's centre of curvature, where the travel coordinate has no meaning to test.
+fn outside_look(l: vec3<f32>) -> bool {
     return abs(l.z) >= 1.0 || l.x <= -1.0 || l.y >= 1.0;
+}
+
+// [`outside_look`] for a caller that wants nothing else out of the frame — `snapshot`,
+// and the coarse deposit, which reads its exposure from the cell scratch instead.
+fn outside_sweep(sw: Sweep) -> bool {
+    return outside_look(segment_look(sw));
 }
 
 // One footprint texel's copy. Factored out because the segment loop runs this from the
@@ -1302,6 +1308,185 @@ const BLEED_OFFS = array<vec2<i32>, 4>(
     vec2<i32>(0, -1),
 );
 
+// ---- What the two deposit kernels share ------------------------------------------
+//
+// `deposit` and `deposit_coarse` are **one model at two resolutions** (§6.2): the exact
+// kernel differences the bake at every texel, the coarse one blends four cell centres
+// the hoist evaluated the same expressions at, and from the exchange solve onward there
+// is nothing left to differ about. That was a hundred lines written out twice with a
+// comment on the second saying it "must stay so, line for line" — an invariant no
+// reader could check and no compiler could hold, on the one kernel where a divergence
+// stays invisible until a brush radius flips the host's choice of path.
+//
+// So it is said once, below, and the two kernels are what they claim to be: the same
+// tail reached by two front halves. The three bundles are what a tail needs and a front
+// half produces.
+
+// The three snapshot texels a paint-laying kernel reads, and writes back through.
+//
+// Read as a bundle because the store `mix`es against all three: a texel outside the
+// selection keeps exactly what it had, which is these.
+struct Under {
+    c: vec4<f32>,
+    a: vec4<f32>,
+    @if(resid) r: vec4<f32>,
+}
+
+fn under_at(t: vec2<i32>) -> Under {
+    var u: Under;
+    u.c = textureLoad(under_color, t, 0);
+    u.a = textureLoad(under_aux, t, 0);
+    @if(resid) u.r = textureLoad(under_resid, t, 0);
+    return u;
+}
+
+// The tool's mean load over the pass it made across this texel — the front half's whole
+// output, recovered from the bake by `deposit` and from the cell scratch by
+// `deposit_coarse`, by expressions that are the same ratio taken in the same measure.
+struct ToolMean {
+    h: f32,
+    m: f32,
+    lat: vec3<f32>,
+    @if(resid) res: vec3<f32>,
+}
+
+// The canvas as this slot found it, in the form the transfer acts on: height, per-unit
+// opacity, and the latent (and residual) un-premultiplied out of it.
+//
+// `bled` is part of the *verdict*, not of the state: it says a lateral flux moved
+// something, which is a change to store even when the vertical transfer was the
+// identity. The coarse kernel never sets it, and that is structural rather than an
+// omission — the host keeps every bleed slot on the exact path.
+struct Canvas {
+    h: f32,
+    op: f32,
+    lat: vec3<f32>,
+    @if(resid) res: vec3<f32>,
+    bled: bool,
+}
+
+fn canvas_at(u: Under) -> Canvas {
+    var c: Canvas;
+    c.h = u.a.x;
+    c.op = u.c.a;
+    c.lat = u.c.rgb / max(u.c.a, PAINT_EPS);
+    @if(resid) c.res = u.r.rgb / max(u.c.a, PAINT_EPS);
+    c.bled = false;
+    return c;
+}
+
+// The shared tail: the lift, the parcel this slot lays, and the store.
+//
+// Everything here is per texel *by model* and stays so at either resolution — the
+// selection coverage, the snapshot, the arc the drain fades along, the color-dynamics
+// jitter, and the re-store guard. What the two kernels hand in is the exposure's
+// solved shares (`ex`) and the tool's mean (`tool`); everything else they compute
+// identically, which is why it is computed here.
+fn lay_parcel(
+    rt: vec2<i32>,
+    sw: Sweep,
+    ex: Exchange,
+    sel: f32,
+    tool: ToolMean,
+    canvas: Canvas,
+    u: Under,
+) {
+    // The lift's removal: height leaves; the remaining paint's latent and per-unit
+    // opacity are unchanged — the source fades because its *thickness* drops,
+    // never because its alpha is scaled (§6.1).
+    var h = canvas.h * ex.keep;
+    var m = canvas.op * h;
+
+    // How far along the stroke this texel sits, and what the brush has left to lay
+    // there. The same value whichever segment is drawing it — segment `i` starts at
+    // `dᵢ` and sees this texel at `(arc − dᵢ)/radius` — so both rates below come out
+    // independent of how the path was cut (`stroke_drain`). It is also the domain the
+    // color-dynamics lookup runs on, so there is one arc, not two.
+    //
+    // The travel frame's `y` is in units of the tip **in force here** and scales by
+    // `sw.radius`; its `x` is in the segment's reference units and scales by
+    // `st.frame_radius`. The two axes are denominated differently on a ramping tip
+    // (`stamp_common::Sweep`).
+    let arc = st.arc_at_start + sw.local.x * st.frame_radius;
+    let drain = stroke_drain(arc);
+    let own_op = st.brush_op * drain;
+
+    // The brush's own color at this texel: the stroke color offset by the
+    // color-dynamics field, sampled at the same stroke-local (lateral, arc) domain as
+    // the fast path — both in canvas px.
+    var own_lat = st.brush_lat;
+    if any(st.noise_amp != vec3<f32>(0.0, 0.0, 0.0)) {
+        let lateral = sw.local.y * sw.radius;
+        own_lat += color_jitter(
+            dyn_noise_tex, dyn_noise_samp, vec2<f32>(lateral, arc),
+            st.noise_freq, st.noise_amp, st.noise_off,
+        );
+    }
+
+    // The parcel this slot lays: the tool's deposit + the brush's own `add` paint —
+    // the latter linear in exposure, i.e. exactly the plain deposit's path-integral
+    // height.
+    // The tool's per-unit opacity, from the two means it carries. Recovered here
+    // rather than carried, so the one expression answers for both front halves.
+    let tool_op = tool.m / max(tool.h, PAINT_EPS);
+    let dep_h = tool.h * ex.dep;
+    // No tooth factor here, and none on the deposit above: both already carry it,
+    // because `ex` was solved at the exposure the ground let through. Multiplying
+    // again would charge the weave twice — and would take the deposit out of the
+    // complement the tool's own dispatch computed, which is what would destroy paint.
+    let add_h = st.add * drain * ex.add_w;
+    let par_h = dep_h + add_h;
+    let par_m = tool_op * dep_h + own_op * add_h;
+
+    // A texel this dispatch did not change must not be **re-stored** (§6.2). The
+    // write itself is not neutral: a storage write re-encodes f32 → f16, and a
+    // backend may truncate that conversion toward zero (D3D12's f32→f16 does), so
+    // re-storing an algebraically identical (premult, op, height) walks a channel
+    // down one ULP per rewrite wherever the recompute rounds a hair low — and
+    // `premult = (premult/op)·op` rounds low about half the time for any op ≠ 1.
+    // Iterated over the sub-pixel segments a slow hand is fitted at, that is a
+    // *directional* drift: measured at +28 8-bit levels of ghost over a 177-knot
+    // stroke whose every rate was zero. The guard is semantic, not a value
+    // comparison: `keep = 1` says the lift took nothing (exact — `exp(±0)` is
+    // exactly 1, and any nonzero rate gives `keep < 1`), a zero parcel says
+    // nothing landed, no flux says nothing moved sideways. What remains is the
+    // identity, whose only observable effect is the rounding above.
+    if ex.keep == 1.0 && par_h == 0.0 && par_m == 0.0 && !canvas.bled {
+        return;
+    }
+    var par_lat = own_lat;
+    // The brush's own residual, unjittered (see `exchange`).
+    @if(resid) var par_res = st.brush_res;
+    if par_m > PAINT_EPS {
+        par_lat = (tool.lat * (tool_op * dep_h) + own_lat * (own_op * add_h)) / par_m;
+        // The same two masses weight the residual's mixture, so the parcel's two
+        // halves are one color rather than two independently averaged ones.
+        @if(resid) par_res =
+            (tool.res * (tool_op * dep_h) + st.brush_res * (own_op * add_h)) / par_m;
+    }
+
+    let lat = blend_latent(canvas.lat, m, par_lat, par_m);
+    @if(resid) let res = blend_latent(canvas.res, m, par_res, par_m);
+    h += par_h;
+    m += par_m;
+    let op = m / max(h, PAINT_EPS);
+
+    // Lerp the whole exchange back towards the snapshot by the selection coverage: at
+    // the mask's feathered edge the texel receives that fraction of everything this
+    // slot did — the lift as well as the deposit — which is exactly the fraction
+    // `exchange` scaled its own side of the transfer by.
+    // On the f16 lattice before it goes down (`lib::store`). The guard above skips the
+    // stores that change nothing at all; this is what keeps the ones that *do* land
+    // from each shaving a ULP off the region as a segment sweep passes over it.
+    textureStore(region_color_w, rt, f16_nearest4(mix(u.c, vec4<f32>(lat * op, op), sel)));
+    textureStore(region_aux_w, rt, f16_nearest4(mix(u.a, vec4<f32>(h, 0.0, 0.0, 0.0), sel)));
+    // Premultiplied by the same `op` and lerped by the same `sel` — the residual is
+    // stored exactly as the color beside it is.
+    @if(resid) textureStore(
+        region_resid_w, rt, f16_nearest4(mix(u.r, vec4<f32>(res * op, 0.0), sel)),
+    );
+}
+
 @compute @workgroup_size(8, 8)
 fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let udim = textureDimensions(under_color);
@@ -1319,15 +1504,15 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // (`outside_sweep`): reject them before the prefix-τ taps below spend ~10 loads
     // apiece computing that zero.
     let sw = segment_frame(rt);
-    if outside_sweep(sw) {
+    // Where that frame lands in the one the prefix and the bake rows are indexed in,
+    // once the tip's stretch is taken into account (§6.6). Built once and used three
+    // times over — the rim test, the exposure and the bake rows all read it — where
+    // each used to build its own. The frame itself stays the tip's own: the arc and
+    // the noise domain are measured off that.
+    let lk = segment_look(sw);
+    if outside_look(lk) {
         return;
     }
-    let xl = sw.local.x;
-    let yl = sw.local.y;
-    // Where those land in the frame the prefix and the bake rows are indexed in, once
-    // the tip's stretch is taken into account (§6.6). The pair above stays the tip's
-    // own — the arc and the noise domain below are measured off it.
-    let lk = segment_look(sw);
 
     // The swept exposure — the brush's coverage integrated as it travels this
     // segment, as a difference of prefix sums (identical to the plain deposit's
@@ -1340,7 +1525,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // is per unit tip travel, but the bake was integrated against the same prefix and
     // its ratios must be taken in the measure it was integrated in — where the factors
     // cancel rather than squaring.
-    let dpre = swept_pre(sw);
+    let dpre = swept_pre(lk);
     if dpre <= 0.0 {
         return; // outside the swept footprint: the region keeps its value
     }
@@ -1361,8 +1546,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // and the same reservoir, both as the segment found them.
     let ex = exchange_at(e);
 
-    let uc = textureLoad(under_color, t, 0);
-    let ua = textureLoad(under_aux, t, 0);
+    let u = under_at(t);
     // The tool's carried paint over this spot, as the tip actually presented it:
     // the swept prefix differenced across the segment (see `bake`) gives the
     // exposure-weighted integral of the reservoir over the whole pass, so dividing
@@ -1380,17 +1564,16 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // green carries a negative a), so its prefix is not monotonic and clamping the
     // difference would shear the chroma off whatever the tool is carrying.
     let inv_pre = 1.0 / dpre;
-    let tool_h = max(d_load.x, 0.0) * inv_pre;
-    let tool_m = max(d_load.y, 0.0) * inv_pre;
-    let latm = d_latm.xyz;
-    let tool_op = tool_m / max(tool_h, PAINT_EPS);
-    let tool_lat = latm * inv_pre / max(tool_m, PAINT_EPS);
+    var tool: ToolMean;
+    tool.h = max(d_load.x, 0.0) * inv_pre;
+    tool.m = max(d_load.y, 0.0) * inv_pre;
+    tool.lat = d_latm.xyz * inv_pre / max(tool.m, PAINT_EPS);
     // The residual's mean over the same pass, recovered against the same mass and the
     // same measure — unclamped like the latent, and for the same reason: a residual is
     // signed (`rgb − poly(c)` is negative on all three channels at black, §6.7), so
     // clamping its prefix difference would shear the color it exists to carry.
     @if(resid) let d_rlm = bake_at(bake_rlm, lk.x, lk.z) - bake_at(bake_rlm, lk.y, lk.z);
-    @if(resid) let tool_res = d_rlm.xyz * inv_pre / max(tool_m, PAINT_EPS);
+    @if(resid) tool.res = d_rlm.xyz * inv_pre / max(tool.m, PAINT_EPS);
 
     // The canvas as this segment found it — or, when the brush bleeds, that state
     // relaxed towards its neighbours first (see `BLEED_REACH` above). Ahead of the
@@ -1399,21 +1582,16 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // sideways. The tool's own half sampled the un-bled region, so the two sides of
     // the vertical transfer disagree by O(k_bleed·k_lift·e²) — second order, the
     // same class as the mean-field freeze the loop already carries (`exchange_at`).
-    var h0 = ua.x;
-    var op0 = uc.a;
-    var lat0 = uc.rgb / max(uc.a, PAINT_EPS);
-    @if(resid) let ur = textureLoad(under_resid, t, 0);
-    @if(resid) var res0 = ur.rgb / max(uc.a, PAINT_EPS);
-    var bled = false;
+    var canvas = canvas_at(u);
     let kb = bleed_rate(); // the bleed rate; nonzero only on a dedicated bleed slot
     if kb > 0.0 {
         let w_t = 1.0 - exp(-kb * e);
         // Entering quantities in the mass-weighted form every flux moves (§6.1):
         // height, optical mass, latent·mass — the same formula both threads of a
         // pair evaluate, which is what makes the flux antisymmetric.
-        let m0 = uc.a * ua.x;
-        let lm0 = uc.rgb * ua.x;
-        @if(resid) let rlm0 = ur.rgb * ua.x;
+        let m0 = u.c.a * u.a.x;
+        let lm0 = u.c.rgb * u.a.x;
+        @if(resid) let rlm0 = u.r.rgb * u.a.x;
         var dh = 0.0;
         var dm = 0.0;
         var dlm = vec3<f32>(0.0, 0.0, 0.0);
@@ -1425,6 +1603,8 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
         let reach = max(st.bleed_reach, 1);
         let rungs = BLEED_LADDER_TAPS + 1;
         let per_rung = BLEED_SHARE_LADDER / f32(BLEED_LADDER_TAPS);
+        // The one factor every neighbour's exposure carries, hoisted out of both loops.
+        let gain = stretch_gain(st.stretch);
         for (var k = 0; k < rungs; k = k + 1) {
             var dist = 1;
             var share = BLEED_SHARE_NEAR;
@@ -1448,20 +1628,23 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let rtn = st.rect_origin + tn;
                 // The neighbour's own exposure, from the same uniform its own thread
                 // reads it — same floats, same verdict, so the pair agrees on its flux.
+                // One `segment_look` for the rim test and the exposure both, where the
+                // two used to build one each: this runs thirty-six times a texel.
                 let swn = segment_frame(rtn);
+                let lkn = segment_look(swn);
                 var w_n = 0.0;
-                if !outside_sweep(swn) {
+                if !outside_look(lkn) {
                     // The same exposure its own thread computes, through the same
                     // function — including the stretch, without which a pair would
                     // disagree about its own flux (`swept_pre`).
-                    w_n = 1.0 - exp(-kb * swept_pre(swn) * swn.warp * stretch_gain(st.stretch));
+                    w_n = 1.0 - exp(-kb * swept_pre(lkn) * swn.warp * gain);
                 }
                 let seln = load1(sel_mask, rtn).r;
                 let c = share * min(w_t, w_n) * seln;
                 if c > 0.0 {
                     let ucn = textureLoad(under_color, tn, 0);
                     let uan = textureLoad(under_aux, tn, 0);
-                    dh += c * (uan.x - ua.x);
+                    dh += c * (uan.x - u.a.x);
                     dm += c * (ucn.a * uan.x - m0);
                     dlm += c * (ucn.rgb * uan.x - lm0);
                     // The same share of the same pair's difference: the residual
@@ -1470,110 +1653,22 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
             }
         }
-        bled = dh != 0.0 || dm != 0.0 || any(dlm != vec3<f32>(0.0, 0.0, 0.0));
+        canvas.bled = dh != 0.0 || dm != 0.0 || any(dlm != vec3<f32>(0.0, 0.0, 0.0));
         // The residual joins the verdict rather than riding on the color's: a flux
         // that moved residual and no latent is possible — two colors with equal
         // concentrations and different residuals is exactly what this channel exists
         // to tell apart — and calling that texel unbled would drop the transfer.
-        @if(resid) bled = bled || any(drlm != vec3<f32>(0.0, 0.0, 0.0));
-        h0 = ua.x + dh;
+        @if(resid) canvas.bled = canvas.bled || any(drlm != vec3<f32>(0.0, 0.0, 0.0));
+        canvas.h = u.a.x + dh;
         let m1 = m0 + dm;
-        op0 = m1 / max(h0, PAINT_EPS);
-        lat0 = (lm0 + dlm) / max(m1, PAINT_EPS);
-        @if(resid) res0 = (rlm0 + drlm) / max(m1, PAINT_EPS);
+        canvas.op = m1 / max(canvas.h, PAINT_EPS);
+        canvas.lat = (lm0 + dlm) / max(m1, PAINT_EPS);
+        @if(resid) canvas.res = (rlm0 + drlm) / max(m1, PAINT_EPS);
     }
 
-    // The lift's removal: height leaves; the remaining paint's latent and per-unit
-    // opacity are unchanged — the source fades because its *thickness* drops,
-    // never because its alpha is scaled (§6.1).
-    var h = h0 * ex.keep;
-    var m = op0 * h;
-    let canvas_lat = lat0;
-    @if(resid) let canvas_res = res0;
-
-    // The brush's own color at this texel: the stroke color offset by the
-    // color-dynamics field, sampled at the same stroke-local (lateral, arc)
-    // domain as the fast path — both in canvas px. The travel frame's `y` is in
-    // units of the tip **in force here** and scales by `sw.radius`; its `x` is in the
-    // segment's reference units and scales by `st.frame_radius`. The two axes are
-    // denominated differently on a ramping tip (`stamp_common::Sweep`).
-    // How far along the stroke this texel sits, and what the brush has left to lay
-    // there. The same value whichever segment is drawing it — segment `i` starts at
-    // `dᵢ` and sees this texel at `(arc − dᵢ)/radius` — so both rates below come out
-    // independent of how the path was cut (`stroke_drain`). It is also the domain the
-    // color-dynamics lookup already ran on, so there is one arc, not two.
-    let arc = st.arc_at_start + xl * st.frame_radius;
-    let drain = stroke_drain(arc);
-    let own_op = st.brush_op * drain;
-
-    var own_lat = st.brush_lat;
-    if any(st.noise_amp != vec3<f32>(0.0, 0.0, 0.0)) {
-        let lateral = yl * sw.radius;
-        own_lat += color_jitter(
-            dyn_noise_tex, dyn_noise_samp, vec2<f32>(lateral, arc),
-            st.noise_freq, st.noise_amp, st.noise_off,
-        );
-    }
-
-    // The parcel this segment lays: the tool's deposit + the brush's own `add`
-    // paint — the latter linear in exposure, i.e. exactly the plain deposit's
-    // path-integral height.
-    let dep_h = tool_h * ex.dep;
-    // No tooth factor here, and none on the deposit above: both already carry it,
-    // because `ex` was solved at the exposure the ground let through. Multiplying
-    // again would charge the weave twice — and would take the deposit out of the
-    // complement the tool's own dispatch computed, which is what would destroy paint.
-    let add_h = st.add * drain * ex.add_w;
-    let par_h = dep_h + add_h;
-    let par_m = tool_op * dep_h + own_op * add_h;
-
-    // A texel this dispatch did not change must not be **re-stored** (§6.2). The
-    // write itself is not neutral: a storage write re-encodes f32 → f16, and a
-    // backend may truncate that conversion toward zero (D3D12's f32→f16 does), so
-    // re-storing an algebraically identical (premult, op, height) walks a channel
-    // down one ULP per rewrite wherever the recompute rounds a hair low — and
-    // `premult = (premult/op)·op` rounds low about half the time for any op ≠ 1.
-    // Iterated over the sub-pixel segments a slow hand is fitted at, that is a
-    // *directional* drift: measured at +28 8-bit levels of ghost over a 177-knot
-    // stroke whose every rate was zero. The guard is semantic, not a value
-    // comparison: `keep = 1` says the lift took nothing (exact — `exp(±0)` is
-    // exactly 1, and any nonzero rate gives `keep < 1`), a zero parcel says
-    // nothing landed, no flux says nothing moved sideways. What remains is the
-    // identity, whose only observable effect is the rounding above.
-    if ex.keep == 1.0 && par_h == 0.0 && par_m == 0.0 && !bled {
-        return;
-    }
-    var par_lat = own_lat;
-    // The brush's own residual, unjittered (see `exchange`).
-    @if(resid) var par_res = st.brush_res;
-    if par_m > PAINT_EPS {
-        par_lat = (tool_lat * (tool_op * dep_h) + own_lat * (own_op * add_h)) / par_m;
-        // The same two masses weight the residual's mixture, so the parcel's two
-        // halves are one color rather than two independently averaged ones.
-        @if(resid) par_res =
-            (tool_res * (tool_op * dep_h) + st.brush_res * (own_op * add_h)) / par_m;
-    }
-
-    let lat = blend_latent(canvas_lat, m, par_lat, par_m);
-    @if(resid) let res = blend_latent(canvas_res, m, par_res, par_m);
-    h += par_h;
-    m += par_m;
-    let op = m / max(h, PAINT_EPS);
-
-    // Lerp the whole exchange back towards the snapshot by the selection coverage: at
-    // the mask's feathered edge the texel receives that fraction of everything this
-    // segment did — the lift as well as the deposit — which is exactly the fraction
-    // `exchange` scaled its own side of the transfer by.
-    // On the f16 lattice before it goes down (`lib::store`). The guard above skips the
-    // stores that change nothing at all; this is what keeps the ones that *do* land
-    // from each shaving a ULP off the region as a segment sweep passes over it.
-    textureStore(region_color_w, rt, f16_nearest4(mix(uc, vec4<f32>(lat * op, op), sel)));
-    textureStore(region_aux_w, rt, f16_nearest4(mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel)));
-    // Premultiplied by the same `op` and lerped by the same `sel` — the residual is
-    // stored exactly as the color beside it is.
-    @if(resid) textureStore(
-        region_resid_w, rt, f16_nearest4(mix(ur, vec4<f32>(res * op, 0.0), sel)),
-    );
+    // The lift, the parcel and the store — the half this kernel shares with its coarse
+    // twin, said once (`lay_parcel`).
+    lay_parcel(rt, sw, ex, sel, tool, canvas, u);
 }
 
 // ---- 4b. The coarse deposit: hoisting the exchange to the tip's shoulder. --------
@@ -1675,11 +1770,11 @@ fn cell_hoist(@builtin(global_invocation_id) gid: vec3<u32>) {
     var tool = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     var lat = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     @if(resid) var res = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    if !outside_sweep(sw) {
-        let lk = segment_look(sw);
+    let lk = segment_look(sw);
+    if !outside_look(lk) {
         // The swept exposure and the baked reservoir means, exactly as `deposit`
         // takes them — same taps, same measure, same clamps — at one position.
-        let dpre = swept_pre(sw);
+        let dpre = swept_pre(lk);
         if dpre > 0.0 {
             let d_load = bake_at(bake_load, lk.x, lk.z) - bake_at(bake_load, lk.y, lk.z);
             let d_latm = bake_at(bake_latm, lk.x, lk.z) - bake_at(bake_latm, lk.y, lk.z);
@@ -1766,95 +1861,42 @@ fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     if outside_sweep(sw) {
         return;
     }
-    let xl = sw.local.x;
 
     // This texel's four cells and their weights.
     let tap = cell_tap(rt);
-    let tool = cell_lerp(cell_tool, tap);
+    let cell = cell_lerp(cell_tool, tap);
     // The exposure in the tip's measure (`dpre · warp`), blended from the centres.
     // Zero is the hoist's "outside the swept footprint" verdict at all four of them,
     // and takes the same exit.
-    if tool.x <= 0.0 {
+    if cell.x <= 0.0 {
         return; // no cell around this texel saw exposure: the region keeps its value
     }
     // The ground's share of this texel (§6.4) — per texel, never per cell: tooth is
     // the canvas's resolution, and averaging it over a cell would smear the weave
     // the gate exists to print.
-    let e = tool.x * surface_tooth(rt, sw.turn);
+    let e = cell.x * surface_tooth(rt, sw.turn);
     let sel = load1(sel_mask, rt).r;
     if sel <= 0.0 {
         return;
     }
     let ex = exchange_at(e);
 
-    let uc = textureLoad(under_color, t, 0);
-    let ua = textureLoad(under_aux, t, 0);
     // The means, recovered from the blended masses by the exact kernel's own
     // expressions — `inv_e` standing where `deposit` writes `inv_pre`, the two
     // differing by the warp both sides of the ratio carry.
-    let inv_e = 1.0 / tool.x;
-    let tool_h = tool.y * inv_e;
-    let tool_m = tool.z * inv_e;
-    let tool_op = tool_m / max(tool_h, PAINT_EPS);
-    let tool_lat = cell_lerp(cell_lat, tap).xyz * inv_e / max(tool_m, PAINT_EPS);
-    @if(resid) let tool_res = cell_lerp(cell_res, tap).xyz * inv_e / max(tool_m, PAINT_EPS);
-    @if(resid) let ur = textureLoad(under_resid, t, 0);
+    let inv_e = 1.0 / cell.x;
+    var tool: ToolMean;
+    tool.h = cell.y * inv_e;
+    tool.m = cell.z * inv_e;
+    tool.lat = cell_lerp(cell_lat, tap).xyz * inv_e / max(tool.m, PAINT_EPS);
+    @if(resid) tool.res = cell_lerp(cell_res, tap).xyz * inv_e / max(tool.m, PAINT_EPS);
 
-    let h0 = ua.x;
-    let op0 = uc.a;
-    let canvas_lat = uc.rgb / max(uc.a, PAINT_EPS);
-    @if(resid) let canvas_res = ur.rgb / max(uc.a, PAINT_EPS);
-
-    // The lift's removal, exactly as the exact kernel takes it (§6.1).
-    var h = h0 * ex.keep;
-    var m = op0 * h;
-
-    // The brush's own paint at this texel — arc, drain and jitter all per texel,
-    // because each is exact there and a cell would make stroke weight depend on
-    // where the grid fell (§6.2).
-    let arc = st.arc_at_start + xl * st.frame_radius;
-    let drain = stroke_drain(arc);
-    let own_op = st.brush_op * drain;
-    var own_lat = st.brush_lat;
-    if any(st.noise_amp != vec3<f32>(0.0, 0.0, 0.0)) {
-        let lateral = sw.local.y * sw.radius;
-        own_lat += color_jitter(
-            dyn_noise_tex, dyn_noise_samp, vec2<f32>(lateral, arc),
-            st.noise_freq, st.noise_amp, st.noise_off,
-        );
-    }
-
-    let dep_h = tool_h * ex.dep;
-    let add_h = st.add * drain * ex.add_w;
-    let par_h = dep_h + add_h;
-    let par_m = tool_op * dep_h + own_op * add_h;
-
-    // The f16 re-store guard (§6.2), same semantics as `deposit`'s: `keep = 1` is
-    // exact (`exp(0)`), a zero parcel laid nothing, and there is no bleed here to
-    // ask about. The cell means feed the *values*; the verdict is still computed
-    // from them exactly, so an untouched texel is still never re-encoded.
-    if ex.keep == 1.0 && par_h == 0.0 && par_m == 0.0 {
-        return;
-    }
-    var par_lat = own_lat;
-    @if(resid) var par_res = st.brush_res;
-    if par_m > PAINT_EPS {
-        par_lat = (tool_lat * (tool_op * dep_h) + own_lat * (own_op * add_h)) / par_m;
-        @if(resid) par_res =
-            (tool_res * (tool_op * dep_h) + st.brush_res * (own_op * add_h)) / par_m;
-    }
-
-    let lat = blend_latent(canvas_lat, m, par_lat, par_m);
-    @if(resid) let res = blend_latent(canvas_res, m, par_res, par_m);
-    h += par_h;
-    m += par_m;
-    let op = m / max(h, PAINT_EPS);
-
-    textureStore(region_color_w, rt, f16_nearest4(mix(uc, vec4<f32>(lat * op, op), sel)));
-    textureStore(region_aux_w, rt, f16_nearest4(mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel)));
-    @if(resid) textureStore(
-        region_resid_w, rt, f16_nearest4(mix(ur, vec4<f32>(res * op, 0.0), sel)),
-    );
+    // The lift, the parcel and the store — the exact kernel's own tail, called rather
+    // than restated (`lay_parcel`). There is no bleed to fold in first: the host keeps
+    // every bleed slot on the exact path, so `Canvas::bled` is structurally false here
+    // and the re-store guard loses nothing by it.
+    let u = under_at(t);
+    lay_parcel(rt, sw, ex, sel, tool, canvas_at(u), u);
 }
 
 // ---- 5. Settle: the transfer the pen-up breaks. ----------------------------------
@@ -1963,14 +2005,15 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     // footprint and `outside_sweep` reduces to the brush-local unit square — the same
     // rejection `snapshot` uses to decide which texels it bothers to copy.
     let sw = segment_frame(rt);
-    if outside_sweep(sw) {
-        return;
-    }
     // The settle's whole geometry is the footprint's, so unlike the deposit it works
     // in the lookup frame throughout: the row it walks is a bake row, and the point it
     // walks to is where the stretch put it (§6.6). The slot carries no travel, so the
-    // range's two ends coincide and `.x` is the point.
+    // range's two ends coincide and `.x` is the point — and the rim test is a reading
+    // of the same frame, so it is built once.
     let lk = segment_look(sw);
+    if outside_look(lk) {
+        return;
+    }
     let xl = lk.x;
     let yl = lk.z;
 

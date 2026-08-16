@@ -32,6 +32,13 @@ wesl = { workspace = true }
 # laid out from. Build-only: the resolver keeps build-dependency features separate,
 # so the library above does not carry it.
 wesl = { workspace = true, features = ["eval"] }
+# The **type checker** (`build.rs::typechecks`). `wesl`'s own `validate` resolves
+# names and checks call arity; it does not typecheck, so a `Sweep` handed to a
+# parameter expecting a `vec3<f32>` linked cleanly and failed at
+# `create_shader_module` — on a GPU, in the half of the suite CI cannot diff. This is
+# the same front end `wgpu` runs there, run at build time instead. Already in the
+# graph (wgpu 30 is built on it), so it costs a compile of what is downloaded anyway.
+naga = { version = "30", default-features = false, features = ["wgsl-in"] }
 # Emitting the host mirrors (`build/mirror.rs`). `quote` builds the code as tokens
 # rather than as text, and `prettyplease` renders it readably — which matters here
 # because the lane documentation the generator carries over is meant to be read.
