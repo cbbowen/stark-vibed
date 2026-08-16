@@ -328,6 +328,10 @@ async fn export_png(
         .map_err(|e| e.to_string())
     })
     .ok_or("the canvas is not ready yet")??;
-    let png = readback.await.to_png().map_err(|e| e.to_string())?;
+    let png = readback
+        .await
+        .map_err(|e| e.to_string())?
+        .to_png()
+        .map_err(|e| e.to_string())?;
     download_bytes(&png, "painting.png", "image/png")
 }

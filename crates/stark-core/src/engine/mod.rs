@@ -276,6 +276,22 @@ pub struct ObservableState {
     /// state, not a view setting — projected here so the frontend shows what the
     /// document says rather than a copy of its own that goes stale.
     pub background: [f32; 3],
+
+    /// Set once the GPU has failed — a lost device, an out-of-memory, an error no
+    /// scope caught (§5). `None` for a healthy device, which is every ordinary
+    /// observation.
+    ///
+    /// **Projected because the document outlives the device.** The engine's state is
+    /// an action log in ordinary memory, so a frontend told this has gone can still
+    /// write the file — where discovering the same fact by aborting in the readback
+    /// path, which is how it used to come out, takes the painting with it. What a
+    /// frontend should do with it is stop dispatching and offer to save; what it must
+    /// not do is keep painting, since nothing after this point reaches a pixel.
+    ///
+    /// An `Arc` so that this projection stays cheap to clone at pointer rate: the
+    /// common value is `None`, and the uncommon one is a refcount bump rather than a
+    /// `String`.
+    pub gpu_failure: Option<Arc<crate::gpu::DeviceFailure>>,
 }
 
 pub struct Engine {
@@ -1210,7 +1226,19 @@ impl Engine {
             color_space: self.color_space.id(),
             surface: doc.surface,
             background: shown.background,
+            gpu_failure: self.gpu.health().failure().map(Arc::new),
         }
+    }
+
+    /// Whether the GPU is still usable, and what went wrong if not (§5) — the same
+    /// fact [`ObservableState::gpu_failure`] projects, as a **request** for a caller
+    /// that holds the engine and has no projection to hand.
+    ///
+    /// The collaboration pump is the caller that wants it: it services peer traffic
+    /// without taking an observation each time (§17.5), and a device that has died is
+    /// exactly the thing that should stop it applying anything further.
+    pub fn gpu_failure(&self) -> Option<crate::gpu::DeviceFailure> {
+        self.gpu.health().failure()
     }
 
     /// The current committed document state.

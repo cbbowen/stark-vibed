@@ -339,7 +339,9 @@ impl Renderer {
         scale: stark_core::ExportScale,
         background: stark_core::Background,
         content: stark_core::Rendered,
-    ) -> stark_core::Result<impl std::future::Future<Output = stark_core::RgbaImage> + use<>> {
+    ) -> stark_core::Result<
+        impl std::future::Future<Output = stark_core::Result<stark_core::RgbaImage>> + use<>,
+    > {
         self.engine.export(
             &mut stark_core::Offscreen::default(),
             frame,

@@ -73,8 +73,8 @@ pub use engine::{
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};
 pub use gpu::{
-    Compositor, CompositorPipeline, EnvironmentId, GpuContext, MediaParams, Offscreen,
-    StrokeRenderer, SurfaceId, TilePairHandle, TilePool,
+    Compositor, CompositorPipeline, DeviceFailure, EnvironmentId, FailureKind, GpuContext,
+    GpuHealth, MediaParams, Offscreen, StrokeRenderer, SurfaceId, TilePairHandle, TilePool,
 };
 pub use gradient::{Gradient, GradientStop};
 pub use guides::{AxisPencil, AxisPlane, GuideScene, Lens, PairTrace, PerspectiveGuide, Scaffold};

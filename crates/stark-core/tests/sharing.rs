@@ -151,7 +151,7 @@ fn export_view_frames_the_callers_view() {
             Rendered::Committed,
         )
         .expect("a finite view within device limits");
-    let img = pollster::block_on(readback);
+    let img = pollster::block_on(readback).expect("the readback completes");
     assert_eq!((img.width, img.height), (64, 32));
     assert!(
         red_dominant(center(&img)),

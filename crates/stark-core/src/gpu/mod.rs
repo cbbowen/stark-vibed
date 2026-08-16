@@ -35,7 +35,7 @@ pub use composite::{
     CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, FilterDraw,
     GroupContent, MatteDraw, MediaParams, Offscreen, SelectionOutline,
 };
-pub use context::GpuContext;
+pub use context::{DeviceFailure, FailureKind, GpuContext, GpuHealth};
 pub use environment::{Environment, EnvironmentId};
 pub use fill::FillRenderer;
 pub use merge::{MergeRenderer, MergeSide};

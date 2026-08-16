@@ -74,7 +74,8 @@ fn exports_the_frame_rect_without_its_own_matte() {
                 Rendered::Live,
             )
             .expect("export"),
-    );
+    )
+    .expect("the readback completes");
     assert_eq!(
         (img.width, img.height),
         (120, 80),
@@ -109,7 +110,8 @@ fn scale_changes_resolution_not_framing() {
                 Rendered::Live,
             )
             .expect("1x"),
-    );
+    )
+    .expect("the readback completes");
     let two = pollster::block_on(
         engine
             .export(
@@ -120,7 +122,8 @@ fn scale_changes_resolution_not_framing() {
                 Rendered::Live,
             )
             .expect("2x"),
-    );
+    )
+    .expect("the readback completes");
     assert_eq!((two.width, two.height), (one.width * 2, one.height * 2));
 
     // Same framing: the four corners and the centre agree between the two, which
@@ -148,7 +151,8 @@ fn scale_changes_resolution_not_framing() {
                 Rendered::Live,
             )
             .expect("by width"),
-    );
+    )
+    .expect("the readback completes");
     assert_eq!((by_width.width, by_width.height), (240, 160));
 }
 
@@ -180,7 +184,8 @@ fn transparent_export_cuts_out_the_paint() {
                 Rendered::Live,
             )
             .expect("transparent"),
-    );
+    )
+    .expect("the readback completes");
     let opaque = pollster::block_on(
         engine
             .export(
@@ -191,7 +196,8 @@ fn transparent_export_cuts_out_the_paint() {
                 Rendered::Live,
             )
             .expect("substrate"),
-    );
+    )
+    .expect("the readback completes");
 
     for (i, c) in corners(&cut).iter().enumerate() {
         assert_eq!(
@@ -229,7 +235,8 @@ fn export_uses_the_documents_ground() {
                 Rendered::Live,
             )
             .expect("paper"),
-    );
+    )
+    .expect("the readback completes");
     assert!(!is_dark(paper.pixel(4, 4)), "default ground is near-white");
 
     engine.process(DocCommand::SetBackground([0.02, 0.02, 0.03]));
@@ -243,7 +250,8 @@ fn export_uses_the_documents_ground() {
                 Rendered::Live,
             )
             .expect("ink"),
-    );
+    )
+    .expect("the readback completes");
     assert!(
         is_dark(ink.pixel(4, 4)),
         "a dark ground should reach the export, got {:?}",
@@ -264,6 +272,7 @@ fn export_uses_the_documents_ground() {
                 )
                 .expect("undone")
         )
+        .expect("the readback completes")
         .pixel(4, 4)
     ));
 }
@@ -286,7 +295,8 @@ fn export_omits_the_selection_outline() {
                 Rendered::Live,
             )
             .expect("clean"),
-    );
+    )
+    .expect("the readback completes");
 
     // A marquee well inside the frame, so its outline would land in the export.
     engine.process(GestureCommand::Start {
@@ -314,7 +324,8 @@ fn export_omits_the_selection_outline() {
                 Rendered::Live,
             )
             .expect("with selection"),
-    );
+    )
+    .expect("the readback completes");
     assert!(
         images_match(&clean, &selected, 2),
         "the selection outline leaked into the export"
@@ -343,7 +354,8 @@ fn export_without_a_frame_falls_back() {
                 Rendered::Live,
             )
             .expect("empty"),
-    );
+    )
+    .expect("the readback completes");
     assert_eq!((empty.width, empty.height), (SIZE.width, SIZE.height));
 
     // Painted: the populated tiles' bounds, which are tile-aligned and so at least
@@ -438,7 +450,8 @@ fn the_export_limit_is_the_devices_own() {
                 Rendered::Committed,
             )
             .expect("export at the limit"),
-    );
+    )
+    .expect("the readback completes");
     assert_eq!((img.width, img.height), (limit, limit));
 
     // One pixel more is refused in the engine's words, not wgpu's.
@@ -514,7 +527,8 @@ fn a_piece_past_the_export_limit_still_has_an_overview() {
                 Rendered::Committed,
             )
             .expect("export"),
-    );
+    )
+    .expect("the readback completes");
     assert_eq!(
         (image.width, image.height),
         (plan.size.width, plan.size.height)
@@ -575,7 +589,8 @@ fn export_is_rgba_whatever_the_target_format_is() {
             Rendered::Live,
         )
         .expect("rgba export"),
-    );
+    )
+    .expect("the readback completes");
     let b = pollster::block_on(
         bgra.export(
             &mut Offscreen::default(),
@@ -585,7 +600,8 @@ fn export_is_rgba_whatever_the_target_format_is() {
             Rendered::Live,
         )
         .expect("bgra export"),
-    );
+    )
+    .expect("the readback completes");
 
     assert_eq!((a.width, a.height), (b.width, b.height));
     assert!(
@@ -630,7 +646,8 @@ fn export_plan_reports_the_size_it_will_produce() {
                 Rendered::Live,
             )
             .expect("export"),
-    );
+    )
+    .expect("the readback completes");
     assert_eq!(
         (img.width, img.height),
         (plan.size.width, plan.size.height),
@@ -663,7 +680,8 @@ fn committed_renders_omit_the_in_flight_stroke() {
                 Rendered::Committed,
             )
             .expect("bare"),
-    );
+    )
+    .expect("the readback completes");
 
     // A stroke *held down* across the middle of the frame: nothing is committed yet.
     engine.process(GestureCommand::Start {
@@ -687,7 +705,8 @@ fn committed_renders_omit_the_in_flight_stroke() {
                 Rendered::Live,
             )
             .expect("live"),
-    );
+    )
+    .expect("the readback completes");
     let committed = pollster::block_on(
         engine
             .export(
@@ -698,7 +717,8 @@ fn committed_renders_omit_the_in_flight_stroke() {
                 Rendered::Committed,
             )
             .expect("committed"),
-    );
+    )
+    .expect("the readback completes");
     assert!(
         !images_match(&bare, &live, 2),
         "the stroke in hand must show in a live render"
@@ -721,7 +741,8 @@ fn committed_renders_omit_the_in_flight_stroke() {
                 Rendered::Committed,
             )
             .expect("after"),
-    );
+    )
+    .expect("the readback completes");
     assert!(
         images_match(&live, &after, 6),
         "the committed stroke should look like the one that was previewed"

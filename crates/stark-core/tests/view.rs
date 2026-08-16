@@ -134,6 +134,7 @@ fn the_view_never_reaches_the_document() {
                 )
                 .expect("export"),
         )
+        .expect("the readback completes")
     };
     let upright = shot(&mut engine);
     let before = engine.observe();

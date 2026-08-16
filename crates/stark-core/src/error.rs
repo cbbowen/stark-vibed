@@ -53,6 +53,22 @@ pub enum EngineError {
     #[error("cannot export: {0}")]
     Export(String),
 
+    /// The GPU failed underneath an operation — a lost device, an exhausted one, or
+    /// an error no scope caught (§5).
+    ///
+    /// **Reported rather than panicked on, because the document survives it.** The
+    /// engine's state is an action log in ordinary memory, so a caller told this can
+    /// still write the file; the readback path used to discover the same fact with an
+    /// `expect`, which on the web is an abort and takes the painting with it.
+    ///
+    /// Distinct from [`Self::Export`], which is about a request that does not make
+    /// sense (a frame too small, a size past the device's limit). That is answerable
+    /// by asking for something else; this is not answerable at all, and
+    /// [`ObservableState::gpu_failure`](crate::ObservableState::gpu_failure) is where
+    /// a frontend learns it is permanent.
+    #[error("{0}")]
+    Gpu(String),
+
     /// A document was asked to replay while content its log names is neither bundled
     /// in the file nor loaded in this engine (§8).
     ///

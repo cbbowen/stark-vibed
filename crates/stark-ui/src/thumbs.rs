@@ -237,15 +237,17 @@ async fn generate(state: AppState, w: Wearable) -> bool {
         readback
     };
     let url = match readback {
-        Ok(f) => {
-            let image = f.await;
-            image
-                .to_png()
-                .map(|png| format!("data:image/png;base64,{}", base64_encode(&png)))
-                .unwrap_or_default()
-        }
-        // A view the device refuses (unreachable at these sizes) — cache the
-        // miss so the generator cannot spin on it.
+        // Two ways to come back empty, and both cache the miss so the generator
+        // cannot spin on it: a view the device refuses (unreachable at these
+        // sizes), and a readback that failed because the GPU did (§5) — which the
+        // canvas will be reporting through `ObservableState::gpu_failure` anyway,
+        // so a thumbnail is not the place to raise it.
+        Ok(f) => f
+            .await
+            .ok()
+            .and_then(|image| image.to_png().ok())
+            .map(|png| format!("data:image/png;base64,{}", base64_encode(&png)))
+            .unwrap_or_default(),
         Err(_) => String::new(),
     };
     let mut cache = state.thumbs.cache;

@@ -186,7 +186,8 @@ fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
                     Rendered::Committed,
                 )
                 .expect("export"),
-        );
+        )
+        .expect("the readback completes");
         Some(image)
     };
 
@@ -270,6 +271,7 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
                 )
                 .expect("export"),
         )
+        .expect("the readback completes")
     };
     let same = |a: &stark_core::RgbaImage, b: &stark_core::RgbaImage, what: &str| {
         assert_eq!((a.width, a.height), (b.width, b.height), "{what}: size");
@@ -388,6 +390,7 @@ fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
                 )
                 .expect("export"),
         )
+        .expect("the readback completes")
     };
 
     // One merge: the buffer is one slot wide, and every bind group over it is built

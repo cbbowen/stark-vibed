@@ -152,6 +152,7 @@ fn shot(engine: &mut stark_core::Engine, scale: f32) -> RgbaImage {
             )
             .expect("export"),
     )
+    .expect("the readback completes")
 }
 
 /// A 1:4 render is the 1:1 render averaged down — and is *not* one texel in sixteen

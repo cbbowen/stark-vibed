@@ -15,6 +15,7 @@
 //! are native by construction, and is **compiled out on wasm** so that the
 //! failure above cannot be reintroduced by calling it from the frontend.
 
+use crate::error::{EngineError, Result};
 use crate::geom::Extent2;
 use crate::gpu::context::GpuContext;
 use crate::gpu::half::f16_to_f32;
@@ -102,7 +103,18 @@ fn take_rows(buffer: wgpu::Buffer, size: Extent2, unpadded: u32, padded: u32) ->
 }
 
 /// Read any texture back to tightly-packed bytes, awaiting the map.
-async fn read_texture_bytes(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<u8> {
+///
+/// **Reports rather than panics**, unlike its blocking sibling, because this is the
+/// path a *shipping* build takes: a failed map here is a lost device or an
+/// exhausted one, and turning that into an `expect` was an abort — on the web, with
+/// the painting unsaved (§5). The action log is untouched by any of it, so a caller
+/// told the readback failed can still save the document; that is the whole point of
+/// there being an error to tell it with.
+async fn read_texture_bytes(
+    ctx: &GpuContext,
+    texture: &wgpu::Texture,
+    size: Extent2,
+) -> Result<Vec<u8>> {
     let (buffer, unpadded, padded) = begin_read(ctx, texture, size);
 
     let (tx, rx) = futures_channel::oneshot::channel();
@@ -125,18 +137,35 @@ async fn read_texture_bytes(ctx: &GpuContext, texture: &wgpu::Texture, size: Ext
     #[cfg(not(target_arch = "wasm32"))]
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
-        .expect("poll device");
+        .map_err(|e| readback_failed(ctx, format!("poll: {e}")))?;
 
     rx.await
-        .expect("readback callback dropped")
-        .expect("map readback buffer");
+        .map_err(|_| readback_failed(ctx, "the map callback was dropped".into()))?
+        .map_err(|e| readback_failed(ctx, format!("map: {e}")))?;
 
-    take_rows(buffer, size, unpadded, padded)
+    Ok(take_rows(buffer, size, unpadded, padded))
+}
+
+/// The error a failed readback reports, preferring what the **device** said over
+/// what the map said.
+///
+/// A lost device fails the map too, so the map's own message is a symptom and the
+/// device-lost callback holds the cause (`GpuHealth`). Reporting the cause where
+/// there is one is what makes the message name a driver reset rather than a buffer.
+fn readback_failed(ctx: &GpuContext, detail: String) -> EngineError {
+    match ctx.health().failure() {
+        Some(failure) => EngineError::Gpu(failure.to_string()),
+        None => EngineError::Gpu(format!("readback failed ({detail})")),
+    }
 }
 
 /// Read an 8-bit, 4-channel (e.g. `Rgba8Unorm`) texture back to tightly-packed
 /// RGBA bytes.
-pub async fn read_rgba8(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<u8> {
+pub async fn read_rgba8(
+    ctx: &GpuContext,
+    texture: &wgpu::Texture,
+    size: Extent2,
+) -> Result<Vec<u8>> {
     read_texture_bytes(ctx, texture, size).await
 }
 
@@ -176,9 +205,9 @@ pub async fn read_many_rgba16f(
     ctx: &GpuContext,
     textures: &[&wgpu::Texture],
     size: Extent2,
-) -> Vec<Vec<f32>> {
+) -> Result<Vec<Vec<f32>>> {
     let Some(first) = textures.first() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let unpadded = size.width * bytes_per_texel(first);
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -220,14 +249,15 @@ pub async fn read_many_rgba16f(
     buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
         let _ = tx.send(r);
     });
-    // The same native/web split as `read_texture_bytes`, for the same reasons.
+    // The same native/web split as `read_texture_bytes`, for the same reasons —
+    // and the same reporting, for the reason set out there.
     #[cfg(not(target_arch = "wasm32"))]
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
-        .expect("poll device");
+        .map_err(|e| readback_failed(ctx, format!("poll: {e}")))?;
     rx.await
-        .expect("readback callback dropped")
-        .expect("map readback buffer");
+        .map_err(|_| readback_failed(ctx, "the map callback was dropped".into()))?
+        .map_err(|e| readback_failed(ctx, format!("map: {e}")))?;
 
     let data = buffer
         .slice(..)
@@ -243,11 +273,11 @@ pub async fn read_many_rgba16f(
             }
             decode_rgba16f(&bytes)
         })
-        .collect();
+        .collect::<Vec<_>>();
     drop(data);
     buffer.unmap();
     // The same argument as `take_rows`: a gradient trace's staging buffer is
     // MAX_SAMPLES patches wide and has already been waited on.
     buffer.destroy();
-    out
+    Ok(out)
 }

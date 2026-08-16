@@ -361,15 +361,32 @@ impl Engine {
         let gpu = self.gpu.clone();
         let color_space = self.color_space.clone();
         async move {
+            // A readback that fails is the GPU failing underneath it (§5), and a
+            // pick has somewhere to put that already: "nothing here" is what this
+            // answers for bare canvas, and it is the honest answer for a device that
+            // can no longer be read. One `None` per point, so the alignment callers
+            // zip against holds whatever happened. What *reports* the failure is
+            // `ObservableState::gpu_failure` — the eyedropper going quiet is a
+            // symptom, and a symptom is the wrong place to learn the cause.
+            let nothing = |n: usize| vec![None; n];
             let refs: Vec<&wgpu::Texture> = colors.iter().collect();
-            let texel_sets = crate::gpu::readback::read_many_rgba16f(&gpu, &refs, size).await;
+            let Ok(texel_sets) = crate::gpu::readback::read_many_rgba16f(&gpu, &refs, size).await
+            else {
+                return nothing(colors.len());
+            };
             // Whether a residual exists is a color-space property, so it is
             // all-or-none across the batch and the two lists stay index-aligned.
             let resid_refs: Vec<&wgpu::Texture> = resids.iter().flatten().collect();
             let resid_sets = if resid_refs.is_empty() {
                 None
             } else {
-                Some(crate::gpu::readback::read_many_rgba16f(&gpu, &resid_refs, size).await)
+                match crate::gpu::readback::read_many_rgba16f(&gpu, &resid_refs, size).await {
+                    Ok(sets) => Some(sets),
+                    // Not `None`: that means "this space has no residual", and taking
+                    // it here would report a pigment color as though its residual were
+                    // zero — a wrong color rather than no color (§6.7).
+                    Err(_) => return nothing(colors.len()),
+                }
             };
             texel_sets
                 .iter()

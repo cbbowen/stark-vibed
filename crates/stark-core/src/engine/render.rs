@@ -442,9 +442,17 @@ impl Engine {
     /// (see [`Offscreen`]) — a `&mut Offscreen::default()` for a one-shot, a held one
     /// for a render that repeats.
     ///
+    /// **Two `Result`s, and they answer different questions.** The outer one is the
+    /// request: a frame too small, a size past the device's limit — refused before
+    /// anything is drawn, and answerable by asking for something else. The inner one
+    /// is the *readback*, which can only fail by the GPU failing underneath it
+    /// (§5), and is not answerable at all — but is reported rather than panicked on,
+    /// because the action log survives what the device does not and a caller told
+    /// this can still save the file.
+    ///
     /// ```ignore
     /// let readback = { engine.write().export(&mut own, frame, scale, bg, content)? }; // borrow ends
-    /// let image = readback.await;
+    /// let image = readback.await?;
     /// ```
     /// **This is [`export_view`](Self::export_view) through the plan's own view**,
     /// which is the whole of what "export a frame" adds: [`ExportPlan::view`] already
@@ -459,7 +467,7 @@ impl Engine {
         scale: ExportScale,
         background: Background,
         content: Rendered,
-    ) -> Result<impl std::future::Future<Output = RgbaImage> + use<>> {
+    ) -> Result<impl std::future::Future<Output = Result<RgbaImage>> + use<>> {
         // Ahead of the render, so a frame too small or too large to export is
         // refused before anything is drawn — and with the message that names the
         // *frame*, since `export_view`'s checks are then satisfied by construction.
@@ -491,7 +499,7 @@ impl Engine {
         view: ViewTransform,
         background: Background,
         content: Rendered,
-    ) -> Result<impl std::future::Future<Output = RgbaImage> + use<>> {
+    ) -> Result<impl std::future::Future<Output = Result<RgbaImage>> + use<>> {
         // The same question the view's own mutators ask before storing anything
         // ([`ViewTransform::usable`]), rather than a second spelling of it here: a
         // caller-supplied view has not passed through them, so it is asked once, at
@@ -515,8 +523,13 @@ impl Engine {
         let gpu = self.gpu.clone();
         let format = self.target_format;
         Ok(async move {
-            let pixels = crate::gpu::readback::read_rgba8(&gpu, &target, size).await;
-            RgbaImage::from_target_bytes(size.width, size.height, pixels, format)
+            let pixels = crate::gpu::readback::read_rgba8(&gpu, &target, size).await?;
+            Ok(RgbaImage::from_target_bytes(
+                size.width,
+                size.height,
+                pixels,
+                format,
+            ))
         })
     }
 
