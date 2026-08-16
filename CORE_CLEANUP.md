@@ -19,20 +19,50 @@ exhaustive on purpose. What follows is the edges.
 
 ## Ranked
 
-| | Finding | Kind | Size |
-|---|---|---|---|
-| [C1](#c1-there-is-no-gpu-failure-path) | There is no GPU failure path | correctness | medium |
-| [C2](#c2-non-finite-input-reaches-a-guaranteed-panic) | Non-finite input reaches a guaranteed panic | correctness | small |
-| [C3](#c3-the-fitters-per-sample-cost-is-linear-in-stroke-length) | The fitter's per-sample cost is linear in stroke length | performance | medium |
-| [C4](#c4-the-draw-list-is-rebuilt-from-scratch-every-frame) | The draw list is rebuilt from scratch every frame | performance | medium |
-| [C5](#c5-nothing-ever-retires-history) | Nothing ever retires history | correctness | medium |
-| [C6](#c6-every-integration-test-builds-its-own-device) | Every integration test builds its own device | build health | small |
-| [C7](#c7-engine-is-the-crates-one-god-object) | `Engine` is the crate's one god object | structure | large |
-| [C8](#c8-smaller-things) | Smaller things | mixed | small |
+| | Finding | Kind | Size | Status |
+|---|---|---|---|---|
+| [C1](#c1-there-is-no-gpu-failure-path) | There is no GPU failure path | correctness | medium | **done** |
+| [C2](#c2-non-finite-input-reaches-a-guaranteed-panic) | Non-finite input reaches a guaranteed panic | correctness | small | **done** |
+| [C3](#c3-the-fitters-per-sample-cost-is-linear-in-stroke-length) | The fitter's per-sample cost is linear in stroke length | performance | medium | **part** |
+| [C4](#c4-the-draw-list-is-rebuilt-from-scratch-every-frame) | The draw list is rebuilt from scratch every frame | performance | medium | **part** |
+| [C5](#c5-nothing-ever-retires-history) | Nothing ever retires history | correctness | medium | open |
+| [C6](#c6-every-integration-test-builds-its-own-device) | Every integration test builds its own device | build health | small | **done** |
+| [C7](#c7-engine-is-the-crates-one-god-object) | `Engine` is the crate's one god object | structure | large | open |
+| [C8](#c8-smaller-things) | Smaller things | mixed | small | open |
 
-Suggested order: **C2**, then **C3**, then **C1**. C2 is small, self-contained,
-and the only one that is currently a crash. C3 has its measuring harness already
-in the tree. C1 is the one whose absence costs a user their work.
+### What landed, and what is left
+
+- **C1** — `GpuContext` carries a `GpuHealth` cell fed by both wgpu callbacks;
+  projected as `ObservableState::gpu_failure` and `Engine::gpu_failure()`. The
+  async readback reports instead of panicking, so `export`/`export_view` yield
+  `Result<RgbaImage>`. `read_rgba8_blocking` still panics on purpose — native,
+  test-facing.
+- **C2** — every `ViewTransform` mutator is total, through one `commit` funnel;
+  non-finite reports are dropped at the fitter and at the session door. The
+  `unreachable!` in `spline::m_step` is now genuinely unreachable.
+- **C3, part** — the curve is read through a borrow and the fit writes back into
+  the candidate (`SplineIndex::fit_into`), removing two `O(m)` copies per solve.
+  Measured on `benches/path.rs`: −21% `fit/live/fast`, −13% `fit/batch/fast`, −9%
+  spiral, −7% hairpin, −8% `fit/batch/loop`, all p < 0.05.
+  **Left:** four `O(m)` allocations per report remain — two candidate grows
+  (`grow_rows`) and two arc profiles. Removing them means a small buffer pool on
+  the fitter so `adopt` swaps the winner in and returns the loser's storage;
+  `Fit` and `adopt` have to change shape for it. Worth doing, and worth measuring
+  separately, since the numerics must not move.
+- **C4, part** — `culled` walks whichever of the layer or the viewport is
+  smaller, so a frame's cost follows the viewport rather than the painting.
+  **Left:** the draw list is still rebuilt every frame. Caching it on
+  `(doc_revision, preview epoch, visible)` needs a cache on `Engine`, which
+  `composite_groups` cannot hold behind `&self` today — it is the same borrow
+  problem [C7](#c7-engine-is-the-crates-one-god-object) is about, and is probably
+  best done after it rather than around it.
+- **C6** — one `GpuContext` per test binary. A fresh `headless_engine` is ~338 ms
+  against ~22 ms on an existing device, so this removes about
+  (386 − 34) × 316 ms of construction; the warm suite is now 111 s.
+
+Suggested order for what remains: **C5** (a real unbounded-memory gap, and the
+policy question is the only hard part), then **C7** (which unblocks the rest of
+C4), then **C8**. The rest of C3 is independent and can go any time.
 
 ---
 

@@ -750,12 +750,9 @@ impl Engine {
     /// there would be nothing to win.
     fn layer_items(&self, layer: &Layer, visible: Option<TileRect>) -> Vec<CompositeItem> {
         match &layer.content {
-            LayerContent::Paint(tiles) => tiles
-                .map()
-                .iter()
-                .filter(|(coord, _)| visible.is_none_or(|r| r.contains(**coord)))
+            LayerContent::Paint(tiles) => culled(tiles.map(), visible)
                 .map(|(coord, handle)| CompositeItem::Tile {
-                    coord: *coord,
+                    coord,
                     handle: handle.clone(),
                     opacity: 1.0,
                 })
@@ -907,6 +904,45 @@ impl Engine {
     }
 }
 
+/// The entries of `map` that `visible` admits, **walking whichever side is smaller**.
+///
+/// The cull is the same set either way — `TileRect::contains` and a probe of
+/// `TileRect::coords` agree by construction — so the only question is which walk to
+/// pay for, and the two differ by orders of magnitude in opposite directions.
+///
+/// Scanning the layer and filtering is right when the viewport admits more tiles than
+/// the layer holds: every zoomed-out frame, which is the case the cull was written
+/// for (§6.3), where the visible count scales as 1/zoom². It is badly wrong the other
+/// way. At 1:1 on a large painting the viewport holds a few dozen tiles and a layer
+/// holds thousands, and `HashTrieMap::iter` walks the whole trie to discard nearly all
+/// of it — per layer, per frame, so a document's paint cost the frame rate whether or
+/// not any of it was on screen.
+///
+/// Probing costs one hash lookup per *visible* tile instead, so the frame follows the
+/// viewport. Which is what a cull is supposed to buy, and what the scan quietly was
+/// not buying.
+///
+/// `None` claims everything: the box could not be measured (a non-finite view, or one
+/// so far out that whole tiles leave the `i32` grid), and an optimization that cannot
+/// see its input must do nothing rather than guess — see [`visible_tiles`].
+fn culled<V>(
+    map: &rpds::HashTrieMap<crate::geom::TileCoord, V>,
+    visible: Option<TileRect>,
+) -> Box<dyn Iterator<Item = (crate::geom::TileCoord, &V)> + '_> {
+    match visible {
+        Some(rect) if rect.count() < map.size() as u64 => Box::new(
+            rect.coords()
+                .filter_map(move |c| map.get(&c).map(|v| (c, v))),
+        ),
+        Some(rect) => Box::new(
+            map.iter()
+                .filter(move |(coord, _)| rect.contains(**coord))
+                .map(|(coord, v)| (*coord, v)),
+        ),
+        None => Box::new(map.iter().map(|(coord, v)| (*coord, v))),
+    }
+}
+
 /// The tiles a render of `view` can show — the **view-AABB cull** (§6.3).
 ///
 /// Pass A places a tile as the quad `[origin, origin + TILE_SIZE]` and lets the
@@ -976,6 +1012,85 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **The two walks are the same cull.** [`culled`] picks between scanning the
+    /// layer and probing the viewport purely on which is cheaper, so the one thing
+    /// that must never depend on that choice is the answer — a disagreement would drop
+    /// paint from the picture at exactly one zoom level, which is the kind of bug that
+    /// gets blamed on the compositor for a week.
+    ///
+    /// Driven over map/rect pairs that put the branch on both sides of its own
+    /// threshold, including the equality case where it flips.
+    #[test]
+    fn both_culling_walks_pick_the_same_tiles() {
+        let map: rpds::HashTrieMap<TileCoord, i32> = (0..40)
+            .map(|i| (TileCoord::new(i % 7, i / 7), i))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .fold(rpds::HashTrieMap::new(), |m, (c, v)| m.insert(c, v));
+
+        let sorted = |mut v: Vec<(TileCoord, i32)>| {
+            v.sort_by_key(|(c, _)| (c.y, c.x));
+            v
+        };
+        // Both routes, asked directly, so the test does not depend on which one
+        // `culled` would have chosen for a given rect.
+        let by_scan = |rect: TileRect| {
+            sorted(
+                map.iter()
+                    .filter(|(c, _)| rect.contains(**c))
+                    .map(|(c, v)| (*c, *v))
+                    .collect(),
+            )
+        };
+        let by_probe = |rect: TileRect| {
+            sorted(
+                rect.coords()
+                    .filter_map(|c| map.get(&c).map(|v| (c, *v)))
+                    .collect(),
+            )
+        };
+
+        for rect in [
+            TileRect::ALL,
+            TileRect::EMPTY,
+            // Wholly inside the painted region, wholly outside, and straddling it —
+            // the three ways a viewport can sit over a painting.
+            TileRect {
+                min: (1, 1),
+                max: (3, 3),
+            },
+            TileRect {
+                min: (50, 50),
+                max: (60, 60),
+            },
+            TileRect {
+                min: (-4, 2),
+                max: (2, 9),
+            },
+            // A single tile, which is the probe branch at its most lopsided.
+            TileRect {
+                min: (3, 2),
+                max: (3, 2),
+            },
+        ] {
+            // The scan is the reference: it is defined for every rect, including
+            // [`TileRect::ALL`].
+            let want = by_scan(rect);
+            let got = sorted(culled(&map, Some(rect)).map(|(c, v)| (c, *v)).collect());
+            assert_eq!(got, want, "culled disagreed on {rect:?}");
+            // The probe is only asked where probing is *finite*, which is the size
+            // guard inside `culled` stated from the outside. `TileRect::ALL` counts
+            // 1.8e19 tiles, so walking its coords is not a slow test but a hung one —
+            // which is exactly the case the guard exists to keep the renderer out of,
+            // and this loop hit it before the guard was mirrored here.
+            if rect.count() <= 10_000 {
+                assert_eq!(want, by_probe(rect), "the walks disagree on {rect:?}");
+            }
+        }
+        // An unmeasurable box claims everything, which is the safe direction.
+        assert_eq!(culled(&map, None).count(), map.size());
     }
 
     #[test]
