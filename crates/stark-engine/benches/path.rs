@@ -23,7 +23,8 @@
 //! and both exist to hold a *flat* line. The fit's window is delimited in arc
 //! length, so before it was bounded each of those axes scaled the work done per
 //! report, and a per-sample throughput figure over fixed recordings could not see
-//! it. See ENGINE_CLEANUP.md F1/F2.
+//! it — which is why the sweeps are here and not merely another recorded stroke.
+//! `MAX_WINDOW_SAMPLES` in `path.rs` carries the bound and the argument for it.
 //!
 //! Run with `cargo bench -p stark-engine --bench path`.
 
