@@ -38,6 +38,9 @@ quanta = "0.12"
 futures-channel = { workspace = true }
 stark-shaders = { workspace = true }
 stark-assetid = { workspace = true }
+# The document (§2). This crate is its derived, cached view: it depends on the
+# model, and the model never depends back.
+stark-model = { workspace = true }
 nalgebra = { workspace = true }
 # Vendored as a git submodule (CC BY-NC 4.0); see vendor/mixbox/LICENSE. Pure
 # no_std + libm, so it builds for wasm. Backs the Mixbox color space (§6.7).

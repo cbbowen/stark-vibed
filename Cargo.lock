@@ -6578,12 +6578,27 @@ dependencies = [
  "rpds",
  "serde",
  "stark-assetid",
+ "stark-model",
  "stark-shaders",
  "stark-testdata",
  "thiserror 2.0.20",
  "tracing",
  "tracing-subscriber",
  "wgpu",
+]
+
+[[package]]
+name = "stark-model"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "glam 0.33.3",
+ "history",
+ "postcard",
+ "serde",
+ "stark-assetid",
+ "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]

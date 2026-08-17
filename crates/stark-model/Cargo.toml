@@ -1,0 +1,30 @@
+# The document, and nothing else (§2): what an action *is*, what it reads and
+# writes, and how a log is written to a file or handed to a peer. No wgpu, no
+# shaders, no build script — which is what lets stark-net depend on the save
+# format and the wire without dragging a renderer behind it.
+[package]
+name = "stark-model"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "The Stark document: the action log, its vocabulary and its file format (CLAUDE.md)."
+
+[dependencies]
+serde = { workspace = true }
+# The action log's wire and file encoding — enums by index, fields in order (§8).
+postcard = { workspace = true }
+# The save container's compression (`io`). Pure Rust, so it builds for wasm.
+flate2 = { workspace = true }
+# Vec2/Affine2 under `geom`. The one piece of the renderer's vocabulary the log
+# genuinely needs: an action is a statement about positions on the canvas.
+glam = { workspace = true }
+thiserror = { workspace = true }
+# `Materialize`/`Logged` (`fold`) and `Footprint`'s `Centralizer` impl live here
+# rather than beside `DocState`, because the orphan rule puts them where `Action`
+# is — which is also where they belong: the model owns *that* an action folds over
+# a state and which actions commute, the engine owns what the state is.
+history = { workspace = true }
+# What a content id *is*. Already its own crate for the same reason this one
+# exists one level up: an id must be derivable without a GPU (§19).
+stark-assetid = { workspace = true }
+tracing = { workspace = true }

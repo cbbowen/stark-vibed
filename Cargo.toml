@@ -24,6 +24,7 @@ exclude = [
 default-members = [
     "crates/stark-assetid",
     "crates/stark-engine",
+    "crates/stark-model",
     "crates/stark-net",
     "crates/stark-shaders",
 ]
@@ -76,6 +77,9 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 
 # stark-shaders is consumed by stark-engine.
 stark-assetid = { path = "crates/stark-assetid" }
+# The document itself (§2). Every other stark crate depends on it; it depends on
+# none of them, which is the whole content of the split.
+stark-model = { path = "crates/stark-model" }
 # `default-features = false` is load-bearing: `stark-shaders`'s own default turns its
 # `mixbox` feature on, and cargo unifies features across the graph — so without this,
 # a `--no-default-features` workspace build would still compile the two Mixbox
