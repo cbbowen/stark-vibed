@@ -692,7 +692,6 @@ hr {
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
-  gap: 4px;
   padding-right: 4px;
   scrollbar-width: thin;
   scrollbar-color: #ffffff33 transparent;
@@ -753,7 +752,6 @@ hr {
   height: 36px;
   flex: none;
   padding: 0 8px;
-  border-radius: 5px;
   background-color: #33333a;
   background-size: cover;
   background-position: center;
