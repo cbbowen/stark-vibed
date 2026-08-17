@@ -1012,11 +1012,11 @@ fn CommandRail() -> Element {
                             MenubarItem {
                                 index: i,
                                 value: format!("panel-{id:?}"),
-                                on_select: move |_| {
-                                    let mut hidden = layout.hidden;
-                                    let mut h = hidden.write();
-                                    if !h.remove(&id) { h.insert(id); }
-                                },
+                                // Through `toggle_panel` rather than writing `hidden`
+                                // here, because opening a panel has a second half: a
+                                // sleeping stack has to be woken, or this entry ticks
+                                // itself and nothing appears (`layout::open_panel`).
+                                on_select: move |_| layout::toggle_panel(state, layout, id),
                                 span { class: "menu-item", {icon(id.glyph())} "{id.title()}" }
                                 span { class: "menu-check",
                                     if !hidden.contains(&id) { {icon(icons::CHECK)} }

@@ -1499,5 +1499,21 @@ pub fn end_interaction(mut state: AppState, paint: Paint, nav: Nav, tune: Tune) 
     // `PickState`). Nothing to undo, either: a sample already in flight is left to
     // land, since it is the answer to a press the user made.
     state.pick.dragging.set(false);
+    // The panel stack does not come straight back: it stays out of the way until the
+    // pointer reaches into its column (`AppState::panels_asleep`, §11). The chrome
+    // going *out* mid-stroke was never the distracting half — coming back the instant
+    // the pen lifts is, because it happens at exactly the moment the artist is looking
+    // at what they just drew.
+    //
+    // Gated on the fade having actually been in force. `end_interaction` runs on every
+    // release the canvas sees, including the ones that deliberately keep the chrome up
+    // — an eyedropper sample reads its answer off the Color panel, brush tuning off the
+    // Brush panel (see the two `canvas_active` comments in `main.rs`) — and putting the
+    // stack to sleep on the way out of those would hide the panel the gesture was for.
+    // Read before the clear, since the clear is what makes it false.
+    let was_faded = *state.canvas_active.peek();
     state.canvas_active.set(false);
+    if was_faded {
+        state.panels_asleep.set(true);
+    }
 }

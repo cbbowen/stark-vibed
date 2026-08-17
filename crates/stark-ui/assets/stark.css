@@ -9,6 +9,14 @@
    texture. Custom properties are global, so the css_module menubar picks these
    up too. Tweak both here. --- */
 :root {
+  /* The panel column: how wide the stack is, and how far it is inset from the window's
+     top-right corner. Two boxes are built out of these — the stack itself, and the
+     full-height slice of the same column that wakes it (`.panel-wake`) — so they are
+     named rather than written twice: a wake area an inset narrower than the column it
+     is meant to be would leave a stripe down the screen's edge that looks like the
+     panels but does not answer. */
+  --panel-column: 300px;
+  --panel-inset: 4px;
   --panel-shadow: 0px 0px 8px 0px black;
   --panel-background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.12'/%3E%3C/svg%3E"), rgba(21, 20, 19, 0.9);
 }
@@ -96,7 +104,11 @@ hr {
      standing over the painting: every press in the empty run below the last panel was
      taken by a box the user cannot see, and a stroke started there never began. Hugging
      the content leaves only what is drawn, and `max-height` below still turns the column
-     into a scroller the moment the panels outgrow the window. */
+     into a scroller the moment the panels outgrow the window.
+
+     `.panel-wake` is the one box that *is* this column at full height, and it is only in
+     the DOM while the panels are asleep — the rules that make that safe are stated
+     there and in `layout::PanelStack`. */
   height: auto;
   /* Explicit, and matching the rail/bars: without it the stack sits at auto level,
      where *any* positioned sibling with a z-index (the frame overlay) wins over it
@@ -113,17 +125,18 @@ hr {
      is the stack's *sibling* rather than its ancestor — so a wheel spent here can
      never also zoom the painting, with no handler needed to say so.
 
-     The box is inset 4px and padded 10px instead of being placed at 14px flat, so
-     the panels still sit exactly 14px off the top-right corner while the scroll
-     container's clip edge stands clear of them: overflow clips at the padding box,
-     and the 8px panel shadow would otherwise be shaved off flat against the first
-     and last panel. `100% - 8px` leaves the matching 4px at the foot. */
+     The box is inset `--panel-inset` and padded 10px instead of being placed at 14px
+     flat, so the panels still sit exactly 14px off the top-right corner while the
+     scroll container's clip edge stands clear of them: overflow clips at the padding
+     box, and the 8px panel shadow would otherwise be shaved off flat against the first
+     and last panel. Taking the inset off both ends leaves the matching 4px at the
+     foot. */
   box-sizing: border-box;
-  top: 4px;
-  right: 4px;
+  top: var(--panel-inset);
+  right: var(--panel-inset);
   padding: 10px;
-  width: 300px;
-  max-height: calc(100% - 8px);
+  width: var(--panel-column);
+  max-height: calc(100% - var(--panel-inset) * 2);
   overflow-y: auto;
   /* Only the vertical axis is a scroller. Left to `visible`, the horizontal axis is
      forced to `auto` alongside it, and a row that overruns its panel by a pixel or
@@ -137,6 +150,33 @@ hr {
      bottom edge already says there is more below — which is the same thing a
      scrollbar would say, at the cost of a bright stripe down the side of the work. */
   scrollbar-width: none;
+}
+
+/* The full-height slice of the panels' own column, standing by while they are asleep:
+   reach into it and they come back (§11). Mounted only while they are asleep *and* no
+   canvas gesture is in flight — `layout::PanelStack` carries the argument for why a box
+   over the painting is admissible on exactly those terms, and it belongs there because
+   it is about what the box may take rather than about where it is.
+
+   The whole column including the inset (`right: 0`), so the screen's very edge counts as
+   reaching for the tools: a 4px stripe that looked like the panel column and did not
+   answer would be the one part of this gesture that felt broken.
+
+   No background, no transition, nothing drawn — it is a hit area, and the thing it makes
+   visible is elsewhere.
+
+   `z-index: 1` puts it directly above the painting and below every control: the catchers
+   a mode lays over the window (9), the handles a transform is dragged by (10), the rail,
+   the bars and the panels themselves (20+). So a mode in flight keeps its whole window
+   and never notices this, and the only presses that land here are ones that would have
+   gone to the canvas. */
+.panel-wake {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: calc(var(--panel-column) + var(--panel-inset));
+  z-index: 1;
 }
 
 .panel-stack::-webkit-scrollbar {

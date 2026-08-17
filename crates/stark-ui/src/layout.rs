@@ -219,10 +219,80 @@ fn panel_key(id: PanelId) -> String {
 /// ([`crate::state::AppState::canvas_active`] only toggles the class), so the chrome
 /// stays laid out where it was and nothing reflows on the way in or out.
 pub fn chrome_class(state: AppState, base: &str) -> String {
-    if (state.canvas_active)() {
+    dim_class(base, (state.canvas_active)())
+}
+
+/// `base`, plus `chrome`, plus `dimmed` when it is `out` of the way. The two class
+/// names the fade is written against, stated once — there are two reasons a container
+/// can be faded now (see [`stack_class`]) and they must not each spell it.
+fn dim_class(base: &str, out: bool) -> String {
+    if out {
         format!("{base} chrome dimmed")
     } else {
         format!("{base} chrome")
+    }
+}
+
+/// [`chrome_class`] for the panel stack, which fades for a second reason: it stays
+/// out of the way after the gesture ends, until the pointer reaches into its column
+/// ([`AppState::panels_asleep`](crate::state::AppState::panels_asleep)).
+///
+/// One `dimmed` for both, deliberately — mid-gesture and asleep are the same fact
+/// about the stack (it is not what the screen is for right now), and giving the second
+/// one a class of its own would be two ways to be invisible for the stylesheet to keep
+/// in step.
+fn stack_class(state: AppState) -> String {
+    dim_class(
+        "panel-stack",
+        (state.canvas_active)() || (state.panels_asleep)(),
+    )
+}
+
+/// Wake the stack: whatever it was still standing down from, the panels are wanted.
+///
+/// Called from the slice the pointer reaches into ([`PanelStack`]) and from
+/// [`open_panel`]. Idempotent, and free when it is already awake — a signal set to
+/// the value it holds wakes no reader.
+fn wake_panels(state: AppState) {
+    let mut asleep = state.panels_asleep;
+    // Read out into a `bool` first, so the borrow the peek takes is over before the
+    // write — a signal read left inline in the condition is a panic in a handler that
+    // then writes it. And guarded rather than set flat: `set` marks its readers dirty
+    // whatever it is handed, and this runs on every pointer move across the slice.
+    let sleeping = *asleep.peek();
+    if sleeping {
+        asleep.set(false);
+    }
+}
+
+/// Show `id`, and wake the stack. **The only way a panel is opened**, which is what
+/// makes the second half structural: a panel un-hidden into a sleeping stack would be
+/// a menu entry that ticks itself and changes nothing on screen, and every call site
+/// that opens one would have to remember the same line.
+///
+/// Closing needs no such pairing and gets no function: it is done from a panel's own ✕
+/// (`Panel`), which the user can only have pressed on a stack that is already awake.
+pub fn open_panel(state: AppState, layout: PanelLayout, id: PanelId) {
+    let mut hidden = layout.hidden;
+    hidden.write().remove(&id);
+    wake_panels(state);
+}
+
+/// Show `id` if it is hidden, hide it if it is not — the Panels menu's entry.
+///
+/// The wake goes through [`open_panel`], so it happens on the half of the toggle that
+/// opens and not on the half that closes.
+pub fn toggle_panel(state: AppState, layout: PanelLayout, id: PanelId) {
+    // Answered into a `bool` before the branch rather than peeked in the condition
+    // itself: a signal read in an `if` stays borrowed for the whole of its body, and
+    // both arms below write that same signal — which would be a panic in a handler
+    // that had already ticked the menu entry.
+    let was_hidden = layout.hidden.peek().contains(&id);
+    if was_hidden {
+        open_panel(state, layout, id);
+    } else {
+        let mut hidden = layout.hidden;
+        hidden.write().insert(id);
     }
 }
 
@@ -240,12 +310,15 @@ pub fn chrome_class(state: AppState, base: &str) -> String {
 /// the ends with `.stack-first` / `.stack-last` instead.
 ///
 /// A stack no taller than its panels, and a stack taller than the window scrolls: both
-/// are the stylesheet's job alone (`.panel-stack`) — no wheel handler here, and no box
-/// beyond the panels for a canvas press to disappear into. The canvas's zoom hangs off
-/// the `<canvas>` element, which is this stack's *sibling*, so a wheel spent over it is
-/// unable to reach it; adding a handler to suppress a zoom that cannot happen would be
-/// a second, quieter claim about the DOM shape for the first one to fall out of step
+/// are the stylesheet's job alone (`.panel-stack`). The canvas's zoom hangs off the
+/// `<canvas>` element, which is this stack's *sibling*, so a wheel spent over the stack
+/// is unable to reach it; adding a handler to suppress a zoom that cannot happen would
+/// be a second, quieter claim about the DOM shape for the first one to fall out of step
 /// with.
+///
+/// The one box here beyond the panels is `.panel-wake`, and it exists only while they
+/// are asleep — see the comment on it below, which is where the reasoning about what a
+/// box over the painting may and may not take belongs.
 #[component]
 pub fn PanelStack() -> Element {
     let layout = use_context::<PanelLayout>();
@@ -276,8 +349,49 @@ pub fn PanelStack() -> Element {
         .as_ref()
         .filter(|d| d.live())
         .and_then(|d| landing(&open, d));
+    // Whether the slice below is standing by. Asleep says the panels are waiting to be
+    // asked for; `!canvas_active` is what keeps the box out of a gesture's way, and it
+    // is the whole safety argument for having one at all (below).
+    let reachable = (state.panels_asleep)() && !(state.canvas_active)();
     rsx! {
-        div { class: chrome_class(state, "panel-stack"),
+        // **The slice the pointer reaches into to bring the panels back** (§11).
+        //
+        // It cannot be the stack itself: the stack is exactly as tall as the panels in
+        // it and must stay that way for its scroller to work, so hovering *it* would
+        // answer near the top of the window and not at the foot — "reach for the panel
+        // you cannot see" is not a thing a hand can aim at. The column is what the user
+        // means by where the tools are, and a column is full height.
+        //
+        // Which makes this the invisible box over the painting that `.panel-stack`'s own
+        // comment forbids, so it is worth being exact about the two things that make it
+        // admissible.
+        //
+        // **It is not here unless the panels are asleep and the canvas is out of hand.**
+        // A gesture in flight is the case that matters: a stroke's moves are delivered
+        // to whatever is under the pointer (nothing captures — the canvas is
+        // full-window, and faded chrome takes no events, which is what lets a stroke
+        // stray under a panel and keep painting), so a box that was live mid-stroke
+        // would take the moves that crossed into this column *and the release that ends
+        // the stroke* — leaving a gesture in flight with nothing left to end it. Awake,
+        // it is not in the DOM at all and can take nothing.
+        //
+        // **What it does take, it answers.** The first press in this column while the
+        // panels are asleep brings them back instead of painting — one press, and only
+        // for a device that arrives without hovering first. A pointer that hovers has
+        // already woken them by moving in, so it never reaches this case; a finger,
+        // which does not hover, taps once to ask for the panels, and that is the only
+        // way a touch-only hand *can* ask — a sleeping stack takes no taps either. The
+        // wheel is here for the same reason and not for the stack's: a notch of zoom
+        // spent in this column would otherwise fall into the box and be silently lost.
+        if reachable {
+            div {
+                class: "panel-wake",
+                onpointermove: move |_| wake_panels(state),
+                onpointerdown: move |_| wake_panels(state),
+                onwheel: move |_| wake_panels(state),
+            }
+        }
+        div { class: stack_class(state),
             for id in PanelId::ALL {
                 if let Some(slot) = open.iter().position(|p| *p == id) {
                     Panel {

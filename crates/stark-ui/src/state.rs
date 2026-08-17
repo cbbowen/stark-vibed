@@ -125,6 +125,29 @@ pub struct AppState {
     /// handing the screen back to the painting — see
     /// [`chrome_class`](crate::layout::chrome_class).
     pub canvas_active: Signal<bool>,
+    /// Whether the panel stack is **asleep**: still out of the way after the gesture
+    /// that faded it, until the pointer reaches into the column it lives in
+    /// (§11).
+    ///
+    /// [`canvas_active`](Self::canvas_active) says the canvas is in hand *now*; this
+    /// says it was, and nothing has asked for the panels back yet. Set by
+    /// [`end_interaction`](crate::input::end_interaction) — only where the fade was
+    /// actually in force, so a gesture that deliberately keeps the chrome up (the
+    /// eyedropper, brush tuning) does not put it to sleep on the way out. Cleared by
+    /// the slice that hears the pointer arrive (`layout::PanelStack`) and by opening
+    /// a panel (`layout::open_panel`), which would otherwise be a command with
+    /// nothing to show for itself.
+    ///
+    /// **The stack alone sleeps**, not everything [`chrome_class`] dims. The rest of
+    /// the floating chrome is either a mode's — a bar with the Done button on it, the
+    /// handles a transform is dragged by — or the rail every menu is behind, and all
+    /// of it lives somewhere other than this column: latched off until the pointer
+    /// visited the *right edge*, those would be controls you cannot reach by reaching
+    /// for them. The stack is what there is a lot of, and it is the thing whose
+    /// coming back over the painting was worth waiting for.
+    ///
+    /// [`chrome_class`]: crate::layout::chrome_class
+    pub panels_asleep: Signal<bool>,
     /// Whether the brush editor dialog is open (rendered at the app root so its
     /// backdrop escapes the panels' `backdrop-filter` containing blocks).
     pub brush_editor_open: Signal<bool>,
@@ -376,6 +399,7 @@ impl AppState {
             renderer_ready: root_signal(|| false),
             space_down: root_signal(|| false),
             canvas_active: root_signal(|| false),
+            panels_asleep: root_signal(|| false),
             brush_editor_open: root_signal(|| false),
             preset_save_open: root_signal(|| false),
             color_epoch: root_signal(|| 0),

@@ -1018,11 +1018,10 @@ fn map_rows(state: AppState, id: LayerId, ramp: Option<Gradient>, layout: PanelL
     // Opening the library is this bar's job too: the ramp is chosen there, and a
     // bar that said "use the Gradients panel" while leaving it closed would be
     // directions to a door it could have opened. Un-hiding keeps the panel's
-    // remembered slot (`PanelLayout`), so it comes back where it lives.
-    let mut hidden = layout.hidden;
-    let open_library = move |_| {
-        hidden.write().remove(&PanelId::Gradients);
-    };
+    // remembered slot (`PanelLayout`), so it comes back where it lives — and wakes
+    // a sleeping stack with it, which is why this goes through `open_panel` rather
+    // than writing `hidden` here (§11).
+    let open_library = move |_| crate::layout::open_panel(state, layout, PanelId::Gradients);
     match ramp {
         None => rsx! {
             span {

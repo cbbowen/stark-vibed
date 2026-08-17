@@ -476,6 +476,24 @@ which the engine draws into directly. DOM chrome surrounds it.
   class the stylesheet animates; the chrome keeps its box (nothing reflows) and
   stops taking clicks while faded, so a stroke straying under a panel keeps
   painting.
+- **The panel stack stays away until it is reached for.** Fading back on release
+  put the panels over the painting at the one moment the artist was looking at
+  what they had just drawn, so the stack alone keeps its fade after the gesture
+  (`AppState::panels_asleep`, set by `input::end_interaction` where — and only
+  where — the fade was actually in force) until the pointer enters the *column*
+  it lives in. That column is a full-height slice of the window, which the stack
+  itself cannot be: it is exactly as tall as its panels and has to stay that way
+  for its own scroller, so `.panel-wake` is a separate box, mounted only while
+  the panels are asleep and no gesture is in flight — the two conditions that
+  keep an invisible box over the painting from swallowing a stroke's moves or the
+  release that ends it. It answers what it does take: the first press or wheel in
+  a sleeping column brings the panels back rather than being lost, which is also
+  the only way a touch-only hand can ask for them. Opening a panel wakes the
+  stack too (`layout::open_panel`, the one door), or the command would tick a
+  menu entry and show nothing. Nothing else sleeps: the rail and a mode's bars
+  and handles live elsewhere on screen, and latching those off until the pointer
+  had visited the right edge would be controls you cannot reach by reaching for
+  them.
 - **Panels are first-class.** `PanelId` + a `PanelLayout` context (order, hidden
   set, drag state, mounted refs) make the stack data-driven: each panel has a
   header with a drag handle and a ✕, a "Panels" menubar menu reopens closed ones
