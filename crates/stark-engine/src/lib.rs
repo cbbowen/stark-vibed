@@ -83,17 +83,25 @@ pub mod view;
 /// or not.
 ///
 /// Every `Mutex` this crate holds guards derived state — a baked tip texture
-/// (`gpu::stroke::tips`), a pooled scratch list (`gpu::stroke::scratch`), the seed of
-/// the last stroke complained about, the timing histograms ([`timing`]) — whose
-/// values are moved in whole after the work producing them has finished, so a panic
-/// while the lock is held cannot leave a torn value behind. All poisoning tells us is
-/// that some *other* thread panicked while it happened to be looking something up;
+/// (`gpu::stroke::tips`), a pooled scratch list (`gpu::stroke::scratch`), the tile
+/// pool's free list and census (`gpu::tile`), the decoded brush masks ([`assets`])
+/// and ground/environment builds (`gpu::registry`), the seed of the last stroke
+/// complained about, the timing histograms ([`timing`]) — whose values are moved in
+/// whole after the work producing them has finished, so a panic while the lock is
+/// held cannot leave a torn value behind. All poisoning tells us is that some
+/// *other* thread panicked while it happened to be looking something up;
 /// propagating that as a panic of our own turns one thread's failure into a dead
 /// renderer, which is a worse answer than a cold cache.
 ///
 /// At the crate root rather than beside any one of them, because the argument is
 /// about what this crate puts *in* a `Mutex` and not about which module did it — and
 /// the second module to want it is what made that worth saying once.
+///
+/// **Every lock in the crate goes through here.** That was not true for a while:
+/// `TilePool::acquire_tex` and `free_count` panicked where the `Drop` beside them
+/// recovered, and `AssetStore` and `Registry` panicked throughout — so the rule above
+/// held on the paths somebody remembered rather than as a property of the crate. The
+/// list is the whole of it now, and a new `Mutex` belongs on it.
 /// `std::result::Result` spelled out, because this crate re-exports an
 /// [`EngineError`]-shaped `Result` below and a bare one here would resolve to that.
 pub(crate) fn unpoisoned<'a, T>(
@@ -110,8 +118,9 @@ pub use colorspace::ColorSpace;
 pub use command::{InputCommand, InputSample};
 pub use document::Selection;
 pub use engine::{
-    Background, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan, ExportScale, LayerInfo,
-    Layers, MatteInfo, ObservableState, PickOptions, PickSource, PresenceTick, Rendered,
+    Background, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan, ExportScale, Guides,
+    LayerInfo, Layers, MatteInfo, ObservableState, PickOptions, PickSource, PresenceTick, Projected,
+    Rendered,
 };
 pub use error::{EngineError, Result};
 pub use gpu::{

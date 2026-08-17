@@ -104,7 +104,7 @@ fn guides_of(state: AppState) -> Vec<PerspectiveGuide> {
         .obs
         .read()
         .as_ref()
-        .map(|o| o.guides.clone())
+        .map(|o| o.guides.to_vec())
         .unwrap_or_default()
 }
 

@@ -26,6 +26,7 @@
 //!
 //! [`Engine::new_sharing`]: crate::Engine::new_sharing
 
+use crate::unpoisoned;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
@@ -113,8 +114,13 @@ impl<R: Resource> Registry<R> {
         }
     }
 
+    /// The one place this registry's lock is taken, poisoned or not ([`unpoisoned`]).
+    ///
+    /// What it guards is a byte map and a build cache — derived state, rebuildable
+    /// from the bytes — so another thread's panic is a reason to serve a cold entry,
+    /// not to take the renderer down with it.
     fn store(&self) -> std::sync::MutexGuard<'_, Store<R>> {
-        self.store.lock().expect("registry store poisoned")
+        unpoisoned(self.store.lock())
     }
 
     /// Which resource is in use.

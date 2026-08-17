@@ -222,7 +222,7 @@ fn a_held_line_takes_the_axis_of_a_visible_guide() {
         ..Default::default()
     };
     let vp = guide.scene().vps[2].expect("Z vanishes on the canvas");
-    session.guides.push(guide);
+    session.guides = vec![guide].into();
 
     // Drawn from `start`, 400px toward the vanishing point but 4° off it.
     let start = Vec2::new(-240.0, 180.0);
@@ -276,7 +276,7 @@ fn steering_an_axis_line_stays_on_the_axis() {
         ..Default::default()
     };
     let vp = guide.scene().vps[2].expect("Z vanishes on the canvas");
-    session.guides.push(guide);
+    session.guides = vec![guide].into();
 
     let start = Vec2::new(-240.0, 180.0);
     let aim = Vec2::from_angle(4f32.to_radians()).rotate((vp - start).normalize());
@@ -334,7 +334,7 @@ fn a_held_loop_becomes_a_circle_on_a_visible_plane() {
         radii,
         angle,
     } = plane.circle_seen(at, radius).expect("a bounded image");
-    session.guides.push(guide);
+    session.guides = vec![guide].into();
 
     // Drawn a tenth too round and leaning 3° off — the two things a hand gets wrong.
     let (u, v) = (
@@ -397,7 +397,7 @@ fn a_hidden_plane_leaves_the_loop_alone() {
         ..Default::default()
     };
     assert!(guide.planes()[2].is_none(), "a hidden guide put up a plane");
-    session.guides.push(guide);
+    session.guides = vec![guide].into();
 
     let (center, radii) = (Vec2::new(40.0, -20.0), Vec2::new(200.0, 90.0));
     drag(&mut session, 90, |t| {

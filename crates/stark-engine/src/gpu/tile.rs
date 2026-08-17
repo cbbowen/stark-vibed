@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::gpu::context::GpuContext;
+use crate::unpoisoned;
 use stark_model::geom::TILE_TEX;
 
 const CHANNEL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
@@ -214,13 +215,11 @@ impl Drop for GpuTex {
         // Recovered from rather than propagated, because the alternative is a leak.
         // A poisoned lock means some other thread panicked holding it; the state it
         // guards is a free list and a counter, and neither can be left saying
-        // something a return would violate. Taking `Err`'s inner guard hands the
-        // texture back; an `if let Ok(..)` would drop it on the floor — never
-        // recycled, and `capacity` never told, so the pool would quietly grow a
-        // replacement for a texture it still owned.
-        let mut inner = pool
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // something a return would violate. [`unpoisoned`] hands the texture back;
+        // an `if let Ok(..)` would drop it on the floor — never recycled, and
+        // `capacity` never told, so the pool would quietly grow a replacement for a
+        // texture it still owned.
+        let mut inner = unpoisoned(pool.lock());
         let Some(tex) = self.tex.take() else { return };
         inner.stamp += 1;
         let returned = inner.stamp;
@@ -705,25 +704,48 @@ impl TilePool {
     /// A recycled slot brings its **view** with it ([`Pooled`]), so the common path
     /// creates no wgpu objects at all — it is a `Vec::pop` and an `Arc::new`.
     ///
+    /// **The device call is made outside the lock**, which is the whole reason this
+    /// is two phases rather than one. `create_texture` is the single slowest thing
+    /// the pool can do and it used to run *inside* the critical section, so a miss on
+    /// one thread stalled every other thread's `Vec::pop` behind a driver call — and
+    /// `Drop for GpuTex`, which returns a texture from whichever thread happened to
+    /// drop it, is exactly such a thread. The accounting still happens under the lock
+    /// and in the same order: a miss books its capacity there, so a second acquirer
+    /// arriving in the gap sees the texture as already owned and does not double-count
+    /// the peak. What that trades is a transient over-report from
+    /// [`resident_bytes`](Self::resident_bytes) — bounded by the number of acquires
+    /// in flight, and it is telemetry.
+    ///
     /// # Panics
     ///
     /// Panics if `format` was not among those the pool was built with.
     pub fn acquire_tex(&self, format: wgpu::TextureFormat, source: AllocSource) -> TexHandle {
         let pool = self.format_pools.get(&format).expect("unsupported format");
-        let Pooled { tex, view, .. } = {
-            let mut pool = pool.lock().expect("tile pool poisoned");
-            pool.sources.add(source);
-            let slot = match pool.free.pop() {
-                Some(slot) => slot,
-                None => {
-                    pool.increase_capacity(format);
-                    self.create_pooled(format)
-                }
-            };
-            // After the slot is out, so `in_use` counts it: the epoch's peak is what
-            // the pool had checked out at its busiest, this acquire included.
-            pool.tick(format);
+        // Phase one, under the lock: take a recycled slot if there is one, and book
+        // the acquire against the epoch either way.
+        let recycled = {
+            // Poison recovered from, not propagated ([`unpoisoned`]). This is the
+            // hottest path in the crate — a stroke acquires ~4 per affected tile per
+            // pointer move — so a panic here is a renderer that never draws again,
+            // which is precisely the outcome that helper exists to rule out.
+            let mut inner = unpoisoned(pool.lock());
+            inner.sources.add(source);
+            let slot = inner.free.pop();
+            if slot.is_none() {
+                // Booked before the texture exists, so the count is monotonic from
+                // every other thread's point of view — see the note on this function.
+                inner.increase_capacity(format);
+            }
+            // After the slot is out (or the capacity booked), so `in_use` counts it:
+            // the epoch's peak is what the pool had checked out at its busiest, this
+            // acquire included.
+            inner.tick(format);
             slot
+        };
+        // Phase two, unlocked: build the texture a miss asked for.
+        let Pooled { tex, view, .. } = match recycled {
+            Some(slot) => slot,
+            None => self.create_pooled(format),
         };
         TexHandle(Arc::new(GpuTex {
             tex: Some(tex),
@@ -749,10 +771,7 @@ impl TilePool {
         self.format_pools
             .iter()
             .map(|(format, pool)| {
-                let capacity = pool
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .capacity as u64;
+                let capacity = unpoisoned(pool.lock()).capacity as u64;
                 capacity * texture_bytes(*format)
             })
             .sum()
@@ -765,13 +784,14 @@ impl TilePool {
     /// lists are *per format*, so an answer that assumed `Rgba16Float` would quietly
     /// tell a caller asking about the aux or the mask list about the color one.
     pub fn free_count(&self, format: wgpu::TextureFormat) -> usize {
-        self.format_pools
-            .get(&format)
-            .expect("unsupported format")
-            .lock()
-            .expect("tile pool poisoned")
-            .free
-            .len()
+        unpoisoned(
+            self.format_pools
+                .get(&format)
+                .expect("unsupported format")
+                .lock(),
+        )
+        .free
+        .len()
     }
 
     /// A fresh texture and the view onto it — the only path that talks to the

@@ -8,7 +8,7 @@
 
 use crate::assist::{AssistShape, PenProfile};
 use crate::command::InputSample;
-use crate::guides::{PerspectiveGuide, Scaffold};
+use crate::guides::Scaffold;
 use crate::path::PathFitter;
 use crate::peer::{GestureView, Identity, LiveGesture, default_name};
 use crate::presence::{GestureSource, GestureTx};
@@ -251,7 +251,7 @@ pub struct Session {
     /// The drawing guides (§20.5) — every perspective grid the artist has set
     /// up, visible or not. View state for now: an aid for the hand holding
     /// the pen, per-client like the pan and the zoom.
-    pub guides: Vec<PerspectiveGuide>,
+    pub guides: crate::engine::Guides,
 
     // --- the published half (§17.4) -------------------------
     //
@@ -302,7 +302,7 @@ impl Session {
             selection_feather: 0.0,
             shape_opacity: 1.0,
             show_peer_selections: false,
-            guides: Vec::new(),
+            guides: Default::default(),
             name: String::new(),
             name_chosen: false,
             cursor: None,

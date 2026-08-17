@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::Result;
 use crate::gpu::context::GpuContext;
+use crate::unpoisoned;
 
 use stark_model::AssetId;
 
@@ -97,7 +98,7 @@ impl AssetStore {
             height: h,
             texels: coverage,
         } = canonical;
-        let mut inner = self.inner.lock().expect("asset store poisoned");
+        let mut inner = unpoisoned(self.inner.lock());
         if let Entry::Vacant(slot) = inner.masks.entry(id) {
             let bytes = match store_bytes {
                 Some(b) => b,
@@ -145,7 +146,7 @@ impl AssetStore {
         id: AssetId,
         orientation: stark_model::document::OrientationSource,
     ) -> Option<wgpu::TextureView> {
-        let mut inner = self.inner.lock().expect("asset store poisoned");
+        let mut inner = unpoisoned(self.inner.lock());
         let mask = inner.masks.get_mut(&id)?;
         if orientation == stark_model::document::OrientationSource::FollowStroke {
             return Some(mask.follow.clone());
@@ -177,9 +178,7 @@ impl AssetStore {
     /// samples this in the **shape's own frame**, rotating the lookup rather than the
     /// mask, so nothing here is ever turned and there is no corner to lose.
     pub fn coverage_view(&self, id: AssetId) -> Option<wgpu::TextureView> {
-        self.inner
-            .lock()
-            .expect("asset store poisoned")
+        unpoisoned(self.inner.lock())
             .masks
             .get(&id)
             .map(|m| m.coverage_view.clone())
@@ -187,9 +186,7 @@ impl AssetStore {
 
     /// Whether `id` is loaded in this store.
     pub fn contains(&self, id: AssetId) -> bool {
-        self.inner
-            .lock()
-            .expect("asset store poisoned")
+        unpoisoned(self.inner.lock())
             .masks
             .contains_key(&id)
     }
@@ -197,9 +194,7 @@ impl AssetStore {
     /// The canonical PNG bytes of one asset, if loaded — what a peer mirror or
     /// a second (preview) engine needs to reproduce the shape.
     pub fn bytes(&self, id: AssetId) -> Option<Vec<u8>> {
-        self.inner
-            .lock()
-            .expect("asset store poisoned")
+        unpoisoned(self.inner.lock())
             .masks
             .get(&id)
             .map(|m| m.bytes.clone())
@@ -207,9 +202,7 @@ impl AssetStore {
 
     /// Source bytes of every loaded asset, for bundling into the save file (§8).
     pub fn all_bytes(&self) -> Vec<(AssetId, Vec<u8>)> {
-        self.inner
-            .lock()
-            .expect("asset store poisoned")
+        unpoisoned(self.inner.lock())
             .masks
             .iter()
             .map(|(id, m)| (*id, m.bytes.clone()))

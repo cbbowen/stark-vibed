@@ -136,43 +136,78 @@ fn normalize_name<T: From<String>>(name: Option<impl AsRef<str>>) -> Option<T> {
     (!capped.is_empty()).then(|| T::from(capped))
 }
 
-/// The layer list [`ObservableState`] carries: the whole tree flattened in
-/// composite order, shared rather than copied.
+/// A list [`ObservableState`] carries: **shared rather than copied**, because a
+/// projection is taken after *every* command — including the pan, zoom and
+/// brush-tuning commands that arrive at pointer rate — and almost none of them can
+/// move any given list.
 ///
-/// **Shared because the walk that builds it is the expensive half of `observe()`,
-/// and most observations do not need a new one.** Producing it visits every layer,
-/// clones every name and asks [`merge::plan_at`](crate::document::merge::plan_at)
-/// per row, while a projection is taken after *every* command — including the pan,
-/// zoom and brush-tuning commands that arrive at pointer rate and cannot move a
-/// layer. `Engine` keeps the last one against the counters it is a function of
-/// ([`Engine::projected_layers`]), so those observations hand out this `Arc` and
-/// walk nothing.
+/// Two properties, and the type exists for both:
 ///
-/// Derefs to `[LayerInfo]`, so it is read exactly as the `Vec` it replaced was.
-#[derive(Clone, Debug, Default)]
-pub struct Layers(Arc<[LayerInfo]>);
+/// - **Handing one out is a refcount bump**, whatever it holds and however long it
+///   is. What that saves depends on the list: the layer roster costs a walk of the
+///   whole tree, cloning every name and asking
+///   [`merge::plan_at`](crate::document::merge::plan_at) per row, and `Engine` keeps
+///   the last one against the counters it is a function of
+///   ([`Engine::projected_layers`]) so an unchanged document walks nothing at all.
+/// - **Asking "did this move?" is a pointer comparison** — see the [`PartialEq`]
+///   impl, which is the half a frontend holding this in a reactive signal actually
+///   feels.
+///
+/// Generic because the argument is about what a *projection* is, not about what any
+/// one list holds. It was written twice for the layer roster and applied to it
+/// alone: the guide list, projected from the same `observe()` at the same rate,
+/// stayed a `Vec` that was deep-cloned and deep-compared per pointer sample even
+/// though [`PerspectiveGuide::name`](crate::guides::PerspectiveGuide) had already
+/// been made an `Arc<str>` citing this very reasoning. One type is what stops the
+/// third list repeating that.
+///
+/// Derefs to `[T]`, so it is read exactly as the `Vec` it replaces was. Building one
+/// is `Vec::into`, which happens where the list actually changes and nowhere else.
+#[derive(Debug)]
+pub struct Projected<T>(Arc<[T]>);
 
-impl std::ops::Deref for Layers {
-    type Target = [LayerInfo];
+/// Cloning shares; it never copies the elements, so this is deliberately **not**
+/// derived — a derived impl would demand `T: Clone` to do what an `Arc` bump does
+/// for free, and would invite someone to satisfy it.
+impl<T> Clone for Projected<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
 
-    fn deref(&self) -> &[LayerInfo] {
+impl<T> Default for Projected<T> {
+    fn default() -> Self {
+        Self(Vec::new().into())
+    }
+}
+
+impl<T> std::ops::Deref for Projected<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
         &self.0
     }
 }
 
-impl From<Vec<LayerInfo>> for Layers {
-    fn from(layers: Vec<LayerInfo>) -> Self {
-        Self(layers.into())
+impl<T> From<Vec<T>> for Projected<T> {
+    fn from(items: Vec<T>) -> Self {
+        Self(items.into())
     }
 }
 
-impl PartialEq for Layers {
+impl<T> FromIterator<T> for Projected<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl<T: PartialEq> PartialEq for Projected<T> {
     /// **Structural equality, with identity as a fast path.**
     ///
     /// The fast path is the whole point of sharing the list: two projections taken
     /// while the document stood still hold the *same* `Arc`, so the frontend's
     /// "did this slice move?" — asked per memo, per command — is one pointer
-    /// comparison instead of a walk of every layer and every name.
+    /// comparison instead of a walk of every element.
     ///
     /// The fall-through keeps the answer exact. Identity alone would be sound
     /// (same `Arc` ⇒ same contents, since the contents are immutable once shared)
@@ -184,6 +219,14 @@ impl PartialEq for Layers {
         Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
     }
 }
+
+/// The layer list [`ObservableState`] carries: the whole tree flattened in composite
+/// order, shared rather than copied — see [`Projected`] for what that buys and why
+/// it is a type.
+pub type Layers = Projected<LayerInfo>;
+
+/// The drawing-guide list, shared on exactly [`Layers`]' argument (§20.5).
+pub type Guides = Projected<crate::guides::PerspectiveGuide>;
 
 /// A layer's presentation properties, for the UI's layer panel (§11).
 ///
@@ -359,7 +402,7 @@ pub struct ObservableState {
     pub history_budget: u64,
     /// The drawing guides (§20.5) — projected so the Drawing Guides panel and
     /// the edit bar read the engine's list rather than a shadow of their own.
-    pub guides: Vec<crate::guides::PerspectiveGuide>,
+    pub guides: Guides,
 
     // --- view settings (per-client, never historized) ---------------------
     //
@@ -1196,7 +1239,7 @@ impl Engine {
                 for g in &mut guides {
                     g.name = normalize_name(g.name.take());
                 }
-                self.session.guides = guides;
+                self.session.guides = guides.into();
             }
             ViewCommand::PreviewMatteRect(drag) => {
                 let preview =
