@@ -1406,38 +1406,64 @@ button.layer-release:hover {
   height: 12px;
 }
 
-/* The layer's own paint in miniature (§14.6). Present only on a row that has tiles
-   to show, so a frame's row and a filter's row keep their names in the column the
-   rest of the panel's do — the box is not held open for a picture that is never
-   coming.
+/* **What this layer is**, in one slot at the far right of every row (§14.6): the
+   layer's own paint for a paint layer, the crop marks for a frame, the funnel for a
+   filter. Every row fills it, so it reads as a column down the panel the way the eyes
+   do — which is the whole reason the frame and filter marks moved here off the front
+   of the name.
 
-   `pointer-events: none` because **the whole row is the grip**: a drag starts
-   anywhere along it, and a 20px element that swallowed the press would put a dead
-   patch in the middle of the panel's principal gesture.
+   Flush with the row's right edge and as tall as the row. `align-self: stretch` takes
+   the row's content height, and the negative margins eat the row's own `5px 6px`
+   padding on the three sides it meets, so the slot goes edge to edge instead of
+   floating in a gutter. The right corners take the row's own 6px radius for the same
+   reason: it is part of the row's rectangle rather than a chip sitting on it. Those
+   three numbers are the only coupling — if `.layer-row`'s padding or radius moves,
+   these move with it.
+
+   `pointer-events: none` because **the whole row is the grip**: a drag starts anywhere
+   along it, and an element at the end of the row that swallowed the press would put a
+   dead patch in the middle of the panel's principal gesture.
 
    `contain`, not `cover`: every row is framed on the same rect the piece occupies
-   (`layer_thumbs`), so a row's picture is a letterboxed view of the whole piece
-   rather than a crop of it — which is what lets one row be compared against another,
-   and what keeps paint in a far corner from being the part that gets cropped away.
+   (`layer_thumbs`), so a row's picture is a letterboxed view of the whole piece rather
+   than a crop of it — which is what lets one row be compared against another, and what
+   keeps paint in a far corner from being the part that gets cropped away.
 
-   The well underneath is a flat tint rather than the usual transparency checker.
-   Two reasons, and the second is the one that decides it: a checker at 20px is
-   noise standing next to a picture that is itself only 20px, and the picture
-   arrives as an inline `background-image` — so a checker drawn with one would be
-   the *same property*, and the inline declaration would simply replace it. A tint
-   is `background-color`, which composes with the image instead of competing for
-   it. */
+   The well underneath is a flat tint rather than the usual transparency checker. Two
+   reasons, and the second decides it: a checker at this size is noise standing next to
+   a picture barely larger than it, and the picture arrives as an inline
+   `background-image` — so a checker drawn with one would be the *same property*, and
+   the inline declaration would simply replace it. A tint is `background-color`, which
+   composes with the image instead of competing for it. */
 .layer-thumb {
-  width: 20px;
-  height: 20px;
+  width: 32px;
   flex: none;
-  border-radius: 3px;
+  align-self: stretch;
+  margin: -5px -6px -5px 0;
+  border-radius: 0 6px 6px 0;
   background-color: #00000038;
   background-repeat: no-repeat;
   background-position: center;
   background-size: contain;
-  box-shadow: inset 0 0 0 1px #ffffff14;
+  /* A rule down the left edge only, parting the slot from the row's controls. A ring
+     on all four sides would draw a line along the row's own border. */
+  box-shadow: inset 1px 0 0 #ffffff14;
   pointer-events: none;
+}
+
+/* The two rows whose slot holds a mark rather than a picture. The same box, so the
+   column stays a column — a frame's row and a filter's row line up with the paint
+   rows either side of them rather than leaving a hole where the picture would be. */
+.layer-thumb-kind {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff8c;
+}
+
+.layer-thumb-kind .icon svg {
+  width: 13px;
+  height: 13px;
 }
 
 /* Duplicate, one slot in from Remove. Bare and 14px like its neighbours, and unlike
@@ -2593,12 +2619,13 @@ button.layer-remove:hover {
    this row is a *what*, not a place to paint. Only the button gets the flex — the
    rename field that stands in for it carries `.layer-name` alone, and a field's
    placeholder is text, not a mark. */
+/* A frame's name and a filter's, dimmed and un-pressable-looking: neither row is a
+   place to paint, so neither name is offering what a paint layer's is.
+
+   It laid out a leading glyph beside the text until the kind marks moved to the row's
+   right-hand slot (`.layer-thumb-kind`), which is why nothing here arranges children
+   any more — what is left is the treatment, and the box is `.layer-name`'s. */
 .layer-name-kind {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex: 1;
-  text-align: left;
   color: #ffffffa6;
   cursor: default;
 }

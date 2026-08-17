@@ -288,17 +288,34 @@ that does both.
 
 Everything a row can do to its own layer is drawn *in* the row — Carry at the head
 of the line, Release out in the indent, then **Duplicate**, **Remove** and the eye
-against the right edge — rather than in header buttons acting on "the selected
-layer". A control drawn in the row has already named what it acts on, so it needs
+in a column at the right, outboard of which sits the kind slot below — rather than
+in header buttons acting on "the selected layer". A control drawn in the row has already named what it acts on, so it needs
 no inapplicable state: Release is simply absent on a layer that is in no group,
 Remove on the row whose removal would empty the document, and Duplicate on neither,
 because every layer can be copied.
 
-#### The row's thumbnail
+#### The kind slot: what this layer *is*
 
-Each paint row carries a miniature of **its own paint** (`stark-ui/src/layer_thumbs.rs`).
-Three decisions make it, and each is a smaller version of one the panel has already
-taken elsewhere.
+Every row ends in one box, flush with the row's right edge and as tall as the row, and
+every row fills it — so the panel gains a second column to read down beside the eyes'.
+All three kinds of layer answer one question there, each in the terms it has:
+
+- a **paint** layer shows a miniature of its own paint
+  (`stark-ui/src/layer_thumbs.rs`);
+- a **frame** shows the crop marks, because its content is a rect and a color the row
+  is already drawing — a picture of it would be a flat rectangle saying less than the
+  mark does;
+- a **filter** shows the funnel, because it has no content at all (§21.3) and an empty
+  picture would say "blank" about a layer that is an operation.
+
+The frame and filter marks led their names until the thumbnails arrived. They belong
+in this slot instead because the question they answer *is* the thumbnail's — what kind
+of thing is this row — and not the name's, which is what the author calls it. Putting
+them anywhere else would have left the column with holes in exactly the rows that had
+the most to say about themselves.
+
+The three decisions behind the picture are each a smaller version of one the panel has
+already taken elsewhere.
 
 - **It shows the layer, not the layer's contribution.** Blend mode, clip and opacity
   are all statements about the *backdrop* (§14.4.3) — they say how much of a layer the
@@ -320,11 +337,9 @@ taken elsewhere.
   (`Background::Transparent`). A row's job is to say *where this layer has paint*, and
   a ground under it fills all twenty pixels and hides exactly that.
 
-A row with no tiles gets **no thumbnail at all** rather than an empty one — a matte's
-content is a rect and a color the row already draws, and a filter has none by
-construction (§21.3), so a blank square beside either would be saying something false
-rather than saying nothing. `LayerInfo::content_revision` is `None` there, which is the
-same field that would have keyed the picture: one question, not two.
+`LayerInfo::content_revision` is what tells the row which of the three it is drawing:
+it is `None` for a matte and a filter, and it is the same field that would have keyed
+the picture, so the row asks one question rather than two.
 
 A **hidden** layer keeps the last thumbnail it had. The isolate draws nothing for one,
 deliberately — a sample must not report paint that is switched off — so the generator

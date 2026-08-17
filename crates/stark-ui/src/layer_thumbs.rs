@@ -19,9 +19,11 @@
 //! content would fill every thumbnail and make none of them relate to another, and
 //! would rescale a row's picture as its layer is painted outward.
 //!
-//! **Cut out, not on the substrate** ([`Background::Transparent`]): a row shows
-//! where the layer *has* paint, and a ground under it would fill every thumbnail
-//! edge to edge and hide exactly that. The stylesheet puts a checker behind it.
+//! **Cut out, not on the substrate** (`Background::Transparent`): a row shows where
+//! the layer *has* paint, and a ground under it would fill every thumbnail edge to
+//! edge and hide exactly that. The stylesheet puts a flat tint behind it rather than
+//! the usual transparency checker — at this size a checker is noise, and it would
+//! have to be drawn with the same `background-image` the picture arrives in.
 //!
 //! # Why these are readbacks when the navigator's miniature is a surface
 //!
@@ -113,9 +115,10 @@ pub struct Thumb {
 /// The thumbnail for `layer`, if the one we hold is still a picture of it.
 /// Subscribes, so a row showing a placeholder re-renders when its image lands.
 ///
-/// `None` for a layer with no tiles at all (a matte, a filter): those have no
-/// content to show and say so through the same field that would have keyed them
-/// (`LayerInfo::content_revision`), so this is one question rather than two.
+/// `None` for a layer with no tiles at all (a matte, a filter) — said through the
+/// same field that would have keyed the picture, `LayerInfo::content_revision`, so
+/// the row asks one question rather than two. Those rows fill the slot with their
+/// kind mark instead (§14.6), which is the panel's business and not this module's.
 pub fn url(state: AppState, layer: &LayerInfo) -> Option<String> {
     let revision = layer.content_revision?;
     state

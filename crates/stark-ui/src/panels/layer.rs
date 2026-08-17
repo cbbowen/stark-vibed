@@ -802,22 +802,6 @@ pub fn LayerRow(
                 } else {
                     span { class: "layer-carry" }
                 }
-                // The layer's own paint, in miniature (§14.6; `crate::layer_thumbs`).
-                //
-                // A `<div>` with a background rather than an `<img>`, and
-                // `pointer-events: none` in the stylesheet, because **the whole row is
-                // the grip**: a drag starts anywhere on it, and an element that took
-                // the press would put a dead patch in the middle of the one gesture
-                // this panel is built around.
-                //
-                // Absent, not blank, on a layer that has no paint to show — a matte and
-                // a filter, which `thumb` reports as `None` because they have no tiles.
-                // A frame's content is a rect and a color the row already draws, and a
-                // filter has no content at all, so an empty square beside either would
-                // be saying something false about it rather than nothing.
-                if let Some(style) = thumb {
-                    div { class: "layer-thumb", style: "{style}" }
-                }
                 if let Some(text) = draft() {
                     input {
                         class: "layer-name",
@@ -871,8 +855,9 @@ pub fn LayerRow(
                 } else {
                     button {
                         // The two kinds that are a *what* rather than a place to
-                        // paint share one treatment: a glyph leading a dimmed,
-                        // un-pressable-looking name.
+                        // paint share one treatment: a dimmed, un-pressable-looking
+                        // name. The mark that used to lead it is in the row's
+                        // right-hand slot now, with the thumbnails.
                         class: if matte || filter { "layer-name layer-name-kind" } else { "layer-name" },
                         title,
                         // The click a drag leaves behind is not this row's — the
@@ -931,20 +916,9 @@ pub fn LayerRow(
                         // tablet — ends it the same way, and `onland` declines a drag
                         // that never went live or that lands where it began.
                         onpointercancel: move |_| onland.call(id),
-                        // The frame's crop marks, on the row as on the bar — the only
-                        // kind of layer that is a *what* rather than a place to paint,
-                        // and the one row in the panel whose dashed border is already
-                        // saying so. It leads the name whether or not the frame has
-                        // been renamed, because the mark is about what the layer is
-                        // and the name is about what the author calls it.
-                        if matte {
-                            {icon(icons::FRAME)}
-                        } else if filter {
-                            // The funnel the filter bar wears, for the same reason
-                            // the crop marks lead a frame's name: the mark is about
-                            // what the layer *is*, the name about what it is called.
-                            {icon(icons::FILTER)}
-                        }
+                        // The kind mark used to lead the name here. It sits in the
+                        // right-hand slot with the thumbnails now (below), because it
+                        // is answering their question rather than the name's.
                         "{label}"
                     }
                 }
@@ -1022,9 +996,12 @@ pub fn LayerRow(
                 } else {
                     span { class: "layer-remove" }
                 }
-                // Last on the line, so the eyes stand in one column down the whole panel
-                // however deep the tree goes: a row is indented from the left, and its right
-                // edge is where the panel's is. That column is the thing being bought — the
+                // The last *control* on the line, so the eyes stand in one column down the
+                // whole panel however deep the tree goes: a row is indented from the left,
+                // and its right edge is where the panel's is. The kind slot below sits
+                // outboard of the column rather than in it — it is flush with the row's
+                // edge and is not a control, so the eyes still line up against a fixed
+                // rule. That column is the thing being bought — the
                 // tick-boxes this replaces marched *rightwards* with the indent, so reading
                 // "what is hidden?" off the panel meant reading every row rather than
                 // glancing down an edge. It shows the eye the layer *is*, not the one
@@ -1046,6 +1023,36 @@ pub fn LayerRow(
                     },
                     onclick: move |_| dispatch(state, DocCommand::SetLayerVisible(id, !visible)),
                     {icon(if visible { icons::VISIBLE } else { icons::HIDDEN })}
+                }
+                // **What this layer is**, in one slot flush with the row's right edge and
+                // as tall as the row (§14.6). Every row fills it and they all line up, so
+                // the panel gains a second column to read down beside the eyes' — and the
+                // three kinds of layer answer the same question in the same place, each in
+                // the terms it has:
+                //
+                // - a **paint** layer shows its own paint (`crate::layer_thumbs`);
+                // - a **frame** shows the crop marks, because its content is a rect and a
+                //   color the row is already drawing — a picture of it would be a flat
+                //   rectangle saying less than the mark does;
+                // - a **filter** shows the funnel, because it has no content at all
+                //   (§21.3) and an empty picture would say "blank" about a layer that is
+                //   an operation.
+                //
+                // The marks led the name until the thumbnails arrived. They belong here
+                // instead because the question they answer is the thumbnail's — what kind
+                // of thing is this — and not the name's, which is what the author calls it.
+                //
+                // A `<div>` with a background rather than an `<img>`, and
+                // `pointer-events: none` in the stylesheet, because **the whole row is the
+                // grip**: a drag starts anywhere on it, and an element that took the press
+                // would put a dead patch in the middle of the one gesture this panel is
+                // built around.
+                if let Some(style) = thumb {
+                    div { class: "layer-thumb", style: "{style}" }
+                } else if matte {
+                    div { class: "layer-thumb layer-thumb-kind", {icon(icons::FRAME)} }
+                } else if filter {
+                    div { class: "layer-thumb layer-thumb-kind", {icon(icons::FILTER)} }
                 }
             }
         }
