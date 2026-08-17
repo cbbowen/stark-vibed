@@ -739,13 +739,22 @@ fn ShapeGallery() -> Element {
             class: if dropping() { "be-shapes dropping" } else { "be-shapes" },
             // `preventDefault` on dragover is what makes the element a drop
             // target at all; the class is just the highlight.
+            //
+            // **And `stopPropagation`, which is what claims the drop.** The app root
+            // takes every drop the window sees, so that one landing on a panel is not
+            // handled by the browser navigating away from an unsaved painting (§23.4)
+            // — and it places what it gets as a picture. A stamp dropped into this
+            // library is a different act, so this handler says so rather than letting
+            // the same file be imported twice, two ways.
             ondragover: move |e| {
                 e.prevent_default();
+                e.stop_propagation();
                 dropping.set(true);
             },
             ondragleave: move |_| dropping.set(false),
             ondrop: move |e| {
                 e.prevent_default();
+                e.stop_propagation();
                 dropping.set(false);
                 crate::shapes::import_dropped(state, e.files());
             },

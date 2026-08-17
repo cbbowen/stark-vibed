@@ -8,9 +8,9 @@ clipboard — §23.
 
 ## 23. Placing an image
 
-Two gestures — **Place image…** in the menu, and **Ctrl+V** — that are the same
-thing from the second step on: bytes arrive, the browser decodes them, and one
-action lands them on the canvas as paint. Everything below is a consequence of
+Three gestures — **Import image…** in the menu, **Ctrl+V**, and a file dragged
+onto the window — that are the same thing from the second step on: bytes arrive,
+the browser decodes them, and one action lands them on the canvas as paint. Everything below is a consequence of
 that last word. An imported image is not an attachment the document keeps a
 reference to, nor a layer of a second kind that composites differently; it is
 paint, laid by the same law a fill lays a parcel by (§18.0.4), and from the
@@ -223,6 +223,27 @@ fetch them (`add_content`) — **before** the commit that names them, which is t
 ordering that leaves receivers able to fetch what an action needs — and only then
 dispatch the placement.
 
+**A drop is claimed at the app root, not at the canvas.** An unclaimed drop is one
+the *browser* handles, and what it does with a dropped file is navigate to it —
+discarding an unsaved painting. So every drop over the window is taken, including
+the ones that land on a panel, and `preventDefault` on `dragover` is what makes the
+window a drop target at all. A descendant that wants a drop for itself takes it by
+stopping propagation, which the brush editor's shape library does: dropping a stamp
+into the library and placing a photograph on the canvas are different acts, and the
+same file could otherwise be imported twice, two ways.
+
+Claiming every drop is also what makes deciding *what each one is* the app's job. A
+`.stark` opens as a document — the other thing this app can be handed, and the same
+gesture the manifest's `file_handlers` answers for a double-click (§11) — and
+anything else goes to the image decoder. Which is why the menu entry is **Import
+image…** rather than *Place*: `PlaceImage` is what the document does with a picture,
+where a menu answers where it came from, and the pairing with **Export image…** is
+the one a hand already knows.
+
+Where a drop lands is **the drop point**, not the middle of the view. A drop is a
+positional gesture — the hand pointed somewhere — where a menu import and a paste
+are not, and that difference is the whole of `images::At`.
+
 **Pasting is the `paste` event, not `navigator.clipboard.read()`.** The event is
 delivered inside the user's own gesture and needs no permission, where the async
 read prompts in Chrome and does not carry images in every engine — and a paste
@@ -261,7 +282,7 @@ engine is told a position, not a policy.
   property §8 is entirely about. The indirection here is the opposite kind — the
   bytes are always somewhere the document can be made whole from, and
   `unbundled_content` is the bill that says so.
-- **No drag-and-drop onto the canvas.** The two doors here cover the two ways a
-  picture is usually in hand. A drop is a third that reuses `place_bytes`
-  unchanged; it is a frontend addition when someone wants it, not a design
-  question.
+- **No placement gesture beyond where it lands.** A drop places the picture
+  centred on the point it was dropped at, and that is the whole of the positional
+  vocabulary — there is no rubber-band to size it as it arrives, because the
+  transform tool is right there and already exact (§16.4).

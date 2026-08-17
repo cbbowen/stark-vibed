@@ -326,6 +326,24 @@ fn app() -> Element {
             onpointerup: move |_| resize_end(panels),
             onpointerleave: move |_| resize_end(panels),
 
+            // Dropping a file anywhere on the app (§23.4). At the **root** rather
+            // than on the canvas, and that is not for convenience: an unclaimed
+            // drop is one the browser handles, and what the browser does with a
+            // dropped file is navigate to it — discarding an unsaved painting. So
+            // every drop over the window has to be claimed, including the ones that
+            // land on a panel, and `preventDefault` on `dragover` is what makes the
+            // window a drop target at all.
+            //
+            // A descendant that wants a drop for itself takes it by stopping
+            // propagation — the brush editor's shape library is the one that does
+            // (`brush_editor`), because dropping a stamp into the library and
+            // placing a photograph on the canvas are different acts.
+            ondragover: move |e| e.prevent_default(),
+            ondrop: move |e| {
+                e.prevent_default();
+                images::drop_files(state, &e);
+            },
+
             Canvas {}
 
             // The frame's edges and handles, over the canvas but *under* all the
@@ -872,15 +890,17 @@ fn CommandRail() -> Element {
                             on_select: move |_| files::save_document(state),
                             span { class: "menu-item", {icon(icons::SAVE)} "Save" }
                         }
-                        // Between the document entries and Export, which is where it
-                        // belongs in both directions: it is a picture coming *in*,
-                        // where Export is one going out, and neither is the painting
-                        // itself (`crate::files`, `crate::images`).
+                        // Directly above Export, and named as its pair: one picture
+                        // coming *in* and one going out, neither of which is the
+                        // painting itself (`crate::files`, `crate::images`). The
+                        // action it commits is a *placement* (§23) — what the
+                        // document does with the picture — where the menu says where
+                        // it came from, which is the question a menu answers.
                         MenubarItem {
                             index: 5usize,
-                            value: "place-image".to_string(),
+                            value: "import-image".to_string(),
                             on_select: move |_| images::import_image(state),
-                            span { class: "menu-item", {icon(icons::PLACE_IMAGE)} "Place image\u{2026}" }
+                            span { class: "menu-item", {icon(icons::IMPORT_IMAGE)} "Import image\u{2026}" }
                             span { class: "menu-shortcut", "Ctrl+V" }
                         }
                         MenubarItem {

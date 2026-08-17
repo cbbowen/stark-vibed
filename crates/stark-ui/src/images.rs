@@ -1,12 +1,13 @@
 //! Getting a picture in: an image file, or the clipboard (§23).
 //!
-//! Two gestures that feel nothing alike — a menu, a file picker, a chosen file; or
-//! Ctrl+V — and are the same thing from here down. Both arrive as encoded bytes, both
-//! go through the browser's decoder, and both commit one
+//! Three gestures that feel nothing alike — a menu and a file picker, Ctrl+V, a file
+//! dragged onto the window — and are the same thing from here down. All three arrive as
+//! encoded bytes, go through the browser's decoder, and commit one
 //! [`DocCommand::PlaceImage`](stark_engine::command::DocCommand::PlaceImage). So the
-//! shared half is [`place_bytes`] and the two entry points are three lines each, which
-//! is the right proportion: what differs between them is only where the bytes came
-//! from and whether there is a filename to name the layer after.
+//! shared half is [`place_bytes`] and the three entry points are a few lines each,
+//! which is the right proportion: what differs between them is only where the bytes
+//! came from, whether there is a filename to name the layer after, and whether the
+//! gesture **pointed** anywhere ([`At`]).
 //!
 //! Sibling to [`crate::files`] rather than part of it, and the distinction is the one
 //! that file's header draws so carefully. Save and Open move the *document*; this moves
@@ -15,13 +16,14 @@
 //! keeps a reference to.
 
 use dioxus::dioxus_core::spawn_forever;
+use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 
 use crate::platform::{decode_image, pick_file};
 use crate::state::{AppState, dispatch};
 use stark_assetid::Picture;
 use stark_engine::command::DocCommand;
-use stark_model::geom::IVec2;
+use stark_model::geom::{IVec2, Vec2};
 
 /// What the file picker offers. `image/*` rather than a list of extensions, because
 /// the decoder is the browser's (§23) — enumerating formats here would be this app
@@ -29,13 +31,75 @@ use stark_model::geom::IVec2;
 /// the browser moved.
 const ACCEPT: &str = "image/*";
 
+/// Where a placement lands.
+///
+/// The one thing that genuinely differs between the three ways in, so it is a type
+/// rather than an `Option<Vec2>` threaded through: a menu import and a paste do not
+/// point anywhere and a drop does, and naming that difference is what keeps the
+/// arithmetic for each in one place.
+#[derive(Copy, Clone)]
+enum At {
+    /// The middle of what is being looked at — the placement that needs no
+    /// explanation, since an image arrives where the eye already is.
+    Viewport,
+    /// Under the pointer, in page pixels: a drop *is* a positional gesture, and
+    /// centring it anywhere else would be ignoring the one thing the hand said.
+    Pointer(Vec2),
+}
+
 /// Ask for an image file and place it — the menu entry.
 pub fn import_image(state: AppState) {
     // Called straight from the menu handler: a file picker may only be opened inside
     // the user gesture that asked for it (`platform::pick_file`).
     pick_file(ACCEPT, move |name, bytes| {
-        place_bytes(state, Some(name), bytes)
+        place_bytes(state, Some(name), bytes, At::Viewport)
     });
+}
+
+/// Take whatever was dropped onto the window (§23.4).
+///
+/// **Every drop, not only an image**, because the alternative is not "nothing happens":
+/// an unclaimed drop is handled by the browser, and what the browser does with a
+/// dropped file is navigate to it, discarding an unsaved painting. The root therefore
+/// claims all of them (`main`), which makes deciding what each one *is* this function's
+/// job.
+///
+/// A `.stark` opens as a document — the other thing this app can be handed, and the
+/// gesture the manifest's `file_handlers` already answers for a double-click (§11,
+/// [`crate::files::bind_file_launch`]). Anything else is offered to the image decoder,
+/// which is the browser's, so what it accepts is the platform's question rather than
+/// this build's (§23.4); a file it cannot read logs and places nothing.
+///
+/// The first file only, like the launch queue and for its reason: this is one gesture
+/// with one drop point, and a second image placed at the same spot would land under the
+/// first where nobody would see it.
+pub fn drop_files(state: AppState, e: &Event<DragData>) {
+    let Some(file) = e.files().into_iter().next() else {
+        // A drag that carried text, a link, or nothing this app can read. Claimed and
+        // discarded rather than handed back to the browser — see above.
+        return;
+    };
+    // Read here rather than in the task: the event is borrowed, and where the hand let
+    // go is the whole of what a drop says that the other two ways in do not.
+    let p = e.page_coordinates();
+    let at = At::Pointer(Vec2::new(p.x as f32, p.y as f32));
+    spawn_forever(async move {
+        let name = file.name();
+        let bytes = match file.read_bytes().await {
+            Ok(bytes) => bytes.to_vec(),
+            Err(e) => return tracing::error!(name, "could not read the dropped file: {e}"),
+        };
+        if is_document(&name) {
+            return crate::files::open_bytes(state, bytes);
+        }
+        place_bytes(state, Some(name), bytes, at);
+    });
+}
+
+/// Whether a dropped file is a Stark document rather than a picture.
+fn is_document(name: &str) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(crate::files::DOC_EXT))
 }
 
 /// Place whatever image is pasted into the page — bound once, for the life of the page.
@@ -48,19 +112,21 @@ pub fn import_image(state: AppState) {
 pub fn bind_paste(state: AppState) {
     crate::platform::on_window_paste(move |bytes| {
         // No name: the clipboard has no filename to offer, so the layer is described by
-        // its place in the stack, which is what an unnamed layer is for.
-        place_bytes(state, None, bytes);
+        // its place in the stack, which is what an unnamed layer is for. And no point:
+        // Ctrl+V is a keystroke, so the pointer is wherever it was left rather than
+        // anywhere the gesture chose.
+        place_bytes(state, None, bytes, At::Viewport);
     });
 }
 
 /// Decode `bytes` and commit the placement — the half both entry points share.
 ///
-/// Detached (`spawn_forever`) because neither caller has a scope to tie the work to: a
-/// menu item unmounts the moment it is clicked, and a paste has no component behind it
-/// at all. The task writes nothing but the document, through
+/// Detached (`spawn_forever`) because no caller has a scope to tie the work to: a menu
+/// item unmounts the moment it is clicked, and a paste and a drop have no component
+/// behind them at all. The task writes nothing but the document, through
 /// [`dispatch`](crate::state::dispatch), so there is no signal of a dead scope to write
 /// through — the hazard `files::ExportModal` avoids by doing the opposite.
-fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>) {
+fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>, at: At) {
     spawn_forever(async move {
         let (width, height, pixels) = match decode_image(bytes).await {
             Ok(decoded) => decoded,
@@ -89,19 +155,22 @@ fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>) {
         // receiver unable to fetch what it needs (§12.4). A no-op when solo.
         seed_session(state, id, png);
 
-        // **Centred on what is being looked at**, which is the only placement that
-        // needs no explanation: an image arrives where the eye already is. The view is
-        // the frontend's (§18.1.2), so this is the frontend's arithmetic — the engine
-        // is told a position, not a policy.
+        // Centred on whatever the gesture meant ([`At`]). The view is the frontend's
+        // (§18.1.2), so this is the frontend's arithmetic — the engine is told a
+        // position, not a policy.
         //
         // Rounded to whole canvas pixels, because that is what the action carries and
         // what makes the placement resample nothing (§23). The engine could not round
         // it for us without the rounding becoming invisible at the call site.
         let Some(at) = crate::state::with_engine_quiet(state, |r| {
-            let center = r.view().center;
+            let view = r.view();
+            let middle = match at {
+                At::Viewport => view.center,
+                At::Pointer(p) => view.screen_to_canvas(p),
+            };
             IVec2::new(
-                (center.x - width as f32 * 0.5).round() as i32,
-                (center.y - height as f32 * 0.5).round() as i32,
+                (middle.x - width as f32 * 0.5).round() as i32,
+                (middle.y - height as f32 * 0.5).round() as i32,
             )
         }) else {
             return tracing::error!("the canvas is not ready yet");

@@ -184,12 +184,13 @@ icons! {
     OPEN_DOC => "folder-open-bold",
     SAVE => "floppy-disk-bold",
     EXPORT => "export-bold",
-    // Placing an image (§23) — a camera rather than a picture frame, because the
-    // frame is taken: [`CLIP`] is already `image-square`, and a glyph that means two
-    // things means neither. A camera also says the truer thing about what arrives
-    // here, which is usually a photograph brought in to work over, where a frame
-    // would suggest something the document merely *holds*.
-    PLACE_IMAGE => "file-image-bold",
+    // Importing an image (§23), beside the file commands because that is what it is: a
+    // picture coming *in*, where [`EXPORT`] is one going out — and the pair is named as
+    // a pair, here and in the menu. A page with a picture on it rather than a bare
+    // frame: the frame is taken ([`CLIP`] is `image-square`, and a glyph that means two
+    // things means neither), and a page is the truer picture anyway, since what arrives
+    // here comes from a file.
+    IMPORT_IMAGE => "file-image-bold",
     SHARE => "share-network-bold",
     // The invite link's Copy. A clipboard is what the act *is* here, which is worth
     // saying because the button's label changes to "Copied" and back: the glyph is

@@ -25,7 +25,10 @@ use stark_engine::{Background, ExportScale, Rendered};
 use stark_model::document::LayerId;
 
 /// Extension for the native (replayable) document format.
-const DOC_EXT: &str = "stark";
+///
+/// `pub(crate)` for `crate::images`, which has to tell a dropped document from a
+/// dropped picture (§23.4) and must not do it with a second spelling of this.
+pub(crate) const DOC_EXT: &str = "stark";
 
 /// Write the document — the action log, not the pixels (§8).
 ///
@@ -94,8 +97,9 @@ pub fn bind_file_launch(state: AppState) {
 }
 
 /// Replace the document with one decoded from `bytes` — the half of [`open_document`]
-/// after the file is in hand, shared with [`bind_file_launch`].
-fn open_bytes(state: AppState, bytes: Vec<u8>) {
+/// after the file is in hand, shared with [`bind_file_launch`] and with a document
+/// **dropped** onto the window (`crate::images::drop_files`, §23.4).
+pub(crate) fn open_bytes(state: AppState, bytes: Vec<u8>) {
     let file = match stark_model::DocumentFile::from_bytes(&bytes) {
         Ok(file) => file,
         Err(e) => return tracing::error!("could not open that file: {e}"),
