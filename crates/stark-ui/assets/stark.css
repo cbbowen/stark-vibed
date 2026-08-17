@@ -1558,8 +1558,11 @@ button.layer-remove:hover {
    panel's right edge is empty except beside the layers that are switched off, so
    "what is hidden?" is answered without reading a single row.
 
-   Nothing moves when they appear — every slot is held either way. The pointer-events
-   go with the opacity, so an invisible control cannot be clicked; only Release can
+   The name does move when they appear, and that is the deal struck below: the four
+   slots after it are collapsed while they are hidden, so at rest the row spends its
+   whole width on the picture rather than on empty boxes. What still may not move is
+   where the name *starts* — Carry's slot is held either way. The pointer-events go
+   with the opacity, so an invisible control cannot be clicked; only Release can
    actually be reached without hovering its row, but the pair is one rule. */
 .layer-carry,
 .layer-merge,
@@ -1582,6 +1585,59 @@ button.layer-remove:hover {
 .layer-item:hover .layer-eye {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* --- and while they are hidden they give their width back to the name ---
+   The four slots after the name, plus the gaps in front of them, are 4 x (14 + 6) =
+   80px of a 252px row: nearly a third of it, held empty on every row the pointer is
+   not on, in a panel whose one scarce axis is width. The name is the row's only
+   `flex: 1`, so what the slots let go of is exactly what it gains — 188px of name at
+   the panel's default width, against the 108px a hovered row has.
+
+   This does not spend the column the held slots bought (see `.layer-merge`,
+   `.layer-remove`), because that argument was always about **rows in the same
+   state**: within one hovered row a missing merge or remove still holds its place
+   with an empty `<span>`, so no row's glyphs sit a slot off from its neighbours'.
+   Every row rests collapsed and the hovered one expands, which is one row moving,
+   under the pointer, saying what it can do.
+
+   **Carry is deliberately not here.** It sits in *front* of the name, so collapsing
+   it would move the name's left edge — and that edge is the column the names
+   themselves are read down, at each depth. What may move is where a name ends;
+   where it starts may not. Release needs no rule either: it is out of flow, in the
+   indent.
+
+   `margin-left: -6px` eats the row's flex gap in front of each collapsed slot — the
+   one coupling here, to `.row`'s `gap`, and without it four collapsed controls still
+   cost 24px of nothing. Note it is the gap *before* each, so the fixed run at the
+   row's end — one gap, then the 32px kind slot — is untouched: the struck eye of a
+   hidden layer never collapses, and it stands in precisely the column a hovered
+   row's eye does. */
+.layer-merge,
+.layer-duplicate,
+.layer-remove,
+.layer-eye:not(.hidden) {
+  width: 0;
+  margin-left: -6px;
+  /* The glyph is wider than its box on the way in and out; clipped rather than
+     spilling over the name it is making room in. */
+  overflow: hidden;
+  /* The width goes with the fade, so it is one motion: the controls push in from
+     the row's end and the name gives ground as they arrive. */
+  transition:
+    opacity 90ms ease-out,
+    width 90ms ease-out,
+    margin-left 90ms ease-out;
+}
+
+/* Back to the slot every other rule on these controls is written for: 14px, the box
+   Carry holds and the one an empty `<span>` stands in with. */
+.layer-item:hover .layer-merge,
+.layer-item:hover .layer-duplicate,
+.layer-item:hover .layer-remove,
+.layer-item:hover .layer-eye {
+  width: 14px;
+  margin-left: 0;
 }
 
 /* Release, in the last step of the row's indent — space only a layer that is *in*
@@ -1640,6 +1696,27 @@ button.layer-remove:hover {
   flex: 1;
   min-width: 0;
   padding: 0;
+  /* **One line, cut with an ellipsis** where the name does not fit. A name that
+     wrapped grew its own row, and a row that grows is the one thing this panel
+     cannot afford: the thumbnails and the eyes are read as *columns* down the
+     stack (see `.layer-thumb`, `.layer-eye`), and a column of same-sized slots at
+     ragged heights is a list to scan rather than one to glance at. Two-line rows
+     also made the tree's own arithmetic — the indent, the seam a drop lands on,
+     the triangle straddling an edge — argue about which line they meant.
+
+     What truncating costs is the tail of a long name, and there are two ways back
+     to it: the row's controls stand aside while they are hidden (below), so a
+     resting row spends 188px of its 252px on the name before anything is cut at
+     all, and a double-click opens the rename field on the whole of it.
+
+     `display: block` is what makes the ellipsis the button's own to draw — a
+     `<button>`'s text otherwise sits in an anonymous child box that centres it,
+     and `text-overflow` has no block of its own to cut. Harmless on the `<input>`
+     that stands in for it, which is one line either way. */
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   /* Carried by both the name button and the rename field that stands in for it, so
      it is what makes their "same text metrics" claim true: a `<button>` and an
      `<input>` each arrive with a font of their own, and the row's is neither. */
@@ -1715,6 +1792,17 @@ button.layer-remove:hover {
 .layer-item.dragging:hover .layer-eye:not(.hidden) {
   opacity: 0;
   pointer-events: none;
+}
+
+/* Hidden there, they are collapsed there too. Otherwise picking a row up would
+   shorten its name — four invisible slots taking their width back — at the one
+   moment the block under the hand has to read as the row you took hold of. */
+.layer-item.dragging:hover .layer-merge,
+.layer-item.dragging:hover .layer-duplicate,
+.layer-item.dragging:hover .layer-remove,
+.layer-item.dragging:hover .layer-eye:not(.hidden) {
+  width: 0;
+  margin-left: -6px;
 }
 
 .layer-item.dragging,
