@@ -27,6 +27,7 @@ mod common;
 
 use common::*;
 use stark_engine::command::DocCommand;
+#[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
 use stark_model::document::{BrushDynamics, BrushParams, BrushShape};
 use stark_model::geom::Vec2;

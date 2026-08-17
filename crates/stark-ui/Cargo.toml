@@ -10,7 +10,7 @@ default = ["mixbox", "webrtc"]
 # Offer the Mixbox pigment space (§6.7) and credit it. Forwarded to the engine,
 # which is where turning it off actually drops the vendored CC BY-NC 4.0 code —
 # see `stark-engine`'s own `mixbox` feature for what that means.
-mixbox = ["stark-engine/mixbox", "stark-net/mixbox"]
+mixbox = ["stark-engine/mixbox"]
 webrtc = ["stark-net/webrtc"]
 
 [build-dependencies]

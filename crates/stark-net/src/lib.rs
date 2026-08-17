@@ -11,7 +11,7 @@
 //!   broadcast over `iroh-gossip` on the session's topic — a sampled path,
 //!   never pixels.
 //! - **Join / catch-up**: a joining peer fetches the session snapshot — the
-//!   save-format [`DocumentFile`](stark_engine::DocumentFile), which already
+//!   save-format [`DocumentFile`](stark_model::DocumentFile), which already
 //!   bundles referenced brush assets — over a dedicated ALPN, then rides the
 //!   gossip tail. Brush blobs a later stroke references are fetched over the
 //!   same ALPN on demand (content-addressed, §6.6).
@@ -71,8 +71,14 @@ pub enum NetError {
     BlobFetch(#[from] iroh_blobs::get::GetError),
     #[error("blob store read failed: {0}")]
     BlobRead(#[from] iroh_blobs::api::ExportBaoError),
+    /// Something went wrong with the **document** — a snapshot that will not decode,
+    /// a version this build is too old for (§8, §19).
+    ///
+    /// `stark-model`'s error rather than the engine's, because this crate never holds
+    /// an engine: it moves logs and assets, and a lost GPU is not a thing that can
+    /// happen to it (§2).
     #[error("document error: {0}")]
-    Document(#[from] stark_engine::EngineError),
+    Document(#[from] stark_model::DocError),
     /// The member asked has no session to serve yet — it is still fetching its
     /// own snapshot. Every member is an entry point (§12.4), so the answer is to
     /// ask a different one, not to give up.

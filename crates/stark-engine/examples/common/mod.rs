@@ -17,9 +17,9 @@
 /// for that reason alone.
 ///
 /// It is a bill and not a fetch: the engine refuses to replay a document whose content
-/// is still outstanding (`EngineError::MissingContent`), so anything left unpaid here
+/// is still outstanding (`stark_model::DocError::MissingContent`), so anything left unpaid here
 /// surfaces at the load rather than in the pixels.
-pub fn settle(engine: &mut stark_engine::Engine, file: &stark_engine::DocumentFile) {
+pub fn settle(engine: &mut stark_engine::Engine, file: &stark_model::DocumentFile) {
     for need in engine.unresolved_content(file) {
         // The id says which store the bytes belong in, so the lookup needs no kind —
         // a shape is hashed from its coverage and a ground from its height, so one

@@ -171,7 +171,7 @@ fn a_shared_session_never_folds() {
     // A replicated timeline reports no scrub range at all, which is the same refusal
     // — so the check is that the log kept every action.
     let log = engine.save_bytes().expect("save");
-    let file = stark_engine::DocumentFile::from_bytes(&log).expect("decode");
+    let file = stark_model::DocumentFile::from_bytes(&log).expect("decode");
     assert_eq!(
         file.actions.len(),
         48,

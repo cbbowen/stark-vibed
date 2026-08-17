@@ -19,7 +19,7 @@ use stark_model::{ColorSpaceId, color};
 /// same tile bytes as different colors, so opening a pigment document through a
 /// colorimetric space would render every pixel wrong while looking like it
 /// worked. Failing is the honest answer, and
-/// [`EngineError::UnsupportedColorSpace`](crate::error::EngineError::UnsupportedColorSpace)
+/// [`DocError::UnsupportedColorSpace`](crate::error::DocError::UnsupportedColorSpace)
 /// is where it lands.
 ///
 /// A free function rather than a method on the id, because the id is

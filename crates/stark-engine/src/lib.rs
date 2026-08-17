@@ -60,7 +60,6 @@ pub mod assets;
 pub(crate) mod assist;
 pub mod colorspace;
 pub mod command;
-pub(crate) mod content;
 pub mod document;
 pub mod engine;
 pub(crate) mod error;
@@ -68,7 +67,6 @@ pub mod filters;
 pub mod gpu;
 pub(crate) mod guides;
 pub(crate) mod image;
-pub mod io;
 pub(crate) mod noise;
 pub mod path;
 pub mod peer;
@@ -107,7 +105,6 @@ pub(crate) fn unpoisoned<'a, T>(
 pub use assets::AssetStore;
 pub use colorspace::ColorSpace;
 pub use command::{InputCommand, InputSample};
-pub use content::{AssetNeed, action_content};
 pub use document::Selection;
 pub use engine::{
     Background, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan, ExportScale, LayerInfo,
@@ -120,6 +117,5 @@ pub use gpu::{
 };
 pub use guides::{AxisPencil, AxisPlane, GuideScene, Lens, PairTrace, PerspectiveGuide, Scaffold};
 pub use image::RgbaImage;
-pub use io::{BuildId, CanvasMeta, DocumentFile};
-pub use peer::{LiveGesture, Peer, PeerFrame, Peers};
+pub use peer::{LiveGesture, Peer, Peers};
 pub use tow::TowString;

@@ -28,16 +28,24 @@
 
 pub mod color;
 pub mod colorspace;
+pub mod content;
 pub mod document;
+pub(crate) mod error;
 pub mod geom;
 pub mod gradient;
+pub mod io;
 pub mod path;
+pub mod peer;
 pub mod surface;
 
 pub use colorspace::ColorSpaceId;
+pub use content::{AssetNeed, action_content};
 pub use document::{LayerId, SelectionMode, SelectionOp, SelectionShape};
+pub use error::{DocError, Result};
 pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};
 pub use gradient::{Gradient, GradientStop};
+pub use io::{BuildId, CanvasMeta, DocumentFile};
+pub use peer::{GestureFrame, PeerFrame, StrokeHead};
 /// What a content id *is* — decode, cap, hash (§19). Re-exported rather than
 /// redefined: `stark-assetid` is a crate of its own so a *build script* can compute
 /// an id, which is what lets the frontend know a bundled asset's id before fetching

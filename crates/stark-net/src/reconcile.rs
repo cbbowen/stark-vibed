@@ -198,7 +198,7 @@ impl Reconciler {
 mod tests {
     use std::time::Duration;
 
-    use stark_engine::DocumentFile;
+    use stark_model::DocumentFile;
     use stark_model::document::{Action, ActionKind, ActorId};
     use tokio::sync::mpsc;
 

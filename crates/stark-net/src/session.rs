@@ -32,10 +32,10 @@ use iroh_blobs::Hash;
 use iroh_gossip::api::{Event as GossipEvent, GossipReceiver, GossipSender};
 pub use iroh_gossip::proto::TopicId;
 use n0_future::{StreamExt, task};
-use stark_engine::DocumentFile;
-use stark_engine::peer::{GestureFrame, PeerFrame};
 use stark_model::AssetId;
+use stark_model::DocumentFile;
 use stark_model::document::{Action, ActorId, BrushShape};
+use stark_model::peer::{GestureFrame, PeerFrame};
 use tokio::sync::mpsc;
 
 use crate::Result;
@@ -75,12 +75,12 @@ pub fn actor_from_endpoint_id(id: EndpointId) -> ActorId {
 }
 
 /// Content a remote action needs before it can be applied faithfully, and which
-/// store it belongs in — [`stark_engine::AssetNeed`], re-exported so a frontend
+/// store it belongs in — [`stark_model::AssetNeed`], re-exported so a frontend
 /// pumping this transport does not need to name two crates for one idea.
 ///
 /// It lives in the engine because the engine is what has the two stores, and
 /// because loading a file asks the same question a joining peer does.
-pub use stark_engine::AssetNeed;
+pub use stark_model::AssetNeed;
 
 /// Something a peer did, to be applied to the local engine. Apply in order:
 /// assets arrive before the action that references them.
@@ -549,7 +549,7 @@ pub struct Broadcaster {
 impl Broadcaster {
     /// See [`CollabSession::broadcast`].
     pub fn broadcast(&self, action: Action) -> Result<()> {
-        let need = stark_engine::action_content(&action);
+        let need = stark_model::action_content(&action);
         let bytes = self.encode(WireRef::Action(&action), need)?;
         // Mirrored after encoding and before queueing, which is what lets the action
         // be moved rather than duplicated — and mirrored whether or not it ever goes
@@ -874,7 +874,7 @@ impl Admission {
     /// parking would be parking forever, and the kind's fallback is the best
     /// available.
     pub fn of(action: &Action, hash: Option<Hash>, waitlist: &Waitlist) -> Self {
-        let Some(need) = stark_engine::action_content(action) else {
+        let Some(need) = stark_model::action_content(action) else {
             return Self::Ready;
         };
         let Some(hash) = hash_or_warn(need, hash) else {

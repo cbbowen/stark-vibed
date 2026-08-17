@@ -29,6 +29,7 @@ mod live;
 mod pick;
 mod render;
 
+use stark_model::DocError;
 use std::sync::Arc;
 
 pub use collab::PresenceTick;
@@ -42,7 +43,6 @@ use crate::command::{DocCommand, GestureCommand, InputCommand, PeerCommand, View
 use crate::document::{
     ApplyCtx, CanvasBounds, DocState, Layer, LayerContent, LinearTimeline, Timeline,
 };
-use crate::error::EngineError;
 use crate::gpu::MediaParams;
 use crate::gpu::desc::Zeroes;
 use crate::gpu::{
@@ -642,7 +642,7 @@ impl Engine {
 
     /// Build an engine in a chosen color space (§6.7).
     ///
-    /// Fails with [`EngineError::UnsupportedColorSpace`] if this build does not carry
+    /// Fails with [`DocError::UnsupportedColorSpace`] if this build does not carry
     /// the space — today only `Mixbox` without the `mixbox` feature. A frontend that
     /// builds its picker from
     /// [`ColorSpaceId::all_available`](stark_model::ColorSpaceId::all_available)
@@ -654,7 +654,7 @@ impl Engine {
         color_space: ColorSpaceId,
     ) -> Result<Self> {
         let color_space = crate::colorspace::make(color_space)
-            .ok_or(EngineError::UnsupportedColorSpace(color_space))?;
+            .ok_or(DocError::UnsupportedColorSpace(color_space))?;
         // The registry starts on the builtin flat ground — it is all that can be
         // built before any bytes exist, and it is also what a fresh document is on
         // (`DEFAULT_SURFACE`), so there is nothing to reconcile between the two. A

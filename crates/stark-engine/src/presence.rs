@@ -29,9 +29,10 @@
 //! here is the state that interprets them.
 
 use crate::path::frozen_spans_for;
-use crate::peer::{GESTURE_RESYNC, GestureFrame, LiveGesture, StrokeHead};
+use crate::peer::LiveGesture;
 use stark_model::document::{FillOp, LayerId, SelectionOp, StrokeRecord};
 use stark_model::path::ControlPoint;
+use stark_model::peer::{GESTURE_RESYNC, GestureFrame, StrokeHead};
 
 /// The gesture a sender has in flight, in the form [`GestureTx::encode`] reads it.
 ///
@@ -48,7 +49,7 @@ pub(crate) enum GestureSource {
     },
     Selection(SelectionOp),
     /// A region being dragged out to fill (§18.0.4). No layer: the
-    /// frame's own [`active_layer`](crate::peer::PeerFrame::active_layer) is it, and
+    /// frame's own [`active_layer`](stark_model::peer::PeerFrame::active_layer) is it, and
     /// a second copy could disagree with that one.
     Fill(FillOp),
 }
@@ -162,7 +163,7 @@ pub(crate) struct GestureRx {
     stroke: Option<StrokeAssembly>,
     /// What a renderer should draw for this peer right now.
     drawn: Option<LiveGesture>,
-    /// [`PeerFrame::seq`](crate::peer::PeerFrame::seq) of the last frame spliced into
+    /// [`PeerFrame::seq`](stark_model::peer::PeerFrame::seq) of the last frame spliced into
     /// `stroke`. A delta is only safe to splice if it *immediately* follows the frame
     /// before it — see [`Self::apply`].
     last_seq: Option<u64>,
@@ -220,7 +221,7 @@ impl GestureRx {
         was_drawing
     }
 
-    /// Integrate one frame, carrying the [`PeerFrame::seq`](crate::peer::PeerFrame::seq)
+    /// Integrate one frame, carrying the [`PeerFrame::seq`](stark_model::peer::PeerFrame::seq)
     /// it arrived under. Returns whether what is *drawn* changed.
     pub(crate) fn apply(&mut self, frame: GestureFrame, seq: u64, active_layer: LayerId) -> bool {
         // A new ordinal is a different gesture: drop whatever was being drawn or
@@ -350,10 +351,11 @@ mod tests {
     use super::*;
     use crate::command::InputSample;
     use crate::path::DEFAULT_TOLERANCE;
-    use crate::peer::{PeerFrame, Peers};
+    use crate::peer::Peers;
     use crate::session::Session;
     use stark_model::document::{ActorId, LayerId, Tool};
     use stark_model::geom::{Extent2, Vec2, ViewTransform};
+    use stark_model::peer::PeerFrame;
 
     /// A fixed-seed generator, so a failure is a bug report rather than a coin toss.
     /// `proptest` would add shrinking, but the inputs here are already minimal —

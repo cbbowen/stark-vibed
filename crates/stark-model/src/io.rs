@@ -21,12 +21,12 @@ use std::io::{Read, Write};
 use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{EngineError, Result};
-use stark_model::AssetId;
-use stark_model::ColorSpaceId;
-use stark_model::SurfaceId;
-use stark_model::document::Action;
-use stark_model::geom::TILE_SIZE;
+use crate::AssetId;
+use crate::ColorSpaceId;
+use crate::SurfaceId;
+use crate::document::Action;
+use crate::error::{DocError, Result};
+use crate::geom::TILE_SIZE;
 
 /// Container magic; identifies a Stark document.
 const MAGIC: &[u8; 8] = b"STARKDOC";
@@ -69,7 +69,7 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// is the whole reason a removal is allowed to be this cheap.
 ///
 /// The field could only ever hold `Brush` — the selection tools produce a
-/// [`SelectionOp`](stark_model::document::SelectionOp), never a stroke — and nothing
+/// [`SelectionOp`](crate::document::SelectionOp), never a stroke — and nothing
 /// read it back. So it was a constant written into every stroke of every
 /// document, and §1's rule about inert scaffolding applies to a field that has
 /// stopped meaning something just as much as to one that never did. If a tool
@@ -262,8 +262,7 @@ impl DocumentFile {
 
     /// Encode to the on-disk container: `MAGIC | version | deflate(postcard)`.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let body =
-            postcard::to_allocvec(self).map_err(|e| EngineError::Serialize(e.to_string()))?;
+        let body = postcard::to_allocvec(self).map_err(|e| DocError::Serialize(e.to_string()))?;
 
         let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
         encoder.write_all(&body)?;
@@ -280,7 +279,7 @@ impl DocumentFile {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let header = MAGIC.len() + 4;
         if bytes.len() < header || &bytes[..MAGIC.len()] != MAGIC {
-            return Err(EngineError::BadMagic);
+            return Err(DocError::BadMagic);
         }
         let version = u32::from_le_bytes(
             bytes[MAGIC.len()..header]
@@ -288,27 +287,14 @@ impl DocumentFile {
                 .expect("4-byte version"),
         );
         if version != WIRE_VERSION {
-            return Err(EngineError::UnsupportedVersion(version));
+            return Err(DocError::UnsupportedVersion(version));
         }
 
         let mut body = Vec::new();
         DeflateDecoder::new(&bytes[header..]).read_to_end(&mut body)?;
         let file: Self =
-            postcard::from_bytes(&body).map_err(|e| EngineError::Deserialize(e.to_string()))?;
+            postcard::from_bytes(&body).map_err(|e| DocError::Deserialize(e.to_string()))?;
 
-        // **The one place an untrusted color space enters.** Checked here rather than
-        // where the document is adopted, for the reason the magic and the version are:
-        // this is the boundary between bytes someone else wrote and a value the engine
-        // treats as its own, and a refusal here leaves whatever is open alone.
-        //
-        // Every `ColorSpaceId` decodes — the enum is unconditional so the save format's
-        // indices cannot shift with a build's features (§8, §19) — and what a build may
-        // lack is the *implementation*. So this is not a decode failure, and saying so
-        // is what lets a frontend offer "this document needs a Mixbox build" instead of
-        // "this file is corrupt".
-        if !crate::colorspace::available(file.canvas.color_space) {
-            return Err(EngineError::UnsupportedColorSpace(file.canvas.color_space));
-        }
         Ok(file)
     }
 }
@@ -316,7 +302,7 @@ impl DocumentFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_model::document::{Action, ActionId, ActionKind, ActorId, LayerId};
+    use crate::document::{Action, ActionId, ActionKind, ActorId, LayerId};
 
     fn sample_doc() -> DocumentFile {
         DocumentFile::new(vec![Action {
@@ -350,7 +336,7 @@ mod tests {
     fn rejects_foreign_bytes() {
         assert!(matches!(
             DocumentFile::from_bytes(b"not a stark file"),
-            Err(EngineError::BadMagic)
+            Err(DocError::BadMagic)
         ));
     }
 
@@ -370,7 +356,7 @@ mod tests {
         bytes[at..at + 4].copy_from_slice(&(WIRE_VERSION - 1).to_le_bytes());
         assert!(matches!(
             DocumentFile::from_bytes(&bytes),
-            Err(EngineError::UnsupportedVersion(v)) if v == WIRE_VERSION - 1
+            Err(DocError::UnsupportedVersion(v)) if v == WIRE_VERSION - 1
         ));
     }
 }

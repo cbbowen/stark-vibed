@@ -13,9 +13,10 @@
 
 use super::{Engine, ROOT_LAYER};
 use crate::document::{DocState, ReplicatedTimeline, TimelineStats};
-use crate::io::DocumentFile;
-use crate::peer::{Identity, Peer, PeerFrame};
+use crate::peer::{Identity, Peer};
+use stark_model::DocumentFile;
 use stark_model::document::{Action, ActorId};
+use stark_model::peer::PeerFrame;
 
 /// What one presence-pump tick moved ([`Engine::take_presence`]).
 ///
@@ -265,7 +266,7 @@ impl Engine {
     }
 
     /// The farewell frame, so peers drop this client at once instead of waiting out
-    /// [`PEER_TIMEOUT`](crate::peer::PEER_TIMEOUT). Send it before tearing the
+    /// [`PEER_TIMEOUT`](stark_model::peer::PEER_TIMEOUT). Send it before tearing the
     /// transport down.
     pub fn leaving_presence(&mut self) -> PeerFrame {
         self.session.publish_leaving()
@@ -287,7 +288,7 @@ impl Engine {
     /// engine's clock stays monotonic. Dating by `self.now` alone would assume the
     /// pump advances it every tick, and the pump skips `take_presence` on a tick with
     /// nothing to publish: on a client that is only *watching*, the clock would
-    /// advance per [`HEARTBEAT`](crate::peer::HEARTBEAT), and every frame merged in
+    /// advance per [`HEARTBEAT`](stark_model::peer::HEARTBEAT), and every frame merged in
     /// between would age a whole heartbeat at once when the expiry finally ran —
     /// taking down live gestures whose frames arrive thirty times a second.
     pub fn merge_presence(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> bool {

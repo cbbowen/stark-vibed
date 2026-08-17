@@ -1378,7 +1378,7 @@ fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
     );
     let before = engine.render_to_image();
 
-    let mut doc = stark_engine::io::DocumentFile::from_bytes(&engine.save_bytes().expect("save"))
+    let mut doc = stark_model::DocumentFile::from_bytes(&engine.save_bytes().expect("save"))
         .expect("parse own save");
     let prev = doc.actions.last().expect("the coat stroke").id;
     let mut brush = dyn_brush(

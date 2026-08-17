@@ -323,7 +323,7 @@ fn a_document_bundles_every_ground_it_names() {
 
     // And the bundle survives the container, which is what a loader reads.
     let encoded = engine.save_bytes().expect("serialize");
-    let back = stark_engine::DocumentFile::from_bytes(&encoded).expect("deserialize");
+    let back = stark_model::DocumentFile::from_bytes(&encoded).expect("deserialize");
     assert_eq!(
         back.surfaces.len(),
         file.surfaces.len(),
@@ -401,7 +401,7 @@ fn a_lean_file_replays_identically_once_its_content_is_resolved() {
         fat.len()
     );
 
-    let file = stark_engine::DocumentFile::from_bytes(&lean).expect("decode");
+    let file = stark_model::DocumentFile::from_bytes(&lean).expect("decode");
     assert!(
         file.surfaces.is_empty(),
         "the ground was promised, so it should not be in the bundle"
@@ -412,7 +412,7 @@ fn a_lean_file_replays_identically_once_its_content_is_resolved() {
     let owed = loaded.unresolved_content(&file);
     assert_eq!(
         owed,
-        vec![stark_engine::AssetNeed::Ground(ground_id)],
+        vec![stark_model::AssetNeed::Ground(ground_id)],
         "a lean file has to say what it is missing, or the opener replays without it"
     );
     for need in &owed {
@@ -443,7 +443,7 @@ fn a_complete_file_owes_nothing() {
     engine.process(DocCommand::SetSurface(gesso));
     paint_toothed(&mut engine);
 
-    let file = stark_engine::DocumentFile::from_bytes(&engine.save_bytes().expect("serialize"))
+    let file = stark_model::DocumentFile::from_bytes(&engine.save_bytes().expect("serialize"))
         .expect("decode");
     let mut fresh = engine_or_skip_blue().expect("adapter");
     assert!(fresh.unresolved_content(&file).is_empty());
@@ -496,11 +496,13 @@ fn an_unsettled_lean_file_is_refused_and_changes_nothing() {
         .load_bytes(&lean)
         .expect_err("an unpaid bill must refuse");
     match err {
-        stark_engine::EngineError::MissingContent(missing) => assert_eq!(
-            missing,
-            vec![stark_engine::AssetNeed::Ground(ground_id)],
-            "the refusal has to name what is owed, or the caller cannot settle it"
-        ),
+        stark_engine::EngineError::Document(stark_model::DocError::MissingContent(missing)) => {
+            assert_eq!(
+                missing,
+                vec![stark_model::AssetNeed::Ground(ground_id)],
+                "the refusal has to name what is owed, or the caller cannot settle it"
+            )
+        }
         other => panic!("expected MissingContent, got {other}"),
     }
     assert!(

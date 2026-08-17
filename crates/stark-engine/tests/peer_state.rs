@@ -15,11 +15,11 @@ mod common;
 use common::{engine_or_skip, images_match, paint};
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_engine::peer::{GestureFrame, PeerFrame, StrokeHead};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{ActorId, LayerId, Tool};
 use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
 use stark_model::geom::Vec2;
+use stark_model::peer::{GestureFrame, PeerFrame, StrokeHead};
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
@@ -496,14 +496,14 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
     // Silence: the gesture expires first, then the peer — and each expiry owes a
     // repaint, or the dead stroke stays on screen exactly as long as the bug it
     // is being taken down to avoid.
-    let tick = engine.take_presence(stark_engine::peer::GESTURE_TIMEOUT + 0.1);
+    let tick = engine.take_presence(stark_model::peer::GESTURE_TIMEOUT + 0.1);
     assert!(tick.repaint, "expiring a gesture changes the canvas");
     assert_eq!(engine.peers().count(), 1, "still on the roster");
     assert!(
         !is_painted(&snap(&mut engine), Vec2::new(0.0, 0.0)),
         "a stalled gesture must stop being drawn"
     );
-    let tick = engine.take_presence(stark_engine::peer::PEER_TIMEOUT + 0.1);
+    let tick = engine.take_presence(stark_model::peer::PEER_TIMEOUT + 0.1);
     assert!(tick.repaint, "a departing peer changes the canvas");
     assert_eq!(engine.peers().count(), 0, "the peer left");
 }
@@ -862,7 +862,7 @@ fn presence_due_never_hides_a_frame() {
         step(&mut engine, &mut now, &mut idle_ticks);
     }
     // And the heartbeat still gets through a long silence.
-    now += stark_engine::peer::HEARTBEAT;
+    now += stark_model::peer::HEARTBEAT;
     let due = engine.presence_due(now);
     assert!(due, "the heartbeat must come due");
     assert!(engine.take_presence(now).frame.is_some(), "heartbeat frame");

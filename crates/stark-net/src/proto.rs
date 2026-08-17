@@ -18,9 +18,9 @@ use std::sync::Mutex;
 use bytes::Bytes;
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
-use stark_engine::peer::PeerFrame;
 use stark_model::AssetId;
 use stark_model::document::{Action, ActionId};
+use stark_model::peer::PeerFrame;
 
 use crate::mirror::{Mirror, Served};
 
@@ -120,7 +120,7 @@ pub(crate) enum Wire {
 /// stream's full contents).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum Request {
-    /// The whole session: a [`DocumentFile`](stark_engine::DocumentFile) container.
+    /// The whole session: a [`DocumentFile`](stark_model::DocumentFile) container.
     Snapshot,
     /// The session, minus the content the joiner says it can resolve without help
     /// — the ids of the assets that ship with its build (§12.4).
@@ -224,7 +224,7 @@ pub(crate) use iroh_wire::{CollabProto, request};
 /// would not go near it. No GPU: this is about the wire.
 #[cfg(test)]
 mod tests {
-    use stark_engine::DocumentFile;
+    use stark_model::DocumentFile;
     use stark_model::document::{Action, ActionId, ActionKind, ActorId};
 
     use super::*;

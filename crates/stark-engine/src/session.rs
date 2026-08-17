@@ -10,9 +10,7 @@ use crate::assist::{AssistShape, PenProfile};
 use crate::command::InputSample;
 use crate::guides::{PerspectiveGuide, Scaffold};
 use crate::path::PathFitter;
-use crate::peer::{
-    GestureView, HEARTBEAT, Identity, LiveGesture, PeerFrame, StrokeHead, default_name,
-};
+use crate::peer::{GestureView, Identity, LiveGesture, default_name};
 use crate::presence::{GestureSource, GestureTx};
 use crate::tow::{Tow, TowString};
 use stark_model::document::{
@@ -21,6 +19,7 @@ use stark_model::document::{
 };
 use stark_model::geom::{Vec2, ViewTransform};
 use stark_model::path::ControlPoint;
+use stark_model::peer::{HEARTBEAT, PeerFrame, StrokeHead};
 
 /// Minimum spacing (canvas px) between lasso vertices. The mask shader costs one
 /// segment test per texel per vertex, and pointer samples arrive far denser than a
@@ -437,7 +436,7 @@ impl Session {
     }
 
     /// The farewell frame: one publish that removes this client from every peer's
-    /// roster at once, rather than making them wait out [`PEER_TIMEOUT`](crate::peer::PEER_TIMEOUT).
+    /// roster at once, rather than making them wait out [`PEER_TIMEOUT`](stark_model::peer::PEER_TIMEOUT).
     pub fn publish_leaving(&mut self) -> PeerFrame {
         self.pub_seq += 1;
         PeerFrame {

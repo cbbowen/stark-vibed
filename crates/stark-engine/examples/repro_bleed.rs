@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use stark_engine::RgbaImage;
 use stark_engine::command::ViewCommand;
 use stark_engine::engine::headless_engine;
-use stark_engine::io::DocumentFile;
+use stark_model::DocumentFile;
 use stark_model::document::{ActionKind, FillOp, SelectionShape};
 use stark_model::geom::{Extent2, Vec2};
 
@@ -157,7 +157,7 @@ fn main() {
     let render = |bytes: &[u8]| -> RgbaImage {
         let mut engine = pollster::block_on(headless_engine(wgpu::TextureFormat::Rgba8Unorm, size))
             .expect("headless engine");
-        let file = stark_engine::DocumentFile::from_bytes(bytes).expect("decode");
+        let file = stark_model::DocumentFile::from_bytes(bytes).expect("decode");
         common::settle(&mut engine, &file);
         engine.load_document(&file).expect("load + replay");
         engine.process(ViewCommand::CenterOn(center));

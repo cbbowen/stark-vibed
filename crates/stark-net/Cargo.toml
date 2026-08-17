@@ -18,17 +18,19 @@ publish = false
 # identically on native (str0m) and wasm (RTCPeerConnection), so the whole
 # flow is testable in `cargo test`.
 webrtc = ["dep:iroh-webrtc-transport", "dep:iroh-base", "dep:anyhow", "iroh/unstable-custom-transports"]
-# Pure forwarding: this crate has no Mixbox code of its own, but it depends on the
-# engine with `default-features = false`, so without this it would pin the engine's
-# Mixbox space *off* for every frontend — including one that wants it.
-mixbox = ["stark-engine/mixbox"]
-default = ["webrtc", "mixbox"]
+# There is no `mixbox` feature here any more, and its absence is the point (§2).
+# It existed only to forward `stark-engine/mixbox`: this crate depended on the
+# engine with `default-features = false`, which would otherwise have pinned the
+# Mixbox space *off* for every frontend. Now the library depends on `stark-model`,
+# which has no such feature — `ColorSpaceId` is unconditional there — so there is
+# nothing left to forward.
+default = ["webrtc"]
 
 [dependencies]
-# The document: the action log, the save format and the presence frames — all this
-# crate speaks on the wire (§2). It names no engine type at all.
+# The document: the action log, the save format and the presence frames — the whole
+# of what this crate moves (§2). It names no engine type at all, which is why the
+# engine is a *dev*-dependency below: transporting a log needs no renderer.
 stark-model = { workspace = true }
-stark-engine = { path = "../stark-engine", default-features = false }
 iroh = "1"
 # The live-edit wire: epidemic broadcast on the session topic. Rides the same
 # endpoint as everything else — which is what the WebRTC custom-transport
@@ -58,6 +60,9 @@ tokio = { version = "1", default-features = false, features = ["sync"] }
 data-encoding = "2"
 
 [dev-dependencies]
+# Only the tests drive a real engine — they paint, render and compare pixels to
+# prove a session converges. The library itself never sees one.
+stark-engine = { path = "../stark-engine", default-features = false }
 # `test-utils` provides the local relay server for the webrtc migration test.
 iroh = { version = "1", features = ["test-utils"] }
 # `test-util` pauses the clock: the asset retry backoff widens to half a minute,

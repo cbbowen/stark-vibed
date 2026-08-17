@@ -24,10 +24,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use bytes::Bytes;
 use iroh_blobs::Hash;
 use rpds::RedBlackTreeMapSync;
-use stark_engine::{BuildId, CanvasMeta, DocumentFile};
 use stark_model::AssetId;
 use stark_model::SurfaceId;
 use stark_model::document::{Action, ActionId};
+use stark_model::{BuildId, CanvasMeta, DocumentFile};
 
 use crate::session::AssetNeed;
 
@@ -289,7 +289,7 @@ impl Mirror {
         ids.iter()
             .filter_map(|id| self.actions.get(id))
             .map(|action| {
-                let hash = stark_engine::action_content(action)
+                let hash = stark_model::action_content(action)
                     .and_then(|need| self.transfer_hash(need.content()));
                 (action.clone(), hash)
             })

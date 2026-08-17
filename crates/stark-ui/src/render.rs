@@ -11,9 +11,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::platform::Canvas;
-use stark_engine::AssetNeed;
 use stark_engine::command::ViewCommand;
 use stark_engine::{Engine, EnvironmentId, GpuContext, InputCommand, InputSample, ObservableState};
+use stark_model::AssetNeed;
 use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
 use stark_model::ViewTransform;
@@ -303,7 +303,7 @@ impl Renderer {
 
     /// What `file` names that neither it carries nor this engine already holds —
     /// settle it before [`Renderer::load_document`].
-    pub fn unresolved_content(&self, file: &stark_engine::DocumentFile) -> Vec<AssetNeed> {
+    pub fn unresolved_content(&self, file: &stark_model::DocumentFile) -> Vec<AssetNeed> {
         self.engine.unresolved_content(file)
     }
 
@@ -311,7 +311,7 @@ impl Renderer {
     ///
     /// Fails, leaving the open document untouched, if anything the log names is still
     /// unresolved — so the settle above is not advisory.
-    pub fn load_document(&mut self, file: &stark_engine::DocumentFile) -> stark_engine::Result<()> {
+    pub fn load_document(&mut self, file: &stark_model::DocumentFile) -> stark_engine::Result<()> {
         self.engine.load_document(file)
     }
 
@@ -482,7 +482,7 @@ impl Renderer {
     /// Replace the document with a joined session's log.
     pub fn join_collaboration(
         &mut self,
-        file: &stark_engine::DocumentFile,
+        file: &stark_model::DocumentFile,
         identity: impl Into<stark_engine::peer::Identity>,
     ) {
         self.engine.join_collaboration(file, identity);
@@ -494,7 +494,7 @@ impl Renderer {
     }
 
     /// Snapshot the document (full shared log + referenced assets).
-    pub fn document_file(&self) -> stark_engine::DocumentFile {
+    pub fn document_file(&self) -> stark_model::DocumentFile {
         self.engine.document_file()
     }
 
@@ -527,7 +527,7 @@ impl Renderer {
     }
 
     /// The farewell frame, so peers drop this client at once on leave.
-    pub fn leaving_presence(&mut self) -> stark_engine::PeerFrame {
+    pub fn leaving_presence(&mut self) -> stark_model::PeerFrame {
         self.engine.leaving_presence()
     }
 
@@ -540,7 +540,7 @@ impl Renderer {
     pub fn merge_presence(
         &mut self,
         actor: stark_model::document::ActorId,
-        frame: stark_engine::PeerFrame,
+        frame: stark_model::PeerFrame,
         now: f64,
     ) -> bool {
         self.engine.merge_presence(actor, frame, now)

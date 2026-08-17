@@ -236,8 +236,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use iroh::SecretKey;
-    use stark_engine::DocumentFile;
     use stark_model::AssetId;
+    use stark_model::DocumentFile;
     use stark_model::document::{Action, ActionId, ActionKind, ActorId};
     use tokio::sync::mpsc;
 

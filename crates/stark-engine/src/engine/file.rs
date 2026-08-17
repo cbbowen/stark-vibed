@@ -11,17 +11,18 @@
 //! and a rendering input second, and its identity is derived from its bytes rather
 //! than asserted alongside them, so a wrong binding cannot be expressed.
 
+use stark_model::DocError;
 use std::sync::Arc;
 
 use super::{Authoring, Engine, GpuBuild, GpuKeep, ROOT_LAYER, build_gpu};
+use crate::Result;
 use crate::colorspace::ColorSpace;
-use crate::content::AssetNeed;
 use crate::document::{DocState, LinearTimeline, effective_actions};
 use crate::gpu::EnvironmentId;
-use crate::io::DocumentFile;
-use crate::{EngineError, Result};
 use stark_model::AssetId;
+use stark_model::AssetNeed;
 use stark_model::ColorSpaceId;
+use stark_model::DocumentFile;
 use stark_model::SurfaceId;
 use stark_model::document::Action;
 
@@ -71,7 +72,7 @@ impl Engine {
     /// Serialize the document to the compact on-disk container, bundling
     /// everything it names (§8). A file that needs nothing but itself.
     pub fn save_bytes(&self) -> Result<Vec<u8>> {
-        self.document_file().to_bytes()
+        Ok(self.document_file().to_bytes()?)
     }
 
     /// The same, leaving out content the opening app can produce itself — the ids
@@ -94,7 +95,7 @@ impl Engine {
         file.assets.retain(|(id, _)| keep(id));
         file.surfaces
             .retain(|(id, _)| AssetNeed::ground(*id).is_none_or(|n| keep(&n.content())));
-        file.to_bytes()
+        Ok(file.to_bytes()?)
     }
 
     /// Empty this engine's document and install everything `file` needs **before**
@@ -133,12 +134,13 @@ impl Engine {
         if file.canvas.color_space != self.shared.color_space.id() {
             // A `DocumentFile` reaches here from exactly two places, and both have
             // already settled this: one decoded from bytes was refused by
-            // [`DocumentFile::from_bytes`] if this build cannot honour its space, and
-            // one built in memory came from a live `Engine` in this same build, whose
-            // space therefore resolves by construction. So the `None` arm is not a
-            // case this function declines to handle — it is one that cannot arrive.
+            // [`require_color_space`](Self::require_color_space) if this build cannot
+            // honour its space, and one built in memory came from a live `Engine` in
+            // this same build, whose space therefore resolves by construction. So the
+            // `None` arm is not a case this function declines to handle — it is one
+            // that cannot arrive.
             let cs = crate::colorspace::make(file.canvas.color_space)
-                .expect("`from_bytes` refuses a document whose space this build lacks");
+                .expect("a document whose space this build lacks is refused before adoption");
             self.rebuild_gpu_for(cs);
         }
         for (_, bytes) in &file.assets {
@@ -152,7 +154,7 @@ impl Engine {
             }
         }
         // Reachable only from a collaboration join now — [`Engine::load_document`] and
-        // the timelapse refuse outright rather than adopt (`EngineError::MissingContent`).
+        // the timelapse refuse outright rather than adopt (`DocError::MissingContent`).
         // A joiner is the one caller that legitimately starts short: the actions arrive
         // over the same transport as the blobs, and the waitlist parks a `SetSurface`
         // until its ground lands (§12.4), so this is a statement about ordering in
@@ -173,7 +175,7 @@ impl Engine {
     /// undo timeline is available afterwards — undo-after-load (§8).
     ///
     /// **Fails, and changes nothing, if the file's content is not all here**
-    /// ([`EngineError::MissingContent`]). The check is before [`Self::adopt`] rather
+    /// ([`DocError::MissingContent`]). The check is before [`Self::adopt`] rather
     /// than inside it so a refusal leaves the open document alone: half-replacing a
     /// painting is worse than declining to.
     pub fn load_document(&mut self, file: &DocumentFile) -> Result<()> {
@@ -194,7 +196,33 @@ impl Engine {
     /// Decode and load a container produced by [`Engine::save_bytes`].
     pub fn load_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         let file = DocumentFile::from_bytes(bytes)?;
+        Self::require_color_space(&file)?;
         self.load_document(&file)
+    }
+
+    /// **The one place an untrusted color space enters.** Checked before anything is
+    /// adopted, for the reason the magic and the version are: this is the boundary
+    /// between bytes someone else wrote and a value the engine treats as its own, and
+    /// a refusal here leaves whatever is open alone.
+    ///
+    /// Every `ColorSpaceId` decodes — the enum is unconditional so the save format's
+    /// indices cannot shift with a build's features (§8, §19) — and what a build may
+    /// lack is the *implementation*. So this is not a decode failure, and saying so is
+    /// what lets a frontend offer "this document needs a Mixbox build" instead of
+    /// "this file is corrupt".
+    ///
+    /// It asks here rather than in [`DocumentFile::from_bytes`], where it used to,
+    /// because since the crate split (§2) the decoder cannot answer it: whether a
+    /// space can be *honoured* is a fact about this build's renderer, and
+    /// `stark-model` has no `mixbox` feature to consult. The property that mattered —
+    /// refuse before disturbing anything — is unchanged, because nothing between the
+    /// decode and here touches the open document.
+    fn require_color_space(file: &DocumentFile) -> Result<()> {
+        if crate::colorspace::available(file.canvas.color_space) {
+            Ok(())
+        } else {
+            Err(DocError::UnsupportedColorSpace(file.canvas.color_space).into())
+        }
     }
 
     /// `Err(MissingContent)` if anything `file`'s log names is neither bundled in it
@@ -204,7 +232,7 @@ impl Engine {
         if missing.is_empty() {
             return Ok(());
         }
-        Err(EngineError::MissingContent(missing))
+        Err(DocError::MissingContent(missing).into())
     }
 
     /// Replay a document, invoking `on_frame` with the rendered image after each
@@ -296,7 +324,7 @@ impl Engine {
     /// frontend-provided *resources* survive: imported brush assets, and the
     /// registered surface and environment bytes. Those belong to the app, not to
     /// the document, and re-fetching them on every New would be gratuitous.
-    /// Fails with [`EngineError::UnsupportedColorSpace`] if this build does not carry
+    /// Fails with [`DocError::UnsupportedColorSpace`] if this build does not carry
     /// `color_space`, **before** anything is reset — so a refusal leaves the open
     /// document alone, the same bargain [`Self::load_document`] makes. A frontend
     /// whose picker comes from
@@ -308,7 +336,7 @@ impl Engine {
         surface: SurfaceId,
     ) -> crate::error::Result<()> {
         let cs = crate::colorspace::make(color_space)
-            .ok_or(EngineError::UnsupportedColorSpace(color_space))?;
+            .ok_or(DocError::UnsupportedColorSpace(color_space))?;
         self.initial_surface = surface;
         self.reset_document();
         self.rebuild_gpu_for(cs);
@@ -391,9 +419,10 @@ impl Engine {
     pub fn accept_surface(&mut self, expected: SurfaceId, png_bytes: &[u8]) -> Result<SurfaceId> {
         let actual = crate::gpu::surface::identify(png_bytes)?;
         if actual != expected {
-            return Err(EngineError::Asset(format!(
+            return Err(DocError::Asset(format!(
                 "ground {expected:?} arrived as {actual:?}; refusing to install it"
-            )));
+            ))
+            .into());
         }
         if self
             .shared

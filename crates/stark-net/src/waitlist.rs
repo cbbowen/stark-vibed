@@ -245,8 +245,8 @@ impl Waitlist {
 /// less exactly.
 #[cfg(test)]
 mod tests {
-    use stark_engine::DocumentFile;
     use stark_model::AssetId;
+    use stark_model::DocumentFile;
     use stark_model::document::{ActionId, ActionKind, ActorId};
 
     use super::*;
