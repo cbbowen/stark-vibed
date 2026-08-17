@@ -15,8 +15,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::assets::{AssetStore, build_coverage_r8, build_prefix_tau};
-use crate::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind};
 use crate::gpu::context::GpuContext;
+use stark_model::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind};
 
 use super::segments::round_coverage;
 use crate::unpoisoned;

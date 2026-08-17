@@ -10,9 +10,9 @@ mod common;
 
 use common::*;
 use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
-use stark_engine::document::{BrushShape, OrientationSource, Tool};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::MAX_SHAPE_DIM;
+use stark_model::document::{BrushShape, OrientationSource, Tool};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];

@@ -374,8 +374,9 @@ fn chromatic_disp(f: &FilterDraw, view: ViewTransform) -> [f32; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{BlendMode, CompositeParams};
+    use crate::document::CompositeParams;
     use crate::gpu::composite::group::MatteDraw;
+    use stark_model::document::BlendMode;
 
     /// A drawable with nothing in it — a matte, because it is the one
     /// [`CompositeItem`] that is plain data. A tile would need a GPU to make one, and

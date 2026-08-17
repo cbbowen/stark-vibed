@@ -11,7 +11,7 @@
 //!   reproducible consequence;
 //! - a **cursor** paints nothing;
 //! - a **live gesture** is by definition the thing that has not committed yet — when
-//!   it does, the [`Action`](crate::document::Action) is authoritative and the live
+//!   it does, the [`Action`](stark_model::document::Action) is authoritative and the live
 //!   copy is discarded.
 //!
 //! (The selection *does* pass that test, so it lives in `DocState` keyed by actor —
@@ -30,8 +30,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::document::{ActorId, BrushParams, FillOp, LayerId, SelectionOp, StrokeRecord};
 use crate::presence::GestureRx;
+use stark_model::document::{ActorId, BrushParams, FillOp, LayerId, SelectionOp, StrokeRecord};
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
 
@@ -198,7 +198,7 @@ impl GestureFrame {
 ///
 /// The author is **not** in the payload: [`Peers::merge`] takes it from the
 /// transport's authenticated origin, the same discipline `Action` gets for free from
-/// its [`ActionId`](crate::document::ActionId) (§17.7).
+/// its [`ActionId`](stark_model::document::ActionId) (§17.7).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PeerFrame {
     /// Which run of this client published the frame ([`Identity::boot`]). Ordered
@@ -571,7 +571,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{SelectionMode, SelectionShape};
+    use stark_model::document::{SelectionMode, SelectionShape};
     use stark_model::path::ControlPoint;
 
     fn frame(seq: u64, gesture: Option<GestureFrame>) -> PeerFrame {

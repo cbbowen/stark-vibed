@@ -23,7 +23,7 @@ mod common;
 use common::*;
 use stark_engine::MediaParams;
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_engine::document::{BrushParams, BrushShape};
+use stark_model::document::{BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
 /// The reference configuration: no relief to tilt a normal, no weave, no gloss —

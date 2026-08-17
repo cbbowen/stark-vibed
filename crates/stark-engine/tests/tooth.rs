@@ -30,8 +30,8 @@ mod common;
 
 use common::*;
 use stark_engine::command::DocCommand;
-use stark_engine::document::{BrushDynamics, BrushParams, BrushShape};
 use stark_model::SurfaceId;
+use stark_model::document::{BrushDynamics, BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -702,7 +702,7 @@ fn a_toothed_live_preview_matches_the_commit() {
         .collect();
     let mut it = path.iter();
     engine.process(stark_engine::command::GestureCommand::Start {
-        tool: stark_engine::document::Tool::Brush,
+        tool: stark_model::document::Tool::Brush,
         sample: stark_engine::command::InputSample::at(*it.next().unwrap()),
         tolerance: stark_engine::path::DEFAULT_TOLERANCE,
         rope: 0.0,
@@ -767,7 +767,7 @@ fn a_toothed_smear_previews_as_it_commits() {
         .collect();
     let mut it = path.iter();
     engine.process(stark_engine::command::GestureCommand::Start {
-        tool: stark_engine::document::Tool::Brush,
+        tool: stark_model::document::Tool::Brush,
         sample: stark_engine::command::InputSample::at(*it.next().unwrap()),
         tolerance: stark_engine::path::DEFAULT_TOLERANCE,
         rope: 0.0,

@@ -61,10 +61,10 @@ pub(crate) mod assist;
 pub mod colorspace;
 pub mod command;
 pub(crate) mod content;
-pub mod dispersion;
 pub mod document;
 pub mod engine;
 pub(crate) mod error;
+pub mod filters;
 pub mod gpu;
 pub(crate) mod guides;
 pub(crate) mod image;
@@ -108,7 +108,7 @@ pub use assets::AssetStore;
 pub use colorspace::ColorSpace;
 pub use command::{InputCommand, InputSample};
 pub use content::{AssetNeed, action_content};
-pub use document::{LayerId, Selection, SelectionMode, SelectionOp, SelectionShape};
+pub use document::Selection;
 pub use engine::{
     Background, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan, ExportScale, LayerInfo,
     Layers, MatteInfo, ObservableState, PickOptions, PickSource, PresenceTick, Rendered,

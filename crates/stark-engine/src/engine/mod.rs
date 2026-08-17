@@ -40,8 +40,7 @@ use crate::assets::AssetStore;
 use crate::colorspace::ColorSpace;
 use crate::command::{DocCommand, GestureCommand, InputCommand, PeerCommand, ViewCommand};
 use crate::document::{
-    Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, CanvasBounds, DocState, Layer,
-    LayerContent, LayerId, LinearTimeline, ShapeAction, Timeline, Tool,
+    ApplyCtx, CanvasBounds, DocState, Layer, LayerContent, LinearTimeline, Timeline,
 };
 use crate::error::EngineError;
 use crate::gpu::MediaParams;
@@ -56,6 +55,9 @@ use crate::session::ShapeResult;
 use stark_model::AssetId;
 use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
+use stark_model::document::{
+    Action, ActionId, ActionKind, ActorId, BrushParams, LayerId, ShapeAction, Tool,
+};
 use stark_model::geom::{Extent2, ViewTransform};
 
 /// The starting layer present in every new document.
@@ -189,7 +191,7 @@ impl PartialEq for Layers {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerInfo {
     pub id: LayerId,
-    pub blend: crate::document::BlendMode,
+    pub blend: stark_model::document::BlendMode,
     /// Whether this layer clips to the paint beneath it (§14.4).
     pub clip: bool,
     pub opacity: f32,
@@ -227,7 +229,7 @@ pub struct LayerInfo {
     /// The whole filter, not a name for it: the filter bar's sliders read their
     /// current values off this and send the adjusted filter straight back, so a
     /// filter that grows a knob costs the projection nothing (§21.6).
-    pub filter: Option<crate::document::Filter>,
+    pub filter: Option<stark_model::document::Filter>,
     /// Whether the compositor would draw anything beneath this layer **within its
     /// own stack** — which is exactly what a filter layer rewrites (§21.2).
     ///
@@ -278,7 +280,7 @@ pub struct MatteInfo {
     /// export frame all stand down rather than invent one.
     pub rect: Option<(stark_model::geom::Vec2, stark_model::geom::Vec2)>,
     /// The paint the region wears — flat, or a ramp (§15.4, §22.4).
-    pub paint: crate::document::MattePaint,
+    pub paint: stark_model::document::MattePaint,
 }
 
 impl MatteInfo {
@@ -969,7 +971,7 @@ impl Engine {
                 // Each family goes to its own action kind — the wire format
                 // never carries the routing enum, only the map it named.
                 if map.usable() {
-                    use crate::document::TransformMap;
+                    use stark_model::document::TransformMap;
                     self.commit(match map {
                         TransformMap::Affine(affine) => ActionKind::Transform { layer, affine },
                         TransformMap::Perspective(map) => {
@@ -1702,7 +1704,7 @@ impl Engine {
     }
 
     /// [`commit`](Self::commit), unless the document already reads that way
-    /// ([`ActionKind::is_noop_on`]) — the shape every *setter* command takes.
+    /// ([`is_noop_on`](crate::document::apply::is_noop_on)) — the shape every *setter* command takes.
     ///
     /// The two halves are one bargain and that is why they are one call. A slider
     /// drag previews per pointer move and commits on release, so a drag that
@@ -1711,7 +1713,7 @@ impl Engine {
     /// all. Splitting those apart is how `SetLayerVisible` came to log a step for
     /// setting the value it already held while `SetLayerOpacity` did not.
     fn settle(&mut self, kind: ActionKind) {
-        if kind.is_noop_on(self.document()) {
+        if crate::document::apply::is_noop_on(&kind, self.document()) {
             // Nothing to log, and the drag still has to be superseded: a slider
             // released on the value it was pressed on left a preview up.
             self.preview.set_doc(None);

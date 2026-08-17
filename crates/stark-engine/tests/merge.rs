@@ -25,10 +25,10 @@ mod common;
 
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand};
-use stark_engine::document::{
+use stark_engine::{Engine, LayerInfo, RgbaImage};
+use stark_model::document::{
     BlendMode, ChromaticAberration, ColorAdjust, DRAGO_K, Filter, LayerId, Place,
 };
-use stark_engine::{Engine, LayerInfo, RgbaImage};
 use stark_model::geom::Vec2;
 
 const ROOT: LayerId = LayerId(0);

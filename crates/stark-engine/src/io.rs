@@ -21,11 +21,11 @@ use std::io::{Read, Write};
 use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
 use serde::{Deserialize, Serialize};
 
-use crate::document::Action;
 use crate::error::{EngineError, Result};
 use stark_model::AssetId;
 use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
+use stark_model::document::Action;
 use stark_model::geom::TILE_SIZE;
 
 /// Container magic; identifies a Stark document.
@@ -69,7 +69,7 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// is the whole reason a removal is allowed to be this cheap.
 ///
 /// The field could only ever hold `Brush` — the selection tools produce a
-/// [`SelectionOp`](crate::document::SelectionOp), never a stroke — and nothing
+/// [`SelectionOp`](stark_model::document::SelectionOp), never a stroke — and nothing
 /// read it back. So it was a constant written into every stroke of every
 /// document, and §1's rule about inert scaffolding applies to a field that has
 /// stopped meaning something just as much as to one that never did. If a tool
@@ -316,7 +316,7 @@ impl DocumentFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{Action, ActionId, ActionKind, ActorId, LayerId};
+    use stark_model::document::{Action, ActionId, ActionKind, ActorId, LayerId};
 
     fn sample_doc() -> DocumentFile {
         DocumentFile::new(vec![Action {

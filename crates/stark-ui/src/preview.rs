@@ -39,9 +39,9 @@
 use dioxus::prelude::*;
 
 use crate::state::{AppState, dispatch};
-use stark_engine::LayerId;
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_engine::document::{BlendMode, FillOp, Filter, MattePaint, TransformMap};
+use stark_model::document::LayerId;
+use stark_model::document::{BlendMode, FillOp, Filter, MattePaint, TransformMap};
 use stark_model::geom::Vec2;
 
 /// One control's pair: the command that shows `T` on the canvas without logging

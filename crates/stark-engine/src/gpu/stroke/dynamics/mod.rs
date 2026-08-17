@@ -14,7 +14,7 @@
 //! submit scope that owns their release. What is left here is the one question
 //! asked before any of them — which path a stroke takes at all.
 
-use crate::document::StrokeRecord;
+use stark_model::document::StrokeRecord;
 
 use super::budget::flatten_tolerance;
 use super::region::segment_fits_region;

@@ -17,12 +17,14 @@
 //! GPU objects, so it is cheap to `Clone` and can ride in the `Action::Context` (§5).
 
 use rpds::HashTrieMap;
+use stark_model::document::SelectionMode;
 use wgpu::util::DeviceExt;
 
-use crate::document::selection::{Selection, SelectionOp, SelectionShape};
+use crate::document::selection::Selection;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
+use stark_model::document::{SelectionOp, SelectionShape};
 use stark_model::geom::{MASK_TEX, TileCoord, Vec2, lasso_edges, mask_tex_origin};
 use stark_shaders::mirror::mask_region::decl as mrd;
 use stark_shaders::mirror::selection::binding as sb;
@@ -221,7 +223,7 @@ impl SelectionRenderer {
     }
 
     /// Apply `op` to `prev`, returning the new selection. `None` when the op's shape
-    /// would need more than [`MAX_SELECTION_TILES`](crate::document::selection::MAX_SELECTION_TILES)
+    /// would need more than [`MAX_SELECTION_TILES`](stark_model::document::MAX_SELECTION_TILES)
     /// mask tiles — the caller leaves the selection alone rather than clipping it.
     pub fn apply(&self, pool: &TilePool, prev: &Selection, op: &SelectionOp) -> Option<Selection> {
         let plan = prev.plan(op)?;
@@ -241,7 +243,7 @@ impl SelectionRenderer {
                 (Some(t), v)
             }
         };
-        let (b, c) = op.shader_params(edges.len());
+        let (b, c) = shader_params(op, edges.len());
 
         // Union and Subtract build on the previous mask (it survives where the shape
         // does not reach); Replace and Intersect start from nothing.
@@ -523,4 +525,54 @@ pub(crate) fn outside_clear(selection: &Selection) -> wgpu::Operations<wgpu::Col
         b: 0.0,
         a: 0.0,
     })
+}
+
+// —— packing an op for `selection.wesl` ————————————————————————————————————————
+//
+// The op is a fact about the document and lives in `stark-model`; how it is packed
+// into a uniform is a fact about the shader and lives here (§2). The codes come
+// through the generated mirror (§6.10) rather than being transcribed, which is why
+// this had to end up on the side that has the shaders at all.
+
+/// The mode's discriminant as the mask shader sees it.
+///
+/// The numbers are `selection.wesl`'s own, generated from its declarations
+/// (§6.10) rather than transcribed: which `u32` a mode is numbered is a fact
+/// about the shader, and a `match` writing `0.0, 1.0, 2.0, 3.0` beside it was a
+/// second declaration of it with nothing checking the correspondence.
+///
+/// `f32` because the lane it lands in is one — `Params::c` packs the kind, the
+/// mode, the edge count and the opacity into one `vec4<f32>`, and the shader
+/// compares them as floats.
+fn mode_code(mode: SelectionMode) -> f32 {
+    use stark_shaders::mirror::selection as sel;
+    let code = match mode {
+        SelectionMode::Replace => sel::MODE_REPLACE,
+        SelectionMode::Union => sel::MODE_UNION,
+        SelectionMode::Subtract => sel::MODE_SUBTRACT,
+        SelectionMode::Intersect => sel::MODE_INTERSECT,
+    };
+    code as f32
+}
+
+/// The shape/feather packed for `selection.wesl`'s uniform: `(b, c)` where `b`
+/// carries the analytic shape's parameters and `c` the kind/mode/edge
+/// count/opacity.
+pub(crate) fn shader_params(op: &SelectionOp, edges: usize) -> ([f32; 4], [f32; 4]) {
+    // The kind codes are `selection.wesl`'s, generated from its declarations
+    // (§6.10) — see `SelectionMode::code` for why they are not written here.
+    use stark_shaders::mirror::selection as sel;
+    let (kind, b) = match &op.shape {
+        SelectionShape::All => (sel::KIND_ALL, [0.0; 4]),
+        SelectionShape::Rect { min, max } => (sel::KIND_RECT, [min.x, min.y, max.x, max.y]),
+        SelectionShape::Ellipse { center, radii } => (
+            sel::KIND_ELLIPSE,
+            [center.x, center.y, radii.x.abs(), radii.y.abs()],
+        ),
+        SelectionShape::Lasso(_) => (sel::KIND_LASSO, [0.0; 4]),
+    };
+    (
+        b,
+        [kind as f32, mode_code(op.mode), edges as f32, op.opacity],
+    )
 }

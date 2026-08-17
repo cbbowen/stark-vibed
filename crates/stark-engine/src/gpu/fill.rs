@@ -20,8 +20,8 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
-use crate::document::fill::{FillOp, GradientAxis, Parcel, plan};
-use crate::document::selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
+use crate::document::fill::plan;
+use crate::document::selection::Selection;
 use crate::gpu::channels::{ChannelFormats, Channels};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
@@ -29,6 +29,8 @@ use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, TileMap, TilePool};
 use crate::gpu::uniforms::UniformSlots;
+use stark_model::document::{FillOp, GradientAxis, Parcel};
+use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
 use stark_model::geom::mask_tex_origin;
 
 // Generated from `fill.wesl`'s own declarations (§6.7).

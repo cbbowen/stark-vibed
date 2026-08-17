@@ -22,9 +22,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::Engine;
-use crate::document::{ActorId, ApplyCtx, DocState, LayerId, StrokeRecord};
+use crate::document::{ApplyCtx, DocState};
 use crate::gpu::StrokeSpans;
 use crate::peer::{GestureView, LiveGesture, Peer};
+use stark_model::document::{ActorId, LayerId, StrokeRecord};
 use stark_model::geom::{TileCoord, TileRect};
 
 /// What is being *shown* over the committed document, and the caches that make
@@ -210,7 +211,7 @@ impl Preview {
                 LiveGesture::Fill { layer, op } => {
                     // Already chained: it reads `out`, not `base`, and replaces the
                     // layer's whole tile map rather than copying tiles across.
-                    claimed.push((layer, crate::document::footprint::fill_rect(&op)));
+                    claimed.push((layer, stark_model::document::fill_rect(&op)));
                     if let Some(tiles) = out.layer(layer).and_then(|l| l.tiles()).cloned() {
                         let gate = base.selection_of(actor);
                         if let Some(filled) = ctx.fill.apply(&ctx.pool, &tiles, &gate, &op) {
@@ -219,7 +220,7 @@ impl Preview {
                     }
                 }
                 LiveGesture::Stroke(rec) => {
-                    let reach = crate::document::footprint::stroke_rect(&rec);
+                    let reach = stark_model::document::stroke_rect(&rec);
                     let contested = claimed
                         .iter()
                         .any(|(layer, rect)| *layer == rec.layer && rect.intersects(&reach));
@@ -390,7 +391,7 @@ impl Engine {
     pub(super) fn preview_transform(
         &self,
         layer: LayerId,
-        map: &crate::document::TransformMap,
+        map: &stark_model::document::TransformMap,
     ) -> Option<DocState> {
         let doc = self.timeline.current();
         let base = doc.layer(layer)?.tiles()?;
@@ -415,7 +416,7 @@ impl Engine {
     pub(super) fn preview_fill(
         &self,
         layer: LayerId,
-        op: &crate::document::FillOp,
+        op: &stark_model::document::FillOp,
     ) -> Option<DocState> {
         let doc = self.timeline.current();
         let base = doc.layer(layer)?.tiles()?.clone();

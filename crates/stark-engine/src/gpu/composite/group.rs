@@ -5,8 +5,9 @@
 //! decided by the document, and the only judgement it makes is [`CompositeGroup::stack`]'s:
 //! whether a group can tell itself apart from no group at all.
 
-use crate::document::{CompositeParams, Filter};
+use crate::document::CompositeParams;
 use crate::gpu::tile::TilePairHandle;
+use stark_model::document::Filter;
 use stark_model::geom::TileCoord;
 
 /// A matte layer's draw parameters (§15.4).
@@ -389,7 +390,7 @@ impl CompositeGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::BlendMode;
+    use stark_model::document::BlendMode;
 
     /// A drawable with a known opacity and nothing else — a matte, because it is the
     /// one [`CompositeItem`] that is plain data. A tile would need a GPU to make one,

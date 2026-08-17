@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use crate::document::BrushParams;
+use stark_model::document::BrushParams;
 use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 
 use super::budget::{MAX_REGION_DIM, MAX_STAMPS};
@@ -317,7 +317,7 @@ pub(super) fn segment_fits_region(b: &BrushParams, tol: crate::path::FlattenTole
     //
     // Drawn out along its facing axis by the brush's **own** elongation and not by any
     // one segment's (§6.6). A modulation can only scale the knob down
-    // ([`Modulation`](crate::document::Modulation)), so the brush's value bounds every
+    // ([`Modulation`](stark_model::document::Modulation)), so the brush's value bounds every
     // segment's — which is what this whole function is: a bound taken against
     // `rec.brush` that has to stay a bound however the pen drives it.
     let stretch = BrushParams::elongation(b.stretch);

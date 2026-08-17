@@ -6,9 +6,9 @@
 //! a range needs nothing from its predecessor but the arc length.
 
 use crate::colorspace::ColorSpace;
-use crate::document::StrokeRecord;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
+use stark_model::document::StrokeRecord;
 use stark_model::geom::{TILE_APRON, TILE_TEX, TileCoord};
 use stark_shaders::mirror::integrate::binding as ib;
 use stark_shaders::mirror::integrate::decl as id;

@@ -12,11 +12,11 @@ mod common;
 use common::*;
 use stark_engine::RgbaImage;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::document::{
+use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_model::document::{
     BrushDynamics, BrushParams, FillOp, SelectionMode, SelectionOp, SelectionShape, ShapeAction,
     Tool,
 };
-use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::geom::Vec2;
 
 /// A fill's paint is color alone — how far it covers is `FillOp::opacity`,
@@ -602,7 +602,7 @@ fn fill_golden() {
 // ---------------------------------------------------------------------------
 
 use stark_engine::PickOptions;
-use stark_engine::document::{GradientAxis, GradientParcel, Parcel};
+use stark_model::document::{GradientAxis, GradientParcel, Parcel};
 use stark_model::{Gradient, GradientStop};
 
 const BLUE: [f32; 3] = [0.1, 0.2, 0.8];

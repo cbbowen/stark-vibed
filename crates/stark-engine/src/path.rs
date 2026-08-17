@@ -6,7 +6,7 @@
 //!   jittery, and never stored: it exists only between the pointer event and the
 //!   fitter.
 //! - [`ControlPoint`] — a knot of the fitted stroke curve. This is what a stroke
-//!   *is* once captured ([`StrokeRecord::path`](crate::document::StrokeRecord)):
+//!   *is* once captured ([`StrokeRecord::path`](stark_model::document::StrokeRecord)):
 //!   typically an order of magnitude fewer points than the input arrived as, and
 //!   all that is needed to reconstruct the stroke.
 //! - [`IntermediateSample`] — a point *of the curve*: position plus its

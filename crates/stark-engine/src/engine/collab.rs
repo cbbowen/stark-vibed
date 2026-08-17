@@ -12,9 +12,10 @@
 //! these hooks, and `stark-net` owns the wire.
 
 use super::{Engine, ROOT_LAYER};
-use crate::document::{Action, ActorId, DocState, ReplicatedTimeline, TimelineStats};
+use crate::document::{DocState, ReplicatedTimeline, TimelineStats};
 use crate::io::DocumentFile;
 use crate::peer::{Identity, Peer, PeerFrame};
+use stark_model::document::{Action, ActorId};
 
 /// What one presence-pump tick moved ([`Engine::take_presence`]).
 ///

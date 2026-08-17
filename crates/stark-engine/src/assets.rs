@@ -143,11 +143,11 @@ impl AssetStore {
     pub fn prefix_view(
         &self,
         id: AssetId,
-        orientation: crate::document::OrientationSource,
+        orientation: stark_model::document::OrientationSource,
     ) -> Option<wgpu::TextureView> {
         let mut inner = self.inner.lock().expect("asset store poisoned");
         let mask = inner.masks.get_mut(&id)?;
-        if orientation == crate::document::OrientationSource::FollowStroke {
+        if orientation == stark_model::document::OrientationSource::FollowStroke {
             return Some(mask.follow.clone());
         }
         if mask.pen.is_none() {

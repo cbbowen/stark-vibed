@@ -1,4 +1,12 @@
-//! The dispersion spectrum (§21.10).
+//! The filter passes' host-side numbers (§21).
+//!
+//! What the host needs in order to *predict* or *draw* what a filter pass will do,
+//! taken through the generated shader mirror (§6.10) rather than transcribed. Both
+//! of the two things here would sit naturally beside the filter they belong to in
+//! `stark-model`'s `document::filter` — and cannot, because reading the mirror means
+//! depending on the shaders, which is what this side of the split is for (§2).
+//!
+//! # The dispersion spectrum (§21.10)
 //!
 //! The chromatic filter's own color science, on the host: which wavelength lands
 //! where along a fringe, and what the eye makes of it. The **pass** is the copy that
@@ -15,6 +23,17 @@
 //! the build-time shader mirror (§6.10) — and `stark-model` compiles without the
 //! shaders at all. The split is the mirror rule stating itself: what the `.wesl`
 //! file says belongs on the side that has the `.wesl` file.
+
+/// Oklab `L` of mid-grey — sRGB `0.5` — which is what `ColorAdjust::contrast`
+/// pivots about.
+///
+/// **Generated from `filter_common.wesl`'s own declaration** (§6.10), which is the
+/// copy that actually runs — the host side exists so a test can predict a texel
+/// without a shader, and taking it through the mirror is what makes the two copies
+/// unable to drift (`stark-shaders/build.rs`, `CONSTS`). Worth stating why the
+/// number is what it is: sRGB `0.5` is linear `0.2140`, the Oklab matrix rows sum
+/// to one so a neutral's `l = m = s = 0.2140`, and `L` is the cube root of that.
+pub const CONTRAST_PIVOT: f32 = stark_shaders::mirror::filter_common::CONTRAST_PIVOT;
 
 use stark_model::color::light_to_linear;
 
@@ -60,6 +79,19 @@ pub fn dispersion_weight(s: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pivot is declared once, in `filter_common.wesl`, and arrives here through
+    /// the build-time mirror (§6.10). Deriving it is what says the *shader's* literal
+    /// is the number it claims to be rather than one somebody typed.
+    #[test]
+    fn the_contrast_pivot_is_mid_greys_lightness() {
+        let lin = stark_model::color::srgb_to_linear(0.5);
+        let l = stark_model::color::linear_srgb_to_oklab([lin, lin, lin])[0];
+        assert!(
+            (l - CONTRAST_PIVOT).abs() < 5e-4,
+            "mid-grey is L = {l}, not {CONTRAST_PIVOT}",
+        );
+    }
 
     /// The three mirrored constants (§6.10) are one statement in three parts: the
     /// Cauchy span *is* `(λ_red/λ_blue)² − 1`, so inverting it at `s = 1` has to land

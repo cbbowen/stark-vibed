@@ -40,12 +40,12 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_engine::document::{BrushParams, FillOp, SelectionShape, Tool};
 use stark_engine::{
     Background, Engine, EnvironmentId, InputSample, MediaParams, Offscreen, Rendered,
 };
 use stark_model::SurfaceId;
 use stark_model::ViewTransform;
+use stark_model::document::{BrushParams, FillOp, SelectionShape, Tool};
 use stark_model::geom::{Extent2, Vec2};
 
 use crate::platform::base64_encode;

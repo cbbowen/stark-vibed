@@ -15,10 +15,10 @@
 //! a receiver has to be *told* which it is being handed, and the thing that knows
 //! is the action that referenced it.
 
-use crate::document::{Action, ActionKind, BrushShape};
 use crate::io::DocumentFile;
 use stark_model::AssetId;
 use stark_model::SurfaceId;
+use stark_model::document::{Action, ActionKind, BrushShape};
 
 /// Content a document needs before it can be replayed faithfully, and which store
 /// it belongs in.

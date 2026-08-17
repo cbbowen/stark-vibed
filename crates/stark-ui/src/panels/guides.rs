@@ -247,7 +247,7 @@ fn remove_guide(state: AppState, index: usize) {
 /// way — an unnamed row is being described, not named, and the description of the
 /// second row is "the second one". Naming it is how you stop it moving.
 ///
-/// [`LayerId::ordinal`]: stark_engine::LayerId::ordinal
+/// [`LayerId::ordinal`]: stark_model::document::LayerId::ordinal
 fn guide_label(index: usize, guide: &PerspectiveGuide) -> String {
     match &guide.name {
         Some(name) => name.to_string(),

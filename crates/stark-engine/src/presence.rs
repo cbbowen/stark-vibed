@@ -28,9 +28,9 @@
 //! The wire *types* stay in [`crate::peer`], which is the public surface. What lives
 //! here is the state that interprets them.
 
-use crate::document::{FillOp, LayerId, SelectionOp, StrokeRecord};
 use crate::path::frozen_spans_for;
 use crate::peer::{GESTURE_RESYNC, GestureFrame, LiveGesture, StrokeHead};
+use stark_model::document::{FillOp, LayerId, SelectionOp, StrokeRecord};
 use stark_model::path::ControlPoint;
 
 /// The gesture a sender has in flight, in the form [`GestureTx::encode`] reads it.
@@ -349,10 +349,10 @@ impl GestureRx {
 mod tests {
     use super::*;
     use crate::command::InputSample;
-    use crate::document::{ActorId, LayerId, Tool};
     use crate::path::DEFAULT_TOLERANCE;
     use crate::peer::{PeerFrame, Peers};
     use crate::session::Session;
+    use stark_model::document::{ActorId, LayerId, Tool};
     use stark_model::geom::{Extent2, Vec2, ViewTransform};
 
     /// A fixed-seed generator, so a failure is a bug report rather than a coin toss.
@@ -531,7 +531,7 @@ mod tests {
             .collect();
         let head = StrokeHead {
             layer,
-            brush: crate::document::BrushParams::default(),
+            brush: stark_model::document::BrushParams::default(),
             seed: 7,
         };
         let stroke = |n: usize, frozen: usize| GestureSource::Stroke {

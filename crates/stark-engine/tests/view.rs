@@ -12,9 +12,9 @@ mod common;
 
 use common::*;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::document::{MattePaint, MatteRegion, Place, Tool};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered, RgbaImage};
+use stark_model::document::{MattePaint, MatteRegion, Place, Tool};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];

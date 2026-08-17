@@ -24,8 +24,8 @@ mod common;
 
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand};
-use stark_engine::document::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
 use stark_engine::{Engine, LayerInfo, RgbaImage};
+use stark_model::document::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
 use stark_model::geom::Vec2;
 
 const ROOT: LayerId = LayerId(0);

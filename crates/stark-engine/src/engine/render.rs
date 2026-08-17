@@ -11,13 +11,14 @@
 //! instead of taking one.
 
 use super::Engine;
-use crate::document::{CompositeParams, DocState, Layer, LayerContent, LayerId};
+use crate::document::{CompositeParams, DocState, Layer, LayerContent};
 use crate::gpu::{
     CompositeGroup, CompositeItem, CompositeScene, FilterDraw, GpuContext, MatteDraw, Offscreen,
     SelectionOutline,
 };
 use crate::image::RgbaImage;
 use crate::{EngineError, Result};
+use stark_model::document::LayerId;
 use stark_model::geom::{Extent2, TileRect, ViewTransform};
 
 /// What sits under the paint when rendering (§15.6).
@@ -847,8 +848,8 @@ impl Engine {
                     None => [0.0; 4],
                 };
                 let flags = match region {
-                    crate::document::MatteRegion::OutsideRect { .. } => 0.0,
-                    crate::document::MatteRegion::Everything => 1.0,
+                    stark_model::document::MatteRegion::OutsideRect { .. } => 0.0,
+                    stark_model::document::MatteRegion::Everything => 1.0,
                 };
                 // sRGB in the log, working-space channels on the GPU — the same
                 // conversion the brush color gets, so a matte means the same
@@ -856,7 +857,7 @@ impl Engine {
                 // every stop the same way, once per item build, and the shader
                 // interpolates in the working space (§22.4).
                 let (channels, resid, ramp) = match paint {
-                    crate::document::MattePaint::Solid(color) => (
+                    stark_model::document::MattePaint::Solid(color) => (
                         self.shared.color_space.rgb_to_channels(*color),
                         {
                             let r = self.shared.color_space.rgb_to_resid(*color);
@@ -864,15 +865,15 @@ impl Engine {
                         },
                         None,
                     ),
-                    crate::document::MattePaint::Gradient { gradient, axis } => {
+                    stark_model::document::MattePaint::Gradient { gradient, axis } => {
                         let mut ramp = stark_shaders::mirror::matte::Ramp::default();
                         let stops = gradient.stops();
                         ramp.p[0] = stops.len() as f32;
                         ramp.axis = match axis {
-                            crate::document::GradientAxis::Linear { from, to } => {
+                            stark_model::document::GradientAxis::Linear { from, to } => {
                                 [from.x, from.y, to.x, to.y]
                             }
-                            crate::document::GradientAxis::Radial { center, radius } => {
+                            stark_model::document::GradientAxis::Radial { center, radius } => {
                                 ramp.p[1] = 1.0;
                                 [center.x, center.y, *radius, 0.0]
                             }
@@ -1271,7 +1272,8 @@ mod tests {
     /// merge in `composite_stack`, and both are functions of `CompositeParams`.
     #[test]
     fn plain_layers_merge_into_one_run() {
-        use crate::document::{BlendMode, CompositeParams};
+        use crate::document::CompositeParams;
+        use stark_model::document::BlendMode;
 
         // A stand-in item; what is being tested is how many groups the merge
         // leaves, not what is in them.

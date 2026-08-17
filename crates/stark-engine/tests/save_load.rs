@@ -8,12 +8,12 @@ mod common;
 
 use common::*;
 use stark_engine::Engine;
-#[cfg(feature = "mixbox")]
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::document::{BrushShape, Tool};
 use stark_engine::path::DEFAULT_TOLERANCE;
+#[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
+use stark_model::document::{BrushShape, Tool};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
@@ -27,7 +27,7 @@ const STROKE_B: &[Vec2] = &[Vec2::new(-40.0, 40.0), Vec2::new(40.0, -40.0)];
 fn paint_toothed(engine: &mut Engine) {
     stroke_with(
         engine,
-        stark_engine::document::BrushParams {
+        stark_model::document::BrushParams {
             color: RED,
             radius: 30.0,
             tooth: 0.55,

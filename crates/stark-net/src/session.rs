@@ -33,9 +33,9 @@ use iroh_gossip::api::{Event as GossipEvent, GossipReceiver, GossipSender};
 pub use iroh_gossip::proto::TopicId;
 use n0_future::{StreamExt, task};
 use stark_engine::DocumentFile;
-use stark_engine::document::{Action, ActorId, BrushShape};
 use stark_engine::peer::{GestureFrame, PeerFrame};
 use stark_model::AssetId;
+use stark_model::document::{Action, ActorId, BrushShape};
 use tokio::sync::mpsc;
 
 use crate::Result;

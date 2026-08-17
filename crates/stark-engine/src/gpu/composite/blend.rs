@@ -9,10 +9,10 @@
 use std::sync::OnceLock;
 
 use crate::colorspace::ColorSpace;
-use crate::document::BlendMode;
 use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Slot};
+use stark_model::document::BlendMode;
 use stark_model::geom::Extent2;
 use stark_shaders::mirror::blend_common::binding as bc;
 use stark_shaders::mirror::blend_common::decl as bcd;

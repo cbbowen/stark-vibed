@@ -7,7 +7,7 @@
 //!
 //! The feature attaches at the seam §18.1.3 named for it — *a path transform applied
 //! between the fitter and the renderer*. Nothing downstream of
-//! [`StrokeRecord::path`](crate::document::StrokeRecord) learns that assist exists: a
+//! [`StrokeRecord::path`](stark_model::document::StrokeRecord) learns that assist exists: a
 //! snapped stroke is still a list of [`ControlPoint`]s, so the renderer, the wire
 //! format, the save file, replay and the goldens are untouched, and the assisted
 //! stroke is undoable, replayable and collaborative for free. That is why this module

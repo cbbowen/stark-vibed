@@ -16,13 +16,14 @@ use std::sync::Arc;
 use super::{Authoring, Engine, GpuBuild, GpuKeep, ROOT_LAYER, build_gpu};
 use crate::colorspace::ColorSpace;
 use crate::content::AssetNeed;
-use crate::document::{Action, DocState, LinearTimeline, effective_actions};
+use crate::document::{DocState, LinearTimeline, effective_actions};
 use crate::gpu::EnvironmentId;
 use crate::io::DocumentFile;
 use crate::{EngineError, Result};
 use stark_model::AssetId;
 use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
+use stark_model::document::Action;
 
 impl Engine {
     /// Snapshot the document as a saveable [`DocumentFile`] (§8), bundling the

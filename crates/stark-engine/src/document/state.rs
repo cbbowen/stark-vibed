@@ -9,13 +9,12 @@ use std::sync::Arc;
 
 use rpds::{HashTrieMap, Vector};
 
-use super::action::ActorId;
-use super::filter::Filter;
-use super::layer::{
-    BlendMode, CompositeParams, Layer, LayerContent, LayerId, MattePaint, MatteRegion, Place,
-};
+use super::layer::{CompositeParams, Layer, LayerContent};
 use super::selection::Selection;
 use stark_model::SurfaceId;
+use stark_model::document::ActorId;
+use stark_model::document::Filter;
+use stark_model::document::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
 use stark_model::geom::{TileCoord, Vec2};
 
 /// Inclusive tile-coordinate bounding box of all populated tiles (§6),
@@ -429,7 +428,7 @@ impl DocState {
     /// Nothing happens — deterministically, so peers and replays agree — when the
     /// source is absent, or when the subtree holds a layer `ids` does not name.
     ///
-    /// [`ActionKind::DuplicateLayer`]: super::action::ActionKind::DuplicateLayer
+    /// [`ActionKind::DuplicateLayer`]: stark_model::document::ActionKind::DuplicateLayer
     pub fn duplicate_layer(&self, ids: &[(LayerId, LayerId)]) -> Self {
         let Some((source, _)) = ids.first() else {
             return self.clone();
@@ -881,7 +880,7 @@ fn insert_at(stack: &Vector<Layer>, index: usize, layer: &Layer) -> Vector<Layer
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{DRAGO_K, DRAGO_K_RANGE};
+    use stark_model::document::{DRAGO_K, DRAGO_K_RANGE};
 
     fn at(x: i32, y: i32) -> TileCoord {
         TileCoord::new(x, y)
@@ -937,7 +936,7 @@ mod tests {
         );
     }
 
-    use crate::document::ColorAdjust;
+    use stark_model::document::ColorAdjust;
 
     const BASE: LayerId = LayerId(0);
     const FILTER: LayerId = LayerId(1);

@@ -5,9 +5,9 @@
 //! the action log); this crate owns the wire and nothing else:
 //!
 //! - **Identity**: an iroh [`iroh::EndpointId`] (a public key) maps
-//!   to the engine's [`ActorId`](stark_engine::document::ActorId) via
+//!   to the engine's [`ActorId`](stark_model::document::ActorId) via
 //!   [`actor_from_endpoint_id`].
-//! - **Live edits**: each committed [`Action`](stark_engine::document::Action) is
+//! - **Live edits**: each committed [`Action`](stark_model::document::Action) is
 //!   broadcast over `iroh-gossip` on the session's topic — a sampled path,
 //!   never pixels.
 //! - **Join / catch-up**: a joining peer fetches the session snapshot — the

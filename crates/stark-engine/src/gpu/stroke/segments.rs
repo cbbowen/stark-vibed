@@ -5,7 +5,7 @@
 //! same record — which is what lets a live tail and the commit that replaces it
 //! agree pixel for pixel.
 
-use crate::document::{BrushParams, BrushShape, OrientationSource, PenState, StrokeRecord};
+use stark_model::document::{BrushParams, BrushShape, OrientationSource, PenState, StrokeRecord};
 use stark_model::geom::Vec2;
 
 use super::StrokeSpans;
@@ -146,15 +146,15 @@ impl Sweep {
 }
 
 /// The brush's paint rates **as the pen asked for them here** (§6.2): the four axes of
-/// [`BrushDynamics`](crate::document::BrushDynamics) scaled by whatever
-/// [`Modulations`](crate::document::Modulations) maps onto each, plus the tooth.
+/// [`BrushDynamics`](stark_model::document::BrushDynamics) scaled by whatever
+/// [`Modulations`](stark_model::document::Modulations) maps onto each, plus the tooth.
 ///
 /// They live on the segment rather than on the stroke because that is now what they
 /// are — the pen attributes they follow are interpolated per segment, and the
 /// flattener already holds their step to
 /// [`FlattenTolerance::attribute`](crate::path::FlattenTolerance::attribute). Each is
 /// at most the brush's own value, never more, which is what lets every bound taken
-/// against `rec.brush` stay a bound (see [`Modulation`](crate::document::Modulation)).
+/// against `rec.brush` stay a bound (see [`Modulation`](stark_model::document::Modulation)).
 ///
 /// `charge` is absent on purpose: it is the tool's *initial* load, one number for the
 /// whole stroke, and there is no per-segment version of it to carry.
@@ -412,7 +412,7 @@ pub(super) struct Taper {
     /// The brush's nominal radius (canvas px) — what a factor step scales by to
     /// become the px step the subdivision is actually bounding. Nominal rather than
     /// modulated is conservative: pressure only ever scales the tip *down*
-    /// ([`Modulation`](crate::document::Modulation)), and the real step with it.
+    /// ([`Modulation`](stark_model::document::Modulation)), and the real step with it.
     radius: f32,
     /// The tip's shoulder width per unit radius
     /// ([`shoulder_per_radius`](super::budget::shoulder_per_radius)) — what lets the
@@ -591,7 +591,7 @@ struct Track {
 /// the curve adaptively, then make each polyline edge a segment. This is where the
 /// brush's fixed numbers become the per-segment ones the shaders read: the radius
 /// follows the size mapping and the stroke's start/end tapers, and each paint rate
-/// follows whatever [`Modulations`](crate::document::Modulations) points at it
+/// follows whatever [`Modulations`](stark_model::document::Modulations) points at it
 /// (§6.2). **It is the only place a modulation is resolved** — both render paths
 /// flatten through here, so a live tail and the commit that replaces it cannot read
 /// the pen differently.
@@ -1132,7 +1132,7 @@ mod tests {
             .map(|i| stark_model::path::ControlPoint::at(Vec2::new(i as f32 / 12.0 * len, 0.0)))
             .collect();
         StrokeRecord {
-            layer: crate::document::LayerId(0),
+            layer: stark_model::document::LayerId(0),
             brush: BrushParams {
                 radius,
                 drain: 0.0,
@@ -1332,7 +1332,7 @@ mod tests {
             })
             .collect();
         let rec = StrokeRecord {
-            layer: crate::document::LayerId(0),
+            layer: stark_model::document::LayerId(0),
             brush: BrushParams {
                 radius: 500.0,
                 drain: 0.0,
@@ -1361,7 +1361,7 @@ mod tests {
     fn a_tip_that_holds_still_carries_no_ramp() {
         // No taper, no size modulation, full pressure throughout.
         let mut rec = tapered_record(40.0, 0.0, 0.0, 900.0);
-        rec.brush.modulation = crate::document::Modulations::default();
+        rec.brush.modulation = stark_model::document::Modulations::default();
         for s in whole(&rec) {
             assert_eq!(s.ramp, 0.0, "an unvarying tip picked up a ramp");
             assert_eq!(s.radius, 40.0, "an unvarying tip changed size");
@@ -1615,7 +1615,7 @@ mod tests {
             })
             .collect();
         StrokeRecord {
-            layer: crate::document::LayerId(0),
+            layer: stark_model::document::LayerId(0),
             brush: BrushParams {
                 radius,
                 drain: 0.0,
@@ -1963,7 +1963,7 @@ mod tests {
     /// A stroke through `pts` with `brush`, as a path of plain full-pressure knots.
     fn record(brush: BrushParams, pts: &[Vec2]) -> StrokeRecord {
         StrokeRecord {
-            layer: crate::document::LayerId(0),
+            layer: stark_model::document::LayerId(0),
             brush,
             path: pts
                 .iter()
@@ -2021,7 +2021,7 @@ mod tests {
 
     /// A brush that manipulates paint, so the stroke takes the dynamics loop.
     fn smearing(radius: f32) -> BrushParams {
-        use crate::document::BrushDynamics;
+        use stark_model::document::BrushDynamics;
         BrushParams {
             radius,
             dynamics: BrushDynamics {
@@ -2060,7 +2060,7 @@ mod tests {
     /// retuning.
     #[test]
     fn the_exchange_budget_scales_with_the_transfer_rate() {
-        use crate::document::BrushDynamics;
+        use stark_model::document::BrushDynamics;
         let at = |lift: f32, deposit: f32, charge: f32| {
             flatten_tolerance(&BrushParams {
                 radius: 100.0,

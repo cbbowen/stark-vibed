@@ -7,8 +7,8 @@ mod common;
 
 use common::{engine_or_skip, images_match, paint};
 use stark_engine::command::{DocCommand, PeerCommand};
-use stark_engine::document::ActorId;
 use stark_engine::{Engine, RgbaImage};
+use stark_model::document::ActorId;
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.9, 0.1, 0.1, 1.0];

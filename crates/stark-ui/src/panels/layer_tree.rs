@@ -20,8 +20,9 @@
 use std::collections::{HashMap, HashSet};
 
 use super::reorder::{Grab, Motion, Slide};
-use stark_engine::document::Place;
-use stark_engine::{LayerId, LayerInfo};
+use stark_engine::LayerInfo;
+use stark_model::document::LayerId;
+use stark_model::document::Place;
 
 /// How far one level of membership indents a row, in pixels. Named because three
 /// things are measured in it: the row's own offset, the slot the indent leaves empty
@@ -259,7 +260,7 @@ fn subtree_len(layers: &[LayerInfo], id: LayerId) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_engine::document::BlendMode;
+    use stark_model::document::BlendMode;
 
     /// A row's height and the gap between two of them, as the stylesheet leaves them.
     /// The exact numbers do not matter — every answer here is a comparison against a
@@ -401,7 +402,7 @@ mod tests {
     /// nests into an ordinary row (the test above) lands beside a filter instead.
     #[test]
     fn a_filter_row_offers_no_carry_depth() {
-        use stark_engine::document::{ColorAdjust, Filter};
+        use stark_model::document::{ColorAdjust, Filter};
         let mut rows = flat();
         rows.iter_mut()
             .find(|r| r.info.id == LayerId(3))

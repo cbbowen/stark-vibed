@@ -1,6 +1,6 @@
 //! Tileable 2-D noise fields for color dynamics (§6.2).
 //!
-//! Each [`crate::document::NoiseKind`] is baked **once, on the CPU,
+//! Each [`stark_model::document::NoiseKind`] is baked **once, on the CPU,
 //! with fixed constants** into a small `Rgba8Snorm` 2-D texture (three
 //! independent signed channels; alpha unused) and sampled in the stamp shaders
 //! with a repeat sampler. Baking on the CPU keeps the field bit-identical across
@@ -42,8 +42,8 @@
 //!   the same exact wrap: the value, like the site, is hashed from the cell index
 //!   modulo `PERIOD`.
 
-use crate::document::NoiseKind;
 use crate::gpu::context::GpuContext;
+use stark_model::document::NoiseKind;
 
 /// Texels per side of a baked 2-D noise tile. Enough for fields that vary
 /// smoothly across a cell; [`NoiseKind::Mosaic`] needs more (see [`MOSAIC_RES`]).

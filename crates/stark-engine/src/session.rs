@@ -8,10 +8,6 @@
 
 use crate::assist::{AssistShape, PenProfile};
 use crate::command::InputSample;
-use crate::document::{
-    ActorId, BrushParams, FillOp, LayerId, SelectionOp, SelectionShape, ShapeAction, StrokeRecord,
-    Tool,
-};
 use crate::guides::{PerspectiveGuide, Scaffold};
 use crate::path::PathFitter;
 use crate::peer::{
@@ -19,6 +15,10 @@ use crate::peer::{
 };
 use crate::presence::{GestureSource, GestureTx};
 use crate::tow::{Tow, TowString};
+use stark_model::document::{
+    ActorId, BrushParams, FillOp, LayerId, SelectionOp, SelectionShape, ShapeAction, StrokeRecord,
+    Tool,
+};
 use stark_model::geom::{Vec2, ViewTransform};
 use stark_model::path::ControlPoint;
 

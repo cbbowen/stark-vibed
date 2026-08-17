@@ -12,7 +12,7 @@
 //! Nothing here touches the GPU. It is float arithmetic over a [`BrushParams`], which
 //! is what lets the segment-budget tests pin it exactly (`segments::tests`).
 
-use crate::document::{BrushDynamics, BrushParams, BrushShape};
+use stark_model::document::{BrushDynamics, BrushParams, BrushShape};
 
 /// The optical depth one full pass of an opaque tip lays over a point — the τ
 /// ceiling `assets::build_prefix_tau` clamps to.

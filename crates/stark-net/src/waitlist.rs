@@ -46,8 +46,8 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use iroh_blobs::Hash;
-use stark_engine::document::{Action, ActionId};
 use stark_model::AssetId;
+use stark_model::document::{Action, ActionId};
 use tokio::sync::mpsc;
 
 use crate::mirror::Mirror;
@@ -246,8 +246,8 @@ impl Waitlist {
 #[cfg(test)]
 mod tests {
     use stark_engine::DocumentFile;
-    use stark_engine::document::{ActionId, ActionKind, ActorId};
     use stark_model::AssetId;
+    use stark_model::document::{ActionId, ActionKind, ActorId};
 
     use super::*;
 

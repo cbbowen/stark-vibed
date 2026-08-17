@@ -1,6 +1,6 @@
 //! `InputCommand`: raw, high-frequency user intent (§4).
 //!
-//! Commands are deliberately distinct from [`Action`](crate::document::Action)s.
+//! Commands are deliberately distinct from [`Action`](stark_model::document::Action)s.
 //! Many commands are ephemeral (pointer moves mid-stroke, pan/zoom, tool changes)
 //! and never enter history; only committed mutations become actions. The `Session`
 //! (§3) interprets commands and decides what, if anything, to commit.
@@ -35,12 +35,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::document::{
+use crate::gpu::{EnvironmentId, MediaParams};
+use stark_model::SurfaceId;
+use stark_model::document::{
     BlendMode, BrushParams, FillOp, Filter, LayerId, MattePaint, MatteRegion, Place, SelectionOp,
     ShapeAction, Tool, TransformMap,
 };
-use crate::gpu::{EnvironmentId, MediaParams};
-use stark_model::SurfaceId;
 use stark_model::geom::{Extent2, Vec2};
 
 /// One pen/mouse sample in canvas space.
@@ -169,7 +169,7 @@ pub enum GestureCommand {
     Cancel,
 }
 
-/// Mutations of **document state**: each becomes an [`Action`](crate::document::Action),
+/// Mutations of **document state**: each becomes an [`Action`](stark_model::document::Action),
 /// enters the undo history, is replicated to peers, and is reproduced by replay.
 #[derive(Clone, Debug)]
 pub enum DocCommand {
@@ -259,10 +259,10 @@ pub enum DocCommand {
     /// Fill a region of `layer` with paint (§18.0.4) — the direct
     /// path, next to `Select`: the selection bar's Fill button and any frontend
     /// that has its own geometry. The gesture path goes through
-    /// [`ShapeAction::Fill`](crate::document::ShapeAction) instead, and commits the
+    /// [`ShapeAction::Fill`](stark_model::document::ShapeAction) instead, and commits the
     /// identical action.
     ///
-    /// A fill whose region is [`SelectionShape::All`](crate::document::SelectionShape)
+    /// A fill whose region is [`SelectionShape::All`](stark_model::document::SelectionShape)
     /// means "the selection", and is refused when there is none — the canvas is
     /// unbounded, and inventing a boundary would be a different fill on every client.
     Fill {
@@ -606,7 +606,7 @@ pub enum ViewCommand {
 /// What separates these from [`ViewCommand`] is only who reads the result. What
 /// separates them from [`DocCommand`] is that replay does not need them to reproduce
 /// a pixel: the selected layer is already closed over by
-/// [`StrokeRecord::layer`](crate::document::StrokeRecord), a cursor paints nothing,
+/// [`StrokeRecord::layer`](stark_model::document::StrokeRecord), a cursor paints nothing,
 /// and a name is not part of the artwork.
 #[derive(Clone, Debug)]
 pub enum PeerCommand {

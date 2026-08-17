@@ -49,8 +49,9 @@ use crate::input::{elem_xy, shortest_turn, snap_quarter};
 use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch};
+use stark_engine::ExportScale;
 use stark_engine::command::ViewCommand;
-use stark_engine::{ExportScale, LayerId};
+use stark_model::document::LayerId;
 use stark_model::geom::{Extent2, Vec2};
 
 /// The largest miniature, in CSS px. The width is the panel's inner width (see

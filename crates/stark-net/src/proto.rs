@@ -18,9 +18,9 @@ use std::sync::Mutex;
 use bytes::Bytes;
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
-use stark_engine::document::{Action, ActionId};
 use stark_engine::peer::PeerFrame;
 use stark_model::AssetId;
+use stark_model::document::{Action, ActionId};
 
 use crate::mirror::{Mirror, Served};
 
@@ -225,7 +225,7 @@ pub(crate) use iroh_wire::{CollabProto, request};
 #[cfg(test)]
 mod tests {
     use stark_engine::DocumentFile;
-    use stark_engine::document::{Action, ActionId, ActionKind, ActorId};
+    use stark_model::document::{Action, ActionId, ActionKind, ActorId};
 
     use super::*;
     use crate::backend::{self, Bound};
@@ -273,7 +273,7 @@ mod tests {
             boot: 3,
             seq: 9,
             name: Some("someone".into()),
-            active_layer: stark_engine::document::LayerId(0),
+            active_layer: stark_model::document::LayerId(0),
             cursor: Some(stark_model::Vec2::new(1.0, 2.0)),
             gesture: None,
             leaving: false,

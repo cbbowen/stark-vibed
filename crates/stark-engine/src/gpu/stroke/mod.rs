@@ -24,7 +24,6 @@ use std::sync::Arc;
 
 use crate::assets::AssetStore;
 use crate::colorspace::ColorSpace;
-use crate::document::StrokeRecord;
 use crate::document::selection::Selection;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::Zeroes;
@@ -32,6 +31,7 @@ use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap, TilePairHandle, TilePool};
 use crate::noise::NOISE_TILE_PX;
 use crate::unpoisoned;
+use stark_model::document::StrokeRecord;
 
 mod budget;
 mod dynamics;

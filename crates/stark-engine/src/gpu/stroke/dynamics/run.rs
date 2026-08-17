@@ -8,11 +8,11 @@ use wgpu::util::DeviceExt;
 
 use std::collections::BTreeSet;
 
-use crate::document::StrokeRecord;
 use crate::gpu::channels::Targets;
 use crate::gpu::composite::view_uniform;
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TileMap};
+use stark_model::document::StrokeRecord;
 use stark_model::geom::{TileCoord, Vec2};
 use stark_shaders::mirror::composite::binding as cb;
 

@@ -30,7 +30,7 @@ pub enum BrushShape {
     /// edge — meaningful only here, since it is what shapes this tip's falloff.
     Round { hardness: f32 },
     /// A sampled coverage mask, referenced by content id (an imported image).
-    Stamp(stark_model::AssetId),
+    Stamp(crate::AssetId),
 }
 
 impl Default for BrushShape {
@@ -219,7 +219,7 @@ impl ColorDynamics {
 /// What a [`Modulation`] reads off the pen (§6.2).
 ///
 /// Both are already carried per point of the fitted curve
-/// ([`ControlPoint`](stark_model::path::ControlPoint)) and interpolated per swept segment,
+/// ([`ControlPoint`](crate::path::ControlPoint)) and interpolated per swept segment,
 /// so a source here costs the renderer nothing to evaluate and nothing to store.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ModSource {
@@ -551,7 +551,7 @@ pub struct BrushParams {
     /// up at all (the historical behaviour, and the default); 1 = it touches only the
     /// very tops of the weave, so the mark is what a dry brush leaves.
     ///
-    /// The *ground* is document state ([`SurfaceId`](stark_model::SurfaceId)) — a pencil and a loaded brush
+    /// The *ground* is document state ([`SurfaceId`](crate::SurfaceId)) — a pencil and a loaded brush
     /// on the same canvas see the same tooth, which is why the grain lives there and
     /// only this knob lives on the brush. What it scales is the paint the brush lays
     /// per unit swept optical depth, gated per texel by whether the ground clears the

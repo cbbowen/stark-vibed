@@ -19,9 +19,9 @@ use crate::slots::{self, Grip};
 use crate::state::{AppState, BrushRing, Dwell, PickScope, TowUi, dispatch, update_brush};
 use stark_engine::InputSample;
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
-use stark_engine::document::SelectionOp;
-use stark_engine::document::{ShapeAction, Tool};
 use stark_engine::{PickOptions, PickSource};
+use stark_model::document::SelectionOp;
+use stark_model::document::{ShapeAction, Tool};
 use stark_model::geom::{Vec2, ViewTransform};
 
 /// How close to a quarter turn a turn has to land to be pulled onto it, radians

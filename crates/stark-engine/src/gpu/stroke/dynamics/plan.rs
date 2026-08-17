@@ -17,7 +17,7 @@
 //! Every slot is a pure function of the record and the piece's own geometry, in plain
 //! CPU float math, so replay is deterministic (§12.1).
 
-use crate::document::StrokeRecord;
+use stark_model::document::StrokeRecord;
 use stark_model::geom::Vec2;
 
 use super::super::budget::{footprint_cell, lambda};
@@ -1541,22 +1541,22 @@ mod tests {
     // --- the pen-up frame --------------------------------------------------
 
     /// A brush that manipulates paint, so a stroke of it settles at all.
-    fn smearing(radius: f32) -> crate::document::BrushParams {
-        crate::document::BrushParams {
+    fn smearing(radius: f32) -> stark_model::document::BrushParams {
+        stark_model::document::BrushParams {
             radius,
-            dynamics: crate::document::BrushDynamics {
+            dynamics: stark_model::document::BrushDynamics {
                 lift: 0.8,
                 deposit: 0.8,
-                ..crate::document::BrushDynamics::default()
+                ..stark_model::document::BrushDynamics::default()
             },
-            ..crate::document::BrushParams::default()
+            ..stark_model::document::BrushParams::default()
         }
     }
 
     /// A stroke through `pts` with `brush`, as plain full-pressure knots.
-    fn record(brush: crate::document::BrushParams, pts: &[Vec2]) -> StrokeRecord {
+    fn record(brush: stark_model::document::BrushParams, pts: &[Vec2]) -> StrokeRecord {
         StrokeRecord {
-            layer: crate::document::LayerId(0),
+            layer: stark_model::document::LayerId(0),
             brush,
             path: pts
                 .iter()

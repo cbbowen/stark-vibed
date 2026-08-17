@@ -34,8 +34,9 @@ use crate::panels::color::OklabPicker;
 use crate::preview;
 use crate::state::{AppState, dispatch};
 use stark_engine::command::{DocCommand, PeerCommand};
-use stark_engine::document::{MattePaint, MatteRegion, Place};
-use stark_engine::{LayerId, LayerInfo, MatteInfo};
+use stark_engine::{LayerInfo, MatteInfo};
+use stark_model::document::LayerId;
+use stark_model::document::{MattePaint, MatteRegion, Place};
 use stark_model::geom::Vec2;
 
 /// The frame's default fill: a near-black mat board. Dark reads as "not the

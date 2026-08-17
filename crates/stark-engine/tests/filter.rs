@@ -19,8 +19,8 @@ mod common;
 
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
-use stark_engine::document::{ChromaticAberration, ColorAdjust, Filter, LayerId, Place};
 use stark_engine::{Engine, RgbaImage};
+use stark_model::document::{ChromaticAberration, ColorAdjust, Filter, LayerId, Place};
 use stark_model::geom::Vec2;
 use stark_model::gradient::{Gradient, GradientStop};
 

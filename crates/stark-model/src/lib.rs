@@ -28,12 +28,14 @@
 
 pub mod color;
 pub mod colorspace;
+pub mod document;
 pub mod geom;
 pub mod gradient;
 pub mod path;
 pub mod surface;
 
 pub use colorspace::ColorSpaceId;
+pub use document::{LayerId, SelectionMode, SelectionOp, SelectionShape};
 pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};
 pub use gradient::{Gradient, GradientStop};
 /// What a content id *is* — decode, cap, hash (§19). Re-exported rather than

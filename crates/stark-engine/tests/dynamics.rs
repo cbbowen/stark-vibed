@@ -7,8 +7,8 @@ mod common;
 
 use common::*;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::document::{BrushDynamics, BrushParams, BrushShape, Tool};
 use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_model::document::{BrushDynamics, BrushParams, BrushShape, Tool};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -1403,13 +1403,13 @@ fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
             cp
         })
         .collect();
-    doc.actions.push(stark_engine::document::Action {
-        id: stark_engine::document::ActionId {
+    doc.actions.push(stark_model::document::Action {
+        id: stark_model::document::ActionId {
             lamport: prev.lamport + 1,
             actor: prev.actor,
         },
-        kind: stark_engine::document::ActionKind::CommitStroke(
-            stark_engine::document::StrokeRecord {
+        kind: stark_model::document::ActionKind::CommitStroke(
+            stark_model::document::StrokeRecord {
                 layer: engine.observe().active_layer,
                 brush,
                 path,

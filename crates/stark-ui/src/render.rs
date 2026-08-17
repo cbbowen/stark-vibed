@@ -13,11 +13,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::platform::Canvas;
 use stark_engine::AssetNeed;
 use stark_engine::command::ViewCommand;
-use stark_engine::document::Tool;
 use stark_engine::{Engine, EnvironmentId, GpuContext, InputCommand, InputSample, ObservableState};
 use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
 use stark_model::ViewTransform;
+use stark_model::document::Tool;
 use stark_model::geom::Extent2;
 
 pub const CANVAS_ID: &str = "stark-canvas";
@@ -112,10 +112,10 @@ struct Overview {
 /// command, while this changes thirty times a second whenever anybody moves.
 #[derive(Clone, PartialEq, Debug)]
 pub struct PeerInfo {
-    pub actor: stark_engine::document::ActorId,
+    pub actor: stark_model::document::ActorId,
     pub name: String,
     pub color: [f32; 3],
-    pub active_layer: stark_engine::LayerId,
+    pub active_layer: stark_model::document::LayerId,
     pub cursor: Option<stark_model::Vec2>,
 }
 
@@ -318,7 +318,7 @@ impl Renderer {
     /// What exporting would produce, without producing it (§15.6).
     pub fn export_plan(
         &self,
-        frame: Option<stark_engine::LayerId>,
+        frame: Option<stark_model::document::LayerId>,
         scale: stark_engine::ExportScale,
     ) -> stark_engine::Result<stark_engine::ExportPlan> {
         self.engine.export_plan(frame, scale)
@@ -335,7 +335,7 @@ impl Renderer {
     /// several-hundred-megabyte pair for the rest of the session.
     pub fn export(
         &mut self,
-        frame: Option<stark_engine::LayerId>,
+        frame: Option<stark_model::document::LayerId>,
         scale: stark_engine::ExportScale,
         background: stark_engine::Background,
         content: stark_engine::Rendered,
@@ -499,12 +499,12 @@ impl Renderer {
     }
 
     /// Integrate one remote action; returns whether it was new.
-    pub fn merge_remote(&mut self, action: stark_engine::document::Action) -> bool {
+    pub fn merge_remote(&mut self, action: stark_model::document::Action) -> bool {
         self.engine.merge_remote(action)
     }
 
     /// Drain locally-committed actions awaiting broadcast.
-    pub fn take_outbox(&mut self) -> Vec<stark_engine::document::Action> {
+    pub fn take_outbox(&mut self) -> Vec<stark_model::document::Action> {
         self.engine.take_outbox()
     }
 
@@ -539,7 +539,7 @@ impl Renderer {
     /// own only advances when the presence pump has something to drain.
     pub fn merge_presence(
         &mut self,
-        actor: stark_engine::document::ActorId,
+        actor: stark_model::document::ActorId,
         frame: stark_engine::PeerFrame,
         now: f64,
     ) -> bool {

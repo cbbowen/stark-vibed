@@ -1033,7 +1033,7 @@ pub fn on_file_launch(_on_file: impl Fn(String, Vec<u8>) + 'static) {}
 ///
 /// Two normalizations beyond transcoding:
 /// - **Downscale** so the longest edge is at most the engine's shape cap
-///   (1024 px, `stark_engine::assets::MAX_SHAPE_DIM`). The engine would cap it
+///   (1024 px, `stark_model::MAX_SHAPE_DIM`). The engine would cap it
 ///   anyway; doing it here keeps library entries small in `localStorage`.
 /// - **Dark-on-light inversion.** The engine reads coverage as
 ///   `luminance × alpha` (white paints, black doesn't) — but scanned or drawn
@@ -1064,7 +1064,7 @@ pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), St
     if sw == 0 || sh == 0 {
         return Err("the image is empty".to_string());
     }
-    let cap = stark_engine::assets::MAX_SHAPE_DIM;
+    let cap = stark_model::MAX_SHAPE_DIM;
     let scale = (cap as f64 / sw.max(sh) as f64).min(1.0);
     let w = ((sw as f64 * scale) as u32).max(1);
     let h = ((sh as f64 * scale) as u32).max(1);

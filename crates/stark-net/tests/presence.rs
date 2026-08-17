@@ -8,8 +8,8 @@
 use std::time::Duration;
 
 use stark_engine::DocumentFile;
-use stark_engine::document::{Action, ActionId, ActionKind, ActorId, LayerId};
 use stark_engine::peer::PeerFrame;
+use stark_model::document::{Action, ActionId, ActionKind, ActorId, LayerId};
 use stark_net::{CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket};
 
 fn ticket_of(session: &CollabSession) -> SessionTicket {

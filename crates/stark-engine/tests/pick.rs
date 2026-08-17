@@ -17,7 +17,8 @@ mod common;
 
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand};
-use stark_engine::{Engine, LayerId, PickOptions, PickSource};
+use stark_engine::{Engine, PickOptions, PickSource};
+use stark_model::document::LayerId;
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.12, 0.1, 1.0];

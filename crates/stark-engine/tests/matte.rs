@@ -17,8 +17,8 @@ mod common;
 
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
-use stark_engine::document::{LayerId, MattePaint, MatteRegion, Place};
 use stark_engine::{Engine, RgbaImage};
+use stark_model::document::{LayerId, MattePaint, MatteRegion, Place};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
@@ -532,7 +532,8 @@ fn matte_undoes() {
 // The whole-plane region and the gradient paint (§15.5, §22.4).
 // ---------------------------------------------------------------------------
 
-use stark_engine::document::{GradientAxis, MattePaint as MP};
+use stark_model::document::GradientAxis;
+use stark_model::document::MattePaint as MP;
 use stark_model::{Gradient, GradientStop};
 
 fn red_blue() -> Gradient {

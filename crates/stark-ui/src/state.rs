@@ -22,8 +22,8 @@ use crate::gesture::TransformUi;
 use crate::prefs::Prefs;
 use crate::render::Renderer;
 use stark_engine::command::ViewCommand;
-use stark_engine::document::{BrushParams, LayerId};
 use stark_engine::{InputCommand, ObservableState};
+use stark_model::document::{BrushParams, LayerId};
 use stark_model::geom::Vec2;
 
 /// Create one of [`AppState`]'s signals, owned by the **root** scope rather than by
@@ -520,11 +520,11 @@ pub enum GradientAxisKind {
 
 impl GradientUi {
     /// The axis the current drag composes, or `None` before the first drag.
-    pub fn axis(&self) -> Option<stark_engine::document::GradientAxis> {
+    pub fn axis(&self) -> Option<stark_model::document::GradientAxis> {
         let (from, to) = self.drag?;
         Some(match self.kind {
-            GradientAxisKind::Linear => stark_engine::document::GradientAxis::Linear { from, to },
-            GradientAxisKind::Radial => stark_engine::document::GradientAxis::Radial {
+            GradientAxisKind::Linear => stark_model::document::GradientAxis::Linear { from, to },
+            GradientAxisKind::Radial => stark_model::document::GradientAxis::Radial {
                 center: from,
                 radius: from.distance(to),
             },

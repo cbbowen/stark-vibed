@@ -20,8 +20,8 @@ mod common;
 use common::*;
 use stark_engine::Engine;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::document::{BrushParams, Tool};
 use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_model::document::{BrushParams, Tool};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -184,7 +184,7 @@ fn a_stroke_too_wide_for_one_region_still_moves_paint() {
 /// varies along the stroke.
 fn inking_brush(start: f32, end: f32) -> BrushParams {
     let mut b = brush(RED, 16.0);
-    b.shape = stark_engine::document::BrushShape::Round { hardness: 0.9 };
+    b.shape = stark_model::document::BrushShape::Round { hardness: 0.9 };
     b.drain = 0.0;
     b.dynamics.add = 1.0;
     b.start_taper_length = start;

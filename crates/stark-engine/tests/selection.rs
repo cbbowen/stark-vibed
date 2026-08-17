@@ -14,10 +14,11 @@
 mod common;
 
 use common::*;
+use stark_engine::RgbaImage;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::document::{BrushDynamics, Tool};
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_engine::{RgbaImage, SelectionMode, SelectionOp, SelectionShape};
+use stark_model::document::{BrushDynamics, Tool};
+use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];

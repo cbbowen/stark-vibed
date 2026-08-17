@@ -73,8 +73,8 @@ use render::CANVAS_ID;
 use settings::SettingsModal;
 use slots::SlotOverlay;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
-use stark_engine::document::SelectionOp;
 use stark_model::ColorSpaceId;
+use stark_model::document::SelectionOp;
 use state::{AppState, dispatch, dispatch_quiet, resize, update_brush, use_obs};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
@@ -503,7 +503,7 @@ fn Canvas() -> Element {
             .any(|l| l.id == o.active_layer && l.is_paintable());
         (paintable, o.tool)
     });
-    let (paintable, tool) = look().unwrap_or((false, stark_engine::document::Tool::Brush));
+    let (paintable, tool) = look().unwrap_or((false, stark_model::document::Tool::Brush));
     // Alt arms the eyedropper over the brush, and the cursor says so before it is
     // used — the only thing that makes a modifier binding discoverable. Not over a
     // selection tool, where alt already means "subtract from the selection"

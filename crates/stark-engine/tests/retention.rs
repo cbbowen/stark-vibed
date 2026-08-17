@@ -92,7 +92,7 @@ fn folding_history_does_not_change_what_a_peer_is_sent() {
     paint_a_session(&mut engine, 48);
 
     let before = pixels(&mut engine);
-    engine.start_collaboration(stark_engine::document::ActorId(7));
+    engine.start_collaboration(stark_model::document::ActorId(7));
     let after = pixels(&mut engine);
 
     assert!(
@@ -164,7 +164,7 @@ fn a_shared_session_never_folds() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.start_collaboration(stark_engine::document::ActorId(3));
+    engine.start_collaboration(stark_model::document::ActorId(3));
     engine.process(ViewCommand::SetHistoryBudget(0));
     paint_a_session(&mut engine, 48);
 

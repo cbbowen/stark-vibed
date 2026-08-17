@@ -24,7 +24,6 @@ use wgpu::util::DeviceExt;
 use std::sync::Arc;
 
 use crate::colorspace::ColorSpace;
-use crate::document::BlendMode;
 use crate::gpu::channels::{ChannelFormats, Channels, Targets};
 use crate::gpu::composite::{
     BlendPass, BlendUniform, FilterDraw, FilterPass, FilterUniform, blend_code,
@@ -34,6 +33,7 @@ use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 use crate::gpu::uniforms::UNIFORM_SLOT;
+use stark_model::document::BlendMode;
 
 // Generated from the shaders' own declarations (§6.10).
 use stark_shaders::mirror::merge::Merge as MergeUniform;

@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use stark_engine::Engine;
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_engine::document::{BlendMode, DRAGO_K, LayerId, Place};
+use stark_model::document::{BlendMode, DRAGO_K, LayerId, Place};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];

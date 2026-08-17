@@ -20,7 +20,7 @@
 use super::action::{Action, ActionKind, ActorId, StrokeRecord};
 use super::brush::BrushParams;
 use super::layer::LayerId;
-use stark_model::geom::{TileRect, Vec2};
+use crate::geom::{TileRect, Vec2};
 
 /// The tiles a pass may touch within the canvas box `[lo, hi]`, grown by `ring`
 /// tiles — [`TileRect::covering`] with a footprint's answer to a box it cannot
@@ -175,7 +175,8 @@ impl Footprint {
     }
 }
 
-/// A [`Footprint`] is the [`history::Centralizer`] of an [`Action`]
+/// A [`Footprint`] is the `history::Centralizer` of a [`Logged`](super::fold::Logged)
+/// action
 /// (§12.6): the history builds it **once** per removal and asks it about each
 /// later action, which is what lets `try_remove_action_with` shift an undone
 /// action past everything it commutes with instead of replaying it.
@@ -185,16 +186,6 @@ impl Footprint {
 /// produces the same state, and [`Action`]'s `inverse` restricted to this
 /// footprint removes exactly this action's effect. A false conflict only costs
 /// the fast path (the contract permits false negatives, never false positives).
-impl<'a> history::Centralizer<'a, Action> for Footprint {
-    fn for_action(action: &'a Action) -> Self {
-        footprint(action)
-    }
-
-    fn commutes(&self, other: &Action) -> bool {
-        !self.conflicts(&footprint(other))
-    }
-}
-
 /// Padding around a stroke's control-point bounding box, in canvas px: the
 /// farthest any of the tip's marks can land from the fitted centerline.
 ///
@@ -223,7 +214,7 @@ fn stroke_pad(brush: &BrushParams) -> f32 {
 /// are painting on the same tiles. Deliberately the *same* answer the commit's
 /// footprint gives, so the fold cannot decide two strokes are independent where the
 /// log would decide they conflict.
-pub(crate) fn stroke_rect(rec: &StrokeRecord) -> TileRect {
+pub fn stroke_rect(rec: &StrokeRecord) -> TileRect {
     let mut min = Vec2::splat(f32::INFINITY);
     let mut max = Vec2::splat(f32::NEG_INFINITY);
     for p in &rec.path {
@@ -445,7 +436,7 @@ fn gated_rect(rect: (Vec2, Vec2), image: Option<(Vec2, Vec2)>) -> TileRect {
 
 /// The tile-aligned reach of a fill: everything its pass may read or write.
 /// Shared with the live-preview fold for the same reason as [`stroke_rect`].
-pub(crate) fn fill_rect(op: &super::fill::FillOp) -> TileRect {
+pub fn fill_rect(op: &super::fill::FillOp) -> TileRect {
     let Some((lo, hi)) = super::fill::fill_bounds(op) else {
         return TileRect::ALL;
     };
@@ -465,8 +456,8 @@ mod tests {
     use crate::document::Place;
     use crate::document::action::ActionId;
     use crate::document::brush::BrushParams;
-    use stark_model::geom::Vec2;
-    use stark_model::path::ControlPoint;
+    use crate::geom::Vec2;
+    use crate::path::ControlPoint;
 
     fn act(actor: u64, kind: ActionKind) -> Action {
         Action {

@@ -9,7 +9,7 @@ use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::Slider;
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_engine::document::{FillOp, SelectionMode, SelectionOp, ShapeAction, Tool};
+use stark_model::document::{FillOp, SelectionMode, SelectionOp, ShapeAction, Tool};
 
 /// Shape tools (§6.8): rect / ellipse / lasso, what the next gesture does
 /// with the region they enclose, and the feather applied to its edge.

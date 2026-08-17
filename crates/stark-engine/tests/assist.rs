@@ -16,9 +16,9 @@
 use glam::Quat;
 use stark_engine::PerspectiveGuide;
 use stark_engine::command::InputSample;
-use stark_engine::document::{LayerId, Tool};
 use stark_engine::path::{DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, flatten};
 use stark_engine::session::Session;
+use stark_model::document::{LayerId, Tool};
 use stark_model::geom::{Ellipse, Extent2, Vec2, ViewTransform};
 
 fn session() -> Session {

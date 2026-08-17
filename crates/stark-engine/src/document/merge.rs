@@ -52,7 +52,7 @@
 //! that must be a pure function of canvas position (§6.4) — the rule that keeps a
 //! tile's apron bit-identical to its neighbour's interior — and a filter that reads
 //! *neighbouring* texels (§21.10) is not one, at any apron width, since its reach is
-//! the document's to set. So [`Filter::resamples`](super::filter::Filter::resamples)
+//! the document's to set. So [`Filter::resamples`](stark_model::document::Filter::resamples)
 //! is asked, and a gather is declined.
 //!
 //! # What is deliberately refused
@@ -85,8 +85,9 @@
 //! rather than overlooked: a *gradient* matte has no such answer, because the
 //! adjustment is nonlinear and filtering the stops is not filtering the ramp.
 
-use super::layer::{CompositeParams, Layer, LayerContent, LayerId};
+use super::layer::{CompositeParams, Layer, LayerContent};
 use super::state::DocState;
+use stark_model::document::LayerId;
 
 /// The merge a [`plan`] found: which layer is consumed, which survives, how the paint
 /// lands, and what each side's tiles are worth on their own.
@@ -97,7 +98,7 @@ use super::state::DocState;
 /// declines if it names a different destination, which is what keeps a peer's action
 /// honest against a tree that has moved under it.
 ///
-/// [`Footprint`]: super::footprint::Footprint
+/// [`Footprint`]: stark_model::document::Footprint
 #[derive(Clone, Debug, PartialEq)]
 pub struct MergePlan {
     pub source: LayerId,
@@ -154,7 +155,7 @@ pub enum MergeKind {
     /// scales coverage and height and leaves the color alone, so the un-premultiplied
     /// color the filter is defined on is the same whatever the slider says.
     Filter {
-        filter: super::filter::Filter,
+        filter: stark_model::document::Filter,
         /// The filter layer's own params, which is what the **compositor** reads of
         /// one (§21.4): the opacity is the filter's strength and has to be baked in,
         /// or a half-applied grade would merge to a fully applied one.
@@ -394,7 +395,9 @@ impl Layer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{BlendMode, ChromaticAberration, ColorAdjust, DRAGO_K, Filter, Place};
+    use stark_model::document::{
+        BlendMode, ChromaticAberration, ColorAdjust, DRAGO_K, Filter, Place,
+    };
 
     const A: LayerId = LayerId(0);
     const B: LayerId = LayerId(1);
@@ -651,7 +654,7 @@ mod tests {
     /// the tests below are its.)
     #[test]
     fn only_paint_is_merged_into() {
-        use crate::document::MatteRegion;
+        use stark_model::document::MatteRegion;
         use stark_model::geom::Vec2;
 
         let region = MatteRegion::OutsideRect {
@@ -662,9 +665,9 @@ mod tests {
             .insert_matte(
                 B,
                 None,
-                crate::document::Place::Above(A),
+                stark_model::document::Place::Above(A),
                 region,
-                crate::document::MattePaint::Solid([1.0; 3]),
+                stark_model::document::MattePaint::Solid([1.0; 3]),
             )
             .insert_layer(C, None, Some(B));
         assert_eq!(dest(&over_matte, C), None, "a matte destination");

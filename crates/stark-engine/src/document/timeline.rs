@@ -11,9 +11,16 @@ use std::collections::{HashMap, HashSet};
 
 use history::History;
 
-use super::action::{Action, ActionId, ActionKind, ActorId, ApplyCtx};
-use super::footprint::footprint;
+/// The log entry `history` actually stores: an [`Action`] addressed to the state it
+/// folds into (§2). [`Logged`] is `stark-model`'s so that the `history::Action` impl
+/// can be written at all — the orphan rule put it there, and the division it forces
+/// is the right one. Nothing outside this module sees it.
+type Entry = Logged<DocState>;
+
+use super::apply::ApplyCtx;
 use super::state::DocState;
+use stark_model::document::footprint;
+use stark_model::document::{Action, ActionId, ActionKind, ActorId, Logged};
 
 /// A versioned document: the source of the current [`DocState`] plus undo/redo.
 pub trait Timeline {
@@ -141,7 +148,7 @@ pub struct TimelineStats {
 
 /// Single-user timeline: a linear undo/redo stack over `history::History`.
 pub struct LinearTimeline {
-    history: History<Action>,
+    history: History<Entry>,
     /// Actions popped by `undo`, awaiting `redo`. Cleared on a fresh `push`.
     redo: Vec<Action>,
     /// Actions folded out of the undo stack by [`forget_oldest`], oldest first —
@@ -174,7 +181,9 @@ impl LinearTimeline {
     /// Every action this timeline holds, oldest first — the folded prefix and then
     /// the live history.
     pub fn actions(&self) -> impl Iterator<Item = &Action> {
-        self.forgotten.iter().chain(self.history.actions())
+        self.forgotten
+            .iter()
+            .chain(self.history.actions().map(|e| &**e))
     }
 
     /// How many actions are currently applied — the playhead's position.
@@ -200,11 +209,11 @@ impl Timeline for LinearTimeline {
     fn push(&mut self, action: Action, ctx: &mut ApplyCtx) {
         self.redo.clear();
         // Infallible apply (§5) — no error to handle.
-        self.history.push_action_with(action, ctx);
+        self.history.push_action_with(Entry::new(action), ctx);
     }
 
     fn undo(&mut self, ctx: &mut ApplyCtx) -> bool {
-        match self.history.pop_action_with(ctx) {
+        match self.history.pop_action_with(ctx).map(Entry::into_action) {
             Some(action) => {
                 self.redo.push(action);
                 true
@@ -216,7 +225,7 @@ impl Timeline for LinearTimeline {
     fn redo(&mut self, ctx: &mut ApplyCtx) -> bool {
         match self.redo.pop() {
             Some(action) => {
-                self.history.push_action_with(action, ctx);
+                self.history.push_action_with(Entry::new(action), ctx);
                 true
             }
             None => false,
@@ -274,7 +283,7 @@ impl Timeline for LinearTimeline {
                 // order successive `undo`s push onto `redo` — so the stack stays
                 // one thing however it was filled.
                 let popped = self.history.pop_actions_with(applied - to, ctx);
-                self.redo.extend(popped);
+                self.redo.extend(popped.into_iter().map(Entry::into_action));
                 true
             }
             std::cmp::Ordering::Greater => {
@@ -287,7 +296,7 @@ impl Timeline for LinearTimeline {
                     .rev()
                     .collect();
                 for action in batch {
-                    self.history.push_action_with(action, ctx);
+                    self.history.push_action_with(Entry::new(action), ctx);
                 }
                 true
             }
@@ -321,7 +330,8 @@ impl Timeline for LinearTimeline {
         let n = folded.len();
         // Oldest first out of `forget_actions`, and oldest first here, so the
         // concatenation in `actions()` is the log in order.
-        self.forgotten.extend(folded);
+        self.forgotten
+            .extend(folded.into_iter().map(Entry::into_action));
         n
     }
 }
@@ -516,7 +526,7 @@ pub struct ReplicatedTimeline {
     ids: HashSet<ActionId>,
     /// Materialization of the effective sequence, in order (the initial empty
     /// document is `History`'s version 0, which pops never remove).
-    history: History<Action>,
+    history: History<Entry>,
     stats: TimelineStats,
     /// What a local undo and redo would target as the log now stands — a pure
     /// function of [`log`](Self::log) and [`actor`](Self::actor), resolved once
@@ -612,7 +622,7 @@ impl ReplicatedTimeline {
         // the newest action goes last.
         if ordinary && appended && !self.undone.contains(&id) {
             let action = self.log[pos].clone();
-            self.history.push_action_with(action, ctx);
+            self.history.push_action_with(Entry::new(action), ctx);
             self.retarget_appended(id);
         } else {
             self.resync(ctx);
@@ -668,7 +678,7 @@ impl ReplicatedTimeline {
     /// footprint declares — so peers still agree state-for-state however each
     /// one got there.
     ///
-    /// [`Footprint`]: super::footprint::Footprint
+    /// [`Footprint`]: stark_model::document::Footprint
     fn resync(&mut self, ctx: &mut ApplyCtx) {
         self.undone = undone_ids(&self.log);
         // Before the arms below, every one of which can return: together with
@@ -689,7 +699,7 @@ impl ReplicatedTimeline {
         if diverge == mat.len() {
             for &i in &eff[diverge..] {
                 let action = self.log[i].clone();
-                self.history.push_action_with(action, ctx);
+                self.history.push_action_with(Entry::new(action), ctx);
             }
             return;
         }
@@ -727,7 +737,7 @@ impl ReplicatedTimeline {
         for &i in &eff[diverge..] {
             let action = self.log[i].clone();
             self.stats.replayed += 1;
-            self.history.push_action_with(action, ctx);
+            self.history.push_action_with(Entry::new(action), ctx);
         }
     }
 }

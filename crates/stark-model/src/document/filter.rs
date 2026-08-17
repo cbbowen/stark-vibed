@@ -51,7 +51,7 @@ pub enum Filter {
     /// chosen yet — is the neutral, the same shape as a chromatic filter whose
     /// spread has not left zero: a gradient map with *any* ramp is already an
     /// edit, so the only setting a freshly added one may hold is none at all.
-    GradientMap(Option<stark_model::gradient::Gradient>),
+    GradientMap(Option<crate::gradient::Gradient>),
 }
 
 impl Filter {
@@ -150,12 +150,12 @@ impl Filter {
                 let stops = g
                     .stops()
                     .iter()
-                    .map(|s| stark_model::gradient::GradientStop {
+                    .map(|s| crate::gradient::GradientStop {
                         t: s.t,
                         color: s.color.map(|c| c.clamp(0.0, 1.0)),
                     })
                     .collect();
-                stark_model::gradient::Gradient::new(stops)
+                crate::gradient::Gradient::new(stops)
             })),
         }
     }
@@ -199,7 +199,7 @@ pub struct ColorAdjust {
     /// About mid-grey rather than about the picture's own mean, which is the other
     /// thing this could have meant: a pivot that depends on the image makes the
     /// adjustment depend on what is underneath the filter, so moving a layer below
-    /// it would change what the slider does. See [`CONTRAST_PIVOT`].
+    /// it would change what the slider does. See `stark-engine`'s `filters::CONTRAST_PIVOT`.
     pub contrast: f32,
     /// Saturation: a gain on Oklab chroma — the distance of `(a, b)` from the
     /// achromatic axis. `1` is the identity, `0` is a greyscale conversion that
@@ -376,33 +376,9 @@ impl Default for ChromaticAberration {
     }
 }
 
-/// Oklab `L` of mid-grey — sRGB `0.5` — which is what [`ColorAdjust::contrast`]
-/// pivots about.
-///
-/// **Generated from `filter_common.wesl`'s own declaration** (§6.10), which is the
-/// copy that actually runs — the host side exists so a test can predict a texel
-/// without a shader, and taking it through the mirror is what makes the two copies
-/// unable to drift (`stark-shaders/build.rs`, `CONSTS`). Worth stating why the
-/// number is what it is: sRGB `0.5` is linear `0.2140`, the Oklab matrix rows sum
-/// to one so a neutral's `l = m = s = 0.2140`, and `L` is the cube root of that.
-pub const CONTRAST_PIVOT: f32 = stark_shaders::mirror::filter_common::CONTRAST_PIVOT;
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The pivot is declared once, in `filter_common.wesl`, and arrives here through
-    /// the build-time mirror (§6.10). Deriving it is what says the *shader's* literal
-    /// is the number it claims to be rather than one somebody typed.
-    #[test]
-    fn the_contrast_pivot_is_mid_greys_lightness() {
-        let lin = stark_model::color::srgb_to_linear(0.5);
-        let l = stark_model::color::linear_srgb_to_oklab([lin, lin, lin])[0];
-        assert!(
-            (l - CONTRAST_PIVOT).abs() < 5e-4,
-            "mid-grey is L = {l}, not {CONTRAST_PIVOT}",
-        );
-    }
 
     /// A filter arriving from a file or a peer reaches **every texel** of the frame,
     /// so the one thing that must not survive the way in is a value that is not a
@@ -495,7 +471,7 @@ mod tests {
     /// value a hostile file can carry, and it reaches every texel of the frame.
     #[test]
     fn sanitizing_a_gradient_map_clamps_its_stops_to_the_cube() {
-        use stark_model::gradient::{Gradient, GradientStop};
+        use crate::gradient::{Gradient, GradientStop};
         let hot = Gradient::new(vec![
             GradientStop {
                 t: 0.0,

@@ -32,7 +32,7 @@ use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId};
 use n0_future::task;
-use stark_engine::document::ActionId;
+use stark_model::document::ActionId;
 use tokio::sync::Notify;
 
 use crate::Result;
@@ -199,7 +199,7 @@ mod tests {
     use std::time::Duration;
 
     use stark_engine::DocumentFile;
-    use stark_engine::document::{Action, ActionKind, ActorId};
+    use stark_model::document::{Action, ActionKind, ActorId};
     use tokio::sync::mpsc;
 
     use std::collections::HashSet;

@@ -15,18 +15,19 @@ use std::sync::Arc;
 
 use rpds::Vector;
 
-use super::action::{Action, ActorId};
-use super::filter::Filter;
-use super::footprint::{Prop, Resource, footprint};
-use super::layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion};
+use super::layer::{Layer, LayerContent};
 use super::selection::Selection;
 use super::state::{DocState, LayerSite};
 use crate::gpu::tile::TilePairHandle;
 use stark_model::SurfaceId;
+use stark_model::document::Filter;
+use stark_model::document::{Action, ActorId};
+use stark_model::document::{BlendMode, LayerId, MatteRegion};
+use stark_model::document::{Prop, Resource, footprint};
 use stark_model::geom::{TileCoord, TileRect};
 
 /// One restorable write. Each variant covers exactly one [`footprint
-/// resource`](super::footprint::Resource), never more — a commuting action in
+/// resource`](stark_model::document::Resource), never more — a commuting action in
 /// between may own any *other* resource of the same layer, and restoring it
 /// would clobber that edit.
 enum PatchOp {
@@ -60,7 +61,7 @@ enum PatchOp {
     Visible(LayerId, bool),
     Name(LayerId, Option<Arc<str>>),
     /// A matte's region and color together — one footprint resource.
-    Matte(LayerId, MatteRegion, super::layer::MattePaint),
+    Matte(LayerId, MatteRegion, stark_model::document::MattePaint),
     /// A filter layer's settings (§21) — one footprint resource, because the action
     /// that writes them carries the filter entire.
     Filter(LayerId, Filter),
@@ -132,7 +133,7 @@ impl StatePatch {
     /// holds, diffed against `from` so untouched entries cost nothing.
     ///
     /// **Driven by the footprint's own write list**, resource for resource, rather
-    /// than by a second match on [`ActionKind`](super::action::ActionKind). That is
+    /// than by a second match on [`ActionKind`](stark_model::document::ActionKind). That is
     /// what makes "a patch restores exactly what the action declared" true by
     /// construction instead of by inspection: the two used to be parallel matches in
     /// two files with nothing but prose between them, and Rust's exhaustiveness gets
@@ -171,7 +172,7 @@ impl StatePatch {
 }
 
 /// Record what `to` holds for one written resource — the map from the
-/// [`Footprint`](super::footprint::Footprint) vocabulary to the [`PatchOp`] that
+/// [`Footprint`](stark_model::document::Footprint) vocabulary to the [`PatchOp`] that
 /// puts that resource back, and the whole of the correspondence [`StatePatch::capture`]
 /// rests on.
 ///
@@ -343,9 +344,9 @@ fn tile_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::action::{ActionId, ActionKind};
-    use crate::document::layer::Place;
     use stark_model::SurfaceId;
+    use stark_model::document::Place;
+    use stark_model::document::{ActionId, ActionKind};
 
     const A: LayerId = LayerId(0);
     const B: LayerId = LayerId(1);
@@ -376,7 +377,7 @@ mod tests {
         bool,
         Option<Arc<str>>,
         Option<Filter>,
-        Option<(MatteRegion, super::super::layer::MattePaint)>,
+        Option<(MatteRegion, stark_model::document::MattePaint)>,
     );
 
     fn props(l: &Layer) -> Props {
@@ -401,8 +402,8 @@ mod tests {
     /// the same list, and the match below has no `_` arm.
     #[test]
     fn every_property_round_trips() {
-        use crate::document::layer::{MattePaint, MatteRegion};
-        use crate::document::{BlendMode, ColorAdjust, Filter};
+        use stark_model::document::{BlendMode, ColorAdjust, Filter};
+        use stark_model::document::{MattePaint, MatteRegion};
         use stark_model::geom::Vec2;
 
         let rect = MatteRegion::OutsideRect {

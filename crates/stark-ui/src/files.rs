@@ -21,7 +21,8 @@ use crate::panels::frame::{piece_frame, use_selected_frame};
 use crate::platform::{download_bytes, pick_file};
 use crate::state::AppState;
 use stark_engine::command::ViewCommand;
-use stark_engine::{Background, ExportScale, LayerId, Rendered};
+use stark_engine::{Background, ExportScale, Rendered};
+use stark_model::document::LayerId;
 
 /// Extension for the native (replayable) document format.
 const DOC_EXT: &str = "stark";

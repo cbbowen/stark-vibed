@@ -10,10 +10,10 @@ use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
-use stark_engine::document::{BrushParams, BrushShape, Tool};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::ColorSpaceId;
+use stark_model::document::{BrushParams, BrushShape, Tool};
 use stark_model::geom::{Extent2, Vec2};
 
 pub const SIZE: Extent2 = Extent2 {

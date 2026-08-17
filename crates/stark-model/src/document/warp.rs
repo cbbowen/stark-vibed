@@ -75,7 +75,7 @@ fn lerp1(a: f32, b: f32, t: f32) -> f32 {
 /// parameter `(u, v)` — evaluated so that cell-edge points (`u` or `v` at 0/1)
 /// are pure 1-D lerps of the shared corners, bitwise identical from whichever
 /// neighbouring cell computes them.
-pub(crate) fn cell_point(g: &[Vec2; 4], u: f32, v: f32) -> Vec2 {
+pub fn cell_point(g: &[Vec2; 4], u: f32, v: f32) -> Vec2 {
     lerp2(lerp2(g[0], g[2], v), lerp2(g[1], g[3], v), u)
 }
 
@@ -133,7 +133,7 @@ fn axis_basis(len: usize, k: usize, f: f32) -> Vec<f32> {
 
 /// The fine lattice a [`WarpMap`] rasterizes through: base coordinates per axis
 /// and the image of every lattice node, row-major (`ny` rows of `nx`).
-pub(crate) struct Lattice {
+pub struct Lattice {
     pub nx: usize,
     pub ny: usize,
     /// Base (undeformed) lattice coordinates, strictly increasing, spanning
@@ -248,7 +248,7 @@ impl WarpMap {
     /// Sample the smooth surface onto the fine lattice. `None` when the map is
     /// malformed or the rect is degenerate enough that the base lattice loses
     /// strict monotonicity in f32.
-    pub(crate) fn lattice(&self) -> Option<Lattice> {
+    pub fn lattice(&self) -> Option<Lattice> {
         if !self.shape_ok() {
             return None;
         }

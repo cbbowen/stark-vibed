@@ -12,7 +12,7 @@
 //! yet. [`safe_frozen`] is the one rule that holds those back until their answer can
 //! no longer change, and it is what makes `preview == committed` hold here (§1.3).
 
-use crate::document::StrokeRecord;
+use stark_model::document::StrokeRecord;
 use stark_model::geom::TileCoord;
 
 use super::scratch::Kept;
