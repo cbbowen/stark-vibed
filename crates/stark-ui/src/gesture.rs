@@ -541,13 +541,18 @@ impl WarpUi {
     /// surface is smooth and unfolded, so nearest-on-a-grid converges fast.
     pub fn grab(&self, p: Vec2) -> (Vec2, [f32; WARP_GRID * WARP_GRID], f32) {
         let map = self.map();
+        // The delta grid hoisted out of the search: this is 81 coarse probes plus
+        // six refinement passes of 25, and `WarpMap::eval` rebuilds the grid on
+        // every call. Same arithmetic to the bit (`Prepared::eval`), which §16.4's
+        // identity invariant requires.
+        let surface = map.prepared();
         let mut best = (Vec2::splat(0.5), f32::INFINITY);
         let scan = |from: Vec2, step: f32, best: &mut (Vec2, f32)| {
             for j in -2..=2i32 {
                 for i in -2..=2i32 {
                     let t =
                         (from + Vec2::new(i as f32, j as f32) * step).clamp(Vec2::ZERO, Vec2::ONE);
-                    let d = map.eval(t).distance_squared(p);
+                    let d = surface.eval(t).distance_squared(p);
                     if d < best.1 {
                         *best = (t, d);
                     }
@@ -557,7 +562,7 @@ impl WarpUi {
         for j in 0..=8 {
             for i in 0..=8 {
                 let t = Vec2::new(i as f32 / 8.0, j as f32 / 8.0);
-                let d = map.eval(t).distance_squared(p);
+                let d = surface.eval(t).distance_squared(p);
                 if d < best.1 {
                     best = (t, d);
                 }

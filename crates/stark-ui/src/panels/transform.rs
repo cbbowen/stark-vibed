@@ -707,15 +707,19 @@ fn mesh_overlay(state: AppState, w: WarpUi, view: ViewTransform) -> Element {
     // cubic reads as a curve at any deformation.
     const SAMPLES: usize = 24;
     let mut lines = String::new();
+    // Once for the whole overlay rather than once per sample: this is
+    // `WARP_GRID * 2 * (SAMPLES + 1)` evaluations — 400 at an 8-wide grid — and
+    // it redraws every frame of a drag.
+    let surface = map.prepared();
     for k in 0..WARP_GRID {
         let t = k as f32 / (WARP_GRID - 1) as f32;
         lines += &polyline((0..=SAMPLES).map(|s| {
             let u = s as f32 / SAMPLES as f32;
-            to_screen(map.eval(Vec2::new(u, t)))
+            to_screen(surface.eval(Vec2::new(u, t)))
         }));
         lines += &polyline((0..=SAMPLES).map(|s| {
             let u = s as f32 / SAMPLES as f32;
-            to_screen(map.eval(Vec2::new(t, u)))
+            to_screen(surface.eval(Vec2::new(t, u)))
         }));
     }
 

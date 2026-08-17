@@ -156,7 +156,13 @@ impl DocumentFile {
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let body = postcard::to_allocvec(self).map_err(|e| DocError::Serialize(e.to_string()))?;
 
-        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
+        // `default` (level 6) rather than `best` (9). Saving is latency the artist
+        // waits through, and level 9 spends a large multiple of 6's time hunting
+        // longer matches for a fraction of a percent on data that is already this
+        // compressible — fitted paths are smooth, so the wins deflate finds here it
+        // finds early. The bundled PNGs, which dominate a large file, are
+        // incompressible either way.
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(&body)?;
         let compressed = encoder.finish()?;
 

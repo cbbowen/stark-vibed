@@ -274,10 +274,7 @@ impl WarpMap {
 
         // Deltas against the undeformed grid — the only thing the Hermite
         // arithmetic ever sees.
-        let deltas: Vec<Vec2> = (0..rows as u32)
-            .flat_map(|j| (0..self.cols).map(move |i| (i, j)))
-            .map(|(i, j)| self.points[(j * self.cols + i) as usize] - self.base(i, j))
-            .collect();
+        let deltas = self.deltas();
 
         let mut pts = Vec::with_capacity(nx * ny);
         let mut row_dev = vec![Vec2::ZERO; rows];
@@ -303,28 +300,49 @@ impl WarpMap {
         })
     }
 
-    /// The smooth surface at grid fraction `t ∈ [0,1]²` — what a frontend draws
-    /// its mesh curves with and inverts to find the grabbed point.
-    pub fn eval(&self, t: Vec2) -> Vec2 {
-        let (cols, rows) = (self.cols as usize, self.rows as usize);
-        let locate = |t: f32, n: usize| -> (usize, f32) {
-            let u = (t * (n - 1) as f32).clamp(0.0, (n - 1) as f32);
-            let k = (u.floor() as usize).min(n - 2);
-            (k, u - k as f32)
-        };
-        let (kx, fx) = locate(t.x, cols);
-        let (ky, fy) = locate(t.y, rows);
-        let deltas: Vec<Vec2> = (0..rows as u32)
+    /// Which control cell the grid fraction `t` falls in on one axis, and how far
+    /// through it — the shared half of [`eval`](Self::eval) and
+    /// [`basis`](Self::basis), which carried a verbatim copy each.
+    fn locate(t: f32, n: usize) -> (usize, f32) {
+        let u = (t * (n - 1) as f32).clamp(0.0, (n - 1) as f32);
+        let k = (u.floor() as usize).min(n - 2);
+        (k, u - k as f32)
+    }
+
+    /// The control points as **deviations** from the undeformed grid — the only
+    /// thing the Hermite arithmetic ever sees (see the module header).
+    ///
+    /// Hoisted out of [`eval`](Self::eval) so a caller evaluating the surface many
+    /// times can compute it once: see [`prepared`](Self::prepared).
+    fn deltas(&self) -> Vec<Vec2> {
+        (0..self.rows)
             .flat_map(|j| (0..self.cols).map(move |i| (i, j)))
             .map(|(i, j)| self.points[(j * self.cols + i) as usize] - self.base(i, j))
-            .collect();
-        let row_dev: Vec<Vec2> = (0..rows)
-            .map(|j| hermite_axis(&deltas[j * cols..(j + 1) * cols], kx, fx))
-            .collect();
-        let delta = hermite_axis(&row_dev, ky, fy);
-        let bx = lerp1(self.base(kx as u32, 0).x, self.base(kx as u32 + 1, 0).x, fx);
-        let by = lerp1(self.base(0, ky as u32).y, self.base(0, ky as u32 + 1).y, fy);
-        Vec2::new(bx, by) + delta
+            .collect()
+    }
+
+    /// The mesh with its delta grid computed once, for a caller that is about to
+    /// evaluate the surface many times (§16.9).
+    ///
+    /// **The frontend is that caller, in a loop.** Finding the grabbed point is a
+    /// search over the surface and drawing the mesh is one `eval` per point of
+    /// every curve, so a drag was rebuilding the whole delta grid — a `Vec`
+    /// allocation and `cols · rows` subtractions — per sample, tens to hundreds of
+    /// times a frame. Nothing about the answer changes between them.
+    pub fn prepared(&self) -> Prepared<'_> {
+        Prepared {
+            map: self,
+            deltas: self.deltas(),
+        }
+    }
+
+    /// The smooth surface at grid fraction `t ∈ [0,1]²` — what a frontend draws
+    /// its mesh curves with and inverts to find the grabbed point.
+    ///
+    /// Evaluating more than one point? [`prepared`](Self::prepared) hoists the
+    /// delta grid this rebuilds on every call.
+    pub fn eval(&self, t: Vec2) -> Vec2 {
+        self.prepared().eval(t)
     }
 
     /// Per-control-point influence at grid fraction `t`: how far the surface
@@ -333,13 +351,8 @@ impl WarpMap {
     /// this (§16.9).
     pub fn basis(&self, t: Vec2) -> Vec<f32> {
         let (cols, rows) = (self.cols as usize, self.rows as usize);
-        let locate = |t: f32, n: usize| -> (usize, f32) {
-            let u = (t * (n - 1) as f32).clamp(0.0, (n - 1) as f32);
-            let k = (u.floor() as usize).min(n - 2);
-            (k, u - k as f32)
-        };
-        let (kx, fx) = locate(t.x, cols);
-        let (ky, fy) = locate(t.y, rows);
+        let (kx, fx) = Self::locate(t.x, cols);
+        let (ky, fy) = Self::locate(t.y, rows);
         let cx = axis_basis(cols, kx, fx);
         let cy = axis_basis(rows, ky, fy);
         let mut out = Vec::with_capacity(cols * rows);
@@ -356,6 +369,40 @@ impl WarpMap {
     /// hull). `None` when the map is unusable.
     pub fn image_aabb(&self) -> Option<(Vec2, Vec2)> {
         self.lattice().map(|lat| lat.aabb())
+    }
+}
+
+/// A [`WarpMap`] with its delta grid already computed — see
+/// [`WarpMap::prepared`]. Borrows the map, so it cannot outlive an edit to it.
+pub struct Prepared<'a> {
+    map: &'a WarpMap,
+    deltas: Vec<Vec2>,
+}
+
+impl Prepared<'_> {
+    /// The smooth surface at grid fraction `t ∈ [0,1]²`.
+    ///
+    /// Bit-for-bit what [`WarpMap::eval`] computes — it *is* what `eval` computes,
+    /// which is what keeps the hoist from being a second implementation that could
+    /// drift from the first. §16.4's identity invariant is stated bitwise, so a
+    /// reordering here would be a real difference and not a rounding one.
+    pub fn eval(&self, t: Vec2) -> Vec2 {
+        let (cols, rows) = (self.map.cols as usize, self.map.rows as usize);
+        let (kx, fx) = WarpMap::locate(t.x, cols);
+        let (ky, fy) = WarpMap::locate(t.y, rows);
+        let row_dev: Vec<Vec2> = (0..rows)
+            .map(|j| hermite_axis(&self.deltas[j * cols..(j + 1) * cols], kx, fx))
+            .collect();
+        let delta = hermite_axis(&row_dev, ky, fy);
+        let base = self.map.base(kx as u32, 0);
+        let next_x = self.map.base(kx as u32 + 1, 0);
+        let bx = lerp1(base.x, next_x.x, fx);
+        let by = lerp1(
+            self.map.base(0, ky as u32).y,
+            self.map.base(0, ky as u32 + 1).y,
+            fy,
+        );
+        Vec2::new(bx, by) + delta
     }
 }
 
@@ -436,6 +483,35 @@ mod tests {
             "surface moved {:?}, wanted {delta:?}",
             after - before
         );
+    }
+
+    /// The hoist must be the **same arithmetic**, not merely a close one.
+    ///
+    /// §16.4's identity invariant is stated bitwise and the watertightness of the
+    /// rasterized quads rests on shared points agreeing to the bit, so a `Prepared`
+    /// that reassociated anything would be a second implementation quietly
+    /// disagreeing with the first — the class of drift this codebase keeps ruling
+    /// out with one shared formula (`grid_base`, `rect_corners`, `lerp2`).
+    #[test]
+    fn preparing_changes_nothing_about_the_answer() {
+        let (min, max) = rect();
+        let mut map = WarpMap::identity(min, max, 4, 4);
+        map.points[5] += Vec2::new(21.0, -13.0);
+        map.points[9] += Vec2::new(-7.0, 18.0);
+        let prepared = map.prepared();
+        for j in 0..=16 {
+            for i in 0..=16 {
+                let t = Vec2::new(i as f32 / 16.0, j as f32 / 16.0);
+                assert_eq!(prepared.eval(t), map.eval(t), "at {t:?}");
+            }
+        }
+        // Including the untouched mesh, whose every point must still be its base.
+        let flat = WarpMap::identity(min, max, 3, 5);
+        let flat_prepared = flat.prepared();
+        for i in 0..=8 {
+            let t = Vec2::splat(i as f32 / 8.0);
+            assert_eq!(flat_prepared.eval(t), flat.eval(t));
+        }
     }
 
     #[test]

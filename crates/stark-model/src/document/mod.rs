@@ -45,7 +45,7 @@ pub use selection::{MAX_SELECTION_TILES, SelectionMode, SelectionOp, SelectionSh
 pub use transform::{
     Homography, MAX_TRANSFORM_TILES, PerspectiveMap, TransformMap, affine_usable, rect_corners,
 };
-pub use warp::{Lattice, MAX_WARP_GRID, WarpMap, cell_point};
+pub use warp::{Lattice, MAX_WARP_GRID, Prepared, WarpMap, cell_point};
 
 /// The tiles a fill would write, as a canvas box — `None` when it would be unbounded.
 ///
