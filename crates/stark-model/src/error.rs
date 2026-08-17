@@ -42,6 +42,18 @@ pub enum DocError {
     #[error("document expands to more than {limit} bytes")]
     TooLarge { limit: u64 },
 
+    /// The document was recorded against a different tile stride than this build
+    /// addresses the canvas with (`CanvasMeta::tile_size`).
+    ///
+    /// A sibling of [`Self::UnsupportedVersion`] for [`Self::TooLarge`]'s reason:
+    /// the bytes are well-formed and well-understood, and what is wrong is that
+    /// they do not mean here what they meant where they were written. Every tile
+    /// boundary moves with the stride, so there is no partial reading to fall back
+    /// on — and the field was stored on every save and read by nothing until this
+    /// existed, so the mismatch used to load clean and render wrong.
+    #[error("document uses a tile size of {found}; this build addresses tiles of {expected}")]
+    TileSize { expected: u32, found: u32 },
+
     /// The document names a color space this build does not carry — today only
     /// [`ColorSpaceId::Mixbox`] in a build without the `mixbox` cargo feature.
     ///

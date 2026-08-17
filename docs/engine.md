@@ -258,6 +258,72 @@ third state (§14.8) without a version bump — and why the variant order is und
 test rather than under a comment, since getting it wrong reinterprets every
 affected action in every saved file with nothing able to notice.
 
+### 8.1 The version history
+
+Every bump and what forced it. Kept here rather than on `WIRE_VERSION` itself,
+where it had grown to a hundred and fifty lines hanging off a `const u32`: the
+record is worth having and is not worth reading every time someone hovers the
+constant. The constant cites this section.
+
+Three shapes of break recur, and it is worth knowing which one a change is
+before paying for it — **a field inserted into an existing variant** (postcard
+writes no names and no lengths, so everything after it misreads), **a variant
+reshaped or removed** (same, read from the other end), and **a meaning changed
+with the layout untouched** (nothing misdecodes; the file simply is not what an
+older reader thinks it is). Only the third is invisible to a decoder, which is
+why it still gets a version.
+
+| # | What changed | Shape |
+|---|---|---|
+| 2 | Layer groups (§14): `AddLayer`, `AddMatte`, `MoveLayer` each grew a `carrier` | field inserted |
+| 3 | Brush modulation (§6.2) and the deposition tooth (§6.4) on `BrushParams` | appended, but a reader still runs off the end of a brush and into the path behind it |
+| 4 | The ground became content-addressed (§6.4): `SurfaceId` went from `Flat \| Linen \| Gesso` to `Flat \| Image(AssetId)`, and `surfaces` joined `assets` | variant reshaped |
+| 5 | `StrokeRecord` dropped its `tool` | field removed — and worst placed, sitting second, so every number after it slid along |
+| 6 | The bundle may be incomplete (§8, §12.4) | **meaning only** |
+| 7 | `FillOp::color` became `paint: Parcel` (§22.4) | variant reshaped |
+| 8 | The matte took the same step: `MattePaint`, `MatteRegion::Everything`, and `AddMatte`'s anchor widened to `Place` (§15.4, §15.5) | reshaped + a free widening |
+| 9 | A fill's strength became one **coverage**, `opacity` (§18.0.4) | three fields out, one in |
+| 10 | `SelectionOp` gained an `opacity` (§6.8) | appended inside the struct |
+| 11 | `BlendMode::Drago` gained its bend `k` (§6.3) | payload on a variant that had none |
+| 12 | `BrushParams` gained `stretch`, `Modulations` a lane to drive it (§6.6) | appended |
+
+Four of them are worth more than a row.
+
+**4 — why a ground is a hash and not a name.** The tooth reads the ground, so a
+document's pixels depend on a height map the file did not carry and named only
+by a label. Open it on a build whose `Gesso.png` had been re-authored and the
+strokes came back different, silently, with nothing in the file able to notice. A
+file that bundles the ground it was painted on is a file that means one thing.
+
+**5 — why a removal is allowed to be this cheap.** The `tool` field could only
+ever hold `Brush` (the selection tools produce a `SelectionOp`, never a stroke)
+and nothing read it back, so it was a constant written into every stroke of every
+document. §1's rule about inert scaffolding applies to a field that has *stopped*
+meaning something just as much as to one that never did.
+
+**6 — walking part of 4 back, and what did not change.** A lean file needs the
+app that wrote it, where a version-5 file needed nothing; that is a real cost,
+and the reason `save_bytes` still writes everything unless told what may be left
+out. But version 4's problem was that a ground was a *label* resolved through a
+table. A ground is a content id now, the id stays in the file, and content that
+does not hash to it is refused rather than substituted — so the failure mode of a
+re-authored asset is a document that will not open, not one that opens wrong.
+
+**9 — why coverage replaced a height.** Coverage is `1 − exp(−K·opacity·height)`,
+so the brush's entire flow at full alpha covers 95% and no setting says "and the
+rest". Naming the *coverage* and inverting the law for the mass — `slab.wesl`'s
+inversion, already there for blended merges — makes 1 mean opaque and ½ mean
+half, and leaves a fill only one control to disagree with.
+
+**11 — the most dangerous shape on the list.** A version-10 `SetLayerBlend(id,
+Drago)` encodes as a bare variant index, so a version-11 reader takes the four
+bytes *after* it — the next action's — as the bend. The misread bend is a
+plausible float and the actions it eats are a plausible log, so nothing
+downstream can notice; the version is what refuses it. The parameter is on the
+variant rather than in a settings struct beside the mode because a `Multiply`
+layer has no `k` to store, and a mode cannot disagree with its own settings about
+which mode it is.
+
 ## 9. Testing — golden images
 
 Separating backend from frontend lets the engine be driven headlessly:

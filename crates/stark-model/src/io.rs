@@ -43,151 +43,18 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 const MAX_DECOMPRESSED: u64 = 256 << 20;
 /// On-disk schema version. Bump when the serialized layout changes.
 ///
-/// **2** — layer groups (§14). `AddLayer`, `AddMatte` and `MoveLayer`
-/// each grew a `carrier` field, and postcard writes a struct variant's fields in
-/// order with no names and no length, so a version-1 file's actions no longer
-/// decode. Every earlier schema change could be *appended* — a new enum variant
-/// takes the next index and leaves the old ones where they were — but a field in
-/// the middle of an existing variant cannot, and inventing a second `MoveLayer`
-/// to preserve the layout would have put the duplication this design exists to
-/// remove straight back into the log.
+/// **What each bump was and what forced it is §8.1**, which also names the three
+/// shapes a break comes in. It lived here, and had grown to a hundred and fifty
+/// lines hanging off a `const u32` — a record worth keeping and not worth reading
+/// every time someone hovers the constant (§1: cite sections, not line numbers).
 ///
-/// **3** — brush parameter modulation (§6.2) and the deposition tooth (§6.4).
-/// `BrushParams` grew a `modulation` field and a `tooth`. It is *appended*, but that is no help here for the reason above: postcard
-/// writes no field names and no length, so a version-2 reader would run straight off
-/// the end of a brush and into the path behind it. `#[serde(default)]` is likewise
-/// no help — it fills a field the *format* left out, which a self-describing format
-/// can signal and postcard cannot. A brush's parameters decide its pixels, so the
-/// mapping had to be in the record rather than in session state; the version is what
-/// that costs. Files are alpha (§19), so old ones are refused rather than migrated.
-///
-/// **4** — the canvas ground became content-addressed and is bundled (§6.4).
-/// `SurfaceId` was a closed enum of names (`Flat | Linen | Gesso`) and is now
-/// `Flat | Image(AssetId)`, so a version-3 file's `Linen` would decode as an
-/// `Image` whose hash is whatever bytes followed — and the new `surfaces` field
-/// pushes `assets` along besides. Both are the same break twice over.
-///
-/// It is worth what it costs. The tooth reads the ground, so a document's pixels
-/// depend on a height map the file did not carry and named only by a label: open it
-/// on a build whose `Gesso.png` had been re-authored and the strokes came back
-/// different, silently, with nothing in the file able to notice. A file that bundles
-/// the ground it was painted on is a file that means one thing.
-///
-/// **5** — `StrokeRecord` dropped its `tool` field. Removing one is the same
-/// break as inserting one, and worse placed: it sat second, so a version-4 file's
-/// `Tool` byte would be read as the first byte of the brush color and every
-/// number after it would be off by one. The version is what refuses that, and it
-/// is the whole reason a removal is allowed to be this cheap.
-///
-/// The field could only ever hold `Brush` — the selection tools produce a
-/// [`SelectionOp`](crate::document::SelectionOp), never a stroke — and nothing
-/// read it back. So it was a constant written into every stroke of every
-/// document, and §1's rule about inert scaffolding applies to a field that has
-/// stopped meaning something just as much as to one that never did. If a tool
-/// ever needs recording, it comes back with whatever distinguishes the tools,
-/// which is not this enum.
-/// **6** — the bundle may be incomplete (§8, §12.4). A file may now leave out
-/// content the opening app can produce itself, and the ids of the assets that
-/// ship with the app are exactly that: a document painted on the built-in gesso
-/// ground carried 2.8 MB of a height map every install already had.
-///
-/// Nothing about the *layout* changed, which is why this bump is about meaning
-/// rather than decoding. A version-5 file promises a complete bundle; a
-/// version-6 one does not, and a reader that does not know to resolve the
-/// difference would install what it found, replay, and deposit every stroke made
-/// on that ground through the flat stand-in — silently, into stored pixels
-/// (§6.4). Refusing the file is the only safe thing an older build can do, and
-/// the version is what lets it.
-///
-/// This walks back part of version 4's reasoning, so it is worth saying what has
-/// changed since and what has not. Version 4's problem was that a ground was a
-/// *label*: `Gesso` resolved through a table, and re-authoring `Gesso.png` gave
-/// you different pixels with nothing able to notice. That is not what this is. A
-/// ground is a content id now, the id stays in the file, and content that does
-/// not hash to it is refused rather than substituted — so the failure mode of a
-/// re-authored asset is a document that will not open, not one that opens wrong.
-///
-/// What is genuinely given up is self-containment: a lean file needs the app that
-/// wrote it, where a version-5 file needed nothing. That is a real cost and the
-/// reason `save_bytes` still writes everything unless it is told what may be left
-/// out.
-///
-/// **7** — `FillOp::color` became `paint: Parcel`, an enum whose first variant
-/// (`Solid`) carries the old four floats and whose second is the gradient
-/// parcel (§22.4). Postcard has no slot for the discriminant that now precedes
-/// them, so a version-6 `Fill` action misreads rather than degrades. The clean
-/// reshape was chosen over an appended `Option` deliberately: files are alpha
-/// (§19), the bump is the whole cost, and a fill's paint being one field is
-/// what every consumer of the op gets to rely on from here on.
-///
-/// **8** — the matte took the same step (§15.4, §22.4): `AddMatte`/
-/// `SetMatteColor`'s `color: [f32; 3]` became `paint: MattePaint`
-/// (`Solid` first, `Gradient` appended), `MatteRegion` gained `Everything`
-/// (append-safe on its own, but riding the same bump), and `AddMatte`'s anchor
-/// widened from `Option<LayerId>` to `Place` — the encoding-free widening
-/// `MoveLayer` demonstrated, here so a ground can be born at the bottom of the
-/// stack (§15.5). Same alpha-policy arithmetic as 7.
-///
-/// **9** — a fill's strength became one number, and a **coverage** (§18.0.4).
-/// `FillOp::height` — paint laid at full coverage, taken off the brush's flow —
-/// is now `opacity`, the visible alpha to cover with; the two per-unit opacities
-/// that used to ride alongside it went with the change, `Parcel::Solid`
-/// narrowing from RGBA to RGB and `GradientParcel` dropping its `opacity`.
-/// Three floats out and one in, all inside existing variants, so a version-8
-/// `Fill` action misreads from `paint` onward rather than degrading — which is
-/// the break the version refuses, the same shape as 5's.
-///
-/// The reason is that a height-and-two-opacities trio cannot express the thing people
-/// reach for. Coverage is `1 − exp(−K·opacity·height)`, so the brush's entire flow at
-/// full alpha covers 95% and no setting says "and the rest". Naming the *coverage*
-/// and inverting the law for the mass — `slab.wesl`'s inversion, already here for
-/// blended merges — makes 1 mean opaque and ½ mean half, and leaves a fill only
-/// one control to disagree with.
-///
-/// **10** — `SelectionOp` gained an `opacity` (§6.8): how strongly the region it
-/// lands is selected at all. Appended after `feather`, which is inside the
-/// existing struct rather than after it, so a version-9 op decodes the float that
-/// follows it as the opacity and everything after that is off — the same break as
-/// 5's, refused the same way.
-///
-/// It is the whole feature: the mask has always been a coverage *field*, so
-/// scaling what an op writes into it makes a half-strength selection a
-/// half-strength brush, fill and transform, with no consumer changed. The two
-/// things that did have to change are the ones that read the mask as a shape
-/// rather than as a weight — the marching ants, which now contour at half of the
-/// selection's own peak (`Selection::level`), and inversion, which reflects
-/// through that peak so the complement of a region selected at 0.4 is its outside
-/// at 0.4 rather than at full strength.
-///
-/// **11** — `BlendMode::Drago` gained its curve bend, `k` (§6.3): the first
-/// parameter a blend mode carries, and the first payload on a variant that had
-/// none. A version-10 `SetLayerBlend(id, Drago)` encodes as a bare variant index,
-/// so a version-11 reader takes the four bytes *after* it — the next action's — as
-/// the bend, and everything from there on is off. The most dangerous shape of
-/// break in this list, since the misread bend is a plausible float and the actions
-/// it eats are a plausible log; refused by the version rather than detected later.
-///
-/// The parameter is on the variant rather than in a settings struct beside the
-/// mode, which is what makes the break worth taking on the alpha policy (§19): a
-/// `Multiply` layer has no `k` to store, and a mode cannot disagree with its own
-/// settings about which mode it is. Everything that carries a `BlendMode` — the
-/// action, the footprint, the patch, the merge's agreement rule, the shader
-/// uniform — took it without moving.
-/// **12** — `BrushParams` gained a `stretch` and `Modulations` a lane to drive it
-/// (§6.6): how far the tip's footprint is drawn out along the axis the brush already
-/// faces. Both are *appended*, and both break for version 2's reason rather than
-/// version 5's — postcard writes no field names and no length, so a version-11 reader
-/// runs off the end of the brush and takes the next action's bytes as the rest of it.
-/// The modulation lane is the worse of the two: it is an `Option`, so the byte that
-/// follows a version-11 brush decides whether four more are eaten.
-///
-/// It is one number and not two because the stretch axis is the orientation's. A tip
-/// elongates along the way it faces, so `OrientationSource` — which a round tip
-/// carried inertly until now — is what aims it, and pointing a `Tilt` modulation at
-/// the knob is the pencil: lean the pen and the contact patch draws out along the
-/// lean. Nothing else on the wire moved, and no shape asset had to: a swept integral
-/// of a stretched footprint is the unstretched one read at another slice of the same
-/// prefix-τ volume, so the brush reads the volume it always bound.
+/// What matters at this line is only the rule the history is evidence for:
+/// postcard writes a struct's fields **in order**, with no names and no lengths,
+/// and an enum by **variant index**. So appending a variant is free, appending a
+/// field to a variant is not, and a file written to an older schema has to be
+/// *refused* rather than decoded into whatever its bytes happen to mean now —
+/// which is what `rejects_an_older_schema_rather_than_misreading_it` pins. Files
+/// are alpha (§19), so old ones are refused rather than migrated.
 const WIRE_VERSION: u32 = 12;
 
 /// Build identity, recorded so cross-build replay differences are explainable
@@ -209,6 +76,20 @@ impl Default for BuildId {
 /// Canvas-wide metadata needed to reproduce the document (§8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanvasMeta {
+    /// The tile stride the log was recorded against, in canvas px
+    /// ([`TILE_SIZE`](crate::geom::TILE_SIZE)).
+    ///
+    /// **Checked on load, which is what makes it worth writing.** It was recorded
+    /// on every save and read by nothing at all — so a file from a build with a
+    /// different stride loaded silently and rendered wrong, which is precisely the
+    /// reproducibility question the field was added to answer. Every tile boundary
+    /// moves with this number: a stroke's footprint quantizes against it (§12.6),
+    /// an apron sits one texel inside it (§6.4), and a fill's written tiles are
+    /// derived from it. None of that degrades gracefully.
+    ///
+    /// A constant rather than something a document may choose. It is stored so the
+    /// file can be *refused* by a build that would read it differently, exactly as
+    /// the wire version is — see [`DocError::TileSize`](crate::DocError::TileSize).
     pub tile_size: u32,
     pub color_space: ColorSpaceId,
     /// The ground the log *starts* from — the initial condition of the empty
@@ -318,6 +199,17 @@ impl DocumentFile {
         let file: Self =
             postcard::from_bytes(&body).map_err(|e| DocError::Deserialize(e.to_string()))?;
 
+        // A sibling of the version check above, and refused for the same reason:
+        // the bytes decode perfectly and simply do not mean what this build would
+        // read them as. Every tile boundary in the document moves with this number
+        // (see `CanvasMeta::tile_size`), so there is nothing to degrade to.
+        if file.canvas.tile_size != TILE_SIZE {
+            return Err(DocError::TileSize {
+                expected: TILE_SIZE,
+                found: file.canvas.tile_size,
+            });
+        }
+
         Ok(file)
     }
 }
@@ -391,6 +283,25 @@ mod tests {
         let bytes = sample_doc().to_bytes().expect("encode");
         assert!((bytes.len() as u64) < MAX_DECOMPRESSED / 1000);
         assert!(DocumentFile::from_bytes(&bytes).is_ok());
+    }
+
+    /// A stride this build does not address is **refused**, not loaded.
+    ///
+    /// The field was written on every save and read by nothing, so this file used
+    /// to open clean — and then quantize every footprint, apron and fill against a
+    /// grid the log was not recorded on.
+    #[test]
+    fn rejects_a_document_recorded_on_another_tile_grid() {
+        let mut doc = sample_doc();
+        doc.canvas.tile_size = TILE_SIZE * 2;
+        let bytes = doc.to_bytes().expect("encode");
+        assert!(matches!(
+            DocumentFile::from_bytes(&bytes),
+            Err(DocError::TileSize { expected, found })
+                if expected == TILE_SIZE && found == TILE_SIZE * 2
+        ));
+        // …and this build's own stride is of course accepted.
+        assert!(DocumentFile::from_bytes(&sample_doc().to_bytes().expect("encode")).is_ok());
     }
 
     #[test]
