@@ -1,5 +1,5 @@
 # iroh transport for shared multi-user drawings (§12.4). Adapts the
-# wire (gossip-broadcast live actions + a catch-up/asset ALPN) to stark-core's
+# wire (gossip-broadcast live actions + a catch-up/asset ALPN) to stark-engine's
 # network-agnostic ReplicatedTimeline; pulled in by the frontend, or omitted.
 [package]
 name = "stark-net"
@@ -21,11 +21,11 @@ webrtc = ["dep:iroh-webrtc-transport", "dep:iroh-base", "dep:anyhow", "iroh/unst
 # Pure forwarding: this crate has no Mixbox code of its own, but it depends on the
 # engine with `default-features = false`, so without this it would pin the engine's
 # Mixbox space *off* for every frontend — including one that wants it.
-mixbox = ["stark-core/mixbox"]
+mixbox = ["stark-engine/mixbox"]
 default = ["webrtc", "mixbox"]
 
 [dependencies]
-stark-core = { path = "../stark-core", default-features = false }
+stark-engine = { path = "../stark-engine", default-features = false }
 iroh = "1"
 # The live-edit wire: epidemic broadcast on the session topic. Rides the same
 # endpoint as everything else — which is what the WebRTC custom-transport

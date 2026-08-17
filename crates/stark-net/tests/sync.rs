@@ -1,16 +1,16 @@
 //! End-to-end: two engines converge over *real* iroh endpoints on loopback
 //! (§12.4, build-order step 12) — no relays, no external services.
-//! This is the wire-level counterpart of stark-core's `tests/collab.rs`.
+//! This is the wire-level counterpart of stark-engine's `tests/collab.rs`.
 
 use std::time::Duration;
 
-use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_core::document::{BrushParams, BrushShape, Tool};
-use stark_core::engine::headless_engine;
-use stark_core::geom::{Extent2, Vec2};
-use stark_core::path::DEFAULT_TOLERANCE;
-use stark_core::peer::{GestureFrame, PeerFrame, StrokeHead};
-use stark_core::{Engine, RgbaImage, SurfaceId};
+use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
+use stark_engine::document::{BrushParams, BrushShape, Tool};
+use stark_engine::engine::headless_engine;
+use stark_engine::geom::{Extent2, Vec2};
+use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_engine::peer::{GestureFrame, PeerFrame, StrokeHead};
+use stark_engine::{Engine, RgbaImage, SurfaceId};
 use stark_net::{AssetNeed, CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket};
 
 const SIZE: Extent2 = Extent2 {
@@ -60,7 +60,7 @@ fn identical(a: &RgbaImage, b: &RgbaImage) -> bool {
 
 /// Local options that promise this client can produce `ids` without the network
 /// — what the frontend passes from its build-time manifest of bundled assets.
-fn promising(ids: &[stark_core::AssetId]) -> NetOptions {
+fn promising(ids: &[stark_engine::AssetId]) -> NetOptions {
     NetOptions {
         resolvable: ids.to_vec(),
         ..NetOptions::local()
@@ -657,7 +657,7 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
 
     // The joiner says it can resolve the gesso ground itself — which, being a
     // ground that ships with the app, it can.
-    let stark_core::SurfaceId::Image(promised) = gesso else {
+    let stark_engine::SurfaceId::Image(promised) = gesso else {
         panic!("an imported ground is an image");
     };
     let Joined {

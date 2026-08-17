@@ -48,9 +48,9 @@ use crate::platform::{capture_pointer, layer_boxes, select_all};
 use crate::preview;
 use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch, use_obs};
-use stark_core::command::{DocCommand, PeerCommand};
-use stark_core::document::{BlendMode, DRAGO_K_RANGE, Place};
-use stark_core::{LayerId, LayerInfo};
+use stark_engine::command::{DocCommand, PeerCommand};
+use stark_engine::document::{BlendMode, DRAGO_K_RANGE, Place};
+use stark_engine::{LayerId, LayerInfo};
 
 #[component]
 pub fn LayerPanel() -> Element {
@@ -996,7 +996,7 @@ pub fn LayerRow(
 }
 
 /// The collaborators whose selected layer is `id`.
-fn peers_on(state: AppState, id: stark_core::LayerId) -> Vec<PeerInfo> {
+fn peers_on(state: AppState, id: stark_engine::LayerId) -> Vec<PeerInfo> {
     state
         .collab
         .peers

@@ -1,7 +1,7 @@
 // The color-dynamics noise lookup (§6.2).
 //
 // **The GPU does not generate noise, it reads it.** Every field is baked once on
-// the CPU into a small tileable `Rgba8Snorm` texture (`stark-core`'s `noise.rs`),
+// the CPU into a small tileable `Rgba8Snorm` texture (`stark-engine`'s `noise.rs`),
 // because that is what keeps it bit-identical across GPUs, runs and peers — the
 // same determinism contract as the sRGB↔Oklab constants (§6.5). So the whole of
 // this module is one texture sample and a scale.

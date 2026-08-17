@@ -7,9 +7,9 @@
 
 use std::time::Duration;
 
-use stark_core::DocumentFile;
-use stark_core::document::{Action, ActionId, ActionKind, ActorId, LayerId};
-use stark_core::peer::PeerFrame;
+use stark_engine::DocumentFile;
+use stark_engine::document::{Action, ActionId, ActionKind, ActorId, LayerId};
+use stark_engine::peer::PeerFrame;
 use stark_net::{CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket};
 
 fn ticket_of(session: &CollabSession) -> SessionTicket {
@@ -26,7 +26,7 @@ fn frame(seq: u64, name: &str) -> PeerFrame {
         seq,
         name: Some(name.to_string()),
         active_layer: LayerId(0),
-        cursor: Some(stark_core::Vec2::new(12.0, 34.0)),
+        cursor: Some(stark_engine::Vec2::new(12.0, 34.0)),
         gesture: None,
         leaving: false,
     }
@@ -71,7 +71,7 @@ async fn presence_reaches_peers_attributed_to_its_sender() {
     let (actor, got) = next_presence(&mut events).await;
     assert_eq!(actor, host.actor_id(), "attributed to the sender");
     assert_eq!(got.name.as_deref(), Some("Ada"));
-    assert_eq!(got.cursor, Some(stark_core::Vec2::new(12.0, 34.0)));
+    assert_eq!(got.cursor, Some(stark_engine::Vec2::new(12.0, 34.0)));
 }
 
 /// Presence is **not part of the document**: it never enters the mirror, so a peer

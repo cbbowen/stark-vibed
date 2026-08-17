@@ -8,7 +8,7 @@
 //!
 //! It waits *here*, beside the gossip receive loop, rather than inside it. What
 //! an action needs ordering against is the content it names and nothing else:
-//! [`merge_remote`](stark_core::Engine::merge_remote) is idempotent by id and
+//! [`merge_remote`](stark_engine::Engine::merge_remote) is idempotent by id and
 //! order-insensitive, and an action landing behind newer ones makes the timeline
 //! resync, which replays them against what it changed (§12.6). Waiting inside
 //! the loop — which is what this replaces — stalled every other peer's actions,
@@ -46,8 +46,8 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use iroh_blobs::Hash;
-use stark_core::AssetId;
-use stark_core::document::{Action, ActionId};
+use stark_engine::AssetId;
+use stark_engine::document::{Action, ActionId};
 use tokio::sync::mpsc;
 
 use crate::mirror::Mirror;
@@ -245,8 +245,8 @@ impl Waitlist {
 /// less exactly.
 #[cfg(test)]
 mod tests {
-    use stark_core::document::{ActionId, ActionKind, ActorId};
-    use stark_core::{AssetId, DocumentFile};
+    use stark_engine::document::{ActionId, ActionKind, ActorId};
+    use stark_engine::{AssetId, DocumentFile};
 
     use super::*;
 

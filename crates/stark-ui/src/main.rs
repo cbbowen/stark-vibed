@@ -72,9 +72,9 @@ use platform::{canvas_by_id, capture_pointer};
 use render::CANVAS_ID;
 use settings::SettingsModal;
 use slots::SlotOverlay;
-use stark_core::ColorSpaceId;
-use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
-use stark_core::document::SelectionOp;
+use stark_engine::ColorSpaceId;
+use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
+use stark_engine::document::SelectionOp;
 use state::{AppState, dispatch, dispatch_quiet, resize, update_brush, use_obs};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
@@ -93,7 +93,7 @@ fn main() {
 }
 
 /// Point `tracing` at both of the places this app reads it: the browser console, and
-/// the timing histograms behind [`TimingModal`] (`stark_core::timing`, §7.1).
+/// the timing histograms behind [`TimingModal`] (`stark_engine::timing`, §7.1).
 ///
 /// Two layers over one registry rather than `tracing_wasm::set_as_global_default`,
 /// and the **filter is the whole reason** it is written out here.
@@ -113,9 +113,9 @@ fn install_tracing() {
     use tracing_subscriber::registry::Registry;
 
     let console = tracing_wasm::WASMLayer::new(tracing_wasm::WASMLayerConfig::default())
-        .with_filter(stark_core::timing::TimingFilter::<false>);
+        .with_filter(stark_engine::timing::TimingFilter::<false>);
     let subscriber = Registry::default()
-        .with(stark_core::timing::layer())
+        .with(stark_engine::timing::layer())
         .with(console);
     // A second install would be a second set of histograms with the first still
     // collecting, so it is refused rather than papered over — but `main` runs once
@@ -503,7 +503,7 @@ fn Canvas() -> Element {
             .any(|l| l.id == o.active_layer && l.is_paintable());
         (paintable, o.tool)
     });
-    let (paintable, tool) = look().unwrap_or((false, stark_core::document::Tool::Brush));
+    let (paintable, tool) = look().unwrap_or((false, stark_engine::document::Tool::Brush));
     // Alt arms the eyedropper over the brush, and the cursor says so before it is
     // used — the only thing that makes a modifier binding discoverable. Not over a
     // selection tool, where alt already means "subtract from the selection"
@@ -800,7 +800,7 @@ fn TowStringOverlay() -> Element {
     // slack string drapes rather than plunges. Screen-down whatever the canvas
     // rotation, because the string hangs from the hand, not from the painting.
     let sag = (slack * 0.4).min(t.rope * 0.2);
-    let mid = (t.tip + t.target) * 0.5 + stark_core::Vec2::new(0.0, sag);
+    let mid = (t.tip + t.target) * 0.5 + stark_engine::Vec2::new(0.0, sag);
     let d = format!(
         "M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}",
         t.tip.x, t.tip.y, mid.x, mid.y, t.target.x, t.target.y

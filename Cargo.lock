@@ -6558,7 +6558,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "stark-core"
+name = "stark-engine"
 version = "0.0.0"
 dependencies = [
  "blake3",
@@ -6606,7 +6606,7 @@ dependencies = [
  "rpds",
  "serde",
  "stark-assetid",
- "stark-core",
+ "stark-engine",
  "stark-testdata",
  "thiserror 2.0.20",
  "tokio",
@@ -6646,7 +6646,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stark-assetid",
- "stark-core",
+ "stark-engine",
  "stark-net",
  "tracing",
  "tracing-subscriber",

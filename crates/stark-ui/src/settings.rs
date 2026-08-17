@@ -34,7 +34,7 @@ use crate::collab::CollabPhase;
 use crate::icons::{self, icon};
 use crate::prefs;
 use crate::state::{AppState, dispatch};
-use stark_core::command::ViewCommand;
+use stark_engine::command::ViewCommand;
 
 /// The settings dialog, opened from the command rail's ⚙ button and dismissed by
 /// Done or by clicking the backdrop (as the other dialogs are).
@@ -58,7 +58,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
         .obs
         .read()
         .as_ref()
-        .map_or(stark_core::DEFAULT_HISTORY_BUDGET, |o| o.history_budget);
+        .map_or(stark_engine::DEFAULT_HISTORY_BUDGET, |o| o.history_budget);
     // Keyed on the *session*, not on whether anyone is currently here, so the note
     // under the peer-outline row does not flicker as collaborators come and go.
     let shared = (state.collab.phase)() == CollabPhase::Shared;
@@ -310,16 +310,16 @@ mod tests {
 
     /// **The engine's default must land on a notch**, or the slider opens showing a
     /// value the app is not using and moving it one step is a jump rather than a
-    /// nudge. The ladder and `stark-core`'s constant are set independently, so this
+    /// nudge. The ladder and `stark-engine`'s constant are set independently, so this
     /// is the only thing holding them together.
     #[test]
     fn the_default_budget_is_a_notch_on_the_ladder() {
-        let at = budget_step(stark_core::DEFAULT_HISTORY_BUDGET);
+        let at = budget_step(stark_engine::DEFAULT_HISTORY_BUDGET);
         assert_eq!(
             BUDGET_STEPS[at].0,
-            stark_core::DEFAULT_HISTORY_BUDGET,
+            stark_engine::DEFAULT_HISTORY_BUDGET,
             "the engine default {} sits between notches, nearest below is {}",
-            stark_core::DEFAULT_HISTORY_BUDGET,
+            stark_engine::DEFAULT_HISTORY_BUDGET,
             BUDGET_STEPS[at].1,
         );
         assert_eq!(BUDGET_STEPS[at].1, "2 GB");

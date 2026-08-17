@@ -23,7 +23,7 @@ exclude = [
 # `dx serve --platform web` or `cargo build -p stark-ui --target wasm32-unknown-unknown`.
 default-members = [
     "crates/stark-assetid",
-    "crates/stark-core",
+    "crates/stark-engine",
     "crates/stark-net",
     "crates/stark-shaders",
 ]
@@ -56,13 +56,13 @@ flate2 = "1"
 # (tracing-wasm) so engine + UI traces show up in the browser devtools.
 #
 # `release_max_level_info` is why every timing span is `info_span!` and not the
-# `trace_span!` its verbosity would suggest (`stark_core::timing`): a release build
+# `trace_span!` its verbosity would suggest (`stark_engine::timing`): a release build
 # compiles `debug!` and `trace!` away, and instrumentation the shipped app does not
 # carry cannot answer a question about the shipped app.
 tracing = { version = "0.1", features = ["release_max_level_info"] }
-# The timing histograms behind `stark_core::timing` (§7.1) — one per span name,
+# The timing histograms behind `stark_engine::timing` (§7.1) — one per span name,
 # read for its quantiles. `default-features = false` at the consumer, because the
-# `sync` feature's cross-thread drain cannot run in a browser; see stark-core's
+# `sync` feature's cross-thread drain cannot run in a browser; see stark-engine's
 # manifest for what that means.
 hdrhistogram = { version = "7", default-features = false }
 # Composing that layer with the console one. `default-features = false` because all
@@ -74,13 +74,13 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "std",
 ] }
 
-# stark-shaders is consumed by stark-core.
+# stark-shaders is consumed by stark-engine.
 stark-assetid = { path = "crates/stark-assetid" }
 # `default-features = false` is load-bearing: `stark-shaders`'s own default turns its
 # `mixbox` feature on, and cargo unifies features across the graph — so without this,
 # a `--no-default-features` workspace build would still compile the two Mixbox
-# shaders and transpile the vendored GLSL, because stark-core would go on asking for
-# them regardless of its own feature. `stark-core/mixbox` forwards it instead.
+# shaders and transpile the vendored GLSL, because stark-engine would go on asking for
+# them regardless of its own feature. `stark-engine/mixbox` forwards it instead.
 stark-shaders = { path = "crates/stark-shaders", default-features = false }
 nalgebra = "0.35"
 

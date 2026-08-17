@@ -21,7 +21,7 @@
 //! the brush editor's gallery and can be named by a default preset.
 
 use dioxus::prelude::*;
-use stark_core::document::BrushShape;
+use stark_engine::document::BrushShape;
 
 use crate::render::Renderer;
 use crate::state::AppState;
@@ -98,7 +98,7 @@ pub fn select(state: AppState, name: &str) {
 /// Every built-in paired with the id it resolved to — `None` for one still in
 /// flight. For the gallery, which draws a card per built-in and highlights the
 /// one the brush is holding; `read`, so the cards light up when the fetch lands.
-pub fn resolved(state: AppState) -> Vec<(&'static BuiltinShape, Option<stark_core::AssetId>)> {
+pub fn resolved(state: AppState) -> Vec<(&'static BuiltinShape, Option<stark_engine::AssetId>)> {
     let renderer = state.renderer.read();
     SHAPES
         .iter()

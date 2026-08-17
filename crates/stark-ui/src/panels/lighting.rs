@@ -8,8 +8,8 @@ use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, with_engine_quiet};
 use crate::widgets::Slider;
 use dioxus::dioxus_core::spawn_forever;
-use stark_core::command::ViewCommand;
-use stark_core::{EnvironmentId, MediaParams, SurfaceId};
+use stark_engine::command::ViewCommand;
+use stark_engine::{EnvironmentId, MediaParams, SurfaceId};
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
 /// stay out of the wasm binary (§6.6). The engine is handed the bytes.
@@ -66,7 +66,7 @@ pub fn LightingPanel() -> Element {
             MediaParams::default(),
             SurfaceId::default(),
             EnvironmentId::default(),
-            stark_core::document::DEFAULT_BACKGROUND,
+            stark_engine::document::DEFAULT_BACKGROUND,
         )
     });
     // Each catalog ground with the id it resolved to — `None` while its height map

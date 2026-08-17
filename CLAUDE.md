@@ -65,7 +65,7 @@ crates/
                    and canvas grounds. No GPU, so a build script can compute one
                    — which is what lets the frontend know a bundled asset's id
                    before fetching it. The file format's identity contract (§19)
-  stark-core/      the engine — no UI, no windowing; compiles to wasm
+  stark-engine/      the engine — no UI, no windowing; compiles to wasm
     document/      versioned state: actions, timeline, layers, selection, footprints
     gpu/           tile pool, stroke renderer, compositor, readback
   stark-shaders/   WESL sources, the build step that links them, and the host
@@ -99,9 +99,9 @@ cargo check -p stark-ui --target wasm32-unknown-unknown
 cargo clippy --workspace --all-targets --no-default-features \
   --features stark-net/webrtc -- -D warnings
 dx serve --web -p stark-ui                  # run it (needs a WebGPU browser)
-cargo bench -p stark-core --bench stroke    # criterion; the dynamics perf gate
+cargo bench -p stark-engine --bench stroke    # criterion; the dynamics perf gate
 # where a stroke's time goes, phase by phase (§7.1) — seconds, not minutes
-cargo run --release -p stark-core --example stroke_bench
+cargo run --release -p stark-engine --example stroke_bench
 ```
 
 Both perf tools print a **phase table** per configuration (§7.1), and the same rows

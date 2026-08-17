@@ -10,8 +10,8 @@
 //! miniature renders through ([`ExportPlan::view`]), so the overview cannot come to
 //! disagree with the picture a file would hold.
 //!
-//! [`Engine::export_plan`]: stark_core::Engine::export_plan
-//! [`ExportPlan::view`]: stark_core::ExportPlan::view
+//! [`Engine::export_plan`]: stark_engine::Engine::export_plan
+//! [`ExportPlan::view`]: stark_engine::ExportPlan::view
 //!
 //! # It is a surface, not an image
 //!
@@ -49,9 +49,9 @@ use crate::input::{elem_xy, shortest_turn, snap_quarter};
 use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch};
-use stark_core::command::ViewCommand;
-use stark_core::geom::{Extent2, Vec2};
-use stark_core::{ExportScale, LayerId};
+use stark_engine::command::ViewCommand;
+use stark_engine::geom::{Extent2, Vec2};
+use stark_engine::{ExportScale, LayerId};
 
 /// The largest miniature, in CSS px. The width is the panel's inner width (see
 /// `.panel-stack` / `.panel` in `stark.css`), so a landscape piece reaches both
@@ -88,7 +88,7 @@ struct Overview {
 ///
 /// `None` before the engine exists, before the panel's canvas has been attached to
 /// it, or when the overview rect has no area to render — a frame dragged to nothing,
-/// which [`export_plan`](stark_core::Engine::export_plan) refuses; the panel then
+/// which [`export_plan`](stark_engine::Engine::export_plan) refuses; the panel then
 /// keeps showing whatever it last drew rather than blinking.
 ///
 /// **One plan, asked for what is actually wanted.** Asking for a 1× plan first, purely
@@ -137,7 +137,7 @@ fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
 /// rather than sticking to an edge and claiming you are still on the painting. What
 /// the stylesheet contributes is a minimum size, so a viewport that is a fraction
 /// of a percent of a large canvas is still something you can see.
-fn viewport_style(over: Overview, view: stark_core::ViewTransform) -> String {
+fn viewport_style(over: Overview, view: stark_engine::ViewTransform) -> String {
     let span = (over.max - over.min).max(Vec2::splat(1e-3));
     // The viewport's own size in canvas px — the rect *before* it is turned, so this
     // is the screen rectangle over the zoom rather than the bound it sweeps.
@@ -185,7 +185,7 @@ const TURN_FOLLOW_PX: f32 = 64.0;
 /// `None` when the drag has gone nowhere, which asks for nothing. The snap is applied
 /// to the *target* rather than to the eased result, so a long pull lands exactly
 /// square while a short one still eases smoothly toward that.
-fn turn_to(view: stark_core::ViewTransform, v: Vec2, was: f32) -> Option<f32> {
+fn turn_to(view: stark_engine::ViewTransform, v: Vec2, was: f32) -> Option<f32> {
     // The miniature is an upright, uniformly scaled picture of canvas space, so a
     // direction in its pixels *is* a direction in canvas px — no mapping needed, and
     // the pull length stays in the screen units the feel constants are written in.

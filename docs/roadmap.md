@@ -56,7 +56,7 @@ format change plus the passes that carry it — cheap to redo, and cheaper than
 storing a zero until then. ("Tooth-revealed canvas" is now the deposition gate,
 §6.4 — built, though it does not yet *fill* as paint piles into the weave.)
 
-Each step is independently testable through `stark-core` before any UI exists,
+Each step is independently testable through `stark-engine` before any UI exists,
 which is exactly the leverage the frontend/backend split was meant to provide.
 
 ### Nice-to-have (not scheduled)

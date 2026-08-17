@@ -522,7 +522,7 @@ fn parse_entry(line: &str) -> Option<(usize, Wearable)> {
 
 #[cfg(test)]
 mod tests {
-    use stark_core::document::BrushParams;
+    use stark_engine::document::BrushParams;
 
     use super::*;
 

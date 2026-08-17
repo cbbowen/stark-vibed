@@ -39,10 +39,10 @@
 use dioxus::prelude::*;
 
 use crate::state::{AppState, dispatch};
-use stark_core::LayerId;
-use stark_core::command::{DocCommand, ViewCommand};
-use stark_core::document::{BlendMode, FillOp, Filter, MattePaint, TransformMap};
-use stark_core::geom::Vec2;
+use stark_engine::LayerId;
+use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::document::{BlendMode, FillOp, Filter, MattePaint, TransformMap};
+use stark_engine::geom::Vec2;
 
 /// One control's pair: the command that shows `T` on the canvas without logging
 /// it, and the command that lays it down.

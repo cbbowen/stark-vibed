@@ -936,7 +936,7 @@ let group = desc::bind_group_for(device, label, &bgl, DEPOSIT, BINDINGS, resid,
                                  |slot| /* the view or buffer for that slot */);
 ```
 
-`crates/stark-core/src/gpu/stroke/dynamics/slots.rs` is the worked example.
+`crates/stark-engine/src/gpu/stroke/dynamics/slots.rs` is the worked example.
 
 **A list is a membership statement and nothing more.** What kind of thing occupies
 a slot, what format a storage texture is, how wide a uniform is, and whether the

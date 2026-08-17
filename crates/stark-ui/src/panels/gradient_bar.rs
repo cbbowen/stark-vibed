@@ -28,9 +28,9 @@ use crate::layout::chrome_class;
 use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, GradientAxisKind, GradientTarget, GradientUi};
-use stark_core::Gradient;
-use stark_core::document::{FillOp, GradientAxis, GradientParcel, MattePaint};
-use stark_core::geom::Vec2;
+use stark_engine::Gradient;
+use stark_engine::document::{FillOp, GradientAxis, GradientParcel, MattePaint};
+use stark_engine::geom::Vec2;
 
 /// Enter the mode for a **fill of the selection**. The target layer is the
 /// transform's choice — the active layer if paintable, else the topmost
@@ -69,7 +69,7 @@ pub fn begin_fill(state: AppState) {
 /// library's current ramp with a vertical axis across its rect (or the view,
 /// for a ground) — a graded sky's default, previewed immediately so entering
 /// the mode already shows something to adjust.
-pub fn begin_matte(state: AppState, layer: stark_core::LayerId, paint: &MattePaint) {
+pub fn begin_matte(state: AppState, layer: stark_engine::LayerId, paint: &MattePaint) {
     // One composing mode at a time (`crate::modes`), as for the fill above.
     crate::modes::leave(state);
     let (gradient, kind, drag) = match paint {
@@ -106,7 +106,7 @@ pub fn begin_matte(state: AppState, layer: stark_core::LayerId, paint: &MattePai
 
 /// The rect a fresh matte axis spans: the matte's own, or the view for a
 /// ground that has none.
-fn default_axis_rect(state: AppState, layer: stark_core::LayerId) -> (Vec2, Vec2) {
+fn default_axis_rect(state: AppState, layer: stark_engine::LayerId) -> (Vec2, Vec2) {
     let obs = state.obs.read();
     let matte_rect = obs
         .as_ref()
@@ -160,8 +160,8 @@ pub fn refresh(state: AppState) {
 /// on a matte target) alongside the two that could. Carried together the mismatch
 /// is not a case to handle; it is a value that cannot be built.
 enum Laid {
-    Fill(stark_core::LayerId, FillOp),
-    Matte(stark_core::LayerId, MattePaint),
+    Fill(stark_engine::LayerId, FillOp),
+    Matte(stark_engine::LayerId, MattePaint),
 }
 
 impl Laid {
@@ -384,7 +384,7 @@ fn axis_chrome(
     kind: GradientAxisKind,
     from: Vec2,
     to: Vec2,
-    view: stark_core::ViewTransform,
+    view: stark_engine::ViewTransform,
 ) -> Element {
     let a = view.canvas_to_screen(from);
     let b = view.canvas_to_screen(to);

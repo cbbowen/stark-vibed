@@ -11,11 +11,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::platform::Canvas;
-use stark_core::AssetNeed;
-use stark_core::command::ViewCommand;
-use stark_core::document::Tool;
-use stark_core::geom::Extent2;
-use stark_core::{
+use stark_engine::AssetNeed;
+use stark_engine::command::ViewCommand;
+use stark_engine::document::Tool;
+use stark_engine::geom::Extent2;
+use stark_engine::{
     ColorSpaceId, Engine, EnvironmentId, GpuContext, InputCommand, InputSample, ObservableState,
     SurfaceId, ViewTransform,
 };
@@ -50,7 +50,7 @@ pub struct Renderer {
     /// its bytes are fetched (§6.6), keyed by the name that module gives it.
     /// A short list looked up by name a handful of times per frame at most —
     /// a `Vec` beats a map, and keeps gallery order.
-    builtins: Vec<(&'static str, stark_core::AssetId)>,
+    builtins: Vec<(&'static str, stark_engine::AssetId)>,
     /// The canvas grounds bundled with the app (`crate::grounds`), each imported
     /// once its height map is fetched (§6.4), keyed by the name that module gives
     /// it.
@@ -94,29 +94,29 @@ struct Overview {
     canvas: Canvas,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    /// Pass A's attachments, kept between refreshes — see [`stark_core::Offscreen`].
+    /// Pass A's attachments, kept between refreshes — see [`stark_engine::Offscreen`].
     /// This render repeats for as long as the panel is open, so it is the one that has
     /// to reuse them; step 2 of this design is what makes a refresh allocate nothing.
-    targets: stark_core::Offscreen,
+    targets: stark_engine::Offscreen,
 }
 
 /// A collaborator, as the chrome draws them (§17.4).
 ///
-/// Deliberately not the engine's [`Peer`](stark_core::Peer): that carries the
+/// Deliberately not the engine's [`Peer`](stark_engine::Peer): that carries the
 /// in-flight gesture, which is a whole stroke path and is the *canvas's* business,
 /// not the DOM's. What the chrome needs is who is here, where they are, and where
 /// they are working.
 ///
-/// Kept out of [`ObservableState`](stark_core::ObservableState) for a related
+/// Kept out of [`ObservableState`](stark_engine::ObservableState) for a related
 /// reason: `obs` drives the entire component tree and is refreshed after every
 /// command, while this changes thirty times a second whenever anybody moves.
 #[derive(Clone, PartialEq, Debug)]
 pub struct PeerInfo {
-    pub actor: stark_core::document::ActorId,
+    pub actor: stark_engine::document::ActorId,
     pub name: String,
     pub color: [f32; 3],
-    pub active_layer: stark_core::LayerId,
-    pub cursor: Option<stark_core::Vec2>,
+    pub active_layer: stark_engine::LayerId,
+    pub cursor: Option<stark_engine::Vec2>,
 }
 
 impl PeerInfo {
@@ -190,7 +190,7 @@ impl Renderer {
     }
 
     /// The in-flight tow, for the string overlay (§6.11).
-    pub fn tow_string(&self) -> Option<stark_core::TowString> {
+    pub fn tow_string(&self) -> Option<stark_engine::TowString> {
         self.engine.tow_string()
     }
 
@@ -296,14 +296,14 @@ impl Renderer {
     /// for one: it is the app that owns the assets it is declining to carry.
     pub fn save_bytes_resolvable(
         &self,
-        resolvable: &[stark_core::AssetId],
-    ) -> stark_core::Result<Vec<u8>> {
+        resolvable: &[stark_engine::AssetId],
+    ) -> stark_engine::Result<Vec<u8>> {
         self.engine.save_bytes_resolvable(resolvable)
     }
 
     /// What `file` names that neither it carries nor this engine already holds —
     /// settle it before [`Renderer::load_document`].
-    pub fn unresolved_content(&self, file: &stark_core::DocumentFile) -> Vec<AssetNeed> {
+    pub fn unresolved_content(&self, file: &stark_engine::DocumentFile) -> Vec<AssetNeed> {
         self.engine.unresolved_content(file)
     }
 
@@ -311,16 +311,16 @@ impl Renderer {
     ///
     /// Fails, leaving the open document untouched, if anything the log names is still
     /// unresolved — so the settle above is not advisory.
-    pub fn load_document(&mut self, file: &stark_core::DocumentFile) -> stark_core::Result<()> {
+    pub fn load_document(&mut self, file: &stark_engine::DocumentFile) -> stark_engine::Result<()> {
         self.engine.load_document(file)
     }
 
     /// What exporting would produce, without producing it (§15.6).
     pub fn export_plan(
         &self,
-        frame: Option<stark_core::LayerId>,
-        scale: stark_core::ExportScale,
-    ) -> stark_core::Result<stark_core::ExportPlan> {
+        frame: Option<stark_engine::LayerId>,
+        scale: stark_engine::ExportScale,
+    ) -> stark_engine::Result<stark_engine::ExportPlan> {
         self.engine.export_plan(frame, scale)
     }
 
@@ -335,15 +335,15 @@ impl Renderer {
     /// several-hundred-megabyte pair for the rest of the session.
     pub fn export(
         &mut self,
-        frame: Option<stark_core::LayerId>,
-        scale: stark_core::ExportScale,
-        background: stark_core::Background,
-        content: stark_core::Rendered,
-    ) -> stark_core::Result<
-        impl std::future::Future<Output = stark_core::Result<stark_core::RgbaImage>> + use<>,
+        frame: Option<stark_engine::LayerId>,
+        scale: stark_engine::ExportScale,
+        background: stark_engine::Background,
+        content: stark_engine::Rendered,
+    ) -> stark_engine::Result<
+        impl std::future::Future<Output = stark_engine::Result<stark_engine::RgbaImage>> + use<>,
     > {
         self.engine.export(
-            &mut stark_core::Offscreen::default(),
+            &mut stark_engine::Offscreen::default(),
             frame,
             scale,
             background,
@@ -393,7 +393,7 @@ impl Renderer {
             canvas,
             surface,
             config,
-            targets: stark_core::Offscreen::default(),
+            targets: stark_engine::Offscreen::default(),
         });
     }
 
@@ -407,7 +407,7 @@ impl Renderer {
     ///
     /// Synchronous, which is the whole point of the surface: there is no readback to
     /// await, so a refresh is one render and a present.
-    pub fn paint_overview(&mut self, plan: &stark_core::ExportPlan) -> bool {
+    pub fn paint_overview(&mut self, plan: &stark_engine::ExportPlan) -> bool {
         use wgpu::CurrentSurfaceTexture::{Suboptimal, Success};
         let Some(ov) = self.overview.as_mut() else {
             return false;
@@ -432,8 +432,8 @@ impl Renderer {
             &mut ov.targets,
             &target,
             plan.view(),
-            stark_core::Background::Substrate,
-            stark_core::Rendered::Committed,
+            stark_engine::Background::Substrate,
+            stark_engine::Rendered::Committed,
         );
         self.engine.gpu().queue.present(frame);
         true
@@ -447,8 +447,8 @@ impl Renderer {
     /// renderer it still holds borrowed.
     pub fn pick_color(
         &mut self,
-        at: stark_core::Vec2,
-        options: stark_core::PickOptions,
+        at: stark_engine::Vec2,
+        options: stark_engine::PickOptions,
     ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
         self.engine.pick_color(at, options)
     }
@@ -457,14 +457,14 @@ impl Renderer {
     /// The same borrow bargain as [`Renderer::pick_color`].
     pub fn pick_gradient(
         &mut self,
-        path: &[stark_core::Vec2],
-        options: stark_core::PickOptions,
-    ) -> impl std::future::Future<Output = Option<stark_core::Gradient>> + use<> {
+        path: &[stark_engine::Vec2],
+        options: stark_engine::PickOptions,
+    ) -> impl std::future::Future<Output = Option<stark_engine::Gradient>> + use<> {
         self.engine.pick_gradient(path, options)
     }
 
     /// A bundled shape's content id, once its bytes have been imported.
-    pub fn builtin(&self, name: &str) -> Option<stark_core::AssetId> {
+    pub fn builtin(&self, name: &str) -> Option<stark_engine::AssetId> {
         self.builtins
             .iter()
             .find(|(n, _)| *n == name)
@@ -475,15 +475,15 @@ impl Renderer {
     // session glue in `collab.rs`. ---
 
     /// Convert the current document into a shared one, authored as `identity`.
-    pub fn start_collaboration(&mut self, identity: impl Into<stark_core::peer::Identity>) {
+    pub fn start_collaboration(&mut self, identity: impl Into<stark_engine::peer::Identity>) {
         self.engine.start_collaboration(identity);
     }
 
     /// Replace the document with a joined session's log.
     pub fn join_collaboration(
         &mut self,
-        file: &stark_core::DocumentFile,
-        identity: impl Into<stark_core::peer::Identity>,
+        file: &stark_engine::DocumentFile,
+        identity: impl Into<stark_engine::peer::Identity>,
     ) {
         self.engine.join_collaboration(file, identity);
     }
@@ -494,17 +494,17 @@ impl Renderer {
     }
 
     /// Snapshot the document (full shared log + referenced assets).
-    pub fn document_file(&self) -> stark_core::DocumentFile {
+    pub fn document_file(&self) -> stark_engine::DocumentFile {
         self.engine.document_file()
     }
 
     /// Integrate one remote action; returns whether it was new.
-    pub fn merge_remote(&mut self, action: stark_core::document::Action) -> bool {
+    pub fn merge_remote(&mut self, action: stark_engine::document::Action) -> bool {
         self.engine.merge_remote(action)
     }
 
     /// Drain locally-committed actions awaiting broadcast.
-    pub fn take_outbox(&mut self) -> Vec<stark_core::document::Action> {
+    pub fn take_outbox(&mut self) -> Vec<stark_engine::document::Action> {
         self.engine.take_outbox()
     }
 
@@ -522,12 +522,12 @@ impl Renderer {
     /// Drain this client's presence latch, and expire peers gone quiet
     /// (§17.5). The frame is `None` when there is nothing new to
     /// say; `repaint` reports that the expiry took paint off the canvas.
-    pub fn take_presence(&mut self, now: f64) -> stark_core::PresenceTick {
+    pub fn take_presence(&mut self, now: f64) -> stark_engine::PresenceTick {
         self.engine.take_presence(now)
     }
 
     /// The farewell frame, so peers drop this client at once on leave.
-    pub fn leaving_presence(&mut self) -> stark_core::PeerFrame {
+    pub fn leaving_presence(&mut self) -> stark_engine::PeerFrame {
         self.engine.leaving_presence()
     }
 
@@ -539,8 +539,8 @@ impl Renderer {
     /// own only advances when the presence pump has something to drain.
     pub fn merge_presence(
         &mut self,
-        actor: stark_core::document::ActorId,
-        frame: stark_core::PeerFrame,
+        actor: stark_engine::document::ActorId,
+        frame: stark_engine::PeerFrame,
         now: f64,
     ) -> bool {
         self.engine.merge_presence(actor, frame, now)
@@ -569,19 +569,19 @@ impl Renderer {
 
     /// Import a user's brush-shape image, returning its content id — the
     /// error surfaces to the import UI rather than a log line.
-    pub fn import_brush_id(&self, png_bytes: &[u8]) -> Result<stark_core::AssetId, String> {
+    pub fn import_brush_id(&self, png_bytes: &[u8]) -> Result<stark_engine::AssetId, String> {
         self.engine
             .import_brush(png_bytes)
             .map_err(|e| e.to_string())
     }
 
     /// The canonical PNG bytes of one imported brush asset, if loaded.
-    pub fn asset_bytes(&self, id: stark_core::AssetId) -> Option<Vec<u8>> {
+    pub fn asset_bytes(&self, id: stark_engine::AssetId) -> Option<Vec<u8>> {
         self.engine.asset_bytes(id)
     }
 
     /// Every imported brush asset, to seed a session's asset mirror.
-    pub fn all_asset_bytes(&self) -> Vec<(stark_core::AssetId, Vec<u8>)> {
+    pub fn all_asset_bytes(&self) -> Vec<(stark_engine::AssetId, Vec<u8>)> {
         self.engine.all_asset_bytes()
     }
 
@@ -666,7 +666,7 @@ impl Renderer {
         // spent. On WebGPU it should be free — `get_current_texture` never blocks
         // there — so a row that grows is a finding rather than a cost.
         let frame = {
-            stark_core::timing::span!("frame.acquire");
+            stark_engine::timing::span!("frame.acquire");
             match self.surface.get_current_texture() {
                 Success(frame) | Suboptimal(frame) => frame,
                 // Timeout/Outdated/Lost/etc.: skip; the next command repaints.
@@ -689,7 +689,7 @@ impl Renderer {
         // A no-op on the web, where the canvas is presented by the page — measured
         // anyway, and cheaply, because "present is free here" is a claim about wgpu's
         // WebGPU backend that a version bump could quietly stop being true.
-        stark_core::timing::span!("frame.present");
+        stark_engine::timing::span!("frame.present");
         self.engine.gpu().queue.present(frame);
     }
 }
@@ -791,7 +791,7 @@ impl Renderer {
     }
 
     /// The expensive half of this renderer's engine, on its own
-    /// (`stark_core::EngineShared`) — the device, the compiled pipelines, the brush
+    /// (`stark_engine::EngineShared`) — the device, the compiled pipelines, the brush
     /// assets and the decoded grounds.
     ///
     /// **It outlives this renderer's borrow, which is the point.** A consumer that
@@ -799,7 +799,7 @@ impl Renderer {
     /// the whole live `Renderer` to reach these, so it could not be built until one
     /// existed and had to be created lazily inside the loop that used it. This clones
     /// for a handful of refcount bumps and can simply be kept.
-    pub fn engine_shared(&self) -> stark_core::EngineShared {
+    pub fn engine_shared(&self) -> stark_engine::EngineShared {
         self.engine.shared()
     }
 }

@@ -66,7 +66,7 @@ future rather than being an `async fn`.
 ### 7.1 Timing — where a frame's time goes
 
 A phase of the pipeline is **a span, and the span's name is its row**. That is the
-whole model (`stark_core::timing`):
+whole model (`stark_engine::timing`):
 
 ```rust
 fn flush_live(&mut self) {

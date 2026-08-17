@@ -41,7 +41,7 @@ const KEY_BOOT: &str = "stark.identity.boot";
 #[derive(Clone)]
 pub struct ClientIdentity {
     pub secret: SecretKey,
-    /// Which run of this identity the process is; see [`stark_core::peer::Identity`].
+    /// Which run of this identity the process is; see [`stark_engine::peer::Identity`].
     pub boot: u64,
 }
 

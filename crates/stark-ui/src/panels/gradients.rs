@@ -20,7 +20,7 @@ use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::platform::capture_pointer;
 use crate::state::AppState;
-use stark_core::geom::Vec2;
+use stark_engine::geom::Vec2;
 
 /// How far the pointer must move, in **screen** px, before the trace keeps
 /// another point. Screen rather than canvas px because it is decimation of the
@@ -206,7 +206,7 @@ pub fn GradientTraceOverlay() -> Element {
 /// The rubber line: the trace so far, in screen space — a dark casing under a
 /// dashed light core so it reads over any painting, with a dot on the anchor
 /// end. A plain function chosen by an `if`, like the transform's visuals.
-fn trace_line(points: &[Vec2], view: stark_core::ViewTransform) -> Element {
+fn trace_line(points: &[Vec2], view: stark_engine::ViewTransform) -> Element {
     let mut d = String::new();
     for (i, p) in points.iter().enumerate() {
         let s = view.canvas_to_screen(*p);

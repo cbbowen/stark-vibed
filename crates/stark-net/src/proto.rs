@@ -18,9 +18,9 @@ use std::sync::Mutex;
 use bytes::Bytes;
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
-use stark_core::AssetId;
-use stark_core::document::{Action, ActionId};
-use stark_core::peer::PeerFrame;
+use stark_engine::AssetId;
+use stark_engine::document::{Action, ActionId};
+use stark_engine::peer::PeerFrame;
 
 use crate::mirror::{Mirror, Served};
 
@@ -120,7 +120,7 @@ pub(crate) enum Wire {
 /// stream's full contents).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum Request {
-    /// The whole session: a [`DocumentFile`](stark_core::DocumentFile) container.
+    /// The whole session: a [`DocumentFile`](stark_engine::DocumentFile) container.
     Snapshot,
     /// The session, minus the content the joiner says it can resolve without help
     /// — the ids of the assets that ship with its build (§12.4).
@@ -224,8 +224,8 @@ pub(crate) use iroh_wire::{CollabProto, request};
 /// would not go near it. No GPU: this is about the wire.
 #[cfg(test)]
 mod tests {
-    use stark_core::DocumentFile;
-    use stark_core::document::{Action, ActionId, ActionKind, ActorId};
+    use stark_engine::DocumentFile;
+    use stark_engine::document::{Action, ActionId, ActionKind, ActorId};
 
     use super::*;
     use crate::backend::{self, Bound};
@@ -273,8 +273,8 @@ mod tests {
             boot: 3,
             seq: 9,
             name: Some("someone".into()),
-            active_layer: stark_core::document::LayerId(0),
-            cursor: Some(stark_core::Vec2::new(1.0, 2.0)),
+            active_layer: stark_engine::document::LayerId(0),
+            cursor: Some(stark_engine::Vec2::new(1.0, 2.0)),
             gesture: None,
             leaving: false,
         };

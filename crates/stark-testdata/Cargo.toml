@@ -1,6 +1,6 @@
-# Recorded pointer input for stark-core's fitter tests. A separate crate so 57 KB
+# Recorded pointer input for stark-engine's fitter tests. A separate crate so 57 KB
 # of stroke literals stay out of the engine's public API and out of the wasm the
-# browser downloads — they are a dev-dependency of stark-core, not part of it.
+# browser downloads — they are a dev-dependency of stark-engine, not part of it.
 [package]
 name = "stark-testdata"
 version = "0.0.0"

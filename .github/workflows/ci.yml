@@ -80,9 +80,9 @@ jobs:
       # off, the vendored crate is not among the crates that get compiled.
       - name: The vendored crate is not in the build
         run: |
-          if cargo tree -p stark-core --no-default-features -e normal | grep -qi mixbox; then
+          if cargo tree -p stark-engine --no-default-features -e normal | grep -qi mixbox; then
             echo "the mixbox crate is still in the dependency graph without its feature" >&2
-            cargo tree -p stark-core --no-default-features -e normal | grep -i mixbox >&2
+            cargo tree -p stark-engine --no-default-features -e normal | grep -i mixbox >&2
             exit 1
           fi
 

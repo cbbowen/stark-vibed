@@ -8,7 +8,7 @@ use crate::platform::select_all;
 use crate::presets;
 use crate::state::{AppState, update_brush};
 use crate::widgets::Slider;
-use stark_core::document::{BrushShape, OrientationSource};
+use stark_engine::document::{BrushShape, OrientationSource};
 
 /// The smallest brush radius (`BrushParams::radius`). A tip finer than a canvas
 /// pixel has nothing left to narrow.

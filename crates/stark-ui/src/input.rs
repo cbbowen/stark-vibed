@@ -1,5 +1,5 @@
 //! Pointer and keyboard input: turning DOM events into
-//! [`InputCommand`](stark_core::InputCommand)s
+//! [`InputCommand`](stark_engine::InputCommand)s
 //! (§4).
 
 use dioxus::dioxus_core::spawn_forever;
@@ -17,12 +17,12 @@ use crate::platform::{
 };
 use crate::slots::{self, Grip};
 use crate::state::{AppState, BrushRing, Dwell, PickScope, TowUi, dispatch, update_brush};
-use stark_core::InputSample;
-use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
-use stark_core::document::SelectionOp;
-use stark_core::document::{ShapeAction, Tool};
-use stark_core::geom::{Vec2, ViewTransform};
-use stark_core::{PickOptions, PickSource};
+use stark_engine::InputSample;
+use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
+use stark_engine::document::SelectionOp;
+use stark_engine::document::{ShapeAction, Tool};
+use stark_engine::geom::{Vec2, ViewTransform};
+use stark_engine::{PickOptions, PickSource};
 
 /// How close to a quarter turn a turn has to land to be pulled onto it, radians
 /// (about 5°).
@@ -1355,7 +1355,7 @@ pub fn elem_xy(e: &Event<PointerData>) -> Vec2 {
 ///
 /// Not a preference — an estimate of the device's grain, which is what the fitter
 /// needs in order to tell jitter from detail (see
-/// [`PathFitter::with_tolerance`](stark_core::path::PathFitter::with_tolerance)). A
+/// [`PathFitter::with_tolerance`](stark_engine::path::PathFitter::with_tolerance)). A
 /// mouse walks the screen in whole *physical* pixels, so `1 / devicePixelRatio` CSS
 /// px is its floor. A pen or a finger comes off a digitizer that resolves well below
 /// the screen it sits under, so what limits those is the hand rather than the API;

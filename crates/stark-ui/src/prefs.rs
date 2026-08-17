@@ -47,7 +47,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::state::{AppState, dispatch};
-use stark_core::command::ViewCommand;
+use stark_engine::command::ViewCommand;
 
 /// One key, namespaced like the shape and preset libraries'; versioned so a
 /// future format change can migrate rather than mis-parse.
@@ -92,7 +92,7 @@ impl Default for Prefs {
             // would be two answers to what Stark does out of the box. `load_engine`
             // pushes this back in at startup, so the engine's constant has to be
             // what a browser that has never stored anything gets.
-            history_budget: stark_core::DEFAULT_HISTORY_BUDGET,
+            history_budget: stark_engine::DEFAULT_HISTORY_BUDGET,
         }
     }
 }
@@ -120,7 +120,7 @@ impl Prefs {
                 .obs
                 .peek()
                 .as_ref()
-                .map_or(stark_core::DEFAULT_HISTORY_BUDGET, |o| o.history_budget),
+                .map_or(stark_engine::DEFAULT_HISTORY_BUDGET, |o| o.history_budget),
         }
     }
 

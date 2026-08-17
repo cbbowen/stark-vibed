@@ -8,7 +8,7 @@
 //!
 //! **The playhead is not stored here.** Scrubbing moves the engine timeline's
 //! applied/withheld split — the very split undo and redo move one step at a time
-//! ([`Timeline::seek`](stark_core::document::Timeline::seek)) — so the mode adds
+//! ([`Timeline::seek`](stark_engine::document::Timeline::seek)) — so the mode adds
 //! no second notion of "where we are" that could disagree with the undo stack.
 //! Two consequences fall out rather than being arranged:
 //!
@@ -28,7 +28,7 @@ use crate::icons::{self, icon, label};
 use crate::layout::chrome_class;
 use crate::platform::sleep_ms;
 use crate::state::{AppState, dispatch};
-use stark_core::command::DocCommand;
+use stark_engine::command::DocCommand;
 
 /// Actions per second at 1×. Eight is about the rate at which a painting reads as
 /// being *made* rather than as a slideshow of states: fast enough that a session's

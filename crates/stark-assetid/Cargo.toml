@@ -1,6 +1,6 @@
 # What an asset *id* is, with nothing that renders one (§6.6, §6.4, §19).
 #
-# Split out of stark-core so it can be depended on without wgpu: an id has to be
+# Split out of stark-engine so it can be depended on without wgpu: an id has to be
 # computable by a build script, which is what lets the app know the id of a
 # bundled ground before its bytes have been fetched. That it is also the file
 # format's identity contract is the better reason — see the crate docs.

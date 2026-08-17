@@ -35,7 +35,7 @@
 
 use dioxus::prelude::*;
 
-use stark_core::document::{
+use stark_engine::document::{
     BrushDynamics, BrushParams, BrushShape, ColorDynamics, ModSource, Modulation, Modulations,
     NoiseKind, OrientationSource,
 };

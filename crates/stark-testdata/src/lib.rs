@@ -3,10 +3,10 @@
 //! Synthetic curves are smooth and evenly sampled in ways real pen input is not,
 //! and the fitter's behaviour turns on exactly those details: the spacing of
 //! reports carries the pen's speed, which the density policy and the freezing both
-//! key off. These are captured from the app (stark-core's `debug-unfrozen` feature
+//! key off. These are captured from the app (stark-engine's `debug-unfrozen` feature
 //! logs a finished stroke's raw samples as a pasteable Rust literal).
 //!
-//! A crate of its own rather than a module of stark-core: as `pub mod testdata` it
+//! A crate of its own rather than a module of stark-engine: as `pub mod testdata` it
 //! was part of the engine's public API and compiled into every build, including the
 //! wasm the browser downloads. Here it is a dev-dependency, so it reaches the tests
 //! and nothing else.

@@ -39,10 +39,10 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
-use stark_core::command::{DocCommand, ViewCommand};
-use stark_core::document::{BrushParams, FillOp, SelectionShape, Tool};
-use stark_core::geom::{Extent2, Vec2};
-use stark_core::{
+use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::document::{BrushParams, FillOp, SelectionShape, Tool};
+use stark_engine::geom::{Extent2, Vec2};
+use stark_engine::{
     Background, Engine, EnvironmentId, InputSample, MediaParams, Offscreen, Rendered, SurfaceId,
     ViewTransform,
 };
@@ -83,14 +83,14 @@ pub struct ThumbState {
     /// The device and compiled pipelines to build that rig on, published once the
     /// main renderer lands (`state::publish_renderer`).
     ///
-    /// **Held rather than fetched**, which is what `stark_core::EngineShared` is for.
+    /// **Held rather than fetched**, which is what `stark_engine::EngineShared` is for.
     /// The generator used to reach into `state.renderer` and borrow the whole live
     /// renderer — its canvas surface, its document, its in-flight gesture — for the
     /// length of building a thumbnail rig, purely to get at the device. So it could
     /// not run before a renderer existed and had to check for one every time round
     /// the loop. This is a handful of refcount bumps and outlives whoever published
     /// it.
-    pub shared: Signal<Option<stark_core::EngineShared>>,
+    pub shared: Signal<Option<stark_engine::EngineShared>>,
     /// Whether the generator task is running — at most one at a time.
     pub busy: Signal<bool>,
 }

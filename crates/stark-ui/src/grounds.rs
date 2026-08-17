@@ -28,8 +28,8 @@
 
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
-use stark_core::SurfaceId;
-use stark_core::command::DocCommand;
+use stark_engine::SurfaceId;
+use stark_engine::command::DocCommand;
 
 use crate::render::Renderer;
 use crate::state::{AppState, dispatch};
@@ -139,7 +139,7 @@ pub async fn resolve(r: &mut Renderer, name: &'static str) -> Option<SurfaceId> 
 /// Fetch *then* open, because the id is what `new_document` is given and the id
 /// comes out of the image. A ground that cannot be fetched leaves the document on
 /// `Flat` — smooth, and honestly so, rather than claiming a weave it has not got.
-pub async fn open_default(r: &mut Renderer, color_space: stark_core::ColorSpaceId) {
+pub async fn open_default(r: &mut Renderer, color_space: stark_engine::ColorSpaceId) {
     let surface = resolve(r, DEFAULT_GROUND).await.unwrap_or_default();
     r.new_document(color_space, surface);
 }

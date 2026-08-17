@@ -33,10 +33,10 @@ use crate::layout::chrome_class;
 use crate::panels::color::OklabPicker;
 use crate::preview;
 use crate::state::{AppState, dispatch};
-use stark_core::command::{DocCommand, PeerCommand};
-use stark_core::document::{MattePaint, MatteRegion, Place};
-use stark_core::geom::Vec2;
-use stark_core::{LayerId, LayerInfo, MatteInfo};
+use stark_engine::command::{DocCommand, PeerCommand};
+use stark_engine::document::{MattePaint, MatteRegion, Place};
+use stark_engine::geom::Vec2;
+use stark_engine::{LayerId, LayerInfo, MatteInfo};
 
 /// The frame's default fill: a near-black mat board. Dark reads as "not the
 /// piece" against almost any painting, which is what a crop scrim is for.
@@ -83,7 +83,7 @@ fn matched_aspect((w, h): (f32, f32)) -> &'static str {
 /// is what makes exactly one row highlighted at a time a *consequence* rather than
 /// a rule to enforce — and it means a frame that is removed, undone, or replaced
 /// by a document load stops being composed with no invalidation to remember.
-pub fn selected_frame_of(o: &stark_core::ObservableState) -> Option<(LayerInfo, MatteInfo)> {
+pub fn selected_frame_of(o: &stark_engine::ObservableState) -> Option<(LayerInfo, MatteInfo)> {
     o.layers
         .iter()
         .find(|l| l.id == o.active_layer)
@@ -143,7 +143,7 @@ fn default_rect(state: AppState) -> (Vec2, Vec2) {
 /// (`crate::files`), the navigator's overview, and the framing a document load does.
 /// Each still supplies its own *policy* around it — the dialog prefers whatever
 /// frame the artist has selected, since that is the one being composed.
-pub(crate) fn piece_frame(o: &stark_core::ObservableState) -> Option<LayerId> {
+pub(crate) fn piece_frame(o: &stark_engine::ObservableState) -> Option<LayerId> {
     o.layers
         .iter()
         .rev()
@@ -152,9 +152,9 @@ pub(crate) fn piece_frame(o: &stark_core::ObservableState) -> Option<LayerId> {
 }
 
 /// The painted content's canvas-space bounds, inset to the populated tiles.
-pub(crate) fn content_rect(o: &stark_core::ObservableState) -> Option<(Vec2, Vec2)> {
+pub(crate) fn content_rect(o: &stark_engine::ObservableState) -> Option<(Vec2, Vec2)> {
     let (min, max) = o.bounds.tile_range()?;
-    let t = stark_core::geom::TILE_SIZE as f32;
+    let t = stark_engine::geom::TILE_SIZE as f32;
     Some((
         Vec2::new(min.x as f32 * t, min.y as f32 * t),
         Vec2::new((max.x + 1) as f32 * t, (max.y + 1) as f32 * t),
@@ -163,7 +163,7 @@ pub(crate) fn content_rect(o: &stark_core::ObservableState) -> Option<(Vec2, Vec
 
 /// What the viewport currently shows, in canvas px, inset a little so a frame made
 /// from it is visibly a frame rather than flush with the window edge.
-pub(crate) fn view_rect(o: &stark_core::ObservableState) -> (Vec2, Vec2) {
+pub(crate) fn view_rect(o: &stark_engine::ObservableState) -> (Vec2, Vec2) {
     // The canvas-space bound of what is on screen — which under a turned canvas
     // covers a little more than the window really shows, and that is the right way
     // round for "frame what I am looking at".

@@ -45,8 +45,8 @@ use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
 use crate::preview;
 use crate::state::AppState;
-use stark_core::document::TransformMap;
-use stark_core::geom::{Vec2, ViewTransform};
+use stark_engine::document::TransformMap;
+use stark_engine::geom::{Vec2, ViewTransform};
 
 /// Half-width of the rim's / an edge's grab band, screen px — converted to
 /// canvas px by the zoom, so it is equally grabbable at any magnification.
@@ -224,7 +224,7 @@ fn switch_family(state: AppState, ui: TransformUi, to: Family) {
                 _ => unreachable!("only the affine family reaches here with an affine map"),
             };
             let corners =
-                stark_core::document::rect_corners(rect.0, rect.1).map(|c| a.transform_point2(c));
+                stark_engine::document::rect_corners(rect.0, rect.1).map(|c| a.transform_point2(c));
             let lo = corners.iter().fold(corners[0], |m, p| m.min(*p));
             let hi = corners.iter().fold(corners[0], |m, p| m.max(*p));
             (lo, hi)

@@ -14,7 +14,7 @@
       "Bash(cargo check *)",
       "Read(//c/Users/chris/.cargo/registry/src/**)",
       "Bash(dx build *)",
-      "Bash(rm -f crates/stark-core/tests/golden/*.png)",
+      "Bash(rm -f crates/stark-engine/tests/golden/*.png)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(git --no-pager diff *)",
       "Bash(git --no-pager log *)",

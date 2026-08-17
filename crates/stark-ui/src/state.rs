@@ -21,10 +21,10 @@ use crate::collab;
 use crate::gesture::TransformUi;
 use crate::prefs::Prefs;
 use crate::render::Renderer;
-use stark_core::command::ViewCommand;
-use stark_core::document::{BrushParams, LayerId};
-use stark_core::geom::Vec2;
-use stark_core::{InputCommand, ObservableState};
+use stark_engine::command::ViewCommand;
+use stark_engine::document::{BrushParams, LayerId};
+use stark_engine::geom::Vec2;
+use stark_engine::{InputCommand, ObservableState};
 
 /// Create one of [`AppState`]'s signals, owned by the **root** scope rather than by
 /// the component that declares it.
@@ -261,13 +261,13 @@ pub struct GuideEdit {
     pub index: usize,
     /// World axes held fixed under the orbit drag: one lock constrains the
     /// drag to turning about that axis, two pin the frame entirely
-    /// ([`PerspectiveGuide::dragged`](stark_core::PerspectiveGuide::dragged)).
+    /// ([`PerspectiveGuide::dragged`](stark_engine::PerspectiveGuide::dragged)).
     pub locked: [bool; 3],
 }
 
 /// The drag-and-hold drawing assist's signals (§6.9).
 ///
-/// The engine owns what a hold *means* ([`GestureCommand::Hold`](stark_core::command::GestureCommand));
+/// The engine owns what a hold *means* ([`GestureCommand::Hold`](stark_engine::command::GestureCommand));
 /// what lives here is the other half — noticing that the pointer has stopped, which is
 /// gesture feel and needs a clock the engine deliberately does not have (§7).
 #[derive(Clone, Copy)]
@@ -507,7 +507,7 @@ pub enum GradientTarget {
     /// click replaces it deliberately.
     Matte {
         layer: LayerId,
-        gradient: stark_core::Gradient,
+        gradient: stark_engine::Gradient,
     },
 }
 
@@ -520,11 +520,11 @@ pub enum GradientAxisKind {
 
 impl GradientUi {
     /// The axis the current drag composes, or `None` before the first drag.
-    pub fn axis(&self) -> Option<stark_core::document::GradientAxis> {
+    pub fn axis(&self) -> Option<stark_engine::document::GradientAxis> {
         let (from, to) = self.drag?;
         Some(match self.kind {
-            GradientAxisKind::Linear => stark_core::document::GradientAxis::Linear { from, to },
-            GradientAxisKind::Radial => stark_core::document::GradientAxis::Radial {
+            GradientAxisKind::Linear => stark_engine::document::GradientAxis::Linear { from, to },
+            GradientAxisKind::Radial => stark_engine::document::GradientAxis::Radial {
                 center: from,
                 radius: from.distance(to),
             },
@@ -537,7 +537,7 @@ impl GradientUi {
 ///
 /// None of this is the *playhead* — that lives in the engine's timeline, where undo
 /// and redo already move it, and is read back through
-/// [`Engine::scrub_range`](stark_core::Engine::scrub_range). A copy here is exactly
+/// [`Engine::scrub_range`](stark_engine::Engine::scrub_range). A copy here is exactly
 /// the copy that would go stale the moment a stroke, an undo or a load moved the
 /// history underneath it.
 #[derive(Clone, Copy)]
@@ -564,7 +564,7 @@ pub struct TimelineState {
 /// the two flags that say where in the gesture we are.
 ///
 /// The options live here rather than in the engine because nothing in the engine
-/// reads them between calls — [`Engine::pick_color`](stark_core::Engine::pick_color)
+/// reads them between calls — [`Engine::pick_color`](stark_engine::Engine::pick_color)
 /// is a request and they are its arguments, so a copy projected back through
 /// `observe()` would be state with no owner.
 #[derive(Clone, Copy)]
@@ -588,7 +588,7 @@ pub struct PickState {
 
 /// Which of the eyedropper's three sources the bar has selected (§18.0.2).
 ///
-/// The *choice*, not [`PickSource`](stark_core::PickSource): which layer "this layer"
+/// The *choice*, not [`PickSource`](stark_engine::PickSource): which layer "this layer"
 /// means is resolved against the selected layer at the moment of the sample
 /// ([`crate::input::pick_color`]), so the bar cannot be left holding a layer id whose
 /// layer has since been deleted — the same reason the radius is a number here and a
@@ -729,7 +729,7 @@ fn schedule_paint(state: AppState) {
                 //
                 // A block holding nothing but the span, because there is nothing
                 // here to time — it closes on the brace, and its duration is noise.
-                stark_core::timing::span!("frame.skipped");
+                stark_engine::timing::span!("frame.skipped");
             }
             drop(guard);
             schedule_paint(state);
@@ -740,7 +740,7 @@ fn schedule_paint(state: AppState) {
         // present around it. Its *count* over the window is the frame rate the app
         // actually achieved, which is the top line of the end-to-end story and the
         // number every phase row underneath is read against.
-        stark_core::timing::span!("frame");
+        stark_engine::timing::span!("frame");
         let mut queued = state.paint_queued;
         queued.set(false);
         // A device that has died renders nothing, and **this** is where that has to
@@ -810,7 +810,7 @@ pub fn with_engine<R>(state: AppState, f: impl FnOnce(&mut Renderer) -> R) -> Op
         // to report the answer they are already showing. `ObservableState` is
         // `PartialEq` for exactly this, and the comparison is cheap: the layer
         // list is shared, so the expensive field answers by pointer
-        // (`stark_core::Layers`).
+        // (`stark_engine::Layers`).
         //
         // The comparison is bound to a local before the `if` rather than written
         // inline in its condition. A guard held in a condition outliving the body
@@ -928,7 +928,7 @@ pub fn dispatch_sample(state: AppState, command: impl Into<InputCommand>) {
     // 240 Hz pen is being heard at 240 Hz or at 60 is a question only this row
     // answers. It contains `input.fit`, so the difference between the two is the
     // engine door and the paint request around the work.
-    stark_core::timing::span!("input.sample");
+    stark_engine::timing::span!("input.sample");
     with_engine_quiet(state, |r| r.process(command));
     request_paint(state);
 }
@@ -936,7 +936,7 @@ pub fn dispatch_sample(state: AppState, command: impl Into<InputCommand>) {
 /// Apply a command **without** repainting, refreshing the observable, or
 /// broadcasting — for the ones that change nothing this client can see.
 ///
-/// [`PeerCommand::SetCursor`](stark_core::command::PeerCommand::SetCursor) is the
+/// [`PeerCommand::SetCursor`](stark_engine::command::PeerCommand::SetCursor) is the
 /// case that needs it: it arrives at pointer rate, and drawing our own cursor is the
 /// browser's job, so the full `dispatch` would repaint the canvas hundreds of times a
 /// second to show nothing. The value still reaches peers, because the presence pump

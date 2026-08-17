@@ -28,7 +28,7 @@ function rather than laying it as paint.
 
 ### 22.1 The model: stops in sRGB, a ramp in Oklab
 
-`stark_core::gradient::Gradient` is a list of color stops — a position `t` in
+`stark_engine::gradient::Gradient` is a list of color stops — a position `t` in
 `[0,1]` and a color — with three invariants held **by construction** rather
 than checked by consumers: at least two stops, positions ascending, endpoints
 at 0 and 1 (`Gradient::new` normalizes and refuses; deserialization funnels

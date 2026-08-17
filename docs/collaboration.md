@@ -8,7 +8,7 @@ The CRDT over the action log, the iroh transport, owned selections, and the pres
 ## 12. Collaboration (peer-to-peer)
 
 Multi-user editing over `iroh` — **implemented**, exactly as the additive layer
-this section always planned: `ReplicatedTimeline` in `stark-core` (merge
+this section always planned: `ReplicatedTimeline` in `stark-engine` (merge
 semantics), `stark-net` (the wire), a share/join dialog in `stark-ui`. Engine and
 GPU code were untouched. Three properties already in place made it tractable:
 the document is a **log of id-tagged deterministic actions** (§4); replay is
@@ -665,7 +665,7 @@ the roster before it is drawn.
 ### 17.10 Testing
 
 The valuable tests are headless and need no network, because §17.3 put the
-semantics in `stark-core`. `tests/peer_state.rs` covers:
+semantics in `stark-engine`. `tests/peer_state.rs` covers:
 
 - **The masking defect.** `one_peers_selection_does_not_clip_anothers_stroke` — A
   selects the left half, B paints across the boundary, and both halves must land

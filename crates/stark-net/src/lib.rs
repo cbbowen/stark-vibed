@@ -1,17 +1,17 @@
 //! `stark-net` — the iroh transport for shared multi-user drawings
 //! (§12.4).
 //!
-//! `stark-core` owns the merge semantics (the `ReplicatedTimeline` CRDT over
+//! `stark-engine` owns the merge semantics (the `ReplicatedTimeline` CRDT over
 //! the action log); this crate owns the wire and nothing else:
 //!
 //! - **Identity**: an iroh [`iroh::EndpointId`] (a public key) maps
-//!   to the engine's [`ActorId`](stark_core::document::ActorId) via
+//!   to the engine's [`ActorId`](stark_engine::document::ActorId) via
 //!   [`actor_from_endpoint_id`].
-//! - **Live edits**: each committed [`Action`](stark_core::document::Action) is
+//! - **Live edits**: each committed [`Action`](stark_engine::document::Action) is
 //!   broadcast over `iroh-gossip` on the session's topic — a sampled path,
 //!   never pixels.
 //! - **Join / catch-up**: a joining peer fetches the session snapshot — the
-//!   save-format [`DocumentFile`](stark_core::DocumentFile), which already
+//!   save-format [`DocumentFile`](stark_engine::DocumentFile), which already
 //!   bundles referenced brush assets — over a dedicated ALPN, then rides the
 //!   gossip tail. Brush blobs a later stroke references are fetched over the
 //!   same ALPN on demand (content-addressed, §6.6).
@@ -21,11 +21,11 @@
 //!   some canvases and not others, forever, with both sides believing they are in
 //!   sync — see [`reconcile`].
 //!
-//! The UI glue is a small pump: drain [`Engine::take_outbox`](stark_core::Engine::take_outbox)
+//! The UI glue is a small pump: drain [`Engine::take_outbox`](stark_engine::Engine::take_outbox)
 //! into [`CollabSession::broadcast`], and feed the [`RemoteEvent`]s the session's
 //! [`Events`] stream yields into
-//! [`Engine::merge_remote`](stark_core::Engine::merge_remote) /
-//! [`Engine::import_brush`](stark_core::Engine::import_brush).
+//! [`Engine::merge_remote`](stark_engine::Engine::merge_remote) /
+//! [`Engine::import_brush`](stark_engine::Engine::import_brush).
 
 mod backend;
 mod content;
@@ -72,7 +72,7 @@ pub enum NetError {
     #[error("blob store read failed: {0}")]
     BlobRead(#[from] iroh_blobs::api::ExportBaoError),
     #[error("document error: {0}")]
-    Document(#[from] stark_core::EngineError),
+    Document(#[from] stark_engine::EngineError),
     /// The member asked has no session to serve yet — it is still fetching its
     /// own snapshot. Every member is an entry point (§12.4), so the answer is to
     /// ask a different one, not to give up.

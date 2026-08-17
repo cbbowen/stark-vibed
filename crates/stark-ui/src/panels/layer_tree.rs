@@ -4,7 +4,7 @@
 //! **Nothing here renders anything.** It is the panel's arithmetic: which rows are
 //! folded away, what a row's own Carry and Release would do, and — given a drag —
 //! where the block would land, at what depth, and what that spells as a
-//! [`MoveLayer`](stark_core::command::DocCommand::MoveLayer). The rsx! that draws
+//! [`MoveLayer`](stark_engine::command::DocCommand::MoveLayer). The rsx! that draws
 //! it is [`super::layer`], which is 900 lines of chrome this used to be buried in.
 //!
 //! It is a file of its own for `crate::gesture`'s reason: this is the part of the
@@ -20,8 +20,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::reorder::{Grab, Motion, Slide};
-use stark_core::document::Place;
-use stark_core::{LayerId, LayerInfo};
+use stark_engine::document::Place;
+use stark_engine::{LayerId, LayerInfo};
 
 /// How far one level of membership indents a row, in pixels. Named because three
 /// things are measured in it: the row's own offset, the slot the indent leaves empty
@@ -259,7 +259,7 @@ fn subtree_len(layers: &[LayerInfo], id: LayerId) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_core::document::BlendMode;
+    use stark_engine::document::BlendMode;
 
     /// A row's height and the gap between two of them, as the stylesheet leaves them.
     /// The exact numbers do not matter — every answer here is a comparison against a
@@ -401,7 +401,7 @@ mod tests {
     /// nests into an ordinary row (the test above) lands beside a filter instead.
     #[test]
     fn a_filter_row_offers_no_carry_depth() {
-        use stark_core::document::{ColorAdjust, Filter};
+        use stark_engine::document::{ColorAdjust, Filter};
         let mut rows = flat();
         rows.iter_mut()
             .find(|r| r.info.id == LayerId(3))

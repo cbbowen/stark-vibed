@@ -1,5 +1,5 @@
 //! The Timing Stats dialog: where this session's time has actually gone
-//! (`stark_core::timing`, §7.1).
+//! (`stark_engine::timing`, §7.1).
 //!
 //! Off the ☰ menu, on the rail's own rule (main.rs): an infrequent command, read
 //! when a question comes up rather than kept on screen. It is deliberately **not** a
@@ -14,18 +14,18 @@
 //!   the pipeline makes a row appear with no edit to this file. A dialog that listed
 //!   the phases would be a second copy of the instrumentation, and the copy that
 //!   drifted would be this one.
-//! - **Nothing here is a rate the app keeps.** [`stark_core::timing::Timings`] carries
+//! - **Nothing here is a rate the app keeps.** [`stark_engine::timing::Timings`] carries
 //!   the wall-clock window it covers, and every "per second" and "% of window" below
 //!   is arithmetic over that — so the numbers stay honest across a Reset, a
 //!   backgrounded tab, and the minutes the dialog was closed.
 //! - **The clock's resolution is on screen.** In a browser it is 100 µs at best and a
 //!   whole millisecond in Firefox, and without that caption a row reading `0.0 ms`
-//!   invites the wrong conclusion. See the module note on `stark_core::timing`.
+//!   invites the wrong conclusion. See the module note on `stark_engine::timing`.
 
 use std::time::Duration;
 
 use dioxus::prelude::*;
-use stark_core::timing::{self, Phase};
+use stark_engine::timing::{self, Phase};
 
 use crate::icons::{self, icon};
 
@@ -185,7 +185,7 @@ fn Shell(on_close: EventHandler<()>, children: Element) -> Element {
 fn PhaseRow(phase: Phase, window: Duration) -> Element {
     // Dotted names group the eye (`stroke.region`, `stroke.loop`), so the prefix is
     // dimmed and the leaf is not — the same shape as an indented tree without
-    // claiming a nesting the histograms do not record (see `stark_core::timing`).
+    // claiming a nesting the histograms do not record (see `stark_engine::timing`).
     let (prefix, leaf) = match phase.name.rsplit_once('.') {
         Some((head, tail)) => (Some(format!("{head}.")), tail.to_string()),
         None => (None, phase.name.clone()),

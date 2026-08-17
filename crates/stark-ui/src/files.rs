@@ -20,8 +20,8 @@ use crate::icons::{self, icon};
 use crate::panels::frame::{piece_frame, use_selected_frame};
 use crate::platform::{download_bytes, pick_file};
 use crate::state::AppState;
-use stark_core::command::ViewCommand;
-use stark_core::{Background, ExportScale, LayerId, Rendered};
+use stark_engine::command::ViewCommand;
+use stark_engine::{Background, ExportScale, LayerId, Rendered};
 
 /// Extension for the native (replayable) document format.
 const DOC_EXT: &str = "stark";
@@ -95,7 +95,7 @@ pub fn bind_file_launch(state: AppState) {
 /// Replace the document with one decoded from `bytes` — the half of [`open_document`]
 /// after the file is in hand, shared with [`bind_file_launch`].
 fn open_bytes(state: AppState, bytes: Vec<u8>) {
-    let file = match stark_core::DocumentFile::from_bytes(&bytes) {
+    let file = match stark_engine::DocumentFile::from_bytes(&bytes) {
         Ok(file) => file,
         Err(e) => return tracing::error!("could not open that file: {e}"),
     };

@@ -9,19 +9,19 @@ description = "Dioxus web frontend for Stark (§11): WASM backend + WebGPU surfa
 default = ["mixbox", "webrtc"]
 # Offer the Mixbox pigment space (§6.7) and credit it. Forwarded to the engine,
 # which is where turning it off actually drops the vendored CC BY-NC 4.0 code —
-# see `stark-core`'s own `mixbox` feature for what that means.
-mixbox = ["stark-core/mixbox", "stark-net/mixbox"]
+# see `stark-engine`'s own `mixbox` feature for what that means.
+mixbox = ["stark-engine/mixbox", "stark-net/mixbox"]
 webrtc = ["stark-net/webrtc"]
 
 [build-dependencies]
 # Hashing the bundled shapes and grounds into their content ids at build time
-# (build.rs). The whole reason that crate is separate from stark-core: an id has
+# (build.rs). The whole reason that crate is separate from stark-engine: an id has
 # to be computable without linking a GPU renderer.
 stark-assetid = { workspace = true }
 
 [dependencies]
 stark-assetid = { workspace = true }
-stark-core = { path = "../stark-core", default-features = false }
+stark-engine = { path = "../stark-engine", default-features = false }
 stark-net = { path = "../stark-net", default-features = false }
 dioxus = { version = "0.7.10", features = ["web", "asset"] }
 wgpu = { workspace = true }

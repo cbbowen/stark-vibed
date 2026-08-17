@@ -31,12 +31,12 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use stark_core::document::{
+use stark_engine::document::{
     BrushParams, BrushShape, ModSource, Modulation, Modulations, NoiseKind, OrientationSource,
     PenState, Tool,
 };
-use stark_core::geom::Vec2;
-use stark_core::{ColorSpaceId, InputSample, SurfaceId};
+use stark_engine::geom::Vec2;
+use stark_engine::{ColorSpaceId, InputSample, SurfaceId};
 
 use dioxus::html::HasFileData;
 
@@ -48,7 +48,7 @@ use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::render::Renderer;
 use crate::state::{AppState, update_brush};
 use crate::widgets::Slider;
-use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
+use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
 const PREVIEW_CANVAS_ID: &str = "brush-preview-canvas";

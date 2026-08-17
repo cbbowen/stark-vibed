@@ -22,8 +22,8 @@
 //! perspective quad turned concave, a warp mesh folded over itself — holds at the
 //! last valid shape rather than tearing through it.
 
-use stark_core::document::{LayerId, PerspectiveMap, TransformMap, WarpMap, rect_corners};
-use stark_core::geom::{Affine2, Mat2, Vec2};
+use stark_engine::document::{LayerId, PerspectiveMap, TransformMap, WarpMap, rect_corners};
+use stark_engine::geom::{Affine2, Mat2, Vec2};
 
 /// Where a pointer stands relative to the transform widget's ellipse — which
 /// decides what a drag starting there does (§16.6).
@@ -433,7 +433,7 @@ fn point_in_quad(c: &[Vec2; 4], p: Vec2) -> bool {
 
 /// Control points per axis of the warp gesture's mesh. 4×4 spans "gentle bend"
 /// to "full puppet" through the smooth interpolation; the engine accepts up to
-/// [`stark_core::document::MAX_WARP_GRID`] if a denser UI ever wants one.
+/// [`stark_engine::document::MAX_WARP_GRID`] if a denser UI ever wants one.
 pub const WARP_GRID: usize = 4;
 
 /// Where a pointer stands relative to the warp mesh (§16.9).

@@ -10,7 +10,7 @@ use dioxus::prelude::*;
 
 use crate::platform::capture_pointer;
 use crate::state::{AppState, update_brush};
-use stark_core::color::{oklab_to_srgb, srgb_to_oklab};
+use stark_engine::color::{oklab_to_srgb, srgb_to_oklab};
 
 /// The color a session starts on. The panel mounts before the engine exists, so
 /// this is both the picker's fallback seed *and* what `main`'s startup seeding

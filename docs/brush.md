@@ -1180,7 +1180,7 @@ section predicted: **a path transform between the fitter and the renderer**.
 Nothing downstream of `StrokeRecord::path` learns that assist exists. A snapped
 stroke is still a list of control points, so the renderer, the wire format, the
 save file, replay and the goldens are untouched, and the stroke is undoable,
-replayable and collaborative for free. That is why `stark-core/src/assist.rs`
+replayable and collaborative for free. That is why `stark-engine/src/assist.rs`
 answers in control points rather than carrying a shape into the action log.
 
 ### Three pieces, deliberately separable
@@ -1512,7 +1512,7 @@ worth paying only for fields that decide pixels. Instead:
 
 The name collision is deliberate avoided: `path.rs` already has a private
 `SMOOTHING` — the fit's curvature ridge, numerical conditioning, not a feel knob
-— so in code this feature is the **tow** (`stark-core::tow`, unit-testable
+— so in code this feature is the **tow** (`stark-engine::tow`, unit-testable
 headless), and "smoothing" is its user-facing name.
 
 ### Interactions

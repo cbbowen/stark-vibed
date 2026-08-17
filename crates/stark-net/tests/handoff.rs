@@ -6,8 +6,8 @@
 
 use std::time::Duration;
 
-use stark_core::DocumentFile;
-use stark_core::document::{Action, ActionId, ActionKind, ActorId, LayerId};
+use stark_engine::DocumentFile;
+use stark_engine::document::{Action, ActionId, ActionKind, ActorId, LayerId};
 use stark_net::{CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket};
 
 /// A cheap, uniquely identifiable action — the content is irrelevant, only that

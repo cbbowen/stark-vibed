@@ -57,7 +57,7 @@ Two habits that recur throughout and are worth naming as principles:
 stark/
 ├── Cargo.toml                  # workspace (vendor/ excluded — see below)
 ├── crates/
-│   ├── stark-core/             # the engine — no UI, no windowing
+│   ├── stark-engine/             # the engine — no UI, no windowing
 │   │   ├── src/
 │   │   │   ├── lib.rs
 │   │   │   ├── engine.rs       # owns everything; process(InputCommand) (§4, §7)
@@ -137,7 +137,7 @@ stark/
     └── iroh-webrtc-transport/  # WebRTC as an iroh custom transport (§12.4)
 ```
 
-`stark-core` is the testable, frontend-agnostic backend. It is also
+`stark-engine` is the testable, frontend-agnostic backend. It is also
 **network-agnostic**: it owns the *merge semantics* of the action log (the
 `Timeline` trait) but not the wire transport. `stark-net` adapts iroh to it (§12)
 and can be pulled in by the frontend or omitted entirely. `stark-shaders` is split
@@ -148,7 +148,7 @@ Two caveats, stated rather than hidden:
 
 - The large image assets (studio HDR, linen weave, bristle brush — 11 MB
   together) live in `crates/stark-ui/assets/`, because Dioxus's `asset!` macro
-  rejects any path outside its own crate. stark-core's *tests* want the same
+  rejects any path outside its own crate. stark-engine's *tests* want the same
   bytes, so they read them from there. That is a path pointing the wrong way; it
   is confined to one module, `stark_testdata::assets`, which is the only thing
   that breaks if the frontend reorganizes. No code or Cargo dependency crosses

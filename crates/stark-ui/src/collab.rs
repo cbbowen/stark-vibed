@@ -24,9 +24,9 @@
 
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
-use stark_core::SurfaceId;
-use stark_core::command::ViewCommand;
-use stark_core::peer::Identity;
+use stark_engine::SurfaceId;
+use stark_engine::command::ViewCommand;
+use stark_engine::peer::Identity;
 use stark_net::{
     AssetNeed, Broadcaster, CollabSession, Events, Joined, LinkKind, NetOptions, RemoteEvent,
     SessionTicket, actor_from_endpoint_id,
@@ -511,7 +511,7 @@ fn start_presence_pump(state: AppState) {
     }
 }
 
-/// Seconds on the monotonic clock `stark-core` deliberately does not own — see
+/// Seconds on the monotonic clock `stark-engine` deliberately does not own — see
 /// [`platform::now_seconds`](crate::platform::now_seconds), which holds the whole
 /// argument for which clock and why.
 pub(crate) fn now_seconds() -> f64 {

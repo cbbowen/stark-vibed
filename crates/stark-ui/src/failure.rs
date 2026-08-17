@@ -1,6 +1,6 @@
 //! What the app does when the GPU dies (§5).
 //!
-//! `stark-core` projects [`ObservableState::gpu_failure`] rather than panicking,
+//! `stark-engine` projects [`ObservableState::gpu_failure`] rather than panicking,
 //! and states the contract this module is the other half of: *stop dispatching and
 //! offer to save; do not keep painting, since nothing after this point reaches a
 //! pixel.* The field is an `Arc` so the projection stays cheap to clone at pointer
@@ -18,7 +18,7 @@
 //! this mounts. A stop with no dialog is a frozen canvas; a dialog over an app that
 //! is still dispatching is a lie.
 //!
-//! [`ObservableState::gpu_failure`]: stark_core::ObservableState::gpu_failure
+//! [`ObservableState::gpu_failure`]: stark_engine::ObservableState::gpu_failure
 
 use dioxus::prelude::*;
 

@@ -32,7 +32,7 @@ use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId};
 use n0_future::task;
-use stark_core::document::ActionId;
+use stark_engine::document::ActionId;
 use tokio::sync::Notify;
 
 use crate::Result;
@@ -198,8 +198,8 @@ impl Reconciler {
 mod tests {
     use std::time::Duration;
 
-    use stark_core::DocumentFile;
-    use stark_core::document::{Action, ActionKind, ActorId};
+    use stark_engine::DocumentFile;
+    use stark_engine::document::{Action, ActionKind, ActorId};
     use tokio::sync::mpsc;
 
     use std::collections::HashSet;

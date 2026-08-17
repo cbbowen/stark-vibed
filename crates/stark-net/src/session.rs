@@ -32,9 +32,9 @@ use iroh_blobs::Hash;
 use iroh_gossip::api::{Event as GossipEvent, GossipReceiver, GossipSender};
 pub use iroh_gossip::proto::TopicId;
 use n0_future::{StreamExt, task};
-use stark_core::document::{Action, ActorId, BrushShape};
-use stark_core::peer::{GestureFrame, PeerFrame};
-use stark_core::{AssetId, DocumentFile};
+use stark_engine::document::{Action, ActorId, BrushShape};
+use stark_engine::peer::{GestureFrame, PeerFrame};
+use stark_engine::{AssetId, DocumentFile};
 use tokio::sync::mpsc;
 
 use crate::Result;
@@ -74,12 +74,12 @@ pub fn actor_from_endpoint_id(id: EndpointId) -> ActorId {
 }
 
 /// Content a remote action needs before it can be applied faithfully, and which
-/// store it belongs in — [`stark_core::AssetNeed`], re-exported so a frontend
+/// store it belongs in — [`stark_engine::AssetNeed`], re-exported so a frontend
 /// pumping this transport does not need to name two crates for one idea.
 ///
 /// It lives in the engine because the engine is what has the two stores, and
 /// because loading a file asks the same question a joining peer does.
-pub use stark_core::AssetNeed;
+pub use stark_engine::AssetNeed;
 
 /// Something a peer did, to be applied to the local engine. Apply in order:
 /// assets arrive before the action that references them.
@@ -87,14 +87,14 @@ pub use stark_core::AssetNeed;
 pub enum RemoteEvent {
     /// Content a remote action references, resolved off a peer — feed to the store
     /// `need` names before the action that wanted it: a brush image to
-    /// [`Engine::import_brush`](stark_core::Engine::import_brush), a canvas ground to
-    /// [`Engine::accept_surface`](stark_core::Engine::accept_surface).
+    /// [`Engine::import_brush`](stark_engine::Engine::import_brush), a canvas ground to
+    /// [`Engine::accept_surface`](stark_engine::Engine::accept_surface).
     Asset { need: AssetNeed, bytes: Bytes },
     /// A committed remote action — feed to
-    /// [`Engine::merge_remote`](stark_core::Engine::merge_remote).
+    /// [`Engine::merge_remote`](stark_engine::Engine::merge_remote).
     Action(Action),
     /// A peer's presence — feed to
-    /// [`Engine::merge_presence`](stark_core::Engine::merge_presence)
+    /// [`Engine::merge_presence`](stark_engine::Engine::merge_presence)
     /// (§17.4). Unlike an action this may be dropped freely: nothing in
     /// the log refers to it, so losing one costs a frame of someone else's cursor
     /// and nothing else.
@@ -244,7 +244,7 @@ pub struct Joined {
     pub session: CollabSession,
     pub events: Events,
     /// The snapshot to load via
-    /// [`Engine::join_collaboration`](stark_core::Engine::join_collaboration) —
+    /// [`Engine::join_collaboration`](stark_engine::Engine::join_collaboration) —
     /// **after** `owed` is settled.
     pub document: DocumentFile,
     /// Content `document`'s log names that the host left out, because this client
@@ -279,8 +279,8 @@ pub struct CollabSession {
 
 impl CollabSession {
     /// Start sharing `doc` (the host side). `doc` should come from
-    /// [`Engine::document_file`](stark_core::Engine::document_file) *after*
-    /// [`Engine::start_collaboration`](stark_core::Engine::start_collaboration)
+    /// [`Engine::document_file`](stark_engine::Engine::document_file) *after*
+    /// [`Engine::start_collaboration`](stark_engine::Engine::start_collaboration)
     /// with [`actor_from_endpoint_id`] of this session's identity — generate a
     /// [`SecretKey`] first and pass it in `opts` so the actor id is known
     /// before binding.
@@ -487,7 +487,7 @@ impl CollabSession {
     }
 
     /// Broadcast one locally-committed action (from
-    /// [`Engine::take_outbox`](stark_core::Engine::take_outbox)) to the swarm.
+    /// [`Engine::take_outbox`](stark_engine::Engine::take_outbox)) to the swarm.
     ///
     /// Returns once the action is mirrored and queued; the session's one send task
     /// puts it on the wire. That task is what makes the wire order the order things
@@ -500,8 +500,8 @@ impl CollabSession {
 
     /// Register content so joiners can be served and peers can fetch it — a brush
     /// image alongside
-    /// [`Engine::import_brush`](stark_core::Engine::import_brush), a canvas ground
-    /// alongside [`Engine::import_surface`](stark_core::Engine::import_surface).
+    /// [`Engine::import_brush`](stark_engine::Engine::import_brush), a canvas ground
+    /// alongside [`Engine::import_surface`](stark_engine::Engine::import_surface).
     ///
     /// Call it *before* committing an action that references the content: the
     /// broadcast attaches a transfer hash looked up here, and an action that goes out
@@ -548,7 +548,7 @@ pub struct Broadcaster {
 impl Broadcaster {
     /// See [`CollabSession::broadcast`].
     pub fn broadcast(&self, action: Action) -> Result<()> {
-        let need = stark_core::action_content(&action);
+        let need = stark_engine::action_content(&action);
         let bytes = self.encode(WireRef::Action(&action), need)?;
         // Mirrored after encoding and before queueing, which is what lets the action
         // be moved rather than duplicated — and mirrored whether or not it ever goes
@@ -873,7 +873,7 @@ impl Admission {
     /// parking would be parking forever, and the kind's fallback is the best
     /// available.
     pub fn of(action: &Action, hash: Option<Hash>, waitlist: &Waitlist) -> Self {
-        let Some(need) = stark_core::action_content(action) else {
+        let Some(need) = stark_engine::action_content(action) else {
             return Self::Ready;
         };
         let Some(hash) = hash_or_warn(need, hash) else {

@@ -8,15 +8,15 @@ use crate::icons::{self, icon, icon_tinted, label};
 use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::Slider;
-use stark_core::command::{DocCommand, ViewCommand};
-use stark_core::document::{FillOp, SelectionMode, SelectionOp, ShapeAction, Tool};
+use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::document::{FillOp, SelectionMode, SelectionOp, ShapeAction, Tool};
 
 /// Shape tools (§6.8): rect / ellipse / lasso, what the next gesture does
 /// with the region they enclose, and the feather applied to its edge.
 ///
 /// The tool chips **arm** a tool rather than selecting a mode to stay in: one of
 /// them is lit only while a shape gesture is pending, and drawing a selection
-/// disarms it ([`Session::end_shape`](stark_core::session::Session::end_shape)).
+/// disarms it ([`Session::end_shape`](stark_engine::session::Session::end_shape)).
 /// Clicking the lit one disarms it too, so the escape hatch from an armed tool is the
 /// same control that armed it. Painting is therefore the resting state and needs no
 /// chip of its own — no chip lit *is* the brush.

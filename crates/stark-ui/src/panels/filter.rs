@@ -62,11 +62,11 @@ use crate::panels::color::ab_field_data_url;
 use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
-use stark_core::color::{dispersion_weight, linear_to_srgb};
-use stark_core::command::{DocCommand, PeerCommand};
-use stark_core::document::{CONTRAST_PIVOT, ChromaticAberration, ColorAdjust, Filter};
-use stark_core::gradient::Gradient;
-use stark_core::{LayerId, LayerInfo};
+use stark_engine::color::{dispersion_weight, linear_to_srgb};
+use stark_engine::command::{DocCommand, PeerCommand};
+use stark_engine::document::{CONTRAST_PIVOT, ChromaticAberration, ColorAdjust, Filter};
+use stark_engine::gradient::Gradient;
+use stark_engine::{LayerId, LayerInfo};
 
 /// One slider on the bar: what it is called, its range, and the two ends of the
 /// round trip through the filter's own parameter struct `F`.
@@ -162,7 +162,7 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
 /// Layers panel highlights — and a filter that is removed, undone, or replaced by a
 /// document load stops being tuned with no invalidation to remember.
 /// The rule itself, asked of a projection already in hand.
-fn selected_filter_of(o: &stark_core::ObservableState) -> Option<(LayerInfo, Filter)> {
+fn selected_filter_of(o: &stark_engine::ObservableState) -> Option<(LayerInfo, Filter)> {
     o.layers
         .iter()
         .find(|l| l.id == o.active_layer)
