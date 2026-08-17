@@ -2984,12 +2984,18 @@ button.layer-remove:hover {
 /* A row in flight is not a row to press buttons on, and the pointer is over it for
    the whole gesture — so its own hover controls would be three glyphs following the
    hand around. The eye of a *hidden* guide stays, because that one is not a control
-   answering a hover, it is the row saying what it is. */
+   answering a hover, it is the row saying what it is.
+
+   Hidden here, collapsed here too (see `.guide-duplicate` below): otherwise picking a
+   row up would shorten its name — three invisible slots taking their width back — at
+   the one moment the row under the hand has to read as the one you took hold of. */
 .guide-row.dragging:hover .guide-duplicate,
 .guide-row.dragging:hover .guide-remove,
 .guide-row.dragging:hover .guide-eye:not(.hidden) {
   opacity: 0;
   pointer-events: none;
+  width: 0;
+  margin-left: -6px;
 }
 
 .guide-row.dragging,
@@ -3005,6 +3011,15 @@ button.layer-remove:hover {
 .guide-name {
   flex: 1;
   min-width: 0;
+  /* One line, cut with an ellipsis where it does not fit, and `display: block` so
+     the cut is the button's own to make. Both the argument and what the `display`
+     is for are `.layer-name`'s, and they hold here for the reason this whole panel
+     is the Layers panel's shape: a row that grew a second line would take its
+     struck eye out of the column the roster is read down. */
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font: inherit;
   font-size: 12px;
   text-align: left;
@@ -3070,6 +3085,40 @@ button.layer-remove:hover {
 .guide-row:hover .guide-remove {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* And while they are hidden they take no width, so the name has the row: three slots
+   and the gaps in front of them are 3 x (14 + 6) = 60px held empty on every row the
+   pointer is not on. `.layer-merge` carries the argument and the one coupling — the
+   negative margin is this row's own `gap`, eaten so that a collapsed control does
+   not still cost 6px of nothing.
+
+   Two things make it simpler here than on a layer row. Every guide row has all three
+   controls, so nothing holds a slot for an absent one and `width: auto` — the glyph's
+   own 14px — is all the hover has to say. And the eye is last on the line, with no
+   kind slot outboard of it, so the struck eye of a hidden guide stands against the
+   row's right padding whatever its neighbours are doing. */
+.guide-duplicate,
+.guide-remove,
+.guide-eye:not(.hidden) {
+  width: 0;
+  margin-left: -6px;
+  /* The glyph is wider than its box on the way in and out; clipped rather than
+     spilling over the name it is making room in. */
+  overflow: hidden;
+  /* The width goes with the fade, so it is one motion: the controls push in from
+     the row's end and the name gives ground as they arrive. */
+  transition:
+    opacity 90ms ease-out,
+    width 90ms ease-out,
+    margin-left 90ms ease-out;
+}
+
+.guide-row:hover .guide-duplicate,
+.guide-row:hover .guide-remove,
+.guide-row:hover .guide-eye {
+  width: auto;
+  margin-left: 0;
 }
 
 /* The transform widget's ellipse (§16.6): purely visual — the
