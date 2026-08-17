@@ -28,9 +28,9 @@ use crate::layout::chrome_class;
 use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, GradientAxisKind, GradientTarget, GradientUi};
-use stark_engine::Gradient;
 use stark_engine::document::{FillOp, GradientAxis, GradientParcel, MattePaint};
-use stark_engine::geom::Vec2;
+use stark_model::Gradient;
+use stark_model::geom::Vec2;
 
 /// Enter the mode for a **fill of the selection**. The target layer is the
 /// transform's choice — the active layer if paintable, else the topmost
@@ -384,7 +384,7 @@ fn axis_chrome(
     kind: GradientAxisKind,
     from: Vec2,
     to: Vec2,
-    view: stark_engine::ViewTransform,
+    view: stark_model::ViewTransform,
 ) -> Element {
     let a = view.canvas_to_screen(from);
     let b = view.canvas_to_screen(to);

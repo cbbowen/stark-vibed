@@ -19,13 +19,11 @@
 use rpds::HashTrieMap;
 use wgpu::util::DeviceExt;
 
-use crate::document::selection::{
-    MASK_TEX, Selection, SelectionOp, SelectionShape, lasso_edges, mask_tex_origin,
-};
-use crate::geom::{TileCoord, Vec2};
+use crate::document::selection::{Selection, SelectionOp, SelectionShape};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
+use stark_model::geom::{MASK_TEX, TileCoord, Vec2, lasso_edges, mask_tex_origin};
 use stark_shaders::mirror::mask_region::decl as mrd;
 use stark_shaders::mirror::selection::binding as sb;
 use stark_shaders::mirror::selection::decl as sd;

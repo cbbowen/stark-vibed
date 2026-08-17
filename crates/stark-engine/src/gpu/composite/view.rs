@@ -9,7 +9,7 @@
 //! never-changing half (the sampler) and [`ViewBindings`] the per-target half (the
 //! buffer holding *what this render is looking at*, and the groups over it).
 
-use crate::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, ViewTransform};
+use stark_model::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, ViewTransform};
 use stark_shaders::mirror::composite::binding as cb;
 
 // Generated from `composite.wesl`'s declaration of `View`, which `matte.wesl` and
@@ -36,7 +36,7 @@ pub(crate) use stark_shaders::mirror::composite::View as ViewUniform;
 /// A free function rather than the `ViewUniform::new` it replaced: the type is
 /// generated into `stark-shaders` now, and an inherent impl on another crate's type
 /// is not allowed. It is still the only way one is built.
-pub(crate) fn view_uniform(st: [f32; 4], xlate: crate::geom::Vec2, zoom: f32) -> ViewUniform {
+pub(crate) fn view_uniform(st: [f32; 4], xlate: stark_model::geom::Vec2, zoom: f32) -> ViewUniform {
     ViewUniform {
         st,
         xlate: [xlate.x, xlate.y, 0.0, 0.0],

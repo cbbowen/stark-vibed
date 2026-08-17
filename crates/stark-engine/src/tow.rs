@@ -34,7 +34,7 @@
 //! polynomial) reach only what is derived *from* the record.
 
 use crate::command::InputSample;
-use crate::geom::Vec2;
+use stark_model::geom::Vec2;
 
 /// Emission spacing while the tip is being dragged, as a fraction of the rope,
 /// measured along the **target's** travel. The tractrix bend mostly completes

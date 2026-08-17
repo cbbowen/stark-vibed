@@ -13,7 +13,7 @@
 //! no longer change, and it is what makes `preview == committed` hold here (§1.3).
 
 use crate::document::StrokeRecord;
-use crate::geom::TileCoord;
+use stark_model::geom::TileCoord;
 
 use super::scratch::Kept;
 use super::segments;

@@ -23,9 +23,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::Engine;
 use crate::document::{ActorId, ApplyCtx, DocState, LayerId, StrokeRecord};
-use crate::geom::{TileCoord, TileRect};
 use crate::gpu::StrokeSpans;
 use crate::peer::{GestureView, LiveGesture, Peer};
+use stark_model::geom::{TileCoord, TileRect};
 
 /// What is being *shown* over the committed document, and the caches that make
 /// showing it affordable (§17.6).

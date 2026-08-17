@@ -27,9 +27,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::selection::{Selection, SelectionMode, SelectionShape, tiles_of};
-use crate::geom::{TILE_APRON, TileCoord, TileRect, Vec2};
-use crate::gradient::Gradient;
+use super::selection::{Selection, SelectionMode, SelectionShape};
+use stark_model::geom::{TILE_APRON, TileCoord, TileRect, Vec2, tiles_of};
+use stark_model::gradient::Gradient;
 
 /// Largest number of paint tiles one fill may write. The same stance and roughly
 /// the same size as [`MAX_TRANSFORM_TILES`](super::transform::MAX_TRANSFORM_TILES):
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn the_footprint_names_every_tile_the_plan_writes() {
         use crate::document::footprint::fill_rect;
-        use crate::geom::TILE_SIZE;
+        use stark_model::geom::TILE_SIZE;
 
         let side = TILE_SIZE as f32;
         let mut steps = 0;

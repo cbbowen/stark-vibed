@@ -21,7 +21,7 @@ use stark_engine::document::{
     LayerId, MattePaint, MatteRegion, PerspectiveMap, Place, SelectionMode, SelectionOp,
     SelectionShape, TransformMap, WarpMap, rect_corners,
 };
-use stark_engine::geom::{Affine2, Vec2};
+use stark_model::geom::{Affine2, Vec2};
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];

@@ -5,10 +5,10 @@
 //! dynamic-offset slot; the shader branches on data rather than on pipeline
 //! variants, so an absent element is a zeroed slot rather than a second pipeline.
 
-use crate::geom::ViewTransform;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
+use stark_model::geom::ViewTransform;
 use stark_shaders::mirror::guides::decl as gd;
 
 /// The guide overlay's one binding (§20.4).
@@ -39,8 +39,8 @@ pub(super) use stark_shaders::mirror::guides::Guide as GuideUniform;
 fn pack_guides(scene: &crate::guides::GuideScene, view: ViewTransform) -> GuideUniform {
     use crate::guides::{Lens, PairTrace};
     let inv = view.inverse_linear();
-    let org = view.screen_to_canvas(crate::geom::Vec2::ZERO);
-    let point = |v: Option<crate::geom::Vec2>| match v {
+    let org = view.screen_to_canvas(stark_model::geom::Vec2::ZERO);
+    let point = |v: Option<stark_model::geom::Vec2>| match v {
         Some(p) => [p.x, p.y, 1.0, 0.0],
         None => [0.0; 4],
     };

@@ -18,7 +18,7 @@
 //! CPU float math, so replay is deterministic (§12.1).
 
 use crate::document::StrokeRecord;
-use crate::geom::Vec2;
+use stark_model::geom::Vec2;
 
 use super::super::budget::{footprint_cell, lambda};
 use super::super::region::{coverage_bounds, segment_end};
@@ -1112,11 +1112,11 @@ fn settle_tangent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geom::Vec2;
     use crate::gpu::stroke::StrokeSpans;
     use crate::gpu::stroke::budget::flatten_tolerance;
     use crate::gpu::stroke::segments::generate_segments_in;
     use crate::gpu::stroke::segments::{Paint, Stretch};
+    use stark_model::geom::Vec2;
 
     /// A straight sweep of `length` from `start` along `dir`, at arc length `dist`.
     fn sweep(start: Vec2, dir: Vec2, length: f32, radius: f32, dist: f32) -> Sweep {

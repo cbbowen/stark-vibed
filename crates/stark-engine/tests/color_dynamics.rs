@@ -13,8 +13,8 @@ mod common;
 use common::*;
 use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
 use stark_engine::document::{BrushParams, ColorDynamics, NoiseKind, Tool};
-use stark_engine::geom::Vec2;
 use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_model::geom::Vec2;
 
 /// A muted teal mid-tone: enough headroom in every Oklab channel for the jitter
 /// to wander both ways without everything clamping at the gamut edge.

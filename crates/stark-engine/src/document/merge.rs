@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn only_paint_is_merged_into() {
         use crate::document::MatteRegion;
-        use crate::geom::Vec2;
+        use stark_model::geom::Vec2;
 
         let region = MatteRegion::OutsideRect {
             min: Vec2::ZERO,

@@ -6,8 +6,8 @@
 //! whether a group can tell itself apart from no group at all.
 
 use crate::document::{CompositeParams, Filter};
-use crate::geom::TileCoord;
 use crate::gpu::tile::TilePairHandle;
+use stark_model::geom::TileCoord;
 
 /// A matte layer's draw parameters (§15.4).
 // No `Debug`: the mirrored `Ramp` (§6.10) derives only what `bytemuck`
@@ -108,7 +108,7 @@ pub struct FilterDraw {
 /// The stop lanes the filter uniform carries — the shader's literal `16`
 /// (`filter_common.wesl`, §6.10's generator cannot resolve a named length), held
 /// to the fitter's own bound here so the two cannot drift: every `Gradient` fits.
-const MAX_MAP_STOPS: usize = crate::gradient::MAX_STOPS;
+const MAX_MAP_STOPS: usize = stark_model::gradient::MAX_STOPS;
 
 impl FilterDraw {
     /// The draw parameters for `filter` under the layer's own `params`.
@@ -162,7 +162,7 @@ impl FilterDraw {
                 let stops = g.as_ref().map(|g| {
                     let mut lanes = Box::new([[0.0f32; 4]; MAX_MAP_STOPS]);
                     for (lane, stop) in lanes.iter_mut().zip(g.stops()) {
-                        let lab = crate::color::srgb_to_oklab([
+                        let lab = stark_model::color::srgb_to_oklab([
                             stop.color[0],
                             stop.color[1],
                             stop.color[2],

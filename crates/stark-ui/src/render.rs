@@ -14,11 +14,12 @@ use crate::platform::Canvas;
 use stark_engine::AssetNeed;
 use stark_engine::command::ViewCommand;
 use stark_engine::document::Tool;
-use stark_engine::geom::Extent2;
 use stark_engine::{
     ColorSpaceId, Engine, EnvironmentId, GpuContext, InputCommand, InputSample, ObservableState,
-    SurfaceId, ViewTransform,
+    SurfaceId,
 };
+use stark_model::ViewTransform;
+use stark_model::geom::Extent2;
 
 pub const CANVAS_ID: &str = "stark-canvas";
 
@@ -116,7 +117,7 @@ pub struct PeerInfo {
     pub name: String,
     pub color: [f32; 3],
     pub active_layer: stark_engine::LayerId,
-    pub cursor: Option<stark_engine::Vec2>,
+    pub cursor: Option<stark_model::Vec2>,
 }
 
 impl PeerInfo {
@@ -447,7 +448,7 @@ impl Renderer {
     /// renderer it still holds borrowed.
     pub fn pick_color(
         &mut self,
-        at: stark_engine::Vec2,
+        at: stark_model::Vec2,
         options: stark_engine::PickOptions,
     ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
         self.engine.pick_color(at, options)
@@ -457,9 +458,9 @@ impl Renderer {
     /// The same borrow bargain as [`Renderer::pick_color`].
     pub fn pick_gradient(
         &mut self,
-        path: &[stark_engine::Vec2],
+        path: &[stark_model::Vec2],
         options: stark_engine::PickOptions,
-    ) -> impl std::future::Future<Output = Option<stark_engine::Gradient>> + use<> {
+    ) -> impl std::future::Future<Output = Option<stark_model::Gradient>> + use<> {
         self.engine.pick_gradient(path, options)
     }
 

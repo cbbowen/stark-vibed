@@ -17,8 +17,8 @@ mod common;
 
 use common::{brush, engine_or_skip, stroke_with};
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_engine::geom::Vec2;
 use stark_engine::{Engine, RgbaImage};
+use stark_model::geom::Vec2;
 
 /// Enough strokes to build a history worth folding, spread so they touch different
 /// tiles — retention only pins a tile version that a *later* action replaced.

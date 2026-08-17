@@ -21,8 +21,8 @@ use common::*;
 use stark_engine::Engine;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::document::{BrushParams, Tool};
-use stark_engine::geom::Vec2;
 use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
@@ -477,7 +477,7 @@ fn stroke_spans_multiple_tiles_via_cow() {
 /// measure. It still catches the regression it exists for: a stroke re-rendered whole
 /// would climb from ~150 segments a move to several thousand.
 fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
-    let size = stark_engine::geom::Extent2 {
+    let size = stark_model::geom::Extent2 {
         width: 1280,
         height: 800,
     };

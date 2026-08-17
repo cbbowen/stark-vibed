@@ -25,8 +25,8 @@ use stark_engine::command::DocCommand;
 use stark_engine::document::{
     BlendMode, BrushDynamics, BrushParams, BrushShape, DRAGO_K, DRAGO_K_RANGE, LayerId,
 };
-use stark_engine::geom::Vec2;
 use stark_engine::{Engine, RgbaImage};
+use stark_model::geom::Vec2;
 
 const ROOT: LayerId = LayerId(0);
 const TOP: LayerId = LayerId(1);

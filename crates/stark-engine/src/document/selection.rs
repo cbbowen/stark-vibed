@@ -29,8 +29,8 @@
 use rpds::HashTrieMap;
 use serde::{Deserialize, Serialize};
 
-use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2};
 use crate::gpu::tile::{MaskHandle, MaskMap};
+use stark_model::geom::{TILE_APRON, TILE_SIZE, TileCoord, Vec2, tiles_covering};
 
 /// Largest number of mask tiles one op may rasterize (~64 MB of R8 coverage). An op
 /// that would exceed it is rejected rather than truncated — a silently clipped
@@ -525,81 +525,6 @@ pub(crate) struct SelectionPlan {
     pub hull: Option<(Vec2, Vec2)>,
 }
 
-/// The tiles whose *texture* (interior + apron) overlaps the canvas box
-/// `[lo, hi]`, grown by `ring` tiles — [`TileRect::covering`] with this module's
-/// padding, since a tile's texture starts one apron before its interior and a box
-/// that reaches into the apron band still touches the neighbour.
-///
-/// `None` — a refusal, not a clamp — for a box that is not finite or not
-/// addressable. That is the only acceptable answer here: a clamp would rasterize
-/// a *different* region, and these coordinates arrive from files and peers, where
-/// the only tolerable disagreement between two clients is none (§6.8).
-pub(crate) fn tile_box(lo: Vec2, hi: Vec2, ring: i32) -> Option<TileRect> {
-    let apron = Vec2::splat(TILE_APRON as f32);
-    TileRect::covering(lo - apron, hi + apron, ring)
-}
-
-/// Tiles whose *texture* (interior + apron) overlaps the canvas box `[lo, hi]`,
-/// expanded by `ring` tiles on every side — `None` when there would be more than
-/// `budget` of them.
-///
-/// **Counted before it is walked**, which is what makes an absurd box a clean
-/// refusal instead of a hang: the box is quadratic in the drag, so a marquee at far
-/// zoom-out (or an op arriving from a file or a peer) can name more tiles than
-/// there is memory to list, and finding that out by listing them is not an option.
-/// Same stance and same shape as `transform::quad_reached_tiles`, which counts its
-/// candidates against its own budget before enumerating, for the same reason.
-pub(crate) fn tiles_covering(
-    lo: Vec2,
-    hi: Vec2,
-    ring: i32,
-    budget: usize,
-) -> Option<Vec<TileCoord>> {
-    tiles_of(tile_box(lo, hi, ring)?, budget)
-}
-
-/// The coordinates of an **already-quantized** rect, `None` when there would be
-/// more than `budget` of them — [`tiles_covering`]'s second half, for the caller
-/// that has its own reason to hold the `TileRect`.
-///
-/// The fill is that caller: its written tile set and its footprint have to be the
-/// same tiles (§12.6), so the rect is derived once by
-/// [`fill_bounds`](super::fill::fill_bounds) and quantized once, and only *then*
-/// walked. Counted before it is walked for [`tiles_covering`]'s own reason.
-pub(crate) fn tiles_of(rect: TileRect, budget: usize) -> Option<Vec<TileCoord>> {
-    let count = rect.count();
-    if count > budget as u64 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(count as usize);
-    out.extend(rect.coords());
-    Some(out)
-}
-
-/// The lasso's closed edge list, as `selection.wesl` reads it: one texel per edge
-/// holding `(a.xy, b.xy)` in canvas px. Empty for a polygon that cannot enclose area.
-pub(crate) fn lasso_edges(points: &[Vec2]) -> Vec<[f32; 4]> {
-    if points.len() < 3 {
-        return Vec::new();
-    }
-    (0..points.len())
-        .map(|i| {
-            let a = points[i];
-            let b = points[(i + 1) % points.len()];
-            [a.x, a.y, b.x, b.y]
-        })
-        .collect()
-}
-
-/// The tile geometry a mask tile is rasterized over: its texture's top-left in canvas
-/// px (the interior origin, shifted out by the apron — §6.4).
-pub(crate) fn mask_tex_origin(coord: TileCoord) -> Vec2 {
-    coord.origin() - Vec2::splat(TILE_APRON as f32)
-}
-
-/// The mask tile's edge length, for the shaders that place it in a region.
-pub(crate) const MASK_TEX: u32 = TILE_TEX;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,25 +656,6 @@ mod tests {
         assert_eq!(n(span(32.0), 32 * 32 - 1), None);
     }
 
-    /// Coordinates arrive from files and peers. A non-finite bound, or one past
-    /// what the `i32` tile grid can address, is refused — never wrapped into a tile
-    /// index pointing somewhere else, which is what the old `as i32` cast did.
-    #[test]
-    fn unrepresentable_boxes_are_refused_rather_than_wrapped() {
-        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(tile_box(Vec2::new(bad, 0.0), Vec2::splat(10.0), 0), None);
-            assert_eq!(tile_box(Vec2::ZERO, Vec2::new(0.0, bad), 0), None);
-        }
-        // Well past `i32::MAX` tiles from the origin, but a *small* box — so the
-        // count would happily pass and only the addressing is impossible.
-        let far = 1.0e30;
-        assert_eq!(tile_box(Vec2::splat(far), Vec2::splat(far + 1.0), 0), None);
-        assert_eq!(
-            tile_box(Vec2::splat(-far), Vec2::splat(-far + 1.0), 0),
-            None
-        );
-    }
-
     #[test]
     fn oversized_shape_is_rejected() {
         let sel = Selection::everything();
@@ -760,21 +666,5 @@ mod tests {
             0.0,
         );
         assert!(sel.plan(&op).is_none());
-    }
-
-    #[test]
-    fn lasso_edges_close_the_loop() {
-        let pts = vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)];
-        let edges = lasso_edges(&pts);
-        assert_eq!(edges.len(), 3);
-        assert_eq!(
-            edges[2],
-            [0.0, 1.0, 0.0, 0.0],
-            "last edge returns to the start"
-        );
-        assert!(
-            lasso_edges(&pts[..2]).is_empty(),
-            "a segment encloses nothing"
-        );
     }
 }

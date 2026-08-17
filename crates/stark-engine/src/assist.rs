@@ -41,10 +41,10 @@ use std::f32::consts::TAU;
 
 use nalgebra::{Const, Dyn, OMatrix};
 
-use crate::geom::{Ellipse, Vec2, principal_axis};
 use crate::guides::{AxisPencil, AxisPlane, Scaffold};
 use crate::path::{ControlPoint, FLATTEN_TOLERANCE, arc_profile, clamp_tilt, flatten, param_at};
 use crate::spline::{CubicBSpline, Observations, SplineIndex};
+use stark_model::geom::{Ellipse, Vec2, principal_axis};
 
 /// Reports below this many are not a shape, whatever they look like: a click, a
 /// twitch, or a two-sample flick has no trace to recognize and would snap to noise.

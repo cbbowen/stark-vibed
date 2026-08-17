@@ -20,9 +20,9 @@ mod common;
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_engine::document::{ChromaticAberration, ColorAdjust, Filter, LayerId, Place};
-use stark_engine::geom::Vec2;
-use stark_engine::gradient::{Gradient, GradientStop};
 use stark_engine::{Engine, RgbaImage};
+use stark_model::geom::Vec2;
+use stark_model::gradient::{Gradient, GradientStop};
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const STROKE: &[Vec2] = &[Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)];
@@ -94,8 +94,8 @@ fn is_grey(c: [u8; 4]) -> bool {
 /// move — the space the claim is made in, so the assertion is about the adjustment
 /// rather than about how sRGB happens to encode it.
 fn chroma_ab(c: [u8; 4]) -> [f32; 2] {
-    let lin = |i: usize| stark_engine::color::srgb_to_linear(c[i] as f32 / 255.0);
-    let lab = stark_engine::color::linear_srgb_to_oklab([lin(0), lin(1), lin(2)]);
+    let lin = |i: usize| stark_model::color::srgb_to_linear(c[i] as f32 / 255.0);
+    let lab = stark_model::color::linear_srgb_to_oklab([lin(0), lin(1), lin(2)]);
     [lab[1], lab[2]]
 }
 
@@ -176,8 +176,8 @@ fn desaturating_keeps_the_lightness_it_found() {
     let after = center(&engine.render_to_image());
 
     let lightness = |c: [u8; 4]| {
-        let lin = |i: usize| stark_engine::color::srgb_to_linear(c[i] as f32 / 255.0);
-        stark_engine::color::linear_srgb_to_oklab([lin(0), lin(1), lin(2)])[0]
+        let lin = |i: usize| stark_model::color::srgb_to_linear(c[i] as f32 / 255.0);
+        stark_model::color::linear_srgb_to_oklab([lin(0), lin(1), lin(2)])[0]
     };
     let (was, now) = (lightness(before), lightness(after));
     // Loose, because the trip out to light and back through the media pass's tonemap
@@ -666,7 +666,8 @@ fn chromatic_aberration_is_the_identity_deep_inside_flat_paint() {
 #[cfg(feature = "mixbox")]
 #[test]
 fn chromatic_aberration_parts_the_spectrum_in_pigment_too() {
-    let Some(mut engine) = engine_or_skip_with(stark_engine::colorspace::ColorSpaceId::Mixbox) else {
+    let Some(mut engine) = engine_or_skip_with(stark_engine::colorspace::ColorSpaceId::Mixbox)
+    else {
         return;
     };
     paint(&mut engine, RED, 22.0, STROKE);
@@ -1032,7 +1033,8 @@ fn a_rampless_gradient_map_changes_no_pixel() {
 #[cfg(feature = "mixbox")]
 #[test]
 fn a_gradient_map_works_in_a_pigment_document() {
-    let Some(mut engine) = engine_or_skip_with(stark_engine::colorspace::ColorSpaceId::Mixbox) else {
+    let Some(mut engine) = engine_or_skip_with(stark_engine::colorspace::ColorSpaceId::Mixbox)
+    else {
         return;
     };
     paint(&mut engine, [0.1, 0.1, 0.9, 1.0], 22.0, STROKE);
@@ -1059,7 +1061,8 @@ fn a_gradient_map_works_in_a_pigment_document() {
 #[cfg(feature = "mixbox")]
 #[test]
 fn a_filter_works_in_a_pigment_document() {
-    let Some(mut engine) = engine_or_skip_with(stark_engine::colorspace::ColorSpaceId::Mixbox) else {
+    let Some(mut engine) = engine_or_skip_with(stark_engine::colorspace::ColorSpaceId::Mixbox)
+    else {
         return;
     };
     paint(&mut engine, RED, 22.0, STROKE);

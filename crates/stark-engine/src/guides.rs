@@ -46,7 +46,7 @@ use std::sync::Arc;
 
 use glam::{Mat3, Quat, Vec2, Vec3};
 
-use crate::geom::{Ellipse, principal_axis};
+use stark_model::geom::{Ellipse, principal_axis};
 
 /// A lattice whose corner sits closer than this many cells to the eye names no
 /// grid (§20.3). Not a tolerance: there all three planes pass through the eye,

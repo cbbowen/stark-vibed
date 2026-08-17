@@ -24,8 +24,10 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use stark_engine::command::InputSample;
-use stark_engine::geom::Vec2;
-use stark_engine::path::{self, DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, FlattenTolerance, PathFitter};
+use stark_engine::path::{
+    self, DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, FlattenTolerance, PathFitter,
+};
+use stark_model::geom::Vec2;
 
 /// The recorded strokes, by the property of the fit each one stresses.
 fn cases() -> Vec<(&'static str, Vec<InputSample>)> {

@@ -16,8 +16,8 @@ use stark_engine::document::{
     BrushDynamics, BrushParams, FillOp, SelectionMode, SelectionOp, SelectionShape, ShapeAction,
     Tool,
 };
-use stark_engine::geom::Vec2;
 use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_model::geom::Vec2;
 
 /// A fill's paint is color alone — how far it covers is `FillOp::opacity`,
 /// which the Select panel's slider sets (§18.0.4). These double as brush
@@ -601,9 +601,10 @@ fn fill_golden() {
 // The gradient fill (§22.4): a parcel whose latent varies with canvas position.
 // ---------------------------------------------------------------------------
 
+use stark_engine::PickOptions;
 use stark_engine::colorspace::ColorSpaceId;
 use stark_engine::document::{GradientAxis, GradientParcel, Parcel};
-use stark_engine::{Gradient, GradientStop, PickOptions};
+use stark_model::{Gradient, GradientStop};
 
 const BLUE: [f32; 3] = [0.1, 0.2, 0.8];
 

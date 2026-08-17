@@ -35,8 +35,8 @@ use stark_engine::document::{
     BrushParams, BrushShape, ModSource, Modulation, Modulations, NoiseKind, OrientationSource,
     PenState, Tool,
 };
-use stark_engine::geom::Vec2;
 use stark_engine::{ColorSpaceId, InputSample, SurfaceId};
+use stark_model::geom::Vec2;
 
 use dioxus::html::HasFileData;
 

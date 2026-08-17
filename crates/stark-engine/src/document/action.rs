@@ -12,11 +12,11 @@ use super::filter::Filter;
 use super::layer::{BlendMode, Layer, LayerContent, LayerId, MattePaint, MatteRegion, Place};
 use super::selection::SelectionOp;
 use super::state::DocState;
-use crate::geom::Vec2;
 use crate::gpu::SurfaceId;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
 use crate::gpu::tile::TilePool;
+use stark_model::geom::Vec2;
 
 /// Identifies the author of an action: one local user, or a peer (§4).
 /// Maps to an iroh `NodeId` when collaborating; a fixed value when solo.
@@ -190,7 +190,7 @@ pub enum ActionKind {
     /// [`super::transform`].
     Transform {
         layer: LayerId,
-        affine: crate::geom::Affine2,
+        affine: stark_model::geom::Affine2,
     },
 
     /// Name a layer, or with `None` take its name away again so it falls back to

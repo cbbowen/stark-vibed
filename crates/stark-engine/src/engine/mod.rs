@@ -44,7 +44,6 @@ use crate::document::{
     LayerContent, LayerId, LinearTimeline, ShapeAction, Timeline, Tool,
 };
 use crate::error::EngineError;
-use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::MediaParams;
 use crate::gpu::desc::Zeroes;
 use crate::gpu::{
@@ -54,6 +53,7 @@ use crate::gpu::{
 };
 use crate::peer::Peers;
 use crate::session::ShapeResult;
+use stark_model::geom::{Extent2, ViewTransform};
 
 /// The starting layer present in every new document.
 const ROOT_LAYER: LayerId = LayerId(0);
@@ -273,7 +273,7 @@ pub struct MatteInfo {
     /// frames against (§15.6). `None` for a region defined against no rect
     /// ([`MatteRegion::Everything`]): the handle box, the aspect readout and the
     /// export frame all stand down rather than invent one.
-    pub rect: Option<(crate::geom::Vec2, crate::geom::Vec2)>,
+    pub rect: Option<(stark_model::geom::Vec2, stark_model::geom::Vec2)>,
     /// The paint the region wears — flat, or a ramp (§15.4, §22.4).
     pub paint: crate::document::MattePaint,
 }
@@ -331,7 +331,7 @@ pub struct ObservableState {
     /// ([`Selection::hull`](crate::document::Selection::hull)). What the
     /// transform chrome hangs its handles on; committed-only, like
     /// `has_selection`.
-    pub selection_hull: Option<(crate::geom::Vec2, crate::geom::Vec2)>,
+    pub selection_hull: Option<(stark_model::geom::Vec2, stark_model::geom::Vec2)>,
     /// What the next shape gesture will do with the region it encloses — combine
     /// it into the selection one of four ways, or fill it (§18.0.4).
     pub shape_action: ShapeAction,

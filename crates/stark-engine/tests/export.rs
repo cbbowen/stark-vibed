@@ -11,9 +11,9 @@ mod common;
 use common::*;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
 use stark_engine::document::{MattePaint, MatteRegion, Place, SelectionOp, Tool};
-use stark_engine::geom::Vec2;
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Background, Engine, ExportScale, LayerId, Offscreen, Rendered, RgbaImage};
+use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const BLACK: [f32; 3] = [0.0, 0.0, 0.0];
@@ -364,8 +364,8 @@ fn export_without_a_frame_falls_back() {
     let plan = engine
         .export_plan(None, ExportScale::Factor(1.0))
         .expect("plan");
-    assert!(plan.size.width >= stark_engine::TILE_SIZE);
-    assert!(plan.size.height >= stark_engine::TILE_SIZE);
+    assert!(plan.size.width >= stark_model::TILE_SIZE);
+    assert!(plan.size.height >= stark_model::TILE_SIZE);
 }
 
 /// **Showing the piece frames what an export would write** (§15.6): the same rect,
@@ -565,7 +565,7 @@ fn the_export_limit_is_the_devices_own() {
 /// showing a stale picture.
 #[test]
 fn a_piece_past_the_export_limit_still_has_an_overview() {
-    use stark_engine::geom::Extent2;
+    use stark_model::geom::Extent2;
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -625,7 +625,7 @@ fn a_piece_past_the_export_limit_still_has_an_overview() {
 /// and a 60-px sketch shown at 60 px says less than the empty panel around it.
 #[test]
 fn fitting_a_small_piece_fills_the_box() {
-    use stark_engine::geom::Extent2;
+    use stark_model::geom::Extent2;
     let Some(mut engine) = engine_or_skip() else {
         return;
     };

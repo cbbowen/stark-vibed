@@ -5,10 +5,10 @@
 //! target directly, this is never bound, and every golden blessed at `zoom = 1.0`
 //! is bit-identical to before supersampling existed.
 
-use crate::geom::Extent2;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
+use stark_model::geom::Extent2;
 use stark_shaders::mirror::resolve::binding as rb;
 use stark_shaders::mirror::resolve::decl as rd;
 

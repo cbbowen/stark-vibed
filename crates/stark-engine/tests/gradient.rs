@@ -10,8 +10,9 @@ mod common;
 
 use common::*;
 use stark_engine::colorspace::ColorSpaceId;
-use stark_engine::geom::Vec2;
-use stark_engine::{Engine, Gradient, PickOptions};
+use stark_engine::{Engine, PickOptions};
+use stark_model::Gradient;
+use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.12, 0.1, 1.0];
 const BLUE: [f32; 4] = [0.1, 0.2, 0.8, 1.0];
@@ -143,7 +144,7 @@ fn a_gap_in_the_paint_does_not_join_the_ramp() {
     // which an interpolated ramp is by construction, and which the paper (or a
     // None mis-mapped to black) sits far off.
     let lab = |c: [f32; 3]| {
-        let l = stark_engine::color::srgb_to_oklab([c[0], c[1], c[2], 1.0]);
+        let l = stark_model::color::srgb_to_oklab([c[0], c[1], c[2], 1.0]);
         [l[0], l[1], l[2]]
     };
     let a = lab(g.sample(0.0));

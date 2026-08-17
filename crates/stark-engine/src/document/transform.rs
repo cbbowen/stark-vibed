@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use super::selection::Selection;
 use super::warp::{Lattice, WarpMap, cell_point};
-use crate::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TileCoord, TileRect, Vec2};
 use crate::gpu::tile::TileMap;
+use stark_model::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TileCoord, TileRect, Vec2};
 
 /// Largest number of paint tiles one transform may rewrite (~650 MB of transient
 /// tile allocation at the worst). A transform that would exceed it is rejected

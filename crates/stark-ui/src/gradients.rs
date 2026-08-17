@@ -24,10 +24,10 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
-use stark_engine::color::srgb_to_oklab;
-use stark_engine::geom::Vec2;
-use stark_engine::gradient::Gradient;
 use stark_engine::{PickOptions, PickSource};
+use stark_model::color::srgb_to_oklab;
+use stark_model::geom::Vec2;
+use stark_model::gradient::Gradient;
 
 use crate::platform::{base64_decode, base64_encode};
 use crate::state::AppState;
@@ -290,7 +290,7 @@ pub fn trace_long_enough(points: &[Vec2]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_engine::gradient::GradientStop;
+    use stark_model::gradient::GradientStop;
 
     fn gradient() -> Gradient {
         Gradient::new(vec![

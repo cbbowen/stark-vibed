@@ -9,7 +9,7 @@
 //!
 //! The type exists to be *captured*, not authored point by point: the artist
 //! traces a line through paint they have already mixed, the engine samples
-//! colors along it ([`Engine::pick_gradient`](crate::Engine::pick_gradient),
+//! colors along it (`stark-engine`'s `Engine::pick_gradient`,
 //! §22.2), and [`fit`] reduces those samples to the fewest stops that still
 //! reproduce the ramp within a perceptual tolerance. Placing and color-picking
 //! control points by hand remains possible in principle — a `Gradient` is just

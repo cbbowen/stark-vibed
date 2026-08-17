@@ -24,7 +24,7 @@ use common::*;
 use stark_engine::MediaParams;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_engine::document::{BrushParams, BrushShape};
-use stark_engine::geom::Vec2;
+use stark_model::geom::Vec2;
 
 /// The reference configuration: no relief to tilt a normal, no weave, no gloss —
 /// every knob that could shape the light turned off, so what is left is only the

@@ -19,9 +19,9 @@ mod common;
 use common::*;
 use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
 use stark_engine::document::{BrushDynamics, Tool};
-use stark_engine::geom::Vec2;
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{MediaParams, RgbaImage};
+use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.15, 0.1, 1.0];
 

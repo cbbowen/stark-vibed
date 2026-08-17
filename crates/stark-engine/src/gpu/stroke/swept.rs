@@ -7,9 +7,9 @@
 
 use crate::colorspace::ColorSpace;
 use crate::document::StrokeRecord;
-use crate::geom::{TILE_APRON, TILE_TEX, TileCoord};
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
+use stark_model::geom::{TILE_APRON, TILE_TEX, TileCoord};
 use stark_shaders::mirror::integrate::binding as ib;
 use stark_shaders::mirror::integrate::decl as id;
 use stark_shaders::mirror::stamp_common::binding as sc;

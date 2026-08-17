@@ -37,8 +37,8 @@ use stark_engine::document::{
     Selection, SelectionMode, SelectionOp, SelectionShape, TransformMap, WarpMap, footprint,
     rect_corners,
 };
-use stark_engine::geom::{Affine2, TileCoord, Vec2};
 use stark_engine::gpu::SurfaceId;
+use stark_model::geom::{Affine2, TileCoord, Vec2};
 
 // ---------------------------------------------------------------------------
 // The state diff
@@ -757,7 +757,7 @@ fn the_check_rejects_a_footprint_that_under_claims() {
         .map(|w| match w {
             Resource::Paint(l, _) => Resource::Paint(
                 *l,
-                stark_engine::geom::TileRect {
+                stark_model::geom::TileRect {
                     min: (0, 0),
                     max: (0, 0),
                 },

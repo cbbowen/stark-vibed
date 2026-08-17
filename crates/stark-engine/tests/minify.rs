@@ -25,8 +25,8 @@ mod common;
 use common::*;
 use stark_engine::command::DocCommand;
 use stark_engine::document::{BrushParams, BrushShape, MattePaint, MatteRegion, Place};
-use stark_engine::geom::Vec2;
 use stark_engine::{Background, ExportScale, Offscreen, Rendered, RgbaImage};
+use stark_model::geom::Vec2;
 
 /// The frame the exports are taken against: a rect whose size divides by [`SS`], so
 /// the two renders are the same picture at two sizes rather than two croppings.

@@ -26,8 +26,8 @@
 
 use std::ops::Range;
 
-use crate::geom::ViewTransform;
 use crate::gpu::tile::TilePairHandle;
+use stark_model::geom::ViewTransform;
 
 use super::blend::{self, BlendUniform};
 use super::filter::FilterUniform;
@@ -367,7 +367,7 @@ fn chromatic_disp(f: &FilterDraw, view: ViewTransform) -> [f32; 2] {
         return [0.0; 2];
     }
     let (spread, angle) = (f.params[0], f.params[1]);
-    let d = view.linear() * crate::geom::Vec2::new(angle.cos(), angle.sin()) * spread;
+    let d = view.linear() * stark_model::geom::Vec2::new(angle.cos(), angle.sin()) * spread;
     [d.x, d.y]
 }
 

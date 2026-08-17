@@ -18,10 +18,10 @@ pub use glam::{Affine2, Mat2, Vec2};
 /// *some* orthogonal pair).
 ///
 /// Here rather than beside either caller because both a scatter of samples and a conic
-/// are the same 2×2 question: [`assist`](crate::assist) reads an ellipse off the second
-/// moments of a trace, and [`guides`](crate::guides) reads one off the quadratic part
-/// of a conic (§20.7).
-pub(crate) fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Option<Vec2>) {
+/// are the same 2×2 question: `stark-engine`'s `assist` reads an ellipse off the second
+/// moments of a trace, and its `guides` reads one off the quadratic part of a conic
+/// (§20.7). Both callers are in the other crate, which is what makes this `pub`.
+pub fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Option<Vec2>) {
     let half_trace = 0.5 * (sxx + syy);
     let disc = (0.25 * (sxx - syy).powi(2) + sxy * sxy).max(0.0).sqrt();
     let (major, minor) = (half_trace + disc, half_trace - disc);
@@ -39,8 +39,8 @@ pub(crate) fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Option<
 /// turned.
 ///
 /// Here beside [`principal_axis`] and for the same reason. Two modules arrive at an
-/// ellipse from opposite directions — [`assist`](crate::assist) reads one off the
-/// second moments of a hand-drawn loop, [`guides`](crate::guides) off the quadratic
+/// ellipse from opposite directions — `stark-engine`'s `assist` reads one off the
+/// second moments of a hand-drawn loop, its `guides` off the quadratic
 /// part of a conic (§20.7) — and both were passing it around as a bare
 /// `(Vec2, Vec2, f32)`, which says nothing about which `Vec2` is which and left the
 /// convergence test in `assist` comparing `a.0` against `b.1`.
@@ -454,7 +454,7 @@ impl ViewTransform {
     /// and with a zoom that can actually be divided by.
     ///
     /// **One definition, asked by the mutators and by the render path alike.**
-    /// [`export_view`](crate::Engine::export_view) spelled the same predicate out
+    /// `stark-engine`'s `Engine::export_view` spelled the same predicate out
     /// inline, which is how a view could be refused at the render and still be
     /// sitting in the session — the check said what was wrong without stopping it
     /// being stored. Now the store is what refuses, and the render's check is the
@@ -511,13 +511,12 @@ impl ViewTransform {
     /// **The easel is straightened, deliberately**, which is what makes this "show me
     /// the piece" rather than "zoom to fit". A turn and a mirror are ways of *looking*
     /// at a painting (§18.1.2), so the caller here is a piece arriving rather than a
-    /// hand adjusting one — the same reading that has [`ExportPlan::view`] write a
+    /// hand adjusting one — the same reading that has `stark-engine`'s `ExportPlan::view` write a
     /// file upright at whatever angle the canvas is being worked at. It is also the
     /// only fit this asks: at an angle the rect's *screen* footprint is a larger,
     /// turned box, so fitting one and fitting the other are two questions with two
     /// answers.
     ///
-    /// [`ExportPlan::view`]: crate::ExportPlan::view
     ///
     /// Refused, like every mutator here, when handed a rect no view could be fitted
     /// to: an inverted or empty one leaves the view exactly as it was rather than
@@ -1149,5 +1148,127 @@ mod tests {
         let mut bad = turned;
         bad.show_rect(max, min, 0.05);
         assert_eq!(bad, turned, "an inverted rect should be refused whole");
+    }
+}
+
+// —— tile cover: the geometry every masked pass shares ————————————————————————
+//
+// A selection, a fill and a transform all have to answer the same question — which
+// tiles does this canvas box touch, and is that more than I am willing to walk — and
+// they have to answer it *identically*, because a fill's written tiles and its
+// footprint are required to be the same tiles (§12.6).
+//
+// It lives here rather than in `document::selection`, where it grew up, because the
+// answer is a fact about the tile grid and not about any one of the three. That the
+// GPU side of all three reaches for it (`gpu::fill`, `gpu::selection`) was the
+// standing hint; the crate split turned the hint into a `pub`.
+
+/// The tiles whose *texture* (interior + apron) overlaps the canvas box
+/// `[lo, hi]`, grown by `ring` tiles — [`TileRect::covering`] with this module's
+/// padding, since a tile's texture starts one apron before its interior and a box
+/// that reaches into the apron band still touches the neighbour.
+///
+/// `None` — a refusal, not a clamp — for a box that is not finite or not
+/// addressable. That is the only acceptable answer here: a clamp would rasterize
+/// a *different* region, and these coordinates arrive from files and peers, where
+/// the only tolerable disagreement between two clients is none (§6.8).
+pub fn tile_box(lo: Vec2, hi: Vec2, ring: i32) -> Option<TileRect> {
+    let apron = Vec2::splat(TILE_APRON as f32);
+    TileRect::covering(lo - apron, hi + apron, ring)
+}
+
+/// Tiles whose *texture* (interior + apron) overlaps the canvas box `[lo, hi]`,
+/// expanded by `ring` tiles on every side — `None` when there would be more than
+/// `budget` of them.
+///
+/// **Counted before it is walked**, which is what makes an absurd box a clean
+/// refusal instead of a hang: the box is quadratic in the drag, so a marquee at far
+/// zoom-out (or an op arriving from a file or a peer) can name more tiles than
+/// there is memory to list, and finding that out by listing them is not an option.
+/// Same stance and same shape as `document::transform`'s `quad_reached_tiles`, which counts its
+/// candidates against its own budget before enumerating, for the same reason.
+pub fn tiles_covering(lo: Vec2, hi: Vec2, ring: i32, budget: usize) -> Option<Vec<TileCoord>> {
+    tiles_of(tile_box(lo, hi, ring)?, budget)
+}
+
+/// The coordinates of an **already-quantized** rect, `None` when there would be
+/// more than `budget` of them — [`tiles_covering`]'s second half, for the caller
+/// that has its own reason to hold the `TileRect`.
+///
+/// The fill is that caller: its written tile set and its footprint have to be the
+/// same tiles (§12.6), so the rect is derived once by
+/// `document::fill_bounds` and quantized once, and only *then*
+/// walked. Counted before it is walked for [`tiles_covering`]'s own reason.
+pub fn tiles_of(rect: TileRect, budget: usize) -> Option<Vec<TileCoord>> {
+    let count = rect.count();
+    if count > budget as u64 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(count as usize);
+    out.extend(rect.coords());
+    Some(out)
+}
+
+/// The lasso's closed edge list, as `selection.wesl` reads it: one texel per edge
+/// holding `(a.xy, b.xy)` in canvas px. Empty for a polygon that cannot enclose area.
+pub fn lasso_edges(points: &[Vec2]) -> Vec<[f32; 4]> {
+    if points.len() < 3 {
+        return Vec::new();
+    }
+    (0..points.len())
+        .map(|i| {
+            let a = points[i];
+            let b = points[(i + 1) % points.len()];
+            [a.x, a.y, b.x, b.y]
+        })
+        .collect()
+}
+
+/// The tile geometry a mask tile is rasterized over: its texture's top-left in canvas
+/// px (the interior origin, shifted out by the apron — §6.4).
+pub fn mask_tex_origin(coord: TileCoord) -> Vec2 {
+    coord.origin() - Vec2::splat(TILE_APRON as f32)
+}
+
+/// The mask tile's edge length, for the shaders that place it in a region.
+pub const MASK_TEX: u32 = TILE_TEX;
+
+#[cfg(test)]
+mod cover_tests {
+    use super::*;
+
+    /// Coordinates arrive from files and peers. A non-finite bound, or one past
+    /// what the `i32` tile grid can address, is refused — never wrapped into a tile
+    /// index pointing somewhere else, which is what an `as i32` cast would do.
+    #[test]
+    fn unrepresentable_boxes_are_refused_rather_than_wrapped() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(tile_box(Vec2::new(bad, 0.0), Vec2::splat(10.0), 0), None);
+            assert_eq!(tile_box(Vec2::ZERO, Vec2::new(0.0, bad), 0), None);
+        }
+        // Well past `i32::MAX` tiles from the origin, but a *small* box — so the
+        // count would happily pass and only the addressing is impossible.
+        let far = 1.0e30;
+        assert_eq!(tile_box(Vec2::splat(far), Vec2::splat(far + 1.0), 0), None);
+        assert_eq!(
+            tile_box(Vec2::splat(-far), Vec2::splat(-far + 1.0), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn lasso_edges_close_the_loop() {
+        let pts = vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)];
+        let edges = lasso_edges(&pts);
+        assert_eq!(edges.len(), 3);
+        assert_eq!(
+            edges[2],
+            [0.0, 1.0, 0.0, 0.0],
+            "last edge returns to the start"
+        );
+        assert!(
+            lasso_edges(&pts[..2]).is_empty(),
+            "a segment encloses nothing"
+        );
     }
 }

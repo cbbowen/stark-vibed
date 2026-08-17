@@ -12,13 +12,13 @@
 
 use super::Engine;
 use crate::document::{CompositeParams, DocState, Layer, LayerContent, LayerId};
-use crate::geom::{Extent2, TileRect, ViewTransform};
 use crate::gpu::{
     CompositeGroup, CompositeItem, CompositeScene, FilterDraw, GpuContext, MatteDraw, Offscreen,
     SelectionOutline,
 };
 use crate::image::RgbaImage;
 use crate::{EngineError, Result};
+use stark_model::geom::{Extent2, TileRect, ViewTransform};
 
 /// What sits under the paint when rendering (§15.6).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -110,8 +110,8 @@ pub enum ExportScale {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ExportPlan {
     /// The canvas-space rect being exported.
-    pub min: crate::geom::Vec2,
-    pub max: crate::geom::Vec2,
+    pub min: stark_model::geom::Vec2,
+    pub max: stark_model::geom::Vec2,
     /// Output size in image px.
     pub size: Extent2,
     /// Image px per canvas px.
@@ -937,7 +937,10 @@ impl Engine {
 
     /// The canvas-space rect an export covers: the named frame, else the painted
     /// bounds, else the viewport.
-    fn export_rect(&self, frame: Option<LayerId>) -> (crate::geom::Vec2, crate::geom::Vec2) {
+    fn export_rect(
+        &self,
+        frame: Option<LayerId>,
+    ) -> (stark_model::geom::Vec2, stark_model::geom::Vec2) {
         self.piece_rect(frame).unwrap_or_else(|| {
             // Everything the viewport shows — a *bound* under rotation, which is the
             // safe direction: an export with nothing painted and no frame should not
@@ -960,7 +963,7 @@ impl Engine {
     pub(super) fn piece_rect(
         &self,
         frame: Option<LayerId>,
-    ) -> Option<(crate::geom::Vec2, crate::geom::Vec2)> {
+    ) -> Option<(stark_model::geom::Vec2, stark_model::geom::Vec2)> {
         let doc = self.timeline.current();
         // An `Everything` matte has no rect and so defines no frame: naming one
         // falls through to the painted bounds, the same answer as no frame at
@@ -974,10 +977,10 @@ impl Engine {
             return Some(rect);
         }
         let (min, max) = doc.bounds().tile_range()?;
-        let t = crate::geom::TILE_SIZE as f32;
+        let t = stark_model::geom::TILE_SIZE as f32;
         Some((
-            crate::geom::Vec2::new(min.x as f32 * t, min.y as f32 * t),
-            crate::geom::Vec2::new((max.x + 1) as f32 * t, (max.y + 1) as f32 * t),
+            stark_model::geom::Vec2::new(min.x as f32 * t, min.y as f32 * t),
+            stark_model::geom::Vec2::new((max.x + 1) as f32 * t, (max.y + 1) as f32 * t),
         ))
     }
 
@@ -1043,9 +1046,9 @@ impl Engine {
 /// so far out that whole tiles leave the `i32` grid), and an optimization that cannot
 /// see its input must do nothing rather than guess — see [`visible_tiles`].
 fn culled<V>(
-    map: &rpds::HashTrieMap<crate::geom::TileCoord, V>,
+    map: &rpds::HashTrieMap<stark_model::geom::TileCoord, V>,
     visible: Option<TileRect>,
-) -> Box<dyn Iterator<Item = (crate::geom::TileCoord, &V)> + '_> {
+) -> Box<dyn Iterator<Item = (stark_model::geom::TileCoord, &V)> + '_> {
     match visible {
         Some(rect) if rect.count() < map.size() as u64 => Box::new(
             rect.coords()
@@ -1129,7 +1132,7 @@ pub(super) fn visible_tiles(view: ViewTransform) -> Option<TileRect> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geom::{TILE_SIZE, TileCoord, Vec2};
+    use stark_model::geom::{TILE_SIZE, TileCoord, Vec2};
 
     /// An upright, unmirrored view of `size` at `zoom`, centred on `center`.
     fn view(center: Vec2, zoom: f32, size: Extent2) -> ViewTransform {

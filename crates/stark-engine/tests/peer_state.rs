@@ -15,11 +15,11 @@ mod common;
 use common::{engine_or_skip, images_match, paint};
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
 use stark_engine::document::{ActorId, LayerId, Tool};
-use stark_engine::geom::Vec2;
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::peer::{GestureFrame, PeerFrame, StrokeHead};
 use stark_engine::{Engine, RgbaImage};
 use stark_engine::{SelectionMode, SelectionOp, SelectionShape};
+use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];

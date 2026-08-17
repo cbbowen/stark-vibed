@@ -35,8 +35,8 @@ use crate::preview;
 use crate::state::{AppState, dispatch};
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::document::{MattePaint, MatteRegion, Place};
-use stark_engine::geom::Vec2;
 use stark_engine::{LayerId, LayerInfo, MatteInfo};
+use stark_model::geom::Vec2;
 
 /// The frame's default fill: a near-black mat board. Dark reads as "not the
 /// piece" against almost any painting, which is what a crop scrim is for.
@@ -154,7 +154,7 @@ pub(crate) fn piece_frame(o: &stark_engine::ObservableState) -> Option<LayerId> 
 /// The painted content's canvas-space bounds, inset to the populated tiles.
 pub(crate) fn content_rect(o: &stark_engine::ObservableState) -> Option<(Vec2, Vec2)> {
     let (min, max) = o.bounds.tile_range()?;
-    let t = stark_engine::geom::TILE_SIZE as f32;
+    let t = stark_model::geom::TILE_SIZE as f32;
     Some((
         Vec2::new(min.x as f32 * t, min.y as f32 * t),
         Vec2::new((max.x + 1) as f32 * t, (max.y + 1) as f32 * t),

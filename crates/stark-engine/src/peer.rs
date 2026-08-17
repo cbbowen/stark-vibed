@@ -31,9 +31,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::document::{ActorId, BrushParams, FillOp, LayerId, SelectionOp, StrokeRecord};
-use crate::geom::Vec2;
 use crate::path::ControlPoint;
 use crate::presence::GestureRx;
+use stark_model::geom::Vec2;
 
 /// How long a peer may go unheard-from before it leaves the roster, in seconds.
 /// Peers publish at least every [`HEARTBEAT`] even when idle, so this is several

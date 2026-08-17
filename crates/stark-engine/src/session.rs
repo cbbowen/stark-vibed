@@ -12,7 +12,6 @@ use crate::document::{
     ActorId, BrushParams, FillOp, LayerId, SelectionOp, SelectionShape, ShapeAction, StrokeRecord,
     Tool,
 };
-use crate::geom::{Vec2, ViewTransform};
 use crate::guides::{PerspectiveGuide, Scaffold};
 use crate::path::{ControlPoint, PathFitter};
 use crate::peer::{
@@ -20,6 +19,7 @@ use crate::peer::{
 };
 use crate::presence::{GestureSource, GestureTx};
 use crate::tow::{Tow, TowString};
+use stark_model::geom::{Vec2, ViewTransform};
 
 /// Minimum spacing (canvas px) between lasso vertices. The mask shader costs one
 /// segment test per texel per vertex, and pointer samples arrive far denser than a

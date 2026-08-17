@@ -622,7 +622,7 @@ impl MergeRenderer {
     /// tiles change" is also what the caller's footprint and the history's tile diff
     /// are about (§12.6) — a tile that keeps its handle is a tile the undo has nothing
     /// to restore.
-    fn rewritten(&self, scene: &MergeScene<'_>) -> Vec<crate::geom::TileCoord> {
+    fn rewritten(&self, scene: &MergeScene<'_>) -> Vec<stark_model::geom::TileCoord> {
         let MergeScene { lower, upper, .. } = *scene;
         let mut out: Vec<_> = lower
             .tiles

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::color;
+use stark_model::color;
 
 /// Identifies a color space; serialized in the save format (`CanvasMeta`, §8).
 ///

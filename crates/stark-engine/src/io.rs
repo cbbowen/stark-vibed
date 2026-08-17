@@ -25,8 +25,8 @@ use crate::assets::AssetId;
 use crate::colorspace::ColorSpaceId;
 use crate::document::Action;
 use crate::error::{EngineError, Result};
-use crate::geom::TILE_SIZE;
 use crate::gpu::SurfaceId;
+use stark_model::geom::TILE_SIZE;
 
 /// Container magic; identifies a Stark document.
 const MAGIC: &[u8; 8] = b"STARKDOC";

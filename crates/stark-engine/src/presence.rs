@@ -349,10 +349,10 @@ mod tests {
     use super::*;
     use crate::command::InputSample;
     use crate::document::{ActorId, LayerId, Tool};
-    use crate::geom::{Extent2, Vec2, ViewTransform};
     use crate::path::DEFAULT_TOLERANCE;
     use crate::peer::{PeerFrame, Peers};
     use crate::session::Session;
+    use stark_model::geom::{Extent2, Vec2, ViewTransform};
 
     /// A fixed-seed generator, so a failure is a bug report rather than a coin toss.
     /// `proptest` would add shrinking, but the inputs here are already minimal —

@@ -23,7 +23,7 @@
 use stark_engine::Engine;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::document::{BrushParams, BrushShape, OrientationSource, Tool};
-use stark_engine::geom::{Extent2, Vec2};
+use stark_model::geom::{Extent2, Vec2};
 
 use super::{SIZE, brush, engine_or_skip_sized, stroke_with};
 

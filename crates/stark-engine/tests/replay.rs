@@ -11,7 +11,7 @@ mod common;
 
 use common::*;
 use stark_engine::command::DocCommand;
-use stark_engine::geom::Vec2;
+use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];

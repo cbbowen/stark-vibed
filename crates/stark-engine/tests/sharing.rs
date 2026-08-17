@@ -14,8 +14,8 @@ mod common;
 
 use common::*;
 use stark_engine::command::DocCommand;
-use stark_engine::geom::{Extent2, Vec2, ViewTransform};
 use stark_engine::{Background, Engine, Offscreen, Rendered};
+use stark_model::geom::{Extent2, Vec2, ViewTransform};
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 

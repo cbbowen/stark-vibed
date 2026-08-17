@@ -8,8 +8,8 @@ mod common;
 use common::*;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::document::{BrushDynamics, BrushParams, BrushShape, Tool};
-use stark_engine::geom::Vec2;
 use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
@@ -1218,7 +1218,7 @@ fn bleed_softens_a_color_boundary() {
 /// own. The pre-ladder stencil put 15 levels through this; the bound is set between.
 #[test]
 fn a_bleed_trail_across_an_edge_has_no_step_in_it() {
-    let Some(mut engine) = engine_or_skip_sized(stark_engine::geom::Extent2 {
+    let Some(mut engine) = engine_or_skip_sized(stark_model::geom::Extent2 {
         width: 512,
         height: 512,
     }) else {
@@ -1408,12 +1408,14 @@ fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
             lamport: prev.lamport + 1,
             actor: prev.actor,
         },
-        kind: stark_engine::document::ActionKind::CommitStroke(stark_engine::document::StrokeRecord {
-            layer: engine.observe().active_layer,
-            brush,
-            path,
-            seed: 7,
-        }),
+        kind: stark_engine::document::ActionKind::CommitStroke(
+            stark_engine::document::StrokeRecord {
+                layer: engine.observe().active_layer,
+                brush,
+                path,
+                seed: 7,
+            },
+        ),
     });
 
     let Some(mut replayed) = engine_or_skip() else {
@@ -1681,7 +1683,7 @@ fn the_settle_leaves_no_crease_across_the_last_stamp() {
 ///   trail may only fade; a rise is a stranded ring printing past the end).
 #[test]
 fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
-    use stark_engine::geom::Extent2;
+    use stark_model::geom::Extent2;
     const WIDE: Extent2 = Extent2 {
         width: 1600,
         height: 256,
@@ -1726,9 +1728,10 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
 
     // Paint level per pixel against the pre-stroke render of the same engine, so the
     // ground's own structure cancels: red paint pulls the green channel down.
-    let level = |before: &stark_engine::RgbaImage, after: &stark_engine::RgbaImage, x: u32, y: u32| {
-        (before.pixel(x, y)[1] as i32 - after.pixel(x, y)[1] as i32).max(0)
-    };
+    let level =
+        |before: &stark_engine::RgbaImage, after: &stark_engine::RgbaImage, x: u32, y: u32| {
+            (before.pixel(x, y)[1] as i32 - after.pixel(x, y)[1] as i32).max(0)
+        };
 
     for (name, points, end_px) in cases {
         let Some(mut engine) = engine_or_skip_sized(WIDE) else {
@@ -1821,7 +1824,7 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
 #[cfg(not(feature = "debug-unfrozen"))]
 #[test]
 fn a_bleeding_strokes_preview_is_its_commit() {
-    let Some(mut engine) = engine_or_skip_sized(stark_engine::geom::Extent2 {
+    let Some(mut engine) = engine_or_skip_sized(stark_model::geom::Extent2 {
         width: 1280,
         height: 256,
     }) else {

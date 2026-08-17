@@ -58,16 +58,14 @@
 
 pub mod assets;
 pub(crate) mod assist;
-pub mod color;
 pub mod colorspace;
 pub mod command;
 pub(crate) mod content;
+pub mod dispersion;
 pub mod document;
 pub mod engine;
 pub(crate) mod error;
-pub mod geom;
 pub mod gpu;
-pub mod gradient;
 pub(crate) mod guides;
 pub(crate) mod image;
 pub mod io;
@@ -116,12 +114,10 @@ pub use engine::{
     Layers, MatteInfo, ObservableState, PickOptions, PickSource, PresenceTick, Rendered,
 };
 pub use error::{EngineError, Result};
-pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};
 pub use gpu::{
     Compositor, CompositorPipeline, DeviceFailure, EnvironmentId, FailureKind, GpuContext,
     GpuHealth, MediaParams, Offscreen, StrokeRenderer, SurfaceId, TilePairHandle, TilePool,
 };
-pub use gradient::{Gradient, GradientStop};
 pub use guides::{AxisPencil, AxisPlane, GuideScene, Lens, PairTrace, PerspectiveGuide, Scaffold};
 pub use image::RgbaImage;
 pub use io::{BuildId, CanvasMeta, DocumentFile};

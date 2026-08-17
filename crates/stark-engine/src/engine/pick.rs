@@ -10,8 +10,8 @@
 use super::Engine;
 use super::render::visible_tiles;
 use crate::document::LayerId;
-use crate::geom::{Extent2, TileRect, ViewTransform};
 use crate::gpu::channels::Targets;
+use stark_model::geom::{Extent2, TileRect, ViewTransform};
 
 /// Which layers an eyedropper sample is taken from (§18.0.2).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -146,9 +146,9 @@ fn mean_over_substrate(texels: &[f32], bg: [f32; 4]) -> Option<[f32; 4]> {
 /// Axis-aligned with the *canvas*, and unrotated: the sampled square is a patch of
 /// the painting, so which way the easel is turned cannot change which texels fall
 /// in it.
-fn patch_view(at: crate::geom::Vec2, size: Extent2) -> ViewTransform {
+fn patch_view(at: stark_model::geom::Vec2, size: Extent2) -> ViewTransform {
     ViewTransform {
-        center: crate::geom::Vec2::new(at.x.floor() + 0.5, at.y.floor() + 0.5),
+        center: stark_model::geom::Vec2::new(at.x.floor() + 0.5, at.y.floor() + 0.5),
         zoom: 1.0,
         rotation: 0.0,
         flip_h: false,
@@ -164,7 +164,7 @@ fn patch_view(at: crate::geom::Vec2, size: Extent2) -> ViewTransform {
 /// an optimization that cannot see one of its inputs has to do nothing about all of
 /// them. Folding the *bounds* instead would have let a non-finite point vanish into
 /// a `min`/`max` and quietly shrink the answer.
-fn patch_cull(points: &[crate::geom::Vec2], size: Extent2) -> Option<TileRect> {
+fn patch_cull(points: &[stark_model::geom::Vec2], size: Extent2) -> Option<TileRect> {
     let mut union: Option<TileRect> = None;
     for &at in points {
         let rect = visible_tiles(patch_view(at, size))?;
@@ -203,7 +203,7 @@ impl Engine {
     /// frontend re-renders and tries to read the engine.
     pub fn pick_color(
         &mut self,
-        at: crate::geom::Vec2,
+        at: stark_model::geom::Vec2,
         options: PickOptions,
     ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
         let fut = self.pick_colors(std::slice::from_ref(&at), options);
@@ -216,10 +216,10 @@ impl Engine {
     /// The trace is how a gradient is *made* here: the artist draws a line
     /// through paint they have already mixed, and the machinery of control
     /// points is this method's problem. The path — canvas-space, as traced — is
-    /// resampled evenly by arc length ([`crate::gradient::resample`]), each
+    /// resampled evenly by arc length ([`stark_model::gradient::resample`]), each
     /// sample is picked exactly as [`Engine::pick_color`] picks (same sources,
     /// same patch mean, same raw-channels-not-lit rule — in a Mixbox document
-    /// the ramp is of pigment mixtures), and [`crate::gradient::fit`] reduces
+    /// the ramp is of pigment mixtures), and [`stark_model::gradient::fit`] reduces
     /// the run to the fewest stops that reproduce it within a perceptual
     /// tolerance.
     ///
@@ -229,11 +229,11 @@ impl Engine {
     /// found paint — there is no gradient in an empty trace.
     pub fn pick_gradient(
         &mut self,
-        path: &[crate::geom::Vec2],
+        path: &[stark_model::geom::Vec2],
         options: PickOptions,
-    ) -> impl std::future::Future<Output = Option<crate::gradient::Gradient>> + use<> {
-        let samples = crate::gradient::resample(path);
-        let points: Vec<crate::geom::Vec2> = samples.iter().map(|&(_, p)| p).collect();
+    ) -> impl std::future::Future<Output = Option<stark_model::gradient::Gradient>> + use<> {
+        let samples = stark_model::gradient::resample(path);
+        let points: Vec<stark_model::geom::Vec2> = samples.iter().map(|&(_, p)| p).collect();
         let fut = self.pick_colors(&points, options);
         async move {
             let colors = fut.await;
@@ -242,7 +242,7 @@ impl Engine {
                 .zip(colors)
                 .filter_map(|(&(t, _), c)| c.map(|c| (t, c)))
                 .collect();
-            crate::gradient::fit(&run)
+            stark_model::gradient::fit(&run)
         }
     }
 
@@ -253,7 +253,7 @@ impl Engine {
     /// and two copies of this logic is how that promise would quietly break.
     pub(crate) fn pick_colors(
         &mut self,
-        points: &[crate::geom::Vec2],
+        points: &[stark_model::geom::Vec2],
         options: PickOptions,
     ) -> impl std::future::Future<Output = Vec<Option<[f32; 3]>>> + use<> {
         // The pick samples `presented`, whose fold is rebuilt lazily — flush, so a

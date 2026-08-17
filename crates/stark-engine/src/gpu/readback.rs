@@ -16,9 +16,9 @@
 //! failure above cannot be reintroduced by calling it from the frontend.
 
 use crate::error::{EngineError, Result};
-use crate::geom::Extent2;
 use crate::gpu::context::GpuContext;
 use crate::gpu::half::f16_to_f32;
+use stark_model::geom::Extent2;
 
 /// A texel of `texture`, in bytes.
 ///
@@ -198,7 +198,7 @@ fn decode_rgba16f(bytes: &[u8]) -> Vec<f32> {
 
 /// Read many same-sized `Rgba16Float` textures back in **one** buffer map — the
 /// gradient capture's readback (§22.2), where a trace is up to
-/// [`MAX_SAMPLES`](crate::gradient::MAX_SAMPLES) patches and a map per patch
+/// [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) patches and a map per patch
 /// would be a map per texel of latency. Every texture must carry `COPY_SRC` and
 /// share `size`; results come back in argument order, 4 `f32` per texel.
 pub async fn read_many_rgba16f(

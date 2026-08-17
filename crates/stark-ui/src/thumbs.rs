@@ -41,11 +41,11 @@ use dioxus::prelude::*;
 
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_engine::document::{BrushParams, FillOp, SelectionShape, Tool};
-use stark_engine::geom::{Extent2, Vec2};
 use stark_engine::{
     Background, Engine, EnvironmentId, InputSample, MediaParams, Offscreen, Rendered, SurfaceId,
-    ViewTransform,
 };
+use stark_model::ViewTransform;
+use stark_model::geom::{Extent2, Vec2};
 
 use crate::platform::base64_encode;
 use crate::presets::Wearable;

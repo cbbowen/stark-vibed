@@ -25,3 +25,10 @@
 //! than remembered.
 //!
 //! [`DocState`]: https://docs.rs/stark-engine
+
+pub mod color;
+pub mod geom;
+pub mod gradient;
+
+pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};
+pub use gradient::{Gradient, GradientStop};

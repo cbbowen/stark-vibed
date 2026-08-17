@@ -21,8 +21,8 @@ use stark_engine::InputSample;
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_engine::document::SelectionOp;
 use stark_engine::document::{ShapeAction, Tool};
-use stark_engine::geom::{Vec2, ViewTransform};
 use stark_engine::{PickOptions, PickSource};
+use stark_model::geom::{Vec2, ViewTransform};
 
 /// How close to a quarter turn a turn has to land to be pulled onto it, radians
 /// (about 5°).

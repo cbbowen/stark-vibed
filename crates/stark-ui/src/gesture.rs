@@ -23,7 +23,7 @@
 //! last valid shape rather than tearing through it.
 
 use stark_engine::document::{LayerId, PerspectiveMap, TransformMap, WarpMap, rect_corners};
-use stark_engine::geom::{Affine2, Mat2, Vec2};
+use stark_model::geom::{Affine2, Mat2, Vec2};
 
 /// Where a pointer stands relative to the transform widget's ellipse — which
 /// decides what a drag starting there does (§16.6).

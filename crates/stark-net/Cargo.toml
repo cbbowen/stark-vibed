@@ -25,6 +25,9 @@ mixbox = ["stark-engine/mixbox"]
 default = ["webrtc", "mixbox"]
 
 [dependencies]
+# The document: the action log, the save format and the presence frames — all this
+# crate speaks on the wire (§2). It names no engine type at all.
+stark-model = { workspace = true }
 stark-engine = { path = "../stark-engine", default-features = false }
 iroh = "1"
 # The live-edit wire: epidemic broadcast on the session topic. Rides the same

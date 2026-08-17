@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use super::action::ActorId;
 use super::filter::Filter;
 use super::state::CanvasBounds;
-use crate::geom::Vec2;
 use crate::gpu::tile::TileMap;
+use stark_model::geom::Vec2;
 
 /// Stable identifier for a layer within a document.
 ///
@@ -552,7 +552,7 @@ pub enum MattePaint {
     /// and a Mixbox document's is a pigment ramp — a graded wash, not a screen
     /// gradient.
     Gradient {
-        gradient: crate::gradient::Gradient,
+        gradient: stark_model::gradient::Gradient,
         axis: super::fill::GradientAxis,
     },
 }

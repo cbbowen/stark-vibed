@@ -11,9 +11,9 @@ use common::*;
 use stark_engine::colorspace::ColorSpaceId;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::document::{BrushShape, Tool};
-use stark_engine::geom::Vec2;
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, SurfaceId};
+use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];

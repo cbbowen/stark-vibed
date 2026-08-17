@@ -23,8 +23,8 @@ use crate::prefs::Prefs;
 use crate::render::Renderer;
 use stark_engine::command::ViewCommand;
 use stark_engine::document::{BrushParams, LayerId};
-use stark_engine::geom::Vec2;
 use stark_engine::{InputCommand, ObservableState};
+use stark_model::geom::Vec2;
 
 /// Create one of [`AppState`]'s signals, owned by the **root** scope rather than by
 /// the component that declares it.
@@ -507,7 +507,7 @@ pub enum GradientTarget {
     /// click replaces it deliberately.
     Matte {
         layer: LayerId,
-        gradient: stark_engine::Gradient,
+        gradient: stark_model::Gradient,
     },
 }
 

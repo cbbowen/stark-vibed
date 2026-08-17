@@ -38,8 +38,8 @@ use nalgebra::{Const, Dyn, OMatrix};
 use serde::{Deserialize, Serialize};
 
 use crate::command::InputSample;
-use crate::geom::Vec2;
 use crate::spline::{CubicBSpline, Observations};
+use stark_model::geom::Vec2;
 
 /// Control points solved for at the live end of the stroke. Everything behind them
 /// is frozen; the pinned endpoint sits inside the window on top of these.
@@ -101,7 +101,7 @@ pub const DEFAULT_TOLERANCE: f32 = 1.0;
 ///
 /// Zero (or negative) would make a control point free and every sample worth one.
 /// The ceiling is 64 canvas px per input px — past the most zoomed-out view
-/// [`ViewTransform`](crate::geom::ViewTransform) allows — and is what keeps the
+/// [`ViewTransform`](stark_model::geom::ViewTransform) allows — and is what keeps the
 /// window advancing, and so the per-sample work bounded, rather than letting a
 /// stroke never grow a control point at all.
 const MIN_TOLERANCE: f32 = 1.0 / 64.0;

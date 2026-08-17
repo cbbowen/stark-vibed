@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use crate::document::BrushParams;
-use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
+use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 
 use super::budget::{MAX_REGION_DIM, MAX_STAMPS};
 use super::dynamics::BLEED_TRAVEL_QUANTUM;

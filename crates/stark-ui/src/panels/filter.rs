@@ -62,11 +62,12 @@ use crate::panels::color::ab_field_data_url;
 use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
-use stark_engine::color::{dispersion_weight, linear_to_srgb};
 use stark_engine::command::{DocCommand, PeerCommand};
+use stark_engine::dispersion::dispersion_weight;
 use stark_engine::document::{CONTRAST_PIVOT, ChromaticAberration, ColorAdjust, Filter};
-use stark_engine::gradient::Gradient;
 use stark_engine::{LayerId, LayerInfo};
+use stark_model::color::linear_to_srgb;
+use stark_model::gradient::Gradient;
 
 /// One slider on the bar: what it is called, its range, and the two ends of the
 /// round trip through the filter's own parameter struct `F`.

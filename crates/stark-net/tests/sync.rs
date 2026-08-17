@@ -7,10 +7,10 @@ use std::time::Duration;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::document::{BrushParams, BrushShape, Tool};
 use stark_engine::engine::headless_engine;
-use stark_engine::geom::{Extent2, Vec2};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::peer::{GestureFrame, PeerFrame, StrokeHead};
 use stark_engine::{Engine, RgbaImage, SurfaceId};
+use stark_model::geom::{Extent2, Vec2};
 use stark_net::{AssetNeed, CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket};
 
 const SIZE: Extent2 = Extent2 {

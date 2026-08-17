@@ -46,7 +46,7 @@ use crate::layout::chrome_class;
 use crate::preview;
 use crate::state::AppState;
 use stark_engine::document::TransformMap;
-use stark_engine::geom::{Vec2, ViewTransform};
+use stark_model::geom::{Vec2, ViewTransform};
 
 /// Half-width of the rim's / an edge's grab band, screen px — converted to
 /// canvas px by the zoom, so it is equally grabbable at any magnification.

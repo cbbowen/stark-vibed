@@ -6,7 +6,7 @@
 //! agree pixel for pixel.
 
 use crate::document::{BrushParams, BrushShape, OrientationSource, PenState, StrokeRecord};
-use crate::geom::Vec2;
+use stark_model::geom::Vec2;
 
 use super::StrokeSpans;
 

@@ -51,7 +51,7 @@ pub enum Filter {
     /// chosen yet — is the neutral, the same shape as a chromatic filter whose
     /// spread has not left zero: a gradient map with *any* ramp is already an
     /// edit, so the only setting a freshly added one may hold is none at all.
-    GradientMap(Option<crate::gradient::Gradient>),
+    GradientMap(Option<stark_model::gradient::Gradient>),
 }
 
 impl Filter {
@@ -150,12 +150,12 @@ impl Filter {
                 let stops = g
                     .stops()
                     .iter()
-                    .map(|s| crate::gradient::GradientStop {
+                    .map(|s| stark_model::gradient::GradientStop {
                         t: s.t,
                         color: s.color.map(|c| c.clamp(0.0, 1.0)),
                     })
                     .collect();
-                crate::gradient::Gradient::new(stops)
+                stark_model::gradient::Gradient::new(stops)
             })),
         }
     }
@@ -396,8 +396,8 @@ mod tests {
     /// is the number it claims to be rather than one somebody typed.
     #[test]
     fn the_contrast_pivot_is_mid_greys_lightness() {
-        let lin = crate::color::srgb_to_linear(0.5);
-        let l = crate::color::linear_srgb_to_oklab([lin, lin, lin])[0];
+        let lin = stark_model::color::srgb_to_linear(0.5);
+        let l = stark_model::color::linear_srgb_to_oklab([lin, lin, lin])[0];
         assert!(
             (l - CONTRAST_PIVOT).abs() < 5e-4,
             "mid-grey is L = {l}, not {CONTRAST_PIVOT}",
@@ -495,7 +495,7 @@ mod tests {
     /// value a hostile file can carry, and it reaches every texel of the frame.
     #[test]
     fn sanitizing_a_gradient_map_clamps_its_stops_to_the_cube() {
-        use crate::gradient::{Gradient, GradientStop};
+        use stark_model::gradient::{Gradient, GradientStop};
         let hot = Gradient::new(vec![
             GradientStop {
                 t: 0.0,

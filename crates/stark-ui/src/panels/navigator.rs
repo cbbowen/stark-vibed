@@ -50,8 +50,8 @@ use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch};
 use stark_engine::command::ViewCommand;
-use stark_engine::geom::{Extent2, Vec2};
 use stark_engine::{ExportScale, LayerId};
+use stark_model::geom::{Extent2, Vec2};
 
 /// The largest miniature, in CSS px. The width is the panel's inner width (see
 /// `.panel-stack` / `.panel` in `stark.css`), so a landscape piece reaches both
@@ -137,7 +137,7 @@ fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
 /// rather than sticking to an edge and claiming you are still on the painting. What
 /// the stylesheet contributes is a minimum size, so a viewport that is a fraction
 /// of a percent of a large canvas is still something you can see.
-fn viewport_style(over: Overview, view: stark_engine::ViewTransform) -> String {
+fn viewport_style(over: Overview, view: stark_model::ViewTransform) -> String {
     let span = (over.max - over.min).max(Vec2::splat(1e-3));
     // The viewport's own size in canvas px — the rect *before* it is turned, so this
     // is the screen rectangle over the zoom rather than the bound it sweeps.
@@ -185,7 +185,7 @@ const TURN_FOLLOW_PX: f32 = 64.0;
 /// `None` when the drag has gone nowhere, which asks for nothing. The snap is applied
 /// to the *target* rather than to the eased result, so a long pull lands exactly
 /// square while a short one still eases smoothly toward that.
-fn turn_to(view: stark_engine::ViewTransform, v: Vec2, was: f32) -> Option<f32> {
+fn turn_to(view: stark_model::ViewTransform, v: Vec2, was: f32) -> Option<f32> {
     // The miniature is an upright, uniformly scaled picture of canvas space, so a
     // direction in its pixels *is* a direction in canvas px — no mapping needed, and
     // the pull length stays in the screen units the feel constants are written in.

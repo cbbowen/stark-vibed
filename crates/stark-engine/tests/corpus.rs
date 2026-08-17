@@ -20,9 +20,9 @@ use common::*;
 use stark_engine::RgbaImage;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::document::{BrushParams, Tool};
-use stark_engine::geom::{TILE_SIZE, Vec2};
 use stark_engine::gpu::SurfaceId;
 use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_model::geom::{TILE_SIZE, Vec2};
 
 /// One `#[test]` per case, plus the check that the two lists agree.
 ///

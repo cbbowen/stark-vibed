@@ -15,8 +15,8 @@ use super::layer::{
     BlendMode, CompositeParams, Layer, LayerContent, LayerId, MattePaint, MatteRegion, Place,
 };
 use super::selection::Selection;
-use crate::geom::{TileCoord, Vec2};
 use crate::gpu::SurfaceId;
+use stark_model::geom::{TileCoord, Vec2};
 
 /// Inclusive tile-coordinate bounding box of all populated tiles (§6),
 /// i.e. the explored extent of the infinite canvas.

@@ -21,9 +21,7 @@ use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
 use crate::document::fill::{FillOp, GradientAxis, Parcel, plan};
-use crate::document::selection::{
-    Selection, SelectionMode, SelectionOp, SelectionShape, mask_tex_origin,
-};
+use crate::document::selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
 use crate::gpu::channels::{ChannelFormats, Channels};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
@@ -31,6 +29,7 @@ use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, TileMap, TilePool};
 use crate::gpu::uniforms::UniformSlots;
+use stark_model::geom::mask_tex_origin;
 
 // Generated from `fill.wesl`'s own declarations (§6.7).
 use stark_shaders::mirror::fill::Fill as FillUniform;
@@ -67,8 +66,9 @@ fn tex(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
 // The shader's stop capacity is the fitter's (§22.1) — asserted rather than
 // commented, since a gradient with more stops than the uniform holds would
 // truncate silently (§6.10).
-const _: () =
-    assert!(stark_shaders::mirror::fill::MAX_GRADIENT_STOPS as usize == crate::gradient::MAX_STOPS);
+const _: () = assert!(
+    stark_shaders::mirror::fill::MAX_GRADIENT_STOPS as usize == stark_model::gradient::MAX_STOPS
+);
 
 #[derive(Clone)]
 pub struct FillRenderer {

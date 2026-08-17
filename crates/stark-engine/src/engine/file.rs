@@ -340,7 +340,7 @@ impl Engine {
     /// *along the travel*, which makes the curve a property of the weave and the
     /// direction crossing it together. Builds the surface if this is the first time
     /// it has been asked for.
-    pub fn surface_bearing(&self, id: SurfaceId, tooth: f32, dir: crate::geom::Vec2) -> f32 {
+    pub fn surface_bearing(&self, id: SurfaceId, tooth: f32, dir: stark_model::geom::Vec2) -> f32 {
         self.shared
             .apply
             .surfaces

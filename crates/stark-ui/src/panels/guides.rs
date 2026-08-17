@@ -45,8 +45,8 @@ use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, guide_boxes, select_all};
 use crate::state::{AppState, GuideEdit, dispatch};
 use stark_engine::command::ViewCommand;
-use stark_engine::geom::Vec2;
 use stark_engine::{Lens, PairTrace, PerspectiveGuide};
+use stark_model::geom::Vec2;
 
 /// The axis hues, by **name**: `stark.css` declares `--axis-x/y/z` and this
 /// side never learns what they are. The colors belong to the app rather than
@@ -999,7 +999,7 @@ mod tests {
             let name = format!("var(--axis-{})", ["x", "y", "z"][i]);
             assert_eq!(AXIS_CSS[i], name, "the bar points at nothing");
 
-            let got = stark_engine::color::oklab_to_srgb([lab[0], lab[1], lab[2], 1.0]);
+            let got = stark_model::color::oklab_to_srgb([lab[0], lab[1], lab[2], 1.0]);
             for c in 0..3 {
                 assert!(
                     (got[c] - want[c]).abs() < 1.0 / 255.0,

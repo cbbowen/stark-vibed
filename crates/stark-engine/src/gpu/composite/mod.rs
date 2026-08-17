@@ -54,13 +54,13 @@ mod view;
 use std::sync::Arc;
 
 use crate::colorspace::ColorSpace;
-use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::environment::Environment;
 use crate::gpu::surface::Surface;
 use crate::gpu::uniforms::{InstanceStream, UniformSlots};
+use stark_model::geom::{Extent2, ViewTransform};
 
 pub(crate) use blend::{BlendPass, BlendUniform, blend_code};
 use blend::{Bounce, ScratchLevel, ScratchTargets};

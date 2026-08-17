@@ -42,7 +42,7 @@ use crate::state::{AppState, dispatch};
 use stark_engine::LayerId;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_engine::document::{BlendMode, FillOp, Filter, MattePaint, TransformMap};
-use stark_engine::geom::Vec2;
+use stark_model::geom::Vec2;
 
 /// One control's pair: the command that shows `T` on the canvas without logging
 /// it, and the command that lays it down.

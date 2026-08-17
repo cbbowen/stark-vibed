@@ -6,9 +6,9 @@
 //! over the substrate into the target. This is the "old masters" payoff.
 
 use crate::colorspace::ColorSpace;
-use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Slot};
+use stark_model::geom::{Extent2, ViewTransform};
 use stark_shaders::mirror::media_common::binding as mc;
 use stark_shaders::mirror::media_common::decl as mcd;
 use stark_shaders::mirror::media_mixbox::binding as mm;
@@ -181,7 +181,7 @@ impl MediaScene<'_> {
         // Screen→canvas mapping for sampling the surface bump in canvas space, so the
         // weave stays attached to the canvas as it pans, zooms, turns and mirrors
         // (§6.4, §18.1.2).
-        let canvas_origin = self.view.screen_to_canvas(crate::geom::Vec2::ZERO);
+        let canvas_origin = self.view.screen_to_canvas(stark_model::geom::Vec2::ZERO);
         // Diffuse samples a heavily-blurred high mip ≈ hemispherical irradiance; the
         // level is the environment's own, so this CPU-side normalization is reading
         // exactly the texels the shader will. The Cook–Torrance specular picks its own

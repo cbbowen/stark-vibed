@@ -39,11 +39,11 @@ use crate::document::transform::{
     FragMap, GatedKind, Homography, SourceUnit, TransformMap, gated_geometry, plan_gated_mask,
     plan_gated_paint, plan_mask, plan_paint,
 };
-use crate::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use crate::gpu::channels::{ChannelFormats, Channels};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::Slot;
 use crate::gpu::desc::{self, Zeroes};
+use stark_model::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use stark_shaders::mirror::transform::binding as t;
 use stark_shaders::mirror::transform::decl as td;
 

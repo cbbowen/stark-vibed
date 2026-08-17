@@ -20,7 +20,7 @@
 use super::action::{Action, ActionKind, ActorId, StrokeRecord};
 use super::brush::BrushParams;
 use super::layer::LayerId;
-use crate::geom::{TileRect, Vec2};
+use stark_model::geom::{TileRect, Vec2};
 
 /// The tiles a pass may touch within the canvas box `[lo, hi]`, grown by `ring`
 /// tiles — [`TileRect::covering`] with a footprint's answer to a box it cannot
@@ -465,8 +465,8 @@ mod tests {
     use crate::document::Place;
     use crate::document::action::ActionId;
     use crate::document::brush::BrushParams;
-    use crate::geom::Vec2;
     use crate::path::ControlPoint;
+    use stark_model::geom::Vec2;
 
     fn act(actor: u64, kind: ActionKind) -> Action {
         Action {

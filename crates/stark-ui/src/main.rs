@@ -800,7 +800,7 @@ fn TowStringOverlay() -> Element {
     // slack string drapes rather than plunges. Screen-down whatever the canvas
     // rotation, because the string hangs from the hand, not from the painting.
     let sag = (slack * 0.4).min(t.rope * 0.2);
-    let mid = (t.tip + t.target) * 0.5 + stark_engine::Vec2::new(0.0, sag);
+    let mid = (t.tip + t.target) * 0.5 + stark_model::Vec2::new(0.0, sag);
     let d = format!(
         "M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}",
         t.tip.x, t.tip.y, mid.x, mid.y, t.target.x, t.target.y

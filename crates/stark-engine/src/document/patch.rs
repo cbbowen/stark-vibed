@@ -21,9 +21,9 @@ use super::footprint::{Prop, Resource, footprint};
 use super::layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion};
 use super::selection::Selection;
 use super::state::{DocState, LayerSite};
-use crate::geom::{TileCoord, TileRect};
 use crate::gpu::SurfaceId;
 use crate::gpu::tile::TilePairHandle;
+use stark_model::geom::{TileCoord, TileRect};
 
 /// One restorable write. Each variant covers exactly one [`footprint
 /// resource`](super::footprint::Resource), never more — a commuting action in
@@ -403,7 +403,7 @@ mod tests {
     fn every_property_round_trips() {
         use crate::document::layer::{MattePaint, MatteRegion};
         use crate::document::{BlendMode, ColorAdjust, Filter};
-        use crate::geom::Vec2;
+        use stark_model::geom::Vec2;
 
         let rect = MatteRegion::OutsideRect {
             min: Vec2::ZERO,
