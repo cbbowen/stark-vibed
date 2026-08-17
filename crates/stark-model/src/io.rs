@@ -30,6 +30,17 @@ use crate::geom::TILE_SIZE;
 
 /// Container magic; identifies a Stark document.
 const MAGIC: &[u8; 8] = b"STARKDOC";
+
+/// Largest decompressed container this build will hold, in bytes.
+///
+/// A ceiling on what a *stranger* can make this process allocate, which is the
+/// only reason there is one: a document arrives from a peer as readily as from
+/// disk (§12.4), and deflate's ratio means a few kilobytes on the wire can name
+/// as many gigabytes as it likes. Generous against real documents — the log is
+/// a few MB at ten thousand actions, and the bundle is dominated by ground height
+/// maps at ~3 MB each — so this is roughly two orders of magnitude of headroom
+/// over anything a session produces, and refuses only what no session would.
+const MAX_DECOMPRESSED: u64 = 256 << 20;
 /// On-disk schema version. Bump when the serialized layout changes.
 ///
 /// **2** — layer groups (§14). `AddLayer`, `AddMatte` and `MoveLayer`
@@ -290,8 +301,20 @@ impl DocumentFile {
             return Err(DocError::UnsupportedVersion(version));
         }
 
+        // Bounded before it is expanded, not after: deflate takes a long run down
+        // to almost nothing, so the compressed length says nothing about the
+        // decompressed one and a reader that finds out by expanding has already
+        // spent the memory. `take` one byte past the limit, so "filled the buffer"
+        // and "reached the limit" are distinguishable.
         let mut body = Vec::new();
-        DeflateDecoder::new(&bytes[header..]).read_to_end(&mut body)?;
+        DeflateDecoder::new(&bytes[header..])
+            .take(MAX_DECOMPRESSED + 1)
+            .read_to_end(&mut body)?;
+        if body.len() as u64 > MAX_DECOMPRESSED {
+            return Err(DocError::TooLarge {
+                limit: MAX_DECOMPRESSED,
+            });
+        }
         let file: Self =
             postcard::from_bytes(&body).map_err(|e| DocError::Deserialize(e.to_string()))?;
 
@@ -330,6 +353,44 @@ mod tests {
             back.actions[0].kind,
             ActionKind::AddLayer { id: LayerId(2), .. }
         ));
+    }
+
+    /// A container whose body expands past the cap is **refused rather than
+    /// expanded**, and refused without ever holding the expansion.
+    ///
+    /// Deflate takes a long run down to almost nothing, so the compressed length
+    /// says nothing about the decompressed one — the whole point of the bound.
+    /// The body here is a few KB on the wire and a third of a gigabyte off it,
+    /// which is exactly the shape a peer can send (§12.4).
+    #[test]
+    fn refuses_a_body_that_expands_past_the_cap() {
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
+        let zeros = vec![0u8; 1 << 20];
+        for _ in 0..((MAX_DECOMPRESSED >> 20) + 8) {
+            encoder.write_all(&zeros).expect("deflate");
+        }
+        let bomb = encoder.finish().expect("deflate");
+        let mut bytes = Vec::from(&MAGIC[..]);
+        bytes.extend_from_slice(&WIRE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&bomb);
+        assert!(
+            bytes.len() < 1 << 20,
+            "the point is that a small file names a huge one; this one is {} bytes",
+            bytes.len(),
+        );
+        assert!(matches!(
+            DocumentFile::from_bytes(&bytes),
+            Err(DocError::TooLarge { limit }) if limit == MAX_DECOMPRESSED
+        ));
+    }
+
+    /// …and the cap is nowhere near an honest document: the roundtrip above has to
+    /// keep working, which is what stops the bound being tightened into a bug.
+    #[test]
+    fn an_ordinary_document_is_nowhere_near_the_cap() {
+        let bytes = sample_doc().to_bytes().expect("encode");
+        assert!((bytes.len() as u64) < MAX_DECOMPRESSED / 1000);
+        assert!(DocumentFile::from_bytes(&bytes).is_ok());
     }
 
     #[test]

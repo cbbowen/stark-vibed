@@ -138,20 +138,108 @@ impl DocumentFile {
     /// `SetSurface` whose height map is not registered when its strokes replay
     /// deposits them through the flat stand-in, and those pixels are stored
     /// (§6.4).
+    ///
+    /// **A need is answered by its own bag, never by the other one.** The two
+    /// bags are keyed separately because their bytes decode differently — a mask
+    /// is luminance × alpha, a ground is channel 0 ([`DocumentFile::surfaces`]) —
+    /// and an id is a *content* hash, so the same image imported once as a stamp
+    /// and once as a ground carries one id in two bags that are not
+    /// interchangeable. Asking one flattened set whether the id is present
+    /// anywhere answers "bundled" for a ground whose bytes are only in the brush
+    /// bag, and the miss is the silent one: nothing refuses the replay, and every
+    /// stroke made on that ground deposits through the flat stand-in.
     pub fn unbundled_content(&self) -> Vec<AssetNeed> {
-        let bundled: std::collections::HashSet<AssetId> = self
-            .assets
+        let brushes: std::collections::HashSet<AssetId> =
+            self.assets.iter().map(|(id, _)| *id).collect();
+        let grounds: std::collections::HashSet<AssetId> = self
+            .surfaces
             .iter()
-            .map(|(id, _)| *id)
-            .chain(
-                self.surfaces
-                    .iter()
-                    .filter_map(|(id, _)| AssetNeed::ground(*id).map(AssetNeed::content)),
-            )
+            .filter_map(|(id, _)| AssetNeed::ground(*id).map(AssetNeed::content))
             .collect();
         self.required_content()
             .into_iter()
-            .filter(|need| !bundled.contains(&need.content()))
+            // Exhaustive, with no `_` arm, for [`action_content`]'s reason: a kind
+            // added later must say which bag answers it rather than inheriting a
+            // bag that cannot hold its bytes.
+            .filter(|need| match need {
+                AssetNeed::Brush(id) => !brushes.contains(id),
+                AssetNeed::Ground(id) => !grounds.contains(id),
+            })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{ActionId, ActionKind, ActorId, BrushParams, LayerId, StrokeRecord};
+
+    fn act(kind: ActionKind) -> Action {
+        Action {
+            id: ActionId {
+                lamport: 1,
+                actor: ActorId::SOLO,
+            },
+            kind,
+        }
+    }
+
+    fn stroke_with(shape: BrushShape) -> Action {
+        act(ActionKind::CommitStroke(StrokeRecord {
+            layer: LayerId(0),
+            brush: BrushParams {
+                shape,
+                ..BrushParams::default()
+            },
+            path: Vec::new(),
+            seed: 0,
+        }))
+    }
+
+    /// **A need is answered by its own bag and never by the other one.**
+    ///
+    /// The bags are keyed apart because their bytes decode differently — a mask is
+    /// luminance × alpha, a ground is channel 0 — and an id is a *content* hash, so
+    /// one image imported as both a stamp and a ground carries one id in two bags
+    /// that cannot stand in for each other. Asked as one flattened set, a ground
+    /// whose bytes sit only in the brush bag came back "bundled": the bill was
+    /// short, nothing refused the replay, and every stroke on that ground deposited
+    /// through the flat stand-in into stored tiles (§6.4).
+    #[test]
+    fn a_need_is_not_answered_by_the_other_bag() {
+        let id = AssetId([7u8; 32]);
+        let bytes = vec![1u8, 2, 3];
+
+        // A document that stamps with `id` and paints on the ground `id`, with the
+        // bytes filed under the *brush* bag only.
+        let mut doc = DocumentFile::new(vec![
+            stroke_with(BrushShape::Stamp(id)),
+            act(ActionKind::SetSurface(SurfaceId::Image(id))),
+        ]);
+        doc.assets.push((id, bytes.clone()));
+        assert_eq!(
+            doc.unbundled_content(),
+            vec![AssetNeed::Ground(id)],
+            "the ground is not bundled just because the brush bag holds the id",
+        );
+
+        // Filed under the ground bag only: now it is the brush that is missing.
+        doc.assets.clear();
+        doc.surfaces.push((SurfaceId::Image(id), bytes.clone()));
+        assert_eq!(doc.unbundled_content(), vec![AssetNeed::Brush(id)]);
+
+        // Both bags, and the bill is settled.
+        doc.assets.push((id, bytes));
+        assert!(doc.unbundled_content().is_empty());
+    }
+
+    /// `Flat` is procedural: it has no bytes to move, so it is never a need and
+    /// never waited on — the one place that case is answered
+    /// ([`AssetNeed::ground`]).
+    #[test]
+    fn a_flat_ground_is_never_owed() {
+        let doc = DocumentFile::new(vec![act(ActionKind::SetSurface(SurfaceId::Flat))]);
+        assert!(doc.required_content().is_empty());
+        assert!(doc.unbundled_content().is_empty());
     }
 }

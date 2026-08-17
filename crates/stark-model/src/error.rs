@@ -30,6 +30,18 @@ pub enum DocError {
     #[error("unsupported document version {0}")]
     UnsupportedVersion(u32),
 
+    /// The container's compressed body expands past what this build will hold in
+    /// memory at once (`io::MAX_DECOMPRESSED`).
+    ///
+    /// A refusal rather than a decode error, and its own variant rather than an
+    /// `Io`, because the bytes may be perfectly well-formed: deflate compresses a
+    /// long run to almost nothing, so a small file can name an enormous one, and a
+    /// reader that expands first and asks afterwards has already spent the memory.
+    /// Documents arrive from peers as well as from disk (§12.4), which is the case
+    /// the bound is actually for.
+    #[error("document expands to more than {limit} bytes")]
+    TooLarge { limit: u64 },
+
     /// The document names a color space this build does not carry — today only
     /// [`ColorSpaceId::Mixbox`] in a build without the `mixbox` cargo feature.
     ///

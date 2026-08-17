@@ -141,9 +141,23 @@ impl TileRect {
         max: (0, 0),
     };
 
+    /// Whether this rect reaches nothing — inverted (`min > max`) on **either**
+    /// axis.
+    ///
+    /// One definition, asked by everything here that has to treat an empty rect as
+    /// empty. It exists because the emptiness test used to be spelled inline and
+    /// per axis: [`intersects`](Self::intersects) guarded x and not y, so a rect
+    /// empty only in y intersected everything, while [`union`](Self::union)
+    /// guarded both. The fields are public, so the disagreement was reachable from
+    /// outside — and this is a footprint predicate, where §12.6 survives a rect
+    /// claiming too much and cannot survive one claiming too little.
+    pub const fn is_empty(self) -> bool {
+        self.min.0 > self.max.0 || self.min.1 > self.max.1
+    }
+
     pub fn intersects(&self, other: &TileRect) -> bool {
-        self.min.0 <= self.max.0
-            && other.min.0 <= other.max.0
+        !self.is_empty()
+            && !other.is_empty()
             && self.min.0 <= other.max.0
             && other.min.0 <= self.max.0
             && self.min.1 <= other.max.1
@@ -163,10 +177,10 @@ impl TileRect {
     /// inverted (`min > max`) so that it is the identity here rather than a corner
     /// the union has to stretch to reach.
     pub fn union(self, other: TileRect) -> TileRect {
-        if self.min.0 > self.max.0 || self.min.1 > self.max.1 {
+        if self.is_empty() {
             return other;
         }
-        if other.min.0 > other.max.0 || other.min.1 > other.max.1 {
+        if other.is_empty() {
             return self;
         }
         TileRect {
@@ -712,6 +726,48 @@ mod tests {
         assert!(TileRect::ALL.contains(TileCoord::new(0, 0)));
         assert!(!TileRect::EMPTY.contains(TileCoord::new(0, 0)));
         assert!(!TileRect::EMPTY.intersects(&TileRect::ALL));
+    }
+
+    /// **Empty is empty on either axis**, and every predicate has to agree about
+    /// it. `intersects` used to guard `min > max` on x alone, so a rect inverted
+    /// only in y reached everything — where `union` treated the same rect as the
+    /// identity. The fields are public, so the disagreement was reachable, and
+    /// this is the predicate the commutation gate rests on: a footprint that
+    /// intersects what it does not touch costs the fast path, but a rect that
+    /// *claims* to touch nothing while testing positive is the §12.6 direction
+    /// with no pixel able to show it.
+    #[test]
+    fn a_rect_inverted_on_either_axis_reaches_nothing() {
+        let real = TileRect::covering(Vec2::ZERO, Vec2::splat(9.0), 0).unwrap();
+        let inverted = [
+            TileRect::EMPTY,
+            // Empty in x alone, and in y alone — the case that used to slip past.
+            TileRect {
+                min: (5, 0),
+                max: (0, 10),
+            },
+            TileRect {
+                min: (0, 5),
+                max: (10, 0),
+            },
+        ];
+        for empty in inverted {
+            assert!(empty.is_empty(), "{empty:?} should be empty");
+            for other in [real, TileRect::ALL, TileRect::EMPTY] {
+                assert!(
+                    !empty.intersects(&other),
+                    "{empty:?} reaches nothing, so it cannot meet {other:?}",
+                );
+                assert!(!other.intersects(&empty), "…and from the other side");
+            }
+            // …and it is the identity of the union, not a corner it stretches to.
+            assert_eq!(empty.union(real), real);
+            assert_eq!(real.union(empty), real);
+            assert_eq!(empty.count(), 0);
+            assert!(!empty.contains(TileCoord::new(0, 0)));
+        }
+        assert!(!real.is_empty());
+        assert!(real.intersects(&real));
     }
 
     /// An upright, unmirrored view of `size` at `zoom`, centred on `center`.
