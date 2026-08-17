@@ -250,6 +250,11 @@ impl Engine {
         content: Rendered,
         attachments: Attachments,
     ) {
+        // Everything a painted frame costs on the CPU, from the fold through to the
+        // last command encoded. The frontend's own `frame` span sits outside it and
+        // adds the surface acquire and the present, so the difference between the two
+        // rows is what the *page* costs on top of what the engine does.
+        crate::timing::span!("render.view");
         // The fold is rebuilt lazily (`Engine::mark_live_stale`), and this is the
         // read that services it: once per frame painted, whatever arrived since.
         if matches!(content, Rendered::Live) {
@@ -267,17 +272,28 @@ impl Engine {
         // Only what this view can show (§6.3). The draw list is otherwise every
         // populated tile of every visible layer, whatever the viewport — and it is
         // rebuilt only when something it is a function of has moved ([`DrawKey`]).
-        self.refresh_draw_cache(
-            DrawKey {
-                doc_revision: self.doc_revision,
-                epoch: self.preview.epoch(),
-                fold: self.preview.fold(),
-                content,
-                only: None,
-                visible: visible_tiles(view),
-            },
-            &doc,
-        );
+        //
+        // Instrumented because the cache is the whole claim: this row's *count*
+        // against `render.view`'s says how often the key actually moved, and a live
+        // stroke moves it every frame by way of `Preview::fold`. A rebuild that
+        // stopped being rare would show up here long before it showed up as a
+        // dropped frame. Braced, because a timing span runs to the end of the block
+        // it is opened in and what is being timed is this call rather than the rest
+        // of the render (`timing::span!`).
+        {
+            crate::timing::span!("render.drawlist");
+            self.refresh_draw_cache(
+                DrawKey {
+                    doc_revision: self.doc_revision,
+                    epoch: self.preview.epoch(),
+                    fold: self.preview.fold(),
+                    content,
+                    only: None,
+                    visible: visible_tiles(view),
+                },
+                &doc,
+            );
+        }
 
         // The substrate is document state now (§15.5), so the ground a
         // piece was painted on travels with it instead of living in whichever
@@ -337,6 +353,14 @@ impl Engine {
             transparent: background == Background::Transparent,
             guides: &guide_scenes,
         };
+        // The three compositing passes and the draws inside them, encoded and
+        // submitted (§6.3). CPU time to *record* them, like every row here — WebGPU
+        // offers no timestamp query on the web, so nothing in this module can say
+        // what the GPU then spent executing them. The signal for that is the
+        // frontend's frame-skip counter (`Renderer::gpu_behind`), which is the
+        // honest place for it: a queue that will not drain is what being GPU-bound
+        // looks like from the CPU's side.
+        crate::timing::span!("render.composite");
         match attachments {
             Attachments::Surface => {
                 self.compositor

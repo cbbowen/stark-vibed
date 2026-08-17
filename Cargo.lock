@@ -2706,6 +2706,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hdrhistogram"
+version = "7.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f49d1053f4708f0af3cf9fc5bffc7e68a914a3c45becb231c80068c9c3f78bea"
+dependencies = [
+ "byteorder",
+ "num-traits",
+]
+
+[[package]]
 name = "headers"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5395,6 +5405,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanta"
+version = "0.12.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3ab5a9d756f0d97bdc89019bd2e4ea098cf9cde50ee7564dde6b81ccc8f06c7"
+dependencies = [
+ "crossbeam-utils",
+ "libc",
+ "once_cell",
+ "raw-cpuid",
+ "wasi",
+ "web-sys",
+ "winapi",
+]
+
+[[package]]
 name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5561,6 +5586,15 @@ dependencies = [
  "ref-cast",
  "serde",
  "smallvec",
+]
+
+[[package]]
+name = "raw-cpuid"
+version = "11.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
+dependencies = [
+ "bitflags",
 ]
 
 [[package]]
@@ -6533,12 +6567,14 @@ dependencies = [
  "flate2",
  "futures-channel",
  "glam 0.33.3",
+ "hdrhistogram",
  "history",
  "mixbox",
  "nalgebra",
  "png",
  "pollster",
  "postcard",
+ "quanta",
  "rpds",
  "serde",
  "stark-assetid",
@@ -6546,6 +6582,7 @@ dependencies = [
  "stark-testdata",
  "thiserror 2.0.20",
  "tracing",
+ "tracing-subscriber",
  "wgpu",
 ]
 
@@ -6612,6 +6649,7 @@ dependencies = [
  "stark-core",
  "stark-net",
  "tracing",
+ "tracing-subscriber",
  "tracing-wasm",
  "wasm-bindgen",
  "wasm-bindgen-futures",

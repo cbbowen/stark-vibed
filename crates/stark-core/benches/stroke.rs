@@ -12,6 +12,23 @@
 //!  * **Every iteration drains the device** (`poll(wait_indefinitely)`) inside the
 //!    timed region. Without that, `submit` returns almost immediately and the
 //!    benchmark measures command encoding — which is not where the time goes.
+//!  * **Every benchmark prints its phase split** (§7.1). Criterion answers "did the
+//!    total move"; the table under each line answers "which phase moved it", for the
+//!    exact configuration criterion just timed — which is the pairing the two were
+//!    always missing. The rows are CPU time to *record* work: no timestamp queries,
+//!    so what the GPU then spent executing it is not in the table (`bench.gpu_wait`
+//!    in `examples/stroke_bench` is the nearest thing, and bracketing is still how
+//!    GPU time gets divided among dispatches).
+//!
+//!    Installing the subscriber invalidates baselines saved before it, and that is
+//!    the right trade — **and the cost is measured, not assumed.** A span costs
+//!    1.4 ns with no subscriber installed and 234 ns with this one (2 M iterations,
+//!    release, 2026-08-16), so the densest benchmark here — `commit/dynamics/8`,
+//!    ~42 k spans over a 4.6 s window — pays **0.2%**, and `live/dynamics/500` pays
+//!    0.07%. Both are two orders of magnitude under the ~15% this box drifts between
+//!    runs of identical code, which is the floor any reading here is against anyway.
+//!    If a line ever does move with the instrumentation, that is a finding about the
+//!    instrumentation and not a cost to be avoided by switching it off.
 //!  * **Radius runs backwards on the dynamics path.** The stamp loop is sequential
 //!    per segment, so a *smaller* brush is slower: it flattens to more segments,
 //!    and the cost is serialized dispatch latency rather than texel work. Only at
@@ -31,6 +48,7 @@ use stark_core::document::{BrushParams, Tool};
 use stark_core::engine::headless_engine;
 use stark_core::geom::{Extent2, Vec2};
 use stark_core::path::DEFAULT_TOLERANCE;
+use stark_core::timing;
 
 const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const VIEWPORT: Extent2 = Extent2 {
@@ -54,6 +72,37 @@ fn wait_idle(engine: &Engine) {
         .device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("device poll");
+}
+
+/// Install the timing layer as this process's subscriber, once.
+///
+/// `Once` rather than a call from `main`, because `criterion_main!` writes `main` and
+/// there is nowhere in it to put this. A bare registry with nothing else on it: the
+/// tables below are printed directly, so a `fmt` layer would only thread engine log
+/// lines through criterion's output.
+fn install_timing() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::registry::Registry;
+        tracing::subscriber::set_global_default(Registry::default().with(timing::layer()))
+            .expect("no subscriber has been installed in this process yet");
+    });
+}
+
+/// Print what the benchmark just run passed through, then start a fresh window.
+///
+/// Between benchmarks rather than at the end: the histograms are cumulative, so one
+/// table for the whole file would average `dynamics/8` together with `swept/100` and
+/// describe neither. Called after `bench_function` returns, so the window covers
+/// criterion's warm-up as well as its measurement — which is what we want, since
+/// shares are the durable reading and a warm-up runs the same phases.
+fn phase_table(label: &str) {
+    match timing::snapshot() {
+        Some(t) => println!("  phases for {label}:\n{t}"),
+        None => println!("  (no timing subscriber installed — phases unavailable)"),
+    }
+    timing::reset();
 }
 
 /// `None` only when this machine has no usable adapter *and* the skip is permitted.
@@ -141,6 +190,7 @@ fn rewind(engine: &mut Engine) {
 /// The whole stroke rendered in one pass — the commit path, and what a replay or a
 /// remote peer's stroke costs.
 fn commit(c: &mut Criterion) {
+    install_timing();
     let Some(mut engine) = engine() else { return };
     let pts = samples();
     // Warm-up outside any measurement: the first stroke builds pipelines and the
@@ -179,6 +229,10 @@ fn commit(c: &mut Criterion) {
                 continue;
             }
             engine.process(ViewCommand::SetBrush(brush));
+            // The warm-up above, and the previous configuration's samples, are not
+            // this one's: clear them so the table describes the line criterion is
+            // about to print and nothing else.
+            timing::reset();
             g.bench_function(BenchmarkId::new(mode, radius), |b| {
                 b.iter_custom(|iters| {
                     let mut total = Duration::ZERO;
@@ -192,6 +246,7 @@ fn commit(c: &mut Criterion) {
                     total
                 });
             });
+            phase_table(&format!("commit/{mode}/{radius}"));
         }
     }
     g.finish();
@@ -206,6 +261,7 @@ fn commit(c: &mut Criterion) {
 /// leaves `commit` flat and moves this one has moved the freezing, and that is
 /// exactly the regression hardest to notice by hand.
 fn live(c: &mut Criterion) {
+    install_timing();
     let Some(mut engine) = engine() else { return };
     let pts = samples();
     engine.process(ViewCommand::SetBrush(smear(30.0)));
@@ -238,6 +294,7 @@ fn live(c: &mut Criterion) {
                 continue;
             }
             engine.process(ViewCommand::SetBrush(brush));
+            timing::reset();
             g.bench_function(BenchmarkId::new(mode, radius), |b| {
                 b.iter_custom(|iters| {
                     let mut total = Duration::ZERO;
@@ -272,6 +329,7 @@ fn live(c: &mut Criterion) {
                     total
                 });
             });
+            phase_table(&format!("live/{mode}/{radius}"));
         }
     }
     g.finish();

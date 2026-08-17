@@ -465,6 +465,12 @@ impl Engine {
         if !self.preview.stale {
             return;
         }
+        // **After the early return**, so the row counts folds rather than calls: this
+        // is asked once per painted frame whether or not anything moved, and a row
+        // whose count was "frames" and whose mean was diluted by the no-op case would
+        // answer neither question. Below the flag rather than above it for the same
+        // reason a `#[inline]` guard goes first — what is being measured is the work.
+        crate::timing::span!("live.fold");
         self.preview.stale = false;
         let gestures = self.live_gestures();
         // Disjoint fields, so the fold reads the context and the committed document

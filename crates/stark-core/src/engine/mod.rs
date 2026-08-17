@@ -852,6 +852,13 @@ impl Engine {
                 self.mark_live_stale();
             }
             GestureCommand::To { sample } => {
+                // The CPU half of a pointer sample, and the *whole* of what arrives at
+                // input rate — the fold and the render it marks stale are paid once a
+                // frame instead (`mark_live_stale`). Worth its own row because it is
+                // the one phase that grows with stroke length rather than with the
+                // tail: the fitter re-solves its unfrozen prefix on every push, and
+                // that has measured ~350× the flattening beside it.
+                crate::timing::span!("input.fit");
                 if self.session.is_selecting() {
                     self.session.selection_to(sample.pos);
                 } else {
@@ -1615,6 +1622,13 @@ impl Engine {
     /// present at eight of them and absent from thirteen, including the gesture
     /// commit, and which thirteen was not a decision anybody had made.
     fn commit(&mut self, kind: ActionKind) {
+        // Every logged edit, whatever kind — a stroke landing at pen-up, a fill, a
+        // layer move. One row rather than one per `ActionKind`, because what a
+        // profile is being asked here is "is a commit the hitch the artist felt",
+        // and the answer is read against `input.fit` and `frame` beside it. Which
+        // *kind* of commit was slow is a question the phases underneath it
+        // (`stroke.range` and its parts) already answer.
+        crate::timing::span!("doc.commit");
         self.preview.set_doc(None);
         let action = Action {
             id: self.next_action_id(),

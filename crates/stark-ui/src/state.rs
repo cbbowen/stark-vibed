@@ -719,10 +719,28 @@ fn schedule_paint(state: AppState) {
         // first paint after the drain folds everything accrued at once and
         // shows exactly what the skipped frames would have.
         if guard.as_ref().is_some_and(Renderer::gpu_behind) {
+            {
+                // **The count is the datum here, not the duration** — this row is
+                // how often the back-pressure above actually fired, which is the one
+                // thing about it no benchmark can see (a bench drains the device by
+                // hand and never queues a second frame). Read against `frame`'s
+                // count: a session where the two are comparable is a session
+                // spending half its animation frames waiting for the GPU.
+                //
+                // A block holding nothing but the span, because there is nothing
+                // here to time — it closes on the brace, and its duration is noise.
+                stark_core::timing::span!("frame.skipped");
+            }
             drop(guard);
             schedule_paint(state);
             return;
         }
+        // Everything a shown frame costs this client, from inside the animation-frame
+        // callback: the engine's own `render.view` plus the surface acquire and the
+        // present around it. Its *count* over the window is the frame rate the app
+        // actually achieved, which is the top line of the end-to-end story and the
+        // number every phase row underneath is read against.
+        stark_core::timing::span!("frame");
         let mut queued = state.paint_queued;
         queued.set(false);
         // A device that has died renders nothing, and **this** is where that has to
@@ -903,6 +921,14 @@ pub fn dispatch(state: AppState, command: impl Into<InputCommand>) {
 /// flush; the gesture's End goes through [`dispatch`], which refreshes the
 /// observable and broadcasts whatever the commit banked.
 pub fn dispatch_sample(state: AppState, command: impl Into<InputCommand>) {
+    // The other end-to-end row, and the partner to `frame`: its count over the
+    // window is how many pointer reports a second actually reached the engine. That
+    // is a *measurement*, not a setting — the browser coalesces pointer moves to
+    // roughly one a frame and `input::samples` un-coalesces them, so whether a
+    // 240 Hz pen is being heard at 240 Hz or at 60 is a question only this row
+    // answers. It contains `input.fit`, so the difference between the two is the
+    // engine door and the paint request around the work.
+    stark_core::timing::span!("input.sample");
     with_engine_quiet(state, |r| r.process(command));
     request_paint(state);
 }

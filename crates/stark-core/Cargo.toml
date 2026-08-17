@@ -18,6 +18,23 @@ flate2 = { workspace = true }
 png = { workspace = true }
 blake3 = { workspace = true }
 tracing = { workspace = true }
+# Where a frame's time goes (`timing`, §7.1). A regular dependency, not a dev one:
+# the histograms are collected in the shipped app, because a profile you have to
+# rebuild to collect is a profile of a build nobody is using.
+#
+# `default-features = false` drops `sync` and `serialization`, and the first of those
+# is load-bearing rather than a diet: `SyncHistogram`'s cross-thread drain calls
+# `std::time::Instant::now()`, which *panics* on wasm32-unknown-unknown ("time not
+# implemented on this platform"). `timing` owns its own tracing layer for exactly
+# that reason, so the plain `Histogram` is all it needs — and the browser build sheds
+# `crossbeam-channel` with it.
+hdrhistogram = { workspace = true }
+tracing-subscriber = { workspace = true }
+# The clock behind those histograms: the samples, the window and the reported
+# resolution all come off one `quanta::Clock` the layer owns. `performance.now()` on
+# the web and the TSC natively — and, unlike `std::time::Instant`, it exists on
+# wasm32-unknown-unknown at all, which is the whole reason it is here by name.
+quanta = "0.12"
 futures-channel = { workspace = true }
 stark-shaders = { workspace = true }
 stark-assetid = { workspace = true }

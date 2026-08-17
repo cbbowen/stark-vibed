@@ -41,7 +41,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [layers.md](docs/layers.md) | §14, §15 | Groups and clipping as one mechanism; merging a layer down without changing the picture; matte layers, framing and export |
 | [filters.md](docs/filters.md) | §21 | Filter layers: adjustment as a layer, where it sits *is* its scope, the color filter, the spectral chromatic aberration, the gradient map |
 | [gradients.md](docs/gradients.md) | §22 | Gradients: stops fitted from a line traced through the painting — the eyedropper generalized — the browser-local library of them, the gradient fill (a `FillOp` parcel that varies with position), and the shared gradient bar that also grades matte paint |
-| [engine.md](docs/engine.md) | §7–§11 | The actor target, the save format, golden tests, the extensibility map, the Dioxus frontend |
+| [engine.md](docs/engine.md) | §7–§11 | The actor target, the timing histograms, the save format, golden tests, the extensibility map, the Dioxus frontend |
 | [collaboration.md](docs/collaboration.md) | §12, §17 | The CRDT over the action log, iroh transport, owned selections, the presence roster |
 | [roadmap.md](docs/roadmap.md) | §13, §18, §19 | Build order and status, the gap analysis against the prior art, file-format stability |
 | [drawing-guides.md](docs/drawing-guides.md) | §20 | The perspective grid: one projective camera behind 1/2/3-point, the fan parametrization, the guide overlay pass, aligning strokes to an axis and to circles on a plane, the stereographic fisheye lens |
@@ -100,7 +100,17 @@ cargo clippy --workspace --all-targets --no-default-features \
   --features stark-net/webrtc -- -D warnings
 dx serve --web -p stark-ui                  # run it (needs a WebGPU browser)
 cargo bench -p stark-core --bench stroke    # criterion; the dynamics perf gate
+# where a stroke's time goes, phase by phase (§7.1) — seconds, not minutes
+cargo run --release -p stark-core --example stroke_bench
 ```
+
+Both perf tools print a **phase table** per configuration (§7.1), and the same rows
+are live in the app behind ☰ → Timing stats. Which question each answers:
+`--bench stroke` is the regression **gate** — totals, confidence intervals, a saved
+baseline — with the split under each line; `--example stroke_bench` is the quick
+look, seconds not minutes, and the only one that accounts for the GPU drain
+(`bench.gpu_wait`). Read the shares, not the totals: this class of box drifts ~15%
+between runs of identical code.
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy `-D warnings`, the test suite
 and the wasm build. Vendored crates are excluded from the workspace, so run their

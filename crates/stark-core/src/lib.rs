@@ -35,6 +35,8 @@
 //! - [`path`] — pointer samples fitted to a cubic B-spline (`spline`), then
 //!   flattened adaptively into the segments the brush sweeps along (§6.2).
 //! - [`io`] — the save format, which *is* the action log (§8).
+//! - [`timing`] — where a frame's time goes: one histogram per named phase of the
+//!   pipeline, collected in the shipped app as well as under a benchmark (§7.1).
 //!
 //! # What is public, and what is only re-exported
 //!
@@ -75,7 +77,34 @@ pub mod peer;
 mod presence;
 pub mod session;
 pub(crate) mod spline;
+pub mod timing;
 pub(crate) mod tow;
+
+/// Take a lock whose only contents are a **cache, a free list or a tally**, poisoned
+/// or not.
+///
+/// Every `Mutex` this crate holds guards derived state — a baked tip texture
+/// (`gpu::stroke::tips`), a pooled scratch list (`gpu::stroke::scratch`), the seed of
+/// the last stroke complained about, the timing histograms ([`timing`]) — whose
+/// values are moved in whole after the work producing them has finished, so a panic
+/// while the lock is held cannot leave a torn value behind. All poisoning tells us is
+/// that some *other* thread panicked while it happened to be looking something up;
+/// propagating that as a panic of our own turns one thread's failure into a dead
+/// renderer, which is a worse answer than a cold cache.
+///
+/// At the crate root rather than beside any one of them, because the argument is
+/// about what this crate puts *in* a `Mutex` and not about which module did it — and
+/// the second module to want it is what made that worth saying once.
+/// `std::result::Result` spelled out, because this crate re-exports an
+/// [`EngineError`]-shaped `Result` below and a bare one here would resolve to that.
+pub(crate) fn unpoisoned<'a, T>(
+    lock: std::result::Result<
+        std::sync::MutexGuard<'a, T>,
+        std::sync::PoisonError<std::sync::MutexGuard<'a, T>>,
+    >,
+) -> std::sync::MutexGuard<'a, T> {
+    lock.unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 pub use assets::{AssetId, AssetStore};
 pub use colorspace::{ColorSpace, ColorSpaceId};

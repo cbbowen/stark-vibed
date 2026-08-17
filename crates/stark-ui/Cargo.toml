@@ -27,6 +27,10 @@ dioxus = { version = "0.7.10", features = ["web", "asset"] }
 wgpu = { workspace = true }
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
 tracing = { workspace = true, features = ["max_level_debug"] }
+# Composing the console layer with the engine's timing layer over one registry
+# (`main::install_tracing`, §7.1) — the two are exact complements, so neither can
+# be installed with `set_as_global_default` alone.
+tracing-subscriber = { workspace = true }
 # Brush presets and the ⚙ dialog's settings persist to localStorage as JSON
 # (presets.rs, prefs.rs): self-describing, so stored values survive their struct
 # gaining fields — unlike the save file's positional postcard. Both already in

@@ -31,6 +31,7 @@ use crate::gpu::desc::Zeroes;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap, TilePairHandle, TilePool};
 use crate::noise::NOISE_TILE_PX;
+use crate::unpoisoned;
 
 mod budget;
 mod dynamics;
@@ -68,25 +69,6 @@ pub(crate) use incremental::safe_frozen;
 /// ([`ScopedResources`]). Laid out this way, a stroke's per-tile uniforms cost one
 /// registered buffer and one bind group however many tiles it crosses.
 const UNIFORM_STRIDE: usize = 256;
-
-/// Take a lock whose only contents are a **cache or a free list**, poisoned or not.
-///
-/// Every lock in this module guards derived state — a baked tip texture
-/// ([`tips`]), a pooled scratch list ([`dynamics`]'s `ScratchPool`), the seed of the
-/// last stroke complained about ([`StrokeRenderer::complained`]) — whose values
-/// are moved in whole after the work producing them has finished, so a panic while
-/// the lock is held cannot leave a torn value behind. All poisoning tells us is
-/// that some *other* thread panicked while it happened to be looking something up;
-/// propagating that as a panic of our own turns one thread's failure into a dead
-/// renderer, which is a worse answer than a cold cache.
-fn unpoisoned<'a, T>(
-    lock: Result<
-        std::sync::MutexGuard<'a, T>,
-        std::sync::PoisonError<std::sync::MutexGuard<'a, T>>,
-    >,
-) -> std::sync::MutexGuard<'a, T> {
-    lock.unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 #[derive(Clone)]
 pub struct StrokeRenderer {
@@ -230,6 +212,11 @@ impl StrokeRenderer {
         spans: StrokeSpans,
         tool: Option<&ToolState>,
     ) -> (TileMap, StrokeCarry) {
+        // Every stroke render, live tail or commit, on either path — the row the two
+        // path rows below are read against. Its *count* is the one number that says
+        // how much of this is the live preview: a commit renders once, a gesture
+        // renders its tail on every frame it survives.
+        crate::timing::span!("stroke.range");
         // Which path the stroke takes — and how finely it flattens — is decided from
         // the record, never from the piece in hand. A live tail and the commit that
         // eventually replaces it have to make the same choice, or releasing the pointer

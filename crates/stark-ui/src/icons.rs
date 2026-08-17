@@ -228,6 +228,13 @@ icons! {
     // would invite someone to "unify" the two the next time either wants to change.
     // The same argument [`RESET`] and [`UNDO`] are two names for one arrow.
     DONE => "check-bold",
+    // The Timing Stats dialog (§7.1), the commands menu's other entry that does
+    // nothing to the drawing. A speedometer rather than a chart or a stopwatch: what
+    // the dialog reports is a *rate the app is achieving* — frames a second, pointer
+    // samples a second — and a dial with a needle already means exactly that. A chart
+    // would promise a history over time, which the histograms do not keep, and a
+    // stopwatch would promise something the reader started.
+    TIMING => "speedometer-bold",
     // Last in the commands menu, and the only entry there that is not a thing to do
     // to the drawing — so it gets the one glyph in the set that is not about one.
     CREDITS => "heart-bold",

@@ -660,10 +660,18 @@ impl Renderer {
     /// Render the current canvas straight into the surface texture and present.
     pub fn paint(&mut self) {
         use wgpu::CurrentSurfaceTexture::{Suboptimal, Success};
-        let frame = match self.surface.get_current_texture() {
-            Success(frame) | Suboptimal(frame) => frame,
-            // Timeout/Outdated/Lost/etc.: skip; the next command repaints.
-            _ => return,
+        // Its own row because it is the one part of a frame that is not Stark's
+        // work: acquiring a surface texture is where a browser compositor makes the
+        // page wait, and folded into `frame` that wait would read as time the engine
+        // spent. On WebGPU it should be free — `get_current_texture` never blocks
+        // there — so a row that grows is a finding rather than a cost.
+        let frame = {
+            stark_core::timing::span!("frame.acquire");
+            match self.surface.get_current_texture() {
+                Success(frame) | Suboptimal(frame) => frame,
+                // Timeout/Outdated/Lost/etc.: skip; the next command repaints.
+                _ => return,
+            }
         };
         let view = frame
             .texture
@@ -678,6 +686,10 @@ impl Renderer {
         self.engine.gpu().queue.on_submitted_work_done(move || {
             in_flight.fetch_sub(1, Ordering::Relaxed);
         });
+        // A no-op on the web, where the canvas is presented by the page — measured
+        // anyway, and cheaply, because "present is free here" is a claim about wgpu's
+        // WebGPU backend that a version bump could quietly stop being true.
+        stark_core::timing::span!("frame.present");
         self.engine.gpu().queue.present(frame);
     }
 }

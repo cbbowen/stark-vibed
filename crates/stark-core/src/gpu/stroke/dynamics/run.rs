@@ -85,11 +85,23 @@ impl StrokeRenderer {
         tool: Option<&ToolState>,
         tol: crate::path::FlattenTolerance,
     ) -> (TileMap, StrokeCarry) {
+        // The sequential stamp loop end to end. Everything below it — `stroke.piece`
+        // and the four phases inside that — partitions this row, which is what makes
+        // the table a phase split rather than a pile of unrelated timings: the shares
+        // have a denominator, and a phase that is missing from the sum is a phase
+        // nobody has instrumented yet.
+        crate::timing::span!("stroke.dynamics");
         // Nothing follows the range that reaches the end of the stroke, so there is no
         // reason to snapshot a reservoir for it — which is the common case, since the
         // live tail is exactly that range and it re-renders every pointer move.
         let capture = spans.range.end < crate::path::span_count(rec.path.len());
-        let (segments, end_dist) = generate_segments_in(rec, tol, spans);
+        // Fitting outweighs flattening by ~350:1 on the CPU side, which is a claim
+        // about *this* call against `input.fit` — and one that has to stay checkable,
+        // because the flattener is the thing that looks worth optimizing and is not.
+        let (segments, end_dist) = {
+            crate::timing::span!("stroke.segments");
+            generate_segments_in(rec, tol, spans)
+        };
         // A range with no geometry runs no dispatches, so it leaves the brush exactly
         // as it found it. Handing back `None` says "unchanged" — the caller keeps the
         // state it passed in rather than paying for a copy of it.
@@ -145,7 +157,15 @@ impl StrokeRenderer {
         // rather than walked a second time over every (segment, tile) pair, which is
         // the very cost `region_of` exists to keep off a long stroke.
         let dirty = std::mem::take(&mut run.dirty).into_iter().collect();
-        run.submit();
+        {
+            // `queue.submit` plus the scratch releases that may only follow it
+            // (`SubmitScope`). Its own row because it is the one phase here that is
+            // not encoding: on the web `submit` hands a command buffer across the
+            // wasm boundary, and if that ever became the wall it would be invisible
+            // folded into the piece that recorded it.
+            crate::timing::span!("stroke.submit");
+            run.submit();
+        }
         (
             map,
             StrokeCarry {
@@ -419,6 +439,10 @@ impl<'a> DynamicsRun<'a> {
         fires: &[BleedFire],
         settle: bool,
     ) -> TileMap {
+        // One region-sized piece of the range. Its count against
+        // `stroke.dynamics`'s says how often a range needed chunking at all, which
+        // is a fact about brush radius and stroke length that nothing else reports.
+        crate::timing::span!("stroke.piece");
         self.scope.flush();
         // Segments and firings both, in one walk: a window writes up to a quantum
         // behind the piece's first segment, and a tile (or region) the walk misses is
@@ -464,7 +488,13 @@ impl<'a> DynamicsRun<'a> {
         // scratch pair across the identical boundary. The clone is an `rpds` map of
         // `Arc` handles: a refcount per tile, no pixels (§5.2).
         self.scope.hold(base.clone());
-        let region = self.composite_region(base, &halo, region_origin, w, h);
+        // Composite the canvas under the piece into a 1:1 region — the read half of
+        // the loop's cost, and the one that scales with the *area* the stroke covers
+        // rather than with its segment count.
+        let region = {
+            crate::timing::span!("stroke.region");
+            self.composite_region(base, &halo, region_origin, w, h)
+        };
 
         // ---- The dispatch plan, one slot per dispatch, uploaded as one buffer the
         // loop reads through dynamic offsets.
@@ -474,33 +504,62 @@ impl<'a> DynamicsRun<'a> {
         // their maximum. Run the other way, the scratch would size itself from a
         // position-independent bound over the same coverage boxes and the plan would
         // have to assert each real rect came in under it.
-        let ctx = PlanCtx {
-            rec: self.rec,
-            tol: self.tol,
-            region_origin,
-            consts: &self.consts,
-            surface: self.scene.surface,
+        //
+        // The plan, the scratch it sizes and the bind groups that name it are one
+        // row: they are the fixed per-piece setup, they move together (a slot count
+        // drives all three), and splitting them would put three sub-quantum numbers
+        // where the browser's clock can resolve one.
+        //
+        // **The block ends the scratch handles' scope, and that is sound** — worth
+        // stating outright in this file, where an early release is the standing
+        // hazard (`scratch::SubmitScope`). `take_piece` and `scope.buffer` register
+        // the *lease* with the scope and hand back refcounted `wgpu` clones, so what
+        // drops here is a handle and never a claim on the pool: the leases are
+        // released by the flush that submits the commands naming them, which is the
+        // next piece's or `finish`'s. The bind groups outlive the block because they
+        // are what the loop below is recorded against, and a `BindGroup` holds its
+        // own references to every view in it.
+        let (plan, bind) = {
+            crate::timing::span!("stroke.plan");
+            let ctx = PlanCtx {
+                rec: self.rec,
+                tol: self.tol,
+                region_origin,
+                consts: &self.consts,
+                surface: self.scene.surface,
+            };
+            let plan = dynamics_plan(&ctx, segments, fires, settle);
+            let under = self.snapshot_scratch(plan.dsize);
+            // The cell scratch (§6.2), only when some slot actually takes the coarse
+            // path — a small or hard tip allocates nothing and binds nothing.
+            let cells = plan
+                .slots
+                .iter()
+                .any(|d| d.cell_groups.is_some())
+                .then(|| self.cell_scratch(plan.dsize));
+            // The bleed pair's mobility scratch (§6.2), only when some slot is a firing —
+            // a brush that does not bleed allocates nothing and binds the 1×1 stand-in.
+            let bleed = plan
+                .slots
+                .iter()
+                .any(|d| matches!(d.kind, SlotKind::Bleed))
+                .then(|| self.bleed_scratch(plan.dsize));
+            let stamp_buf = self.upload_plan(&plan.slots);
+            let bind = self.bind_piece(&region, &under, &stamp_buf, cells.as_ref(), bleed.as_ref());
+            (plan, bind)
         };
-        let plan = dynamics_plan(&ctx, segments, fires, settle);
-        let under = self.snapshot_scratch(plan.dsize);
-        // The cell scratch (§6.2), only when some slot actually takes the coarse
-        // path — a small or hard tip allocates nothing and binds nothing.
-        let cells = plan
-            .slots
-            .iter()
-            .any(|d| d.cell_groups.is_some())
-            .then(|| self.cell_scratch(plan.dsize));
-        // The bleed pair's mobility scratch (§6.2), only when some slot is a firing —
-        // a brush that does not bleed allocates nothing and binds the 1×1 stand-in.
-        let bleed = plan
-            .slots
-            .iter()
-            .any(|d| matches!(d.kind, SlotKind::Bleed))
-            .then(|| self.bleed_scratch(plan.dsize));
-        let stamp_buf = self.upload_plan(&plan.slots);
-        let bind = self.bind_piece(&region, &under, &stamp_buf, cells.as_ref(), bleed.as_ref());
 
-        self.record_loop(&plan.slots, plan.dsize, &bind);
+        {
+            // The stamp loop itself: bake → exchange → deposit per segment, plus the
+            // bleed firings and the pen-up settle. **The row to watch** — this is
+            // where a per-segment cost lands, and where a change to the dispatch
+            // count shows up before it shows up in a total.
+            crate::timing::span!("stroke.loop");
+            self.record_loop(&plan.slots, plan.dsize, &bind);
+        }
+        // Slicing the evolved region back into fresh CoW tiles — the write half,
+        // paired with `stroke.region`'s read.
+        crate::timing::span!("stroke.writeback");
         self.write_back(base, coords, lo, &region)
     }
 

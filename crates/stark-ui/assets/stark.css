@@ -1865,6 +1865,121 @@ button.layer-remove:hover {
   padding-right: 16px;
 }
 
+/* --- timing stats dialog (timings.rs) --- */
+
+/* The two end-to-end rates, given the size the table's rows are not: they are the
+   numbers the phases underneath are an explanation *of*, so the dialog is read
+   top-down from them rather than scanned for the biggest cell. */
+.timing-headline {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.timing-headline-cell {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #ffffff14;
+  background: #ffffff08;
+}
+
+/* Tabular figures throughout the dialog: a number that changes twice a second must
+   not change the width of what is beside it, or the whole table twitches while the
+   reader is trying to compare two rows of it. */
+.timing-headline-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.timing-headline-label {
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.timing-headline-unit {
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+/* Capped and scrolling, like the credits list: the row count grows with the
+   instrumentation, and a dialog that grows past the viewport with it would put its
+   own Done button off-screen. */
+.timing-table {
+  max-height: 46vh;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+/* One grid rather than a <table>: the phase name takes what is left and the five
+   numeric columns are fixed, so every row's digits land in the same place whether or
+   not the name above it wrapped. */
+.timing-row {
+  display: grid;
+  grid-template-columns: 1fr 3.5em 4.8em 4.8em 4.8em 3.8em;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timing-row > span:not(.timing-name) {
+  text-align: right;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.timing-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  /* Opaque, not translucent: the rows scroll *under* this one, and a header you can
+     read a digit through is worse than no header. */
+  background: var(--panel-background);
+  border-bottom: 1px solid #ffffff14;
+  padding-bottom: 5px;
+  margin-bottom: 3px;
+  opacity: 0.7;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.timing-head > span:not(.timing-name) {
+  font-family: inherit;
+}
+
+.timing-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The dotted prefix a family of phases shares (`stroke.`), dimmed so the leaf carries
+   the row. It groups the eye the way an indent would, without claiming a nesting the
+   histograms do not record — see the note in timings.rs. */
+.timing-prefix {
+  opacity: 0.45;
+}
+
+.timing-empty {
+  padding: 10px 0;
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+/* What the numbers above are measured over and against. Small and dim, because it is
+   read once and then remembered — but present, because a share with no window and a
+   duration with no clock resolution are both unreadable. */
+.timing-note {
+  margin-top: 12px;
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0.55;
+}
+
 /* --- share dialog (collab.rs) --- */
 .invite-row {
   display: flex;

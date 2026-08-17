@@ -42,6 +42,7 @@ mod slots;
 mod state;
 mod storage;
 mod thumbs;
+mod timings;
 mod widgets;
 
 use std::collections::HashSet;
@@ -86,10 +87,42 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     {
         console_error_panic_hook::set_once();
-        // Route `tracing` events (engine + UI) to the browser console.
-        tracing_wasm::set_as_global_default();
+        install_tracing();
     }
     dioxus::launch(app);
+}
+
+/// Point `tracing` at both of the places this app reads it: the browser console, and
+/// the timing histograms behind [`TimingModal`] (`stark_core::timing`, §7.1).
+///
+/// Two layers over one registry rather than `tracing_wasm::set_as_global_default`,
+/// and the **filter is the whole reason** it is written out here.
+/// `TimingFilter::timing` (inside `timing::layer`) and `TimingFilter::logging` are
+/// exact complements by construction, so no event is dropped and none is handled
+/// twice — and neither this file nor the engine restates what a timing span is.
+///
+/// The negative half is not tidiness. `tracing_wasm`'s layer calls
+/// `performance.mark` on every span it is shown and `performance.measure` on every
+/// exit, formatting a `String` for each: unfiltered, the dozen-odd phases a painted
+/// frame opens would spend two JS calls apiece reporting Stark's own instrumentation
+/// into the devtools timeline, sixty times a second, for nobody.
+#[cfg(target_arch = "wasm32")]
+fn install_tracing() {
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::registry::Registry;
+
+    let console = tracing_wasm::WASMLayer::new(tracing_wasm::WASMLayerConfig::default())
+        .with_filter(stark_core::timing::TimingFilter::<false>);
+    let subscriber = Registry::default()
+        .with(stark_core::timing::layer())
+        .with(console);
+    // A second install would be a second set of histograms with the first still
+    // collecting, so it is refused rather than papered over — but `main` runs once
+    // per page, so the only way to reach the error is a change to this file.
+    if tracing::subscriber::set_global_default(subscriber).is_err() {
+        web_sys::console::warn_1(&"stark: a tracing subscriber was already installed".into());
+    }
 }
 
 fn app() -> Element {
@@ -796,6 +829,7 @@ fn CommandRail() -> Element {
     let mut show_session = use_signal(|| false);
     let mut show_export = use_signal(|| false);
     let mut show_settings = use_signal(|| false);
+    let mut show_timing = use_signal(|| false);
     let mut show_credits = use_signal(|| false);
     let live = (state.collab.phase)() == collab::CollabPhase::Shared;
     // Through a memo: all three move on a commit and the rail is a menu of
@@ -910,10 +944,20 @@ fn CommandRail() -> Element {
                                 if timeline_open { {icon(icons::CHECK)} }
                             }
                         }
-                        // Last, and last for a reason: it is the only entry here that
-                        // is not a thing to *do* to the drawing.
+                        // The last two, and last for a reason: neither is a thing to
+                        // *do* to the drawing. Timing Stats above Credits because it
+                        // is the one somebody might open twice — and it is a dialog
+                        // rather than a panel because a live frame-rate readout beside
+                        // the canvas is a thing to watch instead of painting
+                        // (§7.1, `crate::timings`).
                         MenubarItem {
                             index: 10usize,
+                            value: "timing".to_string(),
+                            on_select: move |_| show_timing.set(true),
+                            span { class: "menu-item", {icon(icons::TIMING)} "Timing stats\u{2026}" }
+                        }
+                        MenubarItem {
+                            index: 11usize,
                             value: "credits".to_string(),
                             on_select: move |_| show_credits.set(true),
                             span { class: "menu-item", {icon(icons::CREDITS)} "Credits\u{2026}" }
@@ -996,6 +1040,9 @@ fn CommandRail() -> Element {
         }
         if show_settings() {
             SettingsModal { on_close: move |_| show_settings.set(false) }
+        }
+        if show_timing() {
+            timings::TimingModal { on_close: move |_| show_timing.set(false) }
         }
         if show_credits() {
             CreditsModal { on_close: move |_| show_credits.set(false) }

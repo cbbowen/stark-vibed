@@ -63,6 +63,81 @@ into tokio (desktop) or wasm-bindgen-futures (web). **GPU buffer readback is the
 only inherently async GPU op** — see §15.6 for why that makes `export` return a
 future rather than being an `async fn`.
 
+### 7.1 Timing — where a frame's time goes
+
+A phase of the pipeline is **a span, and the span's name is its row**. That is the
+whole model (`stark_core::timing`):
+
+```rust
+fn flush_live(&mut self) {
+    if !self.preview.stale { return; }
+    timing::span!("live.fold");        // measured to the end of the block
+    // …
+}
+```
+
+A `tracing_subscriber` layer stamps the clock at span creation and records
+`close − creation` into an HDR histogram per name; `timing::snapshot()` reads them
+out as counts, means, quantiles and totals. Two consumers render whatever the
+histograms hold — the **Timing Stats** dialog off the ☰ menu, and
+`examples/stroke_bench`'s phase table — so **adding a `span!` anywhere makes a row
+appear in both** with no list to keep in step.
+
+The layer is forty lines here rather than the `tracing-timing` crate, and not by
+preference. That crate's **read** path cannot run in a browser: draining a
+`SyncHistogram` means `refresh_timeout`, which calls `std::time::Instant::now()`
+before it looks at anything, and on `wasm32-unknown-unknown` that is a panic — "time
+not implemented on this platform". `force_synchronize` is the only door to the
+recorders and it always passes a timeout, so there is no way round it from outside.
+The channel, the phase counter and the per-thread recorder that need that clock all
+exist to let many OS threads record without synchronizing, and the browser build has
+one thread. So `hdrhistogram` stays (its quantiles are the point) and the
+cross-thread machinery goes, taking `crossbeam-channel` out of the wasm binary and
+the write-lock off span creation with it.
+
+Consequences worth stating, because they are what the numbers mean:
+
+- **Rows are read against the window, not against each other.** A snapshot carries
+  the wall clock it covers, so `count / window` is a rate and `total / window` is a
+  share. Nested spans double-count against each other; against the window they do
+  not. The two end-to-end rates fall straight out: `frame`'s count is the frame
+  rate achieved, `input.sample`'s is how many pointer reports a second actually
+  reached the engine.
+- **The names are a taxonomy, not a call tree.** `stroke.range` is entered from a
+  commit *and* from the live fold, and its histogram aggregates both.
+- **Every row is CPU time to prepare work.** WebGPU offers no timestamp query on
+  the web, so nothing here says what the GPU then spent executing it. The signals
+  for that are the frame-skip counter (`frame.skipped`, from `Renderer::gpu_behind`)
+  and, in the benchmark, the instrumented drain (`bench.gpu_wait`). Dividing the
+  *wait* among the dispatches inside it still needs bracketing — gate a dispatch
+  kind out, re-run, take the difference.
+- **The browser's clock is the design constraint.** `performance.now()` is
+  quantized to 100 µs in Chromium and a full millisecond in a Firefox that is not
+  cross-origin isolated. So the instrumentation wraps *phases* that are
+  milliseconds when they matter and never single operations, and the measured
+  resolution is reported alongside the numbers — a row of `0.0 ms` has to read as
+  "under the clock" rather than as "free". Aggregates survive the quantization that
+  individual samples do not, which is why these are histograms and not gauges.
+
+The spans are `info_span!`, because the workspace pins `release_max_level_info` and
+instrumentation a release build compiles away cannot answer a question about the
+shipped app. They are separated from the log by a **target**, `stark::timing`, and
+the separation runs both ways — `TimingFilter::<true>` and `TimingFilter::<false>`,
+two settings of one type because they must stay exact complements. The timing layer
+takes only that target, or every `info_span!` in
+`iroh` would open a row; the console layer takes everything else, because
+`tracing_wasm` calls `performance.mark`/`measure` on every span it is shown, which
+at a dozen phases a frame is pure waste. `timing::span!` exists so no call site
+writes the target by hand, and neither filter's call site restates what a timing
+span is.
+
+It is **on for everyone, always** — measured at 234 ns a span, against 1.4 ns for the
+same call site with no subscriber installed — because a profile you have to rebuild
+to collect is a profile of a build nobody is using. That includes `benches/stroke.rs`,
+which prints the phase table under every criterion line it measures: the
+instrumentation costs 0.07–0.2% there, two orders under the ~15% those numbers drift
+between runs of identical code, so paying it buys "which phase moved" for free.
+
 ## 8. Save format & timelapse
 
 The native format is **the serialized action log**:
@@ -425,6 +500,15 @@ which the engine draws into directly. DOM chrome surrounds it.
     half applies in the root's body so the first render is already in the right
     mode, and the engine half waits for the renderer, exactly as
     `presets::load`/`apply_first` split.
+- **Timing Stats is a dialog, not a panel** (`timings.rs`, §7.1). The same
+  argument as settings run from the other end: a live frame-rate readout beside the
+  canvas is a thing to watch *instead of* painting, and the histograms behind it
+  keep accruing whether or not anyone is looking — so it belongs in the ☰ menu with
+  the other things read when a question comes up. It renders whatever rows the
+  engine's histograms hold rather than a list of phases, which is what keeps it from
+  becoming a second copy of the instrumentation; it polls twice a second while open
+  and stops when it closes (a `use_future` in its own scope — the opposite of what
+  the collaboration pumps need, and for the opposite reason).
 
 - **The app installs, and it starts offline.** `index.html` (the crate root's
   own, which replaces the one `dx` would generate) links a web app manifest and

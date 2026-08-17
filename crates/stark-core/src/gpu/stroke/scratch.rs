@@ -51,8 +51,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::gpu::context::GpuContext;
 
-use super::unpoisoned;
 use crate::gpu::submit::ScopedResources;
+use crate::unpoisoned;
 
 /// How many bytes of free textures the pool will hold before it starts destroying
 /// the least-recently-used. One wide-tip piece's working set — region, narrow,

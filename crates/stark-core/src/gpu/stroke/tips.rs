@@ -19,7 +19,7 @@ use crate::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind};
 use crate::gpu::context::GpuContext;
 
 use super::segments::round_coverage;
-use super::unpoisoned;
+use crate::unpoisoned;
 
 /// Resolution of the generated round-tip prefix texture.
 pub(super) const ROUND_RES: u32 = 256;

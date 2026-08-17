@@ -220,6 +220,11 @@ impl StrokeRenderer {
         spans: StrokeSpans,
         tol: crate::path::FlattenTolerance,
     ) -> (TileMap, StrokeCarry) {
+        // The control every dynamics row is read against: the same geometry, the
+        // same tiles, one instanced draw instead of a dispatch chain per segment.
+        // A change that moves this row has moved something shared — segment
+        // generation, tile acquisition, the scope — rather than the loop.
+        crate::timing::span!("stroke.swept");
         let StrokeScene {
             pool,
             assets,

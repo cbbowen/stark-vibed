@@ -54,7 +54,25 @@ postcard = { version = "1", features = ["alloc"] }
 flate2 = "1"
 # Structured logging/diagnostics; the frontend installs a console subscriber
 # (tracing-wasm) so engine + UI traces show up in the browser devtools.
+#
+# `release_max_level_info` is why every timing span is `info_span!` and not the
+# `trace_span!` its verbosity would suggest (`stark_core::timing`): a release build
+# compiles `debug!` and `trace!` away, and instrumentation the shipped app does not
+# carry cannot answer a question about the shipped app.
 tracing = { version = "0.1", features = ["release_max_level_info"] }
+# The timing histograms behind `stark_core::timing` (§7.1) — one per span name,
+# read for its quantiles. `default-features = false` at the consumer, because the
+# `sync` feature's cross-thread drain cannot run in a browser; see stark-core's
+# manifest for what that means.
+hdrhistogram = { version = "7", default-features = false }
+# Composing that layer with the console one. `default-features = false` because all
+# either consumer needs is the span registry the layer stack is built on — the `fmt`
+# subscriber and its ANSI colouring are for a terminal, and neither of Stark's two
+# consumers (a browser tab, a benchmark that prints its own table) has one.
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "registry",
+    "std",
+] }
 
 # stark-shaders is consumed by stark-core.
 stark-assetid = { path = "crates/stark-assetid" }
