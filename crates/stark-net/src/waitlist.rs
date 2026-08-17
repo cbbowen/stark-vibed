@@ -8,7 +8,7 @@
 //!
 //! It waits *here*, beside the gossip receive loop, rather than inside it. What
 //! an action needs ordering against is the content it names and nothing else:
-//! [`merge_remote`](stark_engine::Engine::merge_remote) is idempotent by id and
+//! `Engine::merge_remote` is idempotent by id and
 //! order-insensitive, and an action landing behind newer ones makes the timeline
 //! resync, which replays them against what it changed (§12.6). Waiting inside
 //! the loop — which is what this replaces — stalled every other peer's actions,

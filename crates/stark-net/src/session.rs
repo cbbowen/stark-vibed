@@ -88,14 +88,14 @@ pub use stark_model::AssetNeed;
 pub enum RemoteEvent {
     /// Content a remote action references, resolved off a peer — feed to the store
     /// `need` names before the action that wanted it: a brush image to
-    /// [`Engine::import_brush`](stark_engine::Engine::import_brush), a canvas ground to
-    /// [`Engine::accept_surface`](stark_engine::Engine::accept_surface).
+    /// `Engine::import_brush`, a canvas ground to
+    /// `Engine::accept_surface`.
     Asset { need: AssetNeed, bytes: Bytes },
     /// A committed remote action — feed to
-    /// [`Engine::merge_remote`](stark_engine::Engine::merge_remote).
+    /// `Engine::merge_remote`.
     Action(Action),
     /// A peer's presence — feed to
-    /// [`Engine::merge_presence`](stark_engine::Engine::merge_presence)
+    /// `Engine::merge_presence`
     /// (§17.4). Unlike an action this may be dropped freely: nothing in
     /// the log refers to it, so losing one costs a frame of someone else's cursor
     /// and nothing else.
@@ -245,7 +245,7 @@ pub struct Joined {
     pub session: CollabSession,
     pub events: Events,
     /// The snapshot to load via
-    /// [`Engine::join_collaboration`](stark_engine::Engine::join_collaboration) —
+    /// `Engine::join_collaboration` —
     /// **after** `owed` is settled.
     pub document: DocumentFile,
     /// Content `document`'s log names that the host left out, because this client
@@ -280,8 +280,8 @@ pub struct CollabSession {
 
 impl CollabSession {
     /// Start sharing `doc` (the host side). `doc` should come from
-    /// [`Engine::document_file`](stark_engine::Engine::document_file) *after*
-    /// [`Engine::start_collaboration`](stark_engine::Engine::start_collaboration)
+    /// `Engine::document_file` *after*
+    /// `Engine::start_collaboration`
     /// with [`actor_from_endpoint_id`] of this session's identity — generate a
     /// [`SecretKey`] first and pass it in `opts` so the actor id is known
     /// before binding.
@@ -488,7 +488,7 @@ impl CollabSession {
     }
 
     /// Broadcast one locally-committed action (from
-    /// [`Engine::take_outbox`](stark_engine::Engine::take_outbox)) to the swarm.
+    /// `Engine::take_outbox`) to the swarm.
     ///
     /// Returns once the action is mirrored and queued; the session's one send task
     /// puts it on the wire. That task is what makes the wire order the order things
@@ -501,8 +501,8 @@ impl CollabSession {
 
     /// Register content so joiners can be served and peers can fetch it — a brush
     /// image alongside
-    /// [`Engine::import_brush`](stark_engine::Engine::import_brush), a canvas ground
-    /// alongside [`Engine::import_surface`](stark_engine::Engine::import_surface).
+    /// `Engine::import_brush`, a canvas ground
+    /// alongside `Engine::import_surface`.
     ///
     /// Call it *before* committing an action that references the content: the
     /// broadcast attaches a transfer hash looked up here, and an action that goes out

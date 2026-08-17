@@ -21,11 +21,11 @@
 //!   some canvases and not others, forever, with both sides believing they are in
 //!   sync — see [`reconcile`].
 //!
-//! The UI glue is a small pump: drain [`Engine::take_outbox`](stark_engine::Engine::take_outbox)
+//! The UI glue is a small pump: drain `Engine::take_outbox`
 //! into [`CollabSession::broadcast`], and feed the [`RemoteEvent`]s the session's
 //! [`Events`] stream yields into
-//! [`Engine::merge_remote`](stark_engine::Engine::merge_remote) /
-//! [`Engine::import_brush`](stark_engine::Engine::import_brush).
+//! `Engine::merge_remote` /
+//! `Engine::import_brush`.
 
 mod backend;
 mod content;
