@@ -518,10 +518,6 @@ impl TransformRenderer {
             let parcel = self.render_parcel(&mut scope, &mut from, affine, *dest, sources);
             let dst = Channels::acquire(pool, self.formats, AllocSource::TransformDestination);
             self.combine(&mut scope, &from, *dest, parcel.as_ref(), &dst, None);
-            // Held, not dropped: the parcel is written by the pass above and read
-            // by the combine, both only *recorded*, so an early release hands its
-            // texture to the next destination tile in this very encoder (`TileScope`).
-            scope.hold(parcel);
             tiles = tiles.insert(*dest, dst.into_tile());
             scope.tile_done();
         }
@@ -592,10 +588,6 @@ impl TransformRenderer {
             let parcel = self.render_gated_parcel(&mut scope, &mut from, &paint, unit_idxs, *dest);
             let dst = Channels::acquire(pool, self.formats, AllocSource::TransformDestination);
             self.combine(&mut scope, &from, *dest, parcel.as_ref(), &dst, Some(rect));
-            // Held, not dropped: the parcel is written by the pass above and read
-            // by the combine, both only *recorded*, so an early release hands its
-            // texture to the next destination tile in this very encoder (`TileScope`).
-            scope.hold(parcel);
             tiles = tiles.insert(*dest, dst.into_tile());
             scope.tile_done();
         }
@@ -653,7 +645,12 @@ impl TransformRenderer {
         let device = &self.ctx.device;
         // The parcel carries the residual it was cut with: the lift scales height
         // alone, so the color — both halves of it — rides through unscaled (§16.2).
-        let parcel = Channels::acquire(from.pool, self.formats, AllocSource::TransformScratch);
+        let parcel = Channels::scratch(
+            scope,
+            from.pool,
+            self.formats,
+            AllocSource::TransformScratch,
+        );
 
         let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
         for idx in unit_idxs {
@@ -835,7 +832,12 @@ impl TransformRenderer {
         let device = &self.ctx.device;
         // The parcel carries the residual it was cut with: the lift scales height
         // alone, so the color — both halves of it — rides through unscaled (§16.2).
-        let parcel = Channels::acquire(from.pool, self.formats, AllocSource::TransformScratch);
+        let parcel = Channels::scratch(
+            scope,
+            from.pool,
+            self.formats,
+            AllocSource::TransformScratch,
+        );
 
         let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
         for src in sources {

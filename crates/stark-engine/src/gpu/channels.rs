@@ -106,6 +106,11 @@ impl ChannelFormats {
 /// scratch parcel it writes and a later pass reads.
 ///
 /// The shape [`TilePairHandle`] is built from, before it becomes one.
+///
+/// `Clone` because [`Self::scratch`] hands one copy to the recording and one to the
+/// caller; the textures are `Arc`-backed, so a clone is three refcount bumps and both
+/// copies name the same trio.
+#[derive(Clone)]
 pub(crate) struct Channels {
     pub(crate) color: TexHandle,
     pub(crate) aux: TexHandle,
@@ -126,6 +131,31 @@ impl Channels {
             aux: pool.acquire_tex(formats.aux, source),
             resid: formats.resid.map(|f| pool.acquire_tex(f, source)),
         }
+    }
+
+    /// Check a trio out of the pool **as scratch**, registered with the recording
+    /// that names it in the same breath.
+    ///
+    /// The pairing is the whole point. Nothing in a recorded encoder has run, so a
+    /// scratch trio released before its submit is handed straight back out — to a pass
+    /// in the very same encoder, which overwrites it before the earlier pass ever reads
+    /// it (`gpu::submit`). The rule was upheld by every call site remembering a
+    /// matching `scope.hold`, and the two were not even in the same *function* for a
+    /// transform parcel: acquired in `render_parcel`, held by its caller. Here they
+    /// cannot come apart.
+    ///
+    /// Distinct from [`Self::acquire`], which is what a **destination** takes: that
+    /// trio is returned to the caller and becomes a tile of the document, so its life
+    /// is the document's and not the recording's.
+    pub(crate) fn scratch(
+        scope: &mut crate::gpu::submit::TileScope,
+        pool: &TilePool,
+        formats: ChannelFormats,
+        source: AllocSource,
+    ) -> Self {
+        let trio = Self::acquire(pool, formats, source);
+        scope.hold(trio.clone());
+        trio
     }
 
     /// The views a pass binds or attaches.

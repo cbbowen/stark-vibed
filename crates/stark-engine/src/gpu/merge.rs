@@ -458,18 +458,15 @@ impl MergeRenderer {
         (dst, src): (Option<&TilePairHandle>, Option<&TilePairHandle>),
         out: &Channels,
     ) {
-        let lower = self.acquire(pool, AllocSource::MergeScratch);
-        let upper = self.acquire(pool, AllocSource::MergeScratch);
-        let blended = self.acquire(pool, AllocSource::MergeScratch);
+        // Acquired *as scratch*, so each is registered with the recording that
+        // names it and cannot be released before the submit (`Channels::scratch`).
+        let lower = self.scratch(scope, pool, AllocSource::MergeScratch);
+        let upper = self.scratch(scope, pool, AllocSource::MergeScratch);
+        let blended = self.scratch(scope, pool, AllocSource::MergeScratch);
         self.encode_slab(scope, &self.expand, u.expand.0, self.views_of(dst), &lower);
         self.encode_slab(scope, &self.expand, u.expand.1, self.views_of(src), &upper);
         self.encode_blend(scope, u.blend, &lower, &upper, &blended);
         self.encode_slab(scope, &self.store, u.store, blended.targets(), out);
-        // Held, not dropped: nothing in a recorded encoder has run, so an early
-        // release hands these straight to the next tile's expand (`TileScope`).
-        scope.hold(lower);
-        scope.hold(upper);
-        scope.hold(blended);
     }
 
     /// One direction of the slab law over one tile (`slab.wesl`).
@@ -579,6 +576,12 @@ impl MergeRenderer {
 
     fn acquire(&self, pool: &TilePool, source: AllocSource) -> Channels {
         Channels::acquire(pool, self.formats, source)
+    }
+
+    /// [`acquire`](Self::acquire) for a trio the recording reads back — registered
+    /// with the scope, so it outlives the submit by construction.
+    fn scratch(&self, scope: &mut TileScope, pool: &TilePool, source: AllocSource) -> Channels {
+        Channels::scratch(scope, pool, self.formats, source)
     }
 
     fn uniform<T: bytemuck::Pod>(&self, label: &str, value: &T) -> wgpu::Buffer {
