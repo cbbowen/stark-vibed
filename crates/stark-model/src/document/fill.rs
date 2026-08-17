@@ -27,6 +27,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::brush::clamp01;
 use super::selection::{SelectionMode, SelectionShape};
 use crate::geom::{TILE_APRON, Vec2};
 use crate::gradient::Gradient;
@@ -117,7 +118,15 @@ pub enum GradientAxis {
 /// lay in it. Compact enough for the action log and the wire, exactly like
 /// [`SelectionOp`](super::SelectionOp) — the shape travels, never the tiles, and
 /// every peer rasterizes it identically from the same shader.
+///
+/// **Deserialization funnels through [`FillOp::with_paint`]**, for
+/// [`SelectionOp`](super::SelectionOp)'s reason and by the same device: the
+/// constructor clamps the parcel's color and the opacity, and the derived impl
+/// walked past both. A fill lands paint whose mass is the *inverse* of the
+/// coverage law (§6.1), so an opacity of 1.0000001 from a corrupt log is not a
+/// slightly-too-strong fill — it is an infinite mass.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "RawFillOp")]
 pub struct FillOp {
     /// The region to fill. [`SelectionShape::All`] means "the selection", which is
     /// the selection bar's Fill button; it is refused when nothing is selected,
@@ -160,14 +169,19 @@ impl FillOp {
 
     pub fn with_paint(shape: SelectionShape, feather: f32, paint: Parcel, opacity: f32) -> Self {
         let paint = match paint {
-            Parcel::Solid(c) => Parcel::Solid(c.map(|c| c.clamp(0.0, 1.0))),
+            Parcel::Solid(c) => Parcel::Solid(c.map(clamp01)),
             gradient => gradient,
         };
         Self {
             shape,
-            feather,
+            // Floored like a selection op's, and for the same reason now that this
+            // is also the deserialization gate: `reach` scales it into the fill's
+            // claimed box, so a negative one shrinks the box the footprint promised
+            // — the §12.6 direction — and a NaN one unquantizes it entirely.
+            // `max` rather than `clamp`, so NaN lands on 0 (`brush::clamp01`).
+            feather: feather.max(0.0),
             paint,
-            opacity: opacity.clamp(0.0, 1.0),
+            opacity: clamp01(opacity),
         }
     }
 
@@ -235,4 +249,93 @@ pub fn fill_bounds(op: &FillOp) -> Option<(Vec2, Vec2)> {
     let (lo, hi) = op.shape.bounds()?;
     let pad = Vec2::splat(op.reach() + TILE_APRON as f32);
     Some((lo - pad, hi + pad))
+}
+
+/// The wire shape of a [`FillOp`] — the type `#[serde(from)]` decodes before the
+/// constructor runs. Fields in declaration order; postcard writes them that way
+/// and nothing here may move the encoding (§8).
+#[derive(Deserialize)]
+struct RawFillOp {
+    shape: SelectionShape,
+    feather: f32,
+    paint: Parcel,
+    opacity: f32,
+}
+
+impl From<RawFillOp> for FillOp {
+    fn from(raw: RawFillOp) -> Self {
+        Self::with_paint(raw.shape, raw.feather, raw.paint, raw.opacity)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fill decoded from a file or a peer holds what the constructor promises.
+    ///
+    /// The opacity is the sharp one: the shader inverts the coverage law
+    /// `1 − exp(−K·mass)` to find the mass that covers this much (§6.1), and that
+    /// inverse runs to infinity at 1. A log carrying 1.0000001 is not a slightly
+    /// strong fill, it is a `NaN` texel — and the derived impl passed it through.
+    #[test]
+    fn a_fill_from_the_wire_is_normalized() {
+        let round = |op: &FillOp| {
+            postcard::from_bytes::<FillOp>(&postcard::to_allocvec(op).expect("encodes"))
+                .expect("decodes")
+        };
+        let hostile = FillOp {
+            shape: SelectionShape::Rect {
+                min: Vec2::ZERO,
+                max: Vec2::splat(8.0),
+            },
+            feather: -3.0,
+            paint: Parcel::Solid([-1.0, 2.0, f32::NAN]),
+            opacity: 40.0,
+        };
+        let landed = round(&hostile);
+        assert_eq!(landed.opacity, 1.0);
+        assert_eq!(landed.feather, 0.0);
+        let Parcel::Solid(c) = landed.paint else {
+            panic!("a solid stays solid")
+        };
+        assert_eq!([c[0], c[1]], [0.0, 1.0]);
+        // `f32::clamp` returns the NaN — both of its comparisons are false — so the
+        // bound this gate used to spell caught every hostile value except the one
+        // that matters most. `clamp01` is `max`-then-`min` for exactly this.
+        assert_eq!(c[2], 0.0, "a NaN channel must not reach a shader");
+
+        // …and the same for the opacity, which the shader inverts the coverage law
+        // through: a NaN there is a NaN mass on every texel of the region.
+        let nan_strength = FillOp {
+            opacity: f32::NAN,
+            ..hostile.clone()
+        };
+        assert_eq!(round(&nan_strength).opacity, 0.0);
+
+        // Idempotent on anything this engine wrote.
+        let clean = FillOp::new(SelectionShape::All, 2.0, [0.25, 0.5, 0.75], 0.6);
+        assert_eq!(round(&clean), clean);
+    }
+
+    /// The mirror type must not move the encoding — postcard writes fields in
+    /// order with no names (§8).
+    #[test]
+    fn the_wire_shape_is_the_op_field_for_field() {
+        let op = FillOp::new(
+            SelectionShape::Rect {
+                min: Vec2::new(1.0, 2.0),
+                max: Vec2::new(3.0, 4.0),
+            },
+            1.5,
+            [0.1, 0.2, 0.3],
+            0.25,
+        );
+        let mut by_hand = Vec::new();
+        by_hand.extend(postcard::to_allocvec(&op.shape).expect("encodes"));
+        by_hand.extend(postcard::to_allocvec(&op.feather).expect("encodes"));
+        by_hand.extend(postcard::to_allocvec(&op.paint).expect("encodes"));
+        by_hand.extend(postcard::to_allocvec(&op.opacity).expect("encodes"));
+        assert_eq!(postcard::to_allocvec(&op).expect("encodes"), by_hand);
+    }
 }

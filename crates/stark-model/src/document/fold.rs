@@ -64,21 +64,67 @@ pub trait Materialize: Clone {
 /// An [`Action`] paired with the state it is to be folded into — the local type that
 /// carries the `history::Action` impl.
 ///
-/// Transparent in every way that matters: it holds nothing but the action, and
-/// [`Deref`](std::ops::Deref) gives it straight back. Its only job is to be *this
-/// crate's* type, so the impl below can be written at all.
+/// Transparent in every way that matters: [`Deref`](std::ops::Deref) gives the
+/// action straight back. Its first job is to be *this crate's* type, so the impl
+/// below can be written at all. Its second is to be the **one door onto the
+/// history**, which is what lets the two things below happen exactly once per
+/// action instead of once per question asked about it.
+///
+/// # What the door does
+///
+/// **It sanitizes** ([`ActionKind::sanitized`]). Every action reaching a state
+/// comes through here — a local commit, a replay from a file, a peer's action
+/// merged into the replicated log — and this is the "enters state" half of the
+/// funnel §21.5 describes, with `Engine::commit` the "is minted" half. Peers still
+/// converge because sanitizing is a pure, idempotent function of the action: two
+/// peers handed the same log materialize the same state whether or not the log
+/// itself was ever cleaned.
+///
+/// **It computes the footprint once.** `history` builds a centralizer once per
+/// removal and then asks it about *each* later action
+/// (`History::try_remove_action_with`), so [`Centralizer::commutes`] used to
+/// rebuild the other action's footprint on every comparison — two `Vec`
+/// allocations always, a walk of the whole control-point list for a stroke, and
+/// for a `TransformWarp` an entire fine-lattice solve (`WarpMap::image_aabb`,
+/// 57×57 nodes at an 8×8 grid). An undo across a warp was quadratic in the log for
+/// an answer that cannot change: a footprint is a pure function of an action, and
+/// the action is not moving. Held here, it is paid once at push.
 #[derive(Clone, Debug)]
-#[repr(transparent)]
-pub struct Logged<S: Materialize>(pub Action, PhantomData<S>);
+pub struct Logged<S: Materialize> {
+    action: Action,
+    /// Computed at construction — see the type's note. Not `pub`, and not
+    /// recomputable from outside, so it cannot drift from the action beside it.
+    footprint: Footprint,
+    _state: PhantomData<S>,
+}
 
 impl<S: Materialize> Logged<S> {
     pub fn new(action: Action) -> Self {
-        Self(action, PhantomData)
+        let action = Action {
+            id: action.id,
+            kind: action.kind.sanitized(),
+        };
+        // After sanitizing, deliberately: a footprint is a claim about what the
+        // fold will touch, and the fold sees the sanitized action. Built from the
+        // raw one it could claim a box the run never writes — harmless — or, where
+        // a clamp pulls a value *down*, disagree with the pass in the direction
+        // §12.6 cannot survive.
+        let footprint = footprint(&action);
+        Self {
+            action,
+            footprint,
+            _state: PhantomData,
+        }
+    }
+
+    /// What this action reads and writes (§12.6) — computed once, at construction.
+    pub fn footprint(&self) -> &Footprint {
+        &self.footprint
     }
 
     /// The action back out, dropping the state it was addressed to.
     pub fn into_action(self) -> Action {
-        self.0
+        self.action
     }
 }
 
@@ -92,34 +138,37 @@ impl<S: Materialize> std::ops::Deref for Logged<S> {
     type Target = Action;
 
     fn deref(&self) -> &Action {
-        &self.0
+        &self.action
     }
 }
 
 impl<S: Materialize> history::Action for Logged<S> {
     type State = S;
     type Context = S::Ctx;
-    type Centralizer<'a> = Footprint;
+    type Centralizer<'a> = &'a Footprint;
     // Applying an action never fails: GPU work reports failure through wgpu's device
     // error callbacks rather than return values, and an action that cannot be
     // honoured is declined by leaving the state alone (see [`Materialize::fold`]).
     type Error = std::convert::Infallible;
 
     fn apply(&self, state: S, ctx: &mut S::Ctx) -> Result<S, Self::Error> {
-        Ok(state.fold(&self.0, ctx))
+        Ok(state.fold(&self.action, ctx))
     }
 
     fn inverse(&self, previous_state: &S, state: &mut S) {
-        state.unfold(&self.0, previous_state);
+        state.unfold(&self.action, previous_state);
     }
 }
 
-impl<'a, S: Materialize> history::Centralizer<'a, Logged<S>> for Footprint {
+/// Borrowed from the action rather than rebuilt: both halves read the footprint
+/// each `Logged` already carries, which is the whole of the fix described on the
+/// type. `commutes` is the hot one — it runs once per later action, per removal.
+impl<'a, S: Materialize> history::Centralizer<'a, Logged<S>> for &'a Footprint {
     fn for_action(action: &'a Logged<S>) -> Self {
-        footprint(&action.0)
+        action.footprint()
     }
 
     fn commutes(&self, other: &Logged<S>) -> bool {
-        !self.conflicts(&footprint(&other.0))
+        !self.conflicts(other.footprint())
     }
 }

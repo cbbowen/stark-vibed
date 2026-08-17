@@ -47,6 +47,17 @@ impl BrushShape {
     /// (§6.6), which by construction has no hardness of its own to fall
     /// back on.
     pub const DEFAULT_HARDNESS: f32 = 0.5;
+
+    /// The same tip with its hardness inside the `[0, 1)` it is quoted in — see
+    /// [`BrushParams::sanitized`]. A `Stamp` carries no number to hold.
+    pub fn sanitized(self) -> Self {
+        match self {
+            Self::Round { hardness } => Self::Round {
+                hardness: clamp01(hardness),
+            },
+            Self::Stamp(id) => Self::Stamp(id),
+        }
+    }
 }
 
 /// What sets the brush shape's orientation as it sweeps along the stroke
@@ -154,6 +165,28 @@ impl Default for BrushDynamics {
     }
 }
 
+impl BrushDynamics {
+    /// Every axis a number, and the three fractions inside the `[0, 1]` their own
+    /// docs quote them in — see [`BrushParams::sanitized`].
+    ///
+    /// `add` and `charge` are floored but not capped, because neither has a
+    /// documented ceiling *here*: `add` is a rate rather than a fraction (the
+    /// frontend's `MAX_FLOW` is where a slider stops, not where the quantity stops
+    /// meaning something) and `charge` is a height. A bound this crate does not
+    /// own is not a bound it may invent — clamping to one would silently rewrite
+    /// documents whose brushes were legitimately past a *slider's* end.
+    pub fn sanitized(self) -> Self {
+        let d = Self::default();
+        Self {
+            add: at_least_zero(self.add, d.add),
+            lift: clamp01(finite_or(self.lift, d.lift)),
+            deposit: clamp01(finite_or(self.deposit, d.deposit)),
+            charge: at_least_zero(self.charge, d.charge),
+            bleed: clamp01(finite_or(self.bleed, d.bleed)),
+        }
+    }
+}
+
 /// The kind of noise field driving [`ColorDynamics`] (§6.2). Each kind
 /// is baked once into a small tileable 2-D texture (`noise.rs`), so lookups are
 /// cheap and deterministic across replay, peers, and builds.
@@ -213,6 +246,26 @@ impl ColorDynamics {
     /// Whether the jitter has any effect (any channel amplitude non-zero).
     pub fn is_active(&self) -> bool {
         self.amplitude.iter().any(|a| *a != 0.0)
+    }
+
+    /// Every number a number — see [`BrushParams::sanitized`]. Amplitudes and
+    /// frequencies are floored at zero (an amplitude is a distance the channel
+    /// wanders either way, a frequency a scale) and capped by neither, for
+    /// [`BrushDynamics::sanitized`]'s reason.
+    pub fn sanitized(self) -> Self {
+        let d = Self::default();
+        Self {
+            noise: self.noise,
+            frequency: [
+                at_least_zero(self.frequency[0], d.frequency[0]),
+                at_least_zero(self.frequency[1], d.frequency[1]),
+            ],
+            amplitude: [
+                at_least_zero(self.amplitude[0], d.amplitude[0]),
+                at_least_zero(self.amplitude[1], d.amplitude[1]),
+                at_least_zero(self.amplitude[2], d.amplitude[2]),
+            ],
+        }
     }
 }
 
@@ -339,6 +392,22 @@ impl Modulation {
         1.0 / k - 2.0
     }
 
+    /// The same mapping with both knobs in the range they are quoted in.
+    ///
+    /// [`factor`](Self::factor) and [`max_slope`](Self::max_slope) already clamp
+    /// what they read, so this changes no pixel — it is here so that what is
+    /// *stored* is what the sliders can show, and so a `NaN` curve cannot reach a
+    /// panel that would render a slider at an impossible position.
+    pub fn sanitized(self) -> Self {
+        Self {
+            source: self.source,
+            floor: clamp01(self.floor),
+            // `finite_or` first: `clamp` returns the NaN, and 0 is this knob's own
+            // neutral (a linear response).
+            curve: finite_or(self.curve, 0.0).clamp(-1.0, 1.0),
+        }
+    }
+
     /// A bound on `|d factor / d input|`, for the flattener (see `MIN_BIAS`).
     ///
     /// `shape`'s derivative is `(m + 1)/(m(1 − x) + 1)²`, monotone in `x`, so it is
@@ -358,9 +427,33 @@ impl Modulation {
 /// `f32::max`/`min` return the non-NaN operand where `clamp` returns the NaN. Same
 /// argument as [`BrushParams::taper_px`], and the reason clippy's suggestion here is
 /// the wrong one.
+///
+/// `pub(crate)` because it is the document's NaN policy and not the brush's:
+/// [`SelectionOp::at`](super::selection::SelectionOp::at) and
+/// [`FillOp::with_paint`](super::fill::FillOp::with_paint) are deserialization
+/// gates now, and both spelled the bound `clamp` — which passed a `NaN` opacity
+/// through the very funnel that exists to stop one. One definition, so the policy
+/// is stated once and cannot be half-remembered at the next gate.
 #[allow(clippy::manual_clamp)]
-fn clamp01(x: f32) -> f32 {
+pub(crate) fn clamp01(x: f32) -> f32 {
     x.max(0.0).min(1.0)
+}
+
+/// `x` if it is a number this parameter can be, else `fallback` — the shape every
+/// `sanitized` here takes for a knob with no upper bound to clamp to.
+///
+/// Falling back to the field's **default** rather than to zero is
+/// [`ColorAdjust::sanitized`](super::filter::ColorAdjust::sanitized)'s argument
+/// read for a brush: `NaN` says nothing about which end was meant, and a radius
+/// silently rounded to 0 is a brush that paints nothing, which is a worse answer
+/// than the one the slider ships at.
+fn finite_or(x: f32, fallback: f32) -> f32 {
+    if x.is_finite() { x } else { fallback }
+}
+
+/// `x` as a non-negative length or rate: finite, and floored at zero.
+fn at_least_zero(x: f32, fallback: f32) -> f32 {
+    finite_or(x, fallback).max(0.0)
 }
 
 /// Which brush parameters the pen drives, and how (§6.2) — the mapping from pen
@@ -473,6 +566,26 @@ impl Modulations {
     /// Whether any target is mapped.
     pub fn is_active(&self) -> bool {
         self.all().iter().any(Option::is_some)
+    }
+
+    /// Every mapped target sanitized, the unmapped ones left unmapped.
+    ///
+    /// Destructured through [`all`](Self::all) and rebuilt positionally, so a
+    /// target added to the struct arrives here already covered rather than being
+    /// silently skipped — the same bargain `all` makes for
+    /// [`max_slope`](Self::max_slope).
+    pub fn sanitized(self) -> Self {
+        let [size, flow, lift, deposit, bleed, tooth, stretch] =
+            self.all().map(|m| m.map(Modulation::sanitized));
+        Self {
+            size,
+            flow,
+            lift,
+            deposit,
+            bleed,
+            tooth,
+            stretch,
+        }
     }
 
     /// The steepest response across every active target — how much finer the path has
@@ -652,6 +765,57 @@ impl BrushParams {
     /// 0 would *shrink* the tip across its axis at a low tilt, where scaling the knob
     /// walks `s` back to 1 and leaves the shape alone.
     ///
+    /// The stretch knob's own top: the value at which
+    /// [`elongation`](Self::elongation) reaches [`MAX_ELONGATION`](Self::MAX_ELONGATION)
+    /// and the knob stops meaning anything (§6.6).
+    ///
+    /// Here rather than in the frontend, where it was spelled inline as the
+    /// stretch slider's end, because a slider is only one of the ways a value
+    /// reaches this field — a file and a peer are two more, and neither passes
+    /// through a panel. `MAX_FLOW`'s own doc already makes this argument for the
+    /// *drag* bindings ("a knob reachable two ways must have one range"); the
+    /// wire is simply the third way.
+    pub const MAX_STRETCH: f32 = 1.0 - 1.0 / Self::MAX_ELONGATION;
+
+    /// The same brush with every number a number, and every number that has a
+    /// documented range inside it — the funnel a brush passes through on its way
+    /// into the document, exactly as [`Filter::sanitized`](super::Filter::sanitized)
+    /// is for a filter (§21.5) and for the same two reasons.
+    ///
+    /// **It clamps only where this crate already states a range.** The three pickup
+    /// axes, the tooth, the hardness and the color are quoted in `[0, 1]` by their
+    /// own field docs; the stretch saturates at [`MAX_STRETCH`](Self::MAX_STRETCH)
+    /// by construction. Everything else — the radius, the flow, the drain, the
+    /// charge, the tapers, the jitter — is required to be a finite, non-negative
+    /// number and nothing more, because the ceilings those have are a *frontend's*
+    /// slider ends rather than facts about the quantity, and clamping a document to
+    /// one this crate does not own would rewrite brushes that were never wrong.
+    ///
+    /// Every guard this replaces stays where it is. `taper_px`, `elongation` and
+    /// `stroke_rect` defend themselves against values that never came through here,
+    /// which is what keeps a footprint honest for a record built by hand in a test
+    /// or arriving down a path this funnel does not cover (§12.6).
+    pub fn sanitized(self) -> Self {
+        let d = Self::default();
+        Self {
+            color: self.color.map(clamp01),
+            radius: at_least_zero(self.radius, d.radius),
+            drain: at_least_zero(self.drain, d.drain),
+            shape: self.shape.sanitized(),
+            orientation: self.orientation,
+            dynamics: self.dynamics.sanitized(),
+            color_dynamics: self.color_dynamics.sanitized(),
+            start_taper_length: at_least_zero(self.start_taper_length, d.start_taper_length),
+            end_taper_length: at_least_zero(self.end_taper_length, d.end_taper_length),
+            modulation: self.modulation.sanitized(),
+            tooth: clamp01(finite_or(self.tooth, d.tooth)),
+            // Bounded at the knob's own saturation point rather than at 1: past
+            // `MAX_STRETCH` the reciprocal is already pinned, so a larger value
+            // stored is a number that cannot mean what it says.
+            stretch: finite_or(self.stretch, d.stretch).clamp(0.0, Self::MAX_STRETCH),
+        }
+    }
+
     /// `min`-then-`max` rather than `clamp`, for `clamp01`'s reason and with more
     /// riding on it: `clamp` returns the NaN where these return the other operand, and
     /// the NaN would reach a lane the shaders divide by.
@@ -810,6 +974,95 @@ mod tests {
             (1.0..=9.0 + 1e-4).contains(&slope),
             "an extreme curve should cost something, and a bounded something: {slope}"
         );
+    }
+
+    /// **Nothing that is not a number survives the funnel**, on any field.
+    ///
+    /// Driven off a poison list applied to every field in turn rather than one
+    /// assertion each, so a field added to the brush has an obvious place to be
+    /// added and no way to be quietly exempt — the device
+    /// `a_view_never_stores_a_number_it_cannot_use` uses for the view's mutators,
+    /// and for the same reason: what is being checked is a *class*.
+    #[test]
+    fn a_sanitized_brush_holds_no_number_a_shader_cannot_use() {
+        type Poke = (&'static str, fn(&mut BrushParams, f32));
+        let pokes: [Poke; 16] = [
+            ("radius", |b, f| b.radius = f),
+            ("drain", |b, f| b.drain = f),
+            ("tooth", |b, f| b.tooth = f),
+            ("stretch", |b, f| b.stretch = f),
+            ("start_taper", |b, f| b.start_taper_length = f),
+            ("end_taper", |b, f| b.end_taper_length = f),
+            ("color.r", |b, f| b.color[0] = f),
+            ("color.a", |b, f| b.color[3] = f),
+            ("dynamics.add", |b, f| b.dynamics.add = f),
+            ("dynamics.lift", |b, f| b.dynamics.lift = f),
+            ("dynamics.deposit", |b, f| b.dynamics.deposit = f),
+            ("dynamics.charge", |b, f| b.dynamics.charge = f),
+            ("dynamics.bleed", |b, f| b.dynamics.bleed = f),
+            ("jitter.amplitude", |b, f| b.color_dynamics.amplitude[1] = f),
+            ("jitter.frequency", |b, f| b.color_dynamics.frequency[0] = f),
+            ("hardness", |b, f| {
+                b.shape = BrushShape::Round { hardness: f }
+            }),
+        ];
+        let unit = |b: &BrushParams| {
+            [
+                b.dynamics.lift,
+                b.dynamics.deposit,
+                b.dynamics.bleed,
+                b.tooth,
+                b.color[0],
+                b.color[3],
+            ]
+        };
+        for (name, poke) in pokes {
+            for f in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -9.0, 1e30] {
+                let mut brush = BrushParams::default();
+                poke(&mut brush, f);
+                let clean = brush.sanitized();
+                // Every number is a number…
+                for v in [
+                    clean.radius,
+                    clean.drain,
+                    clean.tooth,
+                    clean.stretch,
+                    clean.start_taper_length,
+                    clean.end_taper_length,
+                    clean.dynamics.add,
+                    clean.dynamics.lift,
+                    clean.dynamics.deposit,
+                    clean.dynamics.charge,
+                    clean.dynamics.bleed,
+                ] {
+                    assert!(v.is_finite(), "{name} = {f} left a non-finite brush");
+                    assert!(v >= 0.0, "{name} = {f} left {v}, which is negative");
+                }
+                // …the ones this crate quotes in [0, 1] are in it…
+                for v in unit(&clean) {
+                    assert!((0.0..=1.0).contains(&v), "{name} = {f} escaped [0, 1]");
+                }
+                // …and the stretch cannot outrun its own saturation point.
+                assert!((0.0..=BrushParams::MAX_STRETCH).contains(&clean.stretch));
+                // Idempotent, or a load would be a small edit every time.
+                assert_eq!(clean.sanitized(), clean, "{name} = {f}");
+            }
+        }
+        // An ordinary brush comes through **bit for bit**: this runs on replay, so
+        // anything it nudged would move a golden.
+        let ordinary = BrushParams {
+            radius: 40.0,
+            stretch: 0.5,
+            tooth: 0.25,
+            dynamics: BrushDynamics {
+                add: 2.5, // past the frontend's slider, and legitimately so
+                lift: 1.0,
+                bleed: 0.95,
+                ..BrushDynamics::default()
+            },
+            ..BrushParams::default()
+        };
+        assert_eq!(ordinary.sanitized(), ordinary);
     }
 
     /// A modulation is a pure function of floats, so replay, goldens and peers agree

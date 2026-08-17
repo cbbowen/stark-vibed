@@ -1033,7 +1033,7 @@ impl Engine {
                     id,
                     carrier,
                     above,
-                    filter: filter.sanitized(),
+                    filter,
                 });
                 // Deliberately *not* made the active layer, for the reason
                 // `AddMatte` is not: a filter has no tile map, so arming it as the
@@ -1041,11 +1041,11 @@ impl Engine {
                 // selects it, which is what raises its bar.
             }
             DocCommand::SetFilter(id, filter) => {
-                // Normalized here, where the action is minted, so replay puts back
-                // what was applied rather than re-deriving it from rules that may
-                // have moved (§21.5) — the same funnel `SetLayerName` goes through,
-                // and the reason `is_noop_on` can compare payloads directly.
-                self.settle(ActionKind::SetFilter(id, filter.sanitized()));
+                // Normalized on the way through `settle`, where the action is
+                // minted, so replay puts back what was applied rather than
+                // re-deriving it from rules that may have moved (§21.5) — and so
+                // `is_noop_on` can compare payloads directly.
+                self.settle(ActionKind::SetFilter(id, filter));
             }
             DocCommand::SetMatteRect(id, min, max) => {
                 self.settle(ActionKind::SetMatteRect(id, min, max))
@@ -1115,12 +1115,12 @@ impl Engine {
                 }
             }
             DocCommand::SetLayerBlend(id, blend) => {
-                // Normalized here, where the action is minted, so replay puts back
-                // what was applied rather than re-deriving it from rules that may
-                // have moved — the same funnel `SetFilter` goes through, and the
-                // reason `is_noop_on` compares the sanitized value rather than the
-                // raw one without having to sanitize a second time.
-                self.settle(ActionKind::SetLayerBlend(id, blend.sanitized()))
+                // Normalized on the way through `settle`, where the action is
+                // minted, so replay puts back what was applied rather than
+                // re-deriving it from rules that may have moved — the same funnel
+                // `SetFilter` goes through, and the reason `is_noop_on` compares
+                // the sanitized value rather than the raw one.
+                self.settle(ActionKind::SetLayerBlend(id, blend))
             }
             DocCommand::SetLayerClip(id, clip) => self.settle(ActionKind::SetLayerClip(id, clip)),
             DocCommand::SetLayerOpacity(id, opacity) => {
@@ -1636,7 +1636,18 @@ impl Engine {
         self.preview.set_doc(None);
         let action = Action {
             id: self.next_action_id(),
-            kind,
+            // The **minted** half of the sanitizing funnel (§21.5); `Logged::new`
+            // is the "enters state" half. Here rather than inside the timeline so
+            // that the log and the wire carry *what was applied* — the broadcast
+            // clone below is taken from this action, so a peer that received the
+            // raw kind and cleaned it on arrival would agree about pixels while
+            // disagreeing about the log.
+            //
+            // One call for every kind, rather than the three payload-level calls
+            // this replaces (`AddFilter`, `SetFilter`, `SetLayerBlend`), which were
+            // a list every new action-with-a-knob had to be added to and the brush,
+            // the fill and the selection op never were.
+            kind: kind.sanitized(),
         };
         // Cloned only when there is somewhere for the copy to go. A `CommitStroke`
         // carries the stroke's whole fitted control-point list — the largest thing
@@ -1713,6 +1724,13 @@ impl Engine {
     /// all. Splitting those apart is how `SetLayerVisible` came to log a step for
     /// setting the value it already held while `SetLayerOpacity` did not.
     fn settle(&mut self, kind: ActionKind) {
+        // Before the comparison, not after: `is_noop_on` compares the payload
+        // against the one already in the document, and the stored one has been
+        // through this funnel. Left raw, a slider released on the value it was
+        // pressed on would compare unequal to its own sanitized twin and log an
+        // action that changes nothing — which is the case this whole function
+        // exists to catch.
+        let kind = kind.sanitized();
         if crate::document::apply::is_noop_on(&kind, self.document()) {
             // Nothing to log, and the drag still has to be superseded: a slider
             // released on the value it was pressed on left a preview up.

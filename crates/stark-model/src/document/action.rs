@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::brush::BrushParams;
+use super::fill::FillOp;
 use super::filter::Filter;
 use super::layer::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
 use super::selection::SelectionOp;
@@ -396,6 +397,93 @@ impl ActionKind {
         one.into_iter().chain(copies.iter().map(|&(_, copy)| copy))
     }
 
+    /// The same action with every payload finite and in range — **the one funnel
+    /// an action passes through on its way into the document.**
+    ///
+    /// The pieces existed already and were called one at a time:
+    /// `Filter::sanitized` at two sites, `BlendMode::sanitized` at two more, and
+    /// nothing at all for the brush a stroke carries or the ops a fill and a
+    /// selection do. That is a list a caller keeps, and §1 prefers ruling out a
+    /// class to enumerating its instances — so the list is here, once, and the
+    /// engine sanitizes an *action* rather than remembering which of its payloads
+    /// have knobs.
+    ///
+    /// **Exhaustive, with no `_` arm**, which is the whole point of writing it this
+    /// way: a variant added later stops this compiling until it says whether it
+    /// carries a number, where a wildcard would answer "nothing to hold" on its
+    /// behalf and be right until the day it was not. Same device as
+    /// [`minted_layers`](Self::minted_layers) and
+    /// [`action_content`](crate::content::action_content), after the same escape.
+    ///
+    /// **Idempotent** on anything this engine wrote, so applying it on the way in
+    /// *and* on replay cannot make a load into a small edit.
+    pub fn sanitized(self) -> Self {
+        match self {
+            ActionKind::CommitStroke(rec) => ActionKind::CommitStroke(StrokeRecord {
+                brush: rec.brush.sanitized(),
+                ..rec
+            }),
+            ActionKind::Fill { layer, op } => ActionKind::Fill {
+                layer,
+                // The op's own invariants are held by its deserialization gate
+                // (`FillOp::with_paint`), so rebuilding through it is how they are
+                // stated once rather than twice.
+                op: FillOp::with_paint(op.shape, op.feather, op.paint, op.opacity),
+            },
+            ActionKind::Select(op) => {
+                ActionKind::Select(SelectionOp::at(op.mode, op.shape, op.feather, op.opacity))
+            }
+            ActionKind::SetLayerBlend(id, mode) => ActionKind::SetLayerBlend(id, mode.sanitized()),
+            ActionKind::SetFilter(id, f) => ActionKind::SetFilter(id, f.sanitized()),
+            ActionKind::AddFilter {
+                id,
+                carrier,
+                above,
+                filter,
+            } => ActionKind::AddFilter {
+                id,
+                carrier,
+                above,
+                filter: filter.sanitized(),
+            },
+            ActionKind::SetLayerOpacity(id, a) => {
+                // A layer's opacity is a coverage weight the compositor multiplies
+                // by; a NaN would take the whole layer with it.
+                ActionKind::SetLayerOpacity(
+                    id,
+                    if a.is_finite() {
+                        a.clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    },
+                )
+            }
+            // Nothing to hold: ids, flags, places, and the geometry whose own
+            // `usable`/`affine_usable` gate rejects it at `apply` rather than
+            // rounding it into something else (§16.1) — a transform that cannot be
+            // clamped into a *different* transform without changing what the
+            // author asked for.
+            ActionKind::AddLayer { .. }
+            | ActionKind::AddMatte { .. }
+            | ActionKind::DuplicateLayer { .. }
+            | ActionKind::RemoveLayer(_)
+            | ActionKind::MergeLayerDown { .. }
+            | ActionKind::MoveLayer { .. }
+            | ActionKind::SetLayerClip(..)
+            | ActionKind::SetLayerVisible(..)
+            | ActionKind::SetLayerName(..)
+            | ActionKind::SetMatteRect(..)
+            | ActionKind::SetMattePaint(..)
+            | ActionKind::SetBackground(_)
+            | ActionKind::SetSurface(_)
+            | ActionKind::InvertSelection
+            | ActionKind::Transform { .. }
+            | ActionKind::TransformPerspective { .. }
+            | ActionKind::TransformWarp { .. }
+            | ActionKind::Undo(_) => self,
+        }
+    }
+
     /// What this action *is*, in two or three words — the caption a history
     /// scrubber puts on the step it is about to cross (§18.2.4).
     ///
@@ -439,4 +527,160 @@ impl ActionKind {
 pub struct Action {
     pub id: ActionId,
     pub kind: ActionKind,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Parcel, SelectionMode, SelectionShape};
+    use crate::geom::Vec2;
+
+    /// The funnel reaches the payloads that carry numbers — the three that had no
+    /// gate of their own before it existed (a stroke's brush, a fill's op, a
+    /// selection's op) alongside the two that did.
+    ///
+    /// A `NaN` in any of them reaches a shader: a brush's radius sizes a dispatch,
+    /// a fill's opacity is inverted through the coverage law, a selection's opacity
+    /// scales the mask every other tool acts through.
+    #[test]
+    fn the_funnel_reaches_every_payload_that_carries_a_number() {
+        let bad = f32::NAN;
+
+        let stroke = ActionKind::CommitStroke(StrokeRecord {
+            layer: LayerId(0),
+            brush: BrushParams {
+                radius: bad,
+                tooth: 9.0,
+                ..BrushParams::default()
+            },
+            path: Vec::new(),
+            seed: 0,
+        })
+        .sanitized();
+        let ActionKind::CommitStroke(rec) = &stroke else {
+            panic!("a stroke stays a stroke")
+        };
+        assert!(rec.brush.radius.is_finite());
+        assert_eq!(rec.brush.tooth, 1.0);
+
+        let fill = ActionKind::Fill {
+            layer: LayerId(0),
+            op: FillOp {
+                shape: SelectionShape::All,
+                feather: -1.0,
+                paint: Parcel::Solid([bad; 3]),
+                opacity: 5.0,
+            },
+        }
+        .sanitized();
+        let ActionKind::Fill { op, .. } = &fill else {
+            panic!("a fill stays a fill")
+        };
+        assert_eq!((op.feather, op.opacity), (0.0, 1.0));
+
+        let select = ActionKind::Select(SelectionOp {
+            mode: SelectionMode::Replace,
+            shape: SelectionShape::All,
+            feather: bad,
+            opacity: 0.5,
+        })
+        .sanitized();
+        let ActionKind::Select(op) = &select else {
+            panic!("a select stays a select")
+        };
+        assert_eq!((op.feather, op.opacity), (0.0, 1.0));
+
+        // A layer's opacity is a coverage weight the compositor multiplies by.
+        let ActionKind::SetLayerOpacity(_, a) =
+            ActionKind::SetLayerOpacity(LayerId(0), bad).sanitized()
+        else {
+            panic!()
+        };
+        assert!(a.is_finite());
+    }
+
+    /// **Idempotent, on every variant.** The funnel runs where an action is minted
+    /// *and* where it enters state, so a second pass that moved anything would make
+    /// every load and every replay a small edit — and goldens are blessed against
+    /// the first pass.
+    ///
+    /// Driven off the same one-of-each list the footprint's exhaustiveness device
+    /// uses, so a variant added later is covered here as soon as it is added there.
+    #[test]
+    fn sanitizing_is_idempotent_on_every_kind() {
+        let id = LayerId(3);
+        let kinds = [
+            ActionKind::CommitStroke(StrokeRecord {
+                layer: id,
+                brush: BrushParams::default(),
+                path: vec![crate::path::ControlPoint::at(Vec2::splat(4.0))],
+                seed: 1,
+            }),
+            ActionKind::AddLayer {
+                id,
+                carrier: None,
+                above: None,
+            },
+            ActionKind::RemoveLayer(id),
+            ActionKind::SetLayerBlend(id, BlendMode::Drago { k: 1e9 }),
+            ActionKind::SetLayerOpacity(id, 0.5),
+            ActionKind::SetLayerVisible(id, true),
+            ActionKind::SetLayerClip(id, true),
+            ActionKind::SetLayerName(id, Some("wash".into())),
+            ActionKind::MoveLayer {
+                id,
+                carrier: None,
+                at: Place::Top,
+            },
+            ActionKind::DuplicateLayer {
+                ids: vec![(id, LayerId(9))],
+            },
+            ActionKind::MergeLayerDown {
+                source: id,
+                dest: LayerId(1),
+            },
+            ActionKind::Undo(ActionId {
+                lamport: 1,
+                actor: ActorId::SOLO,
+            }),
+            ActionKind::SetSurface(crate::SurfaceId::Flat),
+            ActionKind::Select(SelectionOp::select_all()),
+            ActionKind::InvertSelection,
+            ActionKind::AddMatte {
+                id,
+                carrier: None,
+                at: Place::Bottom,
+                region: MatteRegion::Everything,
+                paint: MattePaint::Solid([0.0; 3]),
+            },
+            ActionKind::SetMatteRect(id, Vec2::ZERO, Vec2::splat(4.0)),
+            ActionKind::SetMattePaint(id, MattePaint::Solid([1.0; 3])),
+            ActionKind::SetBackground([0.5; 3]),
+            ActionKind::Transform {
+                layer: id,
+                affine: crate::geom::Affine2::IDENTITY,
+            },
+            ActionKind::Fill {
+                layer: id,
+                op: FillOp::of_selection([0.2, 0.4, 0.6]),
+            },
+            ActionKind::AddFilter {
+                id,
+                carrier: None,
+                above: None,
+                filter: Filter::ALL[0].clone(),
+            },
+            ActionKind::SetFilter(id, Filter::ALL[1].clone()),
+        ];
+        for kind in kinds {
+            let once = kind.sanitized();
+            let twice = once.clone().sanitized();
+            assert_eq!(
+                format!("{once:?}"),
+                format!("{twice:?}"),
+                "sanitizing {} moved on the second pass",
+                once.label(),
+            );
+        }
+    }
 }
