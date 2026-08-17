@@ -133,18 +133,49 @@ fn axis_basis(len: usize, k: usize, f: f32) -> Vec<f32> {
 
 /// The fine lattice a [`WarpMap`] rasterizes through: base coordinates per axis
 /// and the image of every lattice node, row-major (`ny` rows of `nx`).
+///
+/// **Fields are private and [`WarpMap::lattice`] is the only way to one**, which
+/// is what makes the methods below total rather than merely lucky: `positive`
+/// walks `0..ny - 1` and `aabb` reads `pts[0]`, so a hand-built empty lattice
+/// panicked on both. The constructor guarantees at least `SUBDIV + 1` nodes an
+/// axis (a map is refused below two control points), so there is no degenerate
+/// lattice left to defend against — §1's preference for ruling out a class over
+/// checking for its instances.
 pub struct Lattice {
-    pub nx: usize,
-    pub ny: usize,
+    nx: usize,
+    ny: usize,
     /// Base (undeformed) lattice coordinates, strictly increasing, spanning
     /// `[min, max]` exactly at the ends.
-    pub xs: Vec<f32>,
-    pub ys: Vec<f32>,
+    xs: Vec<f32>,
+    ys: Vec<f32>,
     /// Image of node `(a, b)` at `pts[b * nx + a]`.
-    pub pts: Vec<Vec2>,
+    pts: Vec<Vec2>,
 }
 
 impl Lattice {
+    /// Nodes per row, and rows — both at least `SUBDIV + 1`.
+    pub fn nx(&self) -> usize {
+        self.nx
+    }
+
+    pub fn ny(&self) -> usize {
+        self.ny
+    }
+
+    /// Base (undeformed) coordinates per axis, strictly increasing.
+    pub fn xs(&self) -> &[f32] {
+        &self.xs
+    }
+
+    pub fn ys(&self) -> &[f32] {
+        &self.ys
+    }
+
+    /// Image of every node, row-major (`ny` rows of `nx`).
+    pub fn pts(&self) -> &[Vec2] {
+        &self.pts
+    }
+
     /// The corner images of sub-cell `(a, b)` in `cell_point` order
     /// (00, 10, 01, 11).
     pub fn cell(&self, a: usize, b: usize) -> [Vec2; 4] {

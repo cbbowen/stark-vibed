@@ -154,7 +154,7 @@ impl DocumentFile {
 
     /// Encode to the on-disk container: `MAGIC | version | deflate(postcard)`.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let body = postcard::to_allocvec(self).map_err(|e| DocError::Serialize(e.to_string()))?;
+        let body = postcard::to_allocvec(self).map_err(DocError::Serialize)?;
 
         // `default` (level 6) rather than `best` (9). Saving is latency the artist
         // waits through, and level 9 spends a large multiple of 6's time hunting
@@ -202,8 +202,7 @@ impl DocumentFile {
                 limit: MAX_DECOMPRESSED,
             });
         }
-        let file: Self =
-            postcard::from_bytes(&body).map_err(|e| DocError::Deserialize(e.to_string()))?;
+        let file: Self = postcard::from_bytes(&body).map_err(DocError::Deserialize)?;
 
         // A sibling of the version check above, and refused for the same reason:
         // the bytes decode perfectly and simply do not mean what this build would

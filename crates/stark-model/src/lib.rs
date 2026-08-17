@@ -37,9 +37,22 @@ pub mod path;
 pub mod peer;
 pub mod surface;
 
+// # What the root re-exports, and what it does not
+//
+// The small modules below are flat: `color`, `colorspace`, `content`, `geom`,
+// `gradient`, `io`, `path`, `peer` and `surface` each hold a handful of items, so
+// their headline types are lifted here and the module stays available for the
+// rest. That is the ordinary prelude shape.
+//
+// **`document` is the exception, and it is deliberate.** It has a curated
+// re-export list of its own over crate-private submodules (see its header), so a
+// type there already has exactly one public path — and lifting a subset of them
+// again gave `LayerId` two, `SelectionOp` two, and `ActionId` and `FillOp` one
+// apiece, with nothing choosing between them and no rule saying which four were
+// special. Nothing in the workspace ever took the short path; the four are gone
+// rather than the other twenty added, so `document::` means what it says.
 pub use colorspace::ColorSpaceId;
 pub use content::{AssetNeed, action_content};
-pub use document::{LayerId, SelectionMode, SelectionOp, SelectionShape};
 pub use error::{DocError, Result};
 pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};
 pub use gradient::{Gradient, GradientStop};

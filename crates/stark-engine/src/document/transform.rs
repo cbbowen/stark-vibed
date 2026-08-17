@@ -283,22 +283,22 @@ fn units_for_tile(
             // Sub-cells whose sub-rect overlaps the piece. The axes are
             // strictly increasing, so a linear scan with an early break is
             // fine at these counts (≤ 57 per axis).
-            for b in 0..lat.ny - 1 {
-                if lat.ys[b + 1] <= lo.y {
+            for b in 0..lat.ny() - 1 {
+                if lat.ys()[b + 1] <= lo.y {
                     continue;
                 }
-                if lat.ys[b] >= hi.y {
+                if lat.ys()[b] >= hi.y {
                     break;
                 }
-                for a in 0..lat.nx - 1 {
-                    if lat.xs[a + 1] <= lo.x {
+                for a in 0..lat.nx() - 1 {
+                    if lat.xs()[a + 1] <= lo.x {
                         continue;
                     }
-                    if lat.xs[a] >= hi.x {
+                    if lat.xs()[a] >= hi.x {
                         break;
                     }
-                    let (sx0, sx1) = (lat.xs[a], lat.xs[a + 1]);
-                    let (sy0, sy1) = (lat.ys[b], lat.ys[b + 1]);
+                    let (sx0, sx1) = (lat.xs()[a], lat.xs()[a + 1]);
+                    let (sy0, sy1) = (lat.ys()[b], lat.ys()[b + 1]);
                     let plo = Vec2::new(sx0.max(lo.x), sy0.max(lo.y));
                     let phi = Vec2::new(sx1.min(hi.x), sy1.min(hi.y));
                     if !(plo.x < phi.x && plo.y < phi.y) {

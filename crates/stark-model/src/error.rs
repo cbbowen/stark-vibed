@@ -18,11 +18,19 @@ use crate::content::AssetNeed;
 /// Errors produced by reading, writing or resolving a document.
 #[derive(Debug, Error)]
 pub enum DocError {
-    #[error("serialization failed: {0}")]
-    Serialize(String),
+    /// The two halves of the container's codec. They carry the `postcard::Error`
+    /// itself rather than its `to_string()`, so `source()` reaches it and a caller
+    /// printing the chain gets what actually went wrong — the courtesy every other
+    /// variant here already extends (`AssetId`, `Io`).
+    ///
+    /// Two variants rather than one `#[from]`, because both directions fail with
+    /// the same type and which one it was is the useful half of the message: a
+    /// serialize failure is this build's bug, a deserialize failure is the file's.
+    #[error("serialization failed")]
+    Serialize(#[source] postcard::Error),
 
-    #[error("deserialization failed: {0}")]
-    Deserialize(String),
+    #[error("deserialization failed")]
+    Deserialize(#[source] postcard::Error),
 
     #[error("not a Stark document (bad magic)")]
     BadMagic,
