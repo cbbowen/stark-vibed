@@ -104,8 +104,13 @@ pub const DEFAULT_TOLERANCE: f32 = 1.0;
 /// [`ViewTransform`](stark_model::geom::ViewTransform) allows — and is what keeps the
 /// window advancing, and so the per-sample work bounded, rather than letting a
 /// stroke never grow a control point at all.
-const MIN_TOLERANCE: f32 = 1.0 / 64.0;
-const MAX_TOLERANCE: f32 = 64.0;
+/// `pub` so the benchmark can name the bound rather than restate it: the tolerance
+/// sweep in `benches/path.rs` exists to hold the fit's cost flat *to the top of this
+/// range*, and a hard-coded 64.0 there would be a second copy of the number that
+/// decides what the range is.
+pub const MIN_TOLERANCE: f32 = 1.0 / 64.0;
+/// See [`MIN_TOLERANCE`].
+pub const MAX_TOLERANCE: f32 = 64.0;
 
 /// Curvature penalty on the control polygon, as a fraction of the data's own pull
 /// (see [`CubicBSpline::fit_channels`]).
@@ -622,8 +627,11 @@ impl PathFitter {
         while lo + 1 < self.pts.len() && param(self.pts[lo].arc) < cutoff {
             lo += 1;
         }
-        let live = &self.pts[lo..];
-        let pos: Vec<[f32; 2]> = live.iter().map(|s| [s.pos.x, s.pos.y]).collect();
+        // …and of the reports that *do* reach a free row, at most a bounded number are
+        // minimized over — see [`window_indices`], which is the whole of why this
+        // costs what it costs rather than what the digitizer charges for it.
+        let idx = window_indices(&self.pts, lo);
+        let pos: Vec<[f32; 2]> = idx.iter().map(|&i| self.pts[i].pos.to_array()).collect();
 
         // Distance along the stroke is only a *first guess* at where a sample sits on
         // the curve, because a clamped B-spline is not parameterized by arc: the
@@ -638,10 +646,10 @@ impl PathFitter {
         // non-decreasing, so a sample can slide a little along the curve but can
         // never overtake its neighbours — the reordering that makes a searched
         // correspondence dangerous is ruled out by construction.
-        let ts: Vec<f32> = live.iter().map(|s| param(s.arc)).collect();
+        let ts: Vec<f32> = idx.iter().map(|&i| param(self.pts[i].arc)).collect();
         // What each report stands for, so the solve minimizes over the *stroke* rather
         // than over the reporting clock ([`arc_weights`]).
-        let qs = arc_weights(&self.pts, lo);
+        let qs = arc_weights(&self.pts, &idx);
         // Solved **into** the candidate polygon rather than into a fresh one: the
         // prior and the result are the same buffer, which is sound because the solve
         // reads every row it uses as a prior before it writes any
@@ -663,7 +671,7 @@ impl PathFitter {
         // the same solve with a different payload — unsmoothed, since a pressure ramp
         // is not a shape and has no curvature to penalize. Its end is held (the `1`)
         // for the reason set out where that row is written, above.
-        let vals: Vec<[f32; CHANNELS]> = live.iter().map(|s| s.channels).collect();
+        let vals: Vec<[f32; CHANNELS]> = idx.iter().map(|&i| self.pts[i].channels).collect();
         index.fit_into(
             Observations {
                 ts: &ts,
@@ -702,8 +710,13 @@ impl PathFitter {
         let spans = spline.num_spans() as f32;
         let total = self.arc.max(1e-6);
         let lo = lo.min(self.pts.len() - 1);
-        let live = &self.pts[lo..];
-        if live.is_empty() {
+        // **The same reports the solve minimized over**, decimated by the same rule.
+        // This is the third thing the two have to agree about, beside where the samples
+        // sit and what they weigh: scoring the full window while the solve had a
+        // bounded one would charge the growth rule for error at reports the solve was
+        // never shown ([`window_indices`]).
+        let idx = window_indices(&self.pts, lo);
+        if idx.is_empty() {
             return 0.0;
         }
         // Scored at exactly the parameters the solve minimizes at. If the two use
@@ -717,11 +730,12 @@ impl PathFitter {
         // agree about *which samples matter* as well as about where they sit, or the
         // price is charged for an error the solve was never trying to remove — and a
         // dwell would buy control points to trace itself.
-        let qs = arc_weights(&self.pts, lo);
-        let sum: f32 = live
+        let qs = arc_weights(&self.pts, &idx);
+        let sum: f32 = idx
             .iter()
             .zip(&qs)
-            .map(|(s, q)| {
+            .map(|(&i, q)| {
+                let s = self.pts[i];
                 let c = spline.evaluate(param_at(&profile, spans, s.arc / total));
                 q * ((c[0] - s.pos.x).powi(2) + (c[1] - s.pos.y).powi(2))
             })
@@ -815,15 +829,32 @@ impl PathFitter {
 /// Reading the slice instead put a half-interval wherever the window happened to begin,
 /// which is a fact about the solve's bookkeeping and not about the stroke — enough, on
 /// its own, to move `fit_collapses_pixel_staircase` by a control point.
-fn arc_weights(pts: &[Accepted], lo: usize) -> Vec<f32> {
-    let n = pts.len();
-    if n < 2 || lo >= n {
-        return vec![1.0; n.saturating_sub(lo)];
+fn arc_weights(pts: &[Accepted], idx: &[usize]) -> Vec<f32> {
+    let k = idx.len();
+    if pts.len() < 2 || k < 2 {
+        return vec![1.0; k];
     }
-    let mut q: Vec<f32> = (lo..n)
-        .map(|i| {
-            let hi = pts[(i + 1).min(n - 1)].arc;
-            let low = pts[i.saturating_sub(1)].arc;
+    let mut q: Vec<f32> = (0..k)
+        .map(|j| {
+            // Measured against the neighbouring **survivors**, which is what makes the
+            // sum a trapezoid rule over the reports actually being fitted rather than
+            // over the ones that happened to arrive. Where nothing was decimated the
+            // survivors *are* the neighbours and this is the plain rule it always was.
+            let hi = if j + 1 < k {
+                pts[idx[j + 1]].arc
+            } else {
+                // The stroke's own last report has no successor, so it gets the one
+                // half-interval it is entitled to.
+                pts[idx[j]].arc
+            };
+            let low = if j > 0 {
+                pts[idx[j - 1]].arc
+            } else {
+                // The *window's* leading report is not the stroke's: it has a real
+                // predecessor in `pts` and is entitled to it. Only the stroke's own
+                // first report is halved, and `saturating_sub` is what says so.
+                pts[idx[0].saturating_sub(1)].arc
+            };
             // Halved because an interior report spans two half-intervals. An end report
             // has only the one, and `hi == low` on that side already halves it.
             (hi - low) * 0.5
@@ -831,13 +862,104 @@ fn arc_weights(pts: &[Accepted], lo: usize) -> Vec<f32> {
         .collect();
     let total: f32 = q.iter().sum();
     if total <= 1e-6 {
-        return vec![1.0; q.len()];
+        return vec![1.0; k];
     }
-    let k = q.len() as f32 / total;
+    let scale = k as f32 / total;
     for w in &mut q {
-        *w *= k;
+        *w *= scale;
     }
     q
+}
+
+/// How many reports the solve will minimize over at once, however many arrive.
+///
+/// **The bound the window did not have.** `solve`'s window is delimited in *span
+/// parameter* — three spans at the live end — and a span is `KNOT_SPACING ×
+/// tolerance` canvas px wide, so the count of reports inside it is the product of two
+/// things the fitter does not control: how densely the digitizer reports per canvas
+/// px, and how far out the view is zoomed. Each scaled the work linearly and the
+/// stroke quadratically. Measured on `LOOP_STROKE` before this existed
+/// (`benches/path.rs`): per-report throughput fell 19× across a 32× range of report
+/// density, so the densest row cost 612× the total of the sparsest for the same mark;
+/// and 6.4× across the tolerance range, in the direction nobody would guess — a
+/// coarser tolerance produces *fewer* knots and used to cost far more per report.
+///
+/// **Decimating is sound because of what the weights already are.** [`arc_weights`]
+/// exists to turn `Σ residual²` over reports into `∫ residual² ds` over the stroke,
+/// so that a hand's dwell cannot outvote geometry by sheer count. That is exactly the
+/// property that makes a subset with the trapezoid weights recomputed for it
+/// approximate the *same* integral: what is dropped is sampling rate, and the
+/// objective was never a function of sampling rate. Rejecting reports would be a
+/// different operation and `arc_weights`' own header rules it out — but that argument
+/// is about discarding evidence from the integral, not about evaluating it at fewer
+/// points.
+///
+/// **64 is 16 observations per free control point** — the window solves for four —
+/// which is ample for least squares over input whose whole problem is jitter. It is
+/// set from what the fit needs, and deliberately not from what leaves the goldens
+/// alone.
+///
+/// That distinction has a bill attached, so it is stated rather than implied.
+/// [`window_indices`] is the identity under budget and `arc_weights` then reduces to
+/// the rule it always was, so a stroke whose window fits is bit-identical to what it
+/// was. `LOOP_STROKE` at [`DEFAULT_TOLERANCE`] does **not** fit — the corpus's `taper`
+/// case is drawn from it, and re-blessing moved 1.66% of its texels by more than 6
+/// levels of 255, against the 12 the corpus itself calls visible. The two renders are
+/// indistinguishable; what moved is where a few antialiased edges land, because the
+/// fitted curve moved a fraction of a pixel.
+///
+/// Raising the budget until that golden stopped moving was the obvious alternative and
+/// is the wrong shape: it would be a constant chosen to preserve an old output rather
+/// than to serve the fit, and it would weaken the bound precisely where the bound is
+/// the point — the cost of a report is linear in this number, so a budget of 256 gives
+/// back most of the win on the dense strokes that were quadratic. The accuracy this
+/// trades is measured rather than argued and it is under 0.1%
+/// (`thinning_the_window_does_not_cost_the_fit_its_accuracy`).
+const MAX_WINDOW_SAMPLES: usize = 64;
+
+/// The reports `solve` minimizes over: `pts[lo..]`, thinned to at most
+/// [`MAX_WINDOW_SAMPLES`] chosen evenly along the **arc** they cover.
+///
+/// Evenly in arc rather than in index, because arc is the axis the objective is an
+/// integral over — a hand that paused would otherwise spend the whole budget on the
+/// pause. Both ends are kept whatever the budget: the leading report anchors the
+/// window against the frozen prefix, and the trailing one is where the pen is now,
+/// which is the report the curve is pinned to.
+///
+/// Deterministic, and a pure function of the accepted reports — so a replay, a peer
+/// and a golden all decimate identically, which is what keeps this a performance
+/// change rather than a wire-format one (§1).
+fn window_indices(pts: &[Accepted], lo: usize) -> Vec<usize> {
+    let n = pts.len();
+    if lo >= n {
+        return Vec::new();
+    }
+    if n - lo <= MAX_WINDOW_SAMPLES {
+        return (lo..n).collect();
+    }
+    let span = pts[n - 1].arc - pts[lo].arc;
+    // No arc to spread over — a run of reports at one point, which `push` mostly
+    // rejects but a long enough stroke can still round into. Even by index is the
+    // same rule read through the only ordering left.
+    if span <= 0.0 {
+        let stride = (n - lo).div_ceil(MAX_WINDOW_SAMPLES);
+        let mut out: Vec<usize> = (lo..n).step_by(stride).collect();
+        if out.last() != Some(&(n - 1)) {
+            out.push(n - 1);
+        }
+        return out;
+    }
+    let step = span / (MAX_WINDOW_SAMPLES - 1) as f32;
+    let mut out = Vec::with_capacity(MAX_WINDOW_SAMPLES + 1);
+    let mut next = pts[lo].arc;
+    for (i, s) in pts.iter().enumerate().take(n - 1).skip(lo) {
+        if s.arc >= next {
+            out.push(i);
+            next = s.arc + step;
+        }
+    }
+    out.push(n - 1);
+    out
 }
 
 /// One candidate fit, before the growth rule has chosen between two of them.
@@ -1451,6 +1573,144 @@ mod tests {
 
     fn knot(x: f32, y: f32) -> ControlPoint {
         ControlPoint::at(Vec2::new(x, y))
+    }
+
+    /// `n` accepted reports `step` apart along the x axis — the shape
+    /// [`window_indices`] reads, without a fitter around it.
+    fn accepted(n: usize, step: f32) -> Vec<Accepted> {
+        (0..n)
+            .map(|i| Accepted {
+                pos: Vec2::new(i as f32 * step, 0.0),
+                channels: [0.0; CHANNELS],
+                arc: i as f32 * step,
+            })
+            .collect()
+    }
+
+    /// **Under budget the selection is the identity**, which is what makes this a
+    /// change to the pathological cases only. Ordinary painting keeps every report the
+    /// window admitted, `arc_weights` reduces to the rule it always was, and the fitted
+    /// curve is therefore bit-identical to what it was before the bound existed — so
+    /// no golden moves and no recorded stroke re-fits.
+    #[test]
+    fn a_window_under_budget_keeps_every_report() {
+        let pts = accepted(MAX_WINDOW_SAMPLES, 1.0);
+        for lo in [0, 1, 7, MAX_WINDOW_SAMPLES - 1] {
+            assert_eq!(
+                window_indices(&pts, lo),
+                (lo..pts.len()).collect::<Vec<_>>(),
+                "a window of {} was thinned",
+                pts.len() - lo,
+            );
+        }
+    }
+
+    /// Past the budget the window stops growing — the whole point. Both ends survive
+    /// whatever the budget: the leading report anchors against the frozen prefix, and
+    /// the trailing one is where the pen actually is.
+    #[test]
+    fn a_dense_window_is_capped_and_keeps_both_ends() {
+        for n in [MAX_WINDOW_SAMPLES + 1, 500, 20_000] {
+            let pts = accepted(n, 0.05);
+            let idx = window_indices(&pts, 0);
+            assert!(
+                idx.len() <= MAX_WINDOW_SAMPLES + 1,
+                "{n} reports produced a window of {}",
+                idx.len(),
+            );
+            assert_eq!(idx.first().copied(), Some(0), "the window lost its head");
+            assert_eq!(idx.last().copied(), Some(n - 1), "the window lost the pen");
+            assert!(
+                idx.windows(2).all(|w| w[0] < w[1]),
+                "the survivors are out of order",
+            );
+        }
+    }
+
+    /// The survivors are spread along the **arc**, not along the report index — so a
+    /// hand that paused cannot spend the whole budget on the pause.
+    ///
+    /// Half the reports here sit on one point and the other half cover the distance;
+    /// an index-even rule would put half the window in the dwell.
+    #[test]
+    fn a_dwell_does_not_swallow_the_window() {
+        let mut pts = accepted(200, 0.0);
+        for (i, p) in pts.iter_mut().enumerate().skip(100) {
+            let d = (i - 99) as f32;
+            p.pos = Vec2::new(d, 0.0);
+            p.arc = d;
+        }
+        let idx = window_indices(&pts, 0);
+        let in_dwell = idx.iter().filter(|&&i| i < 100).count();
+        assert!(
+            in_dwell <= 2,
+            "{in_dwell} of {} survivors were spent on a dwell",
+            idx.len(),
+        );
+    }
+
+    /// **Thinning the window does not cost the fit its accuracy** — the one risk the
+    /// bound actually carries.
+    ///
+    /// Measured against every report, *including the ones no solve ever saw*, which is
+    /// the point: if a survivor list let the curve wander off the stretches it skipped,
+    /// this is where it would show. A densely-reported mark is exactly the case that
+    /// gets thinned — at 3200 reports the window is thinned throughout, at 200 it is
+    /// under budget and untouched.
+    ///
+    /// The bars come from running it both ways, with `MAX_WINDOW_SAMPLES` raised to
+    /// disable the bound:
+    ///
+    /// | reports | thinned | unthinned |
+    /// |---------|---------|-----------|
+    /// | 200     | 28.461  | 28.481    |
+    /// | 800     | 29.898  | 29.992    |
+    /// | 3200    | 31.824  | 31.833    |
+    ///
+    /// So thinning moves the fit by under 0.1% at every rate, and the ~12% spread
+    /// across the rates is the density policy's own smoothing — a property this
+    /// stroke had before the bound existed and which `KNOT_COST` owns, not this.
+    ///
+    /// Both bars matter and they catch different things. The absolute one catches a
+    /// selection that lost the curve outright; the ratio catches the failure that
+    /// would actually be *this* change's fault — accuracy that degrades as the
+    /// reports get denser, which is what thinning too hard would look like.
+    ///
+    /// The deviations are large in absolute terms because this curve is far coarser
+    /// than [`DEFAULT_TOLERANCE`] is asked to trace (90 px of amplitude over 400 px,
+    /// against a knot every 64 px): the fit is *meant* to smooth it. That is why the
+    /// bars are calibrated from measurement rather than picked to look tight.
+    #[test]
+    fn thinning_the_window_does_not_cost_the_fit_its_accuracy() {
+        let curve = |t: f32| Vec2::new(t * 400.0, (t * 2.2).sin() * 90.0);
+        let deviation = |n: usize| -> f32 {
+            let pts: Vec<InputSample> = (0..n)
+                .map(|i| {
+                    let p = curve(i as f32 / (n - 1) as f32);
+                    sample(p.x, p.y)
+                })
+                .collect();
+            let poly = flatten(&fit(&pts), FLATTEN_TOLERANCE);
+            pts.iter()
+                .map(|r| {
+                    poly.iter()
+                        .map(|s| (s.pos - r.pos).length())
+                        .fold(f32::MAX, f32::min)
+                })
+                .fold(0.0f32, f32::max)
+        };
+        let sparse = deviation(200);
+        for n in [200usize, 800, 3200] {
+            let worst = deviation(n);
+            assert!(
+                worst < 35.0,
+                "{n} reports fitted {worst:.2}px off the curve they came from",
+            );
+            assert!(
+                worst < sparse * 1.25,
+                "{n} reports fitted {worst:.2}px off, against {sparse:.2}px unthinned                  — thinning is costing accuracy as the rate rises",
+            );
+        }
     }
 
     /// Feed samples one at a time, snapshotting the fit after every push.

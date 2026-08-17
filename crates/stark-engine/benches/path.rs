@@ -17,6 +17,14 @@
 //! samples, against 15 µs to flatten the result. On the CPU side of a stroke,
 //! essentially all of the time is the fit.
 //!
+//! Two of the groups are **sweeps** rather than cases: `fit-density` and
+//! `fit-tolerance` vary the two things a recorded stroke cannot vary — how often
+//! the digitizer reported, and how coarse the caller declared its input to be —
+//! and both exist to hold a *flat* line. The fit's window is delimited in arc
+//! length, so before it was bounded each of those axes scaled the work done per
+//! report, and a per-sample throughput figure over fixed recordings could not see
+//! it. See ENGINE_CLEANUP.md F1/F2.
+//!
 //! Run with `cargo bench -p stark-engine --bench path`.
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -25,7 +33,8 @@ use std::time::Duration;
 
 use stark_engine::command::InputSample;
 use stark_engine::path::{
-    self, DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, FlattenTolerance, PathFitter,
+    self, DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, FlattenTolerance, MAX_TOLERANCE, MIN_TOLERANCE,
+    PathFitter,
 };
 use stark_model::geom::Vec2;
 
@@ -47,6 +56,46 @@ fn cases() -> Vec<(&'static str, Vec<InputSample>)> {
 fn samples(pts: &[[f32; 2]]) -> Vec<InputSample> {
     pts.iter()
         .map(|&[x, y]| InputSample::at(Vec2::new(x, y)))
+        .collect()
+}
+
+/// The stroke the two sweeps below are run on: one real hand movement, resampled
+/// and re-priced rather than replaced, so only the axis under test moves.
+const SWEEP_STROKE: &[[f32; 2]] = stark_testdata::LOOP_STROKE;
+
+/// `pts` walked as a polyline and re-emitted at `n` points evenly spaced **in arc
+/// length** — the same hand movement as reported by a digitizer of another rate.
+///
+/// Arc rather than time because that is the axis the fit's window is actually
+/// delimited on, and because these recordings carry no clock. At a roughly steady
+/// hand the two agree; where they do not, arc is the one the fitter sees.
+///
+/// Linear between the reports it was given, so this adds no geometry the hand did
+/// not draw — a 4× resample is the same curve, reported four times as often, which
+/// is exactly the thing being varied.
+fn resampled(pts: &[InputSample], n: usize) -> Vec<InputSample> {
+    let arcs: Vec<f32> = pts
+        .iter()
+        .scan((0.0f32, None::<Vec2>), |(acc, prev), s| {
+            if let Some(p) = *prev {
+                *acc += (s.pos - p).length();
+            }
+            *prev = Some(s.pos);
+            Some(*acc)
+        })
+        .collect();
+    let total = *arcs.last().unwrap_or(&0.0);
+    if total <= 0.0 || n < 2 {
+        return pts.to_vec();
+    }
+    (0..n)
+        .map(|i| {
+            let want = i as f32 / (n - 1) as f32 * total;
+            let k = arcs.partition_point(|&a| a < want).clamp(1, pts.len() - 1);
+            let (a, b) = (arcs[k - 1], arcs[k]);
+            let u = if b > a { (want - a) / (b - a) } else { 0.0 };
+            InputSample::at(pts[k - 1].pos.lerp(pts[k].pos, u))
+        })
         .collect()
 }
 
@@ -90,6 +139,75 @@ fn fit(c: &mut Criterion) {
                 BatchSize::SmallInput,
             );
         });
+    }
+    g.finish();
+}
+
+/// **What one pointer report costs as the reports get denser** — the axis the four
+/// recorded cases above cannot move, because each arrives at whatever rate it was
+/// captured at.
+///
+/// Read as *throughput*, which is the whole point: elements are input samples, so a
+/// fit whose per-report cost does not depend on the reporting rate draws a flat line
+/// here however many samples the row has. A rising line means the work done per
+/// report grows with the rate — which is a stroke that costs the square of the
+/// digitizer's frequency, and the difference between a 200 Hz tablet and a 1000 Hz
+/// pen drawing the identical mark.
+///
+/// It is not hypothetical and it is not small: before the window was bounded this
+/// spanned 9.9 µs to 31.1 µs per report across these five rows, so the 8× row cost
+/// 25× the total of the 1× row for the same stroke.
+fn fit_density(c: &mut Criterion) {
+    let base = samples(SWEEP_STROKE);
+    let mut g = c.benchmark_group("fit-density");
+    for mult in [0.25f32, 0.5, 1.0, 2.0, 4.0, 8.0] {
+        let pts = resampled(&base, (base.len() as f32 * mult) as usize);
+        g.throughput(criterion::Throughput::Elements(pts.len() as u64));
+        g.bench_with_input(
+            BenchmarkId::from_parameter(format!("{mult}x")),
+            &pts,
+            |b, pts| b.iter(|| path::fit(black_box(pts))),
+        );
+    }
+    g.finish();
+}
+
+/// **What one pointer report costs as the declared tolerance rises** — i.e. as the
+/// artist zooms out, since that is what a frontend sets it from.
+///
+/// The other axis the recorded cases hold fixed: they all run at
+/// [`DEFAULT_TOLERANCE`]. Same stroke and same report count on every row here, so
+/// per-element times are directly comparable down the column, and a fit whose cost
+/// is a property of the *stroke* rather than of the view draws a flat line.
+///
+/// This one used to run backwards, which is why it is worth a benchmark rather than
+/// a comment: a coarser tolerance produces far *fewer* knots and used to cost several
+/// times more CPU per report, because the solver's window is measured in spans and a
+/// span is `KNOT_SPACING × tolerance` canvas px wide. Throughput before and after
+/// (Kelem/s):
+///
+/// | tolerance | 1/64  | 0.25 | 1    | 4    | 16   | 64   | collapse |
+/// |-----------|-------|------|------|------|------|------|----------|
+/// | before    | 105.1 | 73.5 | 32.3 | 18.7 | 16.3 | 16.4 | 6.4×     |
+/// | after     | 108.0 | 73.2 | 65.7 | 59.4 | 60.3 | 61.6 | 1.75×    |
+///
+/// Flat from `tol-1` rightwards now, which is the property worth having: zooming out
+/// no longer costs anything. What is left slopes the *other* way, at the fine end,
+/// and is the window filling up to its budget rather than the budget being exceeded.
+///
+/// The top row is [`MAX_TOLERANCE`], not a round number picked to look severe: it is
+/// the coarsest input the fitter will accept, so holding the line flat to here is
+/// holding it flat everywhere.
+fn fit_tolerance(c: &mut Criterion) {
+    let pts = samples(SWEEP_STROKE);
+    let mut g = c.benchmark_group("fit-tolerance");
+    g.throughput(criterion::Throughput::Elements(pts.len() as u64));
+    for tol in [MIN_TOLERANCE, 0.25, DEFAULT_TOLERANCE, 4.0, 16.0, MAX_TOLERANCE] {
+        g.bench_with_input(
+            BenchmarkId::from_parameter(format!("tol-{tol}")),
+            &(pts.clone(), tol),
+            |b, (pts, tol)| b.iter(|| path::fit_with_tolerance(black_box(pts), *tol)),
+        );
     }
     g.finish();
 }
@@ -175,6 +293,6 @@ criterion_group! {
     config = Criterion::default()
         .warm_up_time(Duration::from_secs(1))
         .measurement_time(Duration::from_secs(3));
-    targets = fit, flatten, end_to_end
+    targets = fit, fit_density, fit_tolerance, flatten, end_to_end
 }
 criterion_main!(benches);
