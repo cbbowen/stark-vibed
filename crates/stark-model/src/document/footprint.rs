@@ -203,6 +203,29 @@ impl Footprint {
 /// only ever scales it down; and `elongation` is bounded and NaN-safe, so a malformed
 /// one lands on a real factor here rather than on the infinity that would quietly widen
 /// this to `ALL`.
+///
+/// # Why the lateral flux needs no allowance here
+///
+/// [`BrushDynamics::bleed`](super::brush::BrushDynamics::bleed) diffuses paint
+/// sideways, and the engine's longest tap reaches half the radius further
+/// (`gpu::stroke::dynamics::bleed::BLEED_REACH_MAX`). Added to the `√2` above that
+/// would overrun this pad outright at a large radius — 957 px against 754 at
+/// `radius = 500` — so it is worth saying once why it does not, rather than leaving
+/// the next reader to find the arithmetic and reach for the alarm.
+///
+/// **The flux cannot cross the edge of the sweep.** `dynamics.wesl`'s exchange
+/// weighs every tap by `min(w_t, w_n)` — this texel's mobility and its neighbour's
+/// — and `bleed_weight` writes `w = 0` for any texel outside the sweep. So a texel
+/// outside is never written (its own `w_t` zeroes all of its fluxes) and a tap
+/// reaching out of the sweep carries exactly nothing. The reach sets how *far
+/// within* the footprint paint is carried, never how far the footprint extends: a
+/// no-flux wall, at every scale, which is the same sentence the shader's own
+/// comment uses about the clamped tap at the rect border.
+///
+/// That makes the `1.5` here cover `√2` and nothing else — the coincidence that
+/// `1.0 + 0.5` is also `1.5` is exactly that, and a bleed reach raised past it
+/// would still be contained. What *would* break this is the wall coming down, and
+/// that is a shader invariant, checkable only where the shader is.
 fn stroke_pad(brush: &BrushParams) -> f32 {
     brush.radius * 1.5 * BrushParams::elongation(brush.stretch) + 4.0
 }
