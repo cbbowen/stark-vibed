@@ -16,4 +16,8 @@ description = "Content ids and canonical encodings for Stark's brush shapes and 
 png = { workspace = true }
 blake3 = { workspace = true }
 serde = { workspace = true }
+# An `AssetId` is a field of the save format's bundle, so it needs a compile-time
+# schema like everything else in the log (§8) — and the orphan rule means only this
+# crate can give it one. No GPU, no build-script cost: carbonite is serde + thiserror.
+carbonite = { workspace = true }
 thiserror = { workspace = true }

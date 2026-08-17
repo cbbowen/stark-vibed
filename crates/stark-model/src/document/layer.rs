@@ -19,7 +19,19 @@ use crate::geom::Vec2;
 ///
 /// Ids are **minted from the author**, not from a shared counter — see
 /// [`LayerId::mint`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    carbonite::Schema,
+)]
 pub struct LayerId(pub u64);
 
 impl LayerId {
@@ -70,13 +82,13 @@ impl LayerId {
 /// drop position in a stack except its foot — and "put this behind everything"
 /// is not an exotic move, it is where a background goes.
 ///
-/// **The variant order is load-bearing: this must stay wire-compatible with
-/// `Option<LayerId>`.** Postcard writes an `Option` as `0` for `None` / `1` for `Some`
-/// and an enum as its variant index, so `Top` and `Above` occupy exactly the `None`
-/// and `Some` discriminants and `Bottom` is an *appended* third variant — the one
-/// shape §8 allows without a format break. `place_encodes_as_an_option_layer_id`
-/// below is what keeps the claim honest.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The variant order is **not** load-bearing, and it is worth saying so because it
+/// used to be: `Top` and `Above` were laid out to occupy `Option<LayerId>`'s `None`
+/// and `Some` discriminants, and `Bottom` could only be appended, because the encoding
+/// was positional and a reorder would have decoded every saved move as a different one
+/// (§8). Variants are matched by *name* now, so a case may be added wherever it reads
+/// best. `a_place_is_read_by_variant_name_not_position` is what keeps that honest.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub enum Place {
     /// On top of the stack, over everything already in it.
     Top,
@@ -180,14 +192,15 @@ fn mix32(x: u64) -> u32 {
 /// one — two `Drago`s with different `k` are two different functions, and `!=` already
 /// says so.
 ///
-/// **Appended only, payloads included**: postcard encodes an enum by index and a
-/// variant's fields in order (§8), so a variant inserted above an existing one would
-/// rename every layer's mode in every saved file, and a field inserted into an
-/// existing variant would misread the ones after it.
+/// A new mode may go wherever it reads best, and a parameterized one may gain a knob:
+/// variants and fields are matched by *name* (§8), so neither disturbs the modes in
+/// saved files — a field added to [`Drago`](Self::Drago) needs only the
+/// `#[serde(default)]` that says what an older file's bend meant.
+/// `a_mode_is_read_by_variant_name_bend_and_all` is what holds that.
 ///
 /// See `blend_common.wesl` for the derivations and `Compositor` for the isolation
 /// pass that makes per-layer blending possible at all.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum BlendMode {
     /// Premultiplied "over": the layer sits on top of what is below it.
     #[default]
@@ -420,7 +433,7 @@ impl BlendMode {
 /// `drag` and `wetness` were deleted rather than kept inert, and `bleed` and
 /// `tooth` came back only once each had a model), no variant appears here before
 /// it does something.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum MatteRegion {
     /// Everything *outside* this canvas-space rect — the frame / mat board.
     OutsideRect { min: Vec2, max: Vec2 },
@@ -466,7 +479,7 @@ impl MatteRegion {
 /// layer opacity (§15.3), and its paint is a full-strength coat — which is why
 /// the solid keeps three channels, not four, and the gradient carries no
 /// per-unit opacity where the fill's parcel does.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum MattePaint {
     /// One color everywhere. Straight sRGB, like [`BrushParams::color`],
     /// converted to working-space channels at composite time.
@@ -498,59 +511,69 @@ impl MattePaint {
 mod tests {
     use super::*;
 
-    /// [`Place`] rides a logged action **byte-for-byte as an `Option<LayerId>`**:
-    /// postcard encodes an `Option` as a `0`/`1` discriminant and an enum as its
-    /// variant index, so the two `Option`-shaped cases hold those indices and anything
-    /// further is appended (§8).
+    /// A variant is identified by its **name**, not its position — so [`Place`] may
+    /// gain a case anywhere, and a saved `MoveLayer` still means the move it meant
+    /// (§8).
     ///
-    /// Asserted rather than reasoned about, because the failure is silent in exactly
-    /// the way §8 warns: reorder the variants and every `MoveLayer` in every saved
-    /// document decodes as a *different* move, with nothing in the file able to notice.
+    /// This is the guarantee that replaced "appended only". Under the old positional
+    /// encoding a `Place` had to keep occupying `Option<LayerId>`'s discriminants and
+    /// every new case had to go last, because reordering would have decoded every
+    /// saved move as a *different* one with nothing in the file able to notice. `Old`
+    /// here is that hazard made concrete: the same three cases in a different order,
+    /// written by a build that declared them that way. It must read back exactly.
     #[test]
-    fn place_encodes_as_an_option_layer_id() {
+    fn a_place_is_read_by_variant_name_not_position() {
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "Place")]
+        enum Old {
+            Bottom,
+            Above(LayerId),
+            Top,
+        }
+
         let id = LayerId(0x1234_5678_9ABC_DEF0);
-        assert_eq!(
-            postcard::to_allocvec(&Place::Top).expect("encodes"),
-            postcard::to_allocvec(&None::<LayerId>).expect("encodes"),
-            "Top must occupy None's discriminant"
-        );
-        assert_eq!(
-            postcard::to_allocvec(&Place::Above(id)).expect("encodes"),
-            postcard::to_allocvec(&Some(id)).expect("encodes"),
-            "Above must occupy Some's discriminant, payload and all"
-        );
-        // And the new case is appended, so nothing that existed had to move.
-        assert_eq!(
-            postcard::to_allocvec(&Place::Bottom).expect("encodes"),
-            vec![2u8],
-            "Bottom is the third variant"
-        );
+        let read = |old: &Old| {
+            carbonite::from_slice::<Place>(&carbonite::to_vec(old).expect("encodes"))
+                .expect("an order this build does not declare still reads")
+        };
+
+        assert_eq!(read(&Old::Top), Place::Top);
+        assert_eq!(read(&Old::Bottom), Place::Bottom);
+        assert_eq!(read(&Old::Above(id)), Place::Above(id));
     }
 
-    /// [`BlendMode`]'s parameterless modes still encode as a bare variant index, and
-    /// [`BlendMode::Drago`] as its index followed by its payload — the shape §8
-    /// promises for an enum, asserted here for the same reason the test above is.
+    /// The same for [`BlendMode`], where the stakes are a picture: a mode read as the
+    /// wrong one recomposites every layer that used it.
     ///
-    /// This is the fact the "appended only, payloads included" rule protects, and the
-    /// one a reader would otherwise have to take on trust: a field added *before* `k`
-    /// in a later revision of the variant would decode every saved bend as something
-    /// else, silently.
+    /// `Drago` is the sharp case, and the reason this test exists rather than a
+    /// comment. It carries a payload, and it was *inserted* into the middle of the
+    /// enum's declaration order — under a positional encoding that would have renamed
+    /// every mode after it in every saved file, which is what forced the
+    /// "appended only, payloads included" rule §8 used to carry. Here it is written
+    /// from the far end of the enum and still arrives as itself, bend and all.
     #[test]
-    fn a_mode_encodes_as_its_index_and_its_payload() {
-        let bytes = |m: BlendMode| postcard::to_allocvec(&m).expect("encodes");
-        assert_eq!(bytes(BlendMode::Normal), vec![0u8]);
-        assert_eq!(bytes(BlendMode::Reinhard), vec![1u8]);
-        assert_eq!(bytes(BlendMode::Multiply), vec![3u8]);
-        let drago = bytes(BlendMode::Drago { k: DRAGO_K });
-        assert_eq!(drago[0], 2, "Radiance kept the index it shipped with");
+    fn a_mode_is_read_by_variant_name_bend_and_all() {
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "BlendMode")]
+        enum Old {
+            Multiply,
+            Drago { k: f32 },
+            Normal,
+            Reinhard,
+        }
+
+        let read = |old: &Old| {
+            carbonite::from_slice::<BlendMode>(&carbonite::to_vec(old).expect("encodes"))
+                .expect("a declaration order this build does not use still reads")
+        };
+
+        assert_eq!(read(&Old::Normal), BlendMode::Normal);
+        assert_eq!(read(&Old::Reinhard), BlendMode::Reinhard);
+        assert_eq!(read(&Old::Multiply), BlendMode::Multiply);
         assert_eq!(
-            &drago[1..],
-            &postcard::to_allocvec(&DRAGO_K).expect("encodes")[..],
-            "and `k` follows it, as the variant's only field",
-        );
-        assert_eq!(
-            postcard::from_bytes::<BlendMode>(&drago).expect("decodes"),
+            read(&Old::Drago { k: DRAGO_K }),
             BlendMode::Drago { k: DRAGO_K },
+            "the payload travels with the name, not with an index",
         );
     }
 

@@ -597,6 +597,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "carbonite"
+version = "1.0.0"
+source = "git+https://github.com/cbbowen/carbonite#ad35240896c080304a3bc1850bd40c4c658d9665"
+dependencies = [
+ "carbonite-derive",
+ "glam 0.33.3",
+ "serde",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "carbonite-derive"
+version = "1.0.0"
+source = "git+https://github.com/cbbowen/carbonite#ad35240896c080304a3bc1850bd40c4c658d9665"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1321,7 +1342,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.3",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -6552,6 +6573,7 @@ name = "stark-assetid"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "carbonite",
  "png",
  "serde",
  "thiserror 2.0.20",
@@ -6573,7 +6595,6 @@ dependencies = [
  "nalgebra",
  "png",
  "pollster",
- "postcard",
  "quanta",
  "rpds",
  "serde",
@@ -6591,10 +6612,10 @@ dependencies = [
 name = "stark-model"
 version = "0.0.0"
 dependencies = [
+ "carbonite",
  "flate2",
  "glam 0.33.3",
  "history",
- "postcard",
  "serde",
  "stark-assetid",
  "thiserror 2.0.20",
@@ -6607,6 +6628,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "carbonite",
  "data-encoding",
  "glam 0.33.3",
  "iroh",
@@ -6617,7 +6639,6 @@ dependencies = [
  "n0-future",
  "png",
  "pollster",
- "postcard",
  "rpds",
  "serde",
  "stark-assetid",

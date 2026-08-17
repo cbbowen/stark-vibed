@@ -231,47 +231,108 @@ the same records. A solo file simply has a single actor.
   fast-open cache and a visual fallback. Strokes remain the source of truth;
   checkpoints are advisory and may be empty.
 
-Serialization uses `serde` over `postcard` with a magic header;
-`format_version` gates migrations. **Postcard writes fields in order with no
-names and no length**, so a field added in the middle of an existing struct
-variant is not something it can absorb — that is what forced `WIRE_VERSION` to 2
-when `MoveLayer` gained its `carrier` (§14.8). Appending a new enum variant last
-is always safe (enums encode by index); *re*-shaping an existing one is not,
-which is half of what took the version to 4 when `SurfaceId` went from three
-named grounds to `Flat | Image(AssetId)` — a version-3 file's `Linen` would
-decode as an `Image` whose hash is whatever bytes followed it. The `surfaces`
-field beside it is the other half. Files are alpha (§19), so old ones are refused
-rather than migrated.
+Serialization uses `serde` over [**carbonite**][carbonite] behind an eight-byte
+`STARKDOC` magic and a deflate wrapper — and it carries **no version number at all**,
+which is the whole design. A carbonite frame puts the writer's *schema* at its head:
+every struct, field name and variant the log used. Loading reconciles that schema
+against this build's types **by name**, exactly as reading JSON would, so:
 
-Giving an existing *unit* variant a payload is the same break read from the other
-end, and it took the version to 11 when `BlendMode::Drago` gained its bend (§6.3):
-a version-10 file writes the bare index, so a reader expecting a float takes the
-next action's bytes as the curve and the log is off from there. Worth naming
-separately because it is the case that looks safest — nothing was reordered, and
-nothing about the enum's shape says a variant used to be empty.
+| Change | What an older file does |
+|---|---|
+| A new **variant**, anywhere in an enum | never contains one |
+| A new **field**, with `#[serde(default)]` | filled from the default |
+| A new field **without** a default | refused, naming the field it wanted |
+| A **renamed** field or variant, with `#[serde(alias)]` | found through the alias |
+| A **removed** field | skipped |
+| An **integer widened** (`u32` → `u64`) | read and widened |
 
-The rule cuts the other way too, and it is worth knowing which side a change is
-on before paying for it: an `Option<T>` *is* an enum on the wire (`0` for `None`,
-`1` for `Some`), so widening one into a named enum whose first two variants are
-those two cases costs nothing at all. That is how `MoveLayer`'s anchor grew a
-third state (§14.8) without a version bump — and why the variant order is under
-test rather than under a comment, since getting it wrong reinterprets every
-affected action in every saved file with nothing able to notice.
+That list is the contract, and `a_file_written_against_an_older_shape_still_loads`
+(`io.rs`) is what holds it. What is left that no encoding can absorb is a rename
+without an alias, and a **meaning** changed with the names untouched — reusing a
+variant for something else, or narrowing what a field may hold. Nothing in a file can
+notice the second; it is not a format problem and never was.
 
-### 8.1 The version history
+One thing that follows is easy to miss: the rules that used to hang off nearly every
+`ActionKind` variant — *appended last so postcard keeps decoding older files* — are gone,
+along with the variant-order tests that pinned `Place` to `Option<LayerId>`'s
+discriminants. A case now goes wherever it reads best, and the tests assert *that*
+instead, by reading a `Place` and a `BlendMode` written in another order.
 
-Every bump and what forced it. Kept here rather than on `WIRE_VERSION` itself,
-where it had grown to a hundred and fifty lines hanging off a `const u32`: the
-record is worth having and is not worth reading every time someone hovers the
-constant. The constant cites this section.
+### Where a schema comes from
 
-Three shapes of break recur, and it is worth knowing which one a change is
-before paying for it — **a field inserted into an existing variant** (postcard
-writes no names and no lengths, so everything after it misreads), **a variant
-reshaped or removed** (same, read from the other end), and **a meaning changed
-with the layout untouched** (nothing misdecodes; the file simply is not what an
-older reader thinks it is). Only the third is invisible to a decoder, which is
-why it still gets a version.
+Every type in the log carries `#[derive(carbonite::Schema)]`, so the schema is assembled
+at **compile time** and writing a file discovers nothing. That is a correctness
+requirement rather than an optimization, and the reason is worth knowing before adding a
+type here.
+
+A schema can also be found by **tracing** — driving a type's `Deserialize` impl with
+synthetic values and recording what it asks for. Tracing needs no derive and reads the
+real impl, which makes it the obvious default; it is also unusable here. Three types in
+the log gate their own invariants in `Deserialize` (`FillOp` and `SelectionOp` clamp
+through a `serde(from)` mirror, `Gradient` *refuses* through a `try_from`), and a funnel
+that turns away a one-element stop list cannot describe itself to a file. Worse, it
+poisons everything containing it: no `Action`, no `DocumentFile`, no gossip payload could
+be traced either.
+
+So each of the three states its wire shape outright:
+
+```rust
+#[serde(try_from = "Vec<GradientStop>", into = "Vec<GradientStop>")]
+#[carbonite(as = "Vec<GradientStop>")]
+pub struct Gradient { stops: Vec<GradientStop> }
+```
+
+The schema, the columns and the bytes are then the stop list's, nothing drives the
+conversion to find that out, and `Gradient::new` stays a refusal — which is the point.
+`carbonite(as)` is one declaration for both directions, so a one-sided `serde(from)` is a
+compile error naming the attribute to add; that is why the two mirror types are
+bidirectional now.
+
+The other half is foreign types, which the orphan rule puts out of reach: only carbonite
+can implement its own trait for `glam::Vec2`, and it does, behind a cargo feature. What
+is left is four fields whose types belong to iroh or std — an `EndpointId`, two blob
+hashes, a `SocketAddr` — each marked `#[carbonite(serde)]`, which describes that one
+field by a memoized trace of its own impl and leaves the rest of the type on the fast
+path. It is the right tool exactly when the shape should stay whatever the other crate
+already writes.
+
+The one place it cannot help is a foreign type that is *itself* untraceable, and
+`stark-net`'s session link is the live case: an `EndpointAddr` holds a `RelayUrl` that
+parses its own string, so it refuses the empty one. The link spells its addresses in
+primitives instead (`ticket.rs`), which is the better design anyway — a pasted link's
+format should be Stark's, not a projection of another crate's internals.
+
+Columnar layout is also why the file is small: one field's values sit back to back, so
+deflate has runs to find. A thousand small actions come to ~3.4 KB, of which ~1.4 KB is
+the compressed schema — a fixed cost a real document amortizes immediately.
+
+The **wire** made the opposite choice, and `stark-net`'s `codec` is where the trade is
+written down: a message encodes against a schema both ends already hold, and the ALPN
+(`stark/collab/N`) makes a disagreement fail to *meet* rather than decode wrong. A file
+is a message to the future and the future cannot be asked to agree; a live session is a
+meeting of builds, and a meeting may require agreement. The saving is real — a blob's
+header spends a varint per column and an `Action`'s schema is some four hundred columns
+wide, so a self-describing presence frame would be four kilobytes instead of two
+hundred bytes, on a channel that floods.
+
+Files are alpha (§19). A document written before this change is **named, not migrated**
+(`DocError::Legacy`): its body is postcard, which wrote no field names, so those bytes
+mean nothing without the exact schema that produced them.
+
+[carbonite]: https://github.com/cbbowen/carbonite
+
+### 8.1 The version history — closed
+
+Thirteen numbered schemas, and what each one cost. Kept because it is the argument for
+the format above: every row is a change that would now be free, or a change that would
+still cost something and says what.
+
+The old encoding was **positional** — postcard writes fields in order with no names and
+an enum by variant index — so three shapes of break recurred: **a field inserted into
+an existing variant** (everything after it misreads), **a variant reshaped or removed**
+(the same, read from the other end), and **a meaning changed with the layout untouched**
+(nothing misdecodes; the file simply is not what an older reader thinks it is). Only the
+last of the three would still be a break today, which is the whole point of the table.
 
 | # | What changed | Shape |
 |---|---|---|
@@ -316,23 +377,24 @@ rest". Naming the *coverage* and inverting the law for the mass — `slab.wesl`'
 inversion, already there for blended merges — makes 1 mean opaque and ½ mean
 half, and leaves a fill only one control to disagree with.
 
-**13 — the cheapest shape on the list, and it still costs a version.** Appending
-`PlaceImage` to `ActionKind` is free (postcard encodes an enum by index), but
-appending `pictures` to `DocumentFile` is not: a version-12 file simply stops
-before that field, so a version-13 reader runs off the end of it. The bag is the
-whole of what the bump buys, and it is worth its own entry for what it says about
-§23 — a placed image is *content* named by the log and carried beside it, exactly
-as a brush shape and a ground are, so the third kind cost a third bag and no new
-mechanism.
+**13 — the last bump, and the one that would now be free.** Appending `PlaceImage` to
+`ActionKind` cost nothing even then (an enum encoded by index), but appending
+`pictures` to `DocumentFile` did: a version-12 file simply stopped before that field,
+so a version-13 reader ran off the end of it. Today that field is a `#[serde(default)]`
+away from costing nothing — an empty bag is exactly what a document with no placed
+images means. The entry is worth keeping for what it says about §23: a placed image is
+*content* named by the log and carried beside it, exactly as a brush shape and a ground
+are, so the third kind cost a third bag and no new mechanism.
 
-**11 — the most dangerous shape on the list.** A version-10 `SetLayerBlend(id,
-Drago)` encodes as a bare variant index, so a version-11 reader takes the four
-bytes *after* it — the next action's — as the bend. The misread bend is a
-plausible float and the actions it eats are a plausible log, so nothing
-downstream can notice; the version is what refuses it. The parameter is on the
-variant rather than in a settings struct beside the mode because a `Multiply`
-layer has no `k` to store, and a mode cannot disagree with its own settings about
-which mode it is.
+**11 — the most dangerous shape on the list, and the clearest argument for the
+change.** A version-10 `SetLayerBlend(id, Drago)` encoded as a bare variant index, so a
+version-11 reader took the four bytes *after* it — the next action's — as the bend. The
+misread bend is a plausible float and the actions it ate are a plausible log, so nothing
+downstream could notice; the version number was the only thing that refused it. Reading
+by name, a bend `k` on a variant that had none is a `#[serde(default)]` and an older
+file says so itself. The parameter is on the variant rather than in a settings struct
+beside the mode because a `Multiply` layer has no `k` to store, and a mode cannot
+disagree with its own settings about which mode it is.
 
 ## 9. Testing — golden images
 

@@ -38,7 +38,7 @@ use crate::geom::Vec2;
 pub const MAX_SELECTION_TILES: usize = 1024;
 
 /// A region-producing shape, in canvas space (§6.8).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum SelectionShape {
     /// The whole canvas. Costs no tiles — this is how "select all" / "deselect" is
     /// expressed, and it is the only shape that can be unbounded.
@@ -103,7 +103,7 @@ impl SelectionShape {
 /// per-texel algebra is the soft-set one, so it degrades to ordinary booleans on hard
 /// edges and stays sensible on feathered ones:
 /// `Replace = s`, `Union = max(p, s)`, `Subtract = p·(1−s)`, `Intersect = p·s`.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub enum SelectionMode {
     /// Discard the running selection and take the shape's coverage.
     #[default]
@@ -148,8 +148,9 @@ impl SelectionMode {
 ///
 /// `Raw` mirrors the fields **in order**, so the encoding is unchanged (§8) —
 /// `an_op_from_the_wire_is_normalized` pins that.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(from = "RawSelectionOp")]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
+#[serde(from = "RawSelectionOp", into = "RawSelectionOp")]
+#[carbonite(as = "RawSelectionOp")]
 pub struct SelectionOp {
     pub mode: SelectionMode,
     pub shape: SelectionShape,
@@ -202,9 +203,12 @@ impl SelectionOp {
 
 /// The wire shape of a [`SelectionOp`], which is the same shape — its only job is
 /// to be the type `#[serde(from)]` deserializes *before* the constructor runs.
-/// Fields in declaration order, since postcard writes them that way and nothing
-/// here may change the encoding (§8).
-#[derive(Deserialize)]
+///
+/// **This is the op's wire shape**, named in both directions by the type above for
+/// the reason `RawFillOp` is (§8): a schema describes reading and writing at once, so
+/// the representation is stated once and a one-sided conversion is refused.
+#[derive(Serialize, Deserialize, carbonite::Schema)]
+#[serde(rename = "SelectionOp")]
 struct RawSelectionOp {
     mode: SelectionMode,
     shape: SelectionShape,
@@ -215,6 +219,19 @@ struct RawSelectionOp {
 impl From<RawSelectionOp> for SelectionOp {
     fn from(raw: RawSelectionOp) -> Self {
         Self::at(raw.mode, raw.shape, raw.feather, raw.opacity)
+    }
+}
+
+impl From<SelectionOp> for RawSelectionOp {
+    /// A rename and nothing more: an op in hand already holds the invariants
+    /// [`SelectionOp::at`] promises.
+    fn from(op: SelectionOp) -> Self {
+        Self {
+            mode: op.mode,
+            shape: op.shape,
+            feather: op.feather,
+            opacity: op.opacity,
+        }
     }
 }
 
@@ -232,8 +249,8 @@ mod tests {
     /// rewrite-every-tile path that does not exist.
     #[test]
     fn an_op_from_the_wire_is_normalized() {
-        let wire = |op: &SelectionOp| postcard::to_allocvec(op).expect("encodes");
-        let back = |b: &[u8]| postcard::from_bytes::<SelectionOp>(b).expect("decodes");
+        let wire = |op: &SelectionOp| carbonite::to_vec_static(op).expect("encodes");
+        let back = |b: &[u8]| carbonite::from_slice_static::<SelectionOp>(b).expect("decodes");
 
         // Built by hand in the states the constructor refuses, then round-tripped.
         let hostile = SelectionOp {
@@ -285,10 +302,9 @@ mod tests {
         assert_eq!(back(&wire(&clean)), clean);
     }
 
-    /// The mirror type must not move the encoding. Postcard writes a struct's
-    /// fields in order with no names, so a field reordered in `RawSelectionOp`
-    /// would decode every saved op as a different one, silently (§8) — the same
-    /// failure `place_encodes_as_an_option_layer_id` guards for `Place`.
+    /// The mirror type **is** the wire shape (§8), so what is left to check is that
+    /// the pair of conversions is the identity on an op the constructor already
+    /// blessed — the property the funnel would otherwise quietly break.
     #[test]
     fn the_wire_shape_is_the_op_field_for_field() {
         let op = SelectionOp::at(
@@ -300,13 +316,10 @@ mod tests {
             1.5,
             0.25,
         );
-        let bytes = postcard::to_allocvec(&op).expect("encodes");
-        // Field for field, in order, with nothing around them.
-        let mut by_hand = Vec::new();
-        by_hand.extend(postcard::to_allocvec(&op.mode).expect("encodes"));
-        by_hand.extend(postcard::to_allocvec(&op.shape).expect("encodes"));
-        by_hand.extend(postcard::to_allocvec(&op.feather).expect("encodes"));
-        by_hand.extend(postcard::to_allocvec(&op.opacity).expect("encodes"));
-        assert_eq!(bytes, by_hand);
+        let bytes = carbonite::to_vec_static(&op).expect("encodes as its representation");
+        assert_eq!(
+            carbonite::from_slice_static::<SelectionOp>(&bytes).expect("decodes"),
+            op,
+        );
     }
 }

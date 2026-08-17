@@ -746,6 +746,29 @@ Naming these is part of not becoming Photoshop.
   not guarantee pixel-perfect reproduction, even with the same version — see §8
   on `app_build` and cross-build fidelity.
 
+The ladder is about *promises*, and it is worth saying what the format now does
+regardless of which rung we are on. A file carries its own schema and is reconciled
+against the reader's types by name (§8), so "will continue to load" stopped being a
+thing to arrange per change and became the default: a field added since is filled from
+its `#[serde(default)]`, one removed is skipped, a variant may be inserted anywhere.
+There is no version number to bump and no ratchet of refusals — the thirteen numbered
+schemas that came before are closed history (§8.1), and a document from that era is
+*named* rather than migrated (`DocError::Legacy`).
+
+What alpha still means, then, is narrower and more honest than it was:
+
+- **Meaning** is not versioned. Reusing a variant for something else, or narrowing what
+  a field may hold, is a change no encoding can absorb — replay puts back a different
+  picture and nothing in the file can notice. This is the one that needs discipline.
+- **Pixels** are not promised across builds (`app_build`, §8): the renderer is still
+  moving, and a document is a program for it.
+- **Constants the coordinate system is derived from** are refused, not reconciled. A
+  document recorded against a different `TILE_SIZE` is turned away
+  (`DocError::TileSize`), because every footprint, apron and fill quantizes against it.
+- **Content must be resolvable.** A lean file names its grounds and brush shapes by
+  content id (§8, §12.4), and one whose content is neither bundled nor loaded refuses
+  to replay rather than substituting a stand-in.
+
 ---
 
 

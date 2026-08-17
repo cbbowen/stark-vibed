@@ -594,12 +594,13 @@ resource is already coarse.
   `MoveLayer`'s `above: Option<LayerId>` is therefore a `Place { Top,
   Above(LayerId), Bottom }`. That mattered the moment the panel could drop a layer
   anywhere it could draw one (§14.6) — "put this behind everything" is where a
-  background goes, not an exotic move. It cost no format break: postcard writes an
-  `Option` as a `0`/`1` discriminant and an enum as its variant index, so `Top` and
-  `Above` keep the encoding of the `None` and `Some` they replaced and `Bottom` is
-  an appended third variant — the one shape of change §8 allows. A unit test in
-  `document/layer.rs` asserts the three byte strings rather than leaving that to
-  reasoning, because reordering the variants would silently reinterpret every
+  background goes, not an exotic move. It cost no format break, though it took care at
+  the time: the encoding was positional, so `Top` and `Above` had to keep the `None` and
+  `Some` discriminants they replaced and `Bottom` could only be appended. Variants are
+  matched by name now (§8), so a fourth place would go wherever it reads best — and the
+  unit test in `document/layer.rs` asserts *that* instead, by reading a `Place` written
+  in another order. It is asserted rather than reasoned about because reordering the
+  variants used to silently reinterpret every
   `MoveLayer` in every saved document.
 - **Duplicate.** `DuplicateLayer { ids: Vec<(LayerId, LayerId)> }`: the copy lands
   in the source's own stack directly above it, and the subtree travels as one, for
@@ -613,11 +614,12 @@ resource is already coarse.
   one of the two is painted on. The copy keeps the source's **name** verbatim: a
   name in the document is the author's own word, and "Sky copy" would be the engine
   writing one nobody typed.
-- **The file format.** A field in the middle of an existing struct variant is not
-  something postcard can absorb (§8), so this was the first change here that
-  could not be *appended*, and `WIRE_VERSION` went to 2. The alternative — a
-  second `MoveLayer` variant preserving the old layout — would have put the
-  duplication this design exists to remove straight back into the log.
+- **The file format.** A field in the middle of an existing struct variant was not
+  something the old positional encoding could absorb (§8), so this was the first change
+  here that could not be *appended*, and `WIRE_VERSION` went to 2. The alternative — a
+  second `MoveLayer` variant preserving the old layout — would have put the duplication
+  this design exists to remove straight back into the log. The dilemma is gone: the same
+  field today is a `#[serde(default)]`, and an older file says what its absence meant.
 - **Footprints and patches** — see §12.6; `Resource::StackOrder` and
   `PatchOp::Structure` were shaped for exactly this.
 - **Peers.** Concurrent moves that would make a layer carry its own ancestor are
@@ -840,10 +842,10 @@ merge treating its slider as a sibling's.
 
 #### 14.11.5 Plumbing
 
-- **One action**, `MergeLayerDown { source, dest }`, appended last so postcard keeps
-  decoding older files (§8). `dest` is derived rather than chosen — "down" names one
-  layer — and travels anyway for the reason `DuplicateLayer`'s ids do: a `Footprint`
-  is built from the action alone and cannot search the tree (§12.6).
+- **One action**, `MergeLayerDown { source, dest }` (§8). `dest` is derived rather than
+  chosen — "down" names one layer — and travels anyway for the reason `DuplicateLayer`'s
+  ids do: a `Footprint` is built from the action alone and cannot search the tree
+  (§12.6).
 - **The rule is a pure function of the state**, so the log carries no reasoning. The
   applying side re-derives the plan and **declines deterministically** if it now
   names a different destination, which is what a concurrent reorder or a blend mode

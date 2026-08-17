@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 /// could go missing. The rule ruled out its own class, which is the convention working
 /// as intended — the flag that could have broken the format is now in a crate that
 /// cannot see this enum.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub enum ColorSpaceId {
     Oklab,
     Mixbox,

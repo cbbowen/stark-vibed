@@ -23,7 +23,18 @@ use stark_assetid::AssetId;
 /// which is what makes "built-in" a property of the frontend's asset list and of
 /// nothing downstream. The engine still embeds no image bytes.
 #[derive(
-    Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+    Copy,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    Default,
+    carbonite::Schema,
 )]
 pub enum SurfaceId {
     /// Perfectly smooth: zero height everywhere, so the

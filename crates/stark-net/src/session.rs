@@ -606,7 +606,7 @@ impl Broadcaster {
             asset,
             wire,
         };
-        Ok(postcard::to_allocvec(&stamped)?.into())
+        Ok(crate::codec::encode_stamped_ref(&stamped)?.into())
     }
 
     /// See [`CollabSession::add_content`].
@@ -755,7 +755,7 @@ async fn recv_loop(
             origin,
             asset: asset_hash,
             wire,
-        } = match postcard::from_bytes(&message.content) {
+        } = match crate::codec::decode(&message.content) {
             Ok(stamped) => stamped,
             Err(e) => {
                 tracing::warn!("undecodable gossip payload: {e}");

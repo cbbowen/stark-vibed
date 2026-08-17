@@ -487,12 +487,11 @@ nothing on screen to say where it came from.
 11. A drag — a track or the dial, they go through the same funnel — **previews
     without logging**, and the commit renders what the preview showed.
 12. A filter **survives save and load** — pixel-identical and setting-identical.
-    `AddFilter` and `SetFilter` are the first actions to carry a `Filter`, and
-    postcard writes no field names and no lengths, so a layout mistake decodes into a
-    *different adjustment* rather than into an error (§8). The color filter's every
-    field distinct on the way in, and the tint's two distinct from each other, since
-    an appended pair read in the wrong order or off the end of the struct is exactly
-    that mistake.
+    `AddFilter` and `SetFilter` are the first actions to carry a `Filter`, and what a
+    filter is made of — a nest of same-typed floats, an enum of three kinds, an optional
+    stop list — is where a serialization mistake is *quiet*: it comes back as a
+    different adjustment rather than as an error (§8). So every field is distinct on the
+    way in, and the tint's two distinct from each other.
 13. A filter works in a **pigment** document — the road out through Mixbox's
     polynomial and back through its inverse LUT, with the latent residual carried on
     both legs (§6.7). Nothing in an Oklab test touches that half.

@@ -210,7 +210,7 @@ selection could only *mask*; this makes it *hold* paint.
 ActionKind::Transform { layer: LayerId, affine: Affine2 }
 ```
 
-One variant (appended last — postcard encodes enums by index), carrying a
+One variant, carrying a
 `glam::Affine2` — six floats in the log. Semantics: **cut the paint under the
 author's selection on `layer`, apply the affine, stack the result back onto what
 remained — and carry the author's selection mask along with it.** A universal

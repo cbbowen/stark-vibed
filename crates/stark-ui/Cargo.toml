@@ -36,9 +36,10 @@ tracing = { workspace = true, features = ["max_level_debug"] }
 # be installed with `set_as_global_default` alone.
 tracing-subscriber = { workspace = true }
 # Brush presets and the ⚙ dialog's settings persist to localStorage as JSON
-# (presets.rs, prefs.rs): self-describing, so stored values survive their struct
-# gaining fields — unlike the save file's positional postcard. Both already in
-# the tree via dioxus.
+# (presets.rs, prefs.rs): text, so a stored value is legible in devtools and
+# editable by hand, which a browser-local table is worth. The save format
+# reconciles by name too now (§8), so this is no longer the only door that does.
+# Both already in the tree via dioxus.
 serde = { workspace = true }
 serde_json = "1"
 

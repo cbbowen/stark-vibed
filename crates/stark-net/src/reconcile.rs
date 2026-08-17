@@ -128,7 +128,7 @@ impl Reconciler {
             return Ok(());
         };
         let catchup = self.wiring.dialer.open(EndpointAddr::new(partner)).await?;
-        let theirs: Vec<ActionId> = postcard::from_bytes(&catchup.request(Request::Ids).await?)?;
+        let theirs: Vec<ActionId> = crate::codec::decode(&catchup.request(Request::Ids).await?)?;
         let missing = self.wiring.waitlist.missing_from(&theirs);
         if missing.is_empty() {
             catchup.close().await;
@@ -143,10 +143,10 @@ impl Reconciler {
             "recovering actions the flood dropped"
         );
         let recovered: Vec<Recovered> =
-            postcard::from_bytes(&catchup.request(Request::Actions(missing)).await?)?;
+            crate::codec::decode(&catchup.request(Request::Actions(missing)).await?)?;
         catchup.close().await;
 
-        for (action, hash) in recovered {
+        for Recovered { action, hash } in recovered {
             // The same door the flood's actions go through, for the same reasons.
             // `partner` stands in for both the author and the deliverer: it is who
             // this peer can actually reach, and the resolver widens to the rest of

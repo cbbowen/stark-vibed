@@ -108,7 +108,7 @@ pub(crate) struct Mirror {
 ///
 /// Encoding one is the most expensive thing the mirror does: [`DocumentFile`] owns
 /// its payloads, so every asset is copied out of the [`Bytes`] holding it, and the
-/// whole container is then postcarded into a third buffer — megabytes twice over
+/// whole container is then encoded into a third buffer — megabytes twice over
 /// for a session with imported grounds, on a peer that is also painting.
 ///
 /// Most joins in a session ask the identical question. Peers running the same build
@@ -307,13 +307,13 @@ impl Mirror {
     /// The named actions, each with the hash its content transfers under, for a
     /// member recovering what the flood dropped. Ids not held are skipped — the
     /// asker's digest may be older than this peer's own trimming of it.
-    pub fn recover(&self, ids: &[ActionId]) -> Vec<(Action, Option<Hash>)> {
+    pub fn recover(&self, ids: &[ActionId]) -> Vec<crate::proto::Recovered> {
         ids.iter()
             .filter_map(|id| self.actions.get(id))
-            .map(|action| {
-                let hash = stark_model::action_content(action)
-                    .and_then(|need| self.transfer_hash(need.content()));
-                (action.clone(), hash)
+            .map(|action| crate::proto::Recovered {
+                action: action.clone(),
+                hash: stark_model::action_content(action)
+                    .and_then(|need| self.transfer_hash(need.content())),
             })
             .collect()
     }

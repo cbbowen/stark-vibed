@@ -24,7 +24,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The brush tip shape (§6.6).
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum BrushShape {
     /// Procedural soft disc. Edge softness in [0, 1): 0 = very soft, ~1 = hard
     /// edge — meaningful only here, since it is what shapes this tip's falloff.
@@ -64,7 +64,7 @@ impl BrushShape {
 /// (§6.6). The swept-depth integral runs along the stroke's travel direction, so the
 /// shape is looked up in a per-orientation prefix-τ texture indexed by the *relative*
 /// angle between the shape's native axis and the travel direction.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub enum OrientationSource {
     /// The shape's native axis tracks the stroke tangent — the relative angle is always
     /// 0, so the footprint always faces along the motion (the historical behaviour).
@@ -96,7 +96,7 @@ pub enum OrientationSource {
 /// `lift`-only is an eraser; `lift`+`deposit` (`add = 0`) a conservative smudge;
 /// `bleed`-only a blur; `add`-only ordinary paint. All flow runs with fixed
 /// iteration counts, so replay stays deterministic (§6.2).
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct BrushDynamics {
     /// The brush's own paint laid directly: the paint **height** deposited per unit of
     /// swept optical depth (§6.1), and the tool's only source term. 0 = lays
@@ -190,7 +190,7 @@ impl BrushDynamics {
 /// The kind of noise field driving [`ColorDynamics`] (§6.2). Each kind
 /// is baked once into a small tileable 2-D texture (`noise.rs`), so lookups are
 /// cheap and deterministic across replay, peers, and builds.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub enum NoiseKind {
     /// Uncorrelated per-texel randomness — grainy speckle.
     White,
@@ -218,7 +218,7 @@ pub enum NoiseKind {
 /// (Oklab `L, a, b`; Mixbox pigment concentrations). The per-stroke `seed`
 /// translates the lookup so each stroke draws a fresh part of the field,
 /// deterministically.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct ColorDynamics {
     /// Which noise field to sample.
     pub noise: NoiseKind,
@@ -274,7 +274,7 @@ impl ColorDynamics {
 /// Both are already carried per point of the fitted curve
 /// ([`ControlPoint`](crate::path::ControlPoint)) and interpolated per swept segment,
 /// so a source here costs the renderer nothing to evaluate and nothing to store.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub enum ModSource {
     /// Pen pressure: 0 (barely touching) … 1 (pressed home). A mouse reports 1, so a
     /// pressure-driven brush reads as *pressed* rather than as absent — which is why
@@ -318,7 +318,7 @@ pub struct PenState {
 /// It costs nothing in expressiveness: a pencil that widens as the pen leans over is
 /// the widest radius on the slider with `source = Tilt` and `floor` at the narrow
 /// end. The slider is the maximum, and the pen takes it away.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct Modulation {
     /// Which pen axis drives it.
     pub source: ModSource,
@@ -468,7 +468,7 @@ fn at_least_zero(x: f32, fallback: f32) -> f32 {
 ///
 /// `None` on a target is not "a modulation with no effect" — it is skipped entirely,
 /// so the parameter reaches the renderer as the exact float the slider holds.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub struct Modulations {
     /// Scales [`BrushParams::radius`].
     pub size: Option<Modulation>,
@@ -605,7 +605,7 @@ impl Modulations {
 
 /// Brush configuration. `color` is straight **sRGB** RGBA; it is converted to
 /// the Oklab working space at stamp time (§6.5).
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct BrushParams {
     /// Straight (un-premultiplied) sRGB RGBA, components in [0, 1].
     pub color: [f32; 4],

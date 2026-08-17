@@ -811,10 +811,11 @@ fn a_clipped_gather_stays_inside_the_paint() {
 }
 
 /// A filter survives the round trip through the **file** (§8). Worth its own test
-/// rather than being left to `save_load.rs`'s strokes: `AddFilter` and `SetFilter`
-/// are the first actions to carry a `Filter`, postcard writes no field names and no
-/// lengths, and a layout mistake there decodes into a different adjustment rather
-/// than into an error.
+/// rather than being left to `save_load.rs`'s strokes: `AddFilter` and `SetFilter` are
+/// the first actions to carry a `Filter`, and what a filter is made of — a nest of
+/// same-typed floats, an enum of three kinds, an optional stop list — is where a
+/// serialization mistake is *quiet*. A wrong reading here is a different adjustment,
+/// not an error, and the assertion at the end is a picture.
 #[test]
 fn a_filter_survives_save_and_load() {
     let Some(mut engine) = painted() else { return };
@@ -823,10 +824,9 @@ fn a_filter_survives_save_and_load() {
     // new actions are in the log this saves.
     engine.process(DocCommand::SetFilter(
         id,
-        // Every field distinct, and the tint's two distinct from each other: postcard
-        // writes no names, so a pair read in the wrong order — or read off the end of
-        // the struct it was appended to — decodes as a different adjustment rather
-        // than as an error.
+        // Every field distinct, and the tint's two distinct from each other: five
+        // floats and a pair of them, so any two swapped in the reading decode as a
+        // different adjustment rather than as an error.
         Filter::Color(ColorAdjust {
             exposure: 0.75,
             contrast: 1.4,
@@ -835,10 +835,9 @@ fn a_filter_survives_save_and_load() {
             tint: [0.09, -0.04],
         }),
     ));
-    // A second filter of the **other kind** rides the same log: `Chromatic` is an
-    // appended enum variant (§8), and appended is exactly the layout mistake class
-    // this test exists to catch — a variant misnumbered on either side decodes as
-    // a *different filter* rather than as an error.
+    // A second filter of the **other kind** rides the same log, so the *enum* is
+    // exercised and not just one variant's fields: a filter read as the wrong kind is
+    // a different picture rather than an error.
     let chroma = add_filter(
         &mut engine,
         None,
@@ -852,9 +851,9 @@ fn a_filter_survives_save_and_load() {
         }),
     ));
     // And a third of the third kind: the gradient map is the first filter whose
-    // payload has a *length* (a stop list) and an `Option` around it — two more
-    // shapes postcard writes without names, each a fresh way for a layout mistake
-    // to decode as a different ramp. Three stops, every number distinct.
+    // payload has a *length* (a stop list) and an `Option` around it — two more shapes
+    // to get wrong, each a fresh way to come back as a different ramp. Three stops,
+    // every number distinct.
     let map = add_filter(&mut engine, None, Filter::GradientMap(None));
     engine.process(DocCommand::SetFilter(
         map,

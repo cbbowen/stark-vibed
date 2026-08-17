@@ -13,7 +13,6 @@ rpds = { workspace = true }
 thiserror = { workspace = true }
 history = { workspace = true }
 serde = { workspace = true }
-postcard = { workspace = true }
 flate2 = { workspace = true }
 png = { workspace = true }
 blake3 = { workspace = true }

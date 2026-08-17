@@ -3,9 +3,10 @@
 //! Three channels, one vocabulary (§12.4):
 //!
 //! - **Gossip** carries [`Stamped`] messages — one committed action or
-//!   presence frame each, postcard-encoded. Actions are small (fitted control
-//!   points, ids, params); pixels and image bytes never ride gossip, whatever kind
-//!   of content names them.
+//!   presence frame each, encoded against a schema both ends hold rather than one
+//!   travelling with the message ([`codec`](crate::codec) says why). Actions are
+//!   small (fitted control points, ids, params); pixels and image bytes never ride
+//!   gossip, whatever kind of content names them.
 //! - **The `stark/collab/6` ALPN** answers [`Request`]s over one bi-stream per
 //!   request: the full session [`Snapshot`](Request::Snapshot) (the save-format
 //!   container, assets bundled) for joins. Every response opens with a one-byte
@@ -27,15 +28,21 @@ use stark_model::peer::PeerFrame;
 use crate::mirror::{Mirror, Served};
 
 /// The catch-up (snapshot) protocol. The trailing number moves with the wire:
-/// gossip payloads carry no version of their own, so two builds whose action
-/// encoding differs must fail to *meet* rather than decode each other's
-/// messages wrong — bumped with `WIRE_VERSION` whenever an action reshapes
-/// (1: `FillOp`'s parcel; 2: the matte's paint and anchor, §22.4, §15.4;
-/// 3: a fill's strength became one field and a coverage, §6.8; 4: `SelectionOp`
-/// gained its opacity, §6.8; 5: `BlendMode::Drago` gained its bend, §6.3;
-/// 6: a response opens with a [`Tag`], so a member with nothing to serve can say
-/// so instead of answering).
-pub(crate) const ALPN: &[u8] = b"stark/collab/6";
+/// gossip payloads carry no schema of their own, so two builds whose action shape
+/// differs must fail to *meet* rather than decode each other's messages wrong.
+///
+/// **This is the one version number left, and the save format no longer has a sibling
+/// for it** (§8). A file carries its schema and is reconciled by name, so it needs no
+/// number; a message is encoded against the schema the far end is assumed to hold, so
+/// it does — the trade [`codec`](crate::codec) explains. Bump it whenever the *shape*
+/// of anything gossip carries changes: an action's fields or variants, a presence
+/// frame's, or the envelope's. Past bumps (1: `FillOp`'s parcel; 2: the matte's paint
+/// and anchor, §22.4, §15.4; 3: a fill's strength became one field and a coverage,
+/// §6.8; 4: `SelectionOp` gained its opacity, §6.8; 5: `BlendMode::Drago` gained its
+/// bend, §6.3; 6: a response opens with a [`Tag`], so a member with nothing to serve
+/// can say so instead of answering; 7: carbonite replaced postcard, so every payload
+/// is columnar).
+pub(crate) const ALPN: &[u8] = b"stark/collab/7";
 
 /// The first byte of every response.
 ///
@@ -45,7 +52,7 @@ pub(crate) const ALPN: &[u8] = b"stark/collab/6";
 /// perfectly, indistinguishable from a document with nothing in it yet.
 ///
 /// A byte rather than a `Response` enum wrapping the payload: a snapshot is
-/// megabytes, and nesting it inside another postcard value would copy all of it to
+/// megabytes, and nesting it inside another encoded value would copy all of it to
 /// say one thing about it.
 pub(crate) struct Tag;
 
@@ -57,38 +64,55 @@ impl Tag {
     pub const NOT_READY: u8 = 1;
 }
 
-/// One gossip broadcast: the payload plus who authored it. Postcard-encoded.
+/// One gossip broadcast: the payload plus who authored it.
 ///
 /// Gossip forwards messages through intermediate peers and reports only the
 /// *delivering* neighbor, so the author travels in the payload. It is
 /// self-declared — the same trust already placed in the payload itself, since
 /// anyone holding the ticket can write anything (§12.5 defers
 /// authentication).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, carbonite::Schema)]
 pub(crate) struct Stamped {
     /// Who produced the message — the authoritative source for anything it
     /// references (a presence frame's author, a stroke's brush asset).
+    ///
+    /// `carbonite(serde)` on this field and the next: an `EndpointId` and a blob hash
+    /// are iroh's types, so the orphan rule puts a compile-time schema for them out of
+    /// reach here and each is described by a memoized trace of its own `Deserialize`
+    /// instead. Both are `[u8; 32]` underneath, so nothing about the shape changes.
+    #[carbonite(serde)]
     pub origin: EndpointId,
     /// The blob hash of the brush image the payload references, if any. An
     /// [`AssetId`] names the *decoded coverage* (encoding-independent), so it
     /// is not itself fetchable over blobs — the author, who holds the bytes,
     /// supplies the transfer hash here. Trusted like the rest of the payload;
     /// the engine re-derives the real `AssetId` from the fetched bytes.
+    #[carbonite(serde)]
     pub asset: Option<iroh_blobs::Hash>,
     pub wire: Wire,
 }
 
 /// [`Stamped`], borrowing what it sends.
 ///
-/// Postcard writes fields in declaration order and an enum by variant index, and a
-/// reference writes what it points at — so this produces byte-identical output to
-/// [`Stamped`] and is decoded by it. **The field and variant order of the two pairs
-/// must stay in step**; `the_borrowed_encoding_is_the_owned_one` is what says so.
-///
 /// It exists so that publishing an action does not duplicate it. The mirror keeps
 /// the action (a joiner needs it whether or not the send succeeds) and the wire
 /// encodes it, and without this those are two copies of a stroke's control points.
+///
+/// **It presents itself as a `Stamped`**, name for name, and that is what makes a
+/// second spelling safe. One schema serves both
+/// ([`encode_stamped_ref`](crate::codec::encode_stamped_ref)), and encoding checks the
+/// struct name and every field and variant name as it goes — so a field reordered,
+/// renamed or added in one and not the other fails to encode here rather than shipping
+/// bytes the far end reads as something else. Under the positional format that came
+/// before, the two were kept in step by hand, and the first symptom of a slip was a
+/// decode failure on somebody else's machine.
+///
+/// It carries no schema of its own — it borrows, and a compile-time schema is only
+/// defined for owned types. None is needed: it is written *against* `Stamped`'s
+/// ([`encode_stamped_ref`](crate::codec::encode_stamped_ref)), which is the same
+/// statement the `serde(rename)` makes.
 #[derive(Debug, Serialize)]
+#[serde(rename = "Stamped")]
 pub(crate) struct StampedRef<'a> {
     pub origin: EndpointId,
     pub asset: Option<iroh_blobs::Hash>,
@@ -97,13 +121,14 @@ pub(crate) struct StampedRef<'a> {
 
 /// [`Wire`], borrowing its payload. See [`StampedRef`].
 #[derive(Debug, Serialize)]
+#[serde(rename = "Wire")]
 pub(crate) enum WireRef<'a> {
     Action(&'a Action),
     Presence(&'a PeerFrame),
 }
 
-/// A live-wire message. Postcard-encoded, inside [`Stamped`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A live-wire message, inside [`Stamped`].
+#[derive(Debug, Clone, Serialize, Deserialize, carbonite::Schema)]
 pub(crate) enum Wire {
     /// A freshly committed action for the shared log.
     Action(Action),
@@ -120,26 +145,26 @@ pub(crate) enum Wire {
 
 /// A request over the collab ALPN (one per bi-stream; the response is the
 /// stream's full contents).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, carbonite::Schema)]
 pub(crate) enum Request {
     /// The whole session: a [`DocumentFile`](stark_model::DocumentFile) container.
     Snapshot,
     /// The session, minus the content the joiner says it can resolve without help
     /// — the ids of the assets that ship with its build (§12.4).
     ///
-    /// A separate variant rather than a field on [`Request::Snapshot`] because
-    /// postcard encodes enums by index and appending a variant is the safe
-    /// change (§8): an older peer that only knows `Snapshot` keeps working, and a
-    /// newer one asking an older host gets a decode error on a request rather
-    /// than a silently full bundle.
+    /// A separate variant rather than a field on [`Request::Snapshot`], which is now
+    /// a statement about *peers* rather than about bytes: a variant is matched by name
+    /// (§8), so an older peer that only knows `Snapshot` keeps working, and a newer
+    /// one asking an older host gets a decode error on a request rather than a
+    /// silently full bundle. The [`ALPN`] is what should have caught it first.
     ///
     /// The list is a **promise**, not an inventory — "I can get these", not "I
     /// have these loaded". The joiner has to make it good before replaying, and
     /// the blob fetch is what catches it if it cannot.
     SnapshotWithout(Vec<AssetId>),
     /// Every action id this member holds, in total order — the digest half of
-    /// reconciliation (see [`reconcile`](crate::reconcile)). Answered with a
-    /// postcard `Vec<ActionId>`.
+    /// reconciliation (see [`reconcile`](crate::reconcile)). Answered with an encoded
+    /// `Vec<ActionId>`.
     ///
     /// The whole list, rather than a summary. A per-actor high-water mark would be
     /// a sixteenth the size and would not work: `ActionId` is `(lamport, actor)`
@@ -148,7 +173,7 @@ pub(crate) enum Request {
     /// At 16 bytes each a hundred thousand actions is 1.6 MB, sent rarely.
     Ids,
     /// The named actions, for the ids a reconciling member found it was missing.
-    /// Answered with a postcard `Vec<`[`Recovered`]`>`.
+    /// Answered with an encoded `Vec<`[`Recovered`]`>`.
     Actions(Vec<ActionId>),
 }
 
@@ -159,7 +184,17 @@ pub(crate) enum Request {
 /// one off the flood, and that door needs to know what to fetch — without it a
 /// recovered `SetSurface` would be applied against the flat stand-in, which is the
 /// divergence reconciliation exists to undo (§6.4).
-pub(crate) type Recovered = (Action, Option<iroh_blobs::Hash>);
+///
+/// A named pair rather than the tuple it was, because a tuple has no *field* for the
+/// hash's `carbonite(serde)` to sit on (§8) — and because "the action, and the hash for
+/// what it names" is worth saying in the type rather than at every destructuring.
+#[derive(Debug, Clone, Serialize, Deserialize, carbonite::Schema)]
+pub(crate) struct Recovered {
+    pub action: Action,
+    /// The transfer hash for the content the action names, if it names any.
+    #[carbonite(serde)]
+    pub hash: Option<iroh_blobs::Hash>,
+}
 
 /// Answer one request from the shared [`Mirror`] — every peer is a provider, so
 /// the session survives the original sharer leaving. `None` while this peer is
@@ -177,11 +212,11 @@ pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Byte
         // the other looks up as many actions as the asker found it was missing.
         Request::Ids => {
             let ids = mirror.lock().expect("mirror poisoned").action_ids();
-            postcard::to_allocvec(&ids)?.into()
+            crate::codec::encode(&ids)?.into()
         }
         Request::Actions(ids) => {
             let actions = mirror.lock().expect("mirror poisoned").recover(&ids);
-            postcard::to_allocvec(&actions)?.into()
+            crate::codec::encode(&actions)?.into()
         }
     }))
 }
@@ -191,7 +226,7 @@ pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Byte
 /// Three phases, and the lock covers only the first and last. Taking the snapshot
 /// is a handful of refcount bumps — the log is persistent — while turning it into
 /// a [`DocumentFile`] copies every asset payload (the container owns its bytes) and
-/// postcards the lot. A joiner arriving mid-session must not stall this peer's
+/// encodes the lot. A joiner arriving mid-session must not stall this peer's
 /// receive loop for the length of that, and the next joiner should not repeat it.
 fn snapshot_bytes(mirror: &Mutex<Mirror>, have: &[AssetId]) -> crate::Result<Bytes> {
     let snapshot = {
@@ -212,7 +247,7 @@ fn snapshot_bytes(mirror: &Mutex<Mirror>, have: &[AssetId]) -> crate::Result<Byt
 
 /// Decode a request received over any transport.
 pub(crate) fn decode_request(bytes: &[u8]) -> crate::Result<Request> {
-    Ok(postcard::from_bytes(bytes)?)
+    Ok(crate::codec::decode(bytes)?)
 }
 
 /// The iroh plumbing: the protocol handler and the client-side request call.
@@ -262,10 +297,10 @@ mod tests {
         }
     }
 
-    /// [`StampedRef`] is a second spelling of [`Stamped`], and the only thing that
-    /// makes a second spelling safe is that postcard cannot tell them apart. A
-    /// field or variant reordered in one and not the other is a wire break whose
-    /// first symptom is a decode failure on somebody else's machine.
+    /// [`StampedRef`] is a second spelling of [`Stamped`], and what makes a second
+    /// spelling safe is that the two encode identically — asserted here, and checked
+    /// again by the encoder itself, which matches the schema's names against the
+    /// value's as it writes (see [`StampedRef`]).
     #[test]
     fn the_borrowed_encoding_is_the_owned_one() {
         let origin = iroh::SecretKey::from_bytes(&[5u8; 32]).public();
@@ -282,7 +317,7 @@ mod tests {
         };
 
         let owned = |wire| {
-            postcard::to_allocvec(&Stamped {
+            crate::codec::encode(&Stamped {
                 origin,
                 asset,
                 wire,
@@ -290,7 +325,7 @@ mod tests {
             .expect("encode")
         };
         let borrowed = |wire| {
-            postcard::to_allocvec(&StampedRef {
+            crate::codec::encode_stamped_ref(&StampedRef {
                 origin,
                 asset,
                 wire,
@@ -298,7 +333,7 @@ mod tests {
             .expect("encode")
         };
 
-        // Both variants, so the *indices* are pinned and not just the field order.
+        // Both variants, so each one's payload is pinned and not just the envelope.
         let bytes = borrowed(WireRef::Action(&action));
         assert_eq!(bytes, owned(Wire::Action(action.clone())));
         assert_eq!(
@@ -306,7 +341,7 @@ mod tests {
             owned(Wire::Presence(frame))
         );
 
-        let back: Stamped = postcard::from_bytes(&bytes).expect("decode the borrowed form");
+        let back: Stamped = crate::codec::decode(&bytes).expect("decode the borrowed form");
         assert_eq!(back.origin, origin);
         assert!(matches!(back.wire, Wire::Action(a) if a.id == action.id));
     }
@@ -454,7 +489,7 @@ mod iroh_wire {
     /// them would be the most expensive thing this function does.
     pub(crate) async fn request(conn: &Connection, req: Request) -> crate::Result<Vec<u8>> {
         let (mut send, mut recv) = conn.open_bi().await?;
-        send.write_all(&postcard::to_allocvec(&req)?).await?;
+        send.write_all(&crate::codec::encode(&req)?).await?;
         send.finish()?;
         let mut tag = [0u8; 1];
         recv.read_exact(&mut tag).await?;

@@ -4,17 +4,42 @@
 //! rather than pixels — replaying it rebuilds the canvas, the full undo
 //! timeline, and (via `stark-engine`'s `Engine::replay_timelapse`) a timelapse.
 //!
+//! ## No version number
+//!
+//! There is nothing in this container to bump. The body is a **carbonite** frame:
+//! the writer's schema — every struct, field name and variant the log used — sits
+//! at the head of the file, and loading reconciles it against *this* build's types
+//! by name, exactly as reading JSON would (§8). A field added since is filled from
+//! its `#[serde(default)]`, one removed is skipped, one renamed is found through
+//! its `#[serde(alias)]`, and a variant may be inserted anywhere rather than only
+//! appended. So a file this build writes stays readable by later ones, and the
+//! version check that used to *refuse* older files — and the thirteen numbered
+//! layouts behind it (§8.1) — is gone with the encoding that needed it.
+//!
+//! The schema is built at **compile time** (`#[derive(carbonite::Schema)]` on every
+//! type the log names), so writing a file discovers nothing at runtime. That is not a
+//! speed choice: a schema can also be found by *tracing* a type's `Deserialize` impl,
+//! but tracing drives it with synthetic values, and the three types here that gate
+//! their own invariants — `FillOp`, `SelectionOp`, `Gradient` — refuse those on
+//! principle. Each states its wire shape with `#[carbonite(as = "...")]` instead,
+//! which is what lets a funnel keep refusing (§8).
+//!
+//! [`DocError::Legacy`] is what remains of the version ratchet: enough to recognize a
+//! pre-carbonite container and say so, since postcard wrote no field names and those
+//! bytes cannot be read without the exact schema that produced them.
+//!
 //! ## File size
 //!
 //! Two levers keep files small:
-//! 1. **postcard** — a dense binary encoding with no field names and varint
-//!    integers; far smaller than JSON/CBOR for this data.
-//! 2. **deflate** — sampled stroke paths are smooth and highly compressible.
+//! 1. **carbonite** — a columnar binary encoding: field names are paid for once, in
+//!    the schema, and not per value; integers are varints.
+//! 2. **deflate** — columnar layout is what a compressor wants, since one field's
+//!    values sit back to back, and sampled stroke paths are smooth.
 //!
 //! Both are pure Rust (deflate via miniz_oxide), so the format also works in the
 //! wasm/Dioxus frontend. Further wins (path simplification, delta/quantized
-//! samples, and the advisory raster `checkpoints` of §8) are future schema
-//! additions gated by the wire version.
+//! samples, and the advisory raster `checkpoints` of §8) are additions a later
+//! build can make without a break, which is the point of the paragraph above.
 
 use std::io::{Read, Write};
 
@@ -41,26 +66,20 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// maps at ~3 MB each — so this is roughly two orders of magnitude of headroom
 /// over anything a session produces, and refuses only what no session would.
 const MAX_DECOMPRESSED: u64 = 256 << 20;
-/// On-disk schema version. Bump when the serialized layout changes.
+
+/// The last schema version the **pre-carbonite** container carried, and the only
+/// reason this build still knows any such number (§8.1).
 ///
-/// **What each bump was and what forced it is §8.1**, which also names the three
-/// shapes a break comes in. It lived here, and had grown to a hundred and fifty
-/// lines hanging off a `const u32` — a record worth keeping and not worth reading
-/// every time someone hovers the constant (§1: cite sections, not line numbers).
-///
-/// What matters at this line is only the rule the history is evidence for:
-/// postcard writes a struct's fields **in order**, with no names and no lengths,
-/// and an enum by **variant index**. So appending a variant is free, appending a
-/// field to a variant is not, and a file written to an older schema has to be
-/// *refused* rather than decoded into whatever its bytes happen to mean now —
-/// which is what `rejects_an_older_schema_rather_than_misreading_it` pins. Files
-/// are alpha (§19), so old ones are refused rather than migrated.
-const WIRE_VERSION: u32 = 13;
+/// A tombstone. It is read from one place — [`legacy_header`], on the way to saying
+/// "this file predates the format" — and never to decide how to read a current
+/// document, which carries no version at all. Nothing will bump it; when no
+/// pre-carbonite files are left to open, the constant and its sniff go together.
+const LAST_VERSIONED_SCHEMA: u32 = 13;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (§8). Replay is bit-exact within a build; shader/algorithm changes
 /// across builds may shift pixels.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub struct BuildId {
     pub app_version: String,
 }
@@ -74,7 +93,7 @@ impl Default for BuildId {
 }
 
 /// Canvas-wide metadata needed to reproduce the document (§8).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub struct CanvasMeta {
     /// The tile stride the log was recorded against, in canvas px
     /// ([`TILE_SIZE`](crate::geom::TILE_SIZE)).
@@ -88,8 +107,11 @@ pub struct CanvasMeta {
     /// derived from it. None of that degrades gracefully.
     ///
     /// A constant rather than something a document may choose. It is stored so the
-    /// file can be *refused* by a build that would read it differently, exactly as
-    /// the wire version is — see [`DocError::TileSize`](crate::DocError::TileSize).
+    /// file can be *refused* by a build that would read it differently — and it is now
+    /// the **only** thing in a document that is refused rather than reconciled, which
+    /// is the contrast worth holding onto: a field carbonite can match by name it
+    /// matches, while the stride every coordinate is derived from is not a schema
+    /// question. See [`DocError::TileSize`](crate::DocError::TileSize).
     pub tile_size: u32,
     pub color_space: ColorSpaceId,
     /// The ground the log *starts* from — the initial condition of the empty
@@ -113,10 +135,11 @@ impl Default for CanvasMeta {
     }
 }
 
-/// A complete saved document: metadata plus the replayable action log
-/// (§8). The advisory raster `checkpoints` of §8 are deferred to a
-/// later wire version.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// A complete saved document: metadata plus the replayable action log (§8).
+///
+/// The advisory raster `checkpoints` of §8 are still to come, and are now an ordinary
+/// addition: a `#[serde(default)]` field that older files simply do not carry.
+#[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
 pub struct DocumentFile {
     pub app_build: BuildId,
     pub canvas: CanvasMeta,
@@ -170,9 +193,13 @@ impl DocumentFile {
         }
     }
 
-    /// Encode to the on-disk container: `MAGIC | version | deflate(postcard)`.
+    /// Encode to the on-disk container: `MAGIC | deflate(carbonite(self))`.
+    ///
+    /// The carbonite frame carries its own magic and its own schema, so the eight
+    /// bytes prepended here are the whole of Stark's framing — what a file *is*,
+    /// not which layout it happens to be in.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let body = postcard::to_allocvec(self).map_err(DocError::Serialize)?;
+        let body = carbonite::to_vec_static(self).map_err(DocError::Serialize)?;
 
         // `default` (level 6) rather than `best` (9). Saving is latency the artist
         // waits through, and level 9 spends a large multiple of 6's time hunting
@@ -184,48 +211,49 @@ impl DocumentFile {
         encoder.write_all(&body)?;
         let compressed = encoder.finish()?;
 
-        let mut out = Vec::with_capacity(MAGIC.len() + 4 + compressed.len());
+        let mut out = Vec::with_capacity(MAGIC.len() + compressed.len());
         out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&WIRE_VERSION.to_le_bytes());
         out.extend_from_slice(&compressed);
         Ok(out)
     }
 
     /// Decode a container produced by [`DocumentFile::to_bytes`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let header = MAGIC.len() + 4;
-        if bytes.len() < header || &bytes[..MAGIC.len()] != MAGIC {
+        let Some(body) = bytes.strip_prefix(&MAGIC[..]) else {
             return Err(DocError::BadMagic);
-        }
-        let version = u32::from_le_bytes(
-            bytes[MAGIC.len()..header]
-                .try_into()
-                .expect("4-byte version"),
-        );
-        if version != WIRE_VERSION {
-            return Err(DocError::UnsupportedVersion(version));
-        }
+        };
+        Self::inflate_and_decode(body)
+    }
 
+    fn inflate_and_decode(body: &[u8]) -> Result<Self> {
         // Bounded before it is expanded, not after: deflate takes a long run down
         // to almost nothing, so the compressed length says nothing about the
         // decompressed one and a reader that finds out by expanding has already
         // spent the memory. `take` one byte past the limit, so "filled the buffer"
         // and "reached the limit" are distinguishable.
-        let mut body = Vec::new();
-        DeflateDecoder::new(&bytes[header..])
+        let mut frame = Vec::new();
+        DeflateDecoder::new(body)
             .take(MAX_DECOMPRESSED + 1)
-            .read_to_end(&mut body)?;
-        if body.len() as u64 > MAX_DECOMPRESSED {
+            .read_to_end(&mut frame)
+            // A pre-carbonite container fails *here*, and only here: its four
+            // version bytes sit exactly where the deflate stream has to start, and
+            // none of the thirteen makes a well-formed one. So the sniff hangs off
+            // the inflate error rather than running first — a current file that
+            // inflates is never asked whether it looks old.
+            .map_err(|e| legacy_header(body).unwrap_or(DocError::Io(e)))?;
+        if frame.len() as u64 > MAX_DECOMPRESSED {
             return Err(DocError::TooLarge {
                 limit: MAX_DECOMPRESSED,
             });
         }
-        let file: Self = postcard::from_bytes(&body).map_err(DocError::Deserialize)?;
+        let file: Self = carbonite::from_slice_static(&frame).map_err(DocError::Deserialize)?;
 
-        // A sibling of the version check above, and refused for the same reason:
-        // the bytes decode perfectly and simply do not mean what this build would
-        // read them as. Every tile boundary in the document moves with this number
-        // (see `CanvasMeta::tile_size`), so there is nothing to degrade to.
+        // Refused rather than read, and the one thing left in a document that can
+        // be: the bytes decode perfectly and simply do not mean what this build
+        // would read them as. Every tile boundary in the document moves with this
+        // number (see `CanvasMeta::tile_size`), so there is nothing to degrade to —
+        // which is exactly what distinguishes it from a *schema* difference, where
+        // reconciling by name is a real answer.
         if file.canvas.tile_size != TILE_SIZE {
             return Err(DocError::TileSize {
                 expected: TILE_SIZE,
@@ -234,6 +262,20 @@ impl DocumentFile {
         }
 
         Ok(file)
+    }
+}
+
+/// Recognize the pre-carbonite container header — `MAGIC` followed by a schema
+/// version in `1..=LAST_VERSIONED_SCHEMA` — so an old file can be *named* instead
+/// of reported as a corrupt deflate stream (§8.1).
+///
+/// `body` is what follows the magic. Consulted only after inflating has already
+/// failed, so this never decides how a current document is read.
+fn legacy_header(body: &[u8]) -> Option<DocError> {
+    let head: [u8; 4] = body.get(..4)?.try_into().ok()?;
+    match u32::from_le_bytes(head) {
+        found @ 1..=LAST_VERSIONED_SCHEMA => Some(DocError::Legacy(found)),
+        _ => None,
     }
 }
 
@@ -286,7 +328,6 @@ mod tests {
         }
         let bomb = encoder.finish().expect("deflate");
         let mut bytes = Vec::from(&MAGIC[..]);
-        bytes.extend_from_slice(&WIRE_VERSION.to_le_bytes());
         bytes.extend_from_slice(&bomb);
         assert!(
             bytes.len() < 1 << 20,
@@ -335,23 +376,126 @@ mod tests {
         ));
     }
 
-    /// The version check is what makes a layout change safe to make at all: a
-    /// file written to an older schema has to be **refused**, not decoded into
-    /// whatever its bytes happen to mean now.
+    /// A container from before the format change is **named**, not reported as a
+    /// corrupt deflate stream (§8.1).
     ///
-    /// Postcard writes no field names and no lengths, so nothing downstream can
-    /// notice. Wire 5 is the sharpest case so far — it dropped a field from the
-    /// middle of every stroke, so a version-4 file read as a version-5 one would
-    /// take the old `Tool` byte for the first byte of the brush color and slide
-    /// every number after it along. That decodes; it just is not the painting.
+    /// Those bytes are postcard: no field names, no lengths, meaningful only to the
+    /// exact schema that wrote them. Nothing a newer build does can read them, so
+    /// the whole job here is to say which thing went wrong to someone holding a
+    /// painting they made — `DocError::Legacy` is the last trace of the version
+    /// ratchet this format removed.
     #[test]
-    fn rejects_an_older_schema_rather_than_misreading_it() {
-        let mut bytes = sample_doc().to_bytes().unwrap();
-        let at = MAGIC.len();
-        bytes[at..at + 4].copy_from_slice(&(WIRE_VERSION - 1).to_le_bytes());
-        assert!(matches!(
-            DocumentFile::from_bytes(&bytes),
-            Err(DocError::UnsupportedVersion(v)) if v == WIRE_VERSION - 1
-        ));
+    fn a_document_from_before_the_format_change_says_so() {
+        for version in [1u32, 6, LAST_VERSIONED_SCHEMA] {
+            let mut bytes = Vec::from(&MAGIC[..]);
+            bytes.extend_from_slice(&version.to_le_bytes());
+            // Whatever followed the header: an old body is not a deflate stream
+            // starting four bytes early, which is what makes the sniff sound.
+            let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+            encoder
+                .write_all(b"a postcard action log")
+                .expect("deflate");
+            bytes.extend_from_slice(&encoder.finish().expect("deflate"));
+
+            assert!(
+                matches!(DocumentFile::from_bytes(&bytes), Err(DocError::Legacy(v)) if v == version),
+                "version {version} should be named, got {:?}",
+                DocumentFile::from_bytes(&bytes).err(),
+            );
+        }
+    }
+
+    /// …and a *current* file is never asked whether it looks old. The sniff reads
+    /// the four bytes where a deflate stream now starts, so a save whose compressed
+    /// body happens to open with a small little-endian integer must still load.
+    ///
+    /// The guard is that the sniff hangs off the inflate error rather than running
+    /// first; this is the assertion that would fail if it were reordered.
+    #[test]
+    fn a_current_document_is_not_mistaken_for_an_old_one() {
+        // Enough distinct documents that the leading compressed bytes vary widely.
+        for lamport in 0..64 {
+            let doc = DocumentFile::new(vec![Action {
+                id: ActionId {
+                    lamport,
+                    actor: ActorId(7),
+                },
+                kind: ActionKind::AddLayer {
+                    id: LayerId(2),
+                    carrier: None,
+                    above: None,
+                },
+            }]);
+            let bytes = doc.to_bytes().expect("encode");
+            assert!(
+                DocumentFile::from_bytes(&bytes).is_ok(),
+                "a document this build wrote must load back",
+            );
+        }
+    }
+
+    /// **The whole point of the format**: a file written against an older shape of
+    /// these types loads, rather than being refused by a version number (§8).
+    ///
+    /// `Old` is what `DocumentFile` and `CanvasMeta` looked like at some earlier
+    /// build — no `surface` on the canvas (a field this build added), and a
+    /// `dpi` this build has since dropped — spelled with the names the real types
+    /// carry, because names are what carbonite reconciles on. Both moves are
+    /// exercised at once: the added field arrives from its `#[serde(default)]`, the
+    /// removed one is skipped, and everything either shape shares comes through.
+    #[test]
+    fn a_file_written_against_an_older_shape_still_loads() {
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "CanvasMeta")]
+        struct OldCanvas {
+            tile_size: u32,
+            color_space: ColorSpaceId,
+            /// Carried then, gone now: a reader has to step over its column.
+            dpi: f32,
+        }
+
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "DocumentFile")]
+        struct OldFile {
+            app_build: BuildId,
+            canvas: OldCanvas,
+            actions: Vec<Action>,
+            assets: Vec<(AssetId, Vec<u8>)>,
+            surfaces: Vec<(SurfaceId, Vec<u8>)>,
+            pictures: Vec<(AssetId, Vec<u8>)>,
+        }
+
+        let old = OldFile {
+            app_build: BuildId::default(),
+            canvas: OldCanvas {
+                tile_size: TILE_SIZE,
+                color_space: ColorSpaceId::Oklab,
+                dpi: 96.0,
+            },
+            actions: sample_doc().actions,
+            assets: Vec::new(),
+            surfaces: Vec::new(),
+            pictures: vec![(AssetId([3; 32]), vec![1, 2, 3])],
+        };
+
+        // Framed exactly as `to_bytes` frames one, since it is the container that
+        // used to carry the version this test proves is unnecessary.
+        let body = carbonite::to_vec_static(&old).expect("encode the old shape");
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&body).expect("deflate");
+        let mut bytes = Vec::from(&MAGIC[..]);
+        bytes.extend_from_slice(&encoder.finish().expect("deflate"));
+
+        let back = DocumentFile::from_bytes(&bytes).expect("an older shape still loads");
+        assert_eq!(back.canvas.color_space, ColorSpaceId::Oklab);
+        assert_eq!(
+            back.canvas.surface,
+            SurfaceId::default(),
+            "a field added since arrives from its serde default",
+        );
+        assert_eq!(back.actions.len(), 1);
+        assert_eq!(back.actions[0].id.lamport, 3);
+        assert_eq!(back.pictures.len(), 1, "and the fields both shapes share");
+        assert_eq!(back.pictures[0].1, vec![1, 2, 3]);
     }
 }

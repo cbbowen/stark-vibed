@@ -31,15 +31,15 @@ use serde::{Deserialize, Serialize};
 ///
 /// Three variants, because three are built. The enum is the seam the rest of §21.7
 /// lands on — motion blur, outline, glow — and per this codebase's own precedent
-/// (§1) no variant appears here before it does something to a pixel. **Appended
-/// only**: postcard encodes an enum by index (§8), so a variant inserted above an
-/// existing one would silently rename every filter in every saved file.
+/// (§1) no variant appears here before it does something to a pixel. A new one may go
+/// wherever it reads best — a variant is matched by *name*, not by position, so
+/// inserting one does not disturb the filters in saved files (§8, `ActionKind`).
 ///
 /// `Clone`, not `Copy`, since the gradient map arrived: a ramp is a stop list, and
 /// the enum's old `Copy` was always documented as lasting until the first variant
 /// that carries more than a handful of numbers. A filter is still read once per
 /// render and once per projection, so the clones stay countable.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum Filter {
     /// Exposure, contrast, saturation and hue, applied in Oklab (§21.5).
     Color(ColorAdjust),
@@ -181,7 +181,7 @@ impl Filter {
 /// [`NEUTRAL`](Self::NEUTRAL) is the identity, and it is the value a filter layer is
 /// created holding — a new filter changes nothing until it is dialled, which is what
 /// keeps "add a filter" from being a destructive act.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct ColorAdjust {
     /// Exposure, in **stops**: the light beneath is scaled by `2^exposure`, so `+1`
     /// is twice the light and `-1` is half.
@@ -313,7 +313,7 @@ impl Default for ColorAdjust {
 /// belong to the artwork, so they scale with a zoom and turn with a rotation the
 /// way the paint does. The trip into screen texels is the encoder's, per frame,
 /// through the view's own linear map.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct ChromaticAberration {
     /// How far the red end of the spectrum lands from the blue end, in **canvas
     /// px** — the full width of the fringe an edge grows. `0` is the identity: no

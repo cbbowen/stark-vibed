@@ -247,9 +247,9 @@ pub fn css_strip(g: &Gradient) -> String {
 // The format and the rule it exists for — one damaged entry is skipped rather
 // than poisoning the library — are stated there, once, for all four libraries.
 // What is this module's own is the *fields*: the stops are JSON rather than
-// postcard because `localStorage` outlives app versions, and deserialization
-// funnels through `Gradient`'s own gate, so a tampered line becomes a skipped
-// line rather than an unsampleable ramp.
+// the save file's encoding because `localStorage` outlives app versions, and
+// deserialization funnels through `Gradient`'s own gate, so a tampered line becomes a
+// skipped line rather than an unsampleable ramp.
 
 fn persist(entries: &[GradientEntry]) {
     storage::save_table(

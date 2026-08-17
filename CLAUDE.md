@@ -159,9 +159,21 @@ The workspace is on **nightly** for exactly one reason: `history`'s
 - **Conserve `height`, never alpha** (§6.1). Color alpha is per-unit opacity, a
   material property; the amount of paint is the height channel. The two meet only
   in the slab law `1 − exp(−K · opacity · thickness)`.
-- **Postcard encodes struct fields in order and enums by index** (§8). Appending
-  a variant is safe; inserting a field into an existing variant is a wire-format
-  break.
+- **A new field in the log needs `#[serde(default)]`** (§8). The save format
+  carries its own schema and reconciles it against today's types by *name*, so a
+  variant may be inserted anywhere and a field may be added or removed — but a
+  field an older file lacks has to say what its absence meant, or that file is
+  refused. Renaming needs `#[serde(alias)]`. The **wire** is the other way round
+  (`stark-net::codec`): a message carries no schema, so reshaping anything gossip
+  touches means bumping the ALPN.
+- **A new type in the log needs `#[derive(carbonite::Schema)]`** (§8), and the
+  compiler says so. Two attributes cover what a plain derive cannot:
+  `#[carbonite(as = "Wire")]` on a type that keeps invariants its wire form does
+  not (`FillOp`, `SelectionOp`, `Gradient` — and `as` means *both* directions, so
+  `serde(from)` without `into` is an error), and `#[carbonite(serde)]` on a field
+  whose type belongs to another crate. Never reach for runtime tracing
+  (`Schema::new`): a funnel that refuses a one-element sequence cannot be traced,
+  and one such type poisons every type containing it.
 - **An `impl` that crosses the crate boundary has to move or become a function**
   (§2). The orphan rule is not an obstacle here, it is the boundary reporting
   itself: `history::Action` became `Materialize`/`Logged` in the model,

@@ -200,7 +200,7 @@ fn covered(diff: &Diff, writes: &[Resource]) -> bool {
 // The driver
 
 /// The slot of every action kind, in the order `ActionKind` declares them —
-/// which is also the order postcard encodes them in (§8), so a slot is a fact
+/// which is also the order they are declared in (§8), so a slot is a fact
 /// about the wire form rather than a number invented here.
 ///
 /// **Exhaustive, with no `_` arm, and that is the whole point of it.** What this

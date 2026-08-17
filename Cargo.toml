@@ -50,8 +50,22 @@ history = { git = "https://github.com/cbbowen/history" }
 png = "0.18"
 blake3 = "1"
 serde = { version = "1", features = ["derive"] }
-# Compact binary action log (no field names) + pure-Rust deflate (wasm-friendly).
-postcard = { version = "1", features = ["alloc"] }
+# The action log's encoding, on disk and on the wire (§8). Columnar, with the
+# writer's schema carried beside the data — which is what lets an old file be
+# reconciled against today's types by *name* instead of refused by version.
+#
+# `derive` builds every type's schema at compile time, so nothing in the document tree
+# is discovered at runtime. That is not a speed choice: a schema can also be found by
+# *tracing* a type's `Deserialize` impl, and an invariant funnel refuses the synthetic
+# values tracing feeds it — so `FillOp`, `SelectionOp` and `Gradient` would have no
+# schema at all. Each states its wire shape with `#[carbonite(as = "...")]` instead,
+# which is what lets `Gradient::new` stay a refusal (§8).
+#
+# `glam` supplies the schemas for `Vec2`/`Affine2`/`IVec2`, which sit in the middle of
+# the log through `geom` and which only carbonite can implement — the orphan rule puts
+# a foreign trait on a foreign type out of reach here.
+carbonite = { git = "https://github.com/cbbowen/carbonite", features = ["glam"] }
+# Pure-Rust deflate (wasm-friendly): the save container's compression.
 flate2 = "1"
 # Structured logging/diagnostics; the frontend installs a console subscriber
 # (tracing-wasm) so engine + UI traces show up in the browser devtools.

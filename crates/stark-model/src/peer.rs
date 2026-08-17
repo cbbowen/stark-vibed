@@ -57,7 +57,7 @@ pub const GESTURE_RESYNC: Option<f64> = None;
 /// The invariant part of a live stroke: everything but the path. Sent on the
 /// gesture's first frame and repeated on every resync frame, so a client that joined
 /// mid-stroke or missed a delta can start rendering without asking for anything.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct StrokeHead {
     pub layer: LayerId,
     pub brush: BrushParams,
@@ -65,7 +65,7 @@ pub struct StrokeHead {
 }
 
 /// One gesture update on the wire (§17.5).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
 pub enum GestureFrame {
     /// A stroke in flight. The path grows by appending, because the fitter *freezes*
     /// a prefix of control points that is final and never revised (§6.2) —
@@ -107,7 +107,7 @@ impl GestureFrame {
 /// The author is **not** in the payload: `stark-engine`'s `Peers::merge` takes it from the
 /// transport's authenticated origin, the same discipline `Action` gets for free from
 /// its [`ActionId`](crate::document::ActionId) (§17.7).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
 pub struct PeerFrame {
     /// Which run of this client published the frame (`stark-engine`'s `Identity::boot`). Ordered
     /// *before* `seq`, which restarts at zero when a client does.

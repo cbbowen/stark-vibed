@@ -51,9 +51,8 @@ Two deliberate absences:
 - **No alpha on a stop.** A captured ramp is made of paint the canvas actually
   holds; what a fill does with coverage is the fill's parameter (§6.8's
   `FillOp` already carries one), not the gradient's. If a transparency ramp is
-  ever worth having it is a wire-format decision to take then — inserting a
-  field into a stop postcard-embedded in a `FillOp` is a version bump (§8) —
-  not a `1.0` to carry meanwhile.
+  ever worth having it is a decision to take then — a `#[serde(default)]` on a new stop
+  field, which the format absorbs (§8) — not a `1.0` to carry meanwhile.
 - **No per-stop interpolation modes.** One space, chosen once. A gradient that
   interpolates differently per segment is an authoring tool's feature; a
   captured gradient reproduces paint, and the fitter (§22.2) places extra stops
@@ -136,8 +135,8 @@ painted — the same classification call as brush presets and the shape library
 (§11), and the same consequences: entries live in the frontend
 (`stark-ui/src/gradients.rs`), follow this browser across documents via
 `localStorage` (`stark.gradients.v1`, one line per entry,
-`b64(name)|b64(json(stops))` — line-oriented so one damaged entry is skipped,
-JSON so the format outlives postcard's positional encoding), never enter the
+`b64(name)|b64(json(stops))` — line-oriented so one damaged entry is skipped, JSON so a
+stored ramp stays legible in devtools and editable by hand), never enter the
 document, and never reach a peer. When the gradient fill lands, the chosen ramp
 is **embedded in the `FillOp` it commits** — the way a stroke embeds its brush
 color — so documents stay self-contained and replayable with no reference

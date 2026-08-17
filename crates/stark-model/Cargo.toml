@@ -11,8 +11,8 @@ description = "The Stark document: the action log, its vocabulary and its file f
 
 [dependencies]
 serde = { workspace = true }
-# The action log's wire and file encoding — enums by index, fields in order (§8).
-postcard = { workspace = true }
+# The action log's wire and file encoding — columnar, schema beside the data (§8).
+carbonite = { workspace = true }
 # The save container's compression (`io`). Pure Rust, so it builds for wasm.
 flate2 = { workspace = true }
 # Vec2/Affine2 under `geom`. The one piece of the renderer's vocabulary the log

@@ -17,7 +17,7 @@ publish = false
 # data channel attaches — with the relay path kept open as fallback. Works
 # identically on native (str0m) and wasm (RTCPeerConnection), so the whole
 # flow is testable in `cargo test`.
-webrtc = ["dep:iroh-webrtc-transport", "dep:iroh-base", "dep:anyhow", "iroh/unstable-custom-transports"]
+webrtc = ["dep:iroh-webrtc-transport", "dep:anyhow", "iroh/unstable-custom-transports"]
 # There is no `mixbox` feature here any more, and its absence is the point (§2).
 # It existed only to forward `stark-engine/mixbox`: this crate depended on the
 # engine with `default-features = false`, which would otherwise have pinned the
@@ -47,12 +47,17 @@ rpds = { workspace = true }
 # The upstream package kept the name of an unrelated earlier project (see
 # vendor/iroh-webrtc-transport/VENDORING.md); the `2` disambiguates in code.
 iroh-webrtc-transport = { path = "../../vendor/iroh-webrtc-transport", optional = true }
-# For naming CustomAddr (iroh does not re-export it).
-iroh-base = { version = "1", optional = true }
+# For naming `CustomAddr` and `TransportAddr`, which iroh does not re-export: the
+# vendored transport's negotiation needs the first, and a session link spells every
+# way to reach a peer in primitives (`ticket`), which needs both. Not optional,
+# because a link's shape must not depend on a cargo feature (§8, §19) — iroh depends
+# on this crate regardless.
+iroh-base = { version = "1" }
 # The vendored transport's negotiation API speaks anyhow.
 anyhow = { version = "1", optional = true }
 n0-future = "0.3"
-postcard = { workspace = true }
+# The wire's encoding, the same one the save format uses (§8, §12.4).
+carbonite = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

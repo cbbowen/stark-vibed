@@ -74,7 +74,9 @@ pub const MAX_GROUND_DIM: u32 = 2048;
 /// `Ord` so collections of assets have one order rather than a hash map's — what
 /// a save file's bundle is written in, so the same document serializes to the
 /// same bytes twice running (§8).
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, carbonite::Schema,
+)]
 pub struct AssetId(pub [u8; 32]);
 
 impl std::fmt::Debug for AssetId {

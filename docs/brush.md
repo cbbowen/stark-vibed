@@ -891,9 +891,10 @@ per-*fragment* gate on `τ` in the same slot `drain` occupies, for the same
 composition reason (§6.4). `hardness` and `charge` are deliberately
 not targets: hardness is baked into a prefix-τ texture per value, and `charge` is
 an initial condition rather than a rate, so neither has a per-segment form to
-modulate. Adding the field bumped the wire version to 3 (§8): postcard writes no
-field names, so an appended field is still a break, and `#[serde(default)]`
-cannot fill what a non-self-describing format never marked as absent.
+modulate. Adding the field bumped the wire version to 3 (§8) — back when it had to:
+the encoding wrote no field names, so an appended field was still a break and
+`#[serde(default)]` had nothing to fill from. The same addition today is exactly that
+attribute and no version at all.
 
 In the UI (§11) the mapping lives **on the parameter's own row** — a chip naming
 what drives it, opening source / floor / curve in place, one row at a time — so a
@@ -1491,8 +1492,9 @@ CRDT all see an ordinary stroke whose path happens to be calm.
 That is also why the amount is **not** a `BrushParams` field. The stored path
 already embodies the smoothing, so a field there would be one that replay reads
 and ignores — inert in the document domain, which is the class this codebase
-deletes — and postcard makes appending it a wire-version bump (§8), a price
-worth paying only for fields that decide pixels. Instead:
+deletes. The format would absorb the field now (§8), which is the point: the reason not
+to carry it is that replay would ignore it, and that reason never depended on the
+encoding. Instead:
 
 - **The engine is told the string length per gesture.** `GestureCommand::Start`
   gains a `rope: f32` alongside `tolerance` — in canvas px, `0` = no tow is

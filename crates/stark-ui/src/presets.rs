@@ -58,7 +58,7 @@ const KEY_PRESETS: &str = "stark.presets.v1";
 /// lost its feel is unrepresentable: the preset library, the quick-brush rack
 /// (`crate::slots`) and a hold's swap all traffic in this. The feel is not on
 /// [`BrushParams`] because the stored path already embodies the smoothing — a
-/// field there would be one that replay reads and ignores, and postcard makes
+/// field there would be one that replay reads and ignores, and the log's encoding makes
 /// appending it a wire-version bump (§8).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Wearable {
@@ -551,7 +551,7 @@ pub fn matches(current: &Wearable, preset: &Wearable) -> bool {
 // `b64(name)|b64(json(brush))|b64(json(feel))`. Line-oriented and
 // field-delimited like the shape library, so a single damaged entry is skipped
 // rather than poisoning the whole library. The brush itself is JSON rather than
-// the save file's postcard because localStorage outlives app versions: JSON is
+// the save file's columnar encoding because localStorage outlives app versions: JSON is
 // self-describing, so a `BrushParams` field added later (with
 // `#[serde(default)]`) still reads every stored preset instead of dropping the
 // lot. The feel (§6.11) is its own trailing field for the same reason

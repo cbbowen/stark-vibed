@@ -45,7 +45,7 @@ pub const MAX_FILL_TILES: usize = 1024;
 /// One enum rather than a mode plus a flag: the chips are five answers to a single
 /// question, and modelling them as five values is what keeps "exactly one is lit"
 /// structural instead of a rule two pieces of state have to be kept agreeing on.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub enum ShapeAction {
     /// Combine the region into the author's selection mask, this way.
     Select(SelectionMode),
@@ -80,7 +80,7 @@ impl ShapeAction {
 /// new pipeline, it is a fill whose parcel reads its latent from position — so
 /// the region, the gate, the stacking law and the footprint are all [`FillOp`]'s,
 /// untouched.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum Parcel {
     /// One color everywhere. Straight sRGB, and **color only**: how strongly a
     /// fill covers is [`FillOp::opacity`], one number for the whole fill, so a
@@ -91,7 +91,7 @@ pub enum Parcel {
 }
 
 /// The gradient half of a [`Parcel`]: which ramp, along what axis (§22.4).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct GradientParcel {
     /// The ramp — embedded **by value**, the way a stroke embeds its brush
     /// color, so the document stays self-contained and replayable with no
@@ -105,7 +105,7 @@ pub struct GradientParcel {
 /// composing drag draws (§22.4). Beyond either end the ramp holds its end stop:
 /// a gradient fill covers its whole region, the axis only says where the
 /// transition lives.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum GradientAxis {
     /// `t` grows from `from` to `to` along the line joining them, constant on
     /// perpendiculars.
@@ -125,8 +125,9 @@ pub enum GradientAxis {
 /// walked past both. A fill lands paint whose mass is the *inverse* of the
 /// coverage law (§6.1), so an opacity of 1.0000001 from a corrupt log is not a
 /// slightly-too-strong fill — it is an infinite mass.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(from = "RawFillOp")]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
+#[serde(from = "RawFillOp", into = "RawFillOp")]
+#[carbonite(as = "RawFillOp")]
 pub struct FillOp {
     /// The region to fill. [`SelectionShape::All`] means "the selection", which is
     /// the selection bar's Fill button; it is refused when nothing is selected,
@@ -251,10 +252,18 @@ pub fn fill_bounds(op: &FillOp) -> Option<(Vec2, Vec2)> {
     Some((lo - pad, hi + pad))
 }
 
-/// The wire shape of a [`FillOp`] — the type `#[serde(from)]` decodes before the
-/// constructor runs. Fields in declaration order; postcard writes them that way
-/// and nothing here may move the encoding (§8).
-#[derive(Deserialize)]
+/// **The fill's wire shape**, which [`FillOp`] names in both directions —
+/// `serde(from/into)` for the encoding, `carbonite(as)` for the schema (§8). So a
+/// saved fill's columns and field *names* come from here, and the rename back to
+/// `FillOp` is what keeps a document from recording the mirror's name.
+///
+/// Both directions rather than the one it started with: a schema describes reading and
+/// writing at once, so a one-sided conversion is refused outright rather than left to
+/// disagree with itself. That the conversion is `From` and never `TryFrom` is the whole
+/// design — a hostile value is *clamped* on the way in, not rejected, because a fill
+/// that will not open is worse than one whose opacity was pulled into range.
+#[derive(Serialize, Deserialize, carbonite::Schema)]
+#[serde(rename = "FillOp")]
 struct RawFillOp {
     shape: SelectionShape,
     feather: f32,
@@ -265,6 +274,19 @@ struct RawFillOp {
 impl From<RawFillOp> for FillOp {
     fn from(raw: RawFillOp) -> Self {
         Self::with_paint(raw.shape, raw.feather, raw.paint, raw.opacity)
+    }
+}
+
+impl From<FillOp> for RawFillOp {
+    /// The way out, which does nothing but rename: an op in hand already holds what
+    /// the constructor promises, so writing it is a move, field for field.
+    fn from(op: FillOp) -> Self {
+        Self {
+            shape: op.shape,
+            feather: op.feather,
+            paint: op.paint,
+            opacity: op.opacity,
+        }
     }
 }
 
@@ -281,7 +303,7 @@ mod tests {
     #[test]
     fn a_fill_from_the_wire_is_normalized() {
         let round = |op: &FillOp| {
-            postcard::from_bytes::<FillOp>(&postcard::to_allocvec(op).expect("encodes"))
+            carbonite::from_slice_static::<FillOp>(&carbonite::to_vec_static(op).expect("encodes"))
                 .expect("decodes")
         };
         let hostile = FillOp {
@@ -318,8 +340,14 @@ mod tests {
         assert_eq!(round(&clean), clean);
     }
 
-    /// The mirror type must not move the encoding — postcard writes fields in
-    /// order with no names (§8).
+    /// The mirror type **is** the wire shape, and the compiler is what says so (§8).
+    ///
+    /// `FillOp` declares [`RawFillOp`] as its representation in both directions, so
+    /// the schema, the columns and the bytes are the mirror's — there is no second
+    /// layout to drift from. A field present on one side only will not compile, where
+    /// under a positional format it decoded every saved fill as a different one. What
+    /// is left to test is that the round trip is the identity on a normalized op,
+    /// which is the property the two `From` impls have to have between them.
     #[test]
     fn the_wire_shape_is_the_op_field_for_field() {
         let op = FillOp::new(
@@ -331,11 +359,11 @@ mod tests {
             [0.1, 0.2, 0.3],
             0.25,
         );
-        let mut by_hand = Vec::new();
-        by_hand.extend(postcard::to_allocvec(&op.shape).expect("encodes"));
-        by_hand.extend(postcard::to_allocvec(&op.feather).expect("encodes"));
-        by_hand.extend(postcard::to_allocvec(&op.paint).expect("encodes"));
-        by_hand.extend(postcard::to_allocvec(&op.opacity).expect("encodes"));
-        assert_eq!(postcard::to_allocvec(&op).expect("encodes"), by_hand);
+        let bytes = carbonite::to_vec_static(&op).expect("encodes as its representation");
+        assert_eq!(
+            carbonite::from_slice_static::<FillOp>(&bytes).expect("decodes"),
+            op,
+            "a normalized op round-trips unchanged through its mirror",
+        );
     }
 }

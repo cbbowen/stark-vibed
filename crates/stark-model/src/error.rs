@@ -18,7 +18,7 @@ use crate::content::AssetNeed;
 /// Errors produced by reading, writing or resolving a document.
 #[derive(Debug, Error)]
 pub enum DocError {
-    /// The two halves of the container's codec. They carry the `postcard::Error`
+    /// The two halves of the container's codec. They carry the `carbonite::Error`
     /// itself rather than its `to_string()`, so `source()` reaches it and a caller
     /// printing the chain gets what actually went wrong — the courtesy every other
     /// variant here already extends (`AssetId`, `Io`).
@@ -27,16 +27,32 @@ pub enum DocError {
     /// the same type and which one it was is the useful half of the message: a
     /// serialize failure is this build's bug, a deserialize failure is the file's.
     #[error("serialization failed")]
-    Serialize(#[source] postcard::Error),
+    Serialize(#[source] carbonite::Error),
 
     #[error("deserialization failed")]
-    Deserialize(#[source] postcard::Error),
+    Deserialize(#[source] carbonite::Error),
 
     #[error("not a Stark document (bad magic)")]
     BadMagic,
 
-    #[error("unsupported document version {0}")]
-    UnsupportedVersion(u32),
+    /// A document written by a **pre-carbonite** build, whose container carried a
+    /// schema version and whose body was postcard (§8.1).
+    ///
+    /// The one error here that can never be fixed by a newer build, and the reason
+    /// the format moved: postcard writes no field names, so those bytes only mean
+    /// anything to the exact schema that wrote them, and reading version 6 would
+    /// take this build's copy of all thirteen historical layouts. Files are alpha
+    /// (§19), so they are named rather than migrated.
+    ///
+    /// **A tombstone, not a version check.** It is raised by recognizing the old
+    /// *container header*, never consulted to decide how to read a current file, and
+    /// nothing bumps it — a carbonite document carries no version at all, because
+    /// the writer's schema travels with it and is reconciled by name (§8).
+    #[error(
+        "this document was saved by an older Stark (format version {0}), \
+         which this build can no longer read"
+    )]
+    Legacy(u32),
 
     /// The container's compressed body expands past what this build will hold in
     /// memory at once (`io::MAX_DECOMPRESSED`).
@@ -53,24 +69,29 @@ pub enum DocError {
     /// The document was recorded against a different tile stride than this build
     /// addresses the canvas with (`CanvasMeta::tile_size`).
     ///
-    /// A sibling of [`Self::UnsupportedVersion`] for [`Self::TooLarge`]'s reason:
-    /// the bytes are well-formed and well-understood, and what is wrong is that
-    /// they do not mean here what they meant where they were written. Every tile
-    /// boundary moves with the stride, so there is no partial reading to fall back
-    /// on — and the field was stored on every save and read by nothing until this
-    /// existed, so the mismatch used to load clean and render wrong.
+    /// A refusal for [`Self::TooLarge`]'s reason: the bytes are well-formed and
+    /// well-understood, and what is wrong is that they do not mean here what they
+    /// meant where they were written. Every tile boundary moves with the stride, so
+    /// there is no partial reading to fall back on — and the field was stored on
+    /// every save and read by nothing until this existed, so the mismatch used to
+    /// load clean and render wrong.
+    ///
+    /// **The one thing a document still carries that this build may refuse**, and
+    /// the contrast that says what the format change did and did not buy (§8): a
+    /// field carbonite can reconcile by name is reconciled, while a *constant* the
+    /// whole coordinate system is derived from is not a schema question at all.
     #[error("document uses a tile size of {found}; this build addresses tiles of {expected}")]
     TileSize { expected: u32, found: u32 },
 
     /// The document names a color space this build does not carry — today only
     /// [`ColorSpaceId::Mixbox`] in a build without the `mixbox` cargo feature.
     ///
-    /// A sibling of [`Self::UnsupportedVersion`] rather than a decode error, and for
-    /// the same reason: the bytes are perfectly well-formed and perfectly well
-    /// understood — the id is a variant every build has, because the save format's
-    /// enum indices cannot depend on a feature (§8, §19) — and what is missing is the
-    /// implementation behind it. That distinction is what lets a frontend say "this
-    /// document needs a Mixbox build" instead of "this file is corrupt".
+    /// A refusal rather than a decode error: the bytes are perfectly well-formed and
+    /// perfectly well understood — the id is a variant every build has, because the
+    /// save format's vocabulary cannot depend on a feature (§8, §19) — and what is
+    /// missing is the implementation behind it. That distinction is what lets a
+    /// frontend say "this document needs a Mixbox build" instead of "this file is
+    /// corrupt".
     ///
     /// Raised by whoever *opens* the document rather than by whoever decodes it: this
     /// crate has no `mixbox` feature to consult (§2), and "can this build honour the

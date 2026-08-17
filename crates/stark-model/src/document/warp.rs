@@ -42,9 +42,9 @@ const MIN_JACOBIAN: f32 = 1e-6;
 /// Paint and mask outside the rect stay put — the mask coverage gates the cut,
 /// so a feathered selection's warp stays seamless at the rect edge.
 ///
-/// Wire format note (§8): postcard encodes these fields **in order** — never
-/// insert or reorder, only ever append to the enclosing enum.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Wire format note (§8): these field *names* are what a saved mesh is read back by,
+/// so renaming one needs a `#[serde(alias)]`. Order is free.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct WarpMap {
     /// Source rect, canvas px.
     pub min: Vec2,

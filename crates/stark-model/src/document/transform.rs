@@ -59,9 +59,9 @@ impl TransformMap {
 /// matrix from them. Straight lines stay straight, which is the whole reason
 /// this is not a warp special case (a bilinear mesh bends diagonals).
 ///
-/// Wire format note (§8): postcard encodes these fields **in order** — never
-/// insert or reorder.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// Wire format note (§8): these field *names* are what a saved map is read back by,
+/// so renaming one needs a `#[serde(alias)]`. Order is free.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct PerspectiveMap {
     /// Source rect, canvas px.
     pub min: Vec2,

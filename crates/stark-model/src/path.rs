@@ -21,7 +21,7 @@ use crate::geom::Vec2;
 /// `time` is seconds since the stroke started rather than an absolute clock —
 /// that is what velocity and timelapse want (§8), and it halves the
 /// field.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct ControlPoint {
     pub pos: Vec2,
     pub pressure: f32,

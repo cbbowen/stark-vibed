@@ -25,7 +25,9 @@ use crate::color::{oklab_to_srgb, srgb_to_oklab};
 use crate::geom::Vec2;
 
 /// One color stop: a position along the ramp and the color there.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, carbonite::Schema,
+)]
 pub struct GradientStop {
     /// Position in `[0,1]` along the ramp.
     pub t: f32,
@@ -40,8 +42,15 @@ pub struct GradientStop {
 /// The invariants are held by construction — [`Gradient::new`] normalizes and
 /// refuses rather than every consumer re-checking, and deserialization funnels
 /// through the same gate — so a `Gradient` in hand is always sampleable.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+///
+/// The stop list is the wire shape in both directions, and that is what lets the funnel
+/// stay a *refusal* (§8): `carbonite(as)` states the schema as `Vec<GradientStop>`, so
+/// nothing drives `try_from` to find out what the type looks like, and a stored list
+/// that names no ramp is turned away instead of having to be accepted so that the type
+/// could describe itself.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, carbonite::Schema)]
 #[serde(try_from = "Vec<GradientStop>", into = "Vec<GradientStop>")]
+#[carbonite(as = "Vec<GradientStop>")]
 pub struct Gradient {
     stops: Vec<GradientStop>,
 }
@@ -51,6 +60,10 @@ impl Gradient {
     /// `t`, positions rescaled so the first sits at 0 and the last at 1.
     /// `None` if fewer than two stops arrive, if any component is non-finite,
     /// or if every stop sits at one position (there is no ramp to rescale).
+    ///
+    /// The only door, and it refuses: a caller that traced a line expecting a ramp
+    /// needs to hear "these samples do not describe one" (§22.2), and so does a file
+    /// carrying a stop list that is not one.
     pub fn new(mut stops: Vec<GradientStop>) -> Option<Self> {
         if stops.len() < 2 {
             return None;
@@ -389,12 +402,25 @@ mod tests {
         }
     }
 
+    /// What a stored ramp can smuggle past the funnel: nothing.
+    ///
+    /// Serde's `try_from` routes through this impl, so this is the test of what a file,
+    /// a peer, or a library entry in browser storage can land — and it **refuses**,
+    /// which is worth a note because for a while it could not. A schema used to be
+    /// discovered by tracing this impl with synthetic values, so a funnel that turned
+    /// one away could not describe itself and had to be relaxed; `carbonite(as)` states
+    /// the shape as the stop list instead, and nothing drives the conversion (§8).
     #[test]
     fn deserialization_funnels_through_the_same_gate() {
-        // Serde's `try_from` attribute routes through this impl, so testing it
-        // is testing what a stored library entry can smuggle in: nothing.
         assert!(Gradient::try_from(vec![stop(0.0, [0.0; 3]), stop(1.0, [1.0; 3])]).is_ok());
         assert!(Gradient::try_from(vec![stop(0.5, [0.0; 3])]).is_err());
+        assert!(Gradient::try_from(vec![]).is_err());
+        assert!(Gradient::try_from(vec![stop(f32::NAN, [0.0; 3]), stop(1.0, [1.0; 3])]).is_err());
+
+        // …and it refuses through the *encoding* too, not just the constructor: a stop
+        // list is exactly what a file carries, so this is the path that matters.
+        let lone = carbonite::to_vec_static(&vec![stop(0.5, [1.0; 3])]).expect("encodes");
+        assert!(carbonite::from_slice_static::<Gradient>(&lone).is_err());
     }
 
     #[test]

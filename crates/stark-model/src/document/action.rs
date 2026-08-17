@@ -17,7 +17,19 @@ use crate::geom::Vec2;
 
 /// Identifies the author of an action: one local user, or a peer (§4).
 /// Maps to an iroh `NodeId` when collaborating; a fixed value when solo.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    carbonite::Schema,
+)]
 pub struct ActorId(pub u64);
 
 impl ActorId {
@@ -29,7 +41,19 @@ impl ActorId {
 }
 
 /// Globally-unique action id; also the total order key `(lamport, actor)`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    carbonite::Schema,
+)]
 pub struct ActionId {
     pub lamport: u64,
     pub actor: ActorId,
@@ -43,7 +67,7 @@ pub struct ActionId {
 /// because from the frontend's point of view they are the same interaction: press,
 /// drag, release. But which of them was in hand is not part of what a document
 /// *is*; the stroke or the op it produced is, and that is what the log carries.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub enum Tool {
     #[default]
     Brush,
@@ -72,7 +96,7 @@ impl Tool {
 /// held one value for every stroke of every document and no reader ever asked it
 /// (§8, wire version 5). A tool worth recording would be recorded by whatever
 /// distinguishes it, which this enum does not.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
 pub struct StrokeRecord {
     pub layer: LayerId,
     pub brush: BrushParams,
@@ -88,7 +112,28 @@ pub struct StrokeRecord {
 }
 
 /// What an action does to the document.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+///
+/// # Adding to this enum
+///
+/// This is the document's vocabulary, so it is also the thing every saved file is
+/// read against — and the rules for changing it are **not** the ones that used to
+/// hang off nearly every variant below (§8). A file carries the schema it was written
+/// with, and loading reconciles it against this enum *by name*, so:
+///
+/// - A **new variant** goes wherever it reads best. Nothing has to be appended, and a
+///   file written before it existed simply never contains one.
+/// - A **new field** on an existing variant needs `#[serde(default)]`, which is what
+///   an older file's missing column is filled from. Without it, that file fails to
+///   load and says which field it wanted.
+/// - A **renamed** field or variant needs `#[serde(alias = "…")]` to keep older files
+///   readable; a renamed one without an alias is a break, and the only kind left.
+/// - A **removed** field is skipped by readers that no longer declare it.
+///
+/// What has not changed is that the *meaning* of an existing variant is fixed. Reusing
+/// a name for something else, or narrowing what a field may hold, is a change no
+/// encoding can absorb — replay would put back a different picture, which no file can
+/// notice on its own.
+#[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
 pub enum ActionKind {
     CommitStroke(StrokeRecord),
     AddLayer {
@@ -127,17 +172,15 @@ pub enum ActionKind {
     /// Deliberately **not interpreted by [`Action`]'s `apply`** — undo needs the
     /// whole log, not just the prior state, so the timeline layer resolves
     /// which actions are *effective* (see `stark-engine`'s `document::effective_actions`)
-    /// and only ever materializes those. Appended last so postcard decoding of
-    /// older files is unaffected.
+    /// and only ever materializes those.
     Undo(ActionId),
 
     /// Switch the canvas surface (§6.4).
     ///
     /// Logged rather than kept as a view setting because the surface feeds the
     /// document: which canvas a piece was painted on is part of what it is, and
-    /// replay has to reconstruct it. Appended last so
-    /// postcard decoding of older files is unaffected; documents saved before this
-    /// existed simply never contain one and keep the surface from `CanvasMeta`.
+    /// replay has to reconstruct it. A document saved before this existed contains
+    /// none, and keeps the surface from `CanvasMeta`.
     SetSurface(SurfaceId),
     /// Edit the selection mask (§6.8). Historized because a stroke's
     /// pixels depend on the mask in force when it was drawn — replaying the log has
@@ -179,8 +222,7 @@ pub enum ActionKind {
     /// `affine`, stack it back over what remained — and carry the author's mask
     /// along with it, so the moved region stays selected. A universal selection
     /// moves the whole layer. Six floats in the log; every peer re-derives the
-    /// same tiles from them. Appended last so postcard keeps decoding older
-    /// files.
+    /// same tiles from them.
     ///
     /// Deterministically **rejected** (the document is left unchanged) when the
     /// affine is unusable or the rewrite exceeds the tile caps — see
@@ -198,8 +240,6 @@ pub enum ActionKind {
     /// is what makes a mistyped rename recoverable the same way a mis-set opacity
     /// is. Carries a `String` rather than the `Arc<str>` the state holds, because
     /// this is the file and wire form, where a shared pointer means nothing.
-    /// Appended last so postcard — which encodes an enum by variant *index* —
-    /// keeps decoding older files.
     SetLayerName(LayerId, Option<String>),
 
     /// Fill a region of `layer` with paint (§18.0.4).
@@ -213,9 +253,7 @@ pub enum ActionKind {
     /// Deterministically **rejected** (the document is left unchanged) when the fill
     /// would be unbounded — [`SelectionShape::All`](super::selection::SelectionShape::All)
     /// with nothing selected — or would
-    /// exceed [`MAX_FILL_TILES`](super::fill::MAX_FILL_TILES). Appended last so
-    /// postcard, which encodes an enum by variant *index*, keeps decoding older
-    /// files.
+    /// exceed [`MAX_FILL_TILES`](super::fill::MAX_FILL_TILES).
     Fill {
         layer: LayerId,
         op: super::fill::FillOp,
@@ -236,7 +274,6 @@ pub enum ActionKind {
     /// stack it back over what remained — and carry the covered part of the
     /// author's mask along, unioned with what stayed outside the rect. Twelve
     /// floats in the log; every peer re-derives the same matrix from them.
-    /// Appended last so postcard keeps decoding older files.
     ///
     /// Deterministically **rejected** (the document is left unchanged) when the
     /// map is unusable — a non-convex target quad, a degenerate rect — or the
@@ -250,8 +287,7 @@ pub enum ActionKind {
     /// (§16.9): the same cut/stack/carry as
     /// [`TransformPerspective`](Self::TransformPerspective), under the smooth
     /// surface through the map's control grid. The log carries only the grid —
-    /// a few dozen floats — and every peer subdivides it identically. Appended
-    /// last so postcard keeps decoding older files.
+    /// a few dozen floats — and every peer subdivides it identically.
     ///
     /// Deterministically **rejected** when the mesh folds (any sub-cell's
     /// Jacobian runs non-positive), is malformed, or exceeds the tile caps.
@@ -280,8 +316,7 @@ pub enum ActionKind {
     ///
     /// Deterministically **rejected** (the document is left unchanged) when the
     /// subtree holds a layer `ids` does not name — which is what a concurrent add
-    /// into the group looks like from here. Appended last so postcard, which
-    /// encodes an enum by variant *index*, keeps decoding older files.
+    /// into the group looks like from here.
     DuplicateLayer {
         ids: Vec<(LayerId, LayerId)>,
     },
@@ -293,9 +328,7 @@ pub enum ActionKind {
     /// nothing until it is dialled; the dialling is [`SetFilter`](Self::SetFilter).
     /// Placed by the same two anchors every other layer is (§14.8), which is the
     /// whole of how far a filter reaches — there is no scope to set, because *where
-    /// it sits is its scope*. Appended last, like every variant before it, so
-    /// postcard — which encodes an enum by variant *index* — keeps decoding older
-    /// files.
+    /// it sits is its scope*.
     AddFilter {
         id: LayerId,
         carrier: Option<LayerId>,
@@ -330,9 +363,6 @@ pub enum ActionKind {
     /// points somewhere else is **deterministically declined**, leaving the document
     /// unchanged, which is what a concurrent reorder looks like from here.
     ///
-    /// Appended last, like every variant before it, so postcard — which encodes an
-    /// enum by variant *index* — keeps decoding older files.
-    ///
     /// [`Footprint`]: super::footprint::Footprint
     MergeLayerDown {
         source: LayerId,
@@ -364,9 +394,7 @@ pub enum ActionKind {
     ///
     /// Deterministically **rejected** (the document is left unchanged) when the anchors
     /// name a layer that is not there, exactly as an [`AddLayer`](Self::AddLayer) is, or
-    /// when the placement falls off the tile grid an `i32` can address. Appended last,
-    /// like every variant before it, so postcard — which encodes an enum by variant
-    /// *index* — keeps decoding older files.
+    /// when the placement falls off the tile grid an `i32` can address.
     PlaceImage {
         id: LayerId,
         /// Whose carried stack to add it to — `None` for the document's own (§14.8).
@@ -575,7 +603,7 @@ impl ActionKind {
 }
 
 /// A committed document mutation with its identity.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
 pub struct Action {
     pub id: ActionId,
     pub kind: ActionKind,

@@ -28,6 +28,7 @@
 //! `Engine::import_brush`.
 
 mod backend;
+mod codec;
 mod content;
 mod mirror;
 mod proto;
@@ -64,7 +65,7 @@ pub enum NetError {
     #[error("stream closed: {0}")]
     Closed(#[from] iroh::endpoint::ClosedStream),
     #[error("encode/decode failed: {0}")]
-    Codec(#[from] postcard::Error),
+    Codec(#[from] carbonite::Error),
     #[error("gossip: {0}")]
     Gossip(#[from] iroh_gossip::api::ApiError),
     #[error("blob transfer failed: {0}")]
@@ -102,7 +103,7 @@ pub enum TicketError {
     #[error("the link is damaged: {0}")]
     Encoding(#[from] data_encoding::DecodeError),
     #[error("the link is damaged or cut short: {0}")]
-    Malformed(#[from] postcard::Error),
+    Malformed(#[from] carbonite::Error),
     /// Named rather than guessed at: past the version byte the fields are a
     /// different shape, so anything else this could say about them would be about
     /// the wrong shape.
@@ -110,6 +111,13 @@ pub enum TicketError {
         "this link is version {found}; this build speaks {expected} —          both ends need the same version of Stark"
     )]
     Version { found: u8, expected: u8 },
+    /// The link decoded, and the member it names is not a valid endpoint id.
+    ///
+    /// Its own case because it is the one damaged-link failure that gets *past* the
+    /// encoding: the bytes were well-formed, the version matched, and what is wrong is
+    /// the key inside — which no amount of re-pasting will fix.
+    #[error("this link names something that is not a Stark peer")]
+    NotAnEndpoint,
 }
 
 pub type Result<T, E = NetError> = std::result::Result<T, E>;
