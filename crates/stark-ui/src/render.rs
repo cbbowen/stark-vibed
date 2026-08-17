@@ -11,12 +11,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::platform::Canvas;
+use stark_engine::ViewTransform;
 use stark_engine::command::ViewCommand;
 use stark_engine::{Engine, EnvironmentId, GpuContext, InputCommand, InputSample, ObservableState};
 use stark_model::AssetNeed;
 use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
-use stark_model::ViewTransform;
 use stark_model::document::Tool;
 use stark_model::geom::Extent2;
 

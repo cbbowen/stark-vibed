@@ -9,7 +9,8 @@
 //! never-changing half (the sampler) and [`ViewBindings`] the per-target half (the
 //! buffer holding *what this render is looking at*, and the groups over it).
 
-use stark_model::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, ViewTransform};
+use crate::view::ViewTransform;
+use stark_model::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE};
 use stark_shaders::mirror::composite::binding as cb;
 
 // Generated from `composite.wesl`'s declaration of `View`, which `matte.wesl` and

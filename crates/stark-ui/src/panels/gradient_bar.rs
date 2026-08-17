@@ -384,7 +384,7 @@ fn axis_chrome(
     kind: GradientAxisKind,
     from: Vec2,
     to: Vec2,
-    view: stark_model::ViewTransform,
+    view: stark_engine::ViewTransform,
 ) -> Element {
     let a = view.canvas_to_screen(from);
     let b = view.canvas_to_screen(to);

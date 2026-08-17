@@ -52,13 +52,14 @@ use crate::gpu::{
 };
 use crate::peer::Peers;
 use crate::session::ShapeResult;
+use crate::view::ViewTransform;
 use stark_model::AssetId;
 use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, BrushParams, LayerId, ShapeAction, Tool,
 };
-use stark_model::geom::{Extent2, ViewTransform};
+use stark_model::geom::Extent2;
 
 /// The starting layer present in every new document.
 const ROOT_LAYER: LayerId = LayerId(0);

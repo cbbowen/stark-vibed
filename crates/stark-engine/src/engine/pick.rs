@@ -10,8 +10,9 @@
 use super::Engine;
 use super::render::visible_tiles;
 use crate::gpu::channels::Targets;
+use crate::view::ViewTransform;
 use stark_model::document::LayerId;
-use stark_model::geom::{Extent2, TileRect, ViewTransform};
+use stark_model::geom::{Extent2, TileRect};
 
 /// Which layers an eyedropper sample is taken from (§18.0.2).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]

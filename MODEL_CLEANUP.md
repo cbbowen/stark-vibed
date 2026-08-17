@@ -1,269 +1,254 @@
 # stark-model cleanup
 
-Findings from a review of `crates/stark-model` — the document crate (§2): the
-action log, its vocabulary, the save format and the presence wire.
+Findings from a review of `crates/stark-model` — the document crate (§2) — and
+what was done about each. **Status as of the `model-cleanup` branch.**
 
-The crate is disciplined. Invariants are stated where they are held, the
-wire-format hazards are enumerated one bump at a time, and the
-exhaustive-match-as-tripwire device (`minted_layers`, `action_content`,
-`Filter::resamples`, `Modulations::all`) is used consistently and for the right
-reason. So almost nothing below is a missing rule. What is below is places where
-a rule the crate *states* is not actually enforced, and places where a cost is
-paid in a loop that does not need to pay it.
+The crate was already disciplined: invariants stated where they are held, the
+wire-format hazards enumerated one bump at a time, and the
+exhaustive-match-as-tripwire device used consistently. So almost none of this was
+a missing rule. It was places where a rule the crate *states* was not actually
+enforced, and places where a cost was paid in a loop that did not need to pay it.
 
-Ordered by what it costs to leave alone:
-
-| # | Finding | Cost of leaving it |
+| # | Finding | Status |
 |---|---|---|
-| [1](#1-unbundled_content-conflates-the-two-asset-bags) | `unbundled_content` conflates the two asset bags | a document that silently replays wrong, into stored pixels |
-| [3](#3-four-strategies-for-one-invariant-and-two-do-not-survive-serde) | Deserialization bypasses two of the four validation strategies | a file or peer writes values no slider can produce |
-| [4](#4-the-commutation-hot-path-rebuilds-footprints) | The commutation hot path rebuilds footprints | undo across a warp is O(actions × 3249 nodes) |
-| [2](#2-tilerectintersects-guards-emptiness-on-x-but-not-y) | `TileRect::intersects` guards emptiness on x only | latent §12.6 false negative |
-| [7](#7-from_bytes-decompresses-unbounded) | `from_bytes` decompresses unbounded | a peer can exhaust memory |
-| [9](#9-two-pieces-of-inert-scaffolding), [10](#10-wire_versions-docstring-is-a-150-line-changelog) | Inert scaffolding; a changelog on a `const` | §1 violations, cheap to fix |
-| rest | Code health | maintenance drag |
+| [1](#1-unbundled_content-conflated-the-two-asset-bags) | `unbundled_content` conflated the two asset bags | **fixed** |
+| [2](#2-tilerectintersects-guarded-emptiness-on-x-but-not-y) | `TileRect::intersects` guarded emptiness on x only | **fixed** |
+| [3](#3-four-strategies-for-one-invariant-two-of-which-did-not-survive-serde) | Deserialization bypassed two of four validation strategies | **fixed** |
+| [3b](#3b-the-gates-spelled-their-bounds-clamp) | *(found while fixing 3)* the gates spelled their bounds `f32::clamp` | **fixed** |
+| [4](#4-the-commutation-hot-path-rebuilt-footprints) | The commutation hot path rebuilt footprints | **fixed** |
+| [5](#5-warpmapeval-rebuilt-the-delta-grid-per-call) | `WarpMap::eval` rebuilt the delta grid per call | **fixed** |
+| [6](#6-compressionbest-on-every-save) | `Compression::best()` on every save | **fixed** |
+| [7](#7-from_bytes-decompressed-unbounded) | `from_bytes` decompressed unbounded | **fixed** |
+| [8](#8-viewtransform-broke-the-crates-own-boundary-rule) | `ViewTransform` broke the crate's own boundary rule | **fixed** |
+| [9a](#9a-canvasmetatile_size-was-written-and-never-read) | `CanvasMeta::tile_size` written, never read | **fixed** |
+| [9b](#9b-buildidapp_version-records-a-constant) | `BuildId::app_version` records a constant | **not done — see below** |
+| [10](#10-wire_versions-docstring-was-a-150-line-changelog) | `WIRE_VERSION`'s 150-line changelog docstring | **fixed** (→ §8.1) |
+| [11](#11-the-crate-root-re-exports-contradicted-documentmodrs) | Crate-root re-exports contradicted `document/mod.rs` | **fixed** |
+| [12](#12-smaller-items) | `DocError` source chain, `Lattice` panics, `Modulations` shape | **2 of 3 fixed** |
+| [∗](#the-invariant-that-turned-out-not-to-need-pinning) | `stroke_pad` ↔ `BLEED_REACH_MAX` | **investigated — no defect** |
 
 ---
 
 ## Correctness
 
-### 1. `unbundled_content` conflates the two asset bags
+### 1. `unbundled_content` conflated the two asset bags
 
-[`crates/stark-model/src/content.rs:141-156`](crates/stark-model/src/content.rs)
+`unbundled_content` flattened `assets` and `surfaces` into one
+`HashSet<AssetId>`, then filtered needs by `need.content()` alone — so
+`AssetNeed::Ground(X)` reported as bundled when `X` was present only in the
+*brush* bag.
 
-`unbundled_content` flattens `assets` and `surfaces` into one
-`HashSet<AssetId>`, then filters needs by `need.content()` alone. So
-`AssetNeed::Ground(X)` reports as **bundled** when `X` is present only in the
-*brush* bag, and vice versa.
+This was the exact confusion the format was split to prevent: the bags are keyed
+apart because their bytes decode differently (a mask is luminance × alpha, a
+ground is channel 0), and ids are content hashes, so one image imported as both a
+stamp and a ground carries one id in two bags that cannot stand in for each
+other. The consequence was the one `DocError::MissingContent` exists to rule out:
+the bill came back short, nothing refused the replay, and every stroke made on
+that ground deposited through the flat stand-in — into tiles no later arrival
+un-bakes (§6.4).
 
-This is the exact confusion the format was split to prevent.
-`DocumentFile::surfaces` is keyed separately from `assets` because, in its own
-words, "the two decode differently — a mask is luminance × alpha, a ground is
-channel 0 — so a single bag would hand each store the other's bytes to
-reinterpret" ([`io.rs:243`](crates/stark-model/src/io.rs)). Ids are content
-hashes, so the same image imported once as a stamp and once as a ground collides
-for real rather than theoretically.
+**Fixed** by matching on the need's kind against the corresponding bag,
+exhaustively, so a kind added later must name the bag that answers it.
 
-The consequence is the one `DocError::MissingContent` exists to rule out
-([`error.rs:62-76`](crates/stark-model/src/error.rs)): the bill comes back short,
-nothing refuses the replay, and every stroke made on that ground deposits through
-the flat stand-in — into tiles that no later arrival un-bakes (§6.4).
+### 2. `TileRect::intersects` guarded emptiness on x but not y
 
-**Fix.** Match on the need's kind and check the corresponding bag. `AssetNeed`
-already distinguishes them; only this function throws the distinction away.
+It tested `min.0 <= max.0` for both rects, then overlap on both axes — never
+`min.1 <= max.1`. A rect empty only in y intersected everything, while `union`,
+from the same inputs, treated it as the identity. The fields are public, so the
+disagreement was reachable, and this is the predicate the commutation gate rests
+on: §12.6 survives a rect claiming too much and cannot survive the reverse.
 
-### 2. `TileRect::intersects` guards emptiness on x but not y
+**Fixed**: one `TileRect::is_empty()`, asked by everything that has to treat an
+empty rect as empty.
 
-[`crates/stark-model/src/geom.rs:144-151`](crates/stark-model/src/geom.rs)
+### 3. Four strategies for one invariant, two of which did not survive serde
 
-The predicate tests `min.0 <= max.0` for both rects, then overlap on both axes —
-but never `min.1 <= max.1`. A rect empty only in y intersects everything.
-
-`union` handles both axes ([`geom.rs:165`](crates/stark-model/src/geom.rs)), so
-the two disagree about what "empty" means. Not reachable today: `covering` is the
-only constructor and every caller passes `lo <= hi`. But `min`/`max` are public
-fields, and this is a **footprint** predicate — the one place §12.6 says a false
-negative cannot be survived, because the fast path would splice on a lie and no
-pixel could show it.
-
-**Fix.** One `TileRect::is_empty()`, used by `intersects`, `union` and `contains`
-alike. Rules out the class rather than patching the instance (§1).
-
-### 3. Four strategies for one invariant, and two do not survive serde
-
-The crate holds "a value that reaches a shader is a number in range" four
-different ways:
-
-| Type | Strategy | Survives deserialization? |
+| Type | Strategy | Survived deserialization? |
 |---|---|---|
 | `Gradient` | ctor + `#[serde(try_from)]` funnel | yes |
-| `Filter`, `BlendMode` | `sanitized()`, called at two named engine sites | yes |
+| `Filter`, `BlendMode` | `sanitized()` at named sites | yes |
 | `SelectionOp`, `FillOp` | constructor only, public fields | **no** |
-| `BrushParams`, `BrushDynamics` | nothing; defended per use site | **no** |
+| `BrushParams`, `BrushDynamics` | nothing | **no** |
 
-[`SelectionOp::at`](crates/stark-model/src/document/selection.rs) pins
-`opacity: 1.0` for `SelectionShape::All` (its doc explains at length why that
-state must not exist), clamps opacity and floors feather — and
-`#[derive(Deserialize)]` walks straight past all three. A file or a peer can
-carry `All` at opacity 0.5, `feather: NaN`, `opacity: 5.0`.
-[`FillOp::with_paint`](crates/stark-model/src/document/fill.rs) is the same, and
-does not clamp `feather` even in the constructor.
+`SelectionOp::at` pins `opacity: 1.0` for `SelectionShape::All` — its doc spends a
+paragraph on why that state must not exist — and `#[derive(Deserialize)]` walked
+straight past it, along with the feather floor and the opacity clamp. `FillOp` the
+same. `brush.rs`'s header claimed values from files and peers "are clamped on the
+way in"; `BrushDynamics`' five axes were not bounded anywhere in the workspace.
 
-`brush.rs`'s module header claims "the values that arrive from files, presets and
-peers are clamped on the way in rather than trusted"
-([`brush.rs:20-22`](crates/stark-model/src/document/brush.rs)). Clamping exists
-inside `Modulation::factor`, `taper_px` and `elongation`. `BrushDynamics`' five
-axes — `add`, `lift`, `deposit`, `charge`, `bleed` — are not bounded anywhere in
-the workspace.
+**Fixed** by converging on one shape:
 
-Verified: `sanitized()` is implemented for `Filter`, `ColorAdjust`,
-`ChromaticAberration` and `BlendMode`, and for nothing else.
+- the two ops funnel deserialization through their own constructors, via a
+  field-for-field `Raw` mirror that leaves the encoding untouched (pinned by a
+  test, since postcard writes fields in order with no names);
+- `BrushParams` grows a `sanitized()`, which clamps **only where this crate
+  already states a range** — the pickup axes, tooth, hardness and color in
+  `[0, 1]`, stretch at its own saturation point. Radius, flow, drain, charge and
+  the tapers are required to be finite and non-negative and nothing more, because
+  their ceilings are a frontend's slider ends rather than facts about the
+  quantity, and clamping a document to a bound this crate does not own would
+  rewrite brushes that were never wrong;
+- `ActionKind::sanitized()` gathers all of it into one exhaustive match with no
+  `_` arm, and the engine sanitizes an *action* at mint and at state entry rather
+  than remembering which payloads have knobs. The three payload-level calls that
+  list had accumulated are gone.
 
-**Fix.** Converge on one strategy. `Gradient`'s is strongest because it is
-structural — the type cannot exist in a bad state, and §1 prefers ruling out a
-class to checking for its instances — at the cost of a `try_from` per type.
-`sanitized()` is cheaper and already has engine call sites; its gap is that it
-covers two of the six types that need it. Either way the win is that "which types
-are validated, and where" stops being something a reader reconstructs per type.
+### 3b. The gates spelled their bounds `f32::clamp`
+
+Found while writing the tests for 3, and worth its own row because it is the
+sharper half. `FillOp::with_paint` and `SelectionOp::at` bounded their values with
+`f32::clamp`, which **returns the NaN** — both of its comparisons against one are
+false. So the gates caught every hostile value except the one that matters most:
+a NaN opacity reaches a fullscreen inversion of the coverage law.
+
+`brush.rs` already had `clamp01` (`max`-then-`min`) with the rationale written
+out. It is `pub(crate)` now and is the document's single NaN policy.
+
+### 7. `from_bytes` decompressed unbounded
+
+`read_to_end` on an attacker-supplied deflate stream, reachable from the network
+(§12.4), where a few KB can name as many GB as it likes.
+
+**Fixed**: the body is `take`n one byte past a 256 MiB cap and refused as
+`DocError::TooLarge` — roughly two orders of magnitude of headroom over anything
+a session produces.
 
 ---
 
 ## Performance
 
-### 4. The commutation hot path rebuilds footprints
+### 4. The commutation hot path rebuilt footprints
 
-[`crates/stark-model/src/document/fold.rs:117-125`](crates/stark-model/src/document/fold.rs)
+`history` builds a centralizer once per removal and then asks it about *each*
+later action (`lib.rs:1066-1069`), so `Centralizer::commutes` rebuilt the other
+action's footprint per comparison: two `Vec` allocations always, a walk of the
+whole control-point list for a stroke, and — for `TransformWarp` — an entire
+57×57 fine-lattice solve via `WarpMap::image_aabb`. An undo across a warp was
+quadratic in the log for an answer that cannot change.
 
-Confirmed against the `history` crate (`src/lib.rs:1066-1069`): `for_action`
-builds the centralizer **once**, then `commutes(other)` runs inside a
-`take_while` over every consecutive later action. The impl calls
-`footprint(&other.0)` inside that loop, so each comparison pays:
+**Fixed**: `Logged` carries its footprint, computed once at push. Deliberately
+computed *after* sanitizing — a footprint built from the raw action could
+disagree with the pass wherever a clamp pulls a value down, which is the §12.6
+direction.
 
-- two `Vec<Resource>` heap allocations — every action, every time;
-- a full walk of the control-point path (`stroke_rect`,
-  [`footprint.rs:217`](crates/stark-model/src/document/footprint.rs));
-- for `TransformWarp`, **an entire fine-lattice build**. `map.image_aabb()`
-  ([`footprint.rs:365`](crates/stark-model/src/document/footprint.rs)) calls
-  `lattice()`, which for an 8×8 control grid solves 57×57 nodes with several
-  intermediate `Vec`s.
+### 5. `WarpMap::eval` rebuilt the delta grid per call
 
-So an undo across a warp action is O(actions × 3249 nodes) — for a footprint that
-is a pure function of an action that is not changing.
+Both callers call it in a loop: finding the grabbed point is 81 coarse probes
+plus six refinement passes of 25, and the mesh overlay is ~400 evaluations a frame
+while dragging. `eval` and `basis` also carried a verbatim copy of `locate` each.
 
-**Fix, cheapest first.**
-1. Give `Footprint` an inline buffer (`SmallVec`-shaped). Every arm but
-   `DuplicateLayer` has ≤ 7 resources.
-2. Memoize the expensive arms — `WarpMap::image_aabb` is the only one that is
-   not O(size of the action).
-3. Structurally: compute an action's footprint **once at commit** and carry it
-   beside the action. It is a pure function of the action, so a cached copy
-   cannot drift — which is the property that makes the cache safe here and would
-   not make it safe for a state-dependent quantity.
-
-### 5. `WarpMap::eval` and `basis` rebuild the delta grid per call
-
-[`warp.rs:308-352`](crates/stark-model/src/document/warp.rs)
-
-Both allocate the full `deltas` vector on every call; `basis` allocates three
-more. A frontend drawing mesh curves calls `eval` hundreds of times per frame.
-The two also carry a verbatim copy of the `locate` closure.
-
-**Fix.** A `WarpMap::prepared() -> Deltas` view, computed once per drag and
-borrowed by both — which removes the allocations and the duplicated `locate`
-together.
+**Fixed**: `prepared()` computes the grid once and returns a borrowed view; `eval`
+is that view for a single point, so there is one implementation rather than two
+that could drift. Asserted bit-for-bit, because §16.4's identity invariant is
+stated bitwise and watertightness rests on shared points agreeing exactly.
 
 ### 6. `Compression::best()` on every save
 
-[`io.rs:267`](crates/stark-model/src/io.rs)
-
-Level 9 is markedly slower than level 6 for near-identical size on smooth,
-highly-compressible path data. Saving is user-facing latency.
-
-### 7. `from_bytes` decompresses unbounded
-
-[`io.rs:294`](crates/stark-model/src/io.rs)
-
-`read_to_end` on an attacker-supplied deflate stream. `stark-net` moves logs
-between peers, so this is reachable from the network, not only from a file the
-user chose. A `Read::take(limit)` costs one line, and the limit is a documented
-property of the format rather than a magic number.
+**Fixed**: level 6. Level 9 spends a large multiple of the time for a fraction of
+a percent on smooth path data, and the bundled PNGs are incompressible either way.
 
 ---
 
 ## Code health
 
-### 8. `ViewTransform` breaks the crate's own boundary rule
+### 8. `ViewTransform` broke the crate's own boundary rule
 
-[`lib.rs:21-25`](crates/stark-model/src/lib.rs) states the mechanical test: "if a
-type is serializable it is a fact about the document and lives here; if it holds
-a tile it is a cache and lives there."
+`lib.rs` states a mechanical test — `Serialize` means it is the document,
+holds a tile means it is a cache — and the Cargo.toml charter says "the document,
+and nothing else". `ViewTransform` is neither: it is session state, as its own doc
+always said, and `stark-net` (the consumer the split was made for) was compiling
+four hundred lines it can never use.
 
-`ViewTransform` is not `Serialize`, and its own doc says it "is session state and
-is never historized" ([`geom.rs:246`](crates/stark-model/src/geom.rs)). It is 380
-lines of this crate, and `stark-net` — the consumer the split was made for (§2) —
-has no use for it.
+**Fixed**: it is `stark-engine`'s `view` module now. The tile grid stays in the
+model, because *that* is document vocabulary — a footprint quantizes against
+`TILE_SIZE` and a saved log is addressed in it. The split runs between the canvas
+and the eye, which is the line §18.1.2 already draws.
 
-`geom.rs` is really three modules under one name: the tile grid (document
-vocabulary), the view transform (session), and the mask/lasso helpers
-(engine-facing). Splitting the view out would make the crate doc's rule *true*
-rather than aspirational — the same move §2 already made for `ColorSpaceId::make`
-and `SelectionOp::shader_params`.
+### 9a. `CanvasMeta::tile_size` was written and never read
 
-### 9. Two pieces of inert scaffolding
+Recorded on every save, read by nothing in the workspace. Every tile boundary
+moves with it, so a file from a build with another stride loaded clean and
+rendered wrong — precisely the reproducibility question the field was added to
+answer.
 
-§1: "If a field, slider or shader hook cannot yet change a pixel, leave it out."
+**Fixed**: checked on load, refused as `DocError::TileSize`.
 
-- **`CanvasMeta::tile_size`** ([`io.rs:201`](crates/stark-model/src/io.rs)) is
-  written on every save and **never read anywhere in the workspace** — grepped;
-  the only occurrences are its declaration and its default. A file claiming
-  `tile_size: 999` loads silently and renders wrong. Validate it on load, or drop
-  it.
-- **`BuildId::app_version`** ([`io.rs:193`](crates/stark-model/src/io.rs)) is
-  `env!("CARGO_PKG_VERSION")` of *stark-model*, which is `0.0.0` and is never
-  bumped. The field exists so "cross-build replay differences are explainable"
-  (§8) and records the same constant in every file ever written. Either wire it
-  to something that moves, or take it out until there is a version to record.
+### 9b. `BuildId::app_version` records a constant
 
-### 10. `WIRE_VERSION`'s docstring is a 150-line changelog
+**Not done, deliberately.** It is `env!("CARGO_PKG_VERSION")` of *stark-model*,
+which is `0.0.0` and never moves, so the field that exists to explain cross-build
+replay differences says the same thing in every file ever written.
 
-[`io.rs:33-180`](crates/stark-model/src/io.rs)
+Neither fix is a code change I should make unilaterally:
 
-The content is the best record in the tree of why each format break was worth
-taking — versions 5, 9 and 11 in particular are load-bearing arguments. But it
-hangs off a `const u32`, so anyone who hovers the constant gets the whole history.
+- **removing it** is a wire-format break (version 13) worth nothing on its own,
+  and §8's rule is that breaks are paid for in batches;
+- **wiring it to something that moves** needs either a build script — which this
+  crate's charter forbids, and which is why `stark-assetid` exists as a separate
+  crate at all — or real crate versions, which is a workspace-policy decision.
 
-**Fix.** Move it to `docs/engine.md` §8 and have the constant cite the section —
-the convention §1 already sets ("cite sections, not line numbers").
+The honest intermediate would be for the *engine* to supply it at save time, but
+`stark-engine` is also `0.0.0`, so that changes nothing today. Left as-is and
+flagged rather than papered over.
 
-### 11. The crate-root re-exports contradict `document/mod.rs`'s own argument
+### 10. `WIRE_VERSION`'s docstring was a 150-line changelog
 
-`document/mod.rs` refuses to publish its submodules because "publishing both
-gives every type two paths, `document::BrushParams` and
-`document::brush::BrushParams`, with nothing choosing between them"
-([`mod.rs:5-7`](crates/stark-model/src/document/mod.rs)).
+**Fixed**: it is §8.1 of [docs/engine.md](docs/engine.md) — a table of every bump
+plus the four worth more than a row — and the constant cites the section, per §1.
+What stays at the constant is the rule the history is evidence for.
 
-[`lib.rs:40-53`](crates/stark-model/src/lib.rs) then gives `LayerId`,
-`SelectionMode`, `SelectionOp` and `SelectionShape` exactly two paths each, and
-the chosen subset looks arbitrary: `LayerId` but not `ActionId`, `SelectionOp`
-but not `FillOp`. Pick one level and hold it.
+### 11. The crate-root re-exports contradicted `document/mod.rs`
+
+`document` publishes a curated list over crate-private submodules precisely so
+each type has one path; the crate root then lifted four of them out again, giving
+`LayerId` and `SelectionOp` two paths while `ActionId` and `FillOp` had one.
+
+**Fixed**: not one call site in the workspace took the short path, so the four are
+gone rather than the other twenty added. `lib.rs` now states which modules are
+flat preludes and why `document` is not.
 
 ### 12. Smaller items
 
-- **`DocError::Serialize(String)` / `Deserialize(String)`**
-  ([`error.rs:21-25`](crates/stark-model/src/error.rs)) stringify postcard errors
-  instead of `#[from]`, losing the source chain every other variant preserves.
-- **`Lattice` has public fields and methods that panic on a hand-built one**:
-  `positive()` does `0..self.ny - 1` (underflows at `ny == 0`), `aabb()` indexes
-  `pts[0]`. Private fields plus a constructor rule that out structurally.
+- **`DocError::Serialize`/`Deserialize`** stringified the postcard error, losing
+  the `source()` chain every other variant preserves. **Fixed** — they carry it.
+  Still two variants rather than one `#[from]`: which direction failed is the
+  useful half of the message.
+- **`Lattice`** had public fields and two methods that panic on a lattice they
+  could not have produced (`0..ny - 1` underflows, `pts[0]` indexes out of
+  bounds). **Fixed** — private fields with accessors, and `WarpMap::lattice` the
+  only way to one, so there is no degenerate lattice left to defend against.
 - **`Modulations`' seven `Option` fields and seven near-identical accessors**
-  ([`brush.rs:379-490`](crates/stark-model/src/document/brush.rs)) collapse to
-  `[Option<Modulation>; N]` keyed by a `ModTarget` enum, keeping the
-  exhaustiveness tripwire via `ModTarget::ALL` — the device `Prop::ALL` already
-  uses.
+  would collapse to `[Option<Modulation>; N]` keyed by a `ModTarget` enum.
+  **Not done.** It is the one item on this list that is purely cosmetic — the
+  `all()` destructure already provides the exhaustiveness tripwire the array
+  would, so nothing is unsound or slow — and it reaches into `stark-ui`'s
+  `ModRow`, which is a second enum over the same seven targets and the real
+  duplication. Worth doing as one change that unifies both, which is a wider
+  edit than this branch should carry.
 
 ---
 
-## One invariant worth pinning
+## The invariant that turned out not to need pinning
 
-`stroke_pad`'s `1.5` factor
-([`footprint.rs:206-208`](crates/stark-model/src/document/footprint.rs)) is
-documented as covering `√2` for a square stamp swept at an angle. It also has to
-cover the **bleed** stencil, whose taps reach `BLEED_REACH_MAX = 0.5 · radius`
-(`stark-engine`'s `gpu::stroke::dynamics::bleed`) — and `1.0 + 0.5 = 1.5` is
-unlikely to be a coincidence.
+`stroke_pad` pads a stroke's claim by `radius · 1.5 · elongation + 4`, justified
+in its doc as covering the `√2` a square stamp sweeps to at an angle. The review
+flagged that `1.0 + 0.5` looked too much like the tip plus `BLEED_REACH_MAX` to be
+a coincidence, and that the two constants live in crates that cannot see each
+other.
 
-The claim appears to hold today: a tap landing outside the sweep has `w_n = 0`
-and carries nothing, so bleed's *effect* stays inside `√2 · radius · elongation`,
-under the pad. But the margin over the justification the doc actually gives is
-only `0.086 · radius · elongation + 4`, the constant that makes it work lives in
-`stark-engine` where this crate cannot see it, and
-`a_stretched_stroke_claims_the_tiles_its_drawn_out_tip_can_reach` ties the pad to
-elongation only.
+I wrote the test asserting `pad ≥ tip reach + bleed reach`. **It failed** at
+`radius = 500` — 957 px of reach against 754 of pad.
 
-If the bleed reach ceiling is ever raised, nothing fails. It is a silent §12.6
-break — two peers commuting a pair of strokes the paint says overlap, with no
-pixel able to show which order ran.
+**The test was wrong, not the pad.** `dynamics.wesl` weighs every bleed tap by
+`min(w_t, w_n)` — this texel's mobility and its neighbour's — and `bleed_weight`
+writes `w = 0` for any texel outside the sweep. So a texel outside is never
+written (its own `w_t` zeroes all of its fluxes) and a tap reaching out of the
+sweep carries exactly nothing. The reach sets how far *within* the footprint paint
+is carried, never how far the footprint extends: a no-flux wall, at every scale.
 
-**Fix.** An engine-side test asserting `stroke_pad ≥ tip reach + bleed reach`.
-Engine-side because that is the only crate that can name both constants — the
-same reason `ColorSpaceId::make` ended up there (§2).
+So the coincidence is a coincidence, the `1.5` covers `√2` and nothing else, and a
+bleed reach raised past it would still be contained. What *would* break the pad is
+the wall coming down — a shader invariant, checkable only where the shader is, and
+not something a host-side test can pin. The reasoning is now on `stroke_pad` so
+the next reader who finds the arithmetic does not have to re-derive the alarm in
+order to dismiss it.

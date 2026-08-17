@@ -17,9 +17,10 @@ use crate::gpu::{
     SelectionOutline,
 };
 use crate::image::RgbaImage;
+use crate::view::ViewTransform;
 use crate::{EngineError, Result};
 use stark_model::document::LayerId;
-use stark_model::geom::{Extent2, TileRect, ViewTransform};
+use stark_model::geom::{Extent2, TileRect};
 
 /// What sits under the paint when rendering (§15.6).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]

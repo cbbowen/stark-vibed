@@ -27,7 +27,7 @@
 use std::ops::Range;
 
 use crate::gpu::tile::TilePairHandle;
-use stark_model::geom::ViewTransform;
+use crate::view::ViewTransform;
 
 use super::blend::{self, BlendUniform};
 use super::filter::FilterUniform;

@@ -13,11 +13,12 @@ use crate::path::PathFitter;
 use crate::peer::{GestureView, Identity, LiveGesture, default_name};
 use crate::presence::{GestureSource, GestureTx};
 use crate::tow::{Tow, TowString};
+use crate::view::ViewTransform;
 use stark_model::document::{
     ActorId, BrushParams, FillOp, LayerId, SelectionOp, SelectionShape, ShapeAction, StrokeRecord,
     Tool,
 };
-use stark_model::geom::{Vec2, ViewTransform};
+use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
 use stark_model::peer::{HEARTBEAT, PeerFrame, StrokeHead};
 

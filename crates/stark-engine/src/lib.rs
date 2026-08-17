@@ -75,6 +75,9 @@ pub mod session;
 pub(crate) mod spline;
 pub mod timing;
 pub(crate) mod tow;
+/// The canvas view: pan, zoom, rotation and the mirror (§18.1.2). Session
+/// state, which is why it is here and not in the document crate.
+pub mod view;
 
 /// Take a lock whose only contents are a **cache, a free list or a tally**, poisoned
 /// or not.
@@ -119,3 +122,4 @@ pub use guides::{AxisPencil, AxisPlane, GuideScene, Lens, PairTrace, Perspective
 pub use image::RgbaImage;
 pub use peer::{LiveGesture, Peer, Peers};
 pub use tow::TowString;
+pub use view::ViewTransform;

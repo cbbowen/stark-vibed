@@ -54,7 +54,7 @@ pub mod surface;
 pub use colorspace::ColorSpaceId;
 pub use content::{AssetNeed, action_content};
 pub use error::{DocError, Result};
-pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};
+pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2};
 pub use gradient::{Gradient, GradientStop};
 pub use io::{BuildId, CanvasMeta, DocumentFile};
 pub use peer::{GestureFrame, PeerFrame, StrokeHead};

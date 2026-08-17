@@ -353,8 +353,9 @@ mod tests {
     use crate::path::DEFAULT_TOLERANCE;
     use crate::peer::Peers;
     use crate::session::Session;
+    use crate::view::ViewTransform;
     use stark_model::document::{ActorId, LayerId, Tool};
-    use stark_model::geom::{Extent2, Vec2, ViewTransform};
+    use stark_model::geom::{Extent2, Vec2};
     use stark_model::peer::PeerFrame;
 
     /// A fixed-seed generator, so a failure is a bug report rather than a coin toss.

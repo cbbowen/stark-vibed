@@ -8,7 +8,8 @@
 use crate::colorspace::ColorSpace;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Slot};
-use stark_model::geom::{Extent2, ViewTransform};
+use crate::view::ViewTransform;
+use stark_model::geom::Extent2;
 use stark_shaders::mirror::media_common::binding as mc;
 use stark_shaders::mirror::media_common::decl as mcd;
 use stark_shaders::mirror::media_mixbox::binding as mm;
