@@ -13,6 +13,37 @@ convention exists to prevent.
 **These are findings, not decisions.** Each carries a suggested direction, but the
 measurement is the part worth keeping: the direction is one reading of it.
 
+## Status
+
+| | finding | status |
+|---|---|---|
+| F1 | fit window unbounded in reports | **done** — window thinned to 64, measured below |
+| F2 | benchmark blind to F1's two axes | **done** — `fit-density` and `fit-tolerance` sweeps |
+| F3 | per-report `O(knots)` copying | **deferred**, with numbers — see the note under it |
+| F4 | mutex poisoning inconsistency | **done** — every lock in the crate now behind `unpoisoned` |
+| F5 | submit-ordering held by convention | **done** for the `TileScope` family (`Channels::scratch`) |
+| F6 | `guides` not shared like `Layers` | **done** — both are `Projected<T>` now |
+| F7 | `locate` is an `O(layers)` walk | **not done, on purpose** — it was filed as "watch" |
+
+What F1 bought, through F2's own gate (throughput in Kelem/s, higher is better):
+
+| density | 0.25× | 0.5× | 1× | 2× | 4× | 8× | collapse |
+|---|---|---|---|---|---|---|---|
+| before | 91.3 | 59.1 | 33.8 | 17.5 | 9.8 | 4.8 | 19× |
+| after | 89.6 | 71.8 | 64.1 | 55.0 | 50.8 | 41.2 | 2.2× |
+
+| tolerance | 1/64 | 0.25 | 1 | 4 | 16 | 64 | collapse |
+|---|---|---|---|---|---|---|---|
+| before | 105.1 | 73.5 | 32.3 | 18.7 | 16.3 | 16.4 | 6.4× |
+| after | 108.0 | 73.2 | 65.7 | 59.4 | 60.3 | 61.6 | 1.75× |
+
+The 8× stroke went from 1.06 s to 123 ms, and the tolerance line is flat from `tol-1`
+rightwards — zooming out no longer costs anything. One golden moved (`corpus_taper`,
+sub-visibly) and was re-blessed; the reasoning is on `MAX_WINDOW_SAMPLES`.
+
+Whole suite green throughout: 923 tests across 45 binaries, plus the wasm build and
+the no-Mixbox second configuration.
+
 ## How the measurements were taken
 
 A standalone binary against `stark-engine` with `default-features = false`, driving
@@ -160,6 +191,28 @@ About 10 ns per knot per report — roughly a third of the cost at 795 knots.
 argument one level down and then stops at the solve. Have `arc_profile` append into
 a retained buffer instead of building a fresh `Vec` over the settled prefix.
 
+**Deferred, and why.** Not from doubt that it is real — F1 has made it *more*
+visible, since the residual 2.2× slope left in the density sweep is now mostly this.
+Deferred because the two available routes are priced very differently and neither is
+obviously worth taking yet.
+
+The safe route is buffer reuse: keep the candidates and the profile on the fitter and
+stop allocating. That removes ~8 allocations per report, but at 795 knots the copying
+outweighs the allocation by roughly 2.5:1 (~60 KB memcpy against 8 mallocs per
+report), so it buys around 7% of the fit — for a scratch-buffer rotation threaded
+through `push`, `solve`, `mean_error` and `adopt`, which is the fitter's whole core.
+
+The route that would actually remove the term exploits the fact the copies are
+redundant: the frozen prefix never changes, so a persistent candidate needs only its
+free window re-seeded, and `arc_profile`'s settled prefix never needs recopying at
+all. That is `O(1)` instead of `O(knots)` — but it rests on an invariant spanning
+`adopt`, `settled_profile` and the candidate buffers, on the one path where being
+subtly wrong is wrong pixels in every stroke. It wants its own change and its own
+argument, not a ride on this one.
+
+Worth doing; worth doing deliberately. The gate to measure it against now exists,
+which it did not when this was written.
+
 ---
 
 ## Tier two — structure and consistency
@@ -255,6 +308,12 @@ The apply, patch and preview paths still search per operation; the live fold doe
 roughly six walks per in-flight gesture per frame. At today's layer counts this is
 nothing, and it may never matter. **The shape is flagged, not a measured cost.**
 
+**Not done, deliberately.** This was filed as a shape rather than a cost, with no
+measurement behind it and an explicit "may never matter". Building an index on that
+basis would be adding machinery to serve a number nobody has taken — which is the
+same mistake as a fudge constant, pointed the other way. It stays written down so
+that whoever *does* measure it has the argument ready.
+
 **Suggested direction, if it ever does matter.** The structural answer has an exact
 precedent in the same file: `bounds` is derived, private, and written only by
 `with_layers`, on the stated grounds that a struct literal setting one without the
@@ -282,7 +341,7 @@ obvious cleanup and is not.
 - **The GPU health path.** `on_uncaptured_error` and the device-lost callback route
   failures to `GpuHealth` and out through `ObservableState::gpu_failure`, so a dead
   device is reported rather than discovered by an abort (§5). This is the design F4
-  should be brought in line with.
+  was brought in line with.
 
 ## One note for the actor move
 
