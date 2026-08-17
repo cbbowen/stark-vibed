@@ -286,8 +286,9 @@ why it still gets a version.
 | 10 | `SelectionOp` gained an `opacity` (§6.8) | appended inside the struct |
 | 11 | `BlendMode::Drago` gained its bend `k` (§6.3) | payload on a variant that had none |
 | 12 | `BrushParams` gained `stretch`, `Modulations` a lane to drive it (§6.6) | appended |
+| 13 | Placed images (§23): `PlaceImage` joined the log and `pictures` joined the bundle | appended variant + a third bag |
 
-Four of them are worth more than a row.
+Five of them are worth more than a row.
 
 **4 — why a ground is a hash and not a name.** The tooth reads the ground, so a
 document's pixels depend on a height map the file did not carry and named only
@@ -314,6 +315,15 @@ so the brush's entire flow at full alpha covers 95% and no setting says "and the
 rest". Naming the *coverage* and inverting the law for the mass — `slab.wesl`'s
 inversion, already there for blended merges — makes 1 mean opaque and ½ mean
 half, and leaves a fill only one control to disagree with.
+
+**13 — the cheapest shape on the list, and it still costs a version.** Appending
+`PlaceImage` to `ActionKind` is free (postcard encodes an enum by index), but
+appending `pictures` to `DocumentFile` is not: a version-12 file simply stops
+before that field, so a version-13 reader runs off the end of it. The bag is the
+whole of what the bump buys, and it is worth its own entry for what it says about
+§23 — a placed image is *content* named by the log and carried beside it, exactly
+as a brush shape and a ground are, so the third kind cost a third bag and no new
+mechanism.
 
 **11 — the most dangerous shape on the list.** A version-10 `SetLayerBlend(id,
 Drago)` encodes as a bare variant index, so a version-11 reader takes the four

@@ -55,7 +55,7 @@ const MAX_DECOMPRESSED: u64 = 256 << 20;
 /// *refused* rather than decoded into whatever its bytes happen to mean now —
 /// which is what `rejects_an_older_schema_rather_than_misreading_it` pins. Files
 /// are alpha (§19), so old ones are refused rather than migrated.
-const WIRE_VERSION: u32 = 12;
+const WIRE_VERSION: u32 = 13;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (§8). Replay is bit-exact within a build; shader/algorithm changes
@@ -139,6 +139,23 @@ pub struct DocumentFile {
     /// `Flat` contributes nothing: it is procedural, and the empty vector of a
     /// document that never left it is the honest encoding of that.
     pub surfaces: Vec<(SurfaceId, Vec<u8>)>,
+    /// The pictures the document places (§23), as canonical RGBA PNGs — one entry
+    /// per `PlaceImage` in the log, deduplicated by content id.
+    ///
+    /// A **third** bag rather than a third use of `assets`, for the reason the second
+    /// one exists: the three decode differently — a mask is luminance × alpha, a
+    /// ground is channel 0, a picture is all four channels kept — so a single bag
+    /// would hand each store the others' bytes to reinterpret. An id is a *content*
+    /// hash, so one image imported as a stamp and placed as a picture carries one id
+    /// in two bags that cannot stand in for each other, and
+    /// [`unbundled_content`](DocumentFile::unbundled_content) is where that is
+    /// enforced.
+    ///
+    /// This is what a document with placed images weighs, and by far the largest
+    /// thing in the container — which is the bargain §23 takes deliberately: the log
+    /// stays a log, and the pixels are content beside it, fetched and deduplicated
+    /// like every other kind.
+    pub pictures: Vec<(AssetId, Vec<u8>)>,
 }
 
 impl DocumentFile {
@@ -149,6 +166,7 @@ impl DocumentFile {
             actions,
             assets: Vec::new(),
             surfaces: Vec::new(),
+            pictures: Vec::new(),
         }
     }
 

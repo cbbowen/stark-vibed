@@ -38,7 +38,7 @@ use stark_model::document::{
     MatteRegion, PerspectiveMap, Place, Prop, Resource, SelectionMode, SelectionOp, SelectionShape,
     TransformMap, WarpMap, footprint, rect_corners,
 };
-use stark_model::geom::{Affine2, TileCoord, Vec2};
+use stark_model::geom::{Affine2, IVec2, TileCoord, Vec2};
 
 // ---------------------------------------------------------------------------
 // The state diff
@@ -238,13 +238,14 @@ fn slot(kind: &ActionKind) -> usize {
         ActionKind::AddFilter { .. } => 22,
         ActionKind::SetFilter(..) => 23,
         ActionKind::MergeLayerDown { .. } => 24,
+        ActionKind::PlaceImage { .. } => 25,
     }
 }
 
 /// How many kinds there are — `slot`'s range, bumped with its last arm. [`NAMES`]
 /// is indexed by slot and its length is held to this by the type, so a slot added
 /// without a name is a compile error rather than a worse failure message.
-const KINDS: usize = 25;
+const KINDS: usize = 26;
 
 /// What to call each slot when the run has missed one. `ActionKind::label`'s own
 /// captions, which is what a reader of the failure will go looking for.
@@ -274,6 +275,7 @@ const NAMES: [&str; KINDS] = [
     "Add filter",
     "Filter",
     "Merge down",
+    "Place image",
 ];
 
 /// The action kinds a run actually reached, by [`slot`].
@@ -337,6 +339,30 @@ fn stroke(engine: &mut Engine, seen: &mut Seen, what: &str, points: &[Vec2]) {
 
 fn rect(min: Vec2, max: Vec2) -> SelectionShape {
     SelectionShape::rect_from_corners(min, max)
+}
+
+/// A small image with something in every channel, including a transparent margin —
+/// so a placed layer's tiles are neither uniform nor everywhere opaque.
+fn swatch(w: u32, h: u32) -> Vec<u8> {
+    let pixels = (0..w * h)
+        .flat_map(|i| {
+            let (x, y) = (i % w, i / w);
+            let edge = x == 0 || y == 0 || x + 1 == w || y + 1 == h;
+            [
+                (x * 9) as u8,
+                (y * 11) as u8,
+                ((x ^ y) * 5) as u8,
+                if edge { 0 } else { 255 },
+            ]
+        })
+        .collect();
+    stark_assetid::Picture {
+        width: w,
+        height: h,
+        pixels,
+    }
+    .encode()
+    .expect("a well-formed swatch")
 }
 
 /// Every action kind the engine can be driven to commit, each held to its own
@@ -495,6 +521,32 @@ fn every_action_touches_only_what_it_declares() {
         seen,
         "remove the matte",
         DocCommand::RemoveLayer(matte),
+    );
+
+    // An image from outside the document: one action that mints a layer, names it and
+    // fills it with paint, so it is the only kind here whose writes span all four
+    // resource shapes at once (§23).
+    let picture = engine
+        .import_picture(&swatch(24, 18))
+        .expect("import a picture");
+    step(
+        &mut engine,
+        seen,
+        "place an image",
+        DocCommand::PlaceImage {
+            carrier: None,
+            above: Some(root),
+            at: IVec2::new(40, 30),
+            name: Some("sunset.png".into()),
+            image: picture,
+        },
+    );
+    let placed = engine.observe().active_layer;
+    step(
+        &mut engine,
+        seen,
+        "remove the placed image",
+        DocCommand::RemoveLayer(placed),
     );
 
     // A ground the document names but holds no bytes for still changes what the

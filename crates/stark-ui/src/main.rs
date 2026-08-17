@@ -27,6 +27,7 @@ mod gradients;
 mod grounds;
 mod icons;
 mod identity;
+mod images;
 mod input;
 mod layout;
 mod modes;
@@ -284,6 +285,10 @@ fn app() -> Element {
             // delivers a queued launch, and a document has nowhere to load until
             // the renderer above exists.
             files::bind_file_launch(state);
+            // …and the third way a picture can arrive: pasted (§23). Bound here
+            // beside the launch queue and for a related reason — a paste has an
+            // engine to place into only once the renderer above exists.
+            images::bind_paste(state);
         });
     });
 
@@ -867,14 +872,25 @@ fn CommandRail() -> Element {
                             on_select: move |_| files::save_document(state),
                             span { class: "menu-item", {icon(icons::SAVE)} "Save" }
                         }
+                        // Between the document entries and Export, which is where it
+                        // belongs in both directions: it is a picture coming *in*,
+                        // where Export is one going out, and neither is the painting
+                        // itself (`crate::files`, `crate::images`).
                         MenubarItem {
                             index: 5usize,
+                            value: "place-image".to_string(),
+                            on_select: move |_| images::import_image(state),
+                            span { class: "menu-item", {icon(icons::PLACE_IMAGE)} "Place image\u{2026}" }
+                            span { class: "menu-shortcut", "Ctrl+V" }
+                        }
+                        MenubarItem {
+                            index: 6usize,
                             value: "export-image".to_string(),
                             on_select: move |_| show_export.set(true),
                             span { class: "menu-item", {icon(icons::EXPORT)} "Export image\u{2026}" }
                         }
                         MenubarItem {
-                            index: 6usize,
+                            index: 7usize,
                             value: "share".to_string(),
                             // Sharing starts on the click, not on a second button
                             // inside the dialog: the dialog exists to hand over the
@@ -909,7 +925,7 @@ fn CommandRail() -> Element {
                         // and these are the only entries in the menu that have a
                         // second home elsewhere in the chrome.
                         MenubarItem {
-                            index: 7usize,
+                            index: 8usize,
                             value: "deselect".to_string(),
                             disabled: !has_selection,
                             on_select: move |_| {
@@ -919,7 +935,7 @@ fn CommandRail() -> Element {
                             span { class: "menu-shortcut", "Ctrl+D" }
                         }
                         MenubarItem {
-                            index: 8usize,
+                            index: 9usize,
                             value: "invert-selection".to_string(),
                             disabled: !has_selection,
                             on_select: move |_| dispatch(state, DocCommand::InvertSelection),
@@ -934,7 +950,7 @@ fn CommandRail() -> Element {
                         // are in it, not only how to get there
                         // (§18.2.4).
                         MenubarItem {
-                            index: 9usize,
+                            index: 10usize,
                             value: "timeline".to_string(),
                             on_select: move |_| {
                                 panels::timeline::set_open(state, !timeline_open)
@@ -951,13 +967,13 @@ fn CommandRail() -> Element {
                         // the canvas is a thing to watch instead of painting
                         // (§7.1, `crate::timings`).
                         MenubarItem {
-                            index: 10usize,
+                            index: 11usize,
                             value: "timing".to_string(),
                             on_select: move |_| show_timing.set(true),
                             span { class: "menu-item", {icon(icons::TIMING)} "Timing stats\u{2026}" }
                         }
                         MenubarItem {
-                            index: 11usize,
+                            index: 12usize,
                             value: "credits".to_string(),
                             on_select: move |_| show_credits.set(true),
                             span { class: "menu-item", {icon(icons::CREDITS)} "Credits\u{2026}" }

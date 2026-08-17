@@ -87,6 +87,10 @@ pub(crate) struct Mirror {
     /// decodes as luminance × alpha and a ground as channel 0, so one bag would hand
     /// each store the other's bytes to reinterpret.
     surfaces: HashMap<AssetId, Bytes>,
+    /// The pictures the log places (§23). A third map for the second one's reason:
+    /// the three decode differently, so a single bag would hand each store the
+    /// others' bytes to reinterpret.
+    pictures: HashMap<AssetId, Bytes>,
     /// The blob hash each piece of content transfers under.
     ///
     /// An [`AssetId`] names the *decoded coverage* (encoding-independent), so it is
@@ -129,6 +133,7 @@ pub(crate) struct Snapshot {
     actions: RedBlackTreeMapSync<ActionId, Action>,
     assets: Vec<(AssetId, Bytes)>,
     surfaces: Vec<(AssetId, Bytes)>,
+    pictures: Vec<(AssetId, Bytes)>,
     /// What the mirror stood at when this was taken — the key its encoding is
     /// remembered under.
     pub revision: u64,
@@ -148,10 +153,12 @@ impl Snapshot {
         }
         let have: std::collections::HashSet<&AssetId> = have.iter().collect();
         let omit = |id: &AssetId| have.contains(id);
-        let before = self.assets.len() + self.surfaces.len();
+        let before = self.assets.len() + self.surfaces.len() + self.pictures.len();
         self.assets.retain(|(id, _)| !omit(id));
         self.surfaces.retain(|(id, _)| !omit(id));
-        let spared: usize = before - (self.assets.len() + self.surfaces.len());
+        self.pictures.retain(|(id, _)| !omit(id));
+        let spared: usize =
+            before - (self.assets.len() + self.surfaces.len() + self.pictures.len());
         if spared > 0 {
             tracing::debug!(spared, "omitted content the joiner can resolve locally");
         }
@@ -171,6 +178,11 @@ impl Snapshot {
             .surfaces
             .into_iter()
             .map(|(id, b)| (SurfaceId::Image(id), b.to_vec()))
+            .collect();
+        file.pictures = self
+            .pictures
+            .into_iter()
+            .map(|(id, b)| (id, b.to_vec()))
             .collect();
         file
     }
@@ -195,6 +207,11 @@ impl Mirror {
                 .iter()
                 .filter_map(|(id, b)| Some((ground_content_id(*id)?, Bytes::from(b.clone()))))
                 .collect(),
+            pictures: file
+                .pictures
+                .iter()
+                .map(|(id, b)| (*id, Bytes::from(b.clone())))
+                .collect(),
             hashes: HashMap::new(),
             revision: 0,
             encoded: None,
@@ -211,6 +228,11 @@ impl Mirror {
             assets: self.assets.iter().map(|(id, b)| (*id, b.clone())).collect(),
             surfaces: self
                 .surfaces
+                .iter()
+                .map(|(id, b)| (*id, b.clone()))
+                .collect(),
+            pictures: self
+                .pictures
                 .iter()
                 .map(|(id, b)| (*id, b.clone()))
                 .collect(),
@@ -306,6 +328,9 @@ impl Mirror {
             AssetNeed::Ground(id) => {
                 self.surfaces.insert(id, bytes);
             }
+            AssetNeed::Picture(id) => {
+                self.pictures.insert(id, bytes);
+            }
         }
         self.hashes.insert(need.content(), hash);
         // A snapshot bundles payloads, so this moves what one would say.
@@ -318,6 +343,7 @@ impl Mirror {
         match need {
             AssetNeed::Brush(id) => self.assets.contains_key(&id),
             AssetNeed::Ground(id) => self.surfaces.contains_key(&id),
+            AssetNeed::Picture(id) => self.pictures.contains_key(&id),
         }
     }
 
@@ -339,8 +365,10 @@ impl Mirror {
     pub fn seed_blobs(&mut self, add: impl Fn(Bytes) -> Hash) {
         let assets = self.assets.iter().map(|(id, b)| (*id, b.clone()));
         let grounds = self.surfaces.iter().map(|(id, b)| (*id, b.clone()));
+        let pictures = self.pictures.iter().map(|(id, b)| (*id, b.clone()));
         let hashes: Vec<(AssetId, Hash)> = assets
             .chain(grounds)
+            .chain(pictures)
             .map(|(id, bytes)| (id, add(bytes)))
             .collect();
         self.hashes.extend(hashes);

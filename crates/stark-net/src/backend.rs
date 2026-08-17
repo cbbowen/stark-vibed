@@ -37,8 +37,8 @@ use crate::session::NetOptions;
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// A long stroke's fitted control points can be sizeable, so the gossip
-/// message ceiling sits well past any plausible single action (paths are
-/// RDP-simplified; pixels never ride gossip).
+/// message ceiling sits well past any plausible single *drawn* action (paths are
+/// RDP-simplified).
 ///
 /// It was a quarter of this, which is close enough to a long stroke at a fine
 /// tolerance to be worth widening — and crossing it used to mean the action was
@@ -47,6 +47,14 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 /// it sends, so [`reconcile`](crate::reconcile) hands the action to whoever sweeps
 /// next. A ceiling that a legal document action can cross is still a ceiling that
 /// will be crossed, so this is a delay to avoid rather than a loss to prevent.
+///
+/// **Pixels never ride gossip**, and that is a property of the vocabulary rather than
+/// of this number: every kind of content a log can name — a brush shape, a canvas
+/// ground, a placed picture (§23) — is named by a content id and moved over the blob
+/// ALPN, so what crosses here is always a description. A placed picture is the case
+/// that could most easily have been otherwise, and the one this ceiling decided: it is
+/// megabytes, it would not fit, and raising the ceiling to suit the largest photograph
+/// anyone might paste would size every peer's gossip buffer for it too.
 const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 
 pub(crate) struct Bound {

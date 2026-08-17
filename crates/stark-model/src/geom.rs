@@ -12,7 +12,7 @@
 //! The infinite canvas (§6) is realized by tiles being sparse and
 //! addressed by signed integer coordinates.
 
-pub use glam::{Affine2, Mat2, Vec2};
+pub use glam::{Affine2, IVec2, Mat2, Vec2};
 
 /// Eigenvalues of the symmetric 2×2 `[[sxx, sxy], [sxy, syy]]`, larger first, with the
 /// unit eigenvector of the larger — in closed form, since a 2×2 needs no iteration.

@@ -15,6 +15,7 @@
 //! local one; nothing here embeds an image.
 
 use stark_assetid::AssetId;
+use stark_model::SurfaceId;
 use stark_net::AssetNeed;
 
 include!(concat!(env!("OUT_DIR"), "/builtin_ids.rs"));
@@ -83,10 +84,22 @@ pub async fn fetch(owed: &[AssetNeed]) -> Vec<(AssetNeed, Vec<u8>)> {
 /// `accept_surface` re-derives the id and refuses bytes that do not match, so a
 /// catalog file that changed out from under a document is caught there rather
 /// than deposited through the wrong weave; both wrappers log their own refusal.
+/// **Exhaustive on the need, with no `_` arm**, rather than branching on whether it
+/// names a surface. That is not a style preference: `AssetNeed::surface()` answers
+/// `None` for a brush *and* for a picture (§23), so the two-arm form quietly filed a
+/// picture's RGBA bytes in the brush store, where they would decode as luminance ×
+/// alpha and be neither. The catalogs ship no pictures, so it could not fire today —
+/// which is exactly the kind of latent wrong-bag bug §8 keys the bags apart to
+/// prevent, and the reason this refuses instead.
 pub fn install(r: &mut crate::render::Renderer, need: AssetNeed, bytes: &[u8]) {
-    match need.surface() {
-        Some(id) => r.accept_surface(id, bytes),
-        None => r.import_brush(bytes),
+    match need {
+        AssetNeed::Brush(_) => r.import_brush(bytes),
+        AssetNeed::Ground(id) => r.accept_surface(SurfaceId::Image(id), bytes),
+        // No build ships a picture: one is by definition something a person brought
+        // in, so a catalog naming one is a catalog that is wrong about itself.
+        AssetNeed::Picture(id) => {
+            tracing::error!(?id, "the shipped catalog cannot resolve a picture")
+        }
     }
 }
 

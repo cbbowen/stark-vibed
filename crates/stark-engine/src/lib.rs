@@ -70,6 +70,7 @@ pub(crate) mod image;
 pub(crate) mod noise;
 pub mod path;
 pub mod peer;
+pub mod pictures;
 mod presence;
 pub mod session;
 pub(crate) mod spline;

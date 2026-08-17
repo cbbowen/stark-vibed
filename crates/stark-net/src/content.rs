@@ -132,7 +132,12 @@ impl<S: ContentSource> Resolver<S> {
 
         let attempts = match need {
             AssetNeed::Brush(_) => Some(BRUSH_ATTEMPTS),
-            AssetNeed::Ground(_) => None,
+            // A ground and a picture are both never given up on, for one reason
+            // stated two ways: neither has an acceptable fallback. A ground's would
+            // bake a smooth deposit into tiles no later arrival un-bakes (§6.4); a
+            // picture has no degraded form at all, so giving up would release a
+            // `PlaceImage` that adds an empty layer and calls it done (§23).
+            AssetNeed::Ground(_) | AssetNeed::Picture(_) => None,
         };
         match self.fetch(hash, attempts, origin, from).await {
             // Recording the transfer hash with the bytes is what lets this peer

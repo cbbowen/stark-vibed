@@ -4,14 +4,16 @@
 //!
 //! - **Gossip** carries [`Stamped`] messages — one committed action or
 //!   presence frame each, postcard-encoded. Actions are small (fitted control
-//!   points, ids, params); pixels and image bytes never ride gossip.
+//!   points, ids, params); pixels and image bytes never ride gossip, whatever kind
+//!   of content names them.
 //! - **The `stark/collab/6` ALPN** answers [`Request`]s over one bi-stream per
 //!   request: the full session [`Snapshot`](Request::Snapshot) (the save-format
 //!   container, assets bundled) for joins. Every response opens with a one-byte
 //!   [tag](Tag) saying whether what follows is an answer at all.
-//! - **The `iroh-blobs` ALPN** serves individual brush images to peers that
-//!   see a stroke referencing one they don't hold — hash-verified, addressed
-//!   by the blob hash a [`Stamped`] message carries alongside such a stroke.
+//! - **The `iroh-blobs` ALPN** serves individual pieces of content to peers that
+//!   see an action referencing one they don't hold — a brush image, a canvas
+//!   ground, a placed picture (§23) — hash-verified, addressed by the blob hash a
+//!   [`Stamped`] message carries alongside such an action.
 
 use std::sync::Mutex;
 

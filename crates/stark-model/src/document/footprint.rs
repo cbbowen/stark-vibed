@@ -290,6 +290,32 @@ pub fn footprint(action: &Action) -> Footprint {
                 .collect(),
             writes: vec![Resource::Existence(*id), Resource::StackOrder],
         },
+        // A placed image is an `AddLayer` that arrives with paint and a name in it
+        // (§23), so it claims what one claims plus those two — and claims the paint as
+        // the **whole layer**, not as the box the image covers.
+        //
+        // That is not a conservative shrug, it is the one thing worth saying about this
+        // footprint. Every other action that writes tiles has to derive its box twice —
+        // once here and once where the tiles are planned — and keeping the two in step
+        // is the §12.6 hazard that `fill_bounds` exists to remove. Here there is nothing
+        // to keep in step: the layer did not exist before this action, so *all* of its
+        // paint is this action's by construction, whatever box the image happens to
+        // cover. `image_tiles` is then the only quantization of that box in the tree.
+        ActionKind::PlaceImage {
+            id, carrier, above, ..
+        } => Footprint {
+            reads: [*carrier, *above]
+                .into_iter()
+                .flatten()
+                .map(Resource::Existence)
+                .collect(),
+            writes: vec![
+                Resource::Existence(*id),
+                Resource::StackOrder,
+                Resource::Paint(*id, TileRect::ALL),
+                Resource::Prop(*id, Prop::Name),
+            ],
+        },
         ActionKind::AddMatte {
             id, carrier, at, ..
         } => Footprint {

@@ -40,6 +40,13 @@ pub struct ApplyCtx {
     pub transform: crate::gpu::transform::TransformRenderer,
     pub fill: crate::gpu::fill::FillRenderer,
     pub merge: crate::gpu::merge::MergeRenderer,
+    /// Builds the tiles of an image brought in from outside the document (§23).
+    /// The one renderer here holding no pipeline, because that path has no pass.
+    pub place: crate::gpu::place::PlaceRenderer,
+    /// The pictures a `PlaceImage` names (§23) — the third content-addressed store,
+    /// beside `assets` and `surfaces` and for their reason: the log carries the id
+    /// and the pixels ride here.
+    pub pictures: crate::pictures::PictureStore,
     /// The device, so a canvas surface can be built here on demand.
     pub gpu: crate::gpu::context::GpuContext,
     /// The canvas surfaces and the bytes registered for them (§6.4).
@@ -276,6 +283,49 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             state.map_layer(rec.layer, |l| l.with_tiles(tiles))
         }
         ActionKind::AddLayer { id, carrier, above } => state.insert_layer(*id, *carrier, *above),
+        // An image from outside the document, as a layer holding it (§23). The layer
+        // arrives first and by exactly the same call an `AddLayer` makes, so an unknown
+        // carrier declines it identically — and the tiles are only built once the layer
+        // is known to have landed, since building them for a layer that is not there is
+        // a photograph's worth of GPU memory for nothing.
+        //
+        // The tiles come from the CPU rather than from a pass, which is what makes them
+        // the same bytes on every adapter: see `gpu::place`.
+        ActionKind::PlaceImage {
+            id,
+            carrier,
+            above,
+            at,
+            name,
+            image,
+        } => {
+            let state = state
+                .insert_layer(*id, *carrier, *above)
+                .set_layer_name(*id, name.as_deref().map(Into::into));
+            if !state.contains_layer(*id) {
+                return state;
+            }
+            // The picture, by the id the log carries (§23). Absent means it has not
+            // arrived — which the loader and the transport both make sure cannot
+            // happen before this runs (`unresolved_content`, and the waitlist parking
+            // the action until its content lands), so reaching the `None` arm is a
+            // caller that skipped the bill rather than a state to design around.
+            let Some(picture) = ctx.pictures.get(*image) else {
+                tracing::warn!(?image, "placing an image this session does not hold");
+                return state;
+            };
+            match ctx.place.render(&ctx.pool, *at, &picture) {
+                Some(tiles) => state.map_layer(*id, |l| l.with_tiles(tiles)),
+                None => {
+                    // Off the tile grid an `i32` can address. The layer stays — it is
+                    // what the action minted, and withdrawing it here would make the
+                    // action half-applied — and it is simply empty, which is the honest
+                    // picture of an image placed where no tile exists.
+                    tracing::warn!("placed image is off the addressable canvas; no tiles written");
+                    state
+                }
+            }
+        }
         // The copy's tiles are the shared handles the source already holds, so
         // duplicating a layer costs no GPU memory until one of the two is
         // painted on — copy-on-write is what makes this a cheap action rather
@@ -481,6 +531,7 @@ pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState) -> bool {
         | ActionKind::AddLayer { .. }
         | ActionKind::AddMatte { .. }
         | ActionKind::AddFilter { .. }
+        | ActionKind::PlaceImage { .. }
         | ActionKind::DuplicateLayer { .. }
         | ActionKind::RemoveLayer(_)
         | ActionKind::MergeLayerDown { .. }

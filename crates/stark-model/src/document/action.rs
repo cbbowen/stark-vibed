@@ -338,6 +338,50 @@ pub enum ActionKind {
         source: LayerId,
         dest: LayerId,
     },
+
+    /// Bring an image in from **outside** the document — an image file, or the system
+    /// clipboard — as a new layer holding it as paint (§23).
+    ///
+    /// One action rather than three, and that is the whole of why it mints its own
+    /// layer instead of taking one. A paste lands on its own layer in every tool that
+    /// has one, so spelling it as `AddLayer` then a placement then a rename would put
+    /// the familiar gesture three undo steps deep, and leave two of those steps
+    /// meaning nothing on their own. `AddMatte` already carries this shape: a layer
+    /// arriving with content is one fact, not a layer and then its content.
+    ///
+    /// The pixels are the payload, behind an [`Arc`](std::sync::Arc) and PNG-encoded
+    /// on the wire — see [`ImageRef`](super::ImageRef) for both, and for why this is
+    /// the one action that carries content rather than naming it.
+    ///
+    /// **`at` is in whole canvas pixels, and that is a promise about resampling**: the
+    /// image's texels land on canvas pixels one for one, so nothing is filtered and
+    /// there is no sampling loss between the file and the tiles. Scaling and turning it
+    /// afterwards is [`Transform`](Self::Transform), which is where resampling belongs
+    /// and where its exactness is already pinned (§16.4) — expressing the placement as
+    /// a float and then a scale would have spent one generation of blur on every import
+    /// to reach the same picture. An integer vector is how that is said in a way the
+    /// payload cannot express wrongly.
+    ///
+    /// Deterministically **rejected** (the document is left unchanged) when the anchors
+    /// name a layer that is not there, exactly as an [`AddLayer`](Self::AddLayer) is, or
+    /// when the placement falls off the tile grid an `i32` can address. Appended last,
+    /// like every variant before it, so postcard — which encodes an enum by variant
+    /// *index* — keeps decoding older files.
+    PlaceImage {
+        id: LayerId,
+        /// Whose carried stack to add it to — `None` for the document's own (§14.8).
+        carrier: Option<LayerId>,
+        above: Option<LayerId>,
+        /// Canvas position of the image's top-left texel, in whole canvas pixels.
+        at: crate::geom::IVec2,
+        /// What to call the layer — the file it came from, so the layers panel says
+        /// "sunset.jpg" rather than a number. `None` leaves it described by its place
+        /// in the stack, which is what a clipboard image with no name has.
+        name: Option<String>,
+        /// The picture, by **content id** — named here and carried beside the log,
+        /// exactly as a stamp brush's shape is (§6.6, §23).
+        image: crate::AssetId,
+    },
 }
 
 impl ActionKind {
@@ -368,7 +412,8 @@ impl ActionKind {
         let (one, copies): (Option<LayerId>, &[(LayerId, LayerId)]) = match self {
             ActionKind::AddLayer { id, .. }
             | ActionKind::AddMatte { id, .. }
-            | ActionKind::AddFilter { id, .. } => (Some(*id), &[]),
+            | ActionKind::AddFilter { id, .. }
+            | ActionKind::PlaceImage { id, .. } => (Some(*id), &[]),
             // A duplicate mints one per layer of the subtree it copied, which is
             // why the map travels in the action (§14.8).
             ActionKind::DuplicateLayer { ids } => (None, ids),
@@ -465,6 +510,12 @@ impl ActionKind {
             // author asked for.
             ActionKind::AddLayer { .. }
             | ActionKind::AddMatte { .. }
+            // A placement carries pixels and an integer position: no float to be
+            // non-finite, no knob to be out of range. What *could* be malformed about
+            // an image — dimensions that disagree with the buffer, a size past the cap
+            // — cannot be clamped into a different image, and is refused at
+            // `ImageRef`'s constructor and at its decode instead (§23).
+            | ActionKind::PlaceImage { .. }
             | ActionKind::DuplicateLayer { .. }
             | ActionKind::RemoveLayer(_)
             | ActionKind::MergeLayerDown { .. }
@@ -511,6 +562,7 @@ impl ActionKind {
             ActionKind::SetLayerVisible(..) => "Layer visibility",
             ActionKind::SetLayerName(..) => "Rename layer",
             ActionKind::AddMatte { .. } => "Add matte",
+            ActionKind::PlaceImage { .. } => "Place image",
             ActionKind::AddFilter { .. } => "Add filter",
             ActionKind::SetFilter(..) => "Filter",
             ActionKind::SetMatteRect(..) => "Move frame",
@@ -652,6 +704,14 @@ mod tests {
                 at: Place::Bottom,
                 region: MatteRegion::Everything,
                 paint: MattePaint::Solid([0.0; 3]),
+            },
+            ActionKind::PlaceImage {
+                id,
+                carrier: None,
+                above: None,
+                at: crate::geom::IVec2::new(-3, 9),
+                name: Some("sunset.png".into()),
+                image: crate::AssetId([4; 32]),
             },
             ActionKind::SetMatteRect(id, Vec2::ZERO, Vec2::splat(4.0)),
             ActionKind::SetMattePaint(id, MattePaint::Solid([1.0; 3])),

@@ -36,12 +36,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::gpu::{EnvironmentId, MediaParams};
+use stark_model::AssetId;
 use stark_model::SurfaceId;
 use stark_model::document::{
     BlendMode, BrushParams, FillOp, Filter, LayerId, MattePaint, MatteRegion, Place, SelectionOp,
     ShapeAction, Tool, TransformMap,
 };
-use stark_model::geom::{Extent2, Vec2};
+use stark_model::geom::{Extent2, IVec2, Vec2};
 
 /// One pen/mouse sample in canvas space.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -282,6 +283,44 @@ pub enum DocCommand {
         region: MatteRegion,
         paint: MattePaint,
     },
+    /// Bring an image in from **outside** the document — an image file, or the system
+    /// clipboard — as a new layer holding it as paint (§23).
+    ///
+    /// The engine mints the id, as it does for [`AddLayer`](Self::AddLayer), and the
+    /// new layer becomes the active one for the same reason: it is paint, so it is
+    /// somewhere the next stroke can go, and an artist who just placed a reference
+    /// photograph is looking at the layer they will work over.
+    ///
+    /// `at` is the canvas position of the image's top-left texel in **whole canvas
+    /// pixels**, so the placement resamples nothing — see
+    /// [`ActionKind::PlaceImage`](stark_model::document::ActionKind::PlaceImage). Where
+    /// to put it is the frontend's to decide (the middle of what is on screen, the drop
+    /// point, the pointer) because only the frontend knows what is being looked at
+    /// (§18.1.2); scaling and turning it afterwards is [`Transform`](Self::Transform),
+    /// which with nothing selected moves the whole layer.
+    ///
+    /// The picture is named by **content id**, imported first through
+    /// [`Engine::import_picture`](crate::Engine::import_picture) — the same two-step a
+    /// stamp brush takes (§6.6), and for the same reasons: the id has to exist before
+    /// the action that references it can be built, and in a shared session the bytes
+    /// have to be registered before the commit that names them goes out.
+    ///
+    /// Decoding is the frontend's, and deliberately: a browser decodes JPEG, WebP,
+    /// AVIF and everything else it can display, so "which formats can be imported" is a
+    /// question about the platform rather than about the engine, and a decoder here
+    /// would be a second, smaller answer to it.
+    PlaceImage {
+        carrier: Option<LayerId>,
+        above: Option<LayerId>,
+        at: IVec2,
+        /// What to call the layer — the file it came from. `None` for an image with no
+        /// name, which is what the clipboard hands over.
+        name: Option<String>,
+        /// The picture's content id, from `Engine::import_picture`. An id this engine
+        /// does not hold places an empty layer and warns — see `document::apply`.
+        image: AssetId,
+    },
+
     /// Add a **filter** layer — a function of everything composited beneath it in
     /// the stack it lands in (§21.2). The engine mints the id, as it does for
     /// `AddLayer`; and as for `AddMatte` it does *not* become the active layer,

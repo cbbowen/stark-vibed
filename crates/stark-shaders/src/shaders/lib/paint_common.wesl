@@ -46,6 +46,21 @@ const COVERAGE_EPS: f32 = 1e-4;
 // much as the viewer sees it cover — is the property those four agreeing is worth.
 const OPACITY_K: f32 = 1.0;
 
+// Where "opaque" is, as optical mass — the finite number that stands for the end of a
+// coverage slider.
+//
+// Coverage is `1 − exp(−K·mass)` and so reaches 1 only in the limit, which means
+// anything asking for *full* coverage has to name a mass rather than inherit one: the
+// inversion `m = −ln(1 − w)/K` runs to infinity at `w = 1`. Eight units leaves under a
+// thousandth of what is beneath showing, which is opaque by any reading of it.
+//
+// Beside `OPACITY_K` because it is the same law's other end, and shared because it is
+// asked from both sides of this crate: `fill.wesl` inverts the law here (§18.0.4), and
+// the host builds an imported image's tiles by the same arithmetic with no shader at
+// all (§23) — a duplicate there would be a second declaration of "opaque" that nothing
+// checks, in Rust, where the WESL could not even be read for comparison.
+const OPAQUE_MASS: f32 = 8.0;
+
 // Blend a parcel of paint (latent `lat1`, optical mass `m1` = opacity·height) onto
 // resident paint (`lat0`, `m0`). The parcel lands on top, so its weight is its own
 // visible alpha and the resident paint shows through the remainder — thick deposits

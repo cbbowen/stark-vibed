@@ -43,6 +43,7 @@ Status lives here and nowhere else.
 | — | Stroke smoothing — the towed tip (§6.11) | done — the tow, the per-brush amount, the string overlay; the pursuit-mode soft rope stays in reserve |
 | — | Brush parameter mapping (§6.2, §18.1.4) | done — pressure/tilt → size/flow/stretch/lift/deposit/bleed; more sources and targets are variants away |
 | — | Modifier drags — scrubby zoom, Size/Flow (§18.1.9) | done — with the size ring; a flow readout is not |
+| — | Placed images (§23) | done — import and paste, as one action that lands a layer of paint; placement onto an *existing* layer (§23.5) remains |
 | 14 | Mutable medium — horizontal flux (§14 open / §6.2) | **not started** |
 
 Step 14, restated against what actually shipped: the Dry/Knife/Wet enum variants

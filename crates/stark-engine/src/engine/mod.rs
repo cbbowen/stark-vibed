@@ -1048,6 +1048,30 @@ impl Engine {
                     self.session.active_layer = id;
                 }
             }
+            DocCommand::PlaceImage {
+                carrier,
+                above,
+                at,
+                name,
+                image,
+            } => {
+                let id = self.mint_layer();
+                self.commit(ActionKind::PlaceImage {
+                    id,
+                    carrier,
+                    above,
+                    at,
+                    name,
+                    image,
+                });
+                // The active layer, exactly as an `AddLayer` is and for its reason: it
+                // is paint, so the next stroke has somewhere to go — and only if it
+                // landed, since an unknown carrier adds nothing (§14.8) and arming an
+                // id no layer has would leave that stroke with nowhere.
+                if self.document().contains_layer(id) {
+                    self.session.active_layer = id;
+                }
+            }
             DocCommand::AddMatte {
                 carrier,
                 at,
@@ -1960,6 +1984,12 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
     let transform = TransformRenderer::new(&gpu, cs.as_ref(), selection.clone(), zeroes.clone());
     let fill = FillRenderer::new(&gpu, cs.clone(), selection.clone(), zeroes.clone());
     let merge = MergeRenderer::new(&gpu, cs.as_ref(), zeroes, blend, filter);
+    // No pipeline and no layout: a placed image's tiles are computed on the CPU
+    // (§23), so this is the color space and the queue and nothing else.
+    let place = crate::gpu::PlaceRenderer::new(&gpu, cs.clone());
+    // Rebuilt with the rest rather than carried across, like the two stores beside it:
+    // a color-space change is a new document (§6.7), so nothing it held is still named.
+    let pictures = crate::pictures::PictureStore::new();
     // `passes` and `media` are read off the pipeline that was just built, never
     // assembled beside it: they are the two things `EngineShared` keeps *of* the
     // compositor, and a second source for either is how a rebuild leaves a sibling
@@ -1979,6 +2009,8 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
             transform,
             fill,
             merge,
+            place,
+            pictures,
             gpu,
             surfaces,
         },

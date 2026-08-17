@@ -82,6 +82,11 @@ fn drain_events(events: &mut Events, engine: &mut Engine) -> usize {
                         .accept_surface(SurfaceId::Image(id), &bytes)
                         .expect("install remote ground");
                 }
+                AssetNeed::Picture(id) => {
+                    engine
+                        .accept_picture(id, &bytes)
+                        .expect("install remote picture");
+                }
             },
             RemoteEvent::Action(action) => {
                 engine.merge_remote(action);

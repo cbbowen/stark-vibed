@@ -25,7 +25,7 @@
 // does not vary: the ramp is a transition in color, not in thickness.
 
 import package::lib::latent::{Latent, latent_blend, latent_lerp, latent_of, latent_scale, latent_unpremult};
-import package::lib::paint_common::{OPACITY_K, PAINT_EPS};
+import package::lib::paint_common::{OPACITY_K, OPAQUE_MASS, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::ramp_common::{ramp_position};
 import package::lib::sample::{load1};
@@ -34,12 +34,11 @@ import package::lib::sample::{load1};
 // (`gradient::MAX_STOPS`, asserted equal host-side §6.10).
 const MAX_GRADIENT_STOPS: u32 = 16;
 
-// Where a fill declares "opaque" to be, as optical mass. Coverage is
-// `1 − exp(−K·mass)` and so reaches 1 only in the limit; something finite has to
-// stand for the end of the slider, and this is it. The matte slab's thickness,
-// for the identical reason and by the identical arithmetic (`matte.wesl`,
-// §15.4): at `OPACITY_K = 1` it leaves under a thousandth of the ground showing.
-const OPAQUE_MASS: f32 = 8.0;
+// Where a fill declares "opaque" to be is `paint_common::OPAQUE_MASS`, imported
+// above rather than declared here: the host builds an imported image's tiles by
+// this same inversion with no shader to import from (§23), so the number has to be
+// readable from both sides. The matte slab's thickness is the identical arithmetic
+// for the identical reason (`matte.wesl`, §15.4).
 
 struct Fill {
     // .xyz = a solid parcel's latent in this space's color channels (Oklab

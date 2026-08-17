@@ -79,6 +79,8 @@ pub enum AllocSource {
     /// A merge's composited scratch: the two layers expanded into what they
     /// composite to, and the blend between them (§14.11).
     MergeScratch,
+    /// A tile of an image brought in from outside the document (§23).
+    PlacedImage,
 }
 
 impl AllocSource {
@@ -89,7 +91,7 @@ impl AllocSource {
     /// `a_census_slot_belongs_to_the_source_that_indexes_it` checks the two agree.
     /// A variant that slipped past both would go uncounted rather than out of
     /// bounds — telemetry degrading is the right failure for telemetry.
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::Unknown,
         Self::IntegrateDestination,
         Self::StrokeScratch,
@@ -101,6 +103,7 @@ impl AllocSource {
         Self::FillDestination,
         Self::MergeDestination,
         Self::MergeScratch,
+        Self::PlacedImage,
     ];
 
     const fn name(self) -> &'static str {
@@ -116,6 +119,7 @@ impl AllocSource {
             Self::FillDestination => "fill destination",
             Self::MergeDestination => "merge destination",
             Self::MergeScratch => "merge scratch",
+            Self::PlacedImage => "placed image",
         }
     }
 }
@@ -285,6 +289,57 @@ impl TexHandle {
                 aspect: wgpu::TextureAspect::All,
             },
             dst.as_image_copy(),
+            wgpu::Extent3d {
+                width: TILE_TEX,
+                height: TILE_TEX,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    /// Fill this texture with one full `TILE_TEX` block computed on the **CPU** —
+    /// what a placed image's tiles are built by (§23).
+    ///
+    /// The only writer here that is not a render pass, and the only one that needs to
+    /// be: an imported image's texels are already the answer, so there is nothing for a
+    /// shader to compute from them and a pass would be a round trip through the GPU to
+    /// copy a buffer. It is also what makes those tiles adapter-independent to the
+    /// byte, which no pass in this engine is.
+    ///
+    /// `bytes` is the whole block, row-major, `TILE_TEX` rows of this format's texel
+    /// size — the caller builds it, because what a texel *means* is the channel's
+    /// business and not the pool's. A queue write is ordered against everything
+    /// submitted after it, so a tile written here is safe to read in the next pass
+    /// without a fence.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless `bytes` is exactly one block, which is a caller arithmetic error
+    /// rather than a state to handle.
+    pub fn write_block(&self, queue: &wgpu::Queue, bytes: &[u8]) {
+        let dst = self
+            .0
+            .tex
+            .as_ref()
+            .expect("a live handle holds its texture");
+        let texel = dst
+            .format()
+            .block_copy_size(None)
+            .expect("uncompressed tile format");
+        let row = texel * TILE_TEX;
+        assert_eq!(
+            bytes.len() as u32,
+            row * TILE_TEX,
+            "a block write is exactly one {TILE_TEX}\u{00D7}{TILE_TEX} tile",
+        );
+        queue.write_texture(
+            dst.as_image_copy(),
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(TILE_TEX),
+            },
             wgpu::Extent3d {
                 width: TILE_TEX,
                 height: TILE_TEX,

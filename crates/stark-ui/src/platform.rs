@@ -1137,6 +1137,142 @@ pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), St
     Ok((bytes, false))
 }
 
+/// Decode an image into straight RGBA8, **using the browser as the decoder** — so
+/// every format it can display can be placed (JPEG, PNG, WebP, AVIF, GIF, …).
+///
+/// The same route [`normalize_shape_image`] takes and for the same reason: shipping a
+/// decoder per format would be a second, smaller answer to a question the platform
+/// already answers completely (§23). What comes back is what a `PlaceImage` carries —
+/// `getImageData` is specified as **un-premultiplied** sRGB, which is exactly the form
+/// [`Picture`](stark_assetid::Picture) is defined in, so nothing has to be undone on
+/// either side.
+///
+/// Downscaled so the longest edge is at most the identity contract's cap
+/// ([`MAX_PICTURE_DIM`](stark_assetid::MAX_PICTURE_DIM)) — which `stark_assetid::picture`
+/// would apply anyway, so this is an optimization and not the rule. Here because the
+/// *browser* is the only thing in the chain that can resample
+/// without first materializing the full-size buffer: a 48-megapixel phone photograph
+/// is 190 MB of RGBA before anything has looked at it, and `drawImage` never allocates
+/// it at all.
+#[cfg(target_arch = "wasm32")]
+pub async fn decode_image(bytes: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String> {
+    use wasm_bindgen::JsCast;
+
+    let window = web_sys::window().ok_or("no window")?;
+    let array = js_sys::Uint8Array::from(bytes.as_slice());
+    let parts = js_sys::Array::of1(&array.buffer());
+    let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)
+        .map_err(|_| "could not wrap the image bytes".to_string())?;
+    let promise = window
+        .create_image_bitmap_with_blob(&blob)
+        .map_err(|_| "image decoding unavailable".to_string())?;
+    let bitmap: web_sys::ImageBitmap = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|_| "not an image the browser can decode".to_string())?
+        .dyn_into()
+        .map_err(|_| "unexpected decode result".to_string())?;
+
+    let (sw, sh) = (bitmap.width(), bitmap.height());
+    if sw == 0 || sh == 0 {
+        return Err("the image is empty".to_string());
+    }
+    let cap = stark_assetid::MAX_PICTURE_DIM;
+    let scale = (cap as f64 / sw.max(sh) as f64).min(1.0);
+    let w = ((sw as f64 * scale) as u32).max(1);
+    let h = ((sh as f64 * scale) as u32).max(1);
+
+    let document = window.document().ok_or("no document")?;
+    let canvas: web_sys::HtmlCanvasElement = document
+        .create_element("canvas")
+        .ok()
+        .and_then(|e| e.dyn_into().ok())
+        .ok_or("could not create a canvas")?;
+    canvas.set_width(w);
+    canvas.set_height(h);
+    let ctx: web_sys::CanvasRenderingContext2d = canvas
+        .get_context("2d")
+        .ok()
+        .flatten()
+        .and_then(|c| c.dyn_into().ok())
+        .ok_or("no 2d context")?;
+    ctx.draw_image_with_image_bitmap_and_dw_and_dh(&bitmap, 0.0, 0.0, w as f64, h as f64)
+        .map_err(|_| "could not draw the image".to_string())?;
+    let data = ctx
+        .get_image_data(0.0, 0.0, w as f64, h as f64)
+        .map_err(|_| "could not read the pixels".to_string())?;
+    Ok((w, h, data.data().0))
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn decode_image(_bytes: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String> {
+    Err("no image decoder off the web".to_string())
+}
+
+/// Hand `handler` the bytes of the first image on the clipboard whenever one is
+/// pasted into the page.
+///
+/// The **`paste` event** rather than `navigator.clipboard.read()`, and the difference
+/// matters: the event is delivered inside the user's own gesture and needs no
+/// permission, where the async read prompts in Chrome and is unimplemented for images
+/// in some engines. A paste the page never sees is a feature that works for some people.
+///
+/// Nothing is handed over for a paste into a **text field** — a layer being renamed, the
+/// session name — which is [`on_text_entry`]'s question asked of the event's target, the
+/// same way the keyboard shortcuts ask it. Pasting a screenshot while typing a layer
+/// name should type nothing and place nothing.
+///
+/// Bound once for the life of the page, so the closure is `forget`ten like the window
+/// key handlers'.
+#[cfg(target_arch = "wasm32")]
+pub fn on_window_paste(handler: impl Fn(Vec<u8>) + 'static) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    // Shared rather than moved: the listener is re-entered per paste, and each of those
+    // spawns a task that needs its own handle — `pick_file`'s bargain.
+    let handler = std::rc::Rc::new(handler);
+    let cb =
+        Closure::<dyn FnMut(web_sys::ClipboardEvent)>::new(move |e: web_sys::ClipboardEvent| {
+            if e.target().is_some_and(|t| on_text_entry(&t)) {
+                return;
+            }
+            let Some(data) = e.clipboard_data() else {
+                return;
+            };
+            let items = data.items();
+            // The first image, and only the first: a paste is one gesture, and a clipboard
+            // carrying an image usually carries it several times over (a PNG *and* an HTML
+            // fragment naming it), so taking every entry would place the same picture twice.
+            let file = (0..items.length())
+                .filter_map(|i| items.get(i))
+                .filter(|item| item.kind() == "file" && item.type_().starts_with("image/"))
+                .find_map(|item| item.get_as_file().ok().flatten());
+            let Some(file) = file else {
+                return;
+            };
+            // Only now, once there is an image to place: an ordinary text paste has to
+            // reach whatever would have handled it.
+            e.prevent_default();
+            let handler = handler.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let Ok(buffer) = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await
+                else {
+                    return tracing::error!("the pasted image could not be read");
+                };
+                let Some(buffer) = buffer.dyn_ref::<js_sys::ArrayBuffer>() else {
+                    return;
+                };
+                handler(js_sys::Uint8Array::new(buffer).to_vec());
+            });
+        });
+    let _ = window.add_event_listener_with_callback("paste", cb.as_ref().unchecked_ref());
+    cb.forget();
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn on_window_paste(_handler: impl Fn(Vec<u8>) + 'static) {}
+
 /// The standard base64 alphabet, and its inverse.
 ///
 /// The inverse is built **at compile time**: [`base64_decode`] used to fill a

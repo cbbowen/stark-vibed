@@ -575,6 +575,25 @@ impl Renderer {
             .map_err(|e| e.to_string())
     }
 
+    /// Import a picture to place (§23), returning the content id the action names it
+    /// by — [`import_brush_id`](Self::import_brush_id)'s sibling, error and all: the
+    /// caller has an import to report failure on, where a remote arrival has only a
+    /// log line.
+    pub fn import_picture_id(&self, png_bytes: &[u8]) -> Result<stark_model::AssetId, String> {
+        self.engine
+            .import_picture(png_bytes)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Install a picture that arrives already named — off a peer, or out of a
+    /// document's own bundle. Refused if the bytes are not the picture the id asked
+    /// for, which is where a wrong photograph would otherwise be placed silently.
+    pub fn accept_picture(&self, id: stark_model::AssetId, png_bytes: &[u8]) {
+        if let Err(e) = self.engine.accept_picture(id, png_bytes) {
+            tracing::warn!("remote picture install failed: {e}");
+        }
+    }
+
     /// The canonical PNG bytes of one imported brush asset, if loaded.
     pub fn asset_bytes(&self, id: stark_model::AssetId) -> Option<Vec<u8>> {
         self.engine.asset_bytes(id)

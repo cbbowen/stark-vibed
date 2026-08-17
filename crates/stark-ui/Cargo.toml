@@ -91,9 +91,20 @@ web-sys = { version = "0.3", features = [
     # Importing custom brush shapes (platform::normalize_shape_image): the
     # browser decodes any image format it knows into a canvas, we normalize the
     # pixels (downscale, dark-on-light inversion) and re-encode as PNG.
+    # The same route places an imported or pasted image (platform::decode_image,
+    # §23) — the browser is the decoder, so every format it can display can be
+    # placed, and `getImageData` hands back exactly the un-premultiplied sRGB the
+    # action carries.
     "CanvasRenderingContext2d",
     "ImageBitmap",
     "ImageData",
+    # Pasting an image (platform::on_window_paste): the `paste` event rather than
+    # `navigator.clipboard.read()`, which prompts for a permission and does not
+    # carry images in every engine.
+    "ClipboardEvent",
+    "DataTransfer",
+    "DataTransferItem",
+    "DataTransferItemList",
 ] }
 console_error_panic_hook = "0.1"
 # Routes `tracing` events to the browser console (set as the global subscriber).

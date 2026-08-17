@@ -17,11 +17,12 @@
 mod common;
 
 use common::*;
-use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
+use stark_assetid::Picture;
+use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{MediaParams, RgbaImage};
 use stark_model::document::{BrushDynamics, Tool};
-use stark_model::geom::Vec2;
+use stark_model::geom::{IVec2, Vec2};
 
 const RED: [f32; 4] = [0.85, 0.15, 0.1, 1.0];
 
@@ -93,6 +94,87 @@ fn apron_makes_tiles_seamless_under_zoom() {
         worst <= 25 && frac < 0.07,
         "tile seam: corner vs interior render differ by up to {worst} levels \
          on {:.2}% of pixels — the apron is not covering tile boundaries",
+        frac * 100.0
+    );
+}
+
+/// Like `render_shifted`, but what straddles the corner is a **placed image** (§23) —
+/// the one tile writer here that is not a render pass.
+///
+/// It has to meet the same rule, and it meets it in the strongest available form:
+/// every texel is computed from its own canvas position on the CPU, so a tile's apron
+/// is bit-identical to its neighbour's interior by construction rather than by a pass
+/// being careful. This is what says the tile walk really is written that way — an
+/// implementation that filled each tile from the image's origin *relative to the tile*
+/// would look perfect at one alignment and seam at every boundary.
+fn render_shifted_image(shift: Vec2) -> RgbaImage {
+    let mut engine = engine_or_skip_blue().expect("engine (caller checked adapter)");
+    engine.process(ViewCommand::SetMediaParams(MediaParams {
+        height_strength: 2.5,
+        specular: 0.3,
+        surface_strength: 0.0,
+    }));
+
+    // A field of varying color and full alpha, big enough to span the 4-tile corner in
+    // every direction. Varying rather than flat: a constant image is seamless however
+    // wrongly it is addressed.
+    const SIDE: u32 = 200;
+    let pixels = (0..SIDE * SIDE)
+        .flat_map(|i| {
+            let (x, y) = (i % SIDE, i / SIDE);
+            [
+                (x * 5 % 256) as u8,
+                (y * 3 % 256) as u8,
+                ((x ^ y) % 256) as u8,
+                255,
+            ]
+        })
+        .collect();
+    let png = Picture {
+        width: SIDE,
+        height: SIDE,
+        pixels,
+    }
+    .encode()
+    .expect("a well-formed field");
+    let id = engine.import_picture(&png).expect("import the field");
+    engine.process(DocCommand::PlaceImage {
+        carrier: None,
+        above: None,
+        at: IVec2::new(shift.x as i32, shift.y as i32) - IVec2::splat(SIDE as i32 / 2),
+        name: None,
+        image: id,
+    });
+
+    let center_px = Vec2::new(SIZE.width as f32 * 0.5, SIZE.height as f32 * 0.5);
+    engine.process(ViewCommand::Pan { delta: -shift });
+    engine.process(ViewCommand::Zoom {
+        anchor: center_px,
+        factor: 2.0,
+    });
+    engine.render_to_image()
+}
+
+#[test]
+fn apron_makes_a_placed_image_seamless_under_zoom() {
+    if engine_or_skip_blue().is_none() {
+        return; // no usable GPU adapter
+    }
+
+    let corner = render_shifted_image(Vec2::ZERO);
+    let interior = render_shifted_image(Vec2::new(128.0, 128.0));
+
+    // Held far tighter than its two neighbours above, and that is the point of testing
+    // this path separately: the tiles are CPU arithmetic on integer canvas positions,
+    // so the two runs' *tiles* are bit-identical and only the compositor's sampling
+    // stands between them — which is itself a pure function of canvas position. There
+    // is no sub-pixel residual to allow for here, so anything but a near-exact match is
+    // a real addressing bug rather than lighting amplifying a rounding difference.
+    let (frac, worst) = diff_fraction(&corner, &interior);
+    assert!(
+        worst <= 2 && frac < 0.01,
+        "placed-image seam: corner vs interior differ by up to {worst} levels on \
+         {:.2}% of pixels — the tile walk is not addressing canvas position",
         frac * 100.0
     );
 }

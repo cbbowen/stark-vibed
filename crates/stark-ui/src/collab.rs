@@ -336,6 +336,11 @@ fn install(state: AppState, session: CollabSession, mut events: Events) {
                             // stroke after the switch rather than baking a flat
                             // deposit that no later arrival un-bakes.
                             AssetNeed::Ground(id) => r.accept_surface(SurfaceId::Image(id), &bytes),
+                            // Likewise before the `PlaceImage` that wanted it: the
+                            // transport parks that action until the pixels land,
+                            // because a placement without them is not a degraded
+                            // placement, it is an empty layer (§23).
+                            AssetNeed::Picture(id) => r.accept_picture(id, &bytes),
                         }
                         (false, true)
                     }

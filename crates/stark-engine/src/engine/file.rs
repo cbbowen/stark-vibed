@@ -64,6 +64,14 @@ impl Engine {
                         file.surfaces.push((id, bytes));
                     }
                 }
+                // The third bag (§23). Its own, for the reason the ground has one:
+                // the bytes decode differently, so a single bag would hand each
+                // store the others' to reinterpret (§8).
+                AssetNeed::Picture(id) => {
+                    if let Some(bytes) = self.shared.apply.pictures.bytes(id) {
+                        file.pictures.push((id, bytes));
+                    }
+                }
             }
         }
         file
@@ -95,6 +103,11 @@ impl Engine {
         file.assets.retain(|(id, _)| keep(id));
         file.surfaces
             .retain(|(id, _)| AssetNeed::ground(*id).is_none_or(|n| keep(&n.content())));
+        // Pictures are *not* retained against this list, and cannot be: `resolvable`
+        // is what the opening app ships with (§12.4), and a picture is by definition
+        // something someone brought in — no build ships one. Filtering it anyway
+        // would be a rule that can only ever fire on an id collision.
+        file.pictures.retain(|(id, _)| keep(id));
         Ok(file.to_bytes()?)
     }
 
@@ -151,6 +164,12 @@ impl Engine {
         for (id, bytes) in &file.surfaces {
             if let Err(e) = self.accept_surface(*id, bytes) {
                 tracing::warn!("skipping a canvas ground this document names: {e}");
+            }
+        }
+        for (id, bytes) in &file.pictures {
+            match self.accept_picture(*id, bytes) {
+                Ok(()) => {}
+                Err(e) => tracing::warn!("skipping a picture this document places: {e}"),
             }
         }
         // Reachable only from a collaboration join now — [`Engine::load_document`] and
@@ -285,13 +304,14 @@ impl Engine {
     }
 
     /// Whether this engine already holds what `need` names, in whichever of the
-    /// two stores it belongs to.
+    /// three stores it belongs to.
     pub fn holds(&self, need: AssetNeed) -> bool {
         match need {
             AssetNeed::Brush(id) => self.has_asset(id),
             AssetNeed::Ground(_) => need
                 .surface()
                 .is_some_and(|id| self.surface_bytes(id).is_some()),
+            AssetNeed::Picture(id) => self.shared.apply.pictures.contains(id),
         }
     }
 
@@ -401,6 +421,45 @@ impl Engine {
             self.apply_surface();
         }
         Ok(id)
+    }
+
+    /// Import a **picture** (any image PNG), returning the content id a
+    /// [`PlaceImage`](stark_model::document::ActionKind::PlaceImage) references it by
+    /// (§23).
+    ///
+    /// [`import_brush`](Engine::import_brush)'s sibling, and the same bargain: the id
+    /// names the decoded, capped picture rather than the file bytes, so two people who
+    /// encoded the same photograph differently converge on one id and the stored form
+    /// reloads to it. Idempotent, and cheap on a repeat — placing the same reference
+    /// image twice holds one copy of it.
+    ///
+    /// A **request**, not a command (§4): it has to answer with the id, because the
+    /// action that references it cannot be built until the id exists. That ordering is
+    /// also what a shared session depends on — see
+    /// [`CollabSession::add_content`](stark_net::CollabSession), which must be told
+    /// about the bytes before the commit that names them goes out.
+    pub fn import_picture(&self, png_bytes: &[u8]) -> Result<AssetId> {
+        self.shared.apply.pictures.import(png_bytes)
+    }
+
+    /// Take in a picture that arrives already named: out of a save file's bundle, or
+    /// fetched for a peer's `PlaceImage` (§8, §12.4, §23).
+    ///
+    /// [`accept_surface`](Engine::accept_surface)'s argument, applied to the third
+    /// kind: bytes installed under someone else's id would place a *different
+    /// picture* than the log says, so they are refused rather than installed. The
+    /// failure it rules out is quieter than a ground's — no tooth is baked, the wrong
+    /// photograph simply appears — but it is the same joint, and the same check closes
+    /// it.
+    pub fn accept_picture(&self, expected: AssetId, png_bytes: &[u8]) -> Result<()> {
+        let actual = self.shared.apply.pictures.insert_bytes(png_bytes)?;
+        if actual != expected {
+            return Err(DocError::Asset(format!(
+                "picture {expected:?} arrived as {actual:?}; refusing to install it"
+            ))
+            .into());
+        }
+        Ok(())
     }
 
     /// Take in a ground that arrives already named: out of a save file's bundle, or

@@ -24,6 +24,7 @@ pub(crate) mod fill;
 pub(crate) mod filter;
 pub(crate) mod fold;
 pub(crate) mod footprint;
+pub(crate) mod image;
 pub(crate) mod layer;
 pub(crate) mod selection;
 pub(crate) mod transform;
@@ -40,6 +41,7 @@ pub use fold::{Logged, Materialize};
 /// The commutation vocabulary (§12.6) — what an action reads and writes, and
 /// whether two of them can be reordered.
 pub use footprint::{Footprint, Prop, Resource, fill_rect, footprint, stroke_rect};
+pub use image::{MAX_IMAGE_TILES, image_tiles};
 pub use layer::{BlendMode, DRAGO_K, DRAGO_K_RANGE, LayerId, MattePaint, MatteRegion, Place};
 pub use selection::{MAX_SELECTION_TILES, SelectionMode, SelectionOp, SelectionShape};
 pub use transform::{

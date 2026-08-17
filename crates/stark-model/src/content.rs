@@ -1,19 +1,19 @@
 //! What a document's pixels depend on besides its log (§6.6, §6.4).
 //!
-//! A stroke names the shape it stamps with and a `SetSurface` names the ground it
-//! moves onto, both by content id. Neither is in the log — the log carries the
-//! *name* — so anything that replays a log has first to answer "what does this
-//! need, and have I got it?".
+//! A stroke names the shape it stamps with, a `SetSurface` names the ground it moves
+//! onto, and a `PlaceImage` names the picture it lands — all three by content id.
+//! None of them is in the log — the log carries the *name* — so anything that
+//! replays a log has first to answer "what does this need, and have I got it?".
 //!
 //! That question is asked from three places — loading a file, joining a session, and
 //! receiving a peer's action — and it is the same question each time. So the answer
 //! lives here, beside the engine's two stores, rather than three times over in
 //! whichever crate asked first.
 //!
-//! The two kinds are one hash and travel one way; they part only at the far end,
-//! where a brush mask decodes as luminance × alpha and a ground as channel 0. So
-//! a receiver has to be *told* which it is being handed, and the thing that knows
-//! is the action that referenced it.
+//! The three kinds are one hash and travel one way; they part only at the far end,
+//! where a brush mask decodes as luminance × alpha, a ground as channel 0, and a
+//! picture as all four channels kept. So a receiver has to be *told* which it is
+//! being handed, and the thing that knows is the action that referenced it.
 
 use crate::AssetId;
 use crate::SurfaceId;
@@ -35,6 +35,14 @@ pub enum AssetNeed {
     /// unresolved ground silently drops the deposition tooth (§6.4) and bakes a
     /// smooth deposit into tiles that no later arrival un-bakes.
     Ground(AssetId),
+    /// A picture a `PlaceImage` lands as paint (§23).
+    ///
+    /// Missing it is the ground's case rather than the brush's, and for a sharper
+    /// reason than either: a brush degrades to the round tip and a ground to a wrong
+    /// deposit, but a picture has no degraded form at all — a placement without its
+    /// pixels is an empty layer, which is not a worse version of the action, it is the
+    /// absence of it. So a picture is never given up on (`stark-net`'s `content`).
+    Picture(AssetId),
 }
 
 impl AssetNeed {
@@ -55,7 +63,7 @@ impl AssetNeed {
     /// The id the bytes are named and transferred under.
     pub fn content(self) -> AssetId {
         match self {
-            AssetNeed::Brush(id) | AssetNeed::Ground(id) => id,
+            AssetNeed::Brush(id) | AssetNeed::Ground(id) | AssetNeed::Picture(id) => id,
         }
     }
 
@@ -63,7 +71,7 @@ impl AssetNeed {
     /// `stark-engine`'s `Engine::accept_surface`.
     pub fn surface(self) -> Option<SurfaceId> {
         match self {
-            AssetNeed::Brush(_) => None,
+            AssetNeed::Brush(_) | AssetNeed::Picture(_) => None,
             AssetNeed::Ground(id) => Some(SurfaceId::Image(id)),
         }
     }
@@ -89,6 +97,7 @@ pub fn action_content(action: &Action) -> Option<AssetNeed> {
             BrushShape::Round { .. } => None,
         },
         ActionKind::SetSurface(id) => AssetNeed::ground(*id),
+        ActionKind::PlaceImage { image, .. } => Some(AssetNeed::Picture(*image)),
         ActionKind::AddLayer { .. }
         | ActionKind::AddMatte { .. }
         | ActionKind::AddFilter { .. }
@@ -156,6 +165,8 @@ impl DocumentFile {
             .iter()
             .filter_map(|(id, _)| AssetNeed::ground(*id).map(AssetNeed::content))
             .collect();
+        let pictures: std::collections::HashSet<AssetId> =
+            self.pictures.iter().map(|(id, _)| *id).collect();
         self.required_content()
             .into_iter()
             // Exhaustive, with no `_` arm, for [`action_content`]'s reason: a kind
@@ -164,6 +175,7 @@ impl DocumentFile {
             .filter(|need| match need {
                 AssetNeed::Brush(id) => !brushes.contains(id),
                 AssetNeed::Ground(id) => !grounds.contains(id),
+                AssetNeed::Picture(id) => !pictures.contains(id),
             })
             .collect()
     }
@@ -196,41 +208,73 @@ mod tests {
         }))
     }
 
-    /// **A need is answered by its own bag and never by the other one.**
+    /// **A need is answered by its own bag and never by another one.**
     ///
     /// The bags are keyed apart because their bytes decode differently — a mask is
-    /// luminance × alpha, a ground is channel 0 — and an id is a *content* hash, so
-    /// one image imported as both a stamp and a ground carries one id in two bags
-    /// that cannot stand in for each other. Asked as one flattened set, a ground
-    /// whose bytes sit only in the brush bag came back "bundled": the bill was
-    /// short, nothing refused the replay, and every stroke on that ground deposited
-    /// through the flat stand-in into stored tiles (§6.4).
+    /// luminance × alpha, a ground is channel 0, a picture is all four channels kept
+    /// — and an id is a *content* hash, so one image imported as a stamp, a ground
+    /// and a picture carries one id in three bags that cannot stand in for each
+    /// other. Asked as one flattened set, a ground whose bytes sit only in the brush
+    /// bag came back "bundled": the bill was short, nothing refused the replay, and
+    /// every stroke on that ground deposited through the flat stand-in into stored
+    /// tiles (§6.4).
+    ///
+    /// Driven over all three, because the hazard is not "the brush bag versus the
+    /// ground bag" — it is that a bag which cannot decode these bytes will answer for
+    /// them anyway if anyone asks it, and a third bag is a third chance to ask wrong.
     #[test]
-    fn a_need_is_not_answered_by_the_other_bag() {
+    fn a_need_is_not_answered_by_another_bag() {
         let id = AssetId([7u8; 32]);
         let bytes = vec![1u8, 2, 3];
 
-        // A document that stamps with `id` and paints on the ground `id`, with the
-        // bytes filed under the *brush* bag only.
-        let mut doc = DocumentFile::new(vec![
-            stroke_with(BrushShape::Stamp(id)),
-            act(ActionKind::SetSurface(SurfaceId::Image(id))),
-        ]);
-        doc.assets.push((id, bytes.clone()));
-        assert_eq!(
-            doc.unbundled_content(),
-            vec![AssetNeed::Ground(id)],
-            "the ground is not bundled just because the brush bag holds the id",
-        );
+        // One document that stamps with `id`, paints on the ground `id`, and places
+        // the picture `id` — the same content hash filed three ways.
+        let doc = || {
+            DocumentFile::new(vec![
+                stroke_with(BrushShape::Stamp(id)),
+                act(ActionKind::SetSurface(SurfaceId::Image(id))),
+                act(ActionKind::PlaceImage {
+                    id: LayerId(1),
+                    carrier: None,
+                    above: None,
+                    at: crate::geom::IVec2::ZERO,
+                    name: None,
+                    image: id,
+                }),
+            ])
+        };
+        let brush = AssetNeed::Brush(id);
+        let ground = AssetNeed::Ground(id);
+        let picture = AssetNeed::Picture(id);
 
-        // Filed under the ground bag only: now it is the brush that is missing.
-        doc.assets.clear();
-        doc.surfaces.push((SurfaceId::Image(id), bytes.clone()));
-        assert_eq!(doc.unbundled_content(), vec![AssetNeed::Brush(id)]);
+        // Each bag in turn: filling one leaves exactly the other two owed.
+        for (fill, owed) in [
+            (0usize, vec![ground, picture]),
+            (1, vec![brush, picture]),
+            (2, vec![brush, ground]),
+        ] {
+            let mut d = doc();
+            match fill {
+                0 => d.assets.push((id, bytes.clone())),
+                1 => d.surfaces.push((SurfaceId::Image(id), bytes.clone())),
+                _ => d.pictures.push((id, bytes.clone())),
+            }
+            let mut got = d.unbundled_content();
+            got.sort_unstable();
+            let mut want = owed;
+            want.sort_unstable();
+            assert_eq!(
+                got, want,
+                "bag {fill} answered for content it cannot decode"
+            );
+        }
 
-        // Both bags, and the bill is settled.
-        doc.assets.push((id, bytes));
-        assert!(doc.unbundled_content().is_empty());
+        // All three, and the bill is settled.
+        let mut d = doc();
+        d.assets.push((id, bytes.clone()));
+        d.surfaces.push((SurfaceId::Image(id), bytes.clone()));
+        d.pictures.push((id, bytes));
+        assert!(d.unbundled_content().is_empty());
     }
 
     /// `Flat` is procedural: it has no bytes to move, so it is never a need and
