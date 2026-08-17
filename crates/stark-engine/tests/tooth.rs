@@ -31,7 +31,7 @@ mod common;
 use common::*;
 use stark_engine::command::DocCommand;
 use stark_engine::document::{BrushDynamics, BrushParams, BrushShape};
-use stark_engine::gpu::SurfaceId;
+use stark_model::SurfaceId;
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];

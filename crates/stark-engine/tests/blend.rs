@@ -20,12 +20,12 @@
 mod common;
 
 use common::*;
-use stark_engine::colorspace::ColorSpaceId;
 use stark_engine::command::DocCommand;
 use stark_engine::document::{
     BlendMode, BrushDynamics, BrushParams, BrushShape, DRAGO_K, DRAGO_K_RANGE, LayerId,
 };
 use stark_engine::{Engine, RgbaImage};
+use stark_model::ColorSpaceId;
 use stark_model::geom::Vec2;
 
 const ROOT: LayerId = LayerId(0);
@@ -426,7 +426,10 @@ fn black_is_the_identity_through_the_round_trip() {
     ];
     // Skipping any space this build does not carry, which keeps the table a
     // statement about the *spaces* rather than about the feature set.
-    for (space, color, tol) in cases.into_iter().filter(|(s, _, _)| s.available()) {
+    for (space, color, tol) in cases
+        .into_iter()
+        .filter(|(s, _, _)| stark_engine::colorspace::available(*s))
+    {
         for mode in [BlendMode::Reinhard, RADIANCE] {
             let Some(mut engine) = engine_or_skip_with(space) else {
                 return;
@@ -483,7 +486,10 @@ fn white_is_the_identity_through_the_round_trip() {
         (ColorSpaceId::Mixbox, MUTED, 2u8),
         (ColorSpaceId::Mixbox, WARM, 2u8),
     ];
-    for (space, color, tol) in cases.into_iter().filter(|(s, _, _)| s.available()) {
+    for (space, color, tol) in cases
+        .into_iter()
+        .filter(|(s, _, _)| stark_engine::colorspace::available(*s))
+    {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;
         };

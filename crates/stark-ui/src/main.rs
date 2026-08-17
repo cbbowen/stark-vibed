@@ -72,9 +72,9 @@ use platform::{canvas_by_id, capture_pointer};
 use render::CANVAS_ID;
 use settings::SettingsModal;
 use slots::SlotOverlay;
-use stark_engine::ColorSpaceId;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_engine::document::SelectionOp;
+use stark_model::ColorSpaceId;
 use state::{AppState, dispatch, dispatch_quiet, resize, update_brush, use_obs};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus

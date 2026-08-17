@@ -831,8 +831,7 @@ fn a_resampling_filter_is_never_offered_a_merge() {
 #[cfg(feature = "mixbox")]
 #[test]
 fn a_filter_merges_in_a_pigment_document() {
-    let Some(mut engine) = engine_or_skip_with(stark_engine::colorspace::ColorSpaceId::Mixbox)
-    else {
+    let Some(mut engine) = engine_or_skip_with(stark_model::ColorSpaceId::Mixbox) else {
         return;
     };
     paint(&mut engine, WARM, 44.0, H_STROKE);

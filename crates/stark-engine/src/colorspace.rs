@@ -9,59 +9,45 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use stark_model::{ColorSpaceId, color};
 
-use stark_model::color;
-
-/// Identifies a color space; serialized in the save format (`CanvasMeta`, §8).
+/// Construct the color space implementation for `id`, or `None` when this
+/// build does not carry it.
 ///
-/// **Every variant is unconditional, including one whose implementation a build may
-/// not carry** (`Mixbox`, behind the `mixbox` cargo feature). Postcard encodes enums
-/// by index (§8): a build that `cfg`'d a variant away would renumber every variant
-/// appended after it, so the same bytes would name different spaces in two builds of
-/// the same version — a wire-format break that nothing would report, which is the
-/// class §19 exists to rule out. An id is therefore always nameable and always
-/// serializable, and whether it can be *honoured* is [`Self::make`]'s answer.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ColorSpaceId {
-    Oklab,
-    Mixbox,
+/// `None` is reachable only for [`ColorSpaceId::Mixbox`] without the `mixbox`
+/// feature. It is deliberately not a fallback to Oklab: the two spaces read the
+/// same tile bytes as different colors, so opening a pigment document through a
+/// colorimetric space would render every pixel wrong while looking like it
+/// worked. Failing is the honest answer, and
+/// [`EngineError::UnsupportedColorSpace`](crate::error::EngineError::UnsupportedColorSpace)
+/// is where it lands.
+///
+/// A free function rather than a method on the id, because the id is
+/// `stark-model`'s and an inherent impl may only be written where the type is
+/// (§2). The division it forces is the right one: naming a space is a fact about
+/// the document, building one is the engine's business.
+pub fn make(id: ColorSpaceId) -> Option<Arc<dyn ColorSpace>> {
+    match id {
+        ColorSpaceId::Oklab => Some(Arc::new(OkLabColorSpace)),
+        #[cfg(feature = "mixbox")]
+        ColorSpaceId::Mixbox => Some(Arc::new(MixboxColorSpace)),
+        #[cfg(not(feature = "mixbox"))]
+        ColorSpaceId::Mixbox => None,
+    }
 }
 
-impl ColorSpaceId {
-    /// Construct the color space implementation for this id, or `None` when this
-    /// build does not carry it.
-    ///
-    /// `None` is reachable only for [`ColorSpaceId::Mixbox`] without the `mixbox`
-    /// feature. It is deliberately not a fallback to Oklab: the two spaces read the
-    /// same tile bytes as different colors, so opening a pigment document through a
-    /// colorimetric space would render every pixel wrong while looking like it
-    /// worked. Failing is the honest answer, and
-    /// [`EngineError::UnsupportedColorSpace`](crate::error::EngineError::UnsupportedColorSpace)
-    /// is where it lands.
-    pub fn make(self) -> Option<Arc<dyn ColorSpace>> {
-        match self {
-            ColorSpaceId::Oklab => Some(Arc::new(OkLabColorSpace)),
-            #[cfg(feature = "mixbox")]
-            ColorSpaceId::Mixbox => Some(Arc::new(MixboxColorSpace)),
-            #[cfg(not(feature = "mixbox"))]
-            ColorSpaceId::Mixbox => None,
-        }
-    }
+/// Whether this build can open a document in `id`'s space — [`make`] without
+/// building anything. What a frontend asks to decide which spaces to offer.
+pub fn available(id: ColorSpaceId) -> bool {
+    make(id).is_some()
+}
 
-    /// Whether this build can open a document in this space — [`Self::make`] without
-    /// building anything. What a frontend asks to decide which spaces to offer.
-    pub fn available(self) -> bool {
-        self.make().is_some()
-    }
-
-    /// Every id this build can actually open, in a stable order — the list a "new
-    /// document" picker is built from.
-    pub fn all_available() -> impl Iterator<Item = ColorSpaceId> {
-        [ColorSpaceId::Oklab, ColorSpaceId::Mixbox]
-            .into_iter()
-            .filter(|id| id.available())
-    }
+/// Every id this build can actually open, in a stable order — the list a "new
+/// document" picker is built from.
+pub fn all_available() -> impl Iterator<Item = ColorSpaceId> {
+    [ColorSpaceId::Oklab, ColorSpaceId::Mixbox]
+        .into_iter()
+        .filter(|id| available(*id))
 }
 
 /// A color space: tile layout + blend + picker conversions + GPU shaders.

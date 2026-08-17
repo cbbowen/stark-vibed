@@ -29,8 +29,9 @@
 //! here is the state that interprets them.
 
 use crate::document::{FillOp, LayerId, SelectionOp, StrokeRecord};
-use crate::path::{ControlPoint, frozen_spans_for};
+use crate::path::frozen_spans_for;
 use crate::peer::{GESTURE_RESYNC, GestureFrame, LiveGesture, StrokeHead};
+use stark_model::path::ControlPoint;
 
 /// The gesture a sender has in flight, in the form [`GestureTx::encode`] reads it.
 ///

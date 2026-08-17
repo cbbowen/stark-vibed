@@ -13,13 +13,14 @@ use crate::document::{
     Tool,
 };
 use crate::guides::{PerspectiveGuide, Scaffold};
-use crate::path::{ControlPoint, PathFitter};
+use crate::path::PathFitter;
 use crate::peer::{
     GestureView, HEARTBEAT, Identity, LiveGesture, PeerFrame, StrokeHead, default_name,
 };
 use crate::presence::{GestureSource, GestureTx};
 use crate::tow::{Tow, TowString};
 use stark_model::geom::{Vec2, ViewTransform};
+use stark_model::path::ControlPoint;
 
 /// Minimum spacing (canvas px) between lasso vertices. The mask shader costs one
 /// segment test per texel per vertex, and pointer samples arrive far denser than a

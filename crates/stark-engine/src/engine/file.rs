@@ -14,13 +14,15 @@
 use std::sync::Arc;
 
 use super::{Authoring, Engine, GpuBuild, GpuKeep, ROOT_LAYER, build_gpu};
-use crate::assets::AssetId;
-use crate::colorspace::{ColorSpace, ColorSpaceId};
+use crate::colorspace::ColorSpace;
 use crate::content::AssetNeed;
 use crate::document::{Action, DocState, LinearTimeline, effective_actions};
-use crate::gpu::{EnvironmentId, SurfaceId};
+use crate::gpu::EnvironmentId;
 use crate::io::DocumentFile;
 use crate::{EngineError, Result};
+use stark_model::AssetId;
+use stark_model::ColorSpaceId;
+use stark_model::SurfaceId;
 
 impl Engine {
     /// Snapshot the document as a saveable [`DocumentFile`] (§8), bundling the
@@ -134,10 +136,7 @@ impl Engine {
             // one built in memory came from a live `Engine` in this same build, whose
             // space therefore resolves by construction. So the `None` arm is not a
             // case this function declines to handle — it is one that cannot arrive.
-            let cs = file
-                .canvas
-                .color_space
-                .make()
+            let cs = crate::colorspace::make(file.canvas.color_space)
                 .expect("`from_bytes` refuses a document whose space this build lacks");
             self.rebuild_gpu_for(cs);
         }
@@ -300,15 +299,14 @@ impl Engine {
     /// `color_space`, **before** anything is reset — so a refusal leaves the open
     /// document alone, the same bargain [`Self::load_document`] makes. A frontend
     /// whose picker comes from
-    /// [`ColorSpaceId::all_available`](crate::colorspace::ColorSpaceId::all_available)
+    /// [`ColorSpaceId::all_available`](stark_model::ColorSpaceId::all_available)
     /// never sees it.
     pub fn new_document(
         &mut self,
         color_space: ColorSpaceId,
         surface: SurfaceId,
     ) -> crate::error::Result<()> {
-        let cs = color_space
-            .make()
+        let cs = crate::colorspace::make(color_space)
             .ok_or(EngineError::UnsupportedColorSpace(color_space))?;
         self.initial_surface = surface;
         self.reset_document();

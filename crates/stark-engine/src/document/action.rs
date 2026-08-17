@@ -12,10 +12,10 @@ use super::filter::Filter;
 use super::layer::{BlendMode, Layer, LayerContent, LayerId, MattePaint, MatteRegion, Place};
 use super::selection::SelectionOp;
 use super::state::DocState;
-use crate::gpu::SurfaceId;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
 use crate::gpu::tile::TilePool;
+use stark_model::SurfaceId;
 use stark_model::geom::Vec2;
 
 /// Identifies the author of an action: one local user, or a peer (§4).
@@ -84,7 +84,7 @@ pub struct StrokeRecord {
     /// fewer points and all that is needed to reconstruct the stroke. The raw
     /// samples are never stored — not in the file, not in the action log, not
     /// on the wire.
-    pub path: Vec<crate::path::ControlPoint>,
+    pub path: Vec<stark_model::path::ControlPoint>,
     /// Seed for any brush jitter, making replay reproducible. Unused by the MVP
     /// brush but recorded so the format is stable.
     pub seed: u64,

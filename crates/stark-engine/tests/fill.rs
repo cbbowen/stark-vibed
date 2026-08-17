@@ -602,7 +602,6 @@ fn fill_golden() {
 // ---------------------------------------------------------------------------
 
 use stark_engine::PickOptions;
-use stark_engine::colorspace::ColorSpaceId;
 use stark_engine::document::{GradientAxis, GradientParcel, Parcel};
 use stark_model::{Gradient, GradientStop};
 
@@ -814,7 +813,7 @@ fn the_gradient_preview_does_not_accumulate() {
 /// (§6.7). Read back through the eyedropper, which answers in sRGB.
 #[test]
 fn the_ramp_ends_are_the_stops_in_both_spaces() {
-    for space in ColorSpaceId::all_available() {
+    for space in stark_engine::colorspace::all_available() {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;
         };

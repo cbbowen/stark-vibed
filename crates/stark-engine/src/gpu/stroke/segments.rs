@@ -1128,8 +1128,8 @@ mod tests {
         // Enough control points that the curve has spans to freeze part of, and
         // straight so arc length is the chord and the taper zones are easy to reason
         // about.
-        let path: Vec<crate::path::ControlPoint> = (0..=12)
-            .map(|i| crate::path::ControlPoint::at(Vec2::new(i as f32 / 12.0 * len, 0.0)))
+        let path: Vec<stark_model::path::ControlPoint> = (0..=12)
+            .map(|i| stark_model::path::ControlPoint::at(Vec2::new(i as f32 / 12.0 * len, 0.0)))
             .collect();
         StrokeRecord {
             layer: crate::document::LayerId(0),
@@ -1323,10 +1323,10 @@ mod tests {
     /// travel rather than a value. No second rule was added for the pen.
     #[test]
     fn a_pressure_ramp_on_a_huge_brush_has_no_step_either() {
-        let path: Vec<crate::path::ControlPoint> = (0..=24)
+        let path: Vec<stark_model::path::ControlPoint> = (0..=24)
             .map(|i| {
                 let t = i as f32 / 24.0;
-                let mut cp = crate::path::ControlPoint::at(Vec2::new(t * 4000.0, 0.0));
+                let mut cp = stark_model::path::ControlPoint::at(Vec2::new(t * 4000.0, 0.0));
                 cp.pressure = 0.05 + 0.95 * t;
                 cp
             })
@@ -1605,10 +1605,10 @@ mod tests {
 
     /// A stroke bending through `sweep` radians of a circle of radius `curve_radius`.
     fn curved_record(radius: f32, curve_radius: f32, sweep: f32) -> StrokeRecord {
-        let path: Vec<crate::path::ControlPoint> = (0..=12)
+        let path: Vec<stark_model::path::ControlPoint> = (0..=12)
             .map(|i| {
                 let t = i as f32 / 12.0 * sweep;
-                crate::path::ControlPoint::at(Vec2::new(
+                stark_model::path::ControlPoint::at(Vec2::new(
                     curve_radius * t.sin(),
                     curve_radius * (1.0 - t.cos()),
                 ))
@@ -1909,7 +1909,7 @@ mod tests {
     #[test]
     fn a_square_tip_claims_the_corners_it_can_paint() {
         let radius = 24.0f32;
-        let stamp = BrushShape::Stamp(crate::assets::AssetId([7u8; 32]));
+        let stamp = BrushShape::Stamp(stark_model::AssetId([7u8; 32]));
         assert_eq!(
             tip_reach(&BrushShape::default()),
             1.0,
@@ -1967,7 +1967,7 @@ mod tests {
             brush,
             path: pts
                 .iter()
-                .map(|p| crate::path::ControlPoint::at(*p))
+                .map(|p| stark_model::path::ControlPoint::at(*p))
                 .collect(),
             seed: 0,
         }

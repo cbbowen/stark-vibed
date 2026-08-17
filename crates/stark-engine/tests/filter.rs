@@ -666,8 +666,7 @@ fn chromatic_aberration_is_the_identity_deep_inside_flat_paint() {
 #[cfg(feature = "mixbox")]
 #[test]
 fn chromatic_aberration_parts_the_spectrum_in_pigment_too() {
-    let Some(mut engine) = engine_or_skip_with(stark_engine::colorspace::ColorSpaceId::Mixbox)
-    else {
+    let Some(mut engine) = engine_or_skip_with(stark_model::ColorSpaceId::Mixbox) else {
         return;
     };
     paint(&mut engine, RED, 22.0, STROKE);
@@ -1033,8 +1032,7 @@ fn a_rampless_gradient_map_changes_no_pixel() {
 #[cfg(feature = "mixbox")]
 #[test]
 fn a_gradient_map_works_in_a_pigment_document() {
-    let Some(mut engine) = engine_or_skip_with(stark_engine::colorspace::ColorSpaceId::Mixbox)
-    else {
+    let Some(mut engine) = engine_or_skip_with(stark_model::ColorSpaceId::Mixbox) else {
         return;
     };
     paint(&mut engine, [0.1, 0.1, 0.9, 1.0], 22.0, STROKE);
@@ -1061,8 +1059,7 @@ fn a_gradient_map_works_in_a_pigment_document() {
 #[cfg(feature = "mixbox")]
 #[test]
 fn a_filter_works_in_a_pigment_document() {
-    let Some(mut engine) = engine_or_skip_with(stark_engine::colorspace::ColorSpaceId::Mixbox)
-    else {
+    let Some(mut engine) = engine_or_skip_with(stark_model::ColorSpaceId::Mixbox) else {
         return;
     };
     paint(&mut engine, RED, 22.0, STROKE);

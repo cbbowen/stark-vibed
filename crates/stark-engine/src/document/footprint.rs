@@ -465,8 +465,8 @@ mod tests {
     use crate::document::Place;
     use crate::document::action::ActionId;
     use crate::document::brush::BrushParams;
-    use crate::path::ControlPoint;
     use stark_model::geom::Vec2;
+    use stark_model::path::ControlPoint;
 
     fn act(actor: u64, kind: ActionKind) -> Action {
         Action {

@@ -21,8 +21,8 @@ use super::footprint::{Prop, Resource, footprint};
 use super::layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion};
 use super::selection::Selection;
 use super::state::{DocState, LayerSite};
-use crate::gpu::SurfaceId;
 use crate::gpu::tile::TilePairHandle;
+use stark_model::SurfaceId;
 use stark_model::geom::{TileCoord, TileRect};
 
 /// One restorable write. Each variant covers exactly one [`footprint
@@ -345,7 +345,7 @@ mod tests {
     use super::*;
     use crate::document::action::{ActionId, ActionKind};
     use crate::document::layer::Place;
-    use crate::gpu::SurfaceId;
+    use stark_model::SurfaceId;
 
     const A: LayerId = LayerId(0);
     const B: LayerId = LayerId(1);

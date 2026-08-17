@@ -42,6 +42,6 @@ pub use merge::{MergeRenderer, MergeSide};
 pub use registry::{Registry, Resource};
 pub use selection::SelectionRenderer;
 pub use stroke::{StrokeRenderer, StrokeSpans, ToolState};
-pub use surface::{Surface, SurfaceId};
+pub use surface::Surface;
 pub use tile::{AllocSource, MaskHandle, TilePairHandle, TilePool};
 pub use transform::TransformRenderer;

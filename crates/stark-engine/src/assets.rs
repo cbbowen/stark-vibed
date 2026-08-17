@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use crate::error::Result;
 use crate::gpu::context::GpuContext;
 
-pub use stark_assetid::{AssetId, MAX_SHAPE_DIM};
+use stark_model::AssetId;
 
 /// A loaded brush shape: its source bytes and the textures the stroke path reads it
 /// through.

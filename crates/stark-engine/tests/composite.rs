@@ -28,6 +28,7 @@ mod common;
 use common::*;
 use stark_engine::command::DocCommand;
 use stark_engine::document::{BrushDynamics, BrushParams, BrushShape};
+use stark_model::ColorSpaceId;
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.10, 0.10, 1.0];
@@ -222,7 +223,6 @@ fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
 #[test]
 fn a_kept_offscreen_renders_what_a_fresh_one_would() {
     #[cfg(feature = "mixbox")]
-    use stark_engine::ColorSpaceId;
     use stark_engine::command::ViewCommand;
     use stark_engine::document::{MattePaint, MatteRegion, Place};
     use stark_engine::{Background, EnvironmentId, ExportScale, Offscreen, Rendered};

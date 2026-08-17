@@ -25,7 +25,9 @@ use bytes::Bytes;
 use iroh_blobs::Hash;
 use rpds::RedBlackTreeMapSync;
 use stark_engine::document::{Action, ActionId};
-use stark_engine::{AssetId, BuildId, CanvasMeta, DocumentFile, SurfaceId};
+use stark_engine::{BuildId, CanvasMeta, DocumentFile};
+use stark_model::AssetId;
+use stark_model::SurfaceId;
 
 use crate::session::AssetNeed;
 

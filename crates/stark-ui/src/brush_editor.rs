@@ -31,11 +31,13 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
+use stark_engine::InputSample;
 use stark_engine::document::{
     BrushParams, BrushShape, ModSource, Modulation, Modulations, NoiseKind, OrientationSource,
     PenState, Tool,
 };
-use stark_engine::{ColorSpaceId, InputSample, SurfaceId};
+use stark_model::ColorSpaceId;
+use stark_model::SurfaceId;
 use stark_model::geom::Vec2;
 
 use dioxus::html::HasFileData;

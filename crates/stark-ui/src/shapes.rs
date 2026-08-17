@@ -20,8 +20,8 @@
 
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
-use stark_engine::AssetId;
 use stark_engine::document::BrushShape;
+use stark_model::AssetId;
 
 use crate::platform::{base64_decode, base64_encode, normalize_shape_image};
 use crate::state::{AppState, update_brush};

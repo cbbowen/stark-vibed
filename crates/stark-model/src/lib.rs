@@ -27,8 +27,18 @@
 //! [`DocState`]: https://docs.rs/stark-engine
 
 pub mod color;
+pub mod colorspace;
 pub mod geom;
 pub mod gradient;
+pub mod path;
+pub mod surface;
 
+pub use colorspace::ColorSpaceId;
 pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};
 pub use gradient::{Gradient, GradientStop};
+/// What a content id *is* — decode, cap, hash (§19). Re-exported rather than
+/// redefined: `stark-assetid` is a crate of its own so a *build script* can compute
+/// an id, which is what lets the frontend know a bundled asset's id before fetching
+/// it. This crate is the same argument one level up, and has no reason to restate it.
+pub use stark_assetid::{AssetId, MAX_SHAPE_DIM};
+pub use surface::SurfaceId;

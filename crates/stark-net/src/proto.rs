@@ -18,9 +18,9 @@ use std::sync::Mutex;
 use bytes::Bytes;
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
-use stark_engine::AssetId;
 use stark_engine::document::{Action, ActionId};
 use stark_engine::peer::PeerFrame;
+use stark_model::AssetId;
 
 use crate::mirror::{Mirror, Served};
 

@@ -39,7 +39,8 @@ use crate::document::{
     BlendMode, BrushParams, FillOp, Filter, LayerId, MattePaint, MatteRegion, Place, SelectionOp,
     ShapeAction, Tool, TransformMap,
 };
-use crate::gpu::{EnvironmentId, MediaParams, SurfaceId};
+use crate::gpu::{EnvironmentId, MediaParams};
+use stark_model::SurfaceId;
 use stark_model::geom::{Extent2, Vec2};
 
 /// One pen/mouse sample in canvas space.

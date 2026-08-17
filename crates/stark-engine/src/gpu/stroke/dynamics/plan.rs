@@ -1560,7 +1560,7 @@ mod tests {
             brush,
             path: pts
                 .iter()
-                .map(|p| crate::path::ControlPoint::at(*p))
+                .map(|p| stark_model::path::ControlPoint::at(*p))
                 .collect(),
             seed: 0,
         }

@@ -31,9 +31,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::document::{ActorId, BrushParams, FillOp, LayerId, SelectionOp, StrokeRecord};
-use crate::path::ControlPoint;
 use crate::presence::GestureRx;
 use stark_model::geom::Vec2;
+use stark_model::path::ControlPoint;
 
 /// How long a peer may go unheard-from before it leaves the roster, in seconds.
 /// Peers publish at least every [`HEARTBEAT`] even when idle, so this is several
@@ -572,7 +572,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
 mod tests {
     use super::*;
     use crate::document::{SelectionMode, SelectionShape};
-    use crate::path::ControlPoint;
+    use stark_model::path::ControlPoint;
 
     fn frame(seq: u64, gesture: Option<GestureFrame>) -> PeerFrame {
         PeerFrame {

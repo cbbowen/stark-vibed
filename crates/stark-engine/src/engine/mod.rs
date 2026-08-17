@@ -36,8 +36,8 @@ pub use pick::{PickOptions, PickSource};
 pub use render::{Background, ExportPlan, ExportScale, Rendered};
 
 use crate::Result;
-use crate::assets::{AssetId, AssetStore};
-use crate::colorspace::{ColorSpace, ColorSpaceId};
+use crate::assets::AssetStore;
+use crate::colorspace::ColorSpace;
 use crate::command::{DocCommand, GestureCommand, InputCommand, PeerCommand, ViewCommand};
 use crate::document::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, CanvasBounds, DocState, Layer,
@@ -49,10 +49,13 @@ use crate::gpu::desc::Zeroes;
 use crate::gpu::{
     BlendPass, Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer,
     FilterPass, GpuContext, MergeRenderer, Registry, SelectionRenderer, StrokeRenderer, Surface,
-    SurfaceId, TilePool, TransformRenderer,
+    TilePool, TransformRenderer,
 };
 use crate::peer::Peers;
 use crate::session::ShapeResult;
+use stark_model::AssetId;
+use stark_model::ColorSpaceId;
+use stark_model::SurfaceId;
 use stark_model::geom::{Extent2, ViewTransform};
 
 /// The starting layer present in every new document.
@@ -640,7 +643,7 @@ impl Engine {
     /// Fails with [`EngineError::UnsupportedColorSpace`] if this build does not carry
     /// the space — today only `Mixbox` without the `mixbox` feature. A frontend that
     /// builds its picker from
-    /// [`ColorSpaceId::all_available`](crate::colorspace::ColorSpaceId::all_available)
+    /// [`ColorSpaceId::all_available`](stark_model::ColorSpaceId::all_available)
     /// never sees it.
     pub fn new_with_color_space(
         gpu: GpuContext,
@@ -648,8 +651,7 @@ impl Engine {
         viewport: Extent2,
         color_space: ColorSpaceId,
     ) -> Result<Self> {
-        let color_space = color_space
-            .make()
+        let color_space = crate::colorspace::make(color_space)
             .ok_or(EngineError::UnsupportedColorSpace(color_space))?;
         // The registry starts on the builtin flat ground — it is all that can be
         // built before any bytes exist, and it is also what a fresh document is on

@@ -1392,10 +1392,10 @@ fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
     );
     brush.drain = 0.0;
     // A shallow 72 px arc over 200 knots — every span ~0.36 px, like the repro.
-    let path: Vec<stark_engine::path::ControlPoint> = (0..200)
+    let path: Vec<stark_model::path::ControlPoint> = (0..200)
         .map(|i| {
             let ang = (i as f32 / 199.0 - 0.5) * 1.2;
-            let mut cp = stark_engine::path::ControlPoint::at(Vec2::new(
+            let mut cp = stark_model::path::ControlPoint::at(Vec2::new(
                 ang.sin() * 60.0,
                 (ang.cos() - 1.0) * 60.0,
             ));

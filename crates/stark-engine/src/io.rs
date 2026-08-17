@@ -21,11 +21,11 @@ use std::io::{Read, Write};
 use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
 use serde::{Deserialize, Serialize};
 
-use crate::assets::AssetId;
-use crate::colorspace::ColorSpaceId;
 use crate::document::Action;
 use crate::error::{EngineError, Result};
-use crate::gpu::SurfaceId;
+use stark_model::AssetId;
+use stark_model::ColorSpaceId;
+use stark_model::SurfaceId;
 use stark_model::geom::TILE_SIZE;
 
 /// Container magic; identifies a Stark document.
@@ -306,7 +306,7 @@ impl DocumentFile {
         // lack is the *implementation*. So this is not a decode failure, and saying so
         // is what lets a frontend offer "this document needs a Mixbox build" instead of
         // "this file is corrupt".
-        if !file.canvas.color_space.available() {
+        if !crate::colorspace::available(file.canvas.color_space) {
             return Err(EngineError::UnsupportedColorSpace(file.canvas.color_space));
         }
         Ok(file)

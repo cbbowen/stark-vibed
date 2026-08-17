@@ -15,7 +15,7 @@ use super::layer::{
     BlendMode, CompositeParams, Layer, LayerContent, LayerId, MattePaint, MatteRegion, Place,
 };
 use super::selection::Selection;
-use crate::gpu::SurfaceId;
+use stark_model::SurfaceId;
 use stark_model::geom::{TileCoord, Vec2};
 
 /// Inclusive tile-coordinate bounding box of all populated tiles (§6),

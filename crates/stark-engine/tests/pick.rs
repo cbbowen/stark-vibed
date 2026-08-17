@@ -16,7 +16,6 @@
 mod common;
 
 use common::*;
-use stark_engine::colorspace::ColorSpaceId;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{Engine, LayerId, PickOptions, PickSource};
 use stark_model::geom::Vec2;
@@ -66,7 +65,7 @@ fn assert_near(got: Option<[f32; 3]>, want: [f32; 4], tol: f32, what: &str) {
 /// right in one and wildly wrong in the other.
 #[test]
 fn picks_the_color_that_was_painted() {
-    for space in ColorSpaceId::all_available() {
+    for space in stark_engine::colorspace::all_available() {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;
         };

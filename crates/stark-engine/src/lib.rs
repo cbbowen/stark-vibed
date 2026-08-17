@@ -104,8 +104,8 @@ pub(crate) fn unpoisoned<'a, T>(
     lock.unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-pub use assets::{AssetId, AssetStore};
-pub use colorspace::{ColorSpace, ColorSpaceId};
+pub use assets::AssetStore;
+pub use colorspace::ColorSpace;
 pub use command::{InputCommand, InputSample};
 pub use content::{AssetNeed, action_content};
 pub use document::{LayerId, Selection, SelectionMode, SelectionOp, SelectionShape};
@@ -116,7 +116,7 @@ pub use engine::{
 pub use error::{EngineError, Result};
 pub use gpu::{
     Compositor, CompositorPipeline, DeviceFailure, EnvironmentId, FailureKind, GpuContext,
-    GpuHealth, MediaParams, Offscreen, StrokeRenderer, SurfaceId, TilePairHandle, TilePool,
+    GpuHealth, MediaParams, Offscreen, StrokeRenderer, TilePairHandle, TilePool,
 };
 pub use guides::{AxisPencil, AxisPlane, GuideScene, Lens, PairTrace, PerspectiveGuide, Scaffold};
 pub use image::RgbaImage;

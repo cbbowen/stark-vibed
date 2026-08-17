@@ -1,7 +1,7 @@
 //! User-supplied brush-shape import robustness (§6.6).
 //!
 //! Arbitrary user images must import safely: oversized sources are capped to
-//! [`stark_engine::assets::MAX_SHAPE_DIM`] (a raw 4096² upload would otherwise
+//! [`stark_model::MAX_SHAPE_DIM`] (a raw 4096² upload would otherwise
 //! exceed the device texture limit), the canonical stored PNG is a fixed point
 //! of import (re-importing it yields the same id), and a stroke drawn with an
 //! oversized-source shape survives save/load in a fresh engine.
@@ -9,10 +9,10 @@
 mod common;
 
 use common::*;
-use stark_engine::assets::MAX_SHAPE_DIM;
 use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
 use stark_engine::document::{BrushShape, OrientationSource, Tool};
 use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_model::MAX_SHAPE_DIM;
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];

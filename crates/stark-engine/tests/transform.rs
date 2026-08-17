@@ -15,12 +15,12 @@ mod common;
 use common::*;
 use stark_engine::RgbaImage;
 #[cfg(feature = "mixbox")]
-use stark_engine::colorspace::ColorSpaceId;
 use stark_engine::command::DocCommand;
 use stark_engine::document::{
     LayerId, MattePaint, MatteRegion, PerspectiveMap, Place, SelectionMode, SelectionOp,
     SelectionShape, TransformMap, WarpMap, rect_corners,
 };
+use stark_model::ColorSpaceId;
 use stark_model::geom::{Affine2, Vec2};
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];

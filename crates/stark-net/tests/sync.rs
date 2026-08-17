@@ -9,7 +9,8 @@ use stark_engine::document::{BrushParams, BrushShape, Tool};
 use stark_engine::engine::headless_engine;
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::peer::{GestureFrame, PeerFrame, StrokeHead};
-use stark_engine::{Engine, RgbaImage, SurfaceId};
+use stark_engine::{Engine, RgbaImage};
+use stark_model::SurfaceId;
 use stark_model::geom::{Extent2, Vec2};
 use stark_net::{AssetNeed, CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket};
 
@@ -60,7 +61,7 @@ fn identical(a: &RgbaImage, b: &RgbaImage) -> bool {
 
 /// Local options that promise this client can produce `ids` without the network
 /// — what the frontend passes from its build-time manifest of bundled assets.
-fn promising(ids: &[stark_engine::AssetId]) -> NetOptions {
+fn promising(ids: &[stark_model::AssetId]) -> NetOptions {
     NetOptions {
         resolvable: ids.to_vec(),
         ..NetOptions::local()
@@ -657,7 +658,7 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
 
     // The joiner says it can resolve the gesso ground itself — which, being a
     // ground that ships with the app, it can.
-    let stark_engine::SurfaceId::Image(promised) = gesso else {
+    let stark_model::SurfaceId::Image(promised) = gesso else {
         panic!("an imported ground is an image");
     };
     let Joined {

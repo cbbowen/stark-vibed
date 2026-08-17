@@ -14,10 +14,9 @@ use crate::platform::Canvas;
 use stark_engine::AssetNeed;
 use stark_engine::command::ViewCommand;
 use stark_engine::document::Tool;
-use stark_engine::{
-    ColorSpaceId, Engine, EnvironmentId, GpuContext, InputCommand, InputSample, ObservableState,
-    SurfaceId,
-};
+use stark_engine::{Engine, EnvironmentId, GpuContext, InputCommand, InputSample, ObservableState};
+use stark_model::ColorSpaceId;
+use stark_model::SurfaceId;
 use stark_model::ViewTransform;
 use stark_model::geom::Extent2;
 
@@ -51,7 +50,7 @@ pub struct Renderer {
     /// its bytes are fetched (§6.6), keyed by the name that module gives it.
     /// A short list looked up by name a handful of times per frame at most —
     /// a `Vec` beats a map, and keeps gallery order.
-    builtins: Vec<(&'static str, stark_engine::AssetId)>,
+    builtins: Vec<(&'static str, stark_model::AssetId)>,
     /// The canvas grounds bundled with the app (`crate::grounds`), each imported
     /// once its height map is fetched (§6.4), keyed by the name that module gives
     /// it.
@@ -297,7 +296,7 @@ impl Renderer {
     /// for one: it is the app that owns the assets it is declining to carry.
     pub fn save_bytes_resolvable(
         &self,
-        resolvable: &[stark_engine::AssetId],
+        resolvable: &[stark_model::AssetId],
     ) -> stark_engine::Result<Vec<u8>> {
         self.engine.save_bytes_resolvable(resolvable)
     }
@@ -465,7 +464,7 @@ impl Renderer {
     }
 
     /// A bundled shape's content id, once its bytes have been imported.
-    pub fn builtin(&self, name: &str) -> Option<stark_engine::AssetId> {
+    pub fn builtin(&self, name: &str) -> Option<stark_model::AssetId> {
         self.builtins
             .iter()
             .find(|(n, _)| *n == name)
@@ -570,19 +569,19 @@ impl Renderer {
 
     /// Import a user's brush-shape image, returning its content id — the
     /// error surfaces to the import UI rather than a log line.
-    pub fn import_brush_id(&self, png_bytes: &[u8]) -> Result<stark_engine::AssetId, String> {
+    pub fn import_brush_id(&self, png_bytes: &[u8]) -> Result<stark_model::AssetId, String> {
         self.engine
             .import_brush(png_bytes)
             .map_err(|e| e.to_string())
     }
 
     /// The canonical PNG bytes of one imported brush asset, if loaded.
-    pub fn asset_bytes(&self, id: stark_engine::AssetId) -> Option<Vec<u8>> {
+    pub fn asset_bytes(&self, id: stark_model::AssetId) -> Option<Vec<u8>> {
         self.engine.asset_bytes(id)
     }
 
     /// Every imported brush asset, to seed a session's asset mirror.
-    pub fn all_asset_bytes(&self) -> Vec<(stark_engine::AssetId, Vec<u8>)> {
+    pub fn all_asset_bytes(&self) -> Vec<(stark_model::AssetId, Vec<u8>)> {
         self.engine.all_asset_bytes()
     }
 

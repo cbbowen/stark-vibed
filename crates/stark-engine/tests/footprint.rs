@@ -29,7 +29,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use common::{engine_or_skip, paint};
 use stark_engine::Engine;
-use stark_engine::assets::AssetId;
 use stark_engine::command::{DocCommand, InputCommand};
 use stark_engine::document::{
     ActionId, ActionKind, ActorId, BlendMode, ColorAdjust, DocState, FillOp, Filter, Layer,
@@ -37,7 +36,8 @@ use stark_engine::document::{
     Selection, SelectionMode, SelectionOp, SelectionShape, TransformMap, WarpMap, footprint,
     rect_corners,
 };
-use stark_engine::gpu::SurfaceId;
+use stark_model::AssetId;
+use stark_model::SurfaceId;
 use stark_model::geom::{Affine2, TileCoord, Vec2};
 
 // ---------------------------------------------------------------------------

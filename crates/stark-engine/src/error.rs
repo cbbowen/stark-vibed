@@ -27,7 +27,7 @@ pub enum EngineError {
     UnsupportedVersion(u32),
 
     /// The document names a color space this build does not carry — today only
-    /// [`ColorSpaceId::Mixbox`](crate::colorspace::ColorSpaceId::Mixbox) in a build
+    /// [`ColorSpaceId::Mixbox`](stark_model::ColorSpaceId::Mixbox) in a build
     /// without the `mixbox` cargo feature.
     ///
     /// A sibling of [`Self::UnsupportedVersion`] rather than a decode error, and for
@@ -40,7 +40,7 @@ pub enum EngineError {
         "this build does not support the {0:?} color space; \
          it was compiled without the `mixbox` feature"
     )]
-    UnsupportedColorSpace(crate::colorspace::ColorSpaceId),
+    UnsupportedColorSpace(stark_model::ColorSpaceId),
 
     #[error("asset decode failed: {0}")]
     Asset(String),

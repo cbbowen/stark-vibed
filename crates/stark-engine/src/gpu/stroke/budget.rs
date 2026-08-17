@@ -315,7 +315,7 @@ mod tests {
     /// 2026-08-07 stroke-end spike regression, pinned as arithmetic.
     #[test]
     fn a_shoulderless_tip_is_never_coarsened() {
-        let stamp = BrushShape::Stamp(crate::assets::AssetId([7u8; 32]));
+        let stamp = BrushShape::Stamp(stark_model::AssetId([7u8; 32]));
         for radius in [8.0f32, 100.0, 250.0, 500.0, 4000.0] {
             assert_eq!(
                 footprint_cell(&BrushShape::Round { hardness: 1.0 }, radius),

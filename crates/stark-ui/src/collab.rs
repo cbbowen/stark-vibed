@@ -24,9 +24,9 @@
 
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
-use stark_engine::SurfaceId;
 use stark_engine::command::ViewCommand;
 use stark_engine::peer::Identity;
+use stark_model::SurfaceId;
 use stark_net::{
     AssetNeed, Broadcaster, CollabSession, Events, Joined, LinkKind, NetOptions, RemoteEvent,
     SessionTicket, actor_from_endpoint_id,
