@@ -212,7 +212,7 @@ pub struct ColorAdjust {
     /// red toward yellow.
     ///
     /// Radians because that is the unit the engine states angles in
-    /// ([`ViewCommand::SetRotation`](crate::command::ViewCommand::SetRotation)); the
+    /// (`stark-engine`'s `ViewCommand::SetRotation`); the
     /// frontend offers degrees, which is a way of *presenting* an angle.
     pub hue: f32,
     /// A color cast: `(a, b)` added to Oklab **after** the rotation and the chroma

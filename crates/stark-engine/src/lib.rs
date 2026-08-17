@@ -19,7 +19,7 @@
 //!
 //! # The layers underneath
 //!
-//! - [`document`] — the versioned document: [`document::Action`]s, the
+//! - [`document`] — the versioned document: [`Action`](stark_model::document::Action)s, the
 //!   [`document::Timeline`] that orders them (linear solo, replicated when
 //!   shared), and [`document::DocState`], a persistent map of copy-on-write
 //!   tiles (§5).
@@ -29,12 +29,12 @@
 //!   writes, held outside the timeline because replay does not need it
 //!   (§17.4). The one piece of per-client state that *is* needed by
 //!   replay — the selection — lives in [`document::DocState`] keyed by
-//!   [`document::ActorId`] instead (§17.3).
+//!   [`ActorId`](stark_model::document::ActorId) instead (§17.3).
 //! - [`gpu`] — the tile pool, the stroke renderer, compositing and the media
 //!   pass (§6).
 //! - [`path`] — pointer samples fitted to a cubic B-spline (`spline`), then
 //!   flattened adaptively into the segments the brush sweeps along (§6.2).
-//! - [`io`] — the save format, which *is* the action log (§8).
+//! - `stark-model`'s `io` — the save format, which *is* the action log (§8).
 //! - [`timing`] — where a frame's time goes: one histogram per named phase of the
 //!   pipeline, collected in the shipped app as well as under a benchmark (§7.1).
 //!

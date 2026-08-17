@@ -2,7 +2,7 @@
 //!
 //! The document *is* the list of actions, so the file is a compact action log
 //! rather than pixels — replaying it rebuilds the canvas, the full undo
-//! timeline, and (via [`Engine::replay_timelapse`](crate::Engine)) a timelapse.
+//! timeline, and (via `stark-engine`'s `Engine::replay_timelapse`) a timelapse.
 //!
 //! ## File size
 //!

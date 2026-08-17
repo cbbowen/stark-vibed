@@ -12,7 +12,7 @@
 //!
 //! - **The infinite canvas still works.** Tiles are sparse, and the coverage that
 //!   reigns where there is no tile is carried as a single number
-//!   ([`Selection::outside`]). "No selection" is `outside = 1` with no tiles at all
+//!   (`stark-engine`'s `Selection::outside`). "No selection" is `outside = 1` with no tiles at all
 //!   — free — and so is its inverse, which is what lets `Invert` stay a
 //!   constant-cost operation on an unbounded canvas instead of an impossible one.
 //! - **History and collaboration are free.** The map is persistent (`rpds`), so a
@@ -117,7 +117,7 @@ pub enum SelectionMode {
 
 impl SelectionMode {
     /// Combine two coverages under this mode — the CPU twin of the shader's algebra,
-    /// used to carry [`Selection::outside`] (where there is no tile to rasterize).
+    /// used to carry `stark-engine`'s `Selection::outside` (where there is no tile to rasterize).
     ///
     /// Literally the soft-set expressions above, on `f32` — not a boolean twin of
     /// them. A boolean twin is sound only while every coverage in play is 0 or 1, and
@@ -154,7 +154,7 @@ pub struct SelectionOp {
     ///
     /// Pinned to 1 for [`SelectionShape::All`], which cannot carry a strength: the
     /// unbounded shape is the deselect primitive, and its coverage lands in
-    /// [`Selection::outside`] where a shape has no boundary to rasterize. Rather
+    /// `stark-engine`'s `Selection::outside` where a shape has no boundary to rasterize. Rather
     /// than grow a rewrite-every-tile path for a state the UI has no way to ask
     /// for — "select all, at a half" is not a control anywhere — the constructor
     /// refuses to build it. A partial `outside` is still reachable, by inverting a

@@ -15,14 +15,14 @@
 //!   which is also the answer to the wrinkle that stopped fill being built: a flood
 //!   fill of an unbounded plane is undefined, and here the selection is what bounds
 //!   it. A fill with *neither* a bounded shape nor a bounded selection is refused
-//!   ([`plan`] returns `None`), deterministically, so peers and replays agree.
+//!   (`stark-engine`'s `document::fill::plan` returns `None`), deterministically, so peers and replays agree.
 //! - **A fill deposits paint, not color.** The parcel it lands is fully opaque
 //!   paint of a real thickness — enough of it to *be* the coverage asked for
 //!   ([`FillOp::opacity`]) — so a filled region takes the light, can be glazed
 //!   over, and a lift brush can scrape it back. It stacks by the shared parcel law
 //!   (`paint_common.wesl`), the very law a stroke deposits through.
 //!
-//! Pure CPU geometry, like [`super::transform`]: [`plan`] decides *which* tiles, and
+//! Pure CPU geometry, like `document::transform`: `stark-engine`'s `document::fill::plan` decides *which* tiles, and
 //! [`crate::gpu::fill::FillRenderer`] does the GPU work.
 
 use serde::{Deserialize, Serialize};
@@ -172,7 +172,7 @@ impl FillOp {
     }
 
     /// Fill whatever is selected — the selection bar's button. Bounded by the mask
-    /// alone, so [`plan`] refuses it when there is no mask.
+    /// alone, so `stark-engine`'s `document::fill::plan` refuses it when there is no mask.
     ///
     /// **At full opacity, and not by default — by construction.** This fill's whole
     /// region is the selection, so how strongly it lands is already written into the
@@ -205,16 +205,16 @@ impl FillOp {
 }
 
 /// The canvas-space box a fill can write: its shape's own box, grown by
-/// everything the pass reaches past it — the coverage ramp ([`FillOp::reach`]),
+/// everything the pass reaches past it — the coverage ramp (`FillOp`'s reach),
 /// and then the apron band, because a tile's texture starts one apron before its
 /// interior and a box reaching into that band still touches the neighbour.
 ///
 /// `None` when the fill is bounded only by the selection — [`SelectionShape::All`],
-/// or a lasso with no vertices — which [`plan`] then bounds by the mask and the
+/// or a lasso with no vertices — which `stark-engine`'s `document::fill::plan` then bounds by the mask and the
 /// footprint has to claim as the whole layer.
 ///
 /// **One box, quantized twice, and that is the whole point of this function.**
-/// [`plan`] turns it into the tiles a fill writes and
+/// `stark-engine`'s `document::fill::plan` turns it into the tiles a fill writes and
 /// [`fill_rect`](super::footprint::fill_rect) turns it into the tiles the action
 /// declares, and those must be the same tiles: a footprint naming fewer than the
 /// plan writes is the §12.6 under-claim, which diverges peers through the

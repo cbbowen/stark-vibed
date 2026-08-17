@@ -65,9 +65,15 @@ crates/
                    and canvas grounds. No GPU, so a build script can compute one
                    — which is what lets the frontend know a bundled asset's id
                    before fetching it. The file format's identity contract (§19)
-  stark-engine/      the engine — no UI, no windowing; compiles to wasm
-    document/      versioned state: actions, timeline, layers, selection, footprints
+  stark-model/     the document: the action log, its vocabulary, the save format
+                   and the presence wire. No wgpu, no shaders, no build script
+    document/      actions, footprints, and the halves of layer/selection/fill/
+                   transform that are facts rather than tiles
+    io.rs          the save format, which *is* the action log (§8)
+  stark-engine/    the derived view — no UI, no windowing; compiles to wasm
+    document/      DocState, the timeline, and the fold that fills them
     gpu/           tile pool, stroke renderer, compositor, readback
+    filters.rs     the host's reads of the generated shader mirror (§6.10)
   stark-shaders/   WESL sources, the build step that links them, and the host
                    mirrors generated from them (§6.10)
     shaders/lib/   binding-free leaves — a module here may NOT declare a binding
@@ -82,11 +88,17 @@ crates/
 vendor/            third-party, EXCLUDED from the workspace
 ```
 
-**`stark-ui` depends on core, never the reverse.** The one crack in that: large
-image assets live in `stark-ui/assets/` because Dioxus's `asset!` rejects paths
-outside its own crate, and core's *tests* read them from there through
-`stark_testdata::assets` — the single module that breaks if the frontend
-reorganizes.
+**Dependencies point one way: ui → engine → model.** `stark-net` depends on the
+model *only* — it moves logs and assets and never names an engine type, which is
+what the split bought (§2). Which side a type belongs on has a mechanical answer:
+if it is `Serialize` it is a fact about the document and lives in the model; if it
+holds a tile it is a cache and lives in the engine. `AssetId`/`AssetStore`,
+`SurfaceId`/`Surface`, `LayerId`/`Layer`, `Action`/`DocState` are all the same pair.
+
+The one crack in that: large image assets live in `stark-ui/assets/` because
+Dioxus's `asset!` rejects paths outside its own crate, and the engine's *tests* read
+them from there through `stark_testdata::assets` — the single module that breaks if
+the frontend reorganizes.
 
 ## Commands
 
@@ -95,7 +107,9 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo check -p stark-ui --target wasm32-unknown-unknown
-# the second configuration (§6.7): no Mixbox, and so no CC BY-NC 4.0 code at all
+# the second configuration (§6.7): no Mixbox, and so no CC BY-NC 4.0 code at all.
+# Also the ONLY gate that catches a `#[cfg]` that drifted off the `use` it
+# guarded — the default build is green either way.
 cargo clippy --workspace --all-targets --no-default-features \
   --features stark-net/webrtc -- -D warnings
 dx serve --web -p stark-ui                  # run it (needs a WebGPU browser)
@@ -147,6 +161,16 @@ The workspace is on **nightly** for exactly one reason: `history`'s
 - **Postcard encodes struct fields in order and enums by index** (§8). Appending
   a variant is safe; inserting a field into an existing variant is a wire-format
   break.
+- **An `impl` that crosses the crate boundary has to move or become a function**
+  (§2). The orphan rule is not an obstacle here, it is the boundary reporting
+  itself: `history::Action` became `Materialize`/`Logged` in the model,
+  `ColorSpaceId::make` and `SelectionOp::shader_params` became free functions in
+  the engine, and in each case the side that ended up owning the work is the side
+  that always should have.
+- **Anything reading the generated shader mirror belongs with the shaders**
+  (§6.10). `stark-model` compiles without `stark-shaders` at all, so a constant it
+  wants from a `.wesl` declaration is a signal the item is the engine's —
+  `filters.rs` is where those collected.
 - **Never transcribe onto the host what a `.wesl` file already states** (§6.10).
   Uniform lanes, constants, vertex formats, binding indices and binding *types*
   are all generated from the shader's own declaration —`MIRRORS`, `CONSTS`,

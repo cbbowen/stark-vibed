@@ -57,28 +57,52 @@ Two habits that recur throughout and are worth naming as principles:
 stark/
 ├── Cargo.toml                  # workspace (vendor/ excluded — see below)
 ├── crates/
-│   ├── stark-engine/             # the engine — no UI, no windowing
+│   ├── stark-model/            # the document — no wgpu, no shaders, no build step
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── document/       # the log and its vocabulary
+│   │       │   ├── action.rs    # Action + ActionKind: what a mutation *says* (§4)
+│   │       │   ├── fold.rs      # Materialize + Logged: that a log folds (§5)
+│   │       │   ├── footprint.rs # what an action reads/writes (§12.6)
+│   │       │   ├── brush.rs     # BrushParams and its modulations (§6.2)
+│   │       │   ├── layer.rs     # LayerId, BlendMode, Place, MattePaint (§14, §15)
+│   │       │   ├── selection.rs # SelectionOp and its shapes (§6.8)
+│   │       │   ├── fill.rs      # FillOp, and the box it writes (§18.0.4)
+│   │       │   ├── filter.rs    # the filter parameters (§21)
+│   │       │   ├── transform.rs # the maps, and the homography solve (§16)
+│   │       │   └── warp.rs      # the warp lattice (§16.9)
+│   │       ├── io.rs           # the save format, which *is* the action log (§8)
+│   │       ├── content.rs      # what a log names but does not carry (§8, §19)
+│   │       ├── peer.rs         # the presence wire frames (§17.4)
+│   │       ├── error.rs        # DocError: what can go wrong with a *document*
+│   │       ├── geom.rs         # tile coords, tile cover, the view transform
+│   │       ├── path.rs         # ControlPoint: the stored form of a stroke (§6.2)
+│   │       ├── color.rs        # Oklab working space, conversions (§6.5)
+│   │       ├── colorspace.rs   # ColorSpaceId — the id, not the space (§6.7)
+│   │       ├── surface.rs      # SurfaceId — the id, not the ground (§6.4)
+│   │       └── gradient.rs     # Gradient + the fit through a traced line (§22)
+│   ├── stark-engine/           # the derived view — no UI, no windowing
 │   │   ├── src/
 │   │   │   ├── lib.rs
-│   │   │   ├── engine.rs       # owns everything; process(InputCommand) (§4, §7)
+│   │   │   ├── engine/         # owns everything; process(InputCommand) (§4, §7)
 │   │   │   ├── command.rs      # Gesture/Doc/View/Peer commands (§4)
 │   │   │   ├── session.rs      # view state: tool, brush, view, in-flight gesture
-│   │   │   ├── peer.rs         # presence: the roster + wire frames (§17.4)
+│   │   │   ├── peer.rs         # presence: the roster built from the frames (§17.4)
 │   │   │   ├── presence.rs     # the publish latch (§17.5)
-│   │   │   ├── error.rs        # EngineError + Result
-│   │   │   ├── document/       # versioned state (the history)
-│   │   │   │   ├── action.rs    # Action + ActionId (replayable mutations)
+│   │   │   ├── error.rs        # EngineError + Result; folds DocError in
+│   │   │   ├── filters.rs      # the filter passes' host-side numbers (§6.10, §21)
+│   │   │   ├── document/       # the state the log folds into
+│   │   │   │   ├── apply.rs     # impl Materialize for DocState — the fold (§4)
 │   │   │   │   ├── state.rs     # DocState: layers, per-actor selections, surface
 │   │   │   │   ├── timeline.rs  # Timeline trait; Linear + Replicated impls
-│   │   │   │   ├── selection.rs # Selection soft mask + ops (§6.8)
-│   │   │   │   ├── fill.rs      # FillOp + ShapeAction: what a shape does (§6.8)
-│   │   │   │   ├── transform.rs # affine transform planning (§16)
-│   │   │   │   ├── footprint.rs # what an action reads/writes (§12.6)
-│   │   │   │   ├── patch.rs     # Action::inverse (§12.6)
-│   │   │   │   └── layer.rs     # Layer, LayerContent, carries (§14)
-│   │   │   ├── color.rs        # Oklab working space, conversions, mixing (§6.5)
+│   │   │   │   ├── layer.rs     # Layer, LayerContent, PaintTiles (§14)
+│   │   │   │   ├── selection.rs # the mask the op produces (§6.8)
+│   │   │   │   ├── fill.rs      # planning a fill against the mask (§6.8)
+│   │   │   │   ├── transform.rs # the tile plans (§16)
+│   │   │   │   ├── merge.rs     # merging a layer down (§14.11)
+│   │   │   │   └── patch.rs     # Materialize::unfold (§12.6)
 │   │   │   ├── colorspace.rs   # ColorSpace trait; Oklab + Mixbox impls (§6.7)
-│   │   │   ├── assets.rs       # content-addressed brush/image asset store (§6.6)
+│   │   │   ├── assets.rs       # the content-addressed asset store (§6.6)
 │   │   │   ├── noise.rs        # tileable 2-D noise tiles for color dynamics (§6.2)
 │   │   │   ├── image.rs        # RgbaImage (readback / export)
 │   │   │   ├── gpu/
@@ -86,27 +110,22 @@ stark/
 │   │   │   │   ├── tile.rs      # TilePool, CoW tile handles, channel set (§6.1)
 │   │   │   │   ├── registry.rs  # frontend-provided resources: bytes + live object
 │   │   │   │   ├── stroke/      # the brush engine / stroke rasterizer (§6.2)
-│   │   │   │   │   ├── mod.rs      # StrokeRenderer, entry points, tip caches
-│   │   │   │   │   ├── segments.rs # path → swept segments; region measurements
-│   │   │   │   │   ├── swept.rs    # the plain swept fast path
-│   │   │   │   │   └── dynamics.rs # the sequential swept-exchange loop
-│   │   │   │   ├── composite.rs # compositing + the media/lighting pass (§6.3)
-│   │   │   │   ├── environment.rs # HDR environment maps for IBL (§6.3)
-│   │   │   │   ├── surface.rs   # canvas surface: the weave's relief (§6.4)
+│   │   │   │   ├── composite/   # compositing + the media/lighting pass (§6.3)
+│   │   │   │   ├── environment/ # HDR environment maps for IBL (§6.3)
+│   │   │   │   ├── surface/     # canvas surface: the weave's relief (§6.4)
 │   │   │   │   ├── selection.rs # selection-mask rasterization (§6.8)
 │   │   │   │   ├── fill.rs      # region fill: a paint parcel through a mask (§6.8)
 │   │   │   │   ├── transform.rs # the parcel / combine / mask passes (§16.5)
 │   │   │   │   ├── pigment.rs   # the Mixbox LUT (§6.7)
 │   │   │   │   └── readback.rs  # GPU→CPU texture readback (export, goldens)
-│   │   │   ├── geom.rs         # tile coords, view transform, AABB
-│   │   │   ├── path.rs         # streaming B-spline stroke fit + adaptive flatten (§6.2)
-│   │   │   ├── spline.rs       # clamped cardinal cubic B-spline + least-squares solve
-│   │   │   └── io.rs           # save/load of the action log (§8)
+│   │   │   ├── path.rs         # the streaming B-spline fit + adaptive flatten (§6.2)
+│   │   │   └── spline.rs       # clamped cardinal cubic B-spline + least-squares
 │   │   └── tests/
 │   │       └── golden/         # scripted command sequences + reference PNGs (§9)
+│   ├── stark-assetid/          # what a content id *is* — usable from a build script
 │   ├── stark-shaders/          # WESL sources + build.rs (wesl link/compile)
 │   ├── stark-testdata/         # recorded pen input + asset paths; dev-only (§9)
-│   ├── stark-net/              # iroh transport ↔ Replicated timeline (§12)
+│   ├── stark-net/              # iroh transport ↔ the replicated timeline (§12)
 │   │   └── src/
 │   │       ├── session.rs      # CollabSession: the frontend-facing API
 │   │       ├── transport/      # the WebRTC path bootstrap
@@ -137,12 +156,57 @@ stark/
     └── iroh-webrtc-transport/  # WebRTC as an iroh custom transport (§12.4)
 ```
 
-`stark-engine` is the testable, frontend-agnostic backend. It is also
-**network-agnostic**: it owns the *merge semantics* of the action log (the
-`Timeline` trait) but not the wire transport. `stark-net` adapts iroh to it (§12)
-and can be pulled in by the frontend or omitted entirely. `stark-shaders` is split
-out so shader compilation (a build step) does not pollute the engine crate.
-**`stark-ui` depends on core, never the reverse.**
+**`stark-model` is the document, and nothing else**: what an `Action` is, what it
+reads and writes (`Footprint`, §12.6), and how a log is written to a file (§8) or
+handed to a peer (§12). It compiles without wgpu, without `stark-shaders` and
+without a build script — about fifty crates against the engine's two hundred — and
+it is where the file format lives, so the wire-compatibility rules (§8, §19) have
+one place to be true.
+
+**`stark-engine` is the derived view**: `DocState`, the tile pool, the renderers,
+the compositor, and the controller that drives them (`Session`, the command tier,
+§4). It depends on `stark-model`; the model depends on none of them. The split is
+this document's founding sentence made structural — pixels are a cached function of
+the log, so the log does not know what a pixel is.
+
+**The boundary is visible in the type names, and was before the crates existed**: an
+**id** is in the log and a **resource** is in the engine. `AssetId`/`AssetStore`,
+`SurfaceId`/`Surface`, `ColorSpaceId`/`ColorSpace`, `LayerId`/`Layer`,
+`SelectionOp`/`Selection`, `Action`/`DocState`. A new pair follows the same rule, and
+the mechanical form of it is `#[derive(Serialize)]`: if a type is serializable it is
+a fact about the document and belongs left of the line; if it holds a tile it is a
+cache and belongs right of it. That is not a judgement call — it is the invariant §8
+already enforces, which is why the boundary can be checked rather than remembered.
+
+Four modules are cut down the middle by that line and keep the same file name on
+both sides — `document/layer.rs`, `document/selection.rs`, `document/fill.rs`,
+`document/transform.rs`. Reading an import tells you which half you are in.
+
+**An action folds over the state through `stark_model::document::Materialize`.** The
+history crate asks for `history::Action`, whose `State` would be `DocState`; with the
+two apart, that impl is a foreign trait for a foreign type in one crate and
+unnameable in the other. `Logged<S>` — a local wrapper carrying a generic impl — is
+the way through, and it states the division exactly: the model owns *that* a log
+folds and which actions commute, the engine owns what it folds into.
+`ColorSpaceId::make`, `ActionKind::is_noop_on` and `SelectionOp`'s uniform packing
+became free functions for the same reason, and each of those moves is the boundary
+telling the truth about where the work belonged.
+
+**Anything that reads the generated shader mirror stays with the shaders** (§6.10).
+That is what `stark-engine`'s `filters` collects — `CONTRAST_PIVOT` and the
+dispersion spectrum — and why `SelectionOp`'s uniform packing sits in `gpu/selection`
+rather than beside the op. The op is a document fact; how it is packed for
+`selection.wesl` is not.
+
+`stark-net` adapts iroh to the log (§12) and depends on **`stark-model` alone** — it
+names no engine type at all, and takes `stark-engine` only as a dev-dependency,
+because its tests paint. `stark-ui` depends on both, and on neither through the
+other: a type has one public path, now enforced by the crate boundary instead of by
+convention. **`stark-ui` depends on the engine, never the reverse.**
+`stark-shaders` is split out so shader compilation (a build step) does not pollute
+the engine crate; `stark-assetid` is split out so a *build script* can compute a
+content id without a GPU, which is what lets the frontend know a bundled asset's id
+before fetching it (§19).
 
 Two caveats, stated rather than hidden:
 

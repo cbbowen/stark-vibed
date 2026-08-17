@@ -190,7 +190,7 @@ pub struct ColorDynamics {
     /// Which noise field to sample.
     pub noise: NoiseKind,
     /// Frequency scale per lookup axis (across the stroke, along it): 1 = one
-    /// noise tile per [`crate::noise::NOISE_TILE_PX`] px; higher = finer
+    /// noise tile per `stark-engine`'s `noise::NOISE_TILE_PX` px; higher = finer
     /// variation along that axis; 0 = constant along that axis.
     pub frequency: [f32; 2],
     /// Noise amplitude per color channel, in the color space's own units
@@ -339,7 +339,7 @@ impl Modulation {
         1.0 / k - 2.0
     }
 
-    /// A bound on `|d factor / d input|`, for the flattener (see [`MIN_BIAS`]).
+    /// A bound on `|d factor / d input|`, for the flattener (see `MIN_BIAS`).
     ///
     /// `shape`'s derivative is `(m + 1)/(m(1 − x) + 1)²`, monotone in `x`, so it is
     /// largest at one end or the other: `k/(1 − k)` at 0 and `(1 − k)/k` at 1. The
@@ -476,7 +476,7 @@ impl Modulations {
     }
 
     /// The steepest response across every active target — how much finer the path has
-    /// to be flattened for a modulated ramp to stay smooth (see [`MIN_BIAS`] and
+    /// to be flattened for a modulated ramp to stay smooth (see `MIN_BIAS` and
     /// `gpu::stroke::budget::flatten_tolerance`).
     ///
     /// 1 for the unmodulated brush *and* for the plain linear mappings, so the
@@ -652,7 +652,7 @@ impl BrushParams {
     /// 0 would *shrink* the tip across its axis at a low tilt, where scaling the knob
     /// walks `s` back to 1 and leaves the shape alone.
     ///
-    /// `min`-then-`max` rather than `clamp`, for [`clamp01`]'s reason and with more
+    /// `min`-then-`max` rather than `clamp`, for `clamp01`'s reason and with more
     /// riding on it: `clamp` returns the NaN where these return the other operand, and
     /// the NaN would reach a lane the shaders divide by.
     #[allow(clippy::manual_clamp)]
@@ -663,7 +663,7 @@ impl BrushParams {
         //
         // `min` first and `max` second, and that order is the NaN policy: `f32::min`
         // and `f32::max` return the non-NaN operand (the argument at
-        // [`clamp01`]), so this way a NaN knob falls out as the *identity* and the
+        // `clamp01`), so this way a NaN knob falls out as the *identity* and the
         // other way it would fall out as the widest footprint the brush can ask for.
         1.0 / (1.0 - stretch).min(1.0).max(1.0 / Self::MAX_ELONGATION)
     }

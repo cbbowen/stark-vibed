@@ -1,6 +1,6 @@
 //! Engine error type (§5), surfaced everywhere.
 //!
-//! The renderer's half. The document's half is `stark-model`'s [`DocError`], which
+//! The renderer's half. The document's half is `stark-model`'s [`DocError`](stark_model::DocError), which
 //! this folds in (§2).
 
 use thiserror::Error;
@@ -43,14 +43,14 @@ pub enum EngineError {
     /// file that will not decode, a space this build lacks, content it was never
     /// given (§2). Folded in so a caller holding the engine still catches everything
     /// in one place, while `stark-net` and any other log-only consumer can match on
-    /// [`DocError`] alone and never see `NoAdapter`.
+    /// [`DocError`](stark_model::DocError) alone and never see `NoAdapter`.
     #[error(transparent)]
     Document(#[from] stark_model::DocError),
 }
 
 /// `?` on a content-id failure, in one hop.
 ///
-/// [`DocError`] already folds `AssetError` in, but `From` does not chain: without
+/// [`DocError`](stark_model::DocError) already folds `AssetError` in, but `From` does not chain: without
 /// this, every `?` on an id derivation inside an engine function would have to spell
 /// the two steps out. One impl beats a hundred `.map_err`s, and it keeps the error a
 /// caller sees identical either way.

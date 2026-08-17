@@ -102,14 +102,14 @@ impl GestureFrame {
 }
 
 /// One published frame of a client's presence — the publishable half of a
-/// [`Session`](crate::session::Session).
+/// `stark-engine`'s `Session`.
 ///
-/// The author is **not** in the payload: [`Peers::merge`] takes it from the
+/// The author is **not** in the payload: `stark-engine`'s `Peers::merge` takes it from the
 /// transport's authenticated origin, the same discipline `Action` gets for free from
-/// its [`ActionId`](stark_model::document::ActionId) (§17.7).
+/// its [`ActionId`](crate::document::ActionId) (§17.7).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PeerFrame {
-    /// Which run of this client published the frame ([`Identity::boot`]). Ordered
+    /// Which run of this client published the frame (`stark-engine`'s `Identity::boot`). Ordered
     /// *before* `seq`, which restarts at zero when a client does.
     #[serde(default)]
     pub boot: u64,

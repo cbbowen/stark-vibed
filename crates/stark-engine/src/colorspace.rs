@@ -19,7 +19,7 @@ use stark_model::{ColorSpaceId, color};
 /// same tile bytes as different colors, so opening a pigment document through a
 /// colorimetric space would render every pixel wrong while looking like it
 /// worked. Failing is the honest answer, and
-/// [`DocError::UnsupportedColorSpace`](crate::error::DocError::UnsupportedColorSpace)
+/// [`DocError::UnsupportedColorSpace`](stark_model::DocError::UnsupportedColorSpace)
 /// is where it lands.
 ///
 /// A free function rather than a method on the id, because the id is
@@ -228,7 +228,7 @@ impl ColorSpace for OkLabColorSpace {
 /// which is why this whole space is behind the `mixbox` cargo feature: the licence is
 /// non-commercial, so a build has to be able to leave it out entirely rather than
 /// merely not reach it. [`ColorSpaceId::Mixbox`] still exists there — see
-/// [`ColorSpaceId::make`] for why the *id* cannot be gated even though the
+/// [`make`] for why the *id* cannot be gated even though the
 /// implementation can.
 #[cfg(feature = "mixbox")]
 pub struct MixboxColorSpace;

@@ -328,7 +328,7 @@ impl Engine {
     /// `color_space`, **before** anything is reset — so a refusal leaves the open
     /// document alone, the same bargain [`Self::load_document`] makes. A frontend
     /// whose picker comes from
-    /// [`ColorSpaceId::all_available`](stark_model::ColorSpaceId::all_available)
+    /// [`colorspace::all_available`](crate::colorspace::all_available)
     /// never sees it.
     pub fn new_document(
         &mut self,

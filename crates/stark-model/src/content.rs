@@ -60,7 +60,7 @@ impl AssetNeed {
     }
 
     /// The surface a `Ground` need names, for
-    /// [`Engine::accept_surface`](crate::Engine::accept_surface).
+    /// `stark-engine`'s `Engine::accept_surface`.
     pub fn surface(self) -> Option<SurfaceId> {
         match self {
             AssetNeed::Brush(_) => None,

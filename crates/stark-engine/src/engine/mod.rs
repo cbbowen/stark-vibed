@@ -276,7 +276,7 @@ pub struct MatteInfo {
     /// The rect the region is defined against, in canvas px. For a frame this is
     /// the *hole* — the piece — which is what the handles resize and what export
     /// frames against (§15.6). `None` for a region defined against no rect
-    /// ([`MatteRegion::Everything`]): the handle box, the aspect readout and the
+    /// ([`MatteRegion::Everything`](stark_model::document::MatteRegion::Everything)): the handle box, the aspect readout and the
     /// export frame all stand down rather than invent one.
     pub rect: Option<(stark_model::geom::Vec2, stark_model::geom::Vec2)>,
     /// The paint the region wears — flat, or a ramp (§15.4, §22.4).
@@ -645,7 +645,7 @@ impl Engine {
     /// Fails with [`DocError::UnsupportedColorSpace`] if this build does not carry
     /// the space — today only `Mixbox` without the `mixbox` feature. A frontend that
     /// builds its picker from
-    /// [`ColorSpaceId::all_available`](stark_model::ColorSpaceId::all_available)
+    /// [`colorspace::all_available`](crate::colorspace::all_available)
     /// never sees it.
     pub fn new_with_color_space(
         gpu: GpuContext,

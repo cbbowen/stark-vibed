@@ -111,7 +111,7 @@ pub enum ActionKind {
     /// (§14.8): reorder is `carrier` unchanged, *carry* is `carrier`
     /// set, *release* is `carrier` cleared. Declined deterministically when it
     /// would make a layer carry its own ancestor — see
-    /// [`DocState::move_layer`](super::state::DocState::move_layer) for why the
+    /// `stark-engine`'s `DocState::move_layer` for why the
     /// log's total order is all the cycle protection this needs.
     MoveLayer {
         id: LayerId,
@@ -125,7 +125,7 @@ pub enum ActionKind {
     ///
     /// Deliberately **not interpreted by [`Action`]'s `apply`** — undo needs the
     /// whole log, not just the prior state, so the timeline layer resolves
-    /// which actions are *effective* (see [`super::timeline::effective_actions`])
+    /// which actions are *effective* (see `stark-engine`'s `document::effective_actions`)
     /// and only ever materializes those. Appended last so postcard decoding of
     /// older files is unaffected.
     Undo(ActionId),
@@ -183,7 +183,7 @@ pub enum ActionKind {
     ///
     /// Deterministically **rejected** (the document is left unchanged) when the
     /// affine is unusable or the rewrite exceeds the tile caps — see
-    /// [`super::transform`].
+    /// `document::transform`.
     Transform {
         layer: LayerId,
         affine: crate::geom::Affine2,
@@ -318,7 +318,7 @@ pub enum ActionKind {
     /// The one action in this list whose promise is about *pixels that do not change*:
     /// a merge is offered exactly where the pair composites identically to the one
     /// layer, so the document looks the same before and afterwards. Which pairs those
-    /// are is [`merge::plan`](super::merge::plan), a pure function of the state — so
+    /// are is `stark-engine`'s `document::merge::plan`, a pure function of the state — so
     /// the log carries no reasoning, only the two ids, and every peer and every replay
     /// re-derives the same answer from the same document.
     ///
