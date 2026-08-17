@@ -182,6 +182,7 @@ impl Engine {
         self.render_view(
             target,
             self.session.view,
+            None,
             Background::Substrate,
             Chrome::Shown,
             Rendered::Live,
@@ -216,6 +217,7 @@ impl Engine {
         self.render_view(
             target,
             view,
+            None,
             background,
             Chrome::Hidden,
             content,
@@ -239,14 +241,27 @@ impl Engine {
     /// `session.view` instead of taking one is exactly what made "export" a
     /// screenshot of the viewport.
     ///
+    /// `only` names a single layer to draw **alone**, its blend mode, clip and opacity
+    /// dropped — see [`composite_groups`](Self::composite_groups), which decides what
+    /// that means and has done since the eyedropper needed it (§18.0.2). `None` is the
+    /// document, which is every render but a layer thumbnail's (§14.6).
+    ///
     /// Private, with [`Engine::export`] and [`Engine::render_into`] as the two
-    /// consumers: what a caller may choose is a view, a ground and where the
-    /// attachments live, never whether chrome is drawn (it is, for the screen alone)
-    /// nor how the two are wired together.
+    /// consumers: what a caller may choose is a view, how much of the document, a
+    /// ground and where the attachments live, never whether chrome is drawn (it is,
+    /// for the screen alone) nor how the two are wired together.
+    ///
+    /// Over the arity lint by one, and left that way: **every parameter here is a
+    /// distinct type**, so the arrangement the lint guards against — two arguments of
+    /// one type, silently transposed — cannot be written. If a *second* `Option<LayerId>`
+    /// ever arrives (a frame and a layer are both one), these stop being independent
+    /// choices and become a "what to draw" value worth naming.
+    #[allow(clippy::too_many_arguments)]
     fn render_view(
         &mut self,
         target: &wgpu::TextureView,
         view: ViewTransform,
+        only: Option<LayerId>,
         background: Background,
         chrome: Chrome,
         content: Rendered,
@@ -290,7 +305,7 @@ impl Engine {
                     epoch: self.preview.epoch(),
                     fold: self.preview.fold(),
                     content,
-                    only: None,
+                    only,
                     visible: visible_tiles(view),
                 },
                 &doc,
@@ -390,6 +405,7 @@ impl Engine {
         let (target, size) = self.render_offscreen(
             &mut Offscreen::default(),
             self.session.view,
+            None,
             Background::Substrate,
             Chrome::Shown,
             Rendered::Live,
@@ -405,6 +421,7 @@ impl Engine {
         &mut self,
         into: &mut Offscreen,
         view: ViewTransform,
+        only: Option<LayerId>,
         background: Background,
         chrome: Chrome,
         content: Rendered,
@@ -421,6 +438,7 @@ impl Engine {
         self.render_view(
             &target_view,
             view,
+            only,
             background,
             chrome,
             content,
@@ -534,7 +552,7 @@ impl Engine {
         // refused before anything is drawn — and with the message that names the
         // *frame*, since `export_view`'s checks are then satisfied by construction.
         let plan = self.export_plan(frame, scale)?;
-        self.export_view(into, plan.view(), background, content)
+        self.export_view(into, plan.view(), None, background, content)
     }
 
     /// Render through an **explicit** view to a CPU-side image —
@@ -552,6 +570,16 @@ impl Engine {
     ///
     /// No chrome, like every render that is not the screen's (§15.6).
     ///
+    /// `only` names a layer to render **alone** — its own paint, with its blend mode,
+    /// clip and opacity dropped, which is what makes the result an identity card for
+    /// the layer rather than a picture of its contribution
+    /// ([`composite_groups`](Self::composite_groups) settles what that means, and
+    /// settled it for the eyedropper first). The layer panel's thumbnails are the
+    /// consumer (§14.6); `None` renders the document, which is what every other caller
+    /// wants. A layer that is hidden or fully transparent draws nothing at all, so a
+    /// caller that would rather show the last picture it had than a blank one should
+    /// ask before rendering rather than after.
+    ///
     /// Errors mirror [`export_plan`](Self::export_plan)'s: a degenerate or
     /// non-finite view, or a viewport past the device's texture limit, is reported
     /// rather than surfacing as a wgpu validation panic.
@@ -559,6 +587,7 @@ impl Engine {
         &mut self,
         into: &mut Offscreen,
         view: ViewTransform,
+        only: Option<LayerId>,
         background: Background,
         content: Rendered,
     ) -> Result<impl std::future::Future<Output = Result<RgbaImage>> + use<>> {
@@ -579,7 +608,8 @@ impl Engine {
         }
         // No chrome: a selection outline or any other on-canvas affordance is a
         // thing to draw *with*, never a thing to ship.
-        let (target, size) = self.render_offscreen(into, view, background, Chrome::Hidden, content);
+        let (target, size) =
+            self.render_offscreen(into, view, only, background, Chrome::Hidden, content);
         // Captured, not read through `self`: the future deliberately does not
         // borrow the engine.
         let gpu = self.shared.gpu.clone();

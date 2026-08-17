@@ -64,6 +64,17 @@ pub struct Renderer {
     /// The Navigator panel's canvas and everything that draws into it — `None` until
     /// the panel mounts one ([`Renderer::attach_overview`]).
     overview: Option<Overview>,
+    /// The compositing attachments the Layers panel's thumbnails render through
+    /// ([`Renderer::export_layer`]).
+    ///
+    /// Kept rather than allocated per call, unlike [`export`](Self::export)'s, and the
+    /// decision is here rather than at the call site for the reason `Offscreen`'s own
+    /// doc gives: whether a slot outlives its call is the *caller's* to state, and this
+    /// is the caller that knows. A file export happens once and may be enormous; a
+    /// thumbnail is 64 px, is rendered once per layer, and is rendered again on the
+    /// next commit — so allocating and dropping a pair per row would be the cost of
+    /// the feature.
+    layer_thumbs: stark_engine::Offscreen,
     /// Painted frames whose GPU work has not yet completed (see
     /// [`MAX_FRAMES_IN_FLIGHT`]). Incremented per [`paint`](Self::paint),
     /// decremented by the `on_submitted_work_done` callback that paint registers
@@ -348,6 +359,34 @@ impl Renderer {
             scale,
             background,
             content,
+        )
+    }
+
+    /// Render **one layer alone** through `plan`'s view, for a Layers panel row
+    /// (§14.6). Returns a future for the readback, on [`export`](Self::export)'s
+    /// borrow bargain — the caller drops its write guard before awaiting.
+    ///
+    /// The layer's blend mode, clip and opacity are dropped by the isolate this
+    /// renders through (`Engine::export_view`), so a row shows the paint that is
+    /// there rather than the part of it the document lets through. Cut out rather
+    /// than over the substrate, so a row says where the layer *has* paint.
+    ///
+    /// `plan` is the caller's, and deliberately: it is the same plan the navigator
+    /// frames its miniature with, so an overview and a row cannot come to disagree
+    /// about where the piece is.
+    pub fn export_layer(
+        &mut self,
+        layer: stark_model::document::LayerId,
+        plan: &stark_engine::ExportPlan,
+    ) -> stark_engine::Result<
+        impl std::future::Future<Output = stark_engine::Result<stark_engine::RgbaImage>> + use<>,
+    > {
+        self.engine.export_view(
+            &mut self.layer_thumbs,
+            plan.view(),
+            Some(layer),
+            stark_engine::Background::Transparent,
+            stark_engine::Rendered::Committed,
         )
     }
 
@@ -805,6 +844,7 @@ impl Renderer {
             builtins: self.builtins.clone(),
             grounds: self.grounds.clone(),
             overview: None,
+            layer_thumbs: stark_engine::Offscreen::default(),
             frames_in_flight: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -874,6 +914,7 @@ async fn finish_init(canvas: Canvas, surface: wgpu::Surface<'static>, gpu: GpuCo
         builtins: Vec::new(),
         grounds: Vec::new(),
         overview: None,
+        layer_thumbs: stark_engine::Offscreen::default(),
         frames_in_flight: Arc::new(AtomicU32::new(0)),
     }
 }

@@ -260,9 +260,12 @@ async fn generate(state: AppState, w: Wearable) -> bool {
         let rope = crate::input::rope_in(view, w.smoothing);
         rig.engine
             .replay_stroke_seeded(Tool::Brush, &test_stroke(&view), THUMB_SEED, rope);
+        // The whole rig document, which is only ever the thumbnail in flight — there
+        // is no layer here to single out.
         let readback = rig.engine.export_view(
             &mut rig.off,
             view,
+            None,
             Background::Substrate,
             Rendered::Committed,
         );

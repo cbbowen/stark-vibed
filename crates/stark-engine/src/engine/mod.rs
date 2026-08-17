@@ -303,6 +303,25 @@ pub struct LayerInfo {
     /// merge, it is a different edit, and offering it greyed out would suggest the
     /// document is what stands in the way.
     pub merge_down: Option<LayerId>,
+    /// A number that changes exactly when this layer's own tiles do, or `None` for a
+    /// layer that holds none — [`Layer::content_revision`], projected (§14.6).
+    ///
+    /// The layer panel's thumbnails are keyed on it. Projected rather than read off
+    /// `DocState`, like everything else on this row, so the panel can ask "is the
+    /// picture I cached still this layer's picture?" without reaching past `observe()`
+    /// — and so the answer is taken at the same instant as the name and the blend chip
+    /// beside it rather than from a document that has moved on since.
+    ///
+    /// **This is the one field that moves on an ordinary stroke.** Every other one
+    /// describes the tree, which a stroke leaves alone, so the layer list used to
+    /// compare equal across a commit that only painted. It no longer does, and that is
+    /// the feature: a thumbnail that did not notice paint landing on its layer would be
+    /// a wrong picture. The cost is one comparison and one `Vec<Row>` rebuild per
+    /// *commit* — never per pointer sample, which is the line that matters — and the
+    /// rows whose own `Row` is unchanged still do not re-render.
+    ///
+    /// [`Layer::content_revision`]: crate::document::Layer::content_revision
+    pub content_revision: Option<u64>,
 }
 
 impl LayerInfo {
@@ -1540,6 +1559,10 @@ impl Engine {
                             })
                             .map(|p| p.dest)
                         }),
+                    // Off the *shown* document like the rest of the row, so a thumbnail
+                    // tracks a drag preview's tiles rather than the committed ones
+                    // behind them.
+                    content_revision: l.content_revision(),
                 });
                 stack[depth].below = Some(l);
                 stack[depth].index += 1;

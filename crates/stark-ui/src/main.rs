@@ -29,6 +29,7 @@ mod icons;
 mod identity;
 mod images;
 mod input;
+mod layer_thumbs;
 mod layout;
 mod modes;
 mod panels;

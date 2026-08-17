@@ -98,6 +98,24 @@ pub fn LayerPanel() -> Element {
         )
     });
     let (layers, selected) = tree().unwrap_or_default();
+    // Keep the rows' pictures up to date (§14.6; `crate::layer_thumbs`).
+    //
+    // **Driven from the panel, not from the app root**, which is the opposite of the
+    // brush thumbnails' arrangement and the opposite for a reason. Those have a second
+    // viewer that appears only while a key is held, far too late to start rendering;
+    // these have exactly one viewer, and it is this panel. Rendering a document's
+    // worth of layers for a panel that is closed would be spending the canvas's own
+    // engine borrow on pictures nobody has asked to see.
+    //
+    // On `layers` rather than on `doc_revision`: the memo above already collapses
+    // every engine write down to "the tree or its tiles moved", which is exactly the
+    // question, and `content_revision` is what carries a stroke into it. `refresh`
+    // is idempotent and returns immediately when nothing is stale, so an effect that
+    // fires for an unrelated change costs a scan of the list.
+    use_effect(use_reactive!(|layers| {
+        crate::layer_thumbs::prune(state, &layers);
+        crate::layer_thumbs::refresh(state);
+    }));
     let shut = collapsed.read().clone();
     let rows = rows(&layers, &shut);
     // The rows as the panel actually shows them: top of the document first, with
@@ -590,6 +608,28 @@ pub fn LayerRow(
     // "Layer 3", quietly making a description into a name. The placeholder carries
     // the label instead, so the row still says what it is called while empty.
     let seed = info.name.as_deref().unwrap_or_default().to_string();
+    // This layer's own paint in miniature, or `None` for a row that has no picture
+    // to show (§14.6). The two `None`s are deliberately different things and the
+    // `map` is what keeps them apart: a layer with no *tiles* gets no thumbnail box
+    // at all, while a paint layer whose render has not landed yet gets an empty one,
+    // so the row does not change shape underneath the pointer when the image
+    // arrives. Subscribes, which is how a row learns its picture is ready.
+    //
+    // The style is built here rather than in the markup because it is one: an `if`
+    // inside an rsx attribute is a Rust expression, so `{url}` in its arms is literal
+    // text rather than an interpolation — the row would ask the browser for a picture
+    // called `{url}`. Every other thumbnail in the app is written this way for the
+    // same reason (`panels::brush`, `slots`).
+    let thumb = info.content_revision.map(|_| {
+        match crate::layer_thumbs::url(state, &info) {
+            // `none` written out rather than the property omitted: Dioxus merges
+            // inline style per property, so a declaration simply left off is stranded
+            // on a reused node and the row goes on showing the *previous* layer's
+            // picture after a reorder.
+            Some(url) if !url.is_empty() => format!("background-image: url({url});"),
+            _ => "background-image: none;".to_string(),
+        }
+    });
     // One selection, one highlight. A matte is selected exactly the way a paint
     // layer is (§15.7) — selecting it raises the frame bar and its
     // on-canvas handles, and the brush simply has nowhere to go until a paint layer
@@ -761,6 +801,22 @@ pub fn LayerRow(
                     }
                 } else {
                     span { class: "layer-carry" }
+                }
+                // The layer's own paint, in miniature (§14.6; `crate::layer_thumbs`).
+                //
+                // A `<div>` with a background rather than an `<img>`, and
+                // `pointer-events: none` in the stylesheet, because **the whole row is
+                // the grip**: a drag starts anywhere on it, and an element that took
+                // the press would put a dead patch in the middle of the one gesture
+                // this panel is built around.
+                //
+                // Absent, not blank, on a layer that has no paint to show — a matte and
+                // a filter, which `thumb` reports as `None` because they have no tiles.
+                // A frame's content is a rect and a color the row already draws, and a
+                // filter has no content at all, so an empty square beside either would
+                // be saying something false about it rather than nothing.
+                if let Some(style) = thumb {
+                    div { class: "layer-thumb", style: "{style}" }
                 }
                 if let Some(text) = draft() {
                     input {

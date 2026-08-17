@@ -463,19 +463,31 @@ fn live_and_committed_do_not_share_a_cached_list() {
     // `content` would be caught whichever order it happened to fill in.
     let committed = pollster::block_on(
         engine
-            .export_view(&mut off, view, Background::Substrate, Rendered::Committed)
+            .export_view(
+                &mut off,
+                view,
+                None,
+                Background::Substrate,
+                Rendered::Committed,
+            )
             .expect("export"),
     )
     .expect("the readback completes");
     let live = pollster::block_on(
         engine
-            .export_view(&mut off, view, Background::Substrate, Rendered::Live)
+            .export_view(&mut off, view, None, Background::Substrate, Rendered::Live)
             .expect("export"),
     )
     .expect("the readback completes");
     let committed_again = pollster::block_on(
         engine
-            .export_view(&mut off, view, Background::Substrate, Rendered::Committed)
+            .export_view(
+                &mut off,
+                view,
+                None,
+                Background::Substrate,
+                Rendered::Committed,
+            )
             .expect("export"),
     )
     .expect("the readback completes");

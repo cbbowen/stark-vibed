@@ -512,6 +512,27 @@ which the engine draws into directly. DOM chrome surrounds it.
     surface deleted the GPU→CPU copy and its frame of latency, the pixel buffer
     in a signal, the `putImageData` helper, and the imperative repaint that had
     to re-run whenever the element remounted.
+- **The layer panel's thumbnails go back the other way, and the reasons invert**
+  (`layer_thumbs.rs`, §14.6). They are pictures of the live document like the
+  navigator's, so it would seem to follow that they want surfaces too — but there is
+  one navigator and there are as many of these as the document has layers, so a
+  surface each is a WebGPU context and a swapchain per row; the rows are moved and
+  re-keyed by the drag that reorders them, and a CSS `background-image` survives a
+  node moving where a bound surface is per-node state to rebind; and the frame of
+  latency a surface buys off is worth nothing on a 20 px picture refreshed once per
+  commit. So these are `Engine::export_view` readbacks into `data:` URLs, exactly as
+  the *brush* thumbnails are. Three consumers, three answers, from one question asked
+  each time: does this render repeat, how many of it are there, and who is waiting.
+  - **The engine change was one parameter.** `composite_groups` had answered "just
+    this layer" since the eyedropper needed it (§18.0.2) and `DrawKey` already keyed
+    on it; nothing had ever asked for it as a *picture*, so `render_view` passed
+    `None`. Threading it through is the whole of the feature engine-side, which is
+    what a seam in the right place looks like from outside.
+  - **The cost that is real is the draw cache's single slot.** An isolated render
+    evicts the screen's list, and rebuilding that clones a tile handle per visible
+    tile per layer — so generation is paced one row at a time and stands down while
+    `canvas_active`. The cache key is the layer's own tile revision rather than
+    `doc_revision`, so a stroke re-renders one row instead of all of them.
 - **Compositing splits along "does it depend on the target?"**, so a second view
   costs only its own attachments — and again along **"does it ever change?"**, so
   a second *engine* costs only its own view settings. `CompositorPipeline` holds

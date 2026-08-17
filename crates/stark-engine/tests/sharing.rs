@@ -148,6 +148,7 @@ fn export_view_frames_the_callers_view() {
         .export_view(
             &mut Offscreen::default(),
             view,
+            None,
             Background::Substrate,
             Rendered::Committed,
         )
@@ -169,6 +170,7 @@ fn export_view_frames_the_callers_view() {
             .export_view(
                 &mut Offscreen::default(),
                 huge,
+                None,
                 Background::Substrate,
                 Rendered::Committed
             )

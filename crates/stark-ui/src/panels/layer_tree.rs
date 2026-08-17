@@ -290,6 +290,10 @@ mod tests {
             // here reads the merge, and offering one would say something about a pair
             // of rows that the fixture's `(id, depth)` pairs do not describe.
             merge_down: None,
+            // Every fixture row is a paint layer, and one revision serves them all:
+            // nothing here draws a thumbnail, and a distinct number per row would be
+            // saying something about their contents that these tests do not measure.
+            content_revision: Some(0),
         }
     }
 

@@ -197,10 +197,13 @@ is exactly a layer mask. Alpha lock is a per-layer flag read by the compositor.
 isolation blend modes already had, recursed. **Duplicate** shipped with them
 (§14.8) and cost almost nothing, which is the copy-on-write tile map paying out:
 the copy holds the source's own handles, so duplicating a layer allocates no GPU
-memory at all until one of the two is painted on. **Still missing: layer masks
-proper, alpha lock, thumbnails, and merge/flatten.** Merge is load-bearing twice:
-it is a workflow staple *and* it is how an append-only action log stops growing
-forever.
+memory at all until one of the two is painted on. **Row thumbnails** shipped after
+them (§14.6) and were nearly free for a related reason: the engine could already
+render one layer alone — the eyedropper's isolate, which had simply never been asked
+for as a *picture* — and the copy-on-write tile map supplies the cache key, since a
+map that has not been replaced is the same map. **Still missing: layer masks proper,
+alpha lock, and merge/flatten.** Merge is load-bearing twice: it is a workflow staple
+*and* it is how an append-only action log stops growing forever.
 
 #### 18.1.2 Mirror and rotate the canvas view — built
 

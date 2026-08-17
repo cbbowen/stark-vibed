@@ -1406,6 +1406,40 @@ button.layer-release:hover {
   height: 12px;
 }
 
+/* The layer's own paint in miniature (§14.6). Present only on a row that has tiles
+   to show, so a frame's row and a filter's row keep their names in the column the
+   rest of the panel's do — the box is not held open for a picture that is never
+   coming.
+
+   `pointer-events: none` because **the whole row is the grip**: a drag starts
+   anywhere along it, and a 20px element that swallowed the press would put a dead
+   patch in the middle of the panel's principal gesture.
+
+   `contain`, not `cover`: every row is framed on the same rect the piece occupies
+   (`layer_thumbs`), so a row's picture is a letterboxed view of the whole piece
+   rather than a crop of it — which is what lets one row be compared against another,
+   and what keeps paint in a far corner from being the part that gets cropped away.
+
+   The well underneath is a flat tint rather than the usual transparency checker.
+   Two reasons, and the second is the one that decides it: a checker at 20px is
+   noise standing next to a picture that is itself only 20px, and the picture
+   arrives as an inline `background-image` — so a checker drawn with one would be
+   the *same property*, and the inline declaration would simply replace it. A tint
+   is `background-color`, which composes with the image instead of competing for
+   it. */
+.layer-thumb {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 3px;
+  background-color: #00000038;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  box-shadow: inset 0 0 0 1px #ffffff14;
+  pointer-events: none;
+}
+
 /* Duplicate, one slot in from Remove. Bare and 14px like its neighbours, and unlike
    Remove it needs no held slot: every row has one, so nothing steps sideways. It
    answers a hover in the plain light the constructive controls do — the red is

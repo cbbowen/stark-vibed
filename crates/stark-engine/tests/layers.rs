@@ -4,10 +4,10 @@
 mod common;
 
 use common::*;
-use stark_engine::Engine;
 use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::{Background, Engine, Offscreen, Rendered};
 use stark_model::document::{BlendMode, DRAGO_K, LayerId, Place};
-use stark_model::geom::Vec2;
+use stark_model::geom::{Extent2, Vec2};
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
@@ -681,5 +681,173 @@ fn a_moved_document_projects_a_fresh_layer_list() {
     assert!(
         (shown - 0.125).abs() < 1e-6,
         "the projection reported {shown}, not the preview"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Rendering one layer alone: what the panel's thumbnails are pictures of (§14.6)
+// ---------------------------------------------------------------------------
+
+/// The view both thumbnail tests render through: the whole of the two strokes,
+/// small, which is the shape a row's picture actually has.
+fn thumb_view() -> stark_engine::ViewTransform {
+    stark_engine::ViewTransform {
+        center: Vec2::ZERO,
+        zoom: 0.5,
+        ..stark_engine::ViewTransform::identity(Extent2::new(64, 64))
+    }
+}
+
+fn render_only(engine: &mut Engine, only: Option<LayerId>) -> stark_engine::RgbaImage {
+    let readback = engine
+        .export_view(
+            &mut Offscreen::default(),
+            thumb_view(),
+            only,
+            Background::Transparent,
+            Rendered::Committed,
+        )
+        .expect("a finite view within device limits");
+    pollster::block_on(readback).expect("the readback completes")
+}
+
+/// **A layer renders alone.** The document shows green over red at the origin;
+/// each layer asked for by itself must show its own paint and nothing of the
+/// other's, which is the whole claim a thumbnail makes.
+///
+/// Asked at the centre, where the two strokes cross — the one place a leak from
+/// the layer above would be indistinguishable from the layer below being drawn.
+#[test]
+fn a_layer_renders_alone() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+
+    assert!(
+        green_dominant(center(&render_only(&mut engine, Some(TOP)))),
+        "the top layer alone must be its own green"
+    );
+    assert!(
+        red_dominant(center(&render_only(&mut engine, Some(ROOT)))),
+        "the root layer alone must be red, with none of the green above it"
+    );
+    // …and the same call with no layer named is still the document.
+    assert!(
+        green_dominant(center(&render_only(&mut engine, None))),
+        "None must render the document, green over red"
+    );
+}
+
+/// **A layer's own picture does not change when its surroundings do.** Opacity,
+/// blend mode and clip say how much of a layer the *document* shows; none of them
+/// says anything about what the paint is, so an isolated render must answer the
+/// same picture at any setting (`composite_groups`).
+///
+/// Zero opacity is the deliberate exception and is asserted as such: a layer
+/// switched off contributes nothing, and reporting its paint would be reporting
+/// something the document does not have.
+#[test]
+fn a_layers_own_picture_ignores_its_surroundings() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+    let alone = render_only(&mut engine, Some(TOP));
+
+    for (label, command) in [
+        ("faded", DocCommand::SetLayerOpacity(TOP, 0.25)),
+        (
+            "multiplied",
+            DocCommand::SetLayerBlend(TOP, BlendMode::Multiply),
+        ),
+        ("clipped", DocCommand::SetLayerClip(TOP, true)),
+    ] {
+        engine.process(command);
+        assert!(
+            images_match(&alone, &render_only(&mut engine, Some(TOP)), 0),
+            "a {label} layer must render the same paint on its own"
+        );
+    }
+
+    // The exception, and the one place the picture is allowed to go: switched
+    // off entirely, the layer has nothing to show.
+    engine.process(DocCommand::SetLayerOpacity(TOP, 0.0));
+    assert_eq!(
+        center(&render_only(&mut engine, Some(TOP)))[3],
+        0,
+        "a layer at zero opacity draws nothing at all"
+    );
+}
+
+/// **The thumbnail cache's key moves exactly when the picture does.**
+///
+/// `content_revision` is what the panel compares to decide whether the thumbnail
+/// it holds is still this layer's picture (§14.6), so the two directions are both
+/// failures worth a test: a stroke that did not move it serves a stale image, and
+/// a property change that *did* move it re-renders every thumbnail on every
+/// slider drag.
+#[test]
+fn content_revision_tracks_the_tiles_and_nothing_else() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+
+    let key = |e: &Engine, id: LayerId| {
+        e.observe()
+            .layers
+            .iter()
+            .find(|l| l.id == id)
+            .expect("the layer")
+            .content_revision
+    };
+
+    let before = key(&engine, TOP);
+    assert!(before.is_some(), "a paint layer has a content revision");
+
+    // Painting moves it, and moves only the painted layer's.
+    let root_before = key(&engine, ROOT);
+    paint(&mut engine, GREEN, 10.0, H_STROKE);
+    assert_ne!(before, key(&engine, TOP), "paint must move the key");
+    assert_eq!(
+        root_before,
+        key(&engine, ROOT),
+        "paint on one layer must not move another's key"
+    );
+
+    // Presentation properties do not: they change how the document shows the
+    // layer, never what its own paint is. Three commands, so three undos below.
+    let painted = key(&engine, TOP);
+    engine.process(DocCommand::SetLayerOpacity(TOP, 0.5));
+    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Multiply));
+    engine.process(DocCommand::SetLayerVisible(TOP, false));
+    assert_eq!(
+        painted,
+        key(&engine, TOP),
+        "opacity, blend and visibility must leave the key alone"
+    );
+
+    // …and undoing them does not either: rewinding a property restores a version
+    // holding the same tiles, so the panel keeps serving the thumbnail it has
+    // rather than re-rendering one per step of a held Ctrl+Z.
+    for _ in 0..3 {
+        engine.process(DocCommand::Undo);
+    }
+    assert_eq!(
+        painted,
+        key(&engine, TOP),
+        "undoing a property is not a repaint"
+    );
+
+    // Undoing the *stroke* must move the key, or the panel would go on showing
+    // paint the document no longer has. Whether it lands back on `before` is not
+    // asserted: a fresh number is the sound direction (see `PaintTiles::revision`),
+    // costing one re-render and never a wrong picture.
+    engine.process(DocCommand::Undo);
+    assert_ne!(
+        painted,
+        key(&engine, TOP),
+        "undoing a stroke must move the key off the picture it painted"
     );
 }

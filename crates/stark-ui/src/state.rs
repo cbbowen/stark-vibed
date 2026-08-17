@@ -212,6 +212,12 @@ pub struct AppState {
     /// Rendered preset thumbnails and the offscreen rig that generates them
     /// (`crate::thumbs`).
     pub thumbs: crate::thumbs::ThumbState,
+    /// Rendered thumbnails of the document's own layers (§14.6;
+    /// `crate::layer_thumbs`). A separate cache from `thumbs` above, and not
+    /// merely a second use of it: those are pictures of a brush, keyed on the
+    /// brush and pinned to one look forever, while these are pictures of the
+    /// *document*, keyed on tiles that move as it is painted.
+    pub layer_thumbs: crate::layer_thumbs::LayerThumbState,
     /// The gradient library and its trace mode (§22; `crate::gradients`),
     /// loaded from `localStorage` at startup like the libraries above.
     pub gradients: crate::gradients::GradientsState,
@@ -421,6 +427,10 @@ impl AppState {
                 cache: root_signal(Vec::new),
                 rig: root_signal(|| None),
                 shared: root_signal(|| None),
+                busy: root_signal(|| false),
+            },
+            layer_thumbs: crate::layer_thumbs::LayerThumbState {
+                cache: root_signal(Vec::new),
                 busy: root_signal(|| false),
             },
             gradients: crate::gradients::GradientsState {

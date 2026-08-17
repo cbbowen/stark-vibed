@@ -294,6 +294,67 @@ no inapplicable state: Release is simply absent on a layer that is in no group,
 Remove on the row whose removal would empty the document, and Duplicate on neither,
 because every layer can be copied.
 
+#### The row's thumbnail
+
+Each paint row carries a miniature of **its own paint** (`stark-ui/src/layer_thumbs.rs`).
+Three decisions make it, and each is a smaller version of one the panel has already
+taken elsewhere.
+
+- **It shows the layer, not the layer's contribution.** Blend mode, clip and opacity
+  are all statements about the *backdrop* (§14.4.3) — they say how much of a layer the
+  document lets through, and nothing about what the paint is. So the thumbnail renders
+  through the isolate the eyedropper already samples through (§18.0.2,
+  `Engine::composite_groups`), which drops all three. Turning a layer down does not
+  turn its paint into a paler paint, and its row must not say otherwise. That isolate
+  was written for the picker and had never been *rendered*; the whole engine change
+  here was threading it from `Engine::export_view` down to the draw list, which
+  already keyed on it.
+- **Every row is framed on the piece, not on its own content.** The rect is the one
+  `Engine::export_plan` answers — the same call the navigator's miniature frames itself
+  with (§11), so an overview and a row cannot come to disagree about where the piece
+  is. Framing each row on its own bounds would fill every thumbnail and make no two of
+  them comparable, and would rescale a row's picture as its layer is painted outward.
+  Letterboxed rather than cropped, for the second half of that reason: the corner a
+  layer's only paint is in must not be the part that gets cut.
+- **It is a cut-out**, not a picture of the layer sitting on the canvas
+  (`Background::Transparent`). A row's job is to say *where this layer has paint*, and
+  a ground under it fills all twenty pixels and hides exactly that.
+
+A row with no tiles gets **no thumbnail at all** rather than an empty one — a matte's
+content is a rect and a color the row already draws, and a filter has none by
+construction (§21.3), so a blank square beside either would be saying something false
+rather than saying nothing. `LayerInfo::content_revision` is `None` there, which is the
+same field that would have keyed the picture: one question, not two.
+
+A **hidden** layer keeps the last thumbnail it had. The isolate draws nothing for one,
+deliberately — a sample must not report paint that is switched off — so the generator
+declines to render it rather than replacing a good picture with an empty one at exactly
+the moment the row's own picture is the only remaining record of what is in it.
+
+##### Why it costs nothing per stroke
+
+The obvious key is `doc_revision`, and it is the expensive one: it moves on every
+commit, so one stroke would re-render every row. The key is instead the layer's own
+**content revision** — a number derived in `PaintTiles::new`, beside the bounds and for
+the identical reason given there (it is the only door a tile map is installed through,
+so a writer cannot forget to move it). Paint one layer and exactly one thumbnail
+regenerates; a slider drag, a rename, a reorder and a run of undo through property
+edits regenerate nothing.
+
+It is a counter rather than the tile map's pointer, and that is the one subtle part.
+A tile is never rewritten once committed, so `TilePairHandle::same` already reads
+identity as "unchanged" (§5.2) — but soundly only between two handles *both held*. A
+cache stores its key and compares it later, by which time the allocation it named may
+have been freed and a different map built at the same address: the key would match and
+the picture would be stale, with nothing anywhere to say so. A number that only goes up
+cannot collide with its own past.
+
+The remaining cost is not in the cache but in the compositor: its draw list is a
+**single slot** keyed on, among other things, which layer is being drawn alone, so
+every thumbnail evicts the screen's list and the next frame rebuilds it. That is why
+generation is paced one row per turn of the event loop, waits out `canvas_active`, and
+stops the moment a hand is back on the canvas.
+
 #### Moving a layer by dragging it
 
 The panel draws where every layer sits, so the way to put one somewhere else is to

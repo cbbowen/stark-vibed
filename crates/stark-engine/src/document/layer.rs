@@ -104,13 +104,22 @@ impl Default for CompositeParams {
 pub struct PaintTiles {
     map: TileMap,
     bounds: CanvasBounds,
+    revision: u64,
 }
 
+/// Where [`PaintTiles::revision`] comes from. Process-wide and monotonic, so a
+/// number is never handed out twice however many documents, engines or history
+/// versions are alive.
+static TILE_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl PaintTiles {
-    /// The tiles, with their extent derived once.
+    /// The tiles, with their extent and their revision derived once.
     fn new(map: TileMap) -> Self {
         Self {
             bounds: CanvasBounds::of_tiles(map.keys()),
+            // `Relaxed` is the whole requirement: this is asked for a *distinct*
+            // number, never for an ordering between threads.
+            revision: TILE_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             map,
         }
     }
@@ -118,6 +127,36 @@ impl PaintTiles {
     /// The sparse tile map itself.
     pub fn map(&self) -> &TileMap {
         &self.map
+    }
+
+    /// A number that changes exactly when these tiles do — **the cheapest sound
+    /// answer to "is this the same picture?"** for anything caching a render of
+    /// them (§14.6: the layer panel's thumbnails).
+    ///
+    /// Derived here, beside `bounds`, and for the identical reason the doc above
+    /// gives: `new` is the only way to install a map, so a writer cannot forget to
+    /// move it. That is what makes this a fact about the value rather than a
+    /// counter a new mutation path could leave behind.
+    ///
+    /// **Why not the map's pointer.** A tile is never rewritten once committed, so
+    /// `TilePairHandle::same` already reads identity as "unchanged" — but that is
+    /// sound only between two handles *both held*. A cache stores its key and
+    /// compares it later, by which time the allocation it named may have been freed
+    /// and a different map built at the same address; the key would match and the
+    /// picture would be stale, with nothing anywhere to say so. A counter that only
+    /// ever goes up cannot collide with its own past.
+    ///
+    /// **What undo does with it.** The revision travels with the value, so rewinding
+    /// something that left the tiles alone — a blend mode, an opacity, a rename —
+    /// restores a version holding these same tiles under this same number, and a
+    /// cache keyed on it is untouched by a held Ctrl+Z through a run of property
+    /// edits. Rewinding past a *stroke* is the other case, and there the number is
+    /// simply a new one rather than the pre-stroke number coming back. That is the
+    /// sound direction and deliberately not tightened: a fresh key costs one
+    /// re-render, while reusing a stale one would cost a wrong picture. Both are
+    /// pinned by `tests/layers.rs`.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -297,6 +336,21 @@ impl Layer {
         match &self.content {
             LayerContent::Paint(tiles) => tiles.bounds,
             LayerContent::Matte { .. } | LayerContent::Filter(_) => CanvasBounds::default(),
+        }
+    }
+
+    /// A number that changes exactly when this layer's own painted tiles do
+    /// ([`PaintTiles::revision`]), or `None` for a layer that holds no tiles.
+    ///
+    /// The `None` is the same statement [`tiles`](Self::tiles) makes and is load-bearing
+    /// in the same way: a matte's content is a rect and a color, a filter's is nothing
+    /// at all, and neither has a picture of its own to cache. A caller gets "there is
+    /// no thumbnail here" from the same field that would have told it the key, instead
+    /// of asking a second question about the layer's kind.
+    pub fn content_revision(&self) -> Option<u64> {
+        match &self.content {
+            LayerContent::Paint(tiles) => Some(tiles.revision()),
+            LayerContent::Matte { .. } | LayerContent::Filter(_) => None,
         }
     }
 
