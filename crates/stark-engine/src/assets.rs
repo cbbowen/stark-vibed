@@ -186,9 +186,7 @@ impl AssetStore {
 
     /// Whether `id` is loaded in this store.
     pub fn contains(&self, id: AssetId) -> bool {
-        unpoisoned(self.inner.lock())
-            .masks
-            .contains_key(&id)
+        unpoisoned(self.inner.lock()).masks.contains_key(&id)
     }
 
     /// The canonical PNG bytes of one asset, if loaded — what a peer mirror or

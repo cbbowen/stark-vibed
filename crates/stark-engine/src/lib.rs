@@ -119,8 +119,8 @@ pub use command::{InputCommand, InputSample};
 pub use document::Selection;
 pub use engine::{
     Background, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan, ExportScale, Guides,
-    LayerInfo, Layers, MatteInfo, ObservableState, PickOptions, PickSource, PresenceTick, Projected,
-    Rendered,
+    LayerInfo, Layers, MatteInfo, ObservableState, PickOptions, PickSource, PresenceTick,
+    Projected, Rendered,
 };
 pub use error::{EngineError, Result};
 pub use gpu::{

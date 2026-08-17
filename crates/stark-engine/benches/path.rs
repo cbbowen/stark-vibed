@@ -202,7 +202,14 @@ fn fit_tolerance(c: &mut Criterion) {
     let pts = samples(SWEEP_STROKE);
     let mut g = c.benchmark_group("fit-tolerance");
     g.throughput(criterion::Throughput::Elements(pts.len() as u64));
-    for tol in [MIN_TOLERANCE, 0.25, DEFAULT_TOLERANCE, 4.0, 16.0, MAX_TOLERANCE] {
+    for tol in [
+        MIN_TOLERANCE,
+        0.25,
+        DEFAULT_TOLERANCE,
+        4.0,
+        16.0,
+        MAX_TOLERANCE,
+    ] {
         g.bench_with_input(
             BenchmarkId::from_parameter(format!("tol-{tol}")),
             &(pts.clone(), tol),
