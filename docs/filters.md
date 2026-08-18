@@ -712,12 +712,13 @@ literal sixteen is asserted against `gradient::MAX_STOPS` where the mirror lands
 scalar lanes, a future kind that needs a table of vec4s reads this one as its own.
 
 **In the bar, the ramp is chosen where ramps live.** The gradient map's bar is
-deliberately thin: the strip it wears (the library's own `in oklab` CSS), a
-**Reverse** chip, and a chip that opens the Gradients panel — because the
-choosing already has a home. While a gradient map is selected, clicking a row in
-the Gradients panel hands that ramp to the filter, the same click-is-a-choice the
-composing fill and the matte honour (§22.4); with no ramp yet, the bar says where
-to get one and opens the door. A click is a discrete edit, so it commits one
+deliberately thin: the library's well wearing the ramp (§22.3 — clicking the
+strip flies the library's pop-out out of it) and a **Reverse** chip — because
+the choosing already has a home, and that home is on the strip itself. While a
+gradient map is selected, clicking a row in the pop-out hands that ramp to the
+filter, the same click-is-a-choice the composing fill and the matte honour
+(§22.4); with no ramp yet, the bar shows an empty well that opens the same
+pop-out, where one is picked or traced. A click is a discrete edit, so it commits one
 `SetFilter` with no preview funnel, and re-clicking the ramp already worn is
 refused engine-side (§21.6's out-and-back rule). Reverse is the one edit that is
 about the *mapping* rather than the ramp: a trace runs in whatever direction the

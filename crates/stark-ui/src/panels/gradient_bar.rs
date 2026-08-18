@@ -12,11 +12,17 @@
 //! produces, and re-dragging replaces the preview rather than stacking.
 //!
 //! The two targets differ in one deliberate way. A **fill** reads its ramp live
-//! off the library (the Gradients panel's highlighted row), so a click there
+//! off the library (the pop-out's highlighted row), so a click there
 //! re-previews; a **matte** carries its ramp in the target, seeded from the
 //! matte's own paint — re-composing an old gradient's axis must not silently
 //! swap its colors for whatever the library happens to have selected. A
 //! library click mid-mode still replaces it, because a click is a choice.
+//!
+//! The library itself lives on this bar: the strip showing the ramp in hand is
+//! a [`GradientWell`], and clicking it flies the library out — the rows to pick
+//! from and the Trace that makes a new one (§22.3). Which is why an empty
+//! library no longer refuses the mode: the bar is where ramps come *from*, so
+//! it has to be reachable before there are any.
 
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
@@ -25,6 +31,7 @@ use crate::gradients;
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
+use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, GradientAxisKind, GradientTarget, GradientUi};
@@ -34,15 +41,13 @@ use stark_model::geom::Vec2;
 
 /// Enter the mode for a **fill of the selection**. The target layer is the
 /// transform's choice — the active layer if paintable, else the topmost
-/// paintable. Refuses quietly when the library is empty: the bar's button is
-/// disabled then, and says why.
+/// paintable. An empty library does not refuse: the ramp is read live, so
+/// nothing previews until the bar's well supplies one — and the well is where
+/// one is picked or traced.
 ///
 /// Nothing about strength is captured, because the ramp lands through the
 /// selection and the selection already carries it (§6.8).
 pub fn begin_fill(state: AppState) {
-    if gradients::current(state).is_none() {
-        return;
-    }
     // One composing mode at a time (`crate::modes`), the transform's rule.
     crate::modes::leave(state);
     let obs = state.obs.read();
@@ -68,7 +73,9 @@ pub fn begin_fill(state: AppState) {
 /// and axis, so the mode edits what is there; a solid one starts on the
 /// library's current ramp with a vertical axis across its rect (or the view,
 /// for a ground) — a graded sky's default, previewed immediately so entering
-/// the mode already shows something to adjust.
+/// the mode already shows something to adjust. With the library empty the mode
+/// still opens, carrying no ramp: the bar's well is where the first one is
+/// picked or traced, and the default axis stands ready for it.
 pub fn begin_matte(state: AppState, layer: stark_model::document::LayerId, paint: &MattePaint) {
     // One composing mode at a time (`crate::modes`), as for the fill above.
     crate::modes::leave(state);
@@ -81,16 +88,13 @@ pub fn begin_matte(state: AppState, layer: stark_model::document::LayerId, paint
                     (*center, *center + Vec2::new(*radius, 0.0)),
                 ),
             };
-            (gradient.clone(), kind, drag)
+            (Some(gradient.clone()), kind, drag)
         }
         MattePaint::Solid(_) => {
-            let Some(gradient) = gradients::current(state) else {
-                return;
-            };
             let (lo, hi) = default_axis_rect(state, layer);
             let cx = (lo.x + hi.x) * 0.5;
             (
-                gradient,
+                gradients::current(state),
                 GradientAxisKind::Linear,
                 (Vec2::new(cx, lo.y), Vec2::new(cx, hi.y)),
             )
@@ -138,7 +142,7 @@ fn update(state: AppState, ui: GradientUi) {
 }
 
 /// Re-preview the composing gesture, if one is composing — how a gradient
-/// picked in the panel mid-mode reaches the canvas. For a matte target the
+/// picked in the pop-out mid-mode reaches the canvas. For a matte target the
 /// click *replaces* the carried ramp (a click is a choice); for a fill the
 /// ramp is read live anyway.
 pub fn refresh(state: AppState) {
@@ -147,7 +151,7 @@ pub fn refresh(state: AppState) {
     if let GradientTarget::Matte { gradient, .. } = &mut ui.target
         && let Some(current) = gradients::current(state)
     {
-        *gradient = current;
+        *gradient = Some(current);
     }
     update(state, ui);
 }
@@ -210,7 +214,7 @@ fn compose(state: AppState, ui: &GradientUi) -> Option<Laid> {
         GradientTarget::Matte { layer, gradient } => Laid::Matte(
             *layer,
             MattePaint::Gradient {
-                gradient: gradient.clone(),
+                gradient: gradient.clone()?,
                 axis,
             },
         ),
@@ -234,11 +238,12 @@ fn finish(state: AppState) {
     mode.set(None);
 }
 
-/// The ramp the bar (and the axis chrome) is currently laying.
+/// The ramp the bar (and the axis chrome) is currently laying, or `None` while
+/// the library has yet to supply one.
 fn ramp_in_hand(state: AppState, ui: &GradientUi) -> Option<Gradient> {
     match &ui.target {
         GradientTarget::Fill { .. } => gradients::current(state),
-        GradientTarget::Matte { gradient, .. } => Some(gradient.clone()),
+        GradientTarget::Matte { gradient, .. } => gradient.clone(),
     }
 }
 
@@ -249,7 +254,7 @@ pub fn GradientBar() -> Element {
     let Some(ui) = state.gradient_bar.read().clone() else {
         return rsx! {};
     };
-    // Read reactively so a pick in the Gradients panel repaints the strip.
+    // Read reactively so a pick in the library pop-out repaints the strip.
     let strip = ramp_in_hand(state, &ui).map(|g| gradients::css_strip(&g));
     let kind_chip = |kind: GradientAxisKind, glyph: &'static str, name: &'static str| {
         let active = ui.kind == kind;
@@ -272,30 +277,36 @@ pub fn GradientBar() -> Element {
         }
     };
 
-    let done_title = if ui.drag.is_some() {
+    // A drag alone is not enough to have something to lay: entered with an
+    // empty library, the axis can be composed before any ramp exists to run
+    // along it, and Done then leaves without laying (`compose`).
+    let done_title = if ui.drag.is_some() && strip.is_some() {
         match ui.target {
             GradientTarget::Fill { .. } => "Lay the gradient (undo takes it back)",
             GradientTarget::Matte { .. } => "Keep this paint (undo takes it back)",
         }
+    } else if strip.is_none() {
+        "No ramp yet \u{2014} pick or trace one from the strip, or leave without laying anything"
     } else {
         "Nothing dragged yet \u{2014} leave without laying anything"
+    };
+    let well_title = if strip.is_some() {
+        "The ramp being laid \u{2014} click to pick another or trace a new one"
+    } else {
+        "No ramp yet \u{2014} click to pick or trace one"
     };
 
     rsx! {
         div { class: chrome_class(state, "selection-bar gradient-fill-bar"),
-            // The Gradients panel's mark: the bar is that library's ramp being
+            // The library's mark: the bar is that library's ramp being
             // put to work, so it wears the library's glyph.
             span { class: "bar-label",
                 {icon(icons::GRADIENT)}
                 {label("Gradient")}
             }
-            if let Some(strip) = strip {
-                span {
-                    class: "bar-gradient-strip",
-                    title: "The ramp being laid \u{2014} pick another in the Gradients panel",
-                    style: "background: {strip};",
-                }
-            }
+            // The ramp in hand, and the library behind it: clicking the strip
+            // flies the pop-out up (§22.3).
+            GradientWell { strip, title: well_title }
             span { class: "bar-sep" }
             {kind_chip(GradientAxisKind::Linear, icons::GRADIENT_LINEAR, "Linear")}
             {kind_chip(GradientAxisKind::Radial, icons::GRADIENT_RADIAL, "Radial")}

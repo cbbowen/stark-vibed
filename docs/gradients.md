@@ -43,7 +43,7 @@ value: colors the picker could show and the brush could wear. Interpolation
 between stops happens **in Oklab** (`Gradient::sample`), the same argument as
 §1.6: a perceptually uniform ramp passes through the colors an artist would
 mix on the way, where an sRGB lerp detours through grey. CSS interpolates
-`linear-gradient(in oklab, …)` identically, which is what makes the panel's
+`linear-gradient(in oklab, …)` identically, which is what makes the library's
 preview strip *be* the gradient rather than a picture of it (§22.3).
 
 Two deliberate absences:
@@ -102,8 +102,8 @@ Inside the request:
 3. **Samples over bare canvas answer nothing and are skipped.** The
    `pick_color` rule stretched along the line: a stroke gap crossed mid-trace
    does not inject the paper into the ramp — the ramp runs from paint to paint.
-   Fewer than two samples finding paint is no gradient at all, and the panel
-   says so.
+   Fewer than two samples finding paint is no gradient at all, and the
+   library's notice says so.
 4. **Fit** (`gradient::fit`): three stages, each with one job.
    - *Median-of-3* per Oklab channel — a single outlier sample (the trace
      nicking a dark line) becomes a stop under any least-error criterion, and
@@ -143,22 +143,30 @@ color — so documents stay self-contained and replayable with no reference
 into anyone's library.
 
 Unlike the presets there are **no built-in entries**: a gradient's whole story
-is that it came off *your* canvas, and a panel opening on a stranger's sunset
+is that it came off *your* canvas, and a library opening on a stranger's sunset
 would tell the opposite one. The empty state teaches the gesture instead.
 Captures are named by the machinery ("Gradient N", first free) so the artist
-can trace twice without a dialog between; rows wear the same trash every other
-roster wears, and clicking one takes the ramp in hand for the fill (§22.4).
-That click was deliberately withheld until the fill existed: while the library
-was the whole feature, a selectable row would have promised an application
-nothing could honour.
+can trace twice without a dialog between; rows wear the same hover-revealed
+trash every other roster wears, and clicking one takes the ramp in hand for
+the fill (§22.4). That click was deliberately withheld until the fill existed:
+while the library was the whole feature, a selectable row would have promised
+an application nothing could honour.
 
-The panel (`PanelId::Gradients`, closed by default like the other
-between-passages panels) shows each entry as a strip drawn by
+The library has **no panel**. It lives behind the ramp strip on the two bars
+that consume it — the shared gradient bar (§22.4) and the gradient-map filter
+bar (§21.11) — as a **pop-out** (`GradientWell`, the frame bar's color pop-out
+pattern): clicking the strip flies the list up out of it, anchored on the well,
+with the Trace button that makes a new entry riding its header. A bar with no
+ramp yet shows an empty well (a dashed face wearing the library's glyph)
+that opens the same pop-out, which is why the entry chips are never disabled
+by an empty library: the bar is where ramps come *from*, so it has to be
+reachable before there are any. Each entry is a strip drawn by
 `linear-gradient(in oklab, …)` from the fitted stops — the browser performing
 the same interpolation `Gradient::sample` defines, so the preview cannot
-disagree with what the engine will later fill with. Its Trace button arms the
-capture mode and stays lit for the mode's life: the catcher it arms is
-invisible, so the button is the mode's indicator as well as its switch.
+disagree with what the engine will later fill with. Arming Trace closes the
+pop-out (the catcher wants the canvas it floats over) and a floating hint
+takes over the instruction; the button stays lit for the mode's life, the
+mode's indicator as well as its switch.
 
 ### 22.4 The gradient fill: a parcel that varies with position
 
@@ -188,7 +196,7 @@ drag the hand already made instead of throwing it away.
 converts on the CPU once per fill — `rgb_to_channels` *and* `rgb_to_resid`,
 because in Mixbox the residual is half the color (§6.7) — and the shader
 lerps between adjacent stops in those channels. In an Oklab document that is
-exactly `Gradient::sample`, so the painted ramp is the panel's strip; in a
+exactly `Gradient::sample`, so the painted ramp is the library's strip; in a
 Mixbox document it is a **pigment ramp** — yellow-to-blue passes through green
 the way paint does, which the sRGB strip cannot preview and which is the point
 of painting in pigments. The fragment reads its canvas position through the
@@ -200,10 +208,11 @@ not move.
 
 **The composing mode is the transform's, aimed at a fill** (§16.6). The
 Selection bar — the fill needs a mask to be bounded by, and the bar exists
-exactly when there is one — gains a **Gradient** button (disabled with an
-explanatory title while the library is empty). It swaps in a bar of its own
-(the ramp in hand as a strip, Linear/Radial, Done) and a full-viewport catcher
-where the drag composes the axis. Every mutation funnels through one update
+exactly when there is one — gains a **Gradient** button. It swaps in a bar of
+its own (the ramp in hand as the library's well, §22.3, then Linear/Radial,
+Done) and a full-viewport catcher where the drag composes the axis. An empty
+library does not disable the entry: the mode opens with an empty well, nothing
+previews until it supplies a ramp, and Done then leaves without laying. Every mutation funnels through one update
 that issues `ViewCommand::PreviewFill` — the same `FillRenderer::apply` the
 commit runs over the committed tiles, so **preview == commit bit-exactly**
 (pinned in `tests/fill.rs`) and re-dragging previews one fill, never a stack of

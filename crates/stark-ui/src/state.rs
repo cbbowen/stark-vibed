@@ -564,7 +564,7 @@ pub struct GradientUi {
 #[derive(Clone, PartialEq)]
 pub enum GradientTarget {
     /// Fill the selection on `layer`. The ramp is read live from the library
-    /// (the panel's highlighted row), so a click there re-previews.
+    /// (the pop-out's highlighted row), so a click there re-previews.
     ///
     /// It lays opaque paint through the mask, so how strongly it lands is the
     /// selection's business and there is nothing here to capture (§6.8).
@@ -572,10 +572,13 @@ pub enum GradientTarget {
     /// Repaint the matte `layer` (§15.4). The ramp rides the target — seeded
     /// from the matte's own paint, so re-composing an old gradient's axis does
     /// not silently swap its colors for the library's current row; a library
-    /// click replaces it deliberately.
+    /// click replaces it deliberately. `None` when the mode was entered with
+    /// nothing to seed from — an empty library — and the bar's well is then
+    /// where the first ramp arrives; until one does, there is nothing to
+    /// preview and Done leaves without laying.
     Matte {
         layer: LayerId,
-        gradient: stark_model::Gradient,
+        gradient: Option<stark_model::Gradient>,
     },
 }
 

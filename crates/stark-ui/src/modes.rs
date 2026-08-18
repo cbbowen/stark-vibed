@@ -35,7 +35,7 @@ pub enum Composing {
     Transform,
     /// A perspective guide being shaped (§20.5).
     GuideEdit,
-    /// The Gradients panel's trace, armed (§22.2).
+    /// The gradient library's trace, armed from its pop-out (§22.2).
     GradientTrace,
     /// The gradient fill's axis, on the shared bar (§22.4).
     GradientFill,

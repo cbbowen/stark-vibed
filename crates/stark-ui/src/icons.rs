@@ -284,10 +284,10 @@ icons! {
     // with the tool it arms — which is the whole discoverability argument that bar is
     // built on, made in a picture as well as a word.
     EYEDROPPER => "eyedropper-bold",
-    // The Gradients panel (§22.3): a square filling from ink to air, which is what
-    // a ramp is. Worn by the panel's title bar and its entry in the Panels menu —
-    // and by the gradient-fill bar (§22.4), which is that library's ramp being
-    // put to work, so it is the same subject and the same mark.
+    // The gradient library (§22.3): a square filling from ink to air, which is what
+    // a ramp is. Worn by an empty well's face and by the gradient-fill bar's label
+    // (§22.4), which is that library's ramp being put to work, so it is the same
+    // subject and the same mark.
     GRADIENT => "gradient-bold",
     // The gradient-fill bar's two axis kinds (§22.4): each glyph is the figure
     // the drag draws — a segment the ramp runs along, a circle the ramp reaches.

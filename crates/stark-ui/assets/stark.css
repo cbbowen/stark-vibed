@@ -4292,10 +4292,38 @@ button.layer-remove:hover {
 }
 
 /* ---------------------------------------------------------------------------
-   The gradient library and its trace mode (§22).
+   The gradient library's pop-out and its trace mode (§22).
    --------------------------------------------------------------------------- */
 
-/* Section header, the preset section's shape: the title and the one button that
+/* The well a bar shows its ramp in, and the anchor the library flies out of —
+   `.frame-color`'s shape: the pop-out is centred on the well, not on a bar
+   whose width changes with what else it holds. */
+.gradient-well {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* The library, flown up out of the well — the color pop-out's surface with a
+   column inside: header, notice, rows. Fixed width: a panel's content width,
+   which is what the rows were drawn for. */
+.gradient-popout {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 252px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-background);
+  border-radius: 12px;
+  padding: 8px 12px 12px;
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
+  z-index: 40;
+}
+
+/* Pop-out header, the preset section's shape: the title and the one button that
    acts on the library, on one line. */
 .gradient-header {
   display: flex;
@@ -4324,12 +4352,23 @@ button.layer-remove:hover {
   color: #fff;
 }
 
-/* What to do while armed, under the header that armed it. */
-.gradient-hint {
-  padding: 2px 2px 8px;
-  font-size: 11px;
-  line-height: 1.4;
-  opacity: 0.7;
+/* What to do while armed, floating over the top of the canvas — the pop-out
+   that armed the trace closes when the catcher takes the canvas, so the
+   instruction rides the mode itself. Non-interactive: it must never shadow the
+   trace it explains. */
+.gradient-trace-hint {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  pointer-events: none;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--panel-background);
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
+  font-size: 12px;
 }
 
 /* A capture that came back empty says why, in the same quiet register as the
@@ -4341,11 +4380,11 @@ button.layer-remove:hover {
   color: #d8a24d;
 }
 
-/* The list scrolls its own overflow inside the resizable panel, exactly as the
-   preset list does — same scrollbar, same overscroll containment. */
+/* The list scrolls its own overflow inside the pop-out — the preset list's
+   scrollbar and overscroll containment, capped so a grown library scrolls
+   rather than climbing the screen. */
 .gradient-list {
-  flex: 1;
-  min-height: 0;
+  max-height: 292px;
   overflow-y: auto;
   overscroll-behavior: contain;
   display: flex;
@@ -4525,16 +4564,47 @@ button.layer-remove:hover {
    --------------------------------------------------------------------------- */
 
 /* The ramp in hand, shown on the bar between the label and the axis chips —
-   the same in-oklab strip the panel rows draw, at chip height. A span, not a
-   button: picking a different ramp is the Gradients panel's job, and the strip
-   says which one is loaded rather than offering to change it. */
+   the same in-oklab strip the pop-out rows draw, at chip height. A button: the
+   library lives behind it (`.gradient-popout`), so the strip both says which
+   ramp is loaded and is where another is picked or traced. */
 .bar-gradient-strip {
   display: inline-block;
   width: 88px;
   height: 16px;
+  border: none;
+  padding: 0;
   border-radius: 4px;
   box-shadow: inset 0 0 0 1px #ffffff2e;
   flex: none;
+  cursor: pointer;
+}
+
+.bar-gradient-strip:hover {
+  box-shadow: inset 0 0 0 1px #ffffff59;
+}
+
+/* An empty well: no ramp to show yet, so the face is the library's own glyph
+   over a dashed keyline — a place a ramp will go, not a ramp. */
+.bar-gradient-strip.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff0d;
+  box-shadow: none;
+  border: 1px dashed #ffffff59;
+  color: #eee;
+  opacity: 0.8;
+}
+
+.bar-gradient-strip.empty:hover {
+  box-shadow: none;
+  border-color: #ffffff8c;
+  opacity: 1;
+}
+
+.bar-gradient-strip.empty .icon svg {
+  width: 12px;
+  height: 12px;
 }
 
 /* The radial axis's reach circle, in the trace chrome's own weights: quieter

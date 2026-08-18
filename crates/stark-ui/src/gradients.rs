@@ -2,10 +2,10 @@
 //!
 //! A gradient is made by **tracing a line through the painting** — through a
 //! palette the artist has already mixed on it — not by placing control points
-//! one picker dialog at a time. The trace itself is the Gradients panel's armed
-//! mode (`crate::panels::gradients`); what lives here is the library around it:
-//! the entries, their persistence, and the capture call that turns a finished
-//! trace into one of them through [`Engine::pick_gradient`] (§22.2).
+//! one picker dialog at a time. The trace itself is the mode the library
+//! pop-out arms (`crate::panels::gradients`); what lives here is the library
+//! around it: the entries, their persistence, and the capture call that turns a
+//! finished trace into one of them through [`Engine::pick_gradient`] (§22.2).
 //!
 //! Like the brush presets and the shape library, the entries are frontend state
 //! that follows *this browser* across documents via `localStorage`, and never
@@ -17,7 +17,7 @@
 //! personal.
 //!
 //! Unlike the preset library there are no built-in entries at all: a gradient's
-//! whole story is that it came off *your* canvas, and a panel opening on a
+//! whole story is that it came off *your* canvas, and a library opening on a
 //! stranger's sunset would tell the opposite one. The empty state says how to
 //! begin instead.
 
@@ -93,7 +93,7 @@ pub fn select(state: AppState, name: &str) {
 }
 
 /// The gradient a fill would use right now: the selected entry, or the first —
-/// so a library with anything in it always answers, and the Gradients panel
+/// so a library with anything in it always answers, and the pop-out
 /// highlights the same row this resolves to.
 pub fn current(state: AppState) -> Option<Gradient> {
     current_name(state).and_then(|name| {
@@ -107,7 +107,7 @@ pub fn current(state: AppState) -> Option<Gradient> {
     })
 }
 
-/// The name [`current`] resolves to, for the panel's highlight.
+/// The name [`current`] resolves to, for the pop-out's highlight.
 pub fn current_name(state: AppState) -> Option<String> {
     let entries = state.gradients.entries.read();
     let sel = state.gradients.selected.read();
@@ -118,7 +118,7 @@ pub fn current_name(state: AppState) -> Option<String> {
 }
 
 /// Load what this browser has saved. Call once at app start, before the
-/// renderer exists — entries are pure data and the panel should be populated
+/// renderer exists — entries are pure data and the pop-out should be populated
 /// on first open.
 pub fn load(state: AppState) {
     let Some(entries) = read_storage() else {

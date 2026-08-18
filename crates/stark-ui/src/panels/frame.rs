@@ -311,7 +311,6 @@ pub fn FrameBar() -> Element {
         c[2] * 100.0
     );
     let is_gradient = matches!(matte.paint, MattePaint::Gradient { .. });
-    let have_gradients = !state.gradients.entries.read().is_empty();
     // Offered only while there is no ground to make. Once there is one it is a
     // row in the Layers panel like any other layer, and a second could not mean
     // anything — "the whole plane" admits no second.
@@ -319,10 +318,9 @@ pub fn FrameBar() -> Element {
     let paint_for_begin = matte.paint.clone();
     let gradient_title = if is_gradient {
         "Recompose the gradient's axis"
-    } else if have_gradients {
-        "Paint this with a gradient \u{2014} drag the axis, then Done"
     } else {
-        "No gradients yet \u{2014} trace one in the Gradients panel first"
+        "Paint this with a gradient \u{2014} pick or trace the ramp on the bar, \
+         drag the axis, then Done"
     };
 
     rsx! {
@@ -452,10 +450,10 @@ pub fn FrameBar() -> Element {
             // The other paint a matte can wear (§22.4): entering the
             // shared gradient bar, which stands in for this one while the axis
             // is composed. Lit while the paint *is* a gradient, like every
-            // state-wearing chip.
+            // state-wearing chip — and never disabled, since that bar carries
+            // the library (§22.3) and so is the way to a first ramp too.
             button {
                 class: if is_gradient { "chip active" } else { "chip" },
-                disabled: !is_gradient && !have_gradients,
                 title: gradient_title,
                 onclick: move |_| {
                     crate::panels::gradient_bar::begin_matte(state, info.id, &paint_for_begin);

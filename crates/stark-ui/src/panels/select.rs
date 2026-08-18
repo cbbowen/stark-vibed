@@ -204,10 +204,6 @@ pub fn SelectionBar() -> Element {
     // completely, and a bar offering to fill through a catcher promises something
     // the pointer cannot reach (`crate::modes`).
     let composing = crate::modes::composing(state).is_some();
-    // The gradient fill needs a ramp to lay; with the library empty the chip
-    // stays, disabled, and its title says where ramps come from — the control
-    // is the map of what is possible, the state says what is missing.
-    let have_gradients = !state.gradients.entries.read().is_empty();
 
     rsx! {
         if active && !composing {
@@ -248,25 +244,16 @@ pub fn SelectionBar() -> Element {
                 }
                 // The same act as Fill with the parcel varying along a dragged
                 // axis (§22.4) — a mode rather than a click, because
-                // the axis is composed by hand and judged by eye.
-                {
-                    // Hoisted: an `if`/`else` in an rsx! attribute trips clippy's
-                    // suspicious-else-formatting on the expansion.
-                    let gradient_title = if have_gradients {
-                        "Fill the selection with a gradient \u{2014} drag the axis, then Done"
-                    } else {
-                        "No gradients yet \u{2014} trace one in the Gradients panel first"
-                    };
-                    rsx! {
-                        button {
-                            class: "chip",
-                            disabled: !have_gradients,
-                            title: gradient_title,
-                            onclick: move |_| crate::panels::gradient_bar::begin_fill(state),
-                            {icon(icons::GRADIENT)}
-                            {label("Gradient")}
-                        }
-                    }
+                // the axis is composed by hand and judged by eye. Never
+                // disabled: the mode's own bar carries the library (§22.3), so
+                // it is the way to a first ramp as well as the way to lay one.
+                button {
+                    class: "chip",
+                    title: "Fill the selection with a gradient \u{2014} pick or \
+                            trace the ramp on the bar, drag the axis, then Done",
+                    onclick: move |_| crate::panels::gradient_bar::begin_fill(state),
+                    {icon(icons::GRADIENT)}
+                    {label("Gradient")}
                 }
                 button {
                     class: "chip",

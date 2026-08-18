@@ -57,8 +57,9 @@ use std::sync::LazyLock;
 use dioxus::prelude::*;
 
 use crate::icons::{self, icon, label};
-use crate::layout::{PanelId, PanelLayout, chrome_class};
+use crate::layout::chrome_class;
 use crate::panels::color::ab_field_data_url;
+use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
@@ -189,7 +190,7 @@ fn use_selected_filter(state: AppState) -> Memo<Option<(LayerInfo, Filter)>> {
 }
 
 /// Hand the library's current ramp to the selected **gradient map** filter — the
-/// body of a Gradients-panel row click while one is being tuned (§21.11).
+/// body of a library pop-out row click while one is being tuned (§21.11).
 ///
 /// Called from [`gradients::select`](crate::gradients::select), so "clicking a row
 /// takes the ramp" means the same thing here it means for a composing fill or a
@@ -1005,52 +1006,39 @@ fn fringe_pad(
 /// The gradient map's controls (§21.11): the ramp it wears, and the one edit a
 /// ramp affords in place.
 ///
-/// Deliberately thin, because the *choosing* already has a home: the Gradients
-/// panel is the library, and while this bar is up a row click there hands the
-/// clicked ramp to this filter ([`apply_ramp`]). So the bar shows the ramp in the
-/// library's own strip (the same `in oklab` CSS, which is the same interpolation
-/// the pass runs — §22.3's invariant doing its job a third time), says where to
-/// get one while there is none, and offers **Reverse** — the one edit that is
-/// about the *mapping* rather than the ramp: a trace runs in whatever direction
-/// the hand drew, and the map reads dark at 0, so a ramp captured light-to-dark
-/// is one click from meaning what was meant instead of re-tracing backwards.
-fn map_rows(state: AppState, id: LayerId, ramp: Option<Gradient>, layout: PanelLayout) -> Element {
-    // Opening the library is this bar's job too: the ramp is chosen there, and a
-    // bar that said "use the Gradients panel" while leaving it closed would be
-    // directions to a door it could have opened. Un-hiding keeps the panel's
-    // remembered slot (`PanelLayout`), so it comes back where it lives — and wakes
-    // a sleeping stack with it, which is why this goes through `open_panel` rather
-    // than writing `hidden` here (§11).
-    let open_library = move |_| crate::layout::open_panel(state, layout, PanelId::Gradients);
+/// Deliberately thin, because the *choosing* already has a home: the library
+/// pop-out flies out of the ramp strip itself ([`GradientWell`], §22.3), and
+/// while this bar is up a row click there hands the clicked ramp to this filter
+/// ([`apply_ramp`]). So the bar shows the ramp in the library's own strip (the
+/// same `in oklab` CSS, which is the same interpolation the pass runs — §22.3's
+/// invariant doing its job a third time), opens on an empty well while there is
+/// none, and offers **Reverse** — the one edit that is about the *mapping*
+/// rather than the ramp: a trace runs in whatever direction the hand drew, and
+/// the map reads dark at 0, so a ramp captured light-to-dark is one click from
+/// meaning what was meant instead of re-tracing backwards.
+fn map_rows(state: AppState, id: LayerId, ramp: Option<Gradient>) -> Element {
     match ramp {
         None => rsx! {
             span {
                 class: "filter-inert",
                 title: "A gradient map repaints what is beneath it with a ramp \
                         indexed by lightness \u{2014} dark paint takes the ramp's \
-                        start, light paint its end. Click a gradient in the \
-                        Gradients panel to choose the ramp, or trace one off the \
-                        canvas first.",
-                "no ramp yet \u{2014} pick one in the Gradients panel"
+                        start, light paint its end. Click the well beside this to \
+                        choose the ramp, or trace one off the canvas there.",
+                "no ramp yet"
             }
             span { class: "bar-sep" }
-            button {
-                class: "chip",
-                title: "Open the Gradients panel \u{2014} clicking a gradient \
-                        there hands it to this filter",
-                onclick: open_library,
-                {icon(icons::GRADIENT)}
-                {label("Gradients")}
+            GradientWell {
+                title: "No ramp yet \u{2014} click to pick one, or trace one off the canvas",
             }
         },
         Some(g) => {
             let strip = crate::gradients::css_strip(&g);
             rsx! {
-                span {
-                    class: "bar-gradient-strip",
+                GradientWell {
+                    strip,
                     title: "The ramp, dark paint's end to the left \u{2014} click \
-                            a gradient in the Gradients panel to swap it",
-                    style: "background: {strip};",
+                            to pick another or trace a new one",
                 }
                 span { class: "bar-sep" }
                 button {
@@ -1065,14 +1053,6 @@ fn map_rows(state: AppState, id: LayerId, ramp: Option<Gradient>, layout: PanelL
                     },
                     {icon(icons::SWAP)}
                     {label("Reverse")}
-                }
-                button {
-                    class: "chip",
-                    title: "Open the Gradients panel \u{2014} clicking a gradient \
-                            there hands it to this filter",
-                    onclick: open_library,
-                    {icon(icons::GRADIENT)}
-                    {label("Gradients")}
                 }
             }
         }
@@ -1104,9 +1084,6 @@ pub fn FilterBar() -> Element {
     // variant would be a bool that took longer to read. Declared here for the reason
     // above.
     let pulling = use_signal(|| false);
-    // The panel layout, for the gradient map's "Gradients" chip — a hook, so it is
-    // read whether or not that kind is selected, for the reason every hook above is.
-    let layout = use_context::<PanelLayout>();
     let Some((info, filter)) = use_selected_filter(state)() else {
         return rsx! {};
     };
@@ -1140,7 +1117,7 @@ pub fn FilterBar() -> Element {
             }
         },
         Filter::Chromatic(c) => fringe_pad(state, info.id, c, tuning, pulling),
-        Filter::GradientMap(g) => map_rows(state, info.id, g, layout),
+        Filter::GradientMap(g) => map_rows(state, info.id, g),
     };
 
     rsx! {

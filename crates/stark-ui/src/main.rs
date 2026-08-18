@@ -377,8 +377,8 @@ fn app() -> Element {
             // circle drags the lens, the crosshair moves the construction.
             GuideEditOverlay {}
 
-            // The gradient trace's catcher and rubber line, while the Gradients
-            // panel's Trace is armed (§22.2).
+            // The gradient trace's catcher and rubber line, while the library
+            // pop-out's Trace is armed (§22.2).
             GradientTraceOverlay {}
 
             // The gradient fill's catcher and axis chrome, while the Selection
