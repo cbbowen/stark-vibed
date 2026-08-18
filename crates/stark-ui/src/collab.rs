@@ -97,7 +97,8 @@ pub fn share(state: AppState) {
                 for (id, bytes) in assets {
                     session.add_content(AssetNeed::Brush(id), bytes);
                 }
-                install(state, session, events);
+                let ticket_text = session.ticket().await.to_string();
+                install(state, session, events, ticket_text);
             }
             Err(e) => {
                 tracing::warn!("share failed: {e}");
@@ -173,7 +174,8 @@ pub fn join(state: AppState, ticket_text: String) {
                 for (id, bytes) in assets {
                     session.add_content(AssetNeed::Brush(id), bytes);
                 }
-                install(state, session, events);
+                let ticket_text = session.ticket().await.to_string();
+                install(state, session, events, ticket_text);
             }
             Err(e) => {
                 tracing::warn!("join failed: {e}");
@@ -298,9 +300,9 @@ pub fn flush_outbox(state: AppState) {
     }
 }
 
-/// Store the live session and start the incoming pump.
-fn install(state: AppState, session: CollabSession, mut events: Events) {
-    let ticket_text = session.ticket().to_string();
+/// Store the live session and start the incoming pump. `ticket_text` is minted
+/// by the async caller — minting asks the network which members are reachable.
+fn install(state: AppState, session: CollabSession, mut events: Events, ticket_text: String) {
     // The page URL *is* the invitation: anyone opening it joins this session
     // (via this peer — every member is a valid entry point).
     set_url_ticket(Some(&ticket_text));
@@ -444,6 +446,19 @@ fn start_presence_pump(state: AppState) {
                     let mut links_sig = state.collab.links;
                     if *links_sig.peek() != links {
                         links_sig.set(links);
+                    }
+                    // The invitation re-mints on the same cadence: which members
+                    // a fresh link should name changes exactly when the links do
+                    // — someone arrived, someone left, a path was proven. Kept
+                    // current so the URL a host copies an hour in still works
+                    // after that host closes the tab. Write only on change: the
+                    // ticket signal re-renders the dialog, and minting sorts its
+                    // members so the same membership always spells the same text.
+                    let ticket_text = tx.ticket().await.to_string();
+                    let mut ticket_sig = state.collab.ticket;
+                    if ticket_sig.peek().as_deref() != Some(ticket_text.as_str()) {
+                        set_url_ticket(Some(&ticket_text));
+                        ticket_sig.set(Some(ticket_text));
                     }
                 }
                 ticks = ticks.wrapping_add(1);

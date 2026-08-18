@@ -162,6 +162,7 @@ async fn two_peers_converge_over_iroh() {
     .expect("host session");
     let ticket: SessionTicket = host_session
         .ticket()
+        .await
         .to_string()
         .parse()
         .expect("ticket text");
@@ -263,6 +264,7 @@ async fn custom_shapes_replicate_mid_session() {
     .expect("host session");
     let ticket: SessionTicket = host_session
         .ticket()
+        .await
         .to_string()
         .parse()
         .expect("ticket text");
@@ -388,6 +390,7 @@ async fn a_peer_paints_on_a_ground_it_has_never_seen() {
     .expect("host session");
     let ticket: SessionTicket = host_session
         .ticket()
+        .await
         .to_string()
         .parse()
         .expect("ticket text");
@@ -475,6 +478,7 @@ async fn a_stroke_whose_shape_was_never_registered_still_arrives() {
     .expect("host session");
     let ticket: SessionTicket = host_session
         .ticket()
+        .await
         .to_string()
         .parse()
         .expect("ticket text");
@@ -544,15 +548,15 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
     .await
     .expect("host session");
 
-    let ticket = |s: &CollabSession| -> SessionTicket {
-        s.ticket().to_string().parse().expect("ticket text")
+    let ticket = async |s: &CollabSession| -> SessionTicket {
+        s.ticket().await.to_string().parse().expect("ticket text")
     };
     let Joined {
         session: middle_session,
         events: mut middle_events,
         document: middle_doc,
         ..
-    } = CollabSession::join(&ticket(&host_session), NetOptions::local())
+    } = CollabSession::join(&ticket(&host_session).await, NetOptions::local())
         .await
         .expect("middle joins the host");
     middle.join_collaboration(&middle_doc, middle_session.actor_id());
@@ -587,7 +591,7 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
         events: mut far_events,
         document: far_doc,
         ..
-    } = CollabSession::join(&ticket(&middle_session), NetOptions::local())
+    } = CollabSession::join(&ticket(&middle_session).await, NetOptions::local())
         .await
         .expect("far joins through the intermediary");
     far.join_collaboration(&far_doc, far_session.actor_id());
@@ -657,6 +661,7 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
     .expect("host session");
     let ticket: SessionTicket = host_session
         .ticket()
+        .await
         .to_string()
         .parse()
         .expect("ticket text");
@@ -739,6 +744,7 @@ async fn a_promised_ground_is_asked_of_the_frontend_mid_session() {
     .expect("host session");
     let ticket: SessionTicket = host_session
         .ticket()
+        .await
         .to_string()
         .parse()
         .expect("ticket text");

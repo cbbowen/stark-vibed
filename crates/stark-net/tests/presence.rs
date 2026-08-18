@@ -12,9 +12,10 @@ use stark_model::document::{Action, ActionId, ActionKind, ActorId, LayerId};
 use stark_model::peer::PeerFrame;
 use stark_net::{CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket};
 
-fn ticket_of(session: &CollabSession) -> SessionTicket {
+async fn ticket_of(session: &CollabSession) -> SessionTicket {
     session
         .ticket()
+        .await
         .to_string()
         .parse()
         .expect("ticket round-trips")
@@ -59,7 +60,7 @@ async fn presence_reaches_peers_attributed_to_its_sender() {
         mut events,
         document: _doc,
         ..
-    } = CollabSession::join(&ticket_of(&host), NetOptions::local())
+    } = CollabSession::join(&ticket_of(&host).await, NetOptions::local())
         .await
         .expect("join session");
 
@@ -107,7 +108,7 @@ async fn presence_never_enters_the_snapshot() {
         events: _peer_events,
         document: doc,
         ..
-    } = CollabSession::join(&ticket_of(&host), NetOptions::local())
+    } = CollabSession::join(&ticket_of(&host).await, NetOptions::local())
         .await
         .expect("join session");
     assert_eq!(

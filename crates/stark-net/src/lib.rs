@@ -111,13 +111,19 @@ pub enum TicketError {
         "this link is version {found}; this build speaks {expected} —          both ends need the same version of Stark"
     )]
     Version { found: u8, expected: u8 },
-    /// The link decoded, and the member it names is not a valid endpoint id.
+    /// The link decoded, and a member it names is not a valid endpoint id.
     ///
     /// Its own case because it is the one damaged-link failure that gets *past* the
     /// encoding: the bytes were well-formed, the version matched, and what is wrong is
-    /// the key inside — which no amount of re-pasting will fix.
+    /// a key inside — which no amount of re-pasting will fix.
     #[error("this link names something that is not a Stark peer")]
     NotAnEndpoint,
+    /// The link names no member at all — nobody to join through.
+    ///
+    /// Refused at the parse rather than discovered as a dial with no one to dial:
+    /// the person who pasted the link is still looking at the parse's answer.
+    #[error("this link is empty — it names no session member to join through")]
+    Empty,
 }
 
 pub type Result<T, E = NetError> = std::result::Result<T, E>;

@@ -170,6 +170,34 @@ impl Dialer {
         addr
     }
 
+    /// Teach the endpoint how to reach a session member a link names, without
+    /// dialing it — what lets gossip bootstrap from *every* member a ticket
+    /// names rather than only the one the catch-up connection reached.
+    ///
+    /// Custom (WebRTC) hops are dropped rather than taught. `add_addr` opens
+    /// custom addrs as paths on any live connection to that remote, and a custom
+    /// path opened before this side's channel attaches fails validation and
+    /// blocks the later real open (see `transport::direct::bootstrap`). Minting
+    /// already leaves them off a ticket's extra members — a peer derives one
+    /// from the endpoint id itself — so this holds the same line for links
+    /// minted by anyone else.
+    pub async fn learn(&self, member: &EndpointAddr) {
+        let member = EndpointAddr::from_parts(
+            member.id,
+            member
+                .addrs
+                .iter()
+                .filter(|addr| !matches!(addr, TransportAddr::Custom(_)))
+                .cloned(),
+        );
+        if member.addrs.is_empty() {
+            // Nothing to teach: a bare id resolves through address lookup when
+            // something dials it, and is not worth a resolve round here.
+            return;
+        }
+        self.endpoint.add_addr(member).await;
+    }
+
     /// Connecting also teaches the endpoint how to reach `addr`, which is
     /// what later lets gossip dial the same peer by bare id.
     pub async fn open(&self, addr: EndpointAddr) -> Result<Catchup> {

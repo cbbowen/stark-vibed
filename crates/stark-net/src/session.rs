@@ -38,17 +38,33 @@ use stark_model::document::{Action, ActorId, BrushShape};
 use stark_model::peer::{GestureFrame, PeerFrame};
 use tokio::sync::mpsc;
 
-use crate::Result;
-use crate::backend::{self, Bound, Cancel, Dialer, Shutdown};
+use crate::backend::{self, Bound, Cancel, Catchup, Dialer, Shutdown};
 use crate::content::Resolver;
 use crate::mirror::{Mirror, Served};
 use crate::proto::{Request, Stamped, StampedRef, Wire, WireRef};
 use crate::reconcile::{Prompt, Reconciler};
 use crate::ticket::SessionTicket;
 use crate::waitlist::{Admit, Waitlist};
+use crate::{NetError, Result, TicketError};
 
 /// How long a joiner waits to meet the swarm before fetching the snapshot.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The bound on each attempt to reach one member a link names.
+///
+/// A member that has left gets no answer at all rather than a refusal (UDP
+/// refuses nothing), so without a bound the members after it — the link's
+/// insurance against exactly this — would never be tried.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How many members besides the minter a ticket names (§12.4).
+///
+/// Naming more buys insurance against the minter having left by the time the
+/// link is opened, and a few is enough: any one live member admits the joiner to
+/// the whole swarm. A link is also something a person pastes into a chat window,
+/// so it has a length budget — each member costs tens of bytes before base32's
+/// ×1.6 — and a joiner pays up to [`DIAL_TIMEOUT`] per dead name in it.
+const TICKET_NEIGHBORS: usize = 3;
 
 /// How many presence frames may sit queued for the engine at once, across all
 /// peers.
@@ -268,14 +284,12 @@ pub struct Joined {
 /// requests, and surfaces remote edits as [`RemoteEvent`]s.
 pub struct CollabSession {
     /// Everything publishing needs, which is everything the session needs but
-    /// four — so the session holds one rather than assembling one per call.
+    /// two — so the session holds one rather than assembling one per call.
     broadcaster: Broadcaster,
     shutdown: Shutdown,
     /// Stops what the session spawned. Held here because this is what owns the
     /// session's lifetime; see [`Cancel`].
     cancel: Cancel,
-    topic: TopicId,
-    ticket_addr: EndpointAddr,
 }
 
 impl CollabSession {
@@ -335,20 +349,28 @@ impl CollabSession {
         ticket: &SessionTicket,
         opts: &NetOptions,
     ) -> Result<Joined> {
-        // Open the catch-up connection first: this also teaches the endpoint
-        // the peer's address, so gossip can dial it by bare id below.
-        let catchup = bound.dialer.open(ticket.addr.clone()).await?;
+        // Teach the endpoint every member the link names before anything dials:
+        // gossip below bootstraps from all of them by bare id, and an id is only
+        // dialable once some address for it is known. The catch-up connection
+        // teaches the one member it reaches; this covers the rest.
+        for member in &ticket.members {
+            bound.dialer.learn(member).await;
+        }
+
+        // The catch-up connection: members in link order, first answer wins.
+        // The minter is first and usually still there; every member after it is
+        // the link's insurance against exactly that peer having left.
+        let (reached, catchup) = first_answering(&bound.dialer, &ticket.members).await?;
 
         // Enter the live swarm *before* fetching the snapshot: everything
         // before the join is in the snapshot, everything after rides gossip,
-        // and the overlap deduplicates by action id. The ticket's peer is our
-        // one bootstrap; the rest of the swarm arrives through gossip's
-        // membership exchange. Best effort: joining still proceeds if the
-        // swarm is slow, since the snapshot plus later traffic still converges.
-        let mut sub = bound
-            .gossip
-            .subscribe(ticket.topic, vec![ticket.addr.id])
-            .await?;
+        // and the overlap deduplicates by action id. Every member the link
+        // names is a bootstrap candidate; the rest of the swarm arrives through
+        // gossip's membership exchange. Best effort: joining still proceeds if
+        // the swarm is slow, since the snapshot plus later traffic still
+        // converges.
+        let bootstrap = ticket.members.iter().map(|member| member.id).collect();
+        let mut sub = bound.gossip.subscribe(ticket.topic, bootstrap).await?;
         if n0_future::time::timeout(JOIN_TIMEOUT, sub.joined())
             .await
             .is_err()
@@ -361,8 +383,13 @@ impl CollabSession {
         } else {
             Request::SnapshotWithout(opts.resolvable.clone())
         };
-        let snapshot = catchup.request(request).await?;
-        catchup.close().await;
+        let snapshot = fetch_snapshot(
+            &bound.dialer,
+            catchup,
+            &ticket.members[reached + 1..],
+            request,
+        )
+        .await?;
         // The untrusted door: these bytes are a peer's, and deflate's ratio means a
         // few kilobytes of them can name as many gigabytes as they like (§8, §12.4).
         let file = DocumentFile::from_untrusted_bytes(&snapshot)?;
@@ -460,22 +487,25 @@ impl CollabSession {
                 dialer,
                 neighbors,
                 waitlist,
+                topic,
+                ticket_addr,
             },
             shutdown,
             cancel,
-            topic,
-            ticket_addr,
         };
         Ok((session, Events { rx, presence }))
     }
 
-    /// The ticket others use to join — every member can hand one out (it
-    /// points at *this* peer), so the session survives the host leaving.
-    pub fn ticket(&self) -> SessionTicket {
-        SessionTicket {
-            addr: self.ticket_addr.clone(),
-            topic: self.topic,
-        }
+    /// The ticket others use to join — every member can hand one out, so the
+    /// session survives the host leaving.
+    ///
+    /// It names *this* peer first, then up to [`TICKET_NEIGHBORS`] members it is
+    /// connected to right now — so the link also survives this peer leaving
+    /// between the minting and the pasting: a joiner tries members in order, and
+    /// any one of them admits it. Minted per call rather than stored, because
+    /// the insurance is only as good as it is current.
+    pub async fn ticket(&self) -> SessionTicket {
+        self.broadcaster.ticket().await
     }
 
     /// The author id this session's identity maps to.
@@ -531,9 +561,9 @@ impl CollabSession {
     }
 }
 
-/// A detached publishing handle onto a [`CollabSession`]: broadcast actions and
-/// register assets without holding the session itself. All clones share the
-/// same gossip topic and mirror.
+/// A detached publishing handle onto a [`CollabSession`]: broadcast actions,
+/// register assets and mint tickets without holding the session itself. All
+/// clones share the same gossip topic and mirror.
 #[derive(Clone)]
 pub struct Broadcaster {
     local_id: EndpointId,
@@ -546,6 +576,10 @@ pub struct Broadcaster {
     dialer: Dialer,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
     waitlist: Arc<Waitlist>,
+    topic: TopicId,
+    /// How this peer is reached, minted at bind time — the first name on every
+    /// ticket this peer hands out.
+    ticket_addr: EndpointAddr,
 }
 
 impl Broadcaster {
@@ -621,6 +655,42 @@ impl Broadcaster {
         self.waitlist.imported(need, bytes, hash);
     }
 
+    /// See [`CollabSession::ticket`].
+    pub async fn ticket(&self) -> SessionTicket {
+        let mut neighbors: Vec<EndpointId> = self
+            .neighbors
+            .lock()
+            .expect("neighbors poisoned")
+            .iter()
+            .copied()
+            .collect();
+        // Sorted so one membership always spells one link: the frontend re-mints
+        // on a cadence and rewrites the invitation only when its text changes,
+        // and a set iterated in hash order would change the text every poll.
+        neighbors.sort_unstable_by_key(|id| *id.as_bytes());
+        let mut members = vec![self.ticket_addr.clone()];
+        for id in neighbors.into_iter().take(TICKET_NEIGHBORS) {
+            // The proven path only — the one this peer's traffic rides right
+            // now. Wrong is worse than missing here: a bare id still resolves
+            // through address lookup on a WAN session, while a joiner spends
+            // [`DIAL_TIMEOUT`] discovering that a stale address does not answer.
+            // Custom (WebRTC) addrs are left off for the reason `Dialer::learn`
+            // drops them: a peer derives one from the endpoint id itself, so a
+            // link gains nothing by fixing in where a channel happened to be
+            // attached at minting time.
+            let hops = self
+                .dialer
+                .selected_addr(id)
+                .await
+                .filter(|addr| !matches!(addr, TransportAddr::Custom(_)));
+            members.push(EndpointAddr::from_parts(id, hops));
+        }
+        SessionTicket {
+            members,
+            topic: self.topic,
+        }
+    }
+
     /// How each gossip-neighbor session member is reached right now — direct
     /// (WebRTC or hole-punched UDP) or via a relay. Sampled per call; a link
     /// migrates from relay to direct when hole punching or a WebRTC bootstrap
@@ -666,7 +736,7 @@ pub(crate) struct Wiring {
 /// Run the fallible tail of session setup, closing the stack if it does not
 /// finish.
 ///
-/// Every step that can fail — dialling the ticket's peer, subscribing, fetching
+/// Every step that can fail — dialling the ticket's members, subscribing, fetching
 /// and decoding the snapshot, minting the ticket address — happens *after* the
 /// endpoint exists, and dropping [`Bound`] closes none of it: the endpoint keeps
 /// its relay connection and the gossip, blob and router actors keep running. The
@@ -682,6 +752,90 @@ async fn closing_on_error<T>(
         Err(e) => {
             shutdown.run().await;
             Err(e)
+        }
+    }
+}
+
+/// One bounded attempt to reach one member a link names — see [`DIAL_TIMEOUT`]
+/// for why unbounded would mean the members after this one are never tried.
+async fn try_open(dialer: &Dialer, member: &EndpointAddr) -> Result<Catchup> {
+    match n0_future::time::timeout(DIAL_TIMEOUT, dialer.open(member.clone())).await {
+        Ok(result) => result,
+        Err(_) => Err(NetError::Other(format!(
+            "no answer from session member {}",
+            member.id.fmt_short()
+        ))),
+    }
+}
+
+/// The first member of a link that answers a dial, in link order, and its index —
+/// the members after it are still worth remembering (see [`fetch_snapshot`]).
+///
+/// The error reported is the *last* member's, by which point it describes a link
+/// none of whose members answered. Each miss is also logged as it happens,
+/// because a join that eventually succeeds through the third name should still
+/// say what it walked past.
+async fn first_answering(dialer: &Dialer, members: &[EndpointAddr]) -> Result<(usize, Catchup)> {
+    // What an empty link reports — unmintable, and refused by the parse, but a
+    // `SessionTicket` is a plain struct anyone can assemble.
+    let mut failure = NetError::Ticket(TicketError::Empty);
+    for (index, member) in members.iter().enumerate() {
+        match try_open(dialer, member).await {
+            Ok(catchup) => return Ok((index, catchup)),
+            Err(e) => {
+                tracing::warn!(member = %member.id.fmt_short(), "could not reach session member: {e}");
+                failure = e;
+            }
+        }
+    }
+    Err(failure)
+}
+
+/// One snapshot, from whoever will serve it: the already-open connection first,
+/// then the link's remaining members in order.
+///
+/// The failure this outlives is [`NetError::NotReady`] — a member that answers
+/// the dial but is still fetching its *own* snapshot. Every member is an entry
+/// point (§12.4) and the answer to one that cannot serve yet is to ask another,
+/// which is only possible when the link names another.
+async fn fetch_snapshot(
+    dialer: &Dialer,
+    first: Catchup,
+    rest: &[EndpointAddr],
+    request: Request,
+) -> Result<Vec<u8>> {
+    let mut open = Some(first);
+    let mut members = rest.iter();
+    let mut failure = None;
+    loop {
+        let catchup = match open.take() {
+            Some(catchup) => catchup,
+            None => {
+                let Some(member) = members.next() else {
+                    // The loop's first pass always holds a connection, so by
+                    // here something has failed and been recorded.
+                    return Err(failure.expect("no failure recorded on a failed fetch"));
+                };
+                match try_open(dialer, member).await {
+                    Ok(catchup) => catchup,
+                    Err(e) => {
+                        tracing::warn!(member = %member.id.fmt_short(), "could not reach session member: {e}");
+                        failure = Some(e);
+                        continue;
+                    }
+                }
+            }
+        };
+        match catchup.request(request.clone()).await {
+            Ok(snapshot) => {
+                catchup.close().await;
+                return Ok(snapshot);
+            }
+            Err(e) => {
+                tracing::warn!("a session member answered but could not serve the snapshot: {e}");
+                catchup.close().await;
+                failure = Some(e);
+            }
         }
     }
 }
@@ -908,7 +1062,7 @@ fn referenced_presence_asset(frame: &PeerFrame) -> Option<AssetNeed> {
 impl std::fmt::Debug for CollabSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CollabSession")
-            .field("topic", &self.topic)
+            .field("topic", &self.broadcaster.topic)
             .field("endpoint", &self.broadcaster.local_id)
             .finish_non_exhaustive()
     }

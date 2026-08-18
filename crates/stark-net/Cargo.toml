@@ -31,7 +31,11 @@ default = ["webrtc"]
 # of what this crate moves (§2). It names no engine type at all, which is why the
 # engine is a *dev*-dependency below: transporting a log needs no renderer.
 stark-model = { workspace = true }
-iroh = "1"
+# `unstable-custom-transports` unconditionally, not only under `webrtc`: besides
+# the custom-transport API that feature uses, it gates the patched
+# `Endpoint::add_addr` (vendor/iroh), which joining uses to teach the endpoint
+# every member a ticket names before gossip bootstraps from all of them.
+iroh = { version = "1", features = ["unstable-custom-transports"] }
 # The live-edit wire: epidemic broadcast on the session topic. Rides the same
 # endpoint as everything else — which is what the WebRTC custom-transport
 # design (see the `webrtc` feature) exists to allow.

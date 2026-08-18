@@ -1,12 +1,14 @@
 //! The shareable session ticket: everything a peer needs to join — how to
-//! reach one member (an [`EndpointAddr`]) and the session's topic.
+//! reach a few *members* (each an [`EndpointAddr`]) and the session's topic.
 //!
 //! Displayed as `stark…` + base32 of the encoded ticket, so it survives chat
 //! clients and clipboards.
 //!
-//! One member is enough: the joiner bootstraps gossip from it and the swarm's
-//! membership exchange introduces everyone else, so any member can hand out a
-//! ticket.
+//! One live member is enough: the joiner bootstraps gossip from it and the
+//! swarm's membership exchange introduces everyone else, so any member can hand
+//! out a ticket. Every member *past* the first is insurance — the joiner tries
+//! them in order, so a link keeps working while anyone it names is still in the
+//! session, including after the member that minted it has left.
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -29,7 +31,14 @@ const PREFIX: &str = "stark";
 /// schema alongside it (§8 — the save format carries one, so it needs no number). One
 /// byte buys a message naming the mismatch instead of a decode error about whichever
 /// field happened to move (§19).
-const VERSION: u8 = 0;
+///
+/// It rides *ahead* of the body — the first byte after the prefix — rather than inside
+/// it, because inside it the byte cannot do its one job: a build decodes the body
+/// against its own compile-time schema, so the moment the body's shape changes, a
+/// version field inside that shape is unreadable by exactly the build that needed it.
+/// Version 0 kept it as the body's first field and paid for that here, when the shape
+/// first changed (one member became several) and the byte moved out.
+const VERSION: u8 = 1;
 
 /// What a link actually encodes — **Stark's own shape, in primitives**.
 ///
@@ -47,17 +56,24 @@ const VERSION: u8 = 0;
 /// relay URL *is* on a link anyway.
 #[derive(Debug, Clone, Serialize, Deserialize, carbonite::Schema)]
 pub(crate) struct TicketBody {
-    /// Which spelling of this struct the link uses — see [`VERSION`].
-    version: u8,
-    /// The member's endpoint id (its public key).
-    endpoint: [u8; 32],
-    /// Every way the sharer offered to be reached, in iroh's order.
-    hops: Vec<Hop>,
+    /// The members a joiner may enter through, in the order to try them —
+    /// whoever minted the link first.
+    members: Vec<Member>,
     /// The gossip topic all live actions ride on.
     topic: [u8; 32],
 }
 
-/// One way to reach the member a link names: [`TransportAddr`], in primitives.
+/// One member a link names: an [`EndpointAddr`], in primitives.
+#[derive(Debug, Clone, Serialize, Deserialize, carbonite::Schema)]
+struct Member {
+    /// The member's endpoint id (its public key).
+    endpoint: [u8; 32],
+    /// Every way the link offers to reach this member, in iroh's order. May be
+    /// empty: a bare id still resolves through address lookup on a WAN session.
+    hops: Vec<Hop>,
+}
+
+/// One way to reach a member a link names: [`TransportAddr`], in primitives.
 #[derive(Debug, Clone, Serialize, Deserialize, carbonite::Schema)]
 enum Hop {
     /// A relay server, by URL. A string here, parsed on the way back in.
@@ -75,27 +91,31 @@ enum Hop {
 
 impl From<&SessionTicket> for TicketBody {
     fn from(ticket: &SessionTicket) -> Self {
-        let hops = ticket
-            .addr
-            .addrs
+        let members = ticket
+            .members
             .iter()
-            .filter_map(|addr| match addr {
-                TransportAddr::Relay(url) => Some(Hop::Relay(url.as_str().to_owned())),
-                TransportAddr::Ip(sock) => Some(Hop::Ip(*sock)),
-                TransportAddr::Custom(custom) => Some(Hop::Custom {
-                    transport: custom.id(),
-                    data: custom.data().to_vec(),
-                }),
-                // `TransportAddr` is `#[non_exhaustive]`: a kind this build cannot
-                // spell is dropped rather than refused, because a link with one fewer
-                // way to reach a peer still reaches it by the others.
-                _ => None,
+            .map(|addr| Member {
+                endpoint: *addr.id.as_bytes(),
+                hops: addr
+                    .addrs
+                    .iter()
+                    .filter_map(|addr| match addr {
+                        TransportAddr::Relay(url) => Some(Hop::Relay(url.as_str().to_owned())),
+                        TransportAddr::Ip(sock) => Some(Hop::Ip(*sock)),
+                        TransportAddr::Custom(custom) => Some(Hop::Custom {
+                            transport: custom.id(),
+                            data: custom.data().to_vec(),
+                        }),
+                        // `TransportAddr` is `#[non_exhaustive]`: a kind this build cannot
+                        // spell is dropped rather than refused, because a link with one fewer
+                        // way to reach a peer still reaches it by the others.
+                        _ => None,
+                    })
+                    .collect(),
             })
             .collect();
         TicketBody {
-            version: VERSION,
-            endpoint: *ticket.addr.id.as_bytes(),
-            hops,
+            members,
             topic: *ticket.topic.as_bytes(),
         }
     }
@@ -105,30 +125,35 @@ impl TryFrom<TicketBody> for SessionTicket {
     type Error = TicketError;
 
     fn try_from(body: TicketBody) -> Result<Self, Self::Error> {
-        if body.version != VERSION {
-            return Err(TicketError::Version {
-                found: body.version,
-                expected: VERSION,
-            });
+        if body.members.is_empty() {
+            return Err(TicketError::Empty);
         }
-        let id = EndpointId::from_bytes(&body.endpoint).map_err(|_| TicketError::NotAnEndpoint)?;
-        let addrs = body.hops.into_iter().filter_map(|hop| match hop {
-            // A URL that will not parse is dropped, not refused, for the reason an
-            // unknown transport kind is: the other hops may still reach.
-            Hop::Relay(url) => match url.parse() {
-                Ok(url) => Some(TransportAddr::Relay(url)),
-                Err(_) => {
-                    tracing::warn!(%url, "a link named a relay this build cannot parse");
-                    None
-                }
-            },
-            Hop::Ip(sock) => Some(TransportAddr::Ip(sock)),
-            Hop::Custom { transport, data } => Some(TransportAddr::Custom(CustomAddr::from_parts(
-                transport, &data,
-            ))),
-        });
+        let members = body
+            .members
+            .into_iter()
+            .map(|member| {
+                let id = EndpointId::from_bytes(&member.endpoint)
+                    .map_err(|_| TicketError::NotAnEndpoint)?;
+                let addrs = member.hops.into_iter().filter_map(|hop| match hop {
+                    // A URL that will not parse is dropped, not refused, for the reason an
+                    // unknown transport kind is: the other hops may still reach.
+                    Hop::Relay(url) => match url.parse() {
+                        Ok(url) => Some(TransportAddr::Relay(url)),
+                        Err(_) => {
+                            tracing::warn!(%url, "a link named a relay this build cannot parse");
+                            None
+                        }
+                    },
+                    Hop::Ip(sock) => Some(TransportAddr::Ip(sock)),
+                    Hop::Custom { transport, data } => Some(TransportAddr::Custom(
+                        CustomAddr::from_parts(transport, &data),
+                    )),
+                });
+                Ok(EndpointAddr::from_parts(id, addrs))
+            })
+            .collect::<Result<Vec<_>, TicketError>>()?;
         Ok(SessionTicket {
-            addr: EndpointAddr::from_parts(id, addrs),
+            members,
             topic: TopicId::from_bytes(body.topic),
         })
     }
@@ -136,15 +161,24 @@ impl TryFrom<TicketBody> for SessionTicket {
 
 #[derive(Debug, Clone)]
 pub struct SessionTicket {
-    /// A reachable member of the session (initially the sharer).
-    pub addr: EndpointAddr,
+    /// Reachable members of the session, in the order a joiner should try them —
+    /// whoever minted the link first, then members it could vouch were alive when
+    /// it did.
+    ///
+    /// One live member is enough to join through, so every further name is
+    /// insurance: the link keeps working while *any* member it names is still in
+    /// the session, including after its minter has left.
+    pub members: Vec<EndpointAddr>,
     /// The swarm all live actions ride on.
     pub topic: TopicId,
 }
 
 impl fmt::Display for SessionTicket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let bytes = crate::codec::encode(&TicketBody::from(self)).map_err(|_| fmt::Error)?;
+        let body = crate::codec::encode(&TicketBody::from(self)).map_err(|_| fmt::Error)?;
+        let mut bytes = Vec::with_capacity(1 + body.len());
+        bytes.push(VERSION);
+        bytes.extend_from_slice(&body);
         let mut encoded = data_encoding::BASE32_NOPAD.encode(&bytes);
         encoded.make_ascii_lowercase();
         write!(f, "{PREFIX}{encoded}")
@@ -157,7 +191,19 @@ impl FromStr for SessionTicket {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let encoded = s.trim().strip_prefix(PREFIX).ok_or(TicketError::NoPrefix)?;
         let bytes = data_encoding::BASE32_NOPAD.decode(encoded.to_ascii_uppercase().as_bytes())?;
-        crate::codec::decode::<TicketBody>(&bytes)?.try_into()
+        // The version byte is checked *before* the body is decoded — the body's
+        // shape is exactly what another version disagrees about, so any question
+        // asked of the bytes past this one would be asked in the wrong shape.
+        let Some((&version, body)) = bytes.split_first() else {
+            return Err(TicketError::Empty);
+        };
+        if version != VERSION {
+            return Err(TicketError::Version {
+                found: version,
+                expected: VERSION,
+            });
+        }
+        crate::codec::decode::<TicketBody>(body)?.try_into()
     }
 }
 
@@ -170,17 +216,19 @@ mod tests {
     fn ticket_roundtrips_through_display() {
         let key = SecretKey::from_bytes(&[7u8; 32]);
         let ticket = SessionTicket {
-            addr: EndpointAddr::new(key.public()).with_ip_addr("127.0.0.1:4433".parse().unwrap()),
+            members: vec![
+                EndpointAddr::new(key.public()).with_ip_addr("127.0.0.1:4433".parse().unwrap()),
+            ],
             topic: TopicId::from_bytes([9u8; 32]),
         };
         let s = ticket.to_string();
         assert!(s.starts_with("stark"));
         let back: SessionTicket = s.parse().expect("parse ticket");
-        assert_eq!(back.addr.id, ticket.addr.id);
+        assert_eq!(back.members[0].id, ticket.members[0].id);
         assert_eq!(back.topic, ticket.topic);
         assert_eq!(
-            back.addr.ip_addrs().collect::<Vec<_>>(),
-            ticket.addr.ip_addrs().collect::<Vec<_>>()
+            back.members[0].ip_addrs().collect::<Vec<_>>(),
+            ticket.members[0].ip_addrs().collect::<Vec<_>>()
         );
     }
 
@@ -198,26 +246,25 @@ mod tests {
     fn a_link_carries_every_kind_of_hop() {
         let custom = CustomAddr::from_parts(7, b"a data channel");
         let ticket = SessionTicket {
-            addr: EndpointAddr::from_parts(
+            members: vec![EndpointAddr::from_parts(
                 SecretKey::from_bytes(&[11u8; 32]).public(),
                 [
                     TransportAddr::Relay("https://relay.example/".parse().expect("a relay url")),
                     TransportAddr::Ip("192.0.2.7:4433".parse().expect("a socket")),
                     TransportAddr::Custom(custom.clone()),
                 ],
-            ),
+            )],
             topic: TopicId::from_bytes([5u8; 32]),
         };
 
         let back: SessionTicket = ticket.to_string().parse().expect("parse the link back");
-        assert_eq!(back.addr.id, ticket.addr.id);
+        assert_eq!(back.members[0].id, ticket.members[0].id);
         assert_eq!(
-            back.addr.addrs, ticket.addr.addrs,
+            back.members[0].addrs, ticket.members[0].addrs,
             "every hop must survive the round trip, whatever kind it is",
         );
         // Spelled out for the one that travels as two loose primitives.
-        let Some(TransportAddr::Custom(landed)) = back
-            .addr
+        let Some(TransportAddr::Custom(landed)) = back.members[0]
             .addrs
             .iter()
             .find(|a| matches!(a, TransportAddr::Custom(_)))
@@ -227,6 +274,44 @@ mod tests {
         assert_eq!((landed.id(), landed.data()), (7, &b"a data channel"[..]));
     }
 
+    /// A link names members in the order a joiner should try them, and that order
+    /// is part of what it says: the minter is first because it is the member most
+    /// recently known alive, and the members after it are the insurance a joiner
+    /// falls back on. A round trip that reordered them would silently change which
+    /// peer every joiner dials first.
+    #[test]
+    fn a_link_carries_several_members_in_order() {
+        let member = |seed: u8, hops: Vec<TransportAddr>| {
+            EndpointAddr::from_parts(SecretKey::from_bytes(&[seed; 32]).public(), hops)
+        };
+        let ticket = SessionTicket {
+            members: vec![
+                member(
+                    1,
+                    vec![TransportAddr::Relay(
+                        "https://relay.example/".parse().expect("a relay url"),
+                    )],
+                ),
+                member(
+                    2,
+                    vec![TransportAddr::Ip(
+                        "192.0.2.7:4433".parse().expect("a socket"),
+                    )],
+                ),
+                // A bare id — the WAN case, where address lookup resolves it.
+                member(3, Vec::new()),
+            ],
+            topic: TopicId::from_bytes([5u8; 32]),
+        };
+
+        let back: SessionTicket = ticket.to_string().parse().expect("parse the link back");
+        assert_eq!(back.members.len(), 3);
+        for (landed, minted) in back.members.iter().zip(&ticket.members) {
+            assert_eq!(landed.id, minted.id, "members must keep their order");
+            assert_eq!(landed.addrs, minted.addrs);
+        }
+    }
+
     /// The version byte earns its place only if a mismatch is *named*. Decoding a
     /// future ticket as a current one otherwise yields a decode error about whatever
     /// field happened to move, which tells a user nothing — and a link is the one
@@ -234,14 +319,17 @@ mod tests {
     #[test]
     fn a_ticket_from_another_version_says_so() {
         let ticket = SessionTicket {
-            addr: EndpointAddr::new(SecretKey::from_bytes(&[3u8; 32]).public()),
+            members: vec![EndpointAddr::new(
+                SecretKey::from_bytes(&[3u8; 32]).public(),
+            )],
             topic: TopicId::from_bytes([1u8; 32]),
         };
-        let body = TicketBody {
-            version: VERSION + 1,
-            ..TicketBody::from(&ticket)
-        };
-        let bytes = crate::codec::encode(&body).expect("encode");
+        let body = crate::codec::encode(&TicketBody::from(&ticket)).expect("encode");
+        // A future build's link: a version this one does not speak, ahead of a
+        // body whose shape this build has no idea of — here, today's body, since
+        // the check must not depend on reading past the byte.
+        let mut bytes = vec![VERSION + 1];
+        bytes.extend_from_slice(&body);
         let mut encoded = data_encoding::BASE32_NOPAD.encode(&bytes);
         encoded.make_ascii_lowercase();
 
@@ -249,11 +337,36 @@ mod tests {
             .parse::<SessionTicket>()
             .expect_err("a version this build does not speak");
         assert!(
-            matches!(err, TicketError::Version { found: 1, .. }),
+            matches!(err, TicketError::Version { found: 2, .. }),
             "{err}"
         );
         // And it says which, because the person reading it pasted a link.
-        assert!(err.to_string().contains("version 1"), "{err}");
+        assert!(err.to_string().contains("version 2"), "{err}");
+    }
+
+    /// A link that names nobody is refused whole rather than joined nowhere:
+    /// every use of a ticket begins with "dial a member", so the failure belongs
+    /// to the parse, where the person who pasted it is still looking.
+    #[test]
+    fn a_link_naming_nobody_is_refused() {
+        let body = crate::codec::encode(&TicketBody {
+            members: Vec::new(),
+            topic: [1u8; 32],
+        })
+        .expect("encode");
+        let mut bytes = vec![VERSION];
+        bytes.extend_from_slice(&body);
+        let mut encoded = data_encoding::BASE32_NOPAD.encode(&bytes);
+        encoded.make_ascii_lowercase();
+
+        let err = format!("{PREFIX}{encoded}")
+            .parse::<SessionTicket>()
+            .expect_err("a link naming no member");
+        assert!(matches!(err, TicketError::Empty), "{err}");
+        // The degenerate spelling of the same nothing: a prefix with no bytes
+        // after it at all, which must not reach the version check.
+        let err = PREFIX.parse::<SessionTicket>().expect_err("an empty link");
+        assert!(matches!(err, TicketError::Empty), "{err}");
     }
 
     #[test]

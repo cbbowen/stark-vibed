@@ -94,7 +94,12 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   the snapshot/gossip overlap covers the seam (dedup by id). Every member serves
   snapshots from a session **mirror** (log + assets + grounds, CPU-side), so
   sessions survive the original sharer leaving, and any member can mint a **ticket**
-  (`stark…` base32: an `EndpointAddr` + the topic).
+  (`stark…` base32: a version byte, then a few members' `EndpointAddr`s + the
+  topic). A ticket names its minter first and then up to a handful of members the
+  minter was connected to when it minted — the joiner tries them in order for the
+  snapshot and hands *all* of them to gossip as bootstrap candidates, so a link
+  also survives its **minter** leaving between the minting and the pasting. One
+  live name in it is enough.
 - **What the joiner already has** is left out of that bundle. Content-addressing
   makes provenance irrelevant to correctness, which is what it is for — but it
   also means the app cannot tell that a ground it is being sent is the one it
@@ -167,7 +172,9 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   `merge_remote`/`import_brush`/`accept_surface` and repaints. **The page URL is the invitation:** a live session's ticket rides the
   URL fragment (`…#stark…`, via `replaceState`; cleared on leave), and opening a
   link with one auto-joins on load — the fragment never leaves the browser, so no
-  server sees the ticket.
+  server sees the ticket. The fragment is re-minted on the link-poll cadence
+  (rewritten only when its text changes), so the members a copied invitation
+  names are the ones reachable *now*, not the ones of an hour ago.
 - **Presence** (cursors, selected layer, names, live strokes) — see §17.
   Broadcast as `Wire::Presence`, **never historized, never mirrored and never
   snapshotted**.
