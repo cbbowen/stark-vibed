@@ -831,8 +831,15 @@ hr {
 
 /* The trash the layer and guide rows wear, in the third roster that has rows to take
    things out of. Smaller than theirs, because it is inside an 18px disc rather than
-   standing in a row's own column. */
-.preset-remove {
+   standing in a row's own column.
+
+   Shared with the quick-brush rack's rows (`.slot-clear`, §18.1.8) for the reason the
+   row itself is: the two show the same picture of the same thing, and emptying a slot
+   is the same act as removing a preset — one declaration, so they cannot drift. What
+   is not shared is what reveals it: a preset row is always a control, while a rack row
+   is one only while the rack is pinned. */
+.preset-remove,
+.slot-clear {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -852,6 +859,7 @@ hr {
 }
 
 .preset-remove .icon svg,
+.slot-clear .icon svg,
 .shape-remove .icon svg {
   width: 11px;
   height: 11px;
@@ -861,11 +869,20 @@ hr {
   opacity: 0.8;
 }
 
+/* Only where the rack is a control: transient, the rows take no pointer at all, so
+   this can never be hovered there — but it is written against `.pinned` rather than
+   left to that, because "you can't reach it" is a poor reason for a destructive
+   button to be drawn over a painting in the first place. */
+.slot-overlay.pinned .slot-row:hover .slot-clear {
+  opacity: 0.8;
+}
+
 /* Answers a hover in red *ink*, as the layer and guide rows' trash does — not with a
    red disc behind it. The disc was left over from when this was a ✕ character: a
-   small glyph needed a filled target to look pressable, and a trash does not. Three
-   rosters, one destructive control, one way of saying so. */
-.preset-remove:hover {
+   small glyph needed a filled target to look pressable, and a trash does not. Every
+   roster, one destructive control, one way of saying so. */
+.preset-remove:hover,
+.slot-clear:hover {
   color: #e8757a;
   opacity: 1;
 }

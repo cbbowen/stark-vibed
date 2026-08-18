@@ -409,6 +409,11 @@ pub fn apply(state: AppState, name: &str) {
     // emits the same one (§18.1.8, §24.2). Reported after the lookup, so a row that
     // is not there counts as nothing.
     crate::tutor::did(state, crate::tutor::Deed::AppliedPreset);
+    // And it is the same act a held number is listening for (§18.1.8): a tool
+    // chosen from the library counts as the hold's change even where it moves
+    // nothing, which is exactly the case of filling a slot with the brush already
+    // in hand. Said here rather than in [`wear`], which the hold uses itself.
+    slots::claim(state);
     wear(state, entry.brush);
 }
 

@@ -434,12 +434,22 @@ engine learn nothing:
   hold. A finger's release is left alone, so a palm settling mid-erase does not
   hand the brush back under a pen that never moved.
 
-Three things the rule has to get right, each a place a looser design goes wrong:
+Four things the rule has to get right, each a place a looser design goes wrong:
 
 - **An unused hold keeps nothing.** Compared against the brush the hold *entered*
   on, so holding 5 and drawing does not quietly make 5 whatever was in hand. A
   slot that filled itself on first press would be indistinguishable from one the
   user had set.
+- **A tool chosen deliberately counts, even when it moves nothing.** That
+  comparison is a *proxy* for "did the artist set this brush?", and it is wrong
+  in exactly one place: clicking the preset already in hand. Holding an empty 3
+  and clicking the preset you are painting with is the most natural way there is
+  to fill 3, and under the proxy alone it is a hold nobody used — the slot would
+  stay empty. So the two acts that mean *a whole tool from a library* say so for
+  themselves (`slots::claim`, raised by `presets::apply` and `slots::pick`)
+  rather than being inferred from their effect. It is not raised inside
+  `presets::wear`, which the hold uses itself in both directions and which would
+  therefore make every hold claim itself on the way in.
 - **Color is not part of a slot**, in both directions — the same rule the preset
   library already states, now shared as `presets::wear` rather than restated.
   Swapping never changes the color you are painting with, a color picked
@@ -465,6 +475,19 @@ test stroke the preset library shows it by (§11) and named where the slot still
 is the one being held, since holding an empty number is not a mistake but how it
 gets its first brush.
 
+The held row is drawn from **what the number will keep** rather than from what is
+stored — the release's own rule asked a moment early (`Held::would_keep`, which is
+`settle` and not a second opinion of it). A hold is the one place a slot changes,
+so a rack showing only what was stored answers every question about the digit
+under the finger one keystroke late: click a preset while holding 3 and the row
+for 3 would go on showing the old brush until the release wrote it, by which time
+a transient rack is already gone and the answer waits for the next press of that
+key. What it cannot preview is the *picture* of a brush tuned under the hold — a
+Size drag makes a new brush every frame, and rendering a thumbnail per frame is
+GPU spent on a picture nobody has asked to keep — so the row keeps the last true
+picture of the slot rather than blinking empty, and its name, which costs a
+lookup, updates throughout.
+
 It replaced a permanent row of ten chips at the head of the Brush panel, and the
 trade is the point. The chips spent the scarcest space in the app — panel height
 — every second of every session to say a digit and three lit states, and the
@@ -482,6 +505,18 @@ pinned, a row takes the pointer and clicking one applies that slot for good
 exists — the rule this whole feature is built on needs a keyboard, and a hand
 with a pen in it and a tablet under it has no spare finger for the number row.
 Tapping the key still does not apply a slot, for the reason below.
+
+A filled row pinned also carries the **trash** every other roster in the app
+carries (`slots::clear`), hover-revealed and answering in the same red ink as the
+preset rows'. It is the one operation on a slot the one rule cannot express — a
+hold *assigns*, and no length of holding can mean *nothing* — so it is a control
+rather than a gesture, and it belongs in the one state where the rack is a list
+of controls rather than an answer to "what is on 4". The live brush is untouched
+by it, exactly as removing a preset leaves it: what goes is the binding, not the
+tool. An empty row carries none, having nothing to take back, and a rack emptied
+to the last digit stays empty rather than re-seeding itself from the library on
+the next start — `storage::load_table` tells "never set" from "set to nothing"
+apart, which is the whole reason it returns an option of a vector.
 
 Transient, it takes no pointer at all: the gesture it belongs to then is
 hold-*and-draw*, and the hand is very often painting directly under it. Pinning
@@ -563,10 +598,10 @@ than offered as a replace: the work would not survive the next start, and a
 second row of that name would make "the preset called Pen" two brushes to every
 lookup by name.
 
-**Not built**: a second row (Shift+digit) for twenty, any way to *assign* a slot
-without the keyboard (dragging a preset onto a pinned row, say — applying one
-needs no keyboard, filling one still does), and clearing a slot back to empty — a
-slot is overwritten today, which is the only operation the rack has needed.
+**Not built**: a second row (Shift+digit) for twenty, and any way to *assign* a
+slot without the keyboard (dragging a preset onto a pinned row, say — applying
+one needs no keyboard, and emptying one no longer does, but filling one still
+does).
 
 #### 18.1.9 Modifier drags — zoom, size and flow under the hand — built
 

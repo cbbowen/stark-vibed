@@ -2,7 +2,9 @@
 //! offscreen and cached (§11). Two viewers share the one cache — the preset
 //! library's rows, and the quick-brush rack the number keys draw (§18.1.8) —
 //! and they share it exactly because the key is the brush itself, so a brush
-//! that is in both places is rendered once.
+//! that is in both places is rendered once. Itself *as the picture paints it*,
+//! painting color aside ([`keyed`]): a slot carries the color that was live when
+//! it was filled, and one preset in two colors is one picture.
 //!
 //! Each thumbnail is a red stroke drawn across a canvas laid **entirely in
 //! paint** — a light-gray slab on the left half, a dark-gray slab on the right —
@@ -104,7 +106,8 @@ pub struct Rig {
     off: Offscreen,
 }
 
-/// The cached entry for `w`, found by **comparing the brush snapshot itself**.
+/// The cached entry for `w`, found by **comparing the brush snapshot itself**
+/// ([`keyed`] first, which is the one field the picture does not take from it).
 ///
 /// There is no digest, and that is the point. A cache key has one job — say
 /// whether two brushes would render the same picture — and `Wearable` already
@@ -121,13 +124,38 @@ pub struct Rig {
 /// it. `Renderer::builtins` is a `Vec` looked up the same way and for the same
 /// reason.
 fn lookup(state: AppState, w: &Wearable) -> Option<String> {
+    let key = keyed(w);
     state
         .thumbs
         .cache
         .read()
         .iter()
-        .find(|(cached, _)| cached == w)
+        .find(|(cached, _)| *cached == key)
         .map(|(_, url)| url.clone())
+}
+
+/// The brush **as the thumbnail paints it**: the test stroke's own red in place
+/// of the painting color. Both the render and the cache key go through it, so
+/// the key cannot come to disagree with the picture about what a thumbnail is.
+///
+/// The picture ignores the RGB it is handed — every thumbnail is drawn in
+/// [`STROKE_COLOR`], over the same two grays — so two brushes differing only in
+/// painting color are one picture, and keying on the raw snapshot files that one
+/// picture under a fresh name for every color the artist happens to be holding.
+///
+/// That is not a tidiness point, it is a blank row. `presets::wear` keeps the
+/// live color across every swap (§18.1.8), so a slot assigned under a hold stores
+/// the preset's brush wearing *today's* color: under the raw key its row misses a
+/// cache the preset list already filled, and shows nothing until a background
+/// render produces a byte-for-byte copy of the thumbnail sitting beside it.
+///
+/// Alpha is deliberately untouched. `color[3]` is the brush's own opacity — a
+/// material property the stroke really is laid with (§6.1) — so two brushes that
+/// differ in it are two pictures and keep two entries.
+fn keyed(w: &Wearable) -> Wearable {
+    let mut w = *w;
+    w.params.color[..3].copy_from_slice(&STROKE_COLOR);
+    w
 }
 
 /// The thumbnail for `w`, if it has been generated. Subscribes, so a row showing
@@ -195,7 +223,13 @@ fn next_missing(state: AppState) -> Option<Wearable> {
         .iter()
         .map(|e| e.brush)
         .chain(rack.iter().flatten().copied())
-        .find(|w| !cache.iter().any(|(cached, _)| cached == w))
+        // Asked on the same terms the cache answers on ([`keyed`]) — and it has
+        // to be, or a brush filed under its rendered color would be reported
+        // missing forever and `refresh` would never finish its scan.
+        .find(|w| {
+            let key = keyed(w);
+            !cache.iter().any(|(cached, _)| *cached == key)
+        })
 }
 
 /// Render one thumbnail and put it in the cache. `false` when there is no main
@@ -254,9 +288,9 @@ async fn generate(state: AppState, w: Wearable) -> bool {
                 ),
             });
         }
-        let mut brush = w.params;
-        brush.color[..3].copy_from_slice(&STROKE_COLOR);
-        rig.engine.process(ViewCommand::SetBrush(brush));
+        // The brush the cache will file this under, which is the brush the stroke
+        // is laid with: one statement of "the color a thumbnail is painted in".
+        rig.engine.process(ViewCommand::SetBrush(keyed(&w).params));
         let rope = crate::input::rope_in(view, w.smoothing);
         rig.engine
             .replay_stroke_seeded(Tool::Brush, &test_stroke(&view), THUMB_SEED, rope);
@@ -292,7 +326,7 @@ async fn generate(state: AppState, w: Wearable) -> bool {
         Err(_) => String::new(),
     };
     let mut cache = state.thumbs.cache;
-    cache.write().push((w, url));
+    cache.write().push((keyed(&w), url));
     true
 }
 
@@ -356,4 +390,42 @@ fn test_stroke(view: &ViewTransform) -> Vec<InputSample> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn brush(color: [f32; 4]) -> Wearable {
+        Wearable {
+            params: BrushParams {
+                color,
+                ..BrushParams::default()
+            },
+            smoothing: 0.0,
+        }
+    }
+
+    /// The blank row this key exists to rule out: `presets::wear` keeps the live
+    /// painting color across every swap, so a slot filled from a preset is that
+    /// preset wearing today's color (§18.1.8). One picture — the thumbnail is
+    /// painted in its own red either way — so it must not cost a second render,
+    /// and the row must not wait on one.
+    #[test]
+    fn two_painting_colors_of_one_brush_are_one_thumbnail() {
+        assert_eq!(
+            keyed(&brush([0.9, 0.1, 0.1, 1.0])),
+            keyed(&brush([0.1, 0.2, 0.9, 1.0]))
+        );
+    }
+
+    /// Opacity is the brush's own — a material property the stroke really is laid
+    /// with (§6.1) — so two of them are two pictures and keep two entries.
+    #[test]
+    fn the_brush_opacity_is_part_of_the_picture_though() {
+        assert_ne!(
+            keyed(&brush([0.9, 0.1, 0.1, 1.0])),
+            keyed(&brush([0.9, 0.1, 0.1, 0.3]))
+        );
+    }
 }

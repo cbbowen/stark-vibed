@@ -20,7 +20,10 @@
 //!   slot's brush *is* the live brush for the length of the hold, and a stroke
 //!   snapshots the brush at `Start` (`Session::start_stroke`).
 //! - **Hold and click a preset** — the preset lands on the live brush, so at
-//!   release it is what the number keeps.
+//!   release it is what the number keeps. Including the preset already in hand,
+//!   which is how an empty number is most often filled: a tool chosen from a
+//!   library counts as the hold's change whether or not it moved a value
+//!   ([`claim`]).
 //! - **Hold and drag Size or Flow** — the panel's sliders write the live brush,
 //!   as they always did, so the number keeps the number that was dragged. The
 //!   panel needs to know nothing about any of this: it shows the live brush, and
@@ -46,7 +49,10 @@
 //! the brushes the digits carry, each as the rendered stroke the preset library
 //! shows. The Panels menu can keep it up ("Quick brushes"), which is what makes
 //! it clickable: the rule above needs a keyboard, and a rack that can be clicked
-//! is the whole of what a hand without one gets ([`pick`]).
+//! is the whole of what a hand without one gets ([`pick`]) — that, and the one
+//! operation the rule cannot express, since a hold *assigns* and no length of
+//! holding can mean *nothing*: a filled row wears a trash that empties the slot
+//! ([`clear`]).
 
 use dioxus::prelude::*;
 
@@ -99,6 +105,9 @@ pub struct Held {
     /// release compares against to decide whether anything was changed, and so
     /// whether the number has something new to keep.
     entered: Wearable,
+    /// Whether a whole tool was deliberately put on during the hold — a preset
+    /// row clicked, or another slot's row ([`claim`]).
+    claimed: bool,
 }
 
 impl Held {
@@ -113,7 +122,7 @@ impl Held {
     /// was changed), and the brush to put back.
     ///
     /// Split out as a pure function because it is the whole rule, and the rule is
-    /// the part worth being sure of. Two properties it has to have:
+    /// the part worth being sure of. Three properties it has to have:
     ///
     /// - **An unused hold keeps nothing.** Holding 5 and drawing must not quietly
     ///   make 5 the brush you happened to be holding — the numbers are assigned
@@ -125,9 +134,31 @@ impl Held {
     ///   the same test the preset rows highlight on. Picking a color mid-hold
     ///   would otherwise write the whole brush into the slot, which is the one
     ///   thing a slot is defined not to carry.
+    /// - **A tool put on deliberately counts, even when it changes nothing.**
+    ///   The comparison above is a *proxy* for "did the user set this brush?",
+    ///   and it is wrong in exactly one place: clicking the preset that is
+    ///   already in hand. Holding an empty 3 and clicking the preset you are
+    ///   painting with is the most natural way there is to fill 3, and it moves
+    ///   no value at all — read through the proxy alone it is indistinguishable
+    ///   from a hold nobody used, and the slot would stay empty. So a whole tool
+    ///   arriving says so for itself ([`claim`]) rather than being inferred from
+    ///   its effect.
     fn settle(&self, current: Wearable) -> (Option<Wearable>, Wearable) {
-        let kept = (!presets::matches(&current, &self.entered)).then_some(current);
+        let kept = (self.claimed || !presets::matches(&current, &self.entered)).then_some(current);
         (kept, self.base)
+    }
+
+    /// What the number would keep if the hold ended **now** — the rule asked one
+    /// moment early.
+    ///
+    /// The rack draws the held digit from this rather than from what is stored
+    /// ([`SlotOverlay`]), so a preset clicked mid-hold shows up on the row it is
+    /// about to land on instead of at the release that stores it — by which time
+    /// a transient rack is already gone, and the answer arrives only on the next
+    /// press of the same key. One function, so what the row promises and what the
+    /// release does cannot be two answers.
+    fn would_keep(&self, current: Wearable) -> Option<Wearable> {
+        self.settle(current).0
     }
 }
 
@@ -164,7 +195,29 @@ pub fn hold(state: AppState, slot: usize, grip: Grip) {
         grip,
         base,
         entered,
+        claimed: false,
     }));
+}
+
+/// Say that a whole tool was just put on **deliberately** — a preset row clicked
+/// ([`presets::apply`]) or another slot's row ([`pick`]) — so a hold in flight
+/// keeps what is live when it ends whether or not that moved anything.
+///
+/// Called by the two acts that mean *the artist chose a tool from a library*,
+/// and by nothing else. A slider drag needs no such word: it changed a value, and
+/// [`Held::settle`]'s comparison sees that. Neither does the swap [`hold`] and
+/// [`release`] make themselves, which is why this is not said inside
+/// [`presets::wear`] — that door is used in both directions by the hold itself,
+/// and a claim raised there would make every hold claim itself on the way in.
+///
+/// A no-op with no hold in flight, which is every other click on those same rows.
+pub fn claim(state: AppState) {
+    let mut held = state.slots.held;
+    let Some(h) = *held.peek() else { return };
+    if h.claimed {
+        return;
+    }
+    held.set(Some(Held { claimed: true, ..h }));
 }
 
 /// End the hold on `slot`, if `grip` is what is holding it: keep whatever was
@@ -226,6 +279,13 @@ pub fn release_all(state: AppState) {
 /// a pen in one hand and a tablet under it leaves no spare finger for the number
 /// row, and the transient rack cannot be clicked (see below).
 ///
+/// A filled row pinned also carries the **trash** every other roster in the app
+/// carries ([`clear`]), hover-revealed like the preset rows'. It is the one
+/// operation on a slot that the one rule cannot express: a hold assigns, and no
+/// length of holding can mean *nothing*. It goes here rather than anywhere else
+/// for the reason the pin exists — this is the only place the rack is a list of
+/// controls rather than an answer to "what is on 4".
+///
 /// Two things it deliberately does not do:
 ///
 /// - **It never takes the pointer while it is transient** (`pointer-events` in
@@ -267,7 +327,10 @@ pub fn release_all(state: AppState) {
 pub fn SlotOverlay() -> Element {
     let state = use_context::<AppState>();
     let pinned = (state.slots.pinned)();
-    let held = (state.slots.held)().filter(Held::by_key).map(|h| h.slot);
+    // The hold itself, not only its digit: the held row is drawn from the rule it
+    // is under (`Held::would_keep`) rather than from what is stored.
+    let holding = (state.slots.held)().filter(Held::by_key);
+    let held = holding.map(|h| h.slot);
     // Neither held nor pinned: read nothing else at all, so a rack, a library or a
     // brush that changes during a stroke cannot re-render anything.
     if !pinned && held.is_none() {
@@ -295,7 +358,18 @@ pub fn SlotOverlay() -> Element {
             .chain(std::iter::once(ERASER))
             .filter(|&slot| rack[slot].is_some() || Some(slot) == held)
             .map(|slot| {
-                let brush = rack[slot];
+                // What the digit holds — and, for the one being held, what it is
+                // *about to* hold: the release's own rule, asked a moment early
+                // (`Held::would_keep`). A hold is where a slot changes, so a rack
+                // that showed only what was stored would answer every question
+                // about the digit under the finger one keystroke late — and for a
+                // transient rack, which is gone by the release, not until the next
+                // press of that key. Falls back to the stored brush, which is what
+                // an untouched hold and every other row show.
+                let brush = holding
+                    .filter(|h| h.slot == slot)
+                    .and_then(|h| h.would_keep(live))
+                    .or(rack[slot]);
                 // The library's name for it, where the slot still *is* one of the
                 // presets (color aside). A slot tuned away from the preset it came
                 // from has no name to give and carries none — the preview is what
@@ -324,9 +398,25 @@ pub fn SlotOverlay() -> Element {
                     // nodes are reused as the rack changes under them, and a
                     // stranded declaration would leave one slot showing another's
                     // brush (inline style merges per property).
-                    let bg = match brush.and_then(|b| crate::thumbs::url(state, &b)) {
-                        Some(url) if !url.is_empty() => format!("background-image: url({url});"),
-                        _ => "background-image: none;".to_string(),
+                    //
+                    // The row it is about to hold where that has been rendered,
+                    // and the one it still holds where it has not: a brush *tuned*
+                    // under a hold is new with every pixel of the drag and has no
+                    // thumbnail until the release stores it, and rendering one per
+                    // frame of a Size drag is GPU spent on a picture nobody asked
+                    // to keep. So the row shows the last true picture of the slot
+                    // rather than blinking empty for the length of a drag — while
+                    // a preset clicked mid-hold lands instantly, its thumbnail
+                    // being the one the library is already showing (`thumbs::keyed`
+                    // is why: the painting color it now wears is not part of the
+                    // key, because it is not part of the picture).
+                    let thumb = |b: Option<Wearable>| {
+                        b.and_then(|b| crate::thumbs::url(state, &b))
+                            .filter(|url| !url.is_empty())
+                    };
+                    let bg = match thumb(brush).or_else(|| thumb(rack[slot])) {
+                        Some(url) => format!("background-image: url({url});"),
+                        None => "background-image: none;".to_string(),
                     };
                     // Lit like a preset row and on the same test — this is the
                     // brush in hand, color aside, until any knob moves off it.
@@ -371,6 +461,37 @@ pub fn SlotOverlay() -> Element {
                                 }
                             }
                             span { class: "slot-row-name", "{label}" }
+                            if rack[slot].is_some() {
+                                // The stored brush, not the row's: the trash takes
+                                // something *out of the rack*, and a held row
+                                // previewing a brush the release has not written
+                                // yet has nothing there for it to take.
+                                //
+                                // The trash every other roster in the app wears
+                                // (`icons::REMOVE`) — presets, layers, guides,
+                                // shapes, gradients — because emptying a row of
+                                // this one is the same act, revealed on the same
+                                // hover and answering it in the same red ink.
+                                //
+                                // Only where there is something to remove: an
+                                // empty row is on screen because it is *held*, and
+                                // a trash on it would offer to undo nothing. Only
+                                // reachable pinned, for the row's own reason — the
+                                // stylesheet grants the pointer there and nowhere
+                                // else, so nothing here asks whether the rack is a
+                                // control right now.
+                                button {
+                                    class: "slot-clear",
+                                    title: "Clear this slot",
+                                    onclick: move |e| {
+                                        // The row beneath applies the slot; a
+                                        // click on the trash is not also that.
+                                        e.stop_propagation();
+                                        clear(state, slot);
+                                    },
+                                    {icon(icons::REMOVE)}
+                                }
+                            }
                         }
                     }
                 }
@@ -393,10 +514,12 @@ pub fn SlotOverlay() -> Element {
 /// it means: the click makes that slot's brush live, and the hold then keeps
 /// whatever is live when it ends — so holding 3 and clicking 5 copies 5 onto 3,
 /// exactly as holding 3 and clicking a preset assigns that preset. One rule, not
-/// a special case (`Held::settle`).
+/// a special case (`Held::settle`), and it is a whole tool arriving, so it says
+/// so ([`claim`]) — copying 5 onto 3 must work when 5 is already what is in hand.
 pub fn pick(state: AppState, slot: usize) {
     let brush = state.slots.brushes.peek().get(slot).copied().flatten();
     if let Some(brush) = brush {
+        claim(state);
         presets::wear(state, brush);
     }
 }
@@ -408,6 +531,32 @@ pub fn assign(state: AppState, slot: usize, brush: Wearable) {
     }
     let mut brushes = state.slots.brushes;
     brushes.write()[slot] = Some(brush);
+    persist(&brushes.read());
+}
+
+/// Empty `slot` and persist the rack — the trash on a pinned row
+/// ([`SlotOverlay`]).
+///
+/// The live brush is untouched, exactly as removing a preset leaves it
+/// (`presets::remove`): what goes is the *binding*, not the tool. A slot cleared
+/// while it is being held is cleared for good — the release then finds nothing
+/// changed and keeps nothing, so the emptying stands and the displaced brush
+/// still comes back.
+///
+/// Clearing the last filled slot leaves a rack that is empty rather than unset,
+/// and the two must not be confused: see [`read_storage`].
+pub fn clear(state: AppState, slot: usize) {
+    if slot >= COUNT {
+        return;
+    }
+    let mut brushes = state.slots.brushes;
+    // Its own statement, this module's rule: a `peek` in a condition stays
+    // borrowed through the body, and the write below is of the very signal read.
+    let already_empty = brushes.peek()[slot].is_none();
+    if already_empty {
+        return;
+    }
+    brushes.write()[slot] = None;
     persist(&brushes.read());
 }
 
@@ -500,9 +649,13 @@ fn persist(rack: &Rack) {
 }
 
 /// `None` when this browser has never set a slot (or storage is unavailable) —
-/// the caller seeds the rack. A rack emptied down to nothing is unreachable (a
-/// slot is overwritten, never cleared), so unlike the preset library there is no
-/// emptied-versus-absent case to tell apart.
+/// the caller seeds the rack. **`Some(empty)` is a different answer**, and the
+/// difference is load-bearing now that a slot can be cleared ([`clear`]): a rack
+/// the user has emptied to the last digit is left empty, where an untouched one
+/// is seeded from the library ([`seed_defaults`]). A rack that re-seeded itself
+/// the moment it was emptied would make the trash on the last row do nothing at
+/// all — the same emptied-versus-absent case the preset library has, and
+/// `storage::load_table` keeps them apart for both.
 fn read_storage() -> Option<Rack> {
     let mut rack: Rack = [None; COUNT];
     for (slot, brush) in storage::load_table(KEY_SLOTS, parse_entry)? {
@@ -541,6 +694,7 @@ mod tests {
             grip: Grip::Key,
             base,
             entered,
+            claimed: false,
         }
     }
 
@@ -617,6 +771,39 @@ mod tests {
         };
         let (kept, _) = held(entered, base).settle(smoothed);
         assert_eq!(kept, Some(smoothed));
+    }
+
+    #[test]
+    fn a_preset_clicked_under_the_hold_fills_the_slot_even_when_it_moves_nothing() {
+        // The reported bug, and the case the value comparison cannot see: hold an
+        // empty 3 and click the preset you are already painting with. Nothing
+        // changes, and the slot has to end up holding it all the same.
+        let brush = w(BrushParams::default());
+        let h = Held {
+            claimed: true,
+            ..held(brush, brush)
+        };
+        let (kept, back) = h.settle(brush);
+        assert_eq!(kept, Some(brush), "the tool was chosen, not inferred");
+        assert_eq!(back, brush);
+    }
+
+    #[test]
+    fn a_claim_still_hands_the_displaced_brush_back() {
+        // The half of the rule the claim must not touch: what the number keeps is
+        // one question, what comes back to the hand is the other.
+        let base = w(BrushParams::default());
+        let entered = w(BrushParams {
+            radius: 40.0,
+            ..base.params
+        });
+        let h = Held {
+            claimed: true,
+            ..held(entered, base)
+        };
+        let (kept, back) = h.settle(entered);
+        assert_eq!(kept, Some(entered));
+        assert_eq!(back, base);
     }
 
     #[test]

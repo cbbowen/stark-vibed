@@ -696,7 +696,15 @@ which the engine draws into directly. DOM chrome surrounds it.
   nothing fetched and nothing decoded, and the thumbnails' engine
   (`Renderer::shared_engine`, `thumbs.rs`) deliberately pins the opposite look —
   flat ground, neutral light — so a thumbnail is the *brush's* identity card and
-  its cache key is the brush snapshot alone. Each row's picture is two
+  its cache key is the brush snapshot alone. The snapshot *as the picture paints
+  it*, which is the same thing minus the painting color: the stroke is laid in
+  the thumbnail's own red whatever RGB it is handed, so keying on the raw
+  snapshot would file one picture under a fresh name for every color the artist
+  happened to be holding — and a quick slot assigned under a hold stores the
+  preset's brush wearing today's color (§18.1.8), so that is not a theoretical
+  duplicate but the row of the slot you just filled, blank while it waits on a
+  byte-for-byte copy of the thumbnail beside it. The brush's own opacity does
+  stay in the key: the stroke really is laid with it (§6.1). Each row's picture is two
   half-canvas fills (the ground is all paint, so smearing and lifting read), one
   replayed stroke and one small `Engine::export_view` readback on that one kept
   engine, generated in the background and cached per session. The key being the
