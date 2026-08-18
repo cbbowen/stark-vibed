@@ -40,7 +40,7 @@ pub(crate) fn encode<T>(value: &T) -> carbonite::Result<Vec<u8>>
 where
     T: Serialize + carbonite::SerializeColumns,
 {
-    carbonite::Serializer::new(&T::schema()).to_vec_columns(value)
+    carbonite::Serializer::new(T::schema()).to_vec_columns(value)
 }
 
 /// Decode one message, reconciling against the sender's schema if it differs.
