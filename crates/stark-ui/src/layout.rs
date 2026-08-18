@@ -151,10 +151,8 @@ impl PanelId {
     }
 }
 
-/// The shortest a resizable panel may be dragged: enough for the Brush panel's fixed
-/// controls plus a row of the list under them, so the grip cannot fold a panel into a
-/// sliver that shows nothing and is hard to grab back.
-const MIN_PANEL_HEIGHT: f32 = 260.0;
+/// The shortest a resizable panel may be dragged.
+const MIN_PANEL_HEIGHT: f32 = 140.0;
 
 /// Shared `Copy` layout state for the floating panels: their display order, which are
 /// hidden, and the two in-flight gestures. Closed panels stay in `order` (so reopening
