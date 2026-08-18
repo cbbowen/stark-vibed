@@ -974,12 +974,14 @@ hr {
   box-shadow: inset 0 0 0 2px #3a6ea5;
 }
 
-/* A name floating over a rendered stroke, in both places one does (the rack's
-   rows carry the library's name for the slot, where the slot still is one of
-   its presets). Lifted off the picture by shadow rather than boxed away from
-   it — the stroke is the thing being looked at. */
+/* A name floating over the thing it names, everywhere a row *is* its picture:
+   a rendered stroke (the preset list, and the rack's rows carrying the
+   library's name for the slot), or a ramp (the gradient pop-out's rows).
+   Lifted off the picture by shadow rather than boxed away from it — the
+   picture is the thing being looked at. */
 .preset-row-name,
-.slot-row-name {
+.slot-row-name,
+.gradient-row-name {
   flex: 1;
   padding: 2px;
   min-width: 0;
@@ -999,11 +1001,14 @@ hr {
 
    Shared with the quick-brush rack's rows (`.slot-clear`, §18.1.8) for the reason the
    row itself is: the two show the same picture of the same thing, and emptying a slot
-   is the same act as removing a preset — one declaration, so they cannot drift. What
-   is not shared is what reveals it: a preset row is always a control, while a rack row
-   is one only while the rack is pinned. */
+   is the same act as removing a preset — one declaration, so they cannot drift. The
+   gradient pop-out's rows joined for the same reason: another full-bleed picture with
+   its trash overlaid on the far end, lifted off it the same way. What is not shared
+   is what reveals it: a preset row is always a control, while a rack row is one only
+   while the rack is pinned. */
 .preset-remove,
-.slot-clear {
+.slot-clear,
+.gradient-remove {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1024,6 +1029,7 @@ hr {
 
 .preset-remove .icon svg,
 .slot-clear .icon svg,
+.gradient-remove .icon svg,
 .shape-remove .icon svg {
   width: 11px;
   height: 11px;
@@ -1046,7 +1052,8 @@ hr {
    small glyph needed a filled target to look pressable, and a trash does not. Every
    roster, one destructive control, one way of saying so. */
 .preset-remove:hover,
-.slot-clear:hover {
+.slot-clear:hover,
+.gradient-remove:hover {
   color: #e8757a;
   opacity: 1;
 }
@@ -4425,87 +4432,60 @@ button.layer-remove:hover {
   opacity: 0.5;
 }
 
-/* One gradient: the strip is the entry — the name and the trash sit under it in
-   a quieter line. Clicking takes the ramp in hand for the gradient fill
-   (§22.4); `active` marks the one the next fill would lay — always
-   exactly one while the library has any, since an unset choice falls back to
-   the first entry. The preset rows' colors, because it is the same kind of
-   list answering the same kind of question. */
+/* One gradient: the ramp *is* the row, filling it edge to edge — the preset
+   rows' recipe, because it is the same kind of list answering the same kind of
+   question and the visual is the star. The ramp is drawn by the browser from
+   the same stops the engine fitted, interpolated in the same space
+   (`in oklab`) — the preview is the gradient, not a picture of it — and the
+   name and trash float over it, lifted by shadow (the shared rules with the
+   preset rows, above). Clicking takes the ramp in hand for the gradient fill
+   (§22.4); hover answers in light and the chosen row wears an inset ring, both
+   because a background swap would be invisible under a full-bleed ramp.
+   `active` is always exactly one row while the library has any, since an unset
+   choice falls back to the first entry. The resting keyline keeps a near-black
+   or near-white end legible against the pop-out. */
 .gradient-row {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 5px 8px 4px;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  flex: none;
+  padding: 0 8px;
   border-radius: 5px;
-  background: #33333a;
+  background-color: #33333a;
+  font-size: 12px;
+  box-shadow: inset 0 0 0 1px #ffffff1f;
   cursor: pointer;
 }
 
 .gradient-row:hover {
-  background: #3d3d45;
+  filter: brightness(1.12);
 }
 
 .gradient-row.active {
-  background: #3a6ea5;
-}
-
-/* The ramp itself, drawn by the browser from the same stops the engine fitted,
-   interpolated in the same space (`in oklab`) — the preview is the gradient,
-   not a picture of it. The inset ring keeps a near-black or near-white end
-   legible against the row. */
-.gradient-strip {
-  height: 22px;
-  border-radius: 4px;
-  box-shadow: inset 0 0 0 1px #ffffff1f;
-}
-
-.gradient-row-foot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-}
-
-.gradient-row-name {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  opacity: 0.85;
-}
-
-/* The same trash the preset, layer and guide rows wear; hover-revealed on the
-   row like theirs. */
-.gradient-remove {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: #e8e8ea;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 120ms, background 80ms;
-}
-
-.gradient-remove .icon svg {
-  width: 11px;
-  height: 11px;
+  box-shadow: inset 0 0 0 2px #3a6ea5;
 }
 
 .gradient-row:hover .gradient-remove {
   opacity: 0.8;
 }
 
-.gradient-remove:hover {
-  color: #e8757a;
-  opacity: 1;
+/* The rename field, standing in for the name while a row is being renamed —
+   the layer row's recipe: it shares the name's own box and text metrics
+   (`.gradient-row-name`), so opening it reads as the label becoming editable
+   rather than as a form appearing in the row. What is this list's own is the
+   well: a dark scrim, because the field sits over an arbitrary ramp and the
+   caret and text need a ground that is theirs. */
+.gradient-rename {
+  outline: none;
+  border: none;
+  border-radius: 4px;
+  background: #000000b3;
+  /* An input inherits no font of its own accord; the weight is restated because
+     the `font` shorthand, cascading after the shared name rule, would otherwise
+     reset the 500 the label wears. */
+  font: inherit;
+  font-weight: 500;
 }
 
 /* Trace mode's catcher: the transform catcher's bargain — while armed, the

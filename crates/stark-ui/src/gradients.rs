@@ -206,6 +206,42 @@ pub fn remove(state: AppState, name: &str) {
     persist(&entries.read());
 }
 
+/// Rename one gradient. Trimmed; an empty or unchanged result costs nothing.
+///
+/// Names are this library's identity — the selection, a removal and the row
+/// keys all speak them — so a name another entry already wears is refused, and
+/// the notice says so rather than a silent no-op leaving the field's text
+/// apparently ignored. A selection pointing at the old name follows the
+/// rename: falling back to the first entry would swap the ramp in hand as a
+/// side effect of relabelling it.
+pub fn rename(state: AppState, from: &str, to: &str) {
+    let to = to.trim();
+    if to.is_empty() || to == from {
+        return;
+    }
+    let mut entries = state.gradients.entries;
+    {
+        let mut list = entries.write();
+        if list.iter().any(|e| e.name == to) {
+            let mut notice = state.gradients.notice;
+            notice.set(Some(format!(
+                "There is already a gradient named \u{201c}{to}\u{201d} \u{2014} \
+                 the name stands unchanged."
+            )));
+            return;
+        }
+        let Some(entry) = list.iter_mut().find(|e| e.name == from) else {
+            return;
+        };
+        entry.name = to.to_string();
+    }
+    persist(&entries.read());
+    let mut sel = state.gradients.selected;
+    if sel.peek().as_deref() == Some(from) {
+        sel.set(Some(to.to_string()));
+    }
+}
+
 /// The first free "Gradient N" name — captures are named by the machinery, so
 /// the artist traces twice without a dialog between.
 pub fn next_name(entries: &[GradientEntry]) -> String {

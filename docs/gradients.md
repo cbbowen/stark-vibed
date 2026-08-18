@@ -146,11 +146,16 @@ Unlike the presets there are **no built-in entries**: a gradient's whole story
 is that it came off *your* canvas, and a library opening on a stranger's sunset
 would tell the opposite one. The empty state teaches the gesture instead.
 Captures are named by the machinery ("Gradient N", first free) so the artist
-can trace twice without a dialog between; rows wear the same hover-revealed
-trash every other roster wears, and clicking one takes the ramp in hand for
-the fill (§22.4). That click was deliberately withheld until the fill existed:
-while the library was the whole feature, a selectable row would have promised
-an application nothing could honour.
+can trace twice without a dialog between, and renamed in place — double-click,
+the layer and guide rows' gesture; a name another entry already wears is
+refused with a notice, because names are this library's identity (the
+selection, a removal and the rows all speak them). A row **is** its ramp,
+full-bleed with the name floating over it and the hover-revealed trash
+overlaid on its far end — the preset rows' recipe, because the visual is the
+star — and clicking one takes the ramp in hand for the fill (§22.4). That
+click was deliberately withheld until the fill existed: while the library was
+the whole feature, a selectable row would have promised an application nothing
+could honour.
 
 The library has **no panel**. It lives behind the ramp strip on the two bars
 that consume it — the shared gradient bar (§22.4) and the gradient-map filter

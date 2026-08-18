@@ -17,13 +17,14 @@
 //! sees — so it is a frontend mode ending in a request, the eyedropper's
 //! pattern stretched along a line (§4, §18.0.2).
 
+use dioxus::html::Key;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::gradients;
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
-use crate::platform::capture_pointer;
+use crate::platform::{capture_pointer, select_all};
 use crate::state::AppState;
 use stark_model::geom::Vec2;
 
@@ -128,40 +129,111 @@ fn GradientPopout(open: Signal<bool>) -> Element {
                     let current = gradients::current_name(state);
                     rsx! {
                         for entry in entries {
-                            {
-                                let select_name = entry.name.clone();
-                                let remove_name = entry.name.clone();
-                                let strip = gradients::css_strip(&entry.gradient);
-                                let active = current.as_deref() == Some(entry.name.as_str());
-                                rsx! {
-                                    div {
-                                        key: "{entry.name}",
-                                        class: if active { "gradient-row active" } else { "gradient-row" },
-                                        // Clicking takes the ramp in hand — and
-                                        // re-previews a composing fill, so mid-mode
-                                        // the canvas answers the click.
-                                        onclick: move |_| gradients::select(state, &select_name),
-                                        div { class: "gradient-strip", style: "background: {strip};" }
-                                        div { class: "gradient-row-foot",
-                                            span { class: "gradient-row-name", title: "{entry.name}", "{entry.name}" }
-                                            // The same trash the preset, layer and guide rows
-                                            // wear: a fourth roster, same act, same mark.
-                                            button {
-                                                class: "gradient-remove",
-                                                title: "Remove gradient",
-                                                onclick: move |e| {
-                                                    e.stop_propagation();
-                                                    gradients::remove(state, &remove_name);
-                                                },
-                                                {icon(icons::REMOVE)}
-                                            }
-                                        }
-                                    }
-                                }
+                            GradientRow {
+                                key: "{entry.name}",
+                                active: current.as_deref() == Some(entry.name.as_str()),
+                                entry,
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// One library row: the ramp filling it edge to edge — the preset rows' recipe
+/// (`.preset-row`): the visual is the star, so it gets every pixel the row
+/// has, and the name floats over it lifted by shadow, with the trash overlaid
+/// on the far end, hover-revealed. Double-click opens the rename field, the
+/// layer and guide rows' interaction language.
+///
+/// A component per row because the rename draft is row-local state: opening
+/// one leaves every other row alone, and closing it needs nothing cleaned up.
+/// The draft is held here rather than read back off the field on commit
+/// because both commit paths — Enter and blur — need it, and one of them
+/// fires while the field is on its way out (the layer row's argument, whole).
+#[component]
+fn GradientRow(entry: gradients::GradientEntry, active: bool) -> Element {
+    let state = use_context::<AppState>();
+    let mut draft = use_signal(|| None::<String>);
+    let strip = gradients::css_strip(&entry.gradient);
+    let name = entry.name.clone();
+    let select_name = entry.name.clone();
+    let remove_name = entry.name.clone();
+    let seed = entry.name.clone();
+    let rename_from = entry.name;
+    // Commit whatever the field holds, and close it. `take` is what makes the
+    // two commit paths safe to both fire: whichever runs second finds no draft.
+    // A collision or an untouched field is the library's to refuse
+    // (`gradients::rename`), so no name is lost to a stray blur.
+    let mut commit = move || {
+        let text = draft.write().take();
+        if let Some(text) = text {
+            gradients::rename(state, &rename_from, &text);
+        }
+    };
+    // Cloned for the second handler: unlike the layer row's, this closure
+    // holds a `String` (the name the library is asked to rename *from*), so it
+    // is not `Copy` — the clones share the one draft signal, and `take` above
+    // keeps the pair single-fire either way.
+    let mut commit_on_blur = commit.clone();
+    rsx! {
+        div {
+            class: if active { "gradient-row active" } else { "gradient-row" },
+            style: "background-image: {strip};",
+            // Clicking takes the ramp in hand — and re-previews a composing
+            // fill, so mid-mode the canvas answers the click.
+            onclick: move |_| gradients::select(state, &select_name),
+            ondoubleclick: move |_| draft.set(Some(seed.clone())),
+            if let Some(text) = draft() {
+                input {
+                    class: "gradient-row-name gradient-rename",
+                    r#type: "text",
+                    value: "{text}",
+                    // The field is the point of the double-click, so it takes
+                    // focus as it appears — and selected, since the usual
+                    // reason to open it is to replace the machinery's
+                    // "Gradient N" rather than add to it (the layer row's
+                    // ordering argument for awaiting the focus first).
+                    onmounted: move |e: Event<MountedData>| {
+                        spawn(async move {
+                            let _ = e.set_focus(true).await;
+                            select_all(&e);
+                        });
+                    },
+                    oninput: move |e| draft.set(Some(e.value())),
+                    // A click placing the caret is the field's, not the row's:
+                    // bubbled up it would re-select the ramp under the edit —
+                    // harmless for a fill, one committed `SetFilter` for a map.
+                    onclick: move |e| e.stop_propagation(),
+                    ondoubleclick: move |e| e.stop_propagation(),
+                    // Blur commits (clicking away is an ordinary way to be
+                    // finished); Enter commits directly rather than by
+                    // blurring, since a removed field does not reliably fire
+                    // `blur`. Escape abandons, dropping the draft first so the
+                    // blur that follows has nothing left to send.
+                    onblur: move |_| commit_on_blur(),
+                    onkeydown: move |e| match e.key() {
+                        Key::Enter => commit(),
+                        Key::Escape => draft.set(None),
+                        _ => {}
+                    },
+                }
+            } else {
+                span { class: "gradient-row-name", title: "{name}", "{name}" }
+            }
+            // The same trash the preset, layer and guide rows wear: a fourth
+            // roster, same act, same mark — overlaid on the ramp and lifted
+            // off it by shadow, as the preset rows' is off their stroke.
+            button {
+                class: "gradient-remove",
+                title: "Remove gradient",
+                onclick: move |e| {
+                    e.stop_propagation();
+                    gradients::remove(state, &remove_name);
+                },
+                {icon(icons::REMOVE)}
             }
         }
     }
