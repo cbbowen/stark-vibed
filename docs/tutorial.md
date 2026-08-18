@@ -46,15 +46,16 @@ is at worst redundant, and its cost is paid by the one person it was aimed at.
 Two consequences follow and are not negotiable:
 
 - **Almost no lesson fires on a first try.** `no_lesson_fires_on_a_first_try`
-  refuses a threshold below two for every lesson but the two it names, and it is an
-  *exception* list so that a lesson added later is held to the strict rule by
-  default. The first minute in a new app is the minute with the least attention to
-  spare. The two exceptions are each for a reason the rule does not cover: one
-  answers a question its own deed **raises** (close a panel and "where did that go?"
-  is immediate — answering on the second close would be answering it late), and the
-  other waits on a deed nobody reaches by accident (a guided line needs a guide
-  made, left visible, a stroke drawn *and* held; having done all four once is
-  stronger evidence of intent than ten of anything else).
+  refuses a threshold below two, and the first minute in a new app is why: it is the
+  minute with the least attention to spare. The exceptions are named as **deeds**
+  rather than as lessons, because the question is never "is this tip important" —
+  every tip thinks it is — but *could somebody have done this without meaning to*.
+  Three could not: closing a panel **raises** the question its lesson answers
+  (answering on the second close would be answering late, with the gap spent
+  believing the panel was gone); opening the brush editor **is** the request its
+  series answers; and a guided line is not reachable by accident at all — a guide
+  made, left visible, a stroke drawn *and* held still. An *exception* list, so a
+  deed added later is held to the strict rule by default.
 - **The tally spans sessions.** "The third stroke" is not a claim about one visit,
   so the ledger follows the browser the way the shape and preset libraries do
   (§24.4).
@@ -157,7 +158,7 @@ have, since the other one is a card nobody asked for.
 
 #### The deeds that are not in the stream at all
 
-Two are reported outright (`tutor::did`):
+Three are reported outright (`tutor::did`):
 
 - **A preset put on from the library.** The command it leads to says a brush
   changed and cannot say a row was clicked — and the quick slots, which that lesson
@@ -165,6 +166,8 @@ Two are reported outright (`tutor::did`):
 - **A panel closed.** Which panels are open is the frontend's alone and reaches no
   engine at all, so there is no command to read. `layout::close_panel` reports it,
   and only where a panel actually went away.
+- **The brush editor opened.** A dialog is frontend state too, and this one is the
+  request its whole series answers.
 
 `not_reaching` and `did` are the only two things the tour asks of the rest of the
 app, and they are opposites: one says a command should not be read, the other says
@@ -247,6 +250,13 @@ Panels are found by `layout::panel_key` — the same function that writes the
 A box matched to the wrong panel is measured in silence (§11), and here it would
 show as a card in the corner of the window with nothing beside it to explain.
 
+**Cards narrow rather than move when they run out of room.** Each placement adds a
+`max-width` computed from the anchor's own edge — `calc(100vw - …)` where the
+viewport is what constrains it, so nothing has to be measured and nothing has to
+know the card's width. A card that *shifted* to stay on screen would leave its arrow
+pointing at nothing, and the arrow is the half that says which thing is being talked
+about.
+
 **One anchor is the painting, and one placement goes over it.** A lesson about a
 gesture made *on the canvas* has nothing to stand beside, and standing it beside a
 panel would say the panel had something to do with it. So `Side::Inside` puts the
@@ -259,6 +269,16 @@ card declines the pointer and lets its two buttons take it back — the
 likely to have been the start of a stroke than an attempt to click a paragraph, so
 it paints. The `.chrome` fade takes the buttons' events away as well for the length
 of every gesture.
+
+**One anchor is inside a dialog, and it inverts two rules.** Every other card
+stands down while a modal is up, because a modal is over everything a card could
+point at — but the brush editor's series points *at* the modal, so
+`Anchor::inside_dialog` is what the promotion rule asks instead of testing the
+signal directly. Those cards also sit above the backdrop (`z-index: 101`, and only
+they do) and take the pointer whole, where a card over the painting declines it:
+inside a dialog there is no stroke a press could have been the start of, and what is
+underneath is somebody else's control — here, a test canvas that would read a click
+on a paragraph as a mark to draw.
 
 **One anchor is invisible, and that is also the point.** The panel column's wake slice
 (`.panel-wake`, §11) is a box with nothing drawn in it, so the card is the only
@@ -291,6 +311,24 @@ fn reveal(self, state: AppState, layout: PanelLayout) {
 
 Two fields could state those differently, and a lesson that opened the Color panel
 while pointing at the Brush one is the kind of thing that survives review.
+
+**Dismissing a card offers the next one its deed still owes.** That is what makes a
+*series* possible — the brush editor's five cards all wait on one deed, and being
+opened once earns every one of them, so acknowledging one has to bring the next
+rather than waiting for the dialog to be opened again. The button says which it is:
+"Next" while another is owed, "Got it" on the last, because "Got it" on the first of
+five is a lie about how many are coming.
+
+It costs nothing elsewhere, because the ordinary case is a deed that owes one lesson
+at a time; where it owes more, that is a backlog built up while cards were passed
+over, and draining it in order beats making the artist earn each one twice. And it
+cannot run away: every turn marks one lesson given and `due` skips those.
+
+The chain runs on dismissal *by the button* and deliberately not when the anchor
+disappears (`abandon`). Closing the brush editor takes the anchor out from under
+every card in the series at once, and a chain there would retire the lot in a single
+flush — the artist would have been "taught" four things they never saw. What happens
+instead is that the card on screen is answered and the rest stay owed for next time.
 
 **One card at a time, and a passed-over lesson is not lost.** A threshold is a
 floor rather than an equality, so a lesson skipped because another card was up
@@ -357,6 +395,9 @@ anywhere else unless it counts a deed nothing counts yet.
 | 10 | an undo | the canvas | Draw a rough line or ellipse and *hold* — it snaps to what you meant, and the drag steers it (§6.9) |
 | 3 | a shape-assisted stroke | Drawing Guides panel | Straight is one thing; straight *to somewhere* is another — add a perspective guide (§20) |
 | 1 | an assisted **line** with a guide visible | Drawing Guides panel | The grid aims held lines down its own axes, and turns a held circle into one in perspective (§20.6, §20.7) |
+| 20 | a brush stroke | Select panel | Drag a marquee and every tool acts only inside it; the chips combine one selection with the last (§6.8) |
+| 3 | a selection | Layers panel | A selection says *where*, the stack says *what* — and a group is also a clipping mask (§14) |
+| 1 | the brush editor opened | the editor itself | **A series of five**, walked through with Next: the test stroke, then Tip, Paint, Color dynamics, Pickup |
 
 **Order decides ties**, and the first three all wait on a stroke. Listed in that
 order, so a stroke satisfying more than one gives the earliest still owed — which
@@ -394,7 +435,29 @@ starts happening, so the tour walks somebody from *my lines are wobbly* to *my l
 are on the vanishing point* without ever telling them anything they had not just
 asked for.
 
-One honest limit: the undo count is **undos**, not stroke-undos. Nothing in the
+#### The series
+
+The brush editor is the one lesson that is not a lesson but five, and it is the only
+place the tour ever says more than a sentence' worth in a row. The dialog earns it:
+it is a wall of parameters, it is entered deliberately, and nothing else in Stark
+has as much to say about *why* its knobs are grouped the way they are. Walking it —
+the test stroke first, because tuning by looking is the whole point, then Tip,
+Paint, Color dynamics, Pickup in the order they are laid out — turns that wall into
+a reading order.
+
+Each card anchors to its own section (`brush_editor::BrushPart`, written into the
+markup as `data-be` and read back through the same function, so a section renamed on
+screen keeps its anchor and one deleted stops compiling on both sides at once). The
+section cards stand to the right, over the preview column; the preview's own card
+stands to the left, over the sections. Each covers the half it is not talking about.
+
+Collapsed sections still anchor, because a `Section` renders its header whether or
+not it is open — so Color dynamics and Pickup, which start folded, are pointed at
+where they sit rather than where they would be if expanded.
+
+#### One honest limit
+
+The undo count is **undos**, not stroke-undos. Nothing in the
 projection says what the next undo would remove, and asking would mean a new method
 on `Timeline` with two implementors — a lot of engine surface for a threshold. In a
 painting app almost every undo is a stroke's, and the ones that are not point in the

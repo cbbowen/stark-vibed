@@ -86,6 +86,7 @@ use std::collections::HashSet;
 
 use dioxus::prelude::*;
 
+use crate::brush_editor::BrushPart;
 use crate::icons::{self, icon};
 use crate::layout::{PanelId, PanelLayout, chrome_class, open_panel, panel_key};
 use crate::platform::{self, ElementBox};
@@ -124,6 +125,10 @@ const LONG_PAN: f32 = 1200.0;
 /// How far the card sits from the thing it points at, in CSS px — the arrow lives
 /// in this gap.
 const GAP: f32 = 14.0;
+
+/// How close to the window's edge a card may come, in CSS px. The panel column's own
+/// inset, so a card beside the stack stops where the stack does.
+const EDGE: f32 = 14.0;
 
 /// A thing the user has done, at the grain a person would describe it in.
 ///
@@ -165,12 +170,21 @@ pub enum Deed {
     /// (§20.6) — the state in which the grid is about to start aiming strokes,
     /// whether or not this one landed near enough for it to.
     GuidedLine,
+    /// A marquee or lasso gesture that committed a **selection** (§6.8).
+    ///
+    /// The same gesture as a stroke, told apart by the tool and by what the panel's
+    /// action says it builds: under Fill the drag lays paint instead, which is not
+    /// a selection however much it looks like one from here (§18.0.4).
+    Selection,
+    /// The brush editor opened. Not on the command stream: the dialog is frontend
+    /// state and reaches no engine, so the button reports it ([`did`]).
+    OpenedBrushEditor,
 }
 
 impl Deed {
     /// Every deed. The order **is** the tally's slot order, so this is
     /// [`Deed::slot`]'s only authority.
-    const ALL: [Deed; 10] = [
+    const ALL: [Deed; 12] = [
         Deed::Stroke,
         Deed::TunedBrush,
         Deed::LongPan,
@@ -181,6 +195,8 @@ impl Deed {
         Deed::ClosedPanel,
         Deed::AssistedStroke,
         Deed::GuidedLine,
+        Deed::Selection,
+        Deed::OpenedBrushEditor,
     ];
 
     /// How many there are, so the tally can be an array rather than a map.
@@ -214,6 +230,8 @@ impl Deed {
             Deed::ClosedPanel => "closed-panel",
             Deed::AssistedStroke => "assisted",
             Deed::GuidedLine => "guided-line",
+            Deed::Selection => "selection",
+            Deed::OpenedBrushEditor => "brush-editor",
         }
     }
 
@@ -318,6 +336,14 @@ pub enum Anchor {
     /// the ⚙. Always on screen, so nothing has to reveal it and nothing can close
     /// it.
     CommandRail,
+    /// A part of the brush editor's dialog ([`BrushPart`]).
+    ///
+    /// The only anchor **inside a dialog**, which is the one thing that makes it
+    /// different from all the others: every other card stands down while a modal is
+    /// up, because a modal is over everything a card could point at. These are the
+    /// exception by construction — the dialog *is* what they point at — so they show
+    /// while it is open and only while it is open.
+    BrushEditor(BrushPart),
     /// The painting itself.
     ///
     /// Not a control, and that is what it is for: a lesson about a gesture made
@@ -349,6 +375,10 @@ impl Anchor {
             // canvas is named once (`render::CANVAS_ID`) and this is that name,
             // so there is no second spelling to fall out of step.
             Anchor::Canvas => format!("#{}", crate::render::CANVAS_ID),
+            // From the editor's own naming, so a section renamed on screen keeps
+            // its anchor and a section deleted stops compiling on both sides at
+            // once (`brush_editor::BrushPart`).
+            Anchor::BrushEditor(part) => format!("[data-be=\"{}\"]", part.key()),
             Anchor::TimelineBar => ".timeline-bar".to_string(),
         }
     }
@@ -381,8 +411,22 @@ impl Anchor {
             // control that puts it away, so these lessons are dismissed the ordinary
             // way and by nothing else.
             Anchor::CommandRail | Anchor::Canvas => true,
+            // Exactly as long as the dialog is up. Closing it mid-series is an
+            // answer to the card on screen and leaves the rest of the series owed
+            // for the next time it is opened (`abandon`).
+            Anchor::BrushEditor(_) => (state.brush_editor_open)(),
             Anchor::TimelineBar => (state.timeline.open)(),
         }
+    }
+
+    /// Whether this anchor lives inside a dialog.
+    ///
+    /// The one thing the promotion rule has to ask about an anchor, and the reason
+    /// it is a method here rather than a condition there: "a dialog is over
+    /// everything a card could point at" stops being true exactly when the card is
+    /// pointing at the dialog.
+    fn inside_dialog(self) -> bool {
+        matches!(self, Anchor::BrushEditor(_))
     }
 
     /// Put this anchor on screen, so there is something for the card to point at.
@@ -406,7 +450,11 @@ impl Anchor {
             }
             // Nothing to do: both are always there. Arms that say so, rather than a
             // catch-all, so a variant added later has to decide.
-            Anchor::CommandRail | Anchor::Canvas => {}
+            // Nor here, and this one is a decision rather than a fact: the deed
+            // that brings these due is the dialog being opened, so it is already
+            // up — and opening it *for* somebody would be the tour taking the
+            // screen, which nothing else here does.
+            Anchor::CommandRail | Anchor::Canvas | Anchor::BrushEditor(_) => {}
             Anchor::TimelineBar => crate::panels::timeline::set_open(state, true),
         }
     }
@@ -546,6 +594,32 @@ static LESSONS: &[Lesson] = &[
                below \u{2014} click a row to put it back in your hand.",
     },
     Lesson {
+        key: "select-panel",
+        deed: Deed::Stroke,
+        after: 20,
+        anchor: Anchor::Panel(PanelId::Select),
+        side: Side::LeftAtTop,
+        title: "Paint inside a shape",
+        body: "Drag a rectangle, an ellipse or a lasso and every tool from then on \
+               acts only inside it \u{2014} brush, eraser, fill, transform, the lot. The \
+               chips here combine one selection with the last (add, subtract, \
+               intersect), and Feather softens the edge, so \u{201C}mask off the sky\u{201D} \
+               is a drag rather than a job.",
+    },
+    Lesson {
+        key: "layers-panel",
+        deed: Deed::Selection,
+        after: 3,
+        anchor: Anchor::Panel(PanelId::Layers),
+        side: Side::LeftAtTop,
+        title: "And which paint it lands on",
+        body: "A selection says *where*; this says *what*. Drag a row onto another to \
+               group them, and a group is also a clipping mask \u{2014} the layer above \
+               is held inside the paint of the one below, which is how a shadow is \
+               kept to the thing casting it. Every row shows its own paint, so the \
+               list reads as the picture taken apart.",
+    },
+    Lesson {
         key: "panels-menu",
         deed: Deed::ClosedPanel,
         after: 1,
@@ -646,6 +720,71 @@ static LESSONS: &[Lesson] = &[
                the cursor, and this picker follows it. While Alt is down a small bar \
                appears with what the sample sees \u{2014} one layer, every layer, or \
                every layer over the canvas itself.",
+    },
+    // The brush editor's series (§24.5). Five cards on one deed, walked through in
+    // this order by the chain in `dismiss` — so this list is the tour of the dialog
+    // and its order is the only thing deciding what is said when.
+    Lesson {
+        key: "be-preview",
+        deed: Deed::OpenedBrushEditor,
+        after: 1,
+        anchor: Anchor::BrushEditor(BrushPart::Preview),
+        side: Side::LeftAtTop,
+        title: "Start here, not with the numbers",
+        body: "This is a real stroke, laid by the brush as it stands. Every knob you \
+               move below redraws it, so you can tune by looking rather than by \
+               reading \u{2014} and you can draw straight on it to replace the test \
+               stroke with a mark of your own. \u{21BA} puts the default back.",
+    },
+    Lesson {
+        key: "be-tip",
+        deed: Deed::OpenedBrushEditor,
+        after: 1,
+        anchor: Anchor::BrushEditor(BrushPart::Tip),
+        side: Side::RightAtTop,
+        title: "Tip \u{2014} the footprint",
+        body: "The shape swept along the path. A round tip has hardness; any image \
+               you drop in becomes a stamp, and the gallery keeps it. What aims it is \
+               the row of chips: follow the stroke, or hold an angle. Stretch gives a \
+               round tip an axis, which is what turns it into a flat brush.",
+    },
+    Lesson {
+        key: "be-paint",
+        deed: Deed::OpenedBrushEditor,
+        after: 1,
+        anchor: Anchor::BrushEditor(BrushPart::Paint),
+        side: Side::RightAtTop,
+        title: "Paint \u{2014} how much, and how long it lasts",
+        body: "Flow is how much goes down per unit travelled. Drain is the brush \
+               running out: at zero it never does, which is a marker or a pencil; \
+               above it the stroke thins as it goes, which is a loaded brush on dry \
+               canvas. Those two together are most of the difference between media.",
+    },
+    Lesson {
+        key: "be-color",
+        deed: Deed::OpenedBrushEditor,
+        after: 1,
+        anchor: Anchor::BrushEditor(BrushPart::Color),
+        side: Side::RightAtTop,
+        title: "Color dynamics \u{2014} the wobble that reads as pigment",
+        body: "The color wanders across the width of the tip and along the stroke, \
+               following a noise field rather than a random number per stamp. That is \
+               why it reads as pigment sitting unevenly instead of as static: \
+               neighbouring bristles stay neighbours. A little of this is what keeps a \
+               flat fill from looking printed.",
+    },
+    Lesson {
+        key: "be-pickup",
+        deed: Deed::OpenedBrushEditor,
+        after: 1,
+        anchor: Anchor::BrushEditor(BrushPart::Pickup),
+        side: Side::RightAtTop,
+        title: "Pickup \u{2014} moving paint that is already there",
+        body: "The rest of the brush lays paint; this moves it. Lift takes canvas \
+               paint onto the tip so the next stretch of stroke carries it \u{2014} which \
+               is a smudge, and with no paint of its own a palette knife. Bleed \
+               spreads sideways into what it passes over. Together they are how wet \
+               paint behaves when something drags through it.",
     },
     Lesson {
         key: "timeline",
@@ -815,7 +954,10 @@ fn stroke(state: AppState) -> Vec<Deed> {
         return Vec::new();
     };
     if obs.tool.is_selection() {
-        return Vec::new();
+        // The same gesture builds a mask or lays a fill, and which was decided when
+        // the drag started (§18.0.4). Only the first is a selection; the second is
+        // paint that happens to have arrived through a marquee.
+        return one(Deed::Selection, obs.shape_action.is_select());
     }
     let mut deeds = vec![Deed::Stroke];
     // The engine rather than the projection, because a gesture in flight is not
@@ -942,18 +1084,54 @@ fn due(book: &Ledger, deed: Deed) -> Option<usize> {
         .position(|l| l.deed == deed && count >= l.after && !book.given.contains(l.key))
 }
 
-/// Put a lesson away for good.
+/// Put a lesson away for good, and **offer the next one its deed still owes**.
+///
+/// The chain is what makes a *series* possible: the brush editor's cards all wait on
+/// one deed, and being opened once is the whole of what earns every one of them, so
+/// acknowledging a card has to bring the next rather than waiting for the dialog to
+/// be opened again (§24.5). It costs nothing anywhere else, because the ordinary
+/// case is a deed that owes one lesson at a time — and where it owes more, that is a
+/// *backlog* built up while cards were passed over, and draining it in order beats
+/// making the artist earn each one twice.
+///
+/// It cannot run away: every turn marks one lesson given and [`due`] skips those, so
+/// the chain is exactly as long as the lessons that were already owed.
 fn dismiss(state: AppState, i: usize) {
-    let mut showing = state.tutor.showing;
-    showing.set(None);
-    let Some(lesson) = LESSONS.get(i) else {
+    let Some(deed) = retire(state, i) else {
         return;
     };
+    let book = state.tutor.ledger.peek().clone();
+    if let Some(next) = due(&book, deed) {
+        let mut slot = state.tutor.due;
+        slot.set(Some(next));
+    }
+}
+
+/// Put a lesson away because **the thing it points at has gone** — the panel closed,
+/// the dialog dismissed.
+///
+/// [`dismiss`] without the chain, and the difference is load-bearing: closing the
+/// brush editor takes the anchor out from under every card in its series at once, so
+/// a chain here would retire the lot in one flush and the artist would have been
+/// "taught" several things they never saw. What happens instead is that the card on
+/// screen is answered and the rest stay owed for the next time the dialog opens.
+fn abandon(state: AppState, i: usize) {
+    retire(state, i);
+}
+
+/// The half both ways out share: take the card down and write the lesson into the
+/// ledger. Answers the deed it was waiting on, or `None` for an index that names no
+/// lesson.
+fn retire(state: AppState, i: usize) -> Option<Deed> {
+    let mut showing = state.tutor.showing;
+    showing.set(None);
+    let lesson = LESSONS.get(i)?;
     let mut ledger = state.tutor.ledger;
     let mut book = ledger.peek().clone();
     book.given.insert(lesson.key.to_string());
     ledger.set(book);
     save(state);
+    Some(lesson.deed)
 }
 
 /// What this browser has stored, or an empty ledger — a browser that has stored
@@ -1017,6 +1195,36 @@ fn save(state: AppState) {
     crate::storage::save_table(KEY_LEDGER, "the tips you've seen", deeds.chain(given));
 }
 
+/// How wide a card whose **right** edge is pinned at `x` may be, as a declaration.
+///
+/// The card is placed from the anchor's edge and given no width to work with, so on
+/// a narrow window it would otherwise run off the side. This is the answer, and it
+/// is a *narrowing* rather than a nudge: a card that shifted to stay on screen would
+/// leave its arrow pointing at nothing, and the arrow is the half that says which
+/// thing is being talked about.
+///
+/// Written as a declaration and not measured, because it does not have to be: the
+/// stylesheet already gives the card a width, this is a `max-width` over the top of
+/// it, and `calc` knows the viewport where Rust would have to ask for it.
+fn room_left(x: f32) -> String {
+    format!("max-width: {:.1}px;", (x - EDGE).max(0.0))
+}
+
+/// [`room_left`] for a card whose **left** edge is pinned at `x`.
+fn room_right(x: f32) -> String {
+    format!("max-width: calc(100vw - {x:.1}px - {EDGE}px);")
+}
+
+/// [`room_left`] for a card **centred** on `x`, which is constrained by whichever
+/// side of it has less room — hence the `min`, and the doubling: the card grows both
+/// ways from the middle, so it may only be twice the narrower half.
+fn room_about(x: f32) -> String {
+    format!(
+        "max-width: calc(min({x:.1}px, 100vw - {x:.1}px) * 2 - {:.1}px);",
+        2.0 * EDGE
+    )
+}
+
 /// The lesson card: one at a time, floating beside the thing it points at.
 ///
 /// Mounted at the app root for the life of the page and empty whenever no lesson
@@ -1049,14 +1257,19 @@ pub fn TutorCard() -> Element {
     // point at.
     use_effect(move || {
         let Some(i) = (state.tutor.due)() else { return };
+        let Some(lesson) = LESSONS.get(i) else { return };
+        // A dialog is over everything a card could point at — except when the card
+        // *is* pointing at the dialog, which is the whole of why this asks the anchor
+        // (`Anchor::inside_dialog`). The preset-save dialog is over even those, being
+        // the one thing the brush editor can open on top of itself.
+        let dialog = (state.brush_editor_open)() && !lesson.anchor.inside_dialog();
         let busy = (state.canvas_active)()
-            || (state.brush_editor_open)()
+            || dialog
             || (state.preset_save_open)()
             || crate::modes::composing(state).is_some();
         if busy {
             return;
         }
-        let Some(lesson) = LESSONS.get(i) else { return };
         lesson.anchor.reveal(state, layout);
         let mut showing = state.tutor.showing;
         showing.set(Some(i));
@@ -1088,6 +1301,7 @@ pub fn TutorCard() -> Element {
         // bring this effect back on its own.
         let _ = (state.canvas_active)();
         let _ = (state.slots.pinned)();
+        let _ = (state.brush_editor_open)();
         // Closing the panel a card is about is an answer to the card, so the lesson
         // goes away with it rather than latching `showing` forever — which would be
         // a tour that ended silently at whichever tip the artist happened to close a
@@ -1099,7 +1313,7 @@ pub fn TutorCard() -> Element {
             && let Some(lesson) = LESSONS.get(i)
             && !lesson.anchor.on_screen(state, layout)
         {
-            dismiss(state, i);
+            abandon(state, i);
             return;
         }
         let Some(selector) = showing
@@ -1127,6 +1341,16 @@ pub fn TutorCard() -> Element {
     let Some(at) = anchored() else {
         return rsx! {};
     };
+    // Whether acknowledging this one brings another (`dismiss`). The button says so,
+    // because "Got it" on the first of five is a lie about how many are coming — and
+    // a card that turns out to have four behind it reads as the tour having got
+    // stuck. Computed against the ledger *as it will be*, this lesson included, which
+    // is what `retire` is about to write.
+    let more = {
+        let mut book = state.tutor.ledger.peek().clone();
+        book.given.insert(lesson.key.to_string());
+        due(&book, lesson.deed).is_some()
+    };
 
     // Placed against the anchor's own edges, with no reading of the viewport and no
     // measurement of the card itself: the translate does the work that knowing the
@@ -1135,52 +1359,67 @@ pub fn TutorCard() -> Element {
         Side::LeftAtTop => (
             "side-left",
             format!(
-                "left: {:.1}px; top: {:.1}px; transform: translateX(-100%);",
+                "left: {:.1}px; top: {:.1}px; transform: translateX(-100%); {}",
                 at.left - GAP,
-                at.top
+                at.top,
+                room_left(at.left - GAP),
             ),
         ),
         Side::LeftAtMiddle => (
             "side-left-middle",
             format!(
-                "left: {:.1}px; top: {:.1}px; transform: translate(-100%, -50%);",
+                "left: {:.1}px; top: {:.1}px; transform: translate(-100%, -50%); {}",
                 at.left - GAP,
-                at.mid_y()
+                at.mid_y(),
+                room_left(at.left - GAP),
             ),
         ),
         Side::RightAtTop => (
             "side-right",
-            format!("left: {:.1}px; top: {:.1}px;", at.right() + GAP, at.top),
+            format!(
+                "left: {:.1}px; top: {:.1}px; {}",
+                at.right() + GAP,
+                at.top,
+                room_right(at.right() + GAP),
+            ),
         ),
         Side::RightAtMiddle => (
             "side-right-middle",
             format!(
-                "left: {:.1}px; top: {:.1}px; transform: translateY(-50%);",
+                "left: {:.1}px; top: {:.1}px; transform: translateY(-50%); {}",
                 at.right() + GAP,
-                at.mid_y()
+                at.mid_y(),
+                room_right(at.right() + GAP),
             ),
         ),
         Side::Inside => (
             "side-inside",
             format!(
-                "left: {:.1}px; top: {:.1}px; transform: translateX(-50%);",
+                "left: {:.1}px; top: {:.1}px; transform: translateX(-50%); {}",
                 at.mid_x(),
-                at.top + at.height * INSIDE_DEPTH
+                at.top + at.height * INSIDE_DEPTH,
+                room_about(at.mid_x()),
             ),
         ),
         Side::Above => (
             "side-above",
             format!(
-                "left: {:.1}px; top: {:.1}px; transform: translate(-50%, -100%);",
+                "left: {:.1}px; top: {:.1}px; transform: translate(-50%, -100%); {}",
                 at.mid_x(),
-                at.top - GAP
+                at.top - GAP,
+                room_about(at.mid_x()),
             ),
         ),
     };
 
+    let mut base = format!("tutor-card {side}");
+    if lesson.anchor.inside_dialog() {
+        base.push_str(" over-dialog");
+    }
+
     rsx! {
         div {
-            class: chrome_class(state, &format!("tutor-card {side}")),
+            class: chrome_class(state, &base),
             style: "{place}",
             div { class: "tutor-head",
                 span { class: "tutor-mark", {icon(icons::TOUR)} }
@@ -1204,10 +1443,10 @@ pub fn TutorCard() -> Element {
                     "Stop tips"
                 }
                 button {
-                    class: "chip tutor-done",
+                    class: if more { "chip tutor-done tutor-next" } else { "chip tutor-done" },
                     onclick: move |_| dismiss(state, i),
-                    {icon(icons::DONE)}
-                    "Got it"
+                    {icon(if more { icons::NEXT } else { icons::DONE })}
+                    if more { "Next" } else { "Got it" }
                 }
             }
         }
@@ -1241,47 +1480,83 @@ mod tests {
         assert_eq!(keys.len(), LESSONS.len(), "two lessons share a key");
     }
 
-    /// The lessons that may fire on a **first** deed, and everything else waits for
-    /// a second.
+    /// The deeds whose lessons may fire on the **first** one, where everything else
+    /// waits for a second.
     ///
-    /// An exception list rather than a blanket rule, because there are two — and an
-    /// *exception* list rather than a list of the ordinary ones, so a lesson added
-    /// later is held to the strict rule by default. That is the safe direction: the
-    /// cost of getting this wrong is a tip in somebody's first minute.
+    /// A property of the *deed* rather than of the lesson, which is what makes it
+    /// worth writing down: the question is never "is this tip important" — every tip
+    /// thinks it is — but "could somebody have done this without meaning to". Three
+    /// deeds could not, each for its own reason:
     ///
-    /// - `panels-menu` answers a question its own deed **raises**. Close a panel and
-    ///   "where did that go?" is immediate; answering on the second close would be
-    ///   answering it late, and the artist would have spent the gap thinking the
-    ///   panel was gone.
-    /// - `perspective-assist` waits on a deed nobody performs by accident: you have
-    ///   to have made a guide, left it visible, drawn a stroke *and* held it still.
-    ///   Having done all four once is stronger evidence of intent than ten of
-    ///   anything else on this list.
-    const AT_ONCE: [&str; 2] = ["panels-menu", "perspective-assist"];
+    /// - [`Deed::ClosedPanel`] **raises** the question its lesson answers. Close a
+    ///   panel and "where did that go?" is immediate; answering on the second close
+    ///   would be answering late, with the gap spent believing it was gone.
+    /// - [`Deed::OpenedBrushEditor`] **is** the request. Opening the dialog is
+    ///   somebody asking what is in it, and the series is the answer (§24.5).
+    /// - [`Deed::GuidedLine`] is not reachable by accident: a guide made, left
+    ///   visible, a stroke drawn *and* held still. Having done all four once is
+    ///   stronger evidence of intent than ten of anything else here.
+    ///
+    /// An *exception* list, so a deed added later is held to the strict rule by
+    /// default — the safe direction, since the cost of getting it wrong is a tip in
+    /// somebody's first minute. And a list of deeds rather than of lesson keys, so a
+    /// renamed or deleted entry is a compile error instead of an exemption that
+    /// quietly stops applying.
+    const AT_ONCE: [Deed; 3] = [Deed::ClosedPanel, Deed::OpenedBrushEditor, Deed::GuidedLine];
 
     /// A lesson at one fires on the user's first try, which the design is against
     /// everywhere it has not said otherwise — see [`AT_ONCE`].
     #[test]
     fn no_lesson_fires_on_a_first_try() {
         for l in LESSONS {
-            if AT_ONCE.contains(&l.key) {
-                assert_eq!(l.after, 1, "{} is listed as firing at once", l.key);
+            if AT_ONCE.contains(&l.deed) {
                 continue;
             }
             assert!(l.after >= 2, "{} fires after {}", l.key, l.after);
         }
     }
 
-    /// Every name in [`AT_ONCE`] is a lesson. A key left behind by a renamed or
-    /// deleted lesson would quietly exempt nothing and be impossible to notice.
+    /// Every exempted deed has a lesson that actually uses the exemption. One that
+    /// did not would be a rule relaxed for nobody, and the next reader would take it
+    /// as evidence that the deed is somehow special.
     #[test]
-    fn the_exceptions_name_real_lessons() {
-        for key in AT_ONCE {
+    fn the_exceptions_are_all_spent() {
+        for deed in AT_ONCE {
             assert!(
-                LESSONS.iter().any(|l| l.key == key),
-                "{key} is exempted and does not exist",
+                LESSONS.iter().any(|l| l.deed == deed && l.after == 1),
+                "{deed:?} is exempted and no lesson fires at once on it",
             );
         }
+    }
+
+    /// The brush editor's series: several lessons on one deed, which the chain in
+    /// `dismiss` walks through in table order.
+    ///
+    /// What is asserted is that it *is* a series and that it is contiguous — every
+    /// card owed at the same moment, so the walk cannot stall halfway and leave the
+    /// dialog half explained.
+    #[test]
+    fn the_brush_editor_is_a_series() {
+        let series: Vec<&str> = LESSONS
+            .iter()
+            .filter(|l| l.deed == Deed::OpenedBrushEditor)
+            .map(|l| l.key)
+            .collect();
+        assert!(series.len() > 1, "a series of one is not a series");
+
+        let mut book = Ledger::default();
+        book.tally[Deed::OpenedBrushEditor.slot()] = 1;
+        // One open, and the whole series comes due one card at a time, in order.
+        for key in &series {
+            let owed = due(&book, Deed::OpenedBrushEditor).expect("still owed");
+            assert_eq!(LESSONS[owed].key, *key);
+            book.given.insert((*key).to_string());
+        }
+        assert_eq!(
+            due(&book, Deed::OpenedBrushEditor),
+            None,
+            "and then no more"
+        );
     }
 
     /// [`Deed::slot`] and [`Deed::key`] both have to be total and one-to-one — the

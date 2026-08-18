@@ -64,6 +64,10 @@ pub fn BrushPanel() -> Element {
             onclick: move |_| {
                 let mut open = state.brush_editor_open;
                 open.set(true);
+                // The dialog is frontend state and reaches no engine, so there is no
+                // command for the tour to read (§24.2). Its series of cards is the
+                // one thing this click owes anybody.
+                crate::tutor::did(state, crate::tutor::Deed::OpenedBrushEditor);
             },
             {icon(icons::EDIT_BRUSH)}
             {label("Edit brush\u{2026}")}

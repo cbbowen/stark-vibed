@@ -220,6 +220,45 @@ struct Preview {
     pending: Signal<Option<BrushEdit>>,
 }
 
+/// A part of this dialog the guided tour can point at (§24.3).
+///
+/// The tour's cards are placed against a measured box, so each part it names has to
+/// be findable in the DOM — and findable by something that **cannot drift from the
+/// markup**. This enum is that something: the `data-be` attribute below is written
+/// from [`key`](Self::key) and the tour's selector is built from the same function,
+/// exactly as a panel's `data-panel` and the drag that resolves against it share
+/// `layout::panel_key`. A section renamed on screen keeps its key; a section deleted
+/// stops compiling on both sides at once.
+///
+/// Only the parts a lesson names are here. The dialog has more boxes than this and
+/// they are none of the tour's business.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum BrushPart {
+    /// The dialog itself.
+    Dialog,
+    /// The live test stroke down the right-hand column.
+    Preview,
+    /// The four folding parameter groups, in the order they are laid out.
+    Tip,
+    Paint,
+    Color,
+    Pickup,
+}
+
+impl BrushPart {
+    /// The name this part wears in the DOM, and the one a selector finds it by.
+    pub fn key(self) -> &'static str {
+        match self {
+            BrushPart::Dialog => "dialog",
+            BrushPart::Preview => "preview",
+            BrushPart::Tip => "tip",
+            BrushPart::Paint => "paint",
+            BrushPart::Color => "color",
+            BrushPart::Pickup => "pickup",
+        }
+    }
+}
+
 /// The brush editor dialog. Mounted only while open (so each open re-inits the
 /// preview against the current canvas look and re-seeds the section state).
 #[component]
@@ -308,6 +347,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
             onclick: move |_| on_close.call(()),
             div {
                 class: "modal-dialog be-dialog",
+                "data-be": "{BrushPart::Dialog.key()}",
                 onclick: move |e| e.stop_propagation(),
 
                 div { class: "be-header",
@@ -323,7 +363,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                 // height (the header spans both, the sections take the left).
                 // Draw on it to replace the test stroke; ↺ restores the default.
                 // The stroke re-renders as every setting changes.
-                div { class: "be-preview-wrap",
+                div { class: "be-preview-wrap", "data-be": "{BrushPart::Preview.key()}",
                     canvas {
                         id: PREVIEW_CANVAS_ID,
                         class: "brush-preview",
@@ -359,6 +399,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
 
                 div { class: "be-sections",
                     Section {
+                        part: BrushPart::Tip,
                         title: "Tip", desc: "The footprint the stroke sweeps along the path.",
                         glyph: icons::TIP,
                         open: tip_open,
@@ -428,6 +469,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     }
 
                     Section {
+                        part: BrushPart::Paint,
                         title: "Paint", desc: "The brush's own paint: how much goes down and how far it lasts.",
                         glyph: icons::PAINT,
                         open: paint_open,
@@ -463,6 +505,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     }
 
                     Section {
+                        part: BrushPart::Color,
                         title: "Color dynamics", desc: "The color wanders across the brush and along the stroke, following a noise field.",
                         glyph: icons::COLOR,
                         open: color_open,
@@ -498,6 +541,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     }
 
                     Section {
+                        part: BrushPart::Pickup,
                         title: "Pickup", desc: "Canvas paint on the move — smudge, knife, eraser, blur.",
                         glyph: icons::PICKUP,
                         open: pickup_open,
@@ -828,6 +872,7 @@ fn ShapeGallery() -> Element {
 /// rotate (`icons::FOLD_OPEN`) into a control that must.
 #[component]
 fn Section(
+    part: BrushPart,
     title: String,
     desc: String,
     glyph: &'static str,
@@ -836,7 +881,7 @@ fn Section(
 ) -> Element {
     let mut open = open;
     rsx! {
-        div { class: "be-section",
+        div { class: "be-section", "data-be": "{part.key()}",
             button {
                 class: "be-section-header",
                 onclick: move |_| { let v = open(); open.set(!v); },

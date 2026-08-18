@@ -245,6 +245,12 @@ icons! {
     // Last in the commands menu, and the only entry there that is not a thing to do
     // to the drawing — so it gets the one glyph in the set that is not about one.
     CREDITS => "heart-bold",
+    // "Next" on a guided-tour card that has another behind it (§24.5). The Layers
+    // panel's own fold caret, and the same file — turned a quarter by the stylesheet
+    // (`.tutor-next .icon`) rather than downloaded a second time, so the mark cannot
+    // come out at a different weight from the one three panels already wear. What it
+    // says is the same thing it says there: *there is more this way*.
+    NEXT => "caret-up-bold",
     // The guided tour's card (§24). A lightbulb, which is the one mark in this set
     // that is not about the drawing *or* about the app: it says "here is something
     // you did not know", which is the only thing the card ever says. It is also the

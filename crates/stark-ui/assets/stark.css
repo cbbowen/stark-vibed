@@ -4379,9 +4379,16 @@ button.layer-remove:hover {
 
    The clip keeps the square's **top-left half** — the two legs it leaves are the
    top and right edges, and the diagonal it cuts along is the one that ends up
-   flat against the card. So the outline traces exactly the two outer legs and
-   nothing along the join, which is what stops a hairline from showing *through*
-   the card's translucency where the arrow meets it.
+   flat against the card. So the hairline traces exactly the two outer legs and
+   nothing along the join, which is what stops it from showing *through* the card's
+   translucency where the arrow meets it.
+
+   That hairline is a **border and not an outline**, and the difference is the whole
+   of whether it is drawn: an outline is painted outside the border box, and
+   `clip-path` clips to the box, so the two are mutually exclusive — an outlined
+   arrow has no hairline anywhere and reads only where its fill happens to contrast
+   with what is behind it. Which is nowhere, once a card is over a panel or a dialog
+   made of the same `--panel-background` it is.
 
    At rest that triangle points right, which is the two `side-left` cases; each
    further quarter turn aims it at another side. Stated as one clip and a rotation
@@ -4390,10 +4397,11 @@ button.layer-remove:hover {
 .tutor-card::after {
   content: "";
   position: absolute;
+  box-sizing: border-box;
   width: 12px;
   height: 12px;
   background: var(--panel-background);
-  outline: 1px solid #f0c46138;
+  border: 1px solid #f0c46161;
   clip-path: polygon(0 0, 100% 0, 100% 100%);
   transform: rotate(45deg);
 }
@@ -4415,9 +4423,17 @@ button.layer-remove:hover {
   top: calc(50% - 6px);
 }
 
-/* Right of its anchor and centred on it: half a turn on from the resting arrow, so
-   it points back left at the chrome down that side, and on the card's own middle
-   because that is what it is lined up with (`tutor::Side::RightAtMiddle`). */
+/* Right of its anchor: half a turn on from the resting arrow, so it points back
+   left at whatever the card is standing to the right of. Level with the title, like
+   the mirror case (`tutor::Side::RightAtTop`). */
+.tutor-card.side-right::after {
+  left: -6px;
+  top: 20px;
+  transform: rotate(225deg);
+}
+
+/* And the same arrow on the card's own middle, for the anchor that is lined up with
+   by its middle rather than its top (`tutor::Side::RightAtMiddle`). */
 .tutor-card.side-right-middle::after {
   left: -6px;
   top: calc(50% - 6px);
@@ -4509,6 +4525,28 @@ button.layer-remove:hover {
    itself declines — see `.tutor-card`. */
 .tutor-quiet,
 .tutor-done {
+  pointer-events: auto;
+}
+
+/* "Next" rather than "Got it": the fold caret turned a quarter to point the way it
+   is offering to go (`icons::NEXT`). Turned here rather than fetched as a second
+   file, so it cannot come out at a different weight from the one the Layers panel
+   and the brush editor already wear. */
+.tutor-next .icon svg {
+  transform: rotate(90deg);
+}
+
+/* A card pointing *into* a dialog has to be over it, and a dialog's backdrop is
+   `z-index: 100`. Only those cards get this: every other lesson stands down while a
+   modal is up (`tutor::Anchor::inside_dialog`), and a card that floated over the
+   Settings or Credits dialog would be chrome the tour had no business putting
+   there. */
+.tutor-card.over-dialog {
+  z-index: 101;
+  /* And it takes the pointer whole, where a card over the painting declines it. The
+     argument inverts inside a dialog: there is no stroke a press could have been the
+     start of, and what is underneath is somebody else's control — the brush editor's
+     test canvas, which would take a click on this paragraph as a mark to draw. */
   pointer-events: auto;
 }
 
