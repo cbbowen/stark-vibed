@@ -16,11 +16,15 @@ pays it for one binding by bringing its options bar up on Alt (§18.0.2): press 
 modifier and the thing it does announces itself. This chapter is the same answer
 generalized to everything no modifier announces.
 
-The whole feature is `stark-ui/src/tutor.rs`, one line in `dispatch`, and two
-gestures that say when they are running (§24.2). It turns on three decisions: what
-brings a lesson (§24.1), where the counting comes from (§24.2), and what a card is
-allowed to do to the screen (§24.3). §24.4 is the ledger, §24.5 the table of
-lessons as it stands, and §24.6 what is deliberately absent.
+The whole feature is `stark-ui/src/tutor.rs`, one line in `dispatch`, and four
+call sites that say something the command stream cannot (§24.2). It turns on three
+decisions: what brings a lesson (§24.1), where the counting comes from (§24.2), and
+what a card is allowed to do to the screen (§24.3). §24.4 is the ledger, §24.5 the
+table of lessons as it stands, and §24.6 what is deliberately absent.
+
+Since every panel now starts closed (§11), the tour also carries the opening
+screen: the first three lessons are how the stack gets assembled for somebody who
+has not found the Panels menu.
 
 ### 24.1 A lesson is owed, not scheduled
 
@@ -111,29 +115,51 @@ whole of it. Reports of the same deed closer together than that are one deed,
 measured from the **last** report of a run rather than its first, so a slow drag
 stays one deed however long the hand takes.
 
-**Which gesture wrote the brush.** This one is not a detail, because two of the
-lessons teach gestures that produce the very deed they are counted by: an Alt-drag
-off the painting *is* a color change, and an accelerator drag *is* a size change.
-Counted naively, the tour would wait for somebody to use the eyedropper five times
-and then offer to explain the eyedropper.
+**What wrote the brush.** This one is not a detail, because three of the lessons
+teach ways of changing the brush that produce the very deed they are counted by: an
+Alt-drag off the painting *is* a color change, an accelerator drag *is* a size
+change, and a quick slot is a whole tool arriving in exactly the shape a preset
+click arrives in. Counted naively, the tour would wait for somebody to use the
+eyedropper five times and then offer to explain the eyedropper.
 
-So the two gestures say so while they run — `tutor::via_shortcut`, called in pairs
-around the whole gesture rather than at each write — and a brush write made under
-that flag is not counted. That turns the flaw into the property the tour most
-wanted:
+So the code that makes those writes brackets them — `tutor::not_reaching`, opened
+and closed around the stretch rather than called at each write — and a brush write
+made inside a bracket is not counted. That turns the flaw into the property the
+tour most wanted:
 
 > **It never teaches a gesture you already use.**
 
 Somebody who only ever eyedroppers never accumulates the deed and is never told
 about it; somebody who has clicked the Oklab field five times is told there is a
-faster way, which is the whole point. A flag left set by a gesture that ended
-without saying so costs *counting*, never a wrong card — which is the failure
-direction to have, since the other one is a card nobody asked for.
+faster way, which is the whole point.
 
-`via_shortcut` is the one thing the tour asks of the rest of the app, and it has
-exactly two callers. It earns the exception on the same grounds the hold does:
-what a gesture *is* cannot be derived from the commands it emits, so the side that
-knows is the side that says.
+Three callers, and they are three different reasons the write is not somebody
+reaching for a slider:
+
+| Bracket | Why |
+|---|---|
+| `input::Tune` (§18.1.9) | the gesture the size/flow lesson teaches |
+| `input::pick_color` (§18.0.2) | the gesture the eyedropper lesson teaches |
+| `presets::wear` | a whole tool arriving — a preset click, or a quick slot in either direction (§18.1.8). Not an adjustment of the brush you had, even in the rare case where it differs in nothing but its size |
+
+It is a **depth count rather than a flag**, because the brackets nest: a number key
+held mid-tuning-drag swaps the tool inside the drag's own bracket, and a flag would
+let that swap's close cancel the drag's. A bracket left open by a caller that failed
+to close it costs *counting*, never a wrong card — which is the failure direction to
+have, since the other one is a card nobody asked for.
+
+#### The one deed that is not in the stream at all
+
+Clicking a row in the preset library is reported outright (`tutor::did`, one
+caller). The command it leads to says a brush changed and cannot say a row was
+clicked — and the quick slots, which that lesson goes on to teach, emit a command of
+exactly the same shape.
+
+`not_reaching` and `did` are the only two things the tour asks of the rest of the
+app, and they are opposites: one says a command should not be read, the other says
+something happened that no command describes. Both earn the exception on the grounds
+the hold does (§6.9): what a gesture *is* cannot be derived from the commands it
+emits, so the side that knows is the side that says.
 
 Panning is the one deed that is a *measurement* rather than a report: no single
 `Pan` is long. Its run accumulates across `Pan` **and** `Pinch` — a two-finger pan
@@ -159,15 +185,33 @@ nothing to dismiss before painting can continue.
 Where it goes is measured, not guessed. `platform::anchor_box` reads the anchor's
 box off the DOM and the card is placed against that box's own edges — with a
 `translate` doing the work that knowing the card's own width would otherwise
-require, so nothing has to be measured twice. Which *side* it sits on is the
-lesson's to declare: which side has room is a fact about where that chrome lives in
-the window, and the DOM does not say it. The panels are a column down the right, so
-their cards go left; the timeline bar is across the bottom, so its card goes above.
+require, so nothing has to be measured twice.
+
+*Where* it sits is the lesson's to declare, because neither half is in the DOM:
+which side has room is a fact about where that chrome lives in the window, and
+whether the anchor has a meaningful top edge to line up with is a fact about what
+kind of thing it is. Four placements, named for the picture rather than composed
+out of a side and an alignment — two enums would also spell several combinations
+that mean nothing:
+
+| `Side` | Used by | Why |
+|---|---|---|
+| `LeftAtTop` | the panels | a box hanging from the top of its column, so the top edge is the one always on screen |
+| `LeftAtMiddle` | the panel column | a whole edge of the window, with no meaningful top to line up with |
+| `RightAtMiddle` | the quick-brush rack | the chrome down the left, and a box that centres its rows in a column running to the foot of the window — so its top edge is a long way above anything drawn |
+| `Above` | the timeline bar | across the foot of the window |
 
 Panels are found by `layout::panel_key` — the same function that writes the
 `data-panel` attribute — rather than by a selector spelled out in the lesson table.
 A box matched to the wrong panel is measured in silence (§11), and here it would
 show as a card in the corner of the window with nothing beside it to explain.
+
+**One anchor is invisible, and that is the point.** The panel column's wake slice
+(`.panel-wake`, §11) is a box with nothing drawn in it, so the card is the only
+thing that can say where it is — which is exactly the lesson. It also gets the
+best dismissal in the set: reaching into the column wakes the panels, the slice
+leaves the DOM, and `Anchor::on_screen` reads that as the lesson done. You are not
+told you have learned it; you are shown, and the card goes.
 
 #### Coming due and being shown are two steps
 
@@ -247,21 +291,39 @@ anywhere else unless it counts a deed nothing counts yet.
 
 | After | Deed | Points at | What it says |
 |---|---|---|---|
-| 3 | a brush stroke | Brush panel | Size and Flow, the brush editor's live test stroke, and that the list below is a library |
+| 2 | a brush stroke | Color panel | Here is the first panel, and the picker is Oklab rather than a hue wheel — the slider is lightness (§6.5) |
+| 3 | a brush stroke | the panel column | The panels stand down while you paint; reach into the right-hand edge and they come back (§11) |
+| 5 | a brush stroke | Brush panel | Size and Flow, the brush editor's live test stroke, and that the list below is a library |
 | 10 | size or flow moved *by a control* | Brush panel | Ctrl (⌘) + drag on the canvas — sideways for size, up and down for flow (§18.1.9) |
+| 5 | a preset put on from the library | the quick-brush rack | A held number is a brush you *borrow*; tuning under the hold keeps the change (§18.1.8) |
 | 2 | a long pan | Navigator panel | Drag inside the miniature to travel; right-drag to turn the canvas |
 | 5 | the color moved *by a control* | Color panel | Alt + drag samples off the painting, and the bar that comes up says what the sample sees (§18.0.2) |
 | 2 | a redo | Timeline bar | The history is a place you can stand in, not a stack you pop (§18.2.4) |
 
-The counts are set from what each deed *costs* to keep doing the hard way. Three
-strokes is barely a commitment and the Brush panel is where everything about a
-brush is. Ten trips to the size slider is somebody who has decided that this is how
-they work, which is exactly the moment the drag is worth knowing and well past the
-moment it would have been an interruption.
+**Order decides ties**, and the first three all wait on a stroke. Listed in that
+order, so a stroke satisfying more than one gives the earliest still owed — which
+is also what brings a card passed over while another was up back before the ones
+behind it, rather than letting a busy stretch reorder the tour into whatever the
+artist happened to do next.
 
-"By a control" in two of those rows is `via_shortcut` doing its work: the deed is
+The first three are also where the tour carries weight it did not used to: every
+panel now starts closed (§11), so the opening screen is the painting alone, and the
+sequence *color → where the panels went → the brush* is how the stack gets
+assembled for somebody who has not found the Panels menu. That is the trade the
+empty start buys — the panels arrive one at a time, each with a reason, instead of
+five at once with none.
+
+The counts are set from what each deed *costs* to keep doing the hard way. Two
+strokes is no commitment at all, but a painter with no color picker has already
+wanted one. Ten trips to the size slider is somebody who has decided that this is
+how they work, which is exactly the moment the drag is worth knowing and well past
+the moment it would have been an interruption.
+
+"By a control" in two of those rows is `not_reaching` doing its work: the deed is
 *reaching for the slider*, not *the size changing*, so the artist who already drags
-never accrues it.
+never accrues it. The preset row is the same idea from the other side — the deed is
+the row *click*, which the quick slots never produce, so somebody already fluent
+with the number keys is never offered the lesson about them.
 
 A card says what to **do** and then the thing about Stark that makes it worth
 doing. A tip that only names a shortcut is a keyboard reference, and the menus
@@ -283,6 +345,7 @@ already carry one.
   leave up — it fades with the rest of the chrome for every gesture — and a
   paragraph that vanished while it was being read would be worse than one that
   waited.
-- **No lesson without an anchor.** Every lesson points at chrome that exists. A
+- **No lesson without an anchor.** Every lesson points at a box that exists — even
+  the invisible one, which is a real box with a real gesture attached (§24.3). A
   card floating in the middle of the window with nothing to explain would be an
   announcement, and this feature is not an announcement channel.

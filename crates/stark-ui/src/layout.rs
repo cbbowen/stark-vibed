@@ -16,6 +16,25 @@
 //! positions are measured once at drag start and everything after is derived from
 //! the live pointer, so a sliding neighbour cannot feed back into the decision that
 //! moved it. That property now lives in [`Grab`] and is tested there.
+//!
+//! # Which panels are open follows the browser
+//!
+//! **Every panel starts closed**, and what is open is this browser's, kept between
+//! visits the way the shape and preset libraries are (`crate::storage`). The
+//! opening screen is therefore the painting and nothing else, and the panels that
+//! come back are the ones the artist actually reached for — a stack assembled by
+//! use rather than a default arrangement everybody has to disassemble.
+//!
+//! The two halves of that are one decision. A set of panels chosen for you is only
+//! tolerable because it resets every visit; once the choice sticks, the honest
+//! starting point is none. And the tour is what keeps "none" from meaning "hidden"
+//! — the Color panel arrives on the second stroke and the wake gesture is explained
+//! on the third (§24.5).
+//!
+//! Durability is structural rather than remembered: [`set_open`] is the only thing
+//! that writes [`PanelLayout::hidden`], and it persists after every change, so a
+//! new way to close a panel is durable without its author thinking about storage.
+//! The same move `settings::SettingToggle` makes for the preferences.
 
 use std::collections::{HashMap, HashSet};
 
@@ -59,12 +78,15 @@ impl PanelId {
         PanelId::Lighting,
     ];
 
-    /// The panels that start closed: lighting is a scene-setup control, a guide
-    /// is reached for when a drawing calls for one, and a gradient library is
-    /// visited between passages rather than lived in — none is touched
-    /// mid-painting, so all three stay out of the stack until asked for.
-    pub const CLOSED_BY_DEFAULT: [PanelId; 3] =
-        [PanelId::Gradients, PanelId::Guides, PanelId::Lighting];
+    /// The panel `key` names, or `None` where this build has no such panel — a
+    /// line written by a version whose stack had one this one does not.
+    ///
+    /// Reads [`ALL`](Self::ALL) through [`panel_key`] rather than matching on names
+    /// written out a second time, which is the same reason the attribute and the
+    /// drag share that function: a name spelled twice is a name that can differ.
+    fn from_key(key: &str) -> Option<PanelId> {
+        PanelId::ALL.into_iter().find(|id| panel_key(*id) == key)
+    }
 
     /// The panel's title-bar label.
     pub fn title(self) -> &'static str {
@@ -267,16 +289,95 @@ fn wake_panels(state: AppState) {
     }
 }
 
+/// Stand the panels down, as the end of a canvas gesture does
+/// ([`AppState::panels_asleep`](crate::state::AppState::panels_asleep)).
+///
+/// [`wake_panels`]'s counterpart, and public where that one is not, because it has
+/// an outside caller and waking has none: the tour's lesson about the wake gesture
+/// points at a slice of the window that is only in the DOM while the panels are
+/// standing down, so it makes sure they are (§24.3). Idempotent, and free when they
+/// already are.
+pub fn sleep_panels(state: AppState) {
+    let mut asleep = state.panels_asleep;
+    // Read out into a `bool` before the write, as `wake_panels` does and for the
+    // same two reasons: a signal read left live across a write of itself panics, and
+    // a `set` marks its readers dirty whatever it is handed.
+    let awake = !*asleep.peek();
+    if awake {
+        asleep.set(true);
+    }
+}
+
+/// One key, namespaced and versioned like the other browser-local tables
+/// (`crate::storage`).
+const KEY_PANELS: &str = "stark.panels.v1";
+
+/// The panels this browser last had open, as [`PanelLayout::hidden`] — or every
+/// panel hidden, which is both the never-visited case and the damaged-store one.
+///
+/// The **open** set is what is written, not the hidden one, and the difference is
+/// what a panel added in a later release does: it is absent from every stored line,
+/// so it arrives closed like everything else rather than appearing unbidden in the
+/// stack of every existing user. A line naming a panel this build no longer has
+/// costs that line and not the layout (`storage::load_table`).
+pub fn stored_hidden() -> HashSet<PanelId> {
+    let open: HashSet<PanelId> = crate::storage::load_table(KEY_PANELS, |line| {
+        PanelId::from_key(line.split(crate::storage::FIELD).next()?)
+    })
+    .unwrap_or_default()
+    .into_iter()
+    .collect();
+    PanelId::ALL
+        .into_iter()
+        .filter(|id| !open.contains(id))
+        .collect()
+}
+
+/// Open or close `id`, and remember it. **The only thing that writes
+/// [`PanelLayout::hidden`]**, which is what makes durability structural rather than
+/// a line every call site has to remember — the move
+/// `settings::SettingToggle` makes for the preferences.
+///
+/// The write is guarded on the set actually changing, since this runs from
+/// [`open_panel`], which the tour calls for a panel that is very often already open
+/// (§24.3) — and a `Signal` write dirties every subscriber whether or not the value
+/// moved.
+fn set_open(layout: PanelLayout, id: PanelId, open: bool) {
+    let mut hidden = layout.hidden;
+    // Into a local before the write: a read guard held across one is the shape that
+    // has borrow-panicked in this crate before.
+    let was_open = !hidden.peek().contains(&id);
+    if was_open == open {
+        return;
+    }
+    if open {
+        hidden.write().remove(&id);
+    } else {
+        hidden.write().insert(id);
+    }
+    let hidden = hidden.peek().clone();
+    crate::storage::save_table(
+        KEY_PANELS,
+        "which panels are open",
+        PanelId::ALL
+            .into_iter()
+            .filter(|id| !hidden.contains(id))
+            .map(panel_key),
+    );
+}
+
+/// Close `id`, and remember it — a panel's own ✕ ([`Panel`]) and the closing half of
+/// the Panels menu.
+pub fn close_panel(layout: PanelLayout, id: PanelId) {
+    set_open(layout, id, false);
+}
+
 /// Show `id`, and wake the stack. **The only way a panel is opened**, which is what
 /// makes the second half structural: a panel un-hidden into a sleeping stack would be
 /// a menu entry that ticks itself and changes nothing on screen, and every call site
 /// that opens one would have to remember the same line.
-///
-/// Closing needs no such pairing and gets no function: it is done from a panel's own ✕
-/// (`Panel`), which the user can only have pressed on a stack that is already awake.
 pub fn open_panel(state: AppState, layout: PanelLayout, id: PanelId) {
-    let mut hidden = layout.hidden;
-    hidden.write().remove(&id);
+    set_open(layout, id, true);
     wake_panels(state);
 }
 
@@ -293,8 +394,7 @@ pub fn toggle_panel(state: AppState, layout: PanelLayout, id: PanelId) {
     if was_hidden {
         open_panel(state, layout, id);
     } else {
-        let mut hidden = layout.hidden;
-        hidden.write().insert(id);
+        close_panel(layout, id);
     }
 }
 
@@ -523,10 +623,7 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
                 button {
                     class: "panel-close",
                     title: "Close panel",
-                    onclick: move |_| {
-                        let mut hidden = layout.hidden;
-                        hidden.write().insert(id);
-                    },
+                    onclick: move |_| close_panel(layout, id),
                     {icon(icons::CLOSE)}
                 }
             }
@@ -764,5 +861,40 @@ mod tests {
         grab.track((0.0, 4.0 * STEP), true);
         open.push(PanelId::Layers);
         assert!(landing(&open, &grab).is_none(), "Layers has no box");
+    }
+
+    /// The name a panel is stored under is the name it wears in the DOM, both ways.
+    ///
+    /// [`stored_hidden`] reaches a browser store this test cannot, but the half that
+    /// can go wrong without anyone noticing is here: a `from_key` that failed to
+    /// invert `panel_key` would drop every line, and the symptom would be a stack
+    /// that silently forgot itself between visits rather than an error.
+    #[test]
+    fn a_panel_key_round_trips() {
+        for id in PanelId::ALL {
+            assert_eq!(PanelId::from_key(&panel_key(id)), Some(id));
+        }
+        assert_eq!(PanelId::from_key("a panel no build has"), None);
+        assert_eq!(PanelId::from_key(""), None);
+    }
+
+    /// A stored layout names the panels that are **open**, so one this build does
+    /// not have costs its own line, and one it has that the line never mentioned
+    /// stays closed rather than appearing unbidden.
+    #[test]
+    fn an_unknown_panel_costs_its_own_line() {
+        let text = "Color
+Atmosphere
+Brush";
+        let open: std::collections::HashSet<PanelId> =
+            text.lines().filter_map(PanelId::from_key).collect();
+        let hidden: HashSet<PanelId> = PanelId::ALL
+            .into_iter()
+            .filter(|id| !open.contains(id))
+            .collect();
+        assert!(!hidden.contains(&PanelId::Color));
+        assert!(!hidden.contains(&PanelId::Brush));
+        assert!(hidden.contains(&PanelId::Layers), "never stored, so closed");
+        assert_eq!(hidden.len(), PanelId::ALL.len() - 2);
     }
 }

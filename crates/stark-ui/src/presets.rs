@@ -404,6 +404,11 @@ pub fn apply(state: AppState, name: &str) {
         .find(|e| e.name == name)
         .cloned();
     let Some(entry) = entry else { return };
+    // The one act in the app that means *the artist chose a different tool from the
+    // library*, and the command it is about to make cannot say so — a quick slot
+    // emits the same one (§18.1.8, §24.2). Reported after the lookup, so a row that
+    // is not there counts as nothing.
+    crate::tutor::did(state, crate::tutor::Deed::AppliedPreset);
     wear(state, entry.brush);
 }
 
@@ -426,6 +431,12 @@ pub fn apply(state: AppState, name: &str) {
 /// library, unseen by this document) falls back to the round tip rather than
 /// pointing at an asset the engine would silently substitute.
 pub fn wear(state: AppState, wearable: Wearable) {
+    // A whole tool arriving is not an adjustment of the one you had — not even in
+    // the case where it differs in nothing but its size, which the tour would
+    // otherwise read as somebody reaching for the size slider (§24.2). This is the
+    // one door every swap comes through, in both directions, which is what makes it
+    // the place to say so.
+    crate::tutor::not_reaching(state, true);
     let Wearable {
         params: mut brush,
         smoothing,
@@ -446,6 +457,7 @@ pub fn wear(state: AppState, wearable: Wearable) {
         *b = brush;
         b.color[..3].copy_from_slice(&rgb);
     });
+    crate::tutor::not_reaching(state, false);
 }
 
 /// Put the app on its startup brush: the first preset in the library, or — for a

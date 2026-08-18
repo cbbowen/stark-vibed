@@ -595,6 +595,20 @@ which the engine draws into directly. DOM chrome surrounds it.
   and handles live elsewhere on screen, and latching those off until the pointer
   had visited the right edge would be controls you cannot reach by reaching for
   them.
+- **Every panel starts closed, and what is open follows the browser.** The
+  opening screen is the painting and nothing else; the panels that come back next
+  visit are the ones the artist actually reached for (`layout::stored_hidden`,
+  keyed `stark.panels.v1`). The two halves are one decision — a set of panels
+  chosen for you is only tolerable because it resets every visit, and once the
+  choice sticks the honest starting point is none. What keeps "none" from meaning
+  "hidden" is the tour: the Color panel arrives on the second stroke and the wake
+  gesture is explained on the third (§24.5). Durability is structural rather than
+  remembered — `layout::set_open` is the only thing that writes the hidden set and
+  it persists after every change, so a new way to close a panel is durable without
+  its author thinking about storage, the same move `settings::SettingToggle` makes
+  for the preferences. The **open** set is what is written, not the hidden one, so
+  a panel added in a later release arrives closed like everything else instead of
+  appearing unbidden in the stack of every existing user.
 - **Panels are first-class.** `PanelId` + a `PanelLayout` context (order, hidden
   set, drag state, mounted refs) make the stack data-driven: each panel has a
   header with a drag handle and a ✕, a "Panels" menubar menu reopens closed ones

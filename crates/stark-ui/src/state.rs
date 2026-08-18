@@ -489,7 +489,7 @@ impl AppState {
                 // above and for the same reason.
                 enabled: root_signal(|| Prefs::default().tips),
                 epoch: root_signal(|| 0),
-                via_shortcut: root_signal(|| false),
+                not_reaching: root_signal(|| 0),
             },
         }
     }

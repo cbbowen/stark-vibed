@@ -52,15 +52,21 @@
 //! The first is **when a run of commands is one act**. A slider drag is one
 //! intention and sixty `SetBrush`es; [`COALESCE`] is the whole of the answer.
 //!
-//! The second is **which gesture wrote the brush**, and it matters because two of
-//! the lessons teach gestures that produce the very deed they are counted by: an
-//! Alt-drag off the painting is a color change, and an accelerator drag is a size
-//! change. Counted naively, the tour would wait for somebody to use the eyedropper
-//! five times and then offer to explain the eyedropper. So the two gestures say so
-//! while they run ([`via_shortcut`]), and a brush write made under that flag is not
-//! counted at all — which turns the flaw into the feature the tour most wanted:
-//! **it never teaches a gesture you already use.** Somebody who only ever
-//! eyedroppers never accumulates the deed and is never told about it.
+//! The second is **what wrote the brush**, and it matters because three of the
+//! lessons teach ways of changing it that produce the very deed they are counted
+//! by: an Alt-drag off the painting is a color change, an accelerator drag is a size
+//! change, and a quick slot is a whole tool arriving exactly as a preset click is.
+//! Counted naively, the tour would wait for somebody to use the eyedropper five
+//! times and then offer to explain the eyedropper. So those writes are bracketed by
+//! the code that makes them ([`not_reaching`]) and are not counted — which turns the
+//! flaw into the feature the tour most wanted: **it never teaches a gesture you
+//! already use.** Somebody who only ever eyedroppers never accumulates the deed and
+//! is never told about it.
+//!
+//! One deed is not in the stream at all and is reported outright ([`did`]): clicking
+//! a row in the preset library. The command it leads to says a brush changed and
+//! cannot say that a row was clicked — and the quick slots, which that lesson goes
+//! on to teach, emit a command of exactly the same shape.
 //!
 //! # What the card is, and where it is allowed to appear
 //!
@@ -140,17 +146,21 @@ pub enum Deed {
     ChangedColor,
     /// A redo — the user's own, not the timeline transport's.
     Redo,
+    /// A preset put on from the Brush panel's library. Not on the command stream —
+    /// reported by the row that was clicked ([`did`]).
+    AppliedPreset,
 }
 
 impl Deed {
     /// Every deed. The order **is** the tally's slot order, so this is
     /// [`Deed::slot`]'s only authority.
-    const ALL: [Deed; 5] = [
+    const ALL: [Deed; 6] = [
         Deed::Stroke,
         Deed::TunedBrush,
         Deed::LongPan,
         Deed::ChangedColor,
         Deed::Redo,
+        Deed::AppliedPreset,
     ];
 
     /// How many there are, so the tally can be an array rather than a map.
@@ -179,6 +189,7 @@ impl Deed {
             Deed::LongPan => "long-pan",
             Deed::ChangedColor => "color",
             Deed::Redo => "redo",
+            Deed::AppliedPreset => "preset",
         }
     }
 
@@ -260,19 +271,25 @@ pub struct TutorState {
     pub enabled: Signal<bool>,
     /// Bumped to make the card measure its anchor again — a window resize.
     pub epoch: Signal<u64>,
-    /// Set while the brush is being written by one of the gestures a lesson
-    /// *teaches* — see [`via_shortcut`], which is the only thing that writes it.
-    pub via_shortcut: Signal<bool>,
+    /// How many open brackets say the brush is being written by something other
+    /// than the artist reaching for a control — see [`not_reaching`], which is the
+    /// only thing that writes it.
+    pub not_reaching: Signal<u32>,
 }
 
-/// What a lesson points at.
-///
-/// Two variants, because two is what the lessons below actually name; a third
-/// arrives with the lesson that needs it rather than in advance of it.
+/// What a lesson points at. Each variant arrives with the lesson that needs it
+/// rather than in advance of it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Anchor {
     /// A floating tool panel, by the identity it wears in the DOM ([`panel_key`]).
     Panel(PanelId),
+    /// The full-height slice down the right that the panels are woken by reaching
+    /// into (§11) — the one anchor that is **invisible**, and the only one where
+    /// that is the point: the lesson is about a piece of the window with nothing
+    /// drawn in it, so the card is the only thing that can say where it is.
+    PanelColumn,
+    /// The quick-brush rack down the left (§18.1.8).
+    QuickSlots,
     /// Timeline mode's bar across the foot of the window (§18.2.4).
     TimelineBar,
 }
@@ -289,6 +306,8 @@ impl Anchor {
             Anchor::Panel(id) => {
                 format!(".panel-stack > .panel[data-panel=\"{}\"]", panel_key(id))
             }
+            Anchor::PanelColumn => ".panel-wake".to_string(),
+            Anchor::QuickSlots => ".slot-overlay".to_string(),
             Anchor::TimelineBar => ".timeline-bar".to_string(),
         }
     }
@@ -304,6 +323,19 @@ impl Anchor {
     fn on_screen(self, state: AppState, layout: PanelLayout) -> bool {
         match self {
             Anchor::Panel(id) => !layout.hidden.read().contains(&id),
+            // Asleep, with something to wake. **The wake is the dismissal** — reach
+            // into the column and the panels come back, which is the lesson done and
+            // is a better acknowledgement than the button. Deliberately *not* also
+            // testing `canvas_active`, which is the third thing the slice itself
+            // wants: painting hides the card for the length of the stroke (the
+            // measurement finds nothing) and must not end the lesson, since starting
+            // a stroke is not an answer to it.
+            Anchor::PanelColumn => {
+                let asleep = (state.panels_asleep)();
+                let hidden = layout.hidden.read();
+                asleep && PanelId::ALL.iter().any(|id| !hidden.contains(id))
+            }
+            Anchor::QuickSlots => (state.slots.pinned)(),
             Anchor::TimelineBar => (state.timeline.open)(),
         }
     }
@@ -317,25 +349,49 @@ impl Anchor {
     fn reveal(self, state: AppState, layout: PanelLayout) {
         match self {
             Anchor::Panel(id) => open_panel(state, layout, id),
+            // The slice exists only while the panels are standing down, so what
+            // "reveal" means here is to put them there. A no-op in practice — a
+            // lesson is promoted with the canvas out of hand, and the release that
+            // freed it is what set this — but written out rather than relied upon,
+            // so the card cannot be shown pointing at a box that is not in the DOM.
+            Anchor::PanelColumn => crate::layout::sleep_panels(state),
+            Anchor::QuickSlots => {
+                let mut pinned = state.slots.pinned;
+                pinned.set(true);
+            }
             Anchor::TimelineBar => crate::panels::timeline::set_open(state, true),
         }
     }
 }
 
-/// Which side of its anchor the card sits on.
+/// Where the card sits relative to its anchor.
 ///
 /// The DOM does not say this and cannot be asked: which side has room is a fact
-/// about where that chrome lives in the window, which is the lesson author's to
-/// know. Two, because the panels are a column down the right and the timeline bar
-/// is across the bottom.
+/// about where that chrome lives in the window, and so is whether the anchor has a
+/// meaningful top edge to line up with. Both are the lesson author's to know, which
+/// is why this is a field on the lesson and not something measured.
+///
+/// Named for the picture rather than composed out of a side and an alignment: four
+/// variants say exactly the four placements the lessons use, where two enums would
+/// also spell several that mean nothing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Side {
-    /// Left of the anchor, its top edge aligned with the anchor's.
+    /// Left of the anchor, their top edges level. For a box that hangs from the top
+    /// of the window — a panel in the stack. Level rather than centred so a tall
+    /// panel cannot push the card off the top: the stack hangs from the top of its
+    /// column, so that is the edge always on screen.
+    LeftAtTop,
+    /// Left of the anchor, centred on it. For an anchor that is a whole edge of the
+    /// window and so has no meaningful top — the panel column.
+    LeftAtMiddle,
+    /// Right of the anchor, centred on it, for the chrome down the left.
     ///
-    /// Aligned rather than centred so a tall panel cannot push the card off the top
-    /// of the window: the stack hangs from the top of its column, so the top edge is
-    /// the one always on screen.
-    Left,
+    /// The mirror of [`LeftAtMiddle`](Self::LeftAtMiddle) rather than of
+    /// [`LeftAtTop`](Self::LeftAtTop), and the quick-brush rack is why: its box runs
+    /// from under the command rail to the foot of the window and centres its rows in
+    /// that, so the *box's* top edge is a long way above anything drawn. Lining up
+    /// with it would put the card level with nothing.
+    RightAtMiddle,
     /// Above the anchor, centred on it.
     Above,
 }
@@ -367,19 +423,50 @@ struct Lesson {
 /// The table is the whole feature: a lesson is a row here, and adding one costs no
 /// code anywhere else unless it counts a deed nothing counts yet.
 ///
-/// The counts are set from what each deed *costs* to keep doing the hard way.
-/// Three strokes is barely a commitment and the Brush panel is where everything
-/// about a brush is; ten trips to the size slider is somebody who has decided this
-/// is how they work, which is exactly when the drag is worth knowing. None of them
-/// fires on a first try, deliberately: a tip in the first minute is noise, because
-/// nothing has been wanted yet.
+/// **Order decides ties**, and three lessons wait on the same deed: the second
+/// stroke brings the color, the third says where the panels went, and the fifth
+/// opens the brush. Listed in that order, so a stroke satisfying more than one gives
+/// the earliest still owed — which is also what brings a card passed over while
+/// another was up back before the ones behind it.
+///
+/// The counts are set from what each deed *costs* to keep doing the hard way. Two
+/// strokes is no commitment at all, but a painter with no color picker has already
+/// wanted one; ten trips to the size slider is somebody who has decided this is how
+/// they work, which is exactly when the drag is worth knowing. None of them fires on
+/// a first try, deliberately: a tip in the first minute is noise, because nothing has
+/// been wanted yet.
 static LESSONS: &[Lesson] = &[
+    Lesson {
+        key: "color-panel",
+        deed: Deed::Stroke,
+        after: 2,
+        anchor: Anchor::Panel(PanelId::Color),
+        side: Side::LeftAtTop,
+        title: "Here is the color",
+        body: "Stark starts with an empty screen and hands you the panels as you want \
+               them \u{2014} this is the first. It picks in Oklab rather than on a hue \
+               wheel, so the slider is lightness and the square is every color at that \
+               lightness: slide down and each hue darkens by the same amount, which is \
+               what mixing a shadow actually wants.",
+    },
+    Lesson {
+        key: "panel-column",
+        deed: Deed::Stroke,
+        after: 3,
+        anchor: Anchor::PanelColumn,
+        side: Side::LeftAtMiddle,
+        title: "Your panels are still here",
+        body: "They stand down while you paint, so the screen goes back to being the \
+               painting. Move the pointer into this strip \u{2014} anywhere down the \
+               right-hand edge \u{2014} and they come straight back. On a tablet, one \
+               tap in the same place.",
+    },
     Lesson {
         key: "brush-panel",
         deed: Deed::Stroke,
-        after: 3,
+        after: 5,
         anchor: Anchor::Panel(PanelId::Brush),
-        side: Side::Left,
+        side: Side::LeftAtTop,
         title: "Everything about the brush is here",
         body: "Size and Flow are the two you'll reach for without looking. \
                \u{201C}Edit brush\u{2026}\u{201D} opens the full set beside a live test \
@@ -391,7 +478,7 @@ static LESSONS: &[Lesson] = &[
         deed: Deed::TunedBrush,
         after: 10,
         anchor: Anchor::Panel(PanelId::Brush),
-        side: Side::Left,
+        side: Side::LeftAtTop,
         title: "Size and flow, without leaving the painting",
         body: "Hold Ctrl (\u{2318} on a Mac) and drag on the canvas: sideways sets Size, \
                up and down sets Flow. A ring at the point you pressed shows the size \
@@ -399,11 +486,23 @@ static LESSONS: &[Lesson] = &[
                against the paint instead of against a number.",
     },
     Lesson {
+        key: "quick-slots",
+        deed: Deed::AppliedPreset,
+        after: 5,
+        anchor: Anchor::QuickSlots,
+        side: Side::RightAtMiddle,
+        title: "Ten brushes under your hand",
+        body: "Hold a number key and this rack comes up with that brush in your hand; \
+               let go and the brush you had is back. A number is a tool you borrow for \
+               a few strokes rather than one you switch to. Tune a slot while you hold \
+               it and the slot keeps the change; the pen's other end holds 0.",
+    },
+    Lesson {
         key: "navigator",
         deed: Deed::LongPan,
         after: 2,
         anchor: Anchor::Panel(PanelId::Navigator),
-        side: Side::Left,
+        side: Side::LeftAtTop,
         title: "You don't have to drag that far",
         body: "The Navigator is the whole piece at a glance, with your viewport marked \
                on it. Click or drag inside it to go somewhere; drag with the right \
@@ -414,7 +513,7 @@ static LESSONS: &[Lesson] = &[
         deed: Deed::ChangedColor,
         after: 5,
         anchor: Anchor::Panel(PanelId::Color),
-        side: Side::Left,
+        side: Side::LeftAtTop,
         title: "Take the color off the painting",
         body: "Hold Alt over the canvas and drag: the brush picks up whatever is under \
                the cursor, and this picker follows it. While Alt is down a small bar \
@@ -449,30 +548,55 @@ pub fn begin(state: AppState) {
     armed.set(true);
 }
 
-/// Say whether one of the gestures a lesson teaches is writing the brush right now.
+/// Open (`true`) or close (`false`) a bracket saying the brush is being written by
+/// something other than the artist **reaching for one of its controls**.
 ///
 /// The one thing the tour asks of the rest of the app, and it earns the exception:
-/// which gesture a `SetBrush` came out of is not on the command and cannot be
-/// derived from it, in the way the dwell behind [`GestureCommand::Hold`] is not on
-/// one either (§6.9). Two callers, and both are the *subject* of a lesson — the
-/// tuning drag (`input::Tune`, §18.1.9) and the eyedropper (`input::pick_color`,
-/// §18.0.2).
+/// what a `SetBrush` came out of is not on the command and cannot be derived from
+/// it, in the way the dwell behind [`GestureCommand::Hold`] is not on one either
+/// (§6.9). Three callers, and each is a different reason the write is not somebody
+/// reaching for a slider:
 ///
-/// A brush write made while this is set is not counted, so fluency with a gesture
-/// is never mistaken for needing to be taught it. Called in pairs around the whole
-/// gesture rather than at each write, so there is one place to set it and one to
-/// clear it however many commands run between.
+/// - the tuning drag (`input::Tune`, §18.1.9) and the eyedropper
+///   (`input::pick_color`, §18.0.2) — the two gestures a lesson *teaches*, so
+///   counting them would be waiting for fluency and then offering to teach it;
+/// - `presets::wear`, the one door a whole tool arrives through — a preset click or
+///   a quick slot in either direction (§18.1.8). A tool arriving is not an
+///   adjustment of the one you had, even in the rare case where it differs in
+///   nothing but its size.
 ///
-/// A flag left set by a gesture that ended without saying so costs counting, never
+/// **A depth count rather than a flag**, because the brackets nest: a number key
+/// held mid-tuning-drag swaps the tool inside the drag's own bracket, and a flag
+/// would have that swap's close cancel the drag's. Underflow saturates, so a stray
+/// close costs nothing.
+///
+/// A bracket left open by a caller that failed to close it costs *counting*, never
 /// a wrong card — the failure direction to have, since the other one is a card
 /// nobody asked for.
-pub fn via_shortcut(state: AppState, in_flight: bool) {
-    let mut flag = state.tutor.via_shortcut;
-    // Guarded rather than set flat: the tuning drag clears this on every release the
-    // canvas sees, and a signal set to the value it holds still wakes its readers.
-    if *flag.peek() != in_flight {
-        flag.set(in_flight);
+pub fn not_reaching(state: AppState, open: bool) {
+    let mut depth = state.tutor.not_reaching;
+    let now = *depth.peek();
+    depth.set(if open {
+        now.saturating_add(1)
+    } else {
+        now.saturating_sub(1)
+    });
+}
+
+/// Report a deed the command stream cannot name at all.
+///
+/// [`not_reaching`]'s sibling and its opposite: that one says a command should not
+/// be read, this one says something happened that no command describes. One caller
+/// — `presets::apply`, which is the Brush panel's row click and the only thing that
+/// means *the artist chose a different tool from the library*. The `SetBrush` it
+/// leads to says a brush changed and cannot say that a row was clicked, and the
+/// quick slots produce a command of exactly the same shape (§18.1.8) — which is the
+/// gesture that lesson goes on to teach.
+pub fn did(state: AppState, deed: Deed) {
+    if !*state.tutor.armed.peek() {
+        return;
     }
+    tally(state, deed);
 }
 
 /// Read one of the user's commands as a deed, and bring a lesson due if that was
@@ -513,8 +637,10 @@ fn read(state: AppState, command: &InputCommand) -> Option<Deed> {
         InputCommand::Doc(DocCommand::Redo) => {
             (!crate::panels::timeline::is_playing(state)).then_some(Deed::Redo)
         }
-        // Not one the gesture a lesson teaches is making — see [`via_shortcut`].
-        InputCommand::View(ViewCommand::SetBrush(_)) if *state.tutor.via_shortcut.peek() => None,
+        // Not one that anybody reached for a control to make — see [`not_reaching`].
+        InputCommand::View(ViewCommand::SetBrush(_)) if *state.tutor.not_reaching.peek() > 0 => {
+            None
+        }
         InputCommand::View(ViewCommand::SetBrush(next)) => {
             let held = state.obs.peek().as_ref().map(|o| o.brush)?;
             brush_deed(&held, next)
@@ -777,6 +903,14 @@ pub fn TutorCard() -> Element {
         let showing = (state.tutor.showing)();
         let _ = (layout.order)();
         let _ = (state.tutor.epoch)();
+        // The two anchors that come and go on their own: the wake slice is in the
+        // DOM only while the panels are asleep *and* the canvas is out of hand
+        // (`layout::PanelStack`), and the rack only while it is pinned. Followed
+        // here so the card is measured again when either arrives — `on_screen`
+        // below reads neither `canvas_active` nor `pinned` in a way that would
+        // bring this effect back on its own.
+        let _ = (state.canvas_active)();
+        let _ = (state.slots.pinned)();
         // Closing the panel a card is about is an answer to the card, so the lesson
         // goes away with it rather than latching `showing` forever — which would be
         // a tour that ended silently at whichever tip the artist happened to close a
@@ -821,12 +955,28 @@ pub fn TutorCard() -> Element {
     // measurement of the card itself: the translate does the work that knowing the
     // card's width would otherwise be needed for.
     let (side, place) = match lesson.side {
-        Side::Left => (
+        Side::LeftAtTop => (
             "side-left",
             format!(
                 "left: {:.1}px; top: {:.1}px; transform: translateX(-100%);",
                 at.left - GAP,
                 at.top
+            ),
+        ),
+        Side::LeftAtMiddle => (
+            "side-left-middle",
+            format!(
+                "left: {:.1}px; top: {:.1}px; transform: translate(-100%, -50%);",
+                at.left - GAP,
+                at.mid_y()
+            ),
+        ),
+        Side::RightAtMiddle => (
+            "side-right-middle",
+            format!(
+                "left: {:.1}px; top: {:.1}px; transform: translateY(-50%);",
+                at.right() + GAP,
+                at.mid_y()
             ),
         ),
         Side::Above => (
@@ -999,9 +1149,43 @@ mod tests {
     #[test]
     fn a_threshold_already_passed_still_comes_due() {
         let mut book = Ledger::default();
-        book.tally[Deed::Stroke.slot()] = 50;
-        assert!(due(&book, Deed::Stroke).is_some());
+        book.tally[Deed::Redo.slot()] = 50;
+        assert!(due(&book, Deed::Redo).is_some());
+        book.given.insert("timeline".to_string());
+        assert_eq!(due(&book, Deed::Redo), None, "a lesson is given once");
+    }
+
+    /// Three lessons wait on a stroke, and they come in table order — the earliest
+    /// still owed, whatever the count has run to.
+    ///
+    /// The property the whole queue rests on: a card passed over because another was
+    /// on screen has to come back *before* the lessons behind it, or a busy stretch
+    /// would silently reorder the tour into whatever the artist happened to do next.
+    #[test]
+    fn strokes_bring_their_lessons_in_order() {
+        let key = |book: &Ledger| due(book, Deed::Stroke).map(|i| LESSONS[i].key);
+        let mut book = Ledger::default();
+
+        book.tally[Deed::Stroke.slot()] = 1;
+        assert_eq!(key(&book), None, "the first stroke owes nothing");
+
+        book.tally[Deed::Stroke.slot()] = 2;
+        assert_eq!(key(&book), Some("color-panel"));
+
+        // Never dismissed, so the third stroke still owes the *first* of them.
+        book.tally[Deed::Stroke.slot()] = 3;
+        assert_eq!(key(&book), Some("color-panel"));
+
+        book.given.insert("color-panel".to_string());
+        assert_eq!(key(&book), Some("panel-column"));
+
+        book.given.insert("panel-column".to_string());
+        assert_eq!(key(&book), None, "the brush waits for the fifth");
+
+        book.tally[Deed::Stroke.slot()] = 5;
+        assert_eq!(key(&book), Some("brush-panel"));
+
         book.given.insert("brush-panel".to_string());
-        assert_eq!(due(&book, Deed::Stroke), None, "a lesson is given once");
+        assert_eq!(key(&book), None, "and then a stroke owes nothing at all");
     }
 }

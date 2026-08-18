@@ -4379,11 +4379,10 @@ button.layer-remove:hover {
    nothing along the join, which is what stops a hairline from showing *through*
    the card's translucency where the arrow meets it.
 
-   At rest that triangle points right, which is the `side-left` case; each further
-   quarter turn aims it at another side, and `side-above` is the one other side a
-   lesson uses. Stated as one clip and one rotation because the two have to agree
-   — a second polygon for the second side is how an arrow ends up pointing away
-   from the thing it is for. */
+   At rest that triangle points right, which is the two `side-left` cases; each
+   further quarter turn aims it at another side. Stated as one clip and a rotation
+   per side because they all have to agree — a second polygon for a second side is
+   how an arrow ends up pointing away from the thing it is for. */
 .tutor-card::after {
   content: "";
   position: absolute;
@@ -4397,11 +4396,28 @@ button.layer-remove:hover {
 
 /* Left of its anchor: the arrow points right, off the card's right edge, near the
    top — because the card's top edge is what was aligned with the anchor's
-   (`tutor::Side::Left`). Far enough down to clear the corner radius, and level
+   (`tutor::Side::LeftAtTop`). Far enough down to clear the corner radius, and level
    with the title rather than with the middle of a paragraph whose length varies. */
 .tutor-card.side-left::after {
   right: -6px;
   top: 20px;
+}
+
+/* Left of its anchor and centred on it, which is what an anchor that is a whole
+   edge of the window gets (`tutor::Side::LeftAtMiddle`): there is no top edge to
+   line up with, so the arrow rides the card's own middle. */
+.tutor-card.side-left-middle::after {
+  right: -6px;
+  top: calc(50% - 6px);
+}
+
+/* Right of its anchor and centred on it: half a turn on from the resting arrow, so
+   it points back left at the chrome down that side, and on the card's own middle
+   because that is what it is lined up with (`tutor::Side::RightAtMiddle`). */
+.tutor-card.side-right-middle::after {
+  left: -6px;
+  top: calc(50% - 6px);
+  transform: rotate(225deg);
 }
 
 /* Above its anchor: a quarter turn on, so it points down, centred on the bottom

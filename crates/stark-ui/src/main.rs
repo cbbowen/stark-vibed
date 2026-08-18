@@ -48,8 +48,6 @@ mod timings;
 mod tutor;
 mod widgets;
 
-use std::collections::HashSet;
-
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
@@ -135,11 +133,16 @@ fn app() -> Element {
     use_context_provider(|| state);
 
     // Floating-panel layout: order + which are open. Provided so the panel chrome and
-    // the "Panels" menu can reorder/close/restore them. Panels in `CLOSED_BY_DEFAULT`
-    // start hidden but keep their slot, so the menu reopens them where they belong.
+    // the "Panels" menu can reorder/close/restore them. A closed panel keeps its slot,
+    // so reopening it puts it back where it belongs.
+    //
+    // Every panel starts closed and what this browser last had open comes back
+    // (`layout::stored_hidden`) — read here in the root's own body rather than in a
+    // load step, so the first render is already the stack the artist left rather than
+    // one that assembles itself a frame later.
     let panels = PanelLayout {
         order: use_signal(|| PanelId::ALL.to_vec()),
-        hidden: use_signal(|| HashSet::from(PanelId::CLOSED_BY_DEFAULT)),
+        hidden: use_signal(layout::stored_hidden),
         drag: use_signal(|| None),
         heights: use_signal(PanelLayout::default_heights),
         resize: use_signal(|| None),

@@ -635,8 +635,8 @@ impl Tune {
         drag.set(Some(in_flight));
         // This gesture is what one of the tour's lessons is *about*, so the brush
         // writes it is going to make are not evidence that anybody needs telling
-        // about it (§24.2). Cleared by `stop`, which every release runs.
-        crate::tutor::via_shortcut(self.state, true);
+        // about it (§24.2). Closed by `stop`, which every release runs.
+        crate::tutor::not_reaching(self.state, true);
         // Up from the press, before the drag has said what it is about, showing the brush
         // at the size it already is. That is the reference the new size will be judged
         // against, and it is also the one thing that makes this binding discoverable:
@@ -705,11 +705,12 @@ impl Tune {
         let mut drag = self.drag;
         if drag.peek().is_some() {
             drag.set(None);
+            // Inside the guard, not beside it: this runs on every release the canvas
+            // sees, and the tour's bracket is a depth count — a close for a drag that
+            // never opened one would cancel somebody else's (§24.2).
+            crate::tutor::not_reaching(self.state, false);
         }
         self.hide_ring();
-        // Unconditional, like the ring's own clear: this runs on every release the
-        // canvas sees, and the flag being already down is the ordinary case (§24.2).
-        crate::tutor::via_shortcut(self.state, false);
     }
 
     /// Draw the indicator for `drag`, asking for `radius` (canvas px). Converted to
@@ -1230,12 +1231,6 @@ pub fn pick_color(state: AppState, pos: Vec2) {
         return;
     };
     busy.set(true);
-    // The color this is about to write comes off the painting, which is the gesture
-    // one of the tour's lessons exists to teach — so the write is marked as the
-    // eyedropper's rather than as somebody reaching for the picker (§24.2). Set
-    // *here* rather than in the task, so it is already in force for a sample that
-    // resolves before this function returns.
-    crate::tutor::via_shortcut(state, true);
     // Detached: the sample outlives the pointer gesture that asked for it (a release
     // must not cancel the answer to the press), and every signal it writes is
     // root-owned — see `state::root_signal`.
@@ -1243,18 +1238,21 @@ pub fn pick_color(state: AppState, pos: Vec2) {
         let picked = readback.await;
         busy.set(false);
         // Nothing under the sampler leaves the brush as it was: bare canvas is the
-        // ground, not paint to pick up. An `if let` rather than the early return this
-        // was, because the flag above has to come down on both ways out and one clear
-        // is better than two that must agree.
-        if let Some(rgb) = picked {
-            update_brush(state, |br| br.color = [rgb[0], rgb[1], rgb[2], br.color[3]]);
-            // Tell the Color panel the color moved from outside its own picker, so its
-            // markers follow (see `AppState::color_epoch`).
-            let mut epoch = state.color_epoch;
-            let next = *epoch.peek() + 1;
-            epoch.set(next);
-        }
-        crate::tutor::via_shortcut(state, false);
+        // ground, not paint to pick up.
+        let Some(rgb) = picked else { return };
+        // The color about to be written comes off the painting, which is the gesture
+        // one of the tour's lessons exists to teach — so the write is marked as the
+        // eyedropper's rather than as somebody reaching for the picker (§24.2). The
+        // bracket is drawn tight around the one write, with no `await` inside it, so
+        // it cannot still be open while something else moves the brush.
+        crate::tutor::not_reaching(state, true);
+        update_brush(state, |br| br.color = [rgb[0], rgb[1], rgb[2], br.color[3]]);
+        crate::tutor::not_reaching(state, false);
+        // Tell the Color panel the color moved from outside its own picker, so its
+        // markers follow (see `AppState::color_epoch`).
+        let mut epoch = state.color_epoch;
+        let next = *epoch.peek() + 1;
+        epoch.set(next);
     });
 }
 

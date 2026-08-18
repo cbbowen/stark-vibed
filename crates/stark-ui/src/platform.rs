@@ -321,13 +321,19 @@ pub struct ElementBox {
 }
 
 impl ElementBox {
+    /// The box's right edge — where a card placed to its right starts.
+    pub fn right(&self) -> f32 {
+        self.left + self.width
+    }
+
     /// The horizontal middle of the box.
-    ///
-    /// The one derived number anything asks for, so it is the one there is. A
-    /// `right()` beside it would be an accessor the card does not use, and the card
-    /// is the only caller (§24).
     pub fn mid_x(&self) -> f32 {
         self.left + self.width * 0.5
+    }
+
+    /// The vertical middle of the box.
+    pub fn mid_y(&self) -> f32 {
+        self.top + self.height * 0.5
     }
 }
 
