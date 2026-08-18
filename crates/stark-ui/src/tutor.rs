@@ -562,12 +562,8 @@ static LESSONS: &[Lesson] = &[
         after: 2,
         anchor: Anchor::Panel(PanelId::Color),
         side: Side::LeftAtTop,
-        title: "Here is the color",
-        body: "Stark starts with an empty screen and hands you the panels as you want \
-               them \u{2014} this is the first. It picks in Oklab rather than on a hue \
-               wheel, so the slider is lightness and the square is every color at that \
-               lightness: slide down and each hue darkens by the same amount, which is \
-               what mixing a shadow actually wants.",
+        title: "Every color, at your brush tip",
+        body: "This color picker is built on Oklab, a color space tuned to human perception, so your hue doesn't drift as you make it lighter, and every step feels uniform.",
     },
     Lesson {
         key: "panel-column",
@@ -576,10 +572,7 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::PanelColumn,
         side: Side::LeftAtMiddle,
         title: "Your panels are still here",
-        body: "They stand down while you paint, so the screen goes back to being the \
-               painting. Move the pointer into this strip \u{2014} anywhere down the \
-               right-hand edge \u{2014} and they come straight back. On a tablet, one \
-               tap in the same place.",
+        body: "They just get out of the way while you paint. Move the pointer to the right of the canvas, and they'll come straight back. On a tablet, one tap in the same place.",
     },
     Lesson {
         key: "brush-panel",
@@ -587,11 +580,11 @@ static LESSONS: &[Lesson] = &[
         after: 5,
         anchor: Anchor::Panel(PanelId::Brush),
         side: Side::LeftAtTop,
-        title: "Everything about the brush is here",
-        body: "Size and Flow are the two you'll reach for without looking. \
-               \u{201C}Edit brush\u{2026}\u{201D} opens the full set beside a live test \
+        title: "Pick a brush, then make it yours",
+        body: "Adjust the brush size and how much paint to put on it. \
+               \u{201C}Edit brush\u{2026}\u{201D} opens the full editor beside a live test \
                stroke you can draw on, and any brush you like can be saved to the list \
-               below \u{2014} click a row to put it back in your hand.",
+               below. Select a preset to put it back in your hand.",
     },
     Lesson {
         key: "select-panel",
@@ -612,12 +605,8 @@ static LESSONS: &[Lesson] = &[
         after: 3,
         anchor: Anchor::Panel(PanelId::Layers),
         side: Side::LeftAtTop,
-        title: "And which paint it lands on",
-        body: "A selection says *where*; this says *what*. Drag a row onto another to \
-               group them, and a group is also a clipping mask \u{2014} the layer above \
-               is held inside the paint of the one below, which is how a shadow is \
-               kept to the thing casting it. Every row shows its own paint, so the \
-               list reads as the picture taken apart.",
+        title: "Paint in layers",
+        body: "Build your painting in layers, group them, and change them all you want.",
     },
     Lesson {
         key: "panels-menu",
@@ -646,7 +635,7 @@ static LESSONS: &[Lesson] = &[
     Lesson {
         key: "quick-slots",
         deed: Deed::AppliedPreset,
-        after: 5,
+        after: 3,
         anchor: Anchor::QuickSlots,
         side: Side::RightAtMiddle,
         title: "Ten brushes under your hand",
@@ -665,13 +654,11 @@ static LESSONS: &[Lesson] = &[
         // with it. This is the one lesson whose subject *is* the place it is shown.
         anchor: Anchor::Canvas,
         side: Side::Inside,
-        title: "Let go of drawing it straight",
+        title: "A straight edge whenever you need it",
         body: "Draw a rough line or ellipse and then hold the pen still without \
                lifting: the stroke snaps to the shape you meant, and the rest of the \
-               drag steers it \u{2014} lengthen the line, turn it, resize the ellipse. \
-               Lift to keep it. It is still your stroke, with your pressure and your \
-               brush; only the path is tidied. Settings (\u{2699}, top left) turns \
-               it off if you would rather your lines stayed crooked.",
+               drag steers it. Lengthen the line, turn it, resize the ellipse. It is still your stroke, with your pressure and your \
+               brush; only the path is tidied. Turn it off in the settings if it gets in the way.",
     },
     Lesson {
         key: "guides-panel",
@@ -680,9 +667,7 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::Panel(PanelId::Guides),
         side: Side::LeftAtTop,
         title: "Straight is one thing. Straight *to somewhere* is another",
-        body: "Add a perspective guide here \u{2014} one, two or three point \u{2014} and \
-               the grid draws itself over the canvas. It is one camera behind all three, \
-               so you can drag the horizon and the vanishing points around and the \
+        body: "Add a perspective guide here. One camera \u{2014} one, two or three point \u{2014} perspectives. Drag the horizon and the vanishing points around and the \
                construction stays true.",
     },
     Lesson {
@@ -715,7 +700,7 @@ static LESSONS: &[Lesson] = &[
         after: 5,
         anchor: Anchor::Panel(PanelId::Color),
         side: Side::LeftAtTop,
-        title: "Take the color off the painting",
+        title: "Your canvas is a palette",
         body: "Hold Alt over the canvas and drag: the brush picks up whatever is under \
                the cursor, and this picker follows it. While Alt is down a small bar \
                appears with what the sample sees \u{2014} one layer, every layer, or \
@@ -792,8 +777,8 @@ static LESSONS: &[Lesson] = &[
         after: 2,
         anchor: Anchor::TimelineBar,
         side: Side::Above,
-        title: "Undo is a place, not a stack",
-        body: "The drawing is its own history here, so you can stand anywhere in it. \
+        title: "Rewind, look, come back",
+        body: "Every stroke lives in the history. \
                Drag the scrubber back to the moment it went wrong and simply carry on \
                painting from there, or press play to watch the piece arrive. \
                \u{2630} \u{2192} Timeline brings this back.",
