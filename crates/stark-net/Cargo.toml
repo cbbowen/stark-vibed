@@ -62,6 +62,11 @@ anyhow = { version = "1", optional = true }
 n0-future = "0.3"
 # The wire's encoding, the same one the save format uses (§8, §12.4).
 carbonite = { workspace = true }
+# Deflate, for the same reason the save container uses it (§8): carbonite is
+# columnar, and columns compress. A session link is the one place that matters to a
+# person rather than to a disk — it is a string they paste, and every character of it
+# is one they have to carry (`ticket`).
+flate2 = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

@@ -1,8 +1,9 @@
 //! The shareable session ticket: everything a peer needs to join — how to
 //! reach a few *members* (each an [`EndpointAddr`]) and the session's topic.
 //!
-//! Displayed as `stark…` + base32 of the encoded ticket, so it survives chat
-//! clients and clipboards.
+//! Displayed as `stark…` + base64url of the deflated ticket, so it survives chat
+//! clients, clipboards and URL bars — and so it stays as short as a thing a person
+//! pastes ought to be (see [`wrap`], which holds both halves of that argument).
 //!
 //! One live member is enough: the joiner bootstraps gossip from it and the
 //! swarm's membership exchange introduces everyone else, so any member can hand
@@ -11,9 +12,11 @@
 //! session, including after the member that minted it has left.
 
 use std::fmt;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::str::FromStr;
 
+use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
 use iroh::{EndpointAddr, EndpointId};
 use iroh_base::{CustomAddr, TransportAddr};
 use iroh_gossip::proto::TopicId;
@@ -39,6 +42,17 @@ const PREFIX: &str = "stark";
 /// Version 0 kept it as the body's first field and paid for that here, when the shape
 /// first changed (one member became several) and the byte moved out.
 const VERSION: u8 = 1;
+
+/// The ceiling on what a pasted link may inflate to.
+///
+/// Deflate's ratio runs to about a thousand to one, so a string short enough to paste
+/// can name as many megabytes as it likes. A file gets an unbounded door beside the
+/// bounded one, because a painting off the artist's own disk is as large as they made it
+/// (§8); a link gets only the bounded one, because there is no such thing as a ticket its
+/// reader wrote themselves — every link arrived from somewhere else. Generous rather than
+/// tight: the honest article is a few hundred bytes, so this is a bound on the absurd and
+/// not a budget anyone can spend.
+const MAX_BODY: u64 = 64 * 1024;
 
 /// What a link actually encodes — **Stark's own shape, in primitives**.
 ///
@@ -173,15 +187,74 @@ pub struct SessionTicket {
     pub topic: TopicId,
 }
 
+/// Wrap an encoded body as the string a person pastes:
+/// `PREFIX | base64url(version | deflate(body))`.
+///
+/// Both layers here are about **length**, which for a ticket is not a detail: a link is
+/// pasted into a chat window and carried in a URL bar, and one that wraps across four
+/// lines is one that arrives cut in half.
+///
+/// **Deflated because carbonite is columnar** (§8). The property that makes an action
+/// log small does the same for a ticket, and for the same reason — like bytes end up
+/// beside each other, so the several members a link names put their key material, their
+/// ports and their relay URLs each in one run, and the columnar framing's own
+/// bookkeeping (a length per column, most of them tiny and identical) is among the first
+/// things to go. A representative link loses a third of its bytes.
+///
+/// **`base64url` because a link *is* a URL half the time** — the page fragment a shared
+/// session rides in (`stark-ui`'s `collab`). Base32 spends 8 characters per 5 bytes
+/// where base64 spends 4 per 3, so the alphabet alone is a fifth off the length; the
+/// `url` in the name is what makes that free, `-` and `_` for the two extra digits and
+/// no padding, so a link needs no percent-encoding anywhere it is put. What it costs is
+/// case-sensitivity, which is the one thing base32 was buying: a link is now something
+/// to copy rather than to retype.
+///
+/// **`best` rather than `default`**, the opposite of the save container's choice (§8),
+/// because it is not the same trade at all — a body of a few hundred bytes makes the
+/// extra hunting microseconds nobody waits through, and what it buys is characters a
+/// person has to carry.
+///
+/// Nothing here branches on whether the compression *won*, and it need not: the shortest
+/// link there is — one member, no hops, so two thirds of it is key material and topic —
+/// still comes back at 69 bytes from 163, because what compresses is the framing rather
+/// than the payload. A body that beat deflate outright would cost the handful of bytes
+/// of a stored block, which is not worth a second thing the version byte would have to
+/// say.
+fn wrap(version: u8, body: &[u8]) -> std::io::Result<String> {
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
+    encoder.write_all(body)?;
+    let deflated = encoder.finish()?;
+
+    let mut bytes = Vec::with_capacity(1 + deflated.len());
+    bytes.push(version);
+    bytes.extend_from_slice(&deflated);
+    Ok(format!(
+        "{PREFIX}{}",
+        data_encoding::BASE64URL_NOPAD.encode(&bytes)
+    ))
+}
+
+/// The body [`wrap`] deflated, back as it went in.
+///
+/// Bounded *before* it expands rather than after (§8): the compressed length says
+/// nothing about the decompressed one, so a reader that finds out by inflating has
+/// already spent the memory. `take` one byte past the ceiling, so "filled the buffer"
+/// and "reached the ceiling" stay distinguishable.
+fn inflate(deflated: &[u8]) -> Result<Vec<u8>, TicketError> {
+    let mut body = Vec::new();
+    DeflateDecoder::new(deflated)
+        .take(MAX_BODY + 1)
+        .read_to_end(&mut body)?;
+    if body.len() as u64 > MAX_BODY {
+        return Err(TicketError::TooLarge { limit: MAX_BODY });
+    }
+    Ok(body)
+}
+
 impl fmt::Display for SessionTicket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let body = crate::codec::encode(&TicketBody::from(self)).map_err(|_| fmt::Error)?;
-        let mut bytes = Vec::with_capacity(1 + body.len());
-        bytes.push(VERSION);
-        bytes.extend_from_slice(&body);
-        let mut encoded = data_encoding::BASE32_NOPAD.encode(&bytes);
-        encoded.make_ascii_lowercase();
-        write!(f, "{PREFIX}{encoded}")
+        f.write_str(&wrap(VERSION, &body).map_err(|_| fmt::Error)?)
     }
 }
 
@@ -190,11 +263,12 @@ impl FromStr for SessionTicket {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let encoded = s.trim().strip_prefix(PREFIX).ok_or(TicketError::NoPrefix)?;
-        let bytes = data_encoding::BASE32_NOPAD.decode(encoded.to_ascii_uppercase().as_bytes())?;
-        // The version byte is checked *before* the body is decoded — the body's
-        // shape is exactly what another version disagrees about, so any question
-        // asked of the bytes past this one would be asked in the wrong shape.
-        let Some((&version, body)) = bytes.split_first() else {
+        let bytes = data_encoding::BASE64URL_NOPAD.decode(encoded.as_bytes())?;
+        // The version byte is checked *before* the body is inflated, let alone decoded —
+        // how the body is compressed and what shape it is in are exactly what another
+        // version disagrees about, so any question asked of the bytes past this one
+        // would be asked of the wrong thing.
+        let Some((&version, deflated)) = bytes.split_first() else {
             return Err(TicketError::Empty);
         };
         if version != VERSION {
@@ -203,7 +277,7 @@ impl FromStr for SessionTicket {
                 expected: VERSION,
             });
         }
-        crate::codec::decode::<TicketBody>(body)?.try_into()
+        crate::codec::decode::<TicketBody>(&inflate(deflated)?)?.try_into()
     }
 }
 
@@ -318,20 +392,13 @@ mod tests {
     /// thing here that travels without a schema beside it to reconcile against.
     #[test]
     fn a_ticket_from_another_version_says_so() {
-        let ticket = SessionTicket {
-            members: vec![EndpointAddr::new(
-                SecretKey::from_bytes(&[3u8; 32]).public(),
-            )],
-            topic: TopicId::from_bytes([1u8; 32]),
-        };
-        let body = crate::codec::encode(&TicketBody::from(&ticket)).expect("encode");
-        // A future build's link: a version this one does not speak, ahead of a
-        // body whose shape this build has no idea of — here, today's body, since
-        // the check must not depend on reading past the byte.
+        // A future build's link: a version this one does not speak, ahead of bytes it
+        // has no way to read at all — not a body of some other shape but one that is not
+        // a deflate stream either, since the check must not depend on inflating what
+        // follows it any more than on decoding it.
         let mut bytes = vec![VERSION + 1];
-        bytes.extend_from_slice(&body);
-        let mut encoded = data_encoding::BASE32_NOPAD.encode(&bytes);
-        encoded.make_ascii_lowercase();
+        bytes.extend_from_slice(b"a compression this build has never heard of");
+        let encoded = data_encoding::BASE64URL_NOPAD.encode(&bytes);
 
         let err = format!("{PREFIX}{encoded}")
             .parse::<SessionTicket>()
@@ -354,12 +421,9 @@ mod tests {
             topic: [1u8; 32],
         })
         .expect("encode");
-        let mut bytes = vec![VERSION];
-        bytes.extend_from_slice(&body);
-        let mut encoded = data_encoding::BASE32_NOPAD.encode(&bytes);
-        encoded.make_ascii_lowercase();
 
-        let err = format!("{PREFIX}{encoded}")
+        let err = wrap(VERSION, &body)
+            .expect("wrap")
             .parse::<SessionTicket>()
             .expect_err("a link naming no member");
         assert!(matches!(err, TicketError::Empty), "{err}");
@@ -367,6 +431,101 @@ mod tests {
         // after it at all, which must not reach the version check.
         let err = PREFIX.parse::<SessionTicket>().expect_err("an empty link");
         assert!(matches!(err, TicketError::Empty), "{err}");
+    }
+
+    /// A link shaped like the ones a session actually mints (`CollabSession::ticket`):
+    /// the minter with everything known about how to reach it, then the handful of
+    /// neighbors it vouches for, each by the one path its traffic rides right now.
+    fn a_realistic_ticket() -> SessionTicket {
+        let relay = || {
+            TransportAddr::Relay(
+                "https://usw1-1.relay.n0.iroh.link./"
+                    .parse()
+                    .expect("a relay url"),
+            )
+        };
+        let ip = |i: u8| TransportAddr::Ip(format!("192.0.2.{i}:4433").parse().expect("a socket"));
+        let key = |i: u8| SecretKey::from_bytes(&[i; 32]).public();
+        SessionTicket {
+            members: vec![
+                EndpointAddr::from_parts(key(1), [relay(), ip(1)]),
+                EndpointAddr::from_parts(key(2), [relay()]),
+                EndpointAddr::from_parts(key(3), [ip(3)]),
+                EndpointAddr::from_parts(key(4), [relay()]),
+            ],
+            topic: TopicId::from_bytes([0x5a; 32]),
+        }
+    }
+
+    /// **A link's length is part of whether it works**, and both halves of how one is
+    /// spelled are there to hold it down (see [`wrap`]): the body is deflated, and the
+    /// bytes are base64url rather than base32.
+    ///
+    /// Measured on the ticket above — four members, relay and direct hops, the shape a
+    /// real session hands out — the plain spelling costs 629 characters and this one
+    /// costs 352. The threshold is a three fifths that **neither half clears alone**:
+    /// the wider alphabet by itself lands at 84% of plain and the deflate by itself at
+    /// 67%. So a link that quietly stops being compressed, or quietly goes back to
+    /// base32, fails here rather than merely getting long out in the world, where
+    /// nothing is asserting anything about it.
+    #[test]
+    fn a_link_costs_half_of_the_plain_spelling() {
+        let ticket = a_realistic_ticket();
+        let link = ticket.to_string();
+        let body = crate::codec::encode(&TicketBody::from(&ticket)).expect("encode");
+
+        // The plain spelling of the same ticket: the body uncompressed, in base32.
+        let mut plain_bytes = vec![VERSION];
+        plain_bytes.extend_from_slice(&body);
+        let plain = PREFIX.len() + data_encoding::BASE32_NOPAD.encode(&plain_bytes).len();
+        assert!(
+            link.len() * 5 < plain * 3,
+            "a link costs {} characters where the plain spelling costs {plain}",
+            link.len(),
+        );
+        // And it is still a link: nothing above is worth a character if the round trip
+        // does not survive it.
+        let back: SessionTicket = link.parse().expect("parse the link back");
+        assert_eq!(back.members.len(), ticket.members.len());
+        for (landed, minted) in back.members.iter().zip(&ticket.members) {
+            assert_eq!((landed.id, &landed.addrs), (minted.id, &minted.addrs));
+        }
+    }
+
+    /// A pasted link is a stranger's, and deflate's ratio means a short string can name
+    /// as much memory as it likes. Refused by what it *would* expand to, before it does.
+    ///
+    /// The bomb is minted by the same [`wrap`] a real link is, which is the cheapest way
+    /// to be sure this is the door a real link comes through rather than a hand-built
+    /// near-miss beside it.
+    #[test]
+    fn a_link_that_expands_without_bound_is_refused() {
+        let link = wrap(VERSION, &vec![0u8; 8 * 1024 * 1024]).expect("deflate");
+        assert!(
+            link.len() < 16 * 1024,
+            "the bomb has to be pasteable to be a bomb: {} characters",
+            link.len(),
+        );
+
+        let err = link
+            .parse::<SessionTicket>()
+            .expect_err("a link naming megabytes");
+        assert!(matches!(err, TicketError::TooLarge { .. }), "{err}");
+    }
+
+    /// The characters can all be legal and still spell nothing — base64url has no
+    /// checksum, and a link truncated on a chat client's line wrap decodes fine.
+    /// Deflate is what notices, and it must say so as a damaged link rather than
+    /// escaping as an I/O error from a parse that touches no I/O.
+    #[test]
+    fn a_link_that_is_not_a_deflate_stream_says_it_is_damaged() {
+        let mut bytes = vec![VERSION];
+        bytes.extend_from_slice(b"legal characters, no stream");
+        let err = format!("{PREFIX}{}", data_encoding::BASE64URL_NOPAD.encode(&bytes))
+            .parse::<SessionTicket>()
+            .expect_err("not a deflate stream");
+        assert!(matches!(err, TicketError::Compressed(_)), "{err}");
+        assert!(err.to_string().contains("damaged"), "{err}");
     }
 
     #[test]

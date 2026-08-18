@@ -94,9 +94,11 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   the snapshot/gossip overlap covers the seam (dedup by id). Every member serves
   snapshots from a session **mirror** (log + assets + grounds, CPU-side), so
   sessions survive the original sharer leaving, and any member can mint a **ticket**
-  (`stark…` base32: a version byte, then a few members' `EndpointAddr`s + the
-  topic). A ticket names its minter first and then up to a handful of members the
-  minter was connected to when it minted — the joiner tries them in order for the
+  (`stark…`: a version byte, then a few members' `EndpointAddr`s + the topic,
+  deflated and spelled in base64url — a link is pasted by a person, and carbonite's
+  columns compress, so the two together halve what one costs to carry). A ticket
+  names its minter first and then up to a handful of members the minter was
+  connected to when it minted — the joiner tries them in order for the
   snapshot and hands *all* of them to gossip as bootstrap candidates, so a link
   also survives its **minter** leaving between the minting and the pasting. One
   live name in it is enough.

@@ -6630,6 +6630,7 @@ dependencies = [
  "bytes",
  "carbonite",
  "data-encoding",
+ "flate2",
  "glam 0.33.3",
  "iroh",
  "iroh-base",

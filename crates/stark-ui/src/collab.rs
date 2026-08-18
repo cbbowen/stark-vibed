@@ -558,7 +558,9 @@ fn fail(state: AppState, message: String) {
 // A live session's ticket rides the page URL as `…#stark…`, so sharing a
 // drawing is just sharing the address, and opening such a link joins on load.
 // The fragment is the right vehicle: it never leaves the browser (not sent to
-// the server), and tickets are base32 — no percent-encoding surprises.
+// the server), and a ticket's alphabet is base64**url** — no percent-encoding
+// surprises. It is case-sensitive, though, which the fragment is careful with and
+// nothing here may lowercase.
 
 /// The session ticket in the current page URL, if any.
 pub fn url_ticket() -> Option<String> {

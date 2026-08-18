@@ -93,17 +93,37 @@ pub enum NetError {
 
 /// Why a pasted link could not be read.
 ///
-/// Typed rather than a string, because every one of these reaches a person who
-/// pasted something and needs to know which of four different things went wrong —
-/// and because the frontend shows the text verbatim.
+/// Typed rather than a string, because every one of these reaches a person who pasted
+/// something and needs to know which of several different things went wrong — and
+/// because the frontend shows the text verbatim.
 #[derive(Debug, thiserror::Error)]
 pub enum TicketError {
     #[error("that is not a Stark link — a link starts with the prefix `stark`")]
     NoPrefix,
     #[error("the link is damaged: {0}")]
     Encoding(#[from] data_encoding::DecodeError),
+    /// The characters decoded, and what they spell is not a deflate stream (`ticket`'s
+    /// `wrap` for why a link is compressed at all).
+    ///
+    /// The same sentence as [`Malformed`](Self::Malformed) to the person reading it,
+    /// because the remedy is the same one — ask for the link again — and a separate case
+    /// only because it is a different layer's error type. Which layer noticed is worth
+    /// keeping: base64url has no checksum, so a link cut short by a chat client's line
+    /// wrap decodes into perfectly legal bytes, and deflate is the first thing that says
+    /// otherwise.
+    #[error("the link is damaged or cut short: {0}")]
+    Compressed(#[from] std::io::Error),
     #[error("the link is damaged or cut short: {0}")]
     Malformed(#[from] carbonite::Error),
+    /// The link inflates past the ceiling `ticket` puts on one — a few hundred bytes'
+    /// worth of names being what an honest one holds.
+    ///
+    /// Refused rather than expanded, because deflate's ratio means a string short enough
+    /// to paste can name as many megabytes as it likes, and every link arrives from
+    /// somewhere else (§8: a file has an unbounded door for the case a link has no
+    /// equivalent of).
+    #[error("this link is not a session link: it expands past {limit} bytes")]
+    TooLarge { limit: u64 },
     /// Named rather than guessed at: past the version byte the fields are a
     /// different shape, so anything else this could say about them would be about
     /// the wrong shape.

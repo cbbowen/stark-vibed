@@ -62,8 +62,9 @@ const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Naming more buys insurance against the minter having left by the time the
 /// link is opened, and a few is enough: any one live member admits the joiner to
 /// the whole swarm. A link is also something a person pastes into a chat window,
-/// so it has a length budget — each member costs tens of bytes before base32's
-/// ×1.6 — and a joiner pays up to [`DIAL_TIMEOUT`] per dead name in it.
+/// so it has a length budget — a member costs tens of bytes, of which the spelling
+/// (`ticket`: deflated, then base64url) gives back most but not all — and a joiner
+/// pays up to [`DIAL_TIMEOUT`] per dead name in it.
 const TICKET_NEIGHBORS: usize = 3;
 
 /// How many presence frames may sit queued for the engine at once, across all
