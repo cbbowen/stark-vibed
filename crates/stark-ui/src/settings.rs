@@ -50,6 +50,8 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
     let assist = assist_enabled();
     let mut minimal_enabled = state.minimal;
     let minimal = minimal_enabled();
+    let mut tips_enabled = state.tutor.enabled;
+    let tips = tips_enabled();
     // Read off the engine's projection, like the peer-outline row above: the engine
     // owns this and a copy here would be one that can disagree. Before the renderer
     // is up the dialog cannot be open, so the fallback is unreachable in practice
@@ -108,6 +110,23 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                     note: Some("Dialogs, menus, panel titles and your own layer and preset names keep their text. Hover any control for its name.".to_string()),
                     checked: minimal,
                     onchange: move |v| minimal_enabled.set(v),
+                }
+
+                div { class: "modal-section-label", "GUIDANCE" }
+                SettingToggle {
+                    id: "tips",
+                    label: "Show tips as you work",
+                    // Says what brings a tip and what one costs, because the thing
+                    // somebody wants to know before leaving this on is whether it
+                    // will interrupt them (§24). "Only ever once" is the answer.
+                    description: "Point out the parts of Stark that differ from the apps you came from \u{2014} but only after you've done the thing they're about a few times, and only ever once each.",
+                    // The two facts that make the switch safe to flick either way,
+                    // and neither is guessable from the label: a tip never takes the
+                    // canvas, and turning this off does not throw away what the tour
+                    // still owes you.
+                    note: Some("A tip never interrupts a stroke and never covers the canvas. Turning this off keeps your place \u{2014} the tips you haven't seen are still waiting if you turn it back on.".to_string()),
+                    checked: tips,
+                    onchange: move |v| tips_enabled.set(v),
                 }
 
                 div { class: "modal-section-label", "COLLABORATION" }

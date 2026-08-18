@@ -45,6 +45,7 @@ mod state;
 mod storage;
 mod thumbs;
 mod timings;
+mod tutor;
 mod widgets;
 
 use std::collections::HashSet;
@@ -290,6 +291,13 @@ fn app() -> Element {
             // beside the launch queue and for a related reason — a paste has an
             // engine to place into only once the renderer above exists.
             images::bind_paste(state);
+
+            // And last of all, the guided tour starts listening (§24). Last is the
+            // whole of why it is here: every line above dispatches commands on the
+            // user's behalf — the opening preset, the opening color, the stored
+            // preferences — and a tour armed before them would count the app
+            // starting up as the artist at work.
+            tutor::begin(state);
         });
     });
 
@@ -401,6 +409,14 @@ fn app() -> Element {
 
             // Floating tool panels, stacked top-right — order + visibility are data-driven.
             PanelStack {}
+
+            // The guided tour's card, beside whichever panel or bar the lesson on
+            // screen is about (§24). After the stack in the DOM, which is what puts
+            // it over the panel it points at rather than under it — it is positioned
+            // against that panel's own measured box, so an overlap of a pixel or two
+            // where the shadows meet is expected and must land the right way round.
+            // Empty and free whenever no lesson is showing.
+            tutor::TutorCard {}
 
             // Bottom-centre: the bars that are mounted only while the thing they act
             // on exists. Stacked in one column so a frame and a selection in force at

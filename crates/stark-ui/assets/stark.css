@@ -4326,3 +4326,167 @@ button.layer-remove:hover {
   stroke-width: 1.5px;
   stroke-dasharray: 5 4;
 }
+
+/* ---------------------------------------------------------------------------
+   The guided tour's card (§24).
+   --------------------------------------------------------------------------- */
+
+/* Positioned entirely from Rust: `left`/`top`/`transform` are the anchor's own
+   measured edges (`tutor::TutorCard`), because where it goes is a fact about a
+   box the stylesheet cannot see. Everything that is *not* about the anchor is
+   here.
+
+   `z-index: 26` is one above the timeline bar, which is the highest of the
+   floating chrome (25) — the card has to sit over whatever it points at, and
+   what it points at includes that bar. Still below the dialogs (100), which are
+   the one thing that should cover it.
+
+   Deliberately not `pointer-events: none`: this is the one box over the canvas
+   the user is meant to click, and there are two buttons in it. It is small, it
+   never sits over the middle of the window, and the `.chrome` fade takes its
+   pointer events away for the length of every gesture — which is the whole of
+   when a press near it would have been meant for the painting. */
+.tutor-card {
+  position: absolute;
+  z-index: 26;
+  /* Wide enough for three or four lines of the body at this size, and never
+     wider than the window has room for — the translate that places it works off
+     the anchor and cannot know the viewport, so the clamp is here. */
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--panel-background);
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
+  color: #e8e8ea;
+  /* A hairline in the tip's own color, which is what separates it from the panel
+     it is pointing at: two identical slabs side by side read as one wider panel,
+     and the whole gesture depends on them reading as two things. */
+  outline: 1px solid #f0c46138;
+  outline-offset: -1px;
+}
+
+/* The arrow, pointing back at the anchor across the gap the card was placed
+   with. A rotated square rather than a border triangle, so it can carry the
+   card's own background *and* its hairline: a triangle would be a flat color
+   sitting on a translucent panel, and the difference shows against paint.
+
+   The clip keeps the square's **top-left half** — the two legs it leaves are the
+   top and right edges, and the diagonal it cuts along is the one that ends up
+   flat against the card. So the outline traces exactly the two outer legs and
+   nothing along the join, which is what stops a hairline from showing *through*
+   the card's translucency where the arrow meets it.
+
+   At rest that triangle points right, which is the `side-left` case; each further
+   quarter turn aims it at another side, and `side-above` is the one other side a
+   lesson uses. Stated as one clip and one rotation because the two have to agree
+   — a second polygon for the second side is how an arrow ends up pointing away
+   from the thing it is for. */
+.tutor-card::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--panel-background);
+  outline: 1px solid #f0c46138;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  transform: rotate(45deg);
+}
+
+/* Left of its anchor: the arrow points right, off the card's right edge, near the
+   top — because the card's top edge is what was aligned with the anchor's
+   (`tutor::Side::Left`). Far enough down to clear the corner radius, and level
+   with the title rather than with the middle of a paragraph whose length varies. */
+.tutor-card.side-left::after {
+  right: -6px;
+  top: 20px;
+}
+
+/* Above its anchor: a quarter turn on, so it points down, centred on the bottom
+   edge. */
+.tutor-card.side-above::after {
+  bottom: -6px;
+  left: calc(50% - 6px);
+  transform: rotate(135deg);
+}
+
+.tutor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+/* The lightbulb, in the one warm color the app uses for it. Tinted here rather
+   than in the SVG, like every other mark (`icons::icon`). */
+.tutor-mark {
+  display: flex;
+  color: #f0c461;
+  flex: none;
+}
+
+.tutor-mark svg {
+  width: 15px;
+  height: 15px;
+}
+
+.tutor-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+}
+
+/* Roomier leading than the panels' own text: this is the one place in the app
+   that asks to be *read* rather than scanned, and a paragraph set at control
+   density is a paragraph nobody finishes. */
+.tutor-body {
+  font-size: 12px;
+  line-height: 1.55;
+  opacity: 0.82;
+}
+
+.tutor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 11px;
+}
+
+/* "Stop tips": deliberately not a chip. Turning the tour off and acknowledging
+   one card are not two options of equal weight — one is a preference and the
+   other is what you do with the thing in front of you — and a pair of matching
+   buttons would present them as a choice between equals. */
+.tutor-quiet {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: #e8e8ea;
+  opacity: 0.5;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tutor-quiet:hover {
+  opacity: 0.8;
+}
+
+.tutor-done {
+  flex: none;
+}
+
+/* Minimal mode drops the words from the chrome (§11) and this card is nothing
+   but words, so it keeps every one of them. What the mode does take is the
+   width: the panels close up into a single column there, and a card that stayed
+   at its full size would be the widest thing on a screen chosen for being
+   quiet. */
+.app-root.minimal .tutor-card {
+  width: 260px;
+  font-size: 11px;
+}

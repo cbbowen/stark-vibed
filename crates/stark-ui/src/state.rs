@@ -246,6 +246,13 @@ pub struct AppState {
     pub gradients: crate::gradients::GradientsState,
     /// The ten brushes under the hand (§18.1.8; `crate::slots`).
     pub slots: SlotState,
+    /// The guided tour (§24; `crate::tutor`): what the user has done often enough
+    /// to be told about, and the lesson on screen.
+    ///
+    /// Here rather than in a context of its own because it is written from
+    /// [`dispatch`] — the seam every command passes through — which is free
+    /// function code belonging to no component's scope.
+    pub tutor: crate::tutor::TutorState,
 }
 
 /// The quick-brush rack's signals (§18.1.8), grouped because they are one
@@ -468,6 +475,21 @@ impl AppState {
                 brushes: root_signal(|| [None; crate::slots::COUNT]),
                 held: root_signal(|| None),
                 pinned: root_signal(|| false),
+            },
+            tutor: crate::tutor::TutorState {
+                ledger: root_signal(Default::default),
+                recent: root_signal(Default::default),
+                due: root_signal(|| None),
+                showing: root_signal(|| None),
+                // Off until startup is over, so the commands the app makes on the
+                // user's behalf are not read as things the user did
+                // (`tutor::begin`).
+                armed: root_signal(|| false),
+                // Seeded from the preference defaults, like `assist` and `minimal`
+                // above and for the same reason.
+                enabled: root_signal(|| Prefs::default().tips),
+                epoch: root_signal(|| 0),
+                via_shortcut: root_signal(|| false),
             },
         }
     }
@@ -938,6 +960,15 @@ pub fn publish_renderer(state: AppState, r: Renderer) {
 /// Apply a command, request a repaint, and refresh the observable snapshot.
 /// In a shared session, whatever the command committed is then broadcast.
 pub fn dispatch(state: AppState, command: impl Into<InputCommand>) {
+    let command = command.into();
+    // Before the engine sees it, which is what lets the tour ask what a command
+    // *changes* — `SetBrush` means one thing beside the brush the engine is still
+    // holding and nothing at all beside the one it is about to hold (§24).
+    //
+    // Here rather than at the handlers that produce these commands, on this
+    // function's own argument: it is the one seam, so a tour hung off it counts a
+    // way of doing something that was added after it was written.
+    crate::tutor::observe(state, &command);
     with_engine(state, |r| r.process(command));
     collab::flush_outbox(state);
 }

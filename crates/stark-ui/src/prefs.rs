@@ -66,6 +66,14 @@ pub struct Prefs {
     pub minimal: bool,
     /// Whether collaborators' selections are outlined alongside your own (§17.3).
     pub show_peer_selections: bool,
+    /// Whether the guided tour offers its lessons (§24).
+    ///
+    /// The switch alone lives here. What the tour has *learned* about this browser —
+    /// the tally of deeds, the lessons already given — is a table of its own
+    /// (`crate::tutor`), because it is a record of what happened rather than a
+    /// choice anybody made, and because turning the tour off and on again must not
+    /// be a way to lose it.
+    pub tips: bool,
     /// How much GPU memory undo history may hold before the oldest steps are given
     /// up, in bytes (§5) — the one preference that is about the *machine* rather
     /// than about how Stark behaves, which is why it is the one with a slider.
@@ -87,6 +95,11 @@ impl Default for Prefs {
             // Off, because a second contour over the artwork is paid for on every
             // frame you look at it (§17.3).
             show_peer_selections: false,
+            // On, because the tour exists for the artist who has not found the
+            // switch yet, and it is the one preference whose default decides whether
+            // anybody it is for ever sees it. It costs a newcomer five cards across
+            // their first few sessions and nothing after that (§24).
+            tips: true,
             // The engine's own default, not a second opinion about it: a value
             // written here would be the one that actually applies, and then there
             // would be two answers to what Stark does out of the box. `load_engine`
@@ -111,6 +124,7 @@ impl Prefs {
                 .peek()
                 .as_ref()
                 .is_some_and(|o| o.show_peer_selections),
+            tips: *state.tutor.enabled.peek(),
             // Read off the engine's projection rather than off a signal of our own,
             // for the reason the projection exists: a second copy is one that can
             // disagree. Before the renderer is up there is nothing to read, and the
@@ -128,8 +142,10 @@ impl Prefs {
     fn apply_view(self, state: AppState) {
         let mut assist = state.assist.enabled;
         let mut minimal = state.minimal;
+        let mut tips = state.tutor.enabled;
         assist.set(self.assist);
         minimal.set(self.minimal);
+        tips.set(self.tips);
     }
 
     /// Push the preferences the **engine** owns, as commands. Needs a renderer;

@@ -46,6 +46,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [collaboration.md](docs/collaboration.md) | §12, §17 | The CRDT over the action log, iroh transport, owned selections, the presence roster |
 | [roadmap.md](docs/roadmap.md) | §13, §18, §19 | Build order and status, the gap analysis against the prior art, file-format stability |
 | [drawing-guides.md](docs/drawing-guides.md) | §20 | The perspective grid: one projective camera behind 1/2/3-point, the fan parametrization, the guide overlay pass, aligning strokes to an axis and to circles on a plane, the stereographic fisheye lens |
+| [tutorial.md](docs/tutorial.md) | §24 | The guided tour: a lesson is owed rather than scheduled, deeds read off the `dispatch` seam, the anchored card and what it may take, the browser-local ledger |
 
 §6 — "rendering the canvas" — is the one chapter split across files: the stroke
 path is in [brush.md](docs/brush.md), the compositing path in
@@ -82,6 +83,9 @@ crates/
   stark-testdata/  recorded pen input + asset paths; dev-only
   stark-net/       iroh transport ↔ the replicated timeline
   stark-ui/        Dioxus 0.7 frontend; owns the wgpu::Surface
+    tutor.rs       the guided tour (§24): the one reader hung off `dispatch`, and
+                   the only module that asks what a command *changes* rather than
+                   what it says
     index.html     the page shell: links the manifest, registers the worker
     public/        manifest, service worker, launcher icons — an installable,
                    offline-capable app (§11). Copied to the SITE ROOT unhashed,

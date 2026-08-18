@@ -306,6 +306,59 @@ pub fn guide_boxes() -> Vec<(String, f32, f32)> {
     Vec::new()
 }
 
+/// One element's box on screen, in CSS px from the viewport's top-left.
+///
+/// The whole rectangle, where [`element_boxes`] keeps only the two numbers a column
+/// drag needs. The caller is the guided tour's card ([`anchor_box`]), which has to
+/// put itself *beside* a thing rather than order a list of them, so it needs the
+/// horizontal half as well.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ElementBox {
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl ElementBox {
+    /// The horizontal middle of the box.
+    ///
+    /// The one derived number anything asks for, so it is the one there is. A
+    /// `right()` beside it would be an accessor the card does not use, and the card
+    /// is the only caller (§24).
+    pub fn mid_x(&self) -> f32 {
+        self.left + self.width * 0.5
+    }
+}
+
+/// The box of the **first** element matching `selector`, or `None` where nothing
+/// matches.
+///
+/// First rather than all, because the caller is pointing at *a* thing and a
+/// selector that matched two would mean the thing had no single place to be pointed
+/// at — see [`crate::tutor::Anchor`], which is what builds the selectors and is the
+/// only place they are written.
+///
+/// `None` for "not on screen" is the answer the caller wants and not a failure: a
+/// panel the user closed under the card is exactly this, and a card that draws
+/// nothing is better than one that points at the corner of the window.
+#[cfg(target_arch = "wasm32")]
+pub fn anchor_box(selector: &str) -> Option<ElementBox> {
+    let doc = web_sys::window().and_then(|w| w.document())?;
+    let el = doc.query_selector(selector).ok().flatten()?;
+    let r = el.get_bounding_client_rect();
+    Some(ElementBox {
+        left: r.left() as f32,
+        top: r.top() as f32,
+        width: r.width() as f32,
+        height: r.height() as f32,
+    })
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn anchor_box(_selector: &str) -> Option<ElementBox> {
+    None
+}
+
 /// Route the window's `kind` events ("keydown" / "keyup") to `handler`.
 ///
 /// The shortcuts hang off the **window** rather than off an element, so they keep

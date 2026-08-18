@@ -200,12 +200,14 @@ fn landing(visible: &[PanelId], drag: &Grab) -> Option<(Slide, f32)> {
 
 /// The identity a panel wears in the DOM, and the one a drag resolves against.
 ///
-/// One function because it is asked in three places — the `data-panel` attribute
-/// [`Panel`] writes, the key [`start_drag`] grabs by, and the list [`landing`]
-/// matches — and a box matched to the wrong panel is measured in silence: any box
-/// is a plausible box, whichever element it came from (§11). Stated once, the three
-/// cannot disagree; stated three times, `{id:?}` was the agreement.
-fn panel_key(id: PanelId) -> String {
+/// One function because it is asked in four places — the `data-panel` attribute
+/// [`Panel`] writes, the key [`start_drag`] grabs by, the list [`landing`] matches,
+/// and the selector the guided tour's card points at
+/// ([`tutor::Anchor`](crate::tutor::Anchor)) — and a box matched to the wrong panel
+/// is measured in silence: any box is a plausible box, whichever element it came
+/// from (§11). Stated once, the four cannot disagree; stated four times, `{id:?}`
+/// was the agreement.
+pub fn panel_key(id: PanelId) -> String {
     format!("{id:?}")
 }
 

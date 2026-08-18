@@ -245,6 +245,16 @@ icons! {
     // Last in the commands menu, and the only entry there that is not a thing to do
     // to the drawing — so it gets the one glyph in the set that is not about one.
     CREDITS => "heart-bold",
+    // The guided tour's card (§24). A lightbulb, which is the one mark in this set
+    // that is not about the drawing *or* about the app: it says "here is something
+    // you did not know", which is the only thing the card ever says. It is also the
+    // single glyph that appears where the user did not ask for anything, so it wants
+    // to be recognized before it is read.
+    //
+    // `TOUR` and not `TIP`, which the brush editor's tip section already holds — the
+    // two words collide in English and the marks must not, since one of them names a
+    // part of a brush.
+    TOUR => "lightbulb-bold",
     // Making one, wherever there is no stack to add to and no region to bound: a new
     // document, a brush shape imported into the gallery. A bare plus rather than one
     // of the two loaded "add" marks above, because neither a document nor a stamp is
