@@ -857,6 +857,35 @@ hr {
   justify-content: center;
 }
 
+/* The Brush panel's preset strip gets the same flush treatment: its rows are
+   pictures too (the rendered strokes), already butted into a filmstrip, and
+   minimal mode has dropped the heading above them (`.preset-header`). Here the
+   *section* escapes the panel's padding rather than the panel losing it — the
+   sliders and chips above still need their inset — so the margins restate the
+   panel's own padding, negated: 14px each side, and 14px below because this
+   panel is resizable and `.panel.resizable` deepens the bottom padding for the
+   grip. The list's scrollbar clearance goes with them, so the strip truly
+   meets the edges; the grip's press strip now overlays the last row's bottom
+   sliver, which is the same 12px it was always given. */
+.app-root.minimal .panel[data-panel="Brush"] .preset-section {
+  margin: 0 -14px -14px;
+}
+
+.app-root.minimal .panel[data-panel="Brush"] .preset-list {
+  padding-right: 0;
+}
+
+/* Where a flush picture meets a corner the column still rounds (`.stack-first`
+   / `.stack-last`), the panel clips it to its own radius. Scoped to the three
+   bleeding panels rather than said of `.panel` once, because a clip on every
+   panel would also cut the layer list's dragged row the moment a drag poked it
+   past an edge. */
+.app-root.minimal .panel[data-panel="Navigator"],
+.app-root.minimal .panel[data-panel="Color"],
+.app-root.minimal .panel[data-panel="Brush"] {
+  overflow: clip;
+}
+
 /* The a/b plane widened to the padding it gained, the `L` track matching: the
    pair still fill the row exactly (248 + 10 gap + 22 = 280), and the plane
    stays square so equal spans of `a` and `b` stay equal distances. Corners
