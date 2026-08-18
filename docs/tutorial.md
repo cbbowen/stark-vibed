@@ -16,8 +16,9 @@ pays it for one binding by bringing its options bar up on Alt (§18.0.2): press 
 modifier and the thing it does announces itself. This chapter is the same answer
 generalized to everything no modifier announces.
 
-The whole feature is `stark-ui/src/tutor.rs`, one line in `dispatch`, and four
-call sites that say something the command stream cannot (§24.2). It turns on three
+The whole feature is `stark-ui/src/tutor.rs`, one line in `dispatch`, and six call
+sites that say something the command stream cannot — three brackets and three
+reports (§24.2). It turns on three
 decisions: what brings a lesson (§24.1), where the counting comes from (§24.2), and
 what a card is allowed to do to the screen (§24.3). §24.4 is the ledger, §24.5 the
 table of lessons as it stands, and §24.6 what is deliberately absent.
@@ -228,6 +229,19 @@ Where it goes is measured, not guessed. `platform::anchor_box` reads the anchor'
 box off the DOM and the card is placed against that box's own edges — with a
 `translate` doing the work that knowing the card's own width would otherwise
 require, so nothing has to be measured twice.
+
+**The measurement retries, and that is the ordinary path rather than a defence.** A
+card is placed by the very effect that *revealed* what it points at — the panel it
+opened, the rack it pinned — and a reveal is a signal write whose render has not
+happened yet, let alone been laid out. So the first look routinely finds nothing,
+and one animation frame is a race against Dioxus's own patch rather than a
+guarantee. `measure` asks again for up to eight frames.
+
+Losing that race was silent and strange, which is worth recording: the card was
+armed and correct and simply never drew, until something *else* the measure effect
+follows moved and measured it again. `canvas_active` is one of those, so the symptom
+was a tip that appeared the next time the artist painted a stroke — nowhere near the
+click that had earned it.
 
 *Where* it sits is the lesson's to declare, because neither half is in the DOM:
 which side has room is a fact about where that chrome lives in the window, and

@@ -1238,6 +1238,57 @@ fn room_about(x: f32) -> String {
     )
 }
 
+/// How many animation frames [`measure`] will wait for its anchor before giving up.
+///
+/// Eight is about an eighth of a second, which is far longer than a render and a
+/// layout and far shorter than anybody notices a card arriving. It is a *bound*
+/// rather than a duration: the ordinary case answers on the first or second frame,
+/// and this only decides how long an anchor that is never coming keeps being asked
+/// for.
+const TRIES: u32 = 8;
+
+/// Measure whatever `selector` finds and hand it to the card, asking again on the
+/// next few frames if it finds nothing yet.
+///
+/// **The retry is not defensive, it is the ordinary path.** A card is placed by the
+/// very effect that *revealed* what it points at — the panel it opened, the rack it
+/// pinned — and a reveal is a signal write whose render has not happened, let alone
+/// been laid out. So the first look routinely finds nothing, and a single animation
+/// frame is a race against Dioxus's own patch rather than a guarantee.
+///
+/// Losing that race used to be silent and strange: the card was armed and correct
+/// and simply never drew, until something *else* this effect follows moved and
+/// measured it again. Since `canvas_active` is one of those, the symptom was a tip
+/// that appeared when the artist next painted a stroke — nowhere near the click that
+/// earned it.
+///
+/// `for_lesson` is the card the chain was started for. A chain still in flight when
+/// the card changes is answering a question nobody asked any more, and must not write
+/// the new card's box away.
+fn measure(
+    state: AppState,
+    mut anchored: Signal<Option<ElementBox>>,
+    selector: String,
+    for_lesson: usize,
+    tries: u32,
+) {
+    if *state.tutor.showing.peek() != Some(for_lesson) {
+        return;
+    }
+    if let Some(found) = platform::anchor_box(&selector) {
+        anchored.set(Some(found));
+        return;
+    }
+    // Out of frames: the anchor is not there, and saying so is what takes a card down
+    // that is pointing at something gone. `on_screen` is the half that decides whether
+    // the *lesson* survives that (`abandon`); this only stops it being drawn.
+    if tries == 0 {
+        anchored.set(None);
+        return;
+    }
+    platform::on_animation_frame(move || measure(state, anchored, selector, for_lesson, tries - 1));
+}
+
 /// The lesson card: one at a time, floating beside the thing it points at.
 ///
 /// Mounted at the app root for the life of the page and empty whenever no lesson
@@ -1329,17 +1380,16 @@ pub fn TutorCard() -> Element {
             abandon(state, i);
             return;
         }
-        let Some(selector) = showing
-            .and_then(|i| LESSONS.get(i))
-            .map(|l| l.anchor.selector())
-        else {
+        let (Some(i), Some(selector)) = (
+            showing,
+            showing
+                .and_then(|i| LESSONS.get(i))
+                .map(|l| l.anchor.selector()),
+        ) else {
             anchored.set(None);
             return;
         };
-        anchored.set(platform::anchor_box(&selector));
-        platform::on_animation_frame(move || {
-            anchored.set(platform::anchor_box(&selector));
-        });
+        measure(state, anchored, selector, i, TRIES);
     });
 
     let Some(i) = (state.tutor.showing)() else {
