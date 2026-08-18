@@ -584,7 +584,7 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::Panel(PanelId::Color),
         side: Side::LeftAtTop,
         title: "Every color, at your brush tip",
-        body: "This color picker is built on Oklab, a color space tuned to human perception, so your hue doesn't drift as you make it lighter, and every step feels uniform.",
+        body: "This color picker uses a color space tuned to human perception, so your hue doesn't drift as you change lightnses, and every step feels uniform.",
     },
     Lesson {
         key: "panel-column",
@@ -593,7 +593,7 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::PanelColumn,
         side: Side::LeftAtMiddle,
         title: "Your panels are still here",
-        body: "They just get out of the way while you paint. Move the pointer to the right of the canvas, and they'll come straight back. On a tablet, one tap in the same place.",
+        body: "They just get out of the way while you paint. Point to the right of the canvas, and they'll come right back. You can always disable this behavior in the Settings.",
     },
     Lesson {
         key: "brush-panel",
@@ -603,9 +603,7 @@ static LESSONS: &[Lesson] = &[
         side: Side::LeftAtTop,
         title: "Pick a brush, then make it yours",
         body: "Adjust the brush size and how much paint to put on it. \
-               \u{201C}Edit brush\u{2026}\u{201D} opens the full editor beside a live test \
-               stroke you can draw on, and any brush you like can be saved to the list \
-               below. Select a preset to put it back in your hand.",
+               \u{201C}Edit brush\u{2026}\u{201D} opens the full brush editor, or you can select a saved preset.",
     },
     Lesson {
         key: "select-panel",
@@ -614,11 +612,7 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::Panel(PanelId::Select),
         side: Side::LeftAtTop,
         title: "Paint inside a shape",
-        body: "Drag a rectangle, an ellipse or a lasso and every tool from then on \
-               acts only inside it \u{2014} brush, eraser, fill, transform, the lot. The \
-               chips here combine one selection with the last (add, subtract, \
-               intersect), and Feather softens the edge, so \u{201C}mask off the sky\u{201D} \
-               is a drag rather than a job.",
+        body: "Select a region and every tool acts only inside it.",
     },
     Lesson {
         key: "layers-panel",
@@ -636,10 +630,7 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::CommandRail,
         side: Side::RightAtTop,
         title: "Nothing is lost by closing it",
-        body: "The Panels button here lists all eight with a tick beside the ones on \
-               screen \u{2014} click any of them to bring it back, in the slot it had. \
-               What you leave open is remembered for next time, so the stack ends up \
-               being the one you actually use.",
+        body: "Panels can be opened and closed in this menu.",
     },
     Lesson {
         key: "tune-drag",
@@ -649,9 +640,7 @@ static LESSONS: &[Lesson] = &[
         side: Side::LeftAtTop,
         title: "Size and flow, without leaving the painting",
         body: "Hold Ctrl (\u{2318} on a Mac) and drag on the canvas: sideways sets Size, \
-               up and down sets Flow. A ring at the point you pressed shows the size \
-               you're asking for with the size you had behind it, so you can judge it \
-               against the paint instead of against a number.",
+               up and down sets Flow.",
     },
     Lesson {
         key: "quick-slots",
@@ -659,7 +648,7 @@ static LESSONS: &[Lesson] = &[
         after: 3,
         anchor: Anchor::QuickSlots,
         side: Side::RightAtMiddle,
-        title: "Ten brushes under your hand",
+        title: "Brushes one key press away",
         body: "Hold a number key to paint with a brush from this rack. Release to return to your previous brush. Change a slot while you hold the key and the slot keeps the change.",
     },
     Lesson {
@@ -673,10 +662,7 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::Canvas,
         side: Side::Inside,
         title: "A straight edge whenever you need it",
-        body: "Draw a rough line or ellipse and then hold the pen still without \
-               lifting: the stroke snaps to the shape you meant, and the rest of the \
-               drag steers it. Lengthen the line, turn it, resize the ellipse. It is still your stroke, with your pressure and your \
-               brush; only the path is tidied. Turn it off in the settings if it gets in the way.",
+        body: "Draw a rough line or ellipse and then hold. Turn it off in the settings if it gets in the way.",
     },
     Lesson {
         key: "guides-panel",
@@ -684,9 +670,8 @@ static LESSONS: &[Lesson] = &[
         after: 3,
         anchor: Anchor::Panel(PanelId::Guides),
         side: Side::LeftAtTop,
-        title: "Straight is one thing. Straight *to somewhere* is another",
-        body: "Add a perspective guide here. One camera \u{2014} one, two or three point \u{2014} perspectives. Drag the horizon and the vanishing points around and the \
-               construction stays true.",
+        title: "Getting some perspective",
+        body: "Add and edit perspective guides here.",
     },
     Lesson {
         key: "perspective-assist",
@@ -696,9 +681,7 @@ static LESSONS: &[Lesson] = &[
         side: Side::LeftAtTop,
         title: "Your held lines know about the grid",
         body: "With a guide on screen, a line you draw-and-hold near one of its axes is \
-               aimed exactly down that axis \u{2014} and the rest of the drag runs the \
-               end out along it instead of steering it off. The line stays where you put \
-               it; only its angle comes from the grid. Hold a rough circle on a plane \
+               aimed exactly down that axis. Hold a rough circle on a plane \
                and it comes out a circle in perspective.",
     },
     Lesson {
@@ -708,9 +691,7 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::Panel(PanelId::Navigator),
         side: Side::LeftAtTop,
         title: "You don't have to drag that far",
-        body: "The Navigator is the whole piece at a glance, with your viewport marked \
-               on it. Click or drag inside it to go somewhere; drag with the right \
-               button to turn the canvas \u{2014} the direction you drag becomes up.",
+        body: "The navigator is the whole piece at a glance. Click or drag inside it to go somewhere. Drag with the right button to rotate the canvas.",
     },
     Lesson {
         key: "eyedropper",
@@ -719,10 +700,7 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::Panel(PanelId::Color),
         side: Side::LeftAtTop,
         title: "Your canvas is a palette",
-        body: "Hold Alt over the canvas and drag: the brush picks up whatever is under \
-               the cursor, and this picker follows it. While Alt is down a small bar \
-               appears with what the sample sees \u{2014} one layer, every layer, or \
-               every layer over the canvas itself.",
+        body: "Hold Alt over the canvas and drag.",
     },
     // The brush editor's series (§24.5). Five cards on one deed, walked through in
     // this order by the chain in `dismiss` — so this list is the tour of the dialog
@@ -733,11 +711,10 @@ static LESSONS: &[Lesson] = &[
         after: 1,
         anchor: Anchor::BrushEditor(BrushPart::Preview),
         side: Side::LeftAtTop,
-        title: "Start here, not with the numbers",
+        title: "What you see is what you get",
         body: "This is a real stroke, laid by the brush as it stands. Every knob you \
                move below redraws it, so you can tune by looking rather than by \
-               reading \u{2014} and you can draw straight on it to replace the test \
-               stroke with a mark of your own. \u{21BA} puts the default back.",
+               reading.",
     },
     Lesson {
         key: "be-tip",
