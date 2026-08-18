@@ -639,10 +639,7 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::QuickSlots,
         side: Side::RightAtMiddle,
         title: "Ten brushes under your hand",
-        body: "Hold a number key and this rack comes up with that brush in your hand; \
-               let go and the brush you had is back. A number is a tool you borrow for \
-               a few strokes rather than one you switch to. Tune a slot while you hold \
-               it and the slot keeps the change; the pen's other end holds 0.",
+        body: "Hold a number key to paint with a brush from this rack. Release to return to your previous brush. Change a slot while you hold the key and the slot keeps the change.",
     },
     Lesson {
         key: "shape-assist",
