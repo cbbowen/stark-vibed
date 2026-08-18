@@ -32,6 +32,7 @@ use dioxus::prelude::*;
 
 use crate::collab::CollabPhase;
 use crate::icons::{self, icon};
+use crate::layout::ChromeHiding;
 use crate::prefs;
 use crate::state::{AppState, dispatch};
 use stark_engine::command::ViewCommand;
@@ -52,6 +53,8 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
     let minimal = minimal_enabled();
     let mut tips_enabled = state.tutor.enabled;
     let tips = tips_enabled();
+    let mut chrome_hiding = state.chrome_hiding;
+    let hiding = chrome_hiding();
     // Read off the engine's projection, like the peer-outline row above: the engine
     // owns this and a copy here would be one that can disagree. Before the renderer
     // is up the dialog cannot be open, so the fallback is unreachable in practice
@@ -110,6 +113,30 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                     note: Some("Dialogs, menus, panel titles and your own layer and preset names keep their text. Hover any control for its name.".to_string()),
                     checked: minimal,
                     onchange: move |v| minimal_enabled.set(v),
+                }
+
+                SettingChoice {
+                    label: "Panels and bars while you paint",
+                    // Says what the chrome *does* today, because the behavior is the
+                    // thing being chosen and two of the three options are only
+                    // meaningful against it (§11).
+                    description: "The floating panels and bars sit over the canvas, so they get out of the way while a stroke is in flight and come back when it ends.",
+                    // The one thing somebody picking the last option has to know, since
+                    // it is a gesture rather than a control and nothing on screen says
+                    // it: how to get the panels back.
+                    note: Some("With \u{201C}Hide after painting\u{201D}, move the pointer to the right of the window \u{2014} or tap there on a tablet \u{2014} to bring the panels back.".to_string()),
+                    options: CHROME_CHOICES,
+                    value: hiding.key(),
+                    onchange: move |name: String| {
+                        chrome_hiding.set(ChromeHiding::from(name));
+                        // A stack already standing down when the choice moves off
+                        // "Hide after painting" has nothing left to bring it back —
+                        // the slice that hears the pointer is mounted on the very
+                        // state being switched off. Waking is idempotent and free
+                        // (`layout::wake_panels`), so it is done on every change
+                        // rather than on the one that needs it.
+                        crate::layout::wake_panels(state);
+                    },
                 }
 
                 div { class: "modal-section-label", "GUIDANCE" }
@@ -179,6 +206,31 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
         }
     }
 }
+
+/// What the chrome-hiding row offers, in the order the chrome gets quieter
+/// ([`ChromeHiding`]): each option's stored name, its label, and the sentence that
+/// says what picking it does.
+///
+/// The names are [`ChromeHiding::key`]'s own, which is what keeps the dialog and the
+/// store speaking one vocabulary — a row here cannot come to offer a value nothing
+/// reads back.
+const CHROME_CHOICES: &[(&str, &str, &str)] = &[
+    (
+        "never",
+        "Always show",
+        "Everything stays where it is, whatever the hand is doing.",
+    ),
+    (
+        "while-painting",
+        "Hide while painting",
+        "The chrome fades for the length of a stroke and is back the moment you lift.",
+    ),
+    (
+        "after-painting",
+        "Hide after painting",
+        "The chrome fades for the stroke, and the panels stay away until you reach for them.",
+    ),
+];
 
 /// The undo-memory ladder, smallest first: what the slider's notches mean.
 ///
@@ -268,6 +320,64 @@ fn SettingSlider(
                         onchange.call(*bytes);
                         prefs::save(state);
                     },
+                }
+                if let Some(note) = note {
+                    div { class: "setting-note", "{note}" }
+                }
+            }
+        }
+    }
+}
+
+/// One setting chosen from a handful of named states: the same row as
+/// [`SettingToggle`], with the options as a segmented run of chips under the
+/// description and the chosen one lit.
+///
+/// Chips rather than a drop-down or a run of radio buttons, because all three answers
+/// are worth reading side by side — the choice is between *behaviors*, and each needs
+/// its own sentence. Each chip carries that sentence as its title, so the row explains
+/// the option under the pointer without spending three lines of dialog on states
+/// nobody picked.
+///
+/// Stringly typed on purpose. The value is the same name the preference is stored
+/// under (`ChromeHiding::key`), so the dialog, the store and the enum share one
+/// vocabulary and this component stays a *choice* rather than a second component per
+/// enum — the same bargain [`SettingSlider`] makes by sliding an index.
+///
+/// It saves for itself, like the slider and unlike the toggle — persistence hangs off
+/// `SettingToggle`'s own input handler, and a second control cannot inherit it.
+#[component]
+fn SettingChoice(
+    label: String,
+    description: String,
+    note: Option<String>,
+    options: &'static [(&'static str, &'static str, &'static str)],
+    value: &'static str,
+    onchange: EventHandler<String>,
+) -> Element {
+    let state = use_context::<AppState>();
+
+    rsx! {
+        div { class: "setting-row",
+            // The checkbox's column, kept empty so this row's text starts where every
+            // other row's does — see `SettingSlider`.
+            div { class: "setting-check-spacer" }
+            div { class: "setting-text",
+                div { class: "setting-label", "{label}" }
+                div { class: "setting-desc", "{description}" }
+                div { class: "setting-choice",
+                    for (key, name, about) in options.iter().copied() {
+                        button {
+                            key: "{key}",
+                            class: if key == value { "chip active" } else { "chip" },
+                            title: "{about}",
+                            onclick: move |_| {
+                                onchange.call(key.to_string());
+                                prefs::save(state);
+                            },
+                            "{name}"
+                        }
+                    }
                 }
                 if let Some(note) = note {
                     div { class: "setting-note", "{note}" }

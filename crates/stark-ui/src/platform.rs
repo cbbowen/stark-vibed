@@ -280,6 +280,49 @@ pub fn panel_boxes() -> Vec<(String, f32, f32)> {
     Vec::new()
 }
 
+/// The panel stack's scroll geometry: how far it is scrolled, how tall its content
+/// is, and how much of it is showing — all in CSS px (§11).
+///
+/// Read off the DOM rather than computed from the panels' own heights, and it has to
+/// be: the column's height is whatever eight panels of content come to, half of it
+/// grown by lists the artist filled, and the one place that number exists is the
+/// element the browser laid out. `None` before the stack has mounted, and off wasm.
+#[cfg(target_arch = "wasm32")]
+pub fn stack_scroll() -> Option<(f32, f32, f32)> {
+    let el = web_sys::window()?
+        .document()?
+        .query_selector(".panel-stack")
+        .ok()
+        .flatten()?;
+    Some((
+        el.scroll_top() as f32,
+        el.scroll_height() as f32,
+        el.client_height() as f32,
+    ))
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn stack_scroll() -> Option<(f32, f32, f32)> {
+    None
+}
+
+/// Scroll the panel stack to `top` — what dragging its rail's thumb does
+/// (`layout::PanelScrollbar`).
+///
+/// Setting the element's own `scrollTop` rather than keeping a scroll position of our
+/// own: the browser clamps it, the wheel and the rail then agree by construction, and
+/// the `scroll` event it raises is what tells the rail where it ended up.
+#[cfg(target_arch = "wasm32")]
+pub fn set_stack_scroll(top: f32) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.query_selector(".panel-stack").ok().flatten())
+    {
+        el.set_scroll_top(top.max(0.0).round() as i32);
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_stack_scroll(_top: f32) {}
+
 /// The layer panel's rows, each under its `data-layer` id — see [`element_boxes`].
 ///
 /// The whole entry is measured (`.layer-item`, indent included) rather than the row

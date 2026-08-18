@@ -88,7 +88,7 @@ use dioxus::prelude::*;
 
 use crate::brush_editor::BrushPart;
 use crate::icons::{self, icon};
-use crate::layout::{PanelId, PanelLayout, chrome_class, open_panel, panel_key};
+use crate::layout::{ChromeHiding, PanelId, PanelLayout, chrome_class, open_panel, panel_key};
 use crate::platform::{self, ElementBox};
 use crate::state::AppState;
 use stark_engine::InputCommand;
@@ -534,6 +534,27 @@ struct Lesson {
     /// makes it worth doing — a tip that only names a shortcut is a keyboard
     /// reference, and there is one of those in the menus already.
     body: &'static str,
+}
+
+impl Lesson {
+    /// Whether this lesson's subject exists for this browser at all.
+    ///
+    /// Derived from the anchor, for [`Anchor::reveal`]'s reason: what a lesson points
+    /// at and what has to be true for it to point are one fact. Only one anchor has
+    /// ever been able to answer no — the panel column's wake slice is a *setting* now
+    /// (`layout::ChromeHiding`), and a tip explaining a gesture somebody has switched
+    /// off is worse than no tip at all.
+    ///
+    /// Asked in [`due`] rather than at the card, so an inapplicable lesson does not
+    /// merely fail to draw: it steps aside and lets the next one its deed owes come
+    /// forward. A lesson that could not be shown *and* could not be passed would stall
+    /// its whole deed — the stroke owes four — and it would stall it silently.
+    fn applies(&self, chrome: ChromeHiding) -> bool {
+        match self.anchor {
+            Anchor::PanelColumn => chrome.sleeps(),
+            _ => true,
+        }
+    }
 }
 
 /// Every lesson, in the order they are offered when two come due at once.
@@ -1057,7 +1078,7 @@ fn tally(state: AppState, deed: Deed) {
     let mut book = ledger.peek().clone();
     let slot = deed.slot();
     book.tally[slot] = book.tally[slot].saturating_add(1);
-    let owed = due(&book, deed);
+    let owed = due(&book, deed, *state.chrome_hiding.peek());
     ledger.set(book);
     // The tally is what has to survive a reload; which lesson it brought due is
     // re-derived on the next deed of the same kind if this visit ends before the
@@ -1077,12 +1098,18 @@ fn tally(state: AppState, deed: Deed) {
     }
 }
 
-/// The first lesson `deed` has brought due against `book`, if any.
-fn due(book: &Ledger, deed: Deed) -> Option<usize> {
+/// The first lesson `deed` has brought due against `book`, if any — skipping any
+/// whose subject this browser has switched off ([`Lesson::applies`]).
+///
+/// `chrome` is passed rather than read off the app, so the whole of "which lesson is
+/// owed" stays a function of the ledger and a value: it is asked from three places
+/// and tested from a fourth, and a signal read in here would be a subscription taken
+/// in whichever scope happened to ask.
+fn due(book: &Ledger, deed: Deed, chrome: ChromeHiding) -> Option<usize> {
     let count = book.tally[deed.slot()];
-    LESSONS
-        .iter()
-        .position(|l| l.deed == deed && count >= l.after && !book.given.contains(l.key))
+    LESSONS.iter().position(|l| {
+        l.deed == deed && count >= l.after && !book.given.contains(l.key) && l.applies(chrome)
+    })
 }
 
 /// Put a lesson away for good, and **offer the next one its deed still owes**.
@@ -1102,7 +1129,7 @@ fn dismiss(state: AppState, i: usize) {
         return;
     };
     let book = state.tutor.ledger.peek().clone();
-    if let Some(next) = due(&book, deed) {
+    if let Some(next) = due(&book, deed, *state.chrome_hiding.peek()) {
         let mut slot = state.tutor.due;
         slot.set(Some(next));
     }
@@ -1409,7 +1436,7 @@ pub fn TutorCard() -> Element {
     let more = {
         let mut book = state.tutor.ledger.peek().clone();
         book.given.insert(lesson.key.to_string());
-        due(&book, lesson.deed).is_some()
+        due(&book, lesson.deed, *state.chrome_hiding.peek()).is_some()
     };
 
     // Placed against the anchor's own edges, with no reading of the viewport and no
@@ -1608,12 +1635,13 @@ mod tests {
         book.tally[Deed::OpenedBrushEditor.slot()] = 1;
         // One open, and the whole series comes due one card at a time, in order.
         for key in &series {
-            let owed = due(&book, Deed::OpenedBrushEditor).expect("still owed");
+            let owed =
+                due(&book, Deed::OpenedBrushEditor, ChromeHiding::default()).expect("still owed");
             assert_eq!(LESSONS[owed].key, *key);
             book.given.insert((*key).to_string());
         }
         assert_eq!(
-            due(&book, Deed::OpenedBrushEditor),
+            due(&book, Deed::OpenedBrushEditor, ChromeHiding::default()),
             None,
             "and then no more"
         );
@@ -1708,9 +1736,13 @@ mod tests {
     fn a_threshold_already_passed_still_comes_due() {
         let mut book = Ledger::default();
         book.tally[Deed::Redo.slot()] = 50;
-        assert!(due(&book, Deed::Redo).is_some());
+        assert!(due(&book, Deed::Redo, ChromeHiding::default()).is_some());
         book.given.insert("timeline".to_string());
-        assert_eq!(due(&book, Deed::Redo), None, "a lesson is given once");
+        assert_eq!(
+            due(&book, Deed::Redo, ChromeHiding::default()),
+            None,
+            "a lesson is given once"
+        );
     }
 
     /// Three lessons wait on a stroke, and they come in table order — the earliest
@@ -1721,7 +1753,9 @@ mod tests {
     /// would silently reorder the tour into whatever the artist happened to do next.
     #[test]
     fn strokes_bring_their_lessons_in_order() {
-        let key = |book: &Ledger| due(book, Deed::Stroke).map(|i| LESSONS[i].key);
+        let key = |book: &Ledger| {
+            due(book, Deed::Stroke, ChromeHiding::default()).map(|i| LESSONS[i].key)
+        };
         let mut book = Ledger::default();
 
         book.tally[Deed::Stroke.slot()] = 1;
@@ -1745,5 +1779,25 @@ mod tests {
 
         book.given.insert("brush-panel".to_string());
         assert_eq!(key(&book), None, "and then a stroke owes nothing at all");
+    }
+
+    /// A lesson whose subject this browser has switched off **steps aside** rather
+    /// than waiting: the wake gesture is a setting now (`layout::ChromeHiding`), and
+    /// its card can neither be shown — the slice it points at is never in the DOM —
+    /// nor dismissed. Left owed it would stall the three lessons behind it, silently,
+    /// for as long as the setting stood.
+    #[test]
+    fn a_lesson_whose_subject_is_switched_off_lets_the_next_one_through() {
+        let mut book = Ledger::default();
+        book.tally[Deed::Stroke.slot()] = 5;
+        book.given.insert("color-panel".to_string());
+        let key = |chrome| due(&book, Deed::Stroke, chrome).map(|i| LESSONS[i].key);
+        assert_eq!(key(ChromeHiding::AfterPainting), Some("panel-column"));
+        // And it is *skipped*, not spent: turn the gesture back on and it is owed
+        // again, because nothing was written to the ledger to say otherwise.
+        for off in [ChromeHiding::Never, ChromeHiding::WhilePainting] {
+            assert_eq!(key(off), Some("brush-panel"), "{off:?}");
+        }
+        assert_eq!(key(ChromeHiding::AfterPainting), Some("panel-column"));
     }
 }

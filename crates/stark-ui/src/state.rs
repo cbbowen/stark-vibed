@@ -148,6 +148,17 @@ pub struct AppState {
     ///
     /// [`chrome_class`]: crate::layout::chrome_class
     pub panels_asleep: Signal<bool>,
+    /// Whether the chrome gets out of the way at all, and for how long — this
+    /// browser's own choice (`layout::ChromeHiding`, §11), set in the ⚙ dialog and
+    /// stored with the other preferences.
+    ///
+    /// Read by the two functions that decide what the fade means
+    /// ([`chrome_class`](crate::layout::chrome_class) and `layout::sleep_panels`), and
+    /// deliberately *not* by the gestures: `canvas_active` above still says the canvas
+    /// is in hand whatever this holds, because half a dozen other things ask that
+    /// question for their own reasons (a thumbnail deferring its work, the eyedropper
+    /// bar). What the setting changes is who looks faded, not what is happening.
+    pub chrome_hiding: Signal<crate::layout::ChromeHiding>,
     /// Whether the brush editor dialog is open (rendered at the app root so its
     /// backdrop escapes the panels' `backdrop-filter` containing blocks).
     pub brush_editor_open: Signal<bool>,
@@ -407,6 +418,7 @@ impl AppState {
             space_down: root_signal(|| false),
             canvas_active: root_signal(|| false),
             panels_asleep: root_signal(|| false),
+            chrome_hiding: root_signal(Default::default),
             brush_editor_open: root_signal(|| false),
             preset_save_open: root_signal(|| false),
             color_epoch: root_signal(|| 0),

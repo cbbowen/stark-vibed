@@ -146,10 +146,33 @@ hr {
   /* Nothing behind the stack scrolls, so chaining past its ends has nothing to do
      but rubber-band the page; `contain` keeps the gesture where it was aimed. */
   overscroll-behavior: contain;
-  /* No rail. The stack floats over a painting, and a panel visibly running past the
-     bottom edge already says there is more below — which is the same thing a
-     scrollbar would say, at the cost of a bright stripe down the side of the work. */
+  /* No *native* rail: the stack floats over a painting, and a bright stripe down the
+     side of the work is not what says there is more below. What says it is
+     `.panel-scroll` — the app's own rail, in the padding the panels already clear,
+     shown while the pointer is in this column and gone the moment it leaves. It has to
+     be ours rather than a styled `::-webkit-scrollbar` because a native one takes its
+     width out of the content box: every panel would narrow by 10px the moment the
+     column overflowed, and widen again when it did not. */
   scrollbar-width: none;
+
+  /* **The stack is chrome, not a document.** Nothing in it is text anybody selects, and
+     leaving it selectable cost the panel drag: a title-bar drag that travels — which is
+     every reorder — sweeps a selection down through whatever the pointer crosses, and
+     the *next* press on that selection starts the browser's own text drag instead of
+     the reorder. What you get is a transparent ghost of the panel's own words following
+     the pointer while the panel stays put, and no way to clear it that anybody would
+     guess (`2026-08-18`, the Layers panel — the deepest stack of text under a grip).
+     `.panel-title`'s own `user-select: none` could not prevent it: the selection it
+     makes is in everything *below* the grip, not in the grip. */
+  user-select: none;
+}
+
+/* A field being typed in is the one place in the stack where the text is the artist's
+   rather than the app's — a layer's name, a gradient's. `user-select: none` inherits
+   into form controls in Blink and would make one unselectable to its own caret. */
+.panel-stack input,
+.panel-stack textarea {
+  user-select: text;
 }
 
 /* The full-height slice of the panels' own column, standing by while they are asleep:
@@ -181,6 +204,90 @@ hr {
 
 .panel-stack::-webkit-scrollbar {
   display: none;
+}
+
+/* --- the panel column's own scrollbar (`layout::PanelScrollbar`) ---
+
+   In the strip of padding down the column's right edge — the stack's own 10px, which
+   the panels already clear — so it costs the panels no width and nothing moves when it
+   appears. That is the whole reason it is not a styled `::-webkit-scrollbar`: a native
+   rail takes its width out of the content box, and every panel would narrow by ten
+   pixels the moment the column overflowed, then widen again when one closed.
+
+   Its `top` and `height` come in inline from the measurement (the stack's own box),
+   because a *sibling* of the scroller has no way to inherit it — and a sibling is what
+   it has to be, since an absolutely positioned child of a scroll container scrolls away
+   with the content it is meant to describe.
+
+   `right: 0` rather than the inset: the rail is the last thing before the screen's
+   edge, where nothing else is, and hard against that edge is what makes it reachable
+   by throwing the pen at the side of the tablet.
+
+   z-index one above the panels, because it is drawn over the column. */
+.panel-scroll {
+  position: absolute;
+  right: 0;
+  width: 14px;
+  z-index: 21;
+  /* Only while the pointer is in this column (below). Gone, it takes no pointer
+     either — a bar the artist cannot see must not be able to catch a stroke. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+/* Shown while the pointer is over the stack — the rail is its next sibling, which is
+   what `~` needs — or over the rail itself, which is *not* over the stack: hover
+   applies to what the pointer hit and its ancestors, and this is neither. A drag keeps
+   it up wherever the pointer has gone, or the hand would be steering something that
+   had disappeared. */
+.panel-stack:hover ~ .panel-scroll,
+.panel-scroll:hover,
+.panel-scroll.dragging {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Faded with the rest of the chrome mid-gesture, and that has to win over the hover
+   rules above — a pointer resting on the rail when a stroke begins is exactly when both
+   apply. Three classes to out-specify `.panel-stack:hover ~ .panel-scroll`, which is
+   worth stating rather than relying on a dimmed stack being unhoverable. */
+.panel-scroll.chrome.dimmed {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The thumb. **Dark**, unlike the preset list's white-on-dark rail: that one is inside
+   a panel and this one stands on the *painting*, which is white far more often than it
+   is anything else. Same answer the quick-brush rack's digit gives to the same question
+   — a mark over paint that may be light, dark or red needs its own ground — and the
+   hairline is the other half of it, so the thumb still reads where the painting under
+   it is dark.
+
+   Placed by `top`/`height` from the measurement: `layout::Scroll::thumb` owns that
+   arithmetic, and the drag inverts it. */
+.panel-scroll-thumb {
+  position: absolute;
+  left: 3px;
+  width: 8px;
+  border-radius: 4px;
+  background: #000000a6;
+  box-shadow: 0 0 0 1px #ffffff40;
+  cursor: grab;
+  transition: background 100ms ease;
+  /* The rail is a place to press: a drag on it must not also pan the page, and on a
+     tablet it must not be read as a gesture at all. */
+  touch-action: none;
+}
+
+.panel-scroll-thumb:hover {
+  background: #000000cc;
+}
+
+.panel-scroll.dragging .panel-scroll-thumb {
+  background: #000000e6;
+  box-shadow: 0 0 0 1px #ffffff59;
+  cursor: grabbing;
 }
 
 /* Timeline mode plants a full-width bar across the foot of the window (z-index 25),
@@ -230,6 +337,45 @@ hr {
   cursor: grab;
   user-select: none;
   touch-action: none;
+}
+
+/* A panel folded to its title bar (`layout::toggle_collapse`). Everything but the
+   header goes — the resize grip with it, since a folded panel has no height to set.
+
+   `display: none` on the children rather than the children being left out of the
+   render, which is the whole reason this is a stylesheet rule: a panel keeps its
+   subtree while folded, so unfolding is instant and nothing inside is rebuilt. One of
+   them owns a `wgpu::Surface` (the navigator) and another a scrolled list.
+
+   The header's bottom margin goes too, or the bar would stand in a panel a third
+   taller than itself. */
+.panel.collapsed > :not(.panel-header) {
+  display: none;
+}
+
+.panel.collapsed .panel-header {
+  margin-bottom: 0;
+}
+
+/* Which way the panel folds, at the far end of the grip. `margin-left: auto` puts it
+   against the ✕ rather than against the title, so the mark sits where the eye already
+   goes for the header's controls — and it turns to point the way the content will go:
+   up to fold it away, down to bring it back. */
+.panel-fold {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  opacity: 0.5;
+  transition: transform 120ms ease;
+}
+
+.panel-fold .icon svg {
+  width: 10px;
+  height: 10px;
+}
+
+.panel.collapsed .panel-fold {
+  transform: rotate(180deg);
 }
 
 /* A panel the user can set the height of (`PanelId::default_height`). The height
@@ -698,12 +844,11 @@ hr {
   flex-direction: column;
 }
 
-/* Section title with Save on the same line: the button costs no row of its own, and
-   it sits where the thing it acts on begins. */
+/* The list's heading, and only that: Save moved up beside "Edit brush…"
+   (`.brush-actions`), where it costs no line of its own at all. */
 .preset-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   padding: 8px 2px;
 }
@@ -713,10 +858,13 @@ hr {
   font-weight: 600;
 }
 
-.preset-save {
-  flex: none;
-  padding: 3px 12px;
-  font-size: 12px;
+/* The one heading in the panels, and so the one thing minimal mode has to drop by
+   name rather than through `.label` — a word wrapped as a control's name would be
+   claiming the list is a control. What says "presets" in its place is the rows: a
+   column of rendered strokes under a Save preset button is not ambiguous, and the
+   line it costs is a line every panel below this one in the stack pays for. */
+.app-root.minimal .preset-header {
+  display: none;
 }
 
 /* The list takes the rest of the section and scrolls its own overflow. The scrollbar
@@ -2332,6 +2480,25 @@ button.layer-remove:hover {
 /* --- brush editor dialog --- */
 
 /* "Edit brush…" entry point at the bottom of the Brush panel. */
+/* The Brush panel's two doors on one line (`panels::brush`): equal halves, so neither
+   reads as the main one, and the row costs the height of a single button where the two
+   used to cost two lines and a section header between them. */
+.brush-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* `width: auto` and `min-width: 0` against `.be-open`'s full-width rule below: a flex
+   item that keeps `width: 100%` refuses to share, and one that will not shrink below
+   its text pushes the pair wider than the panel. */
+.brush-actions .be-open {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  margin-top: 0;
+}
+
 .be-open {
   display: flex;
   align-items: center;
@@ -3850,6 +4017,26 @@ button.layer-remove:hover {
   font-size: 12px;
   line-height: 1.4;
   opacity: 0.6;
+}
+
+/* A setting with more than two states (`settings::SettingChoice`): its options as one
+   segmented run under the description, in the row's own text column so they line up
+   with the sentence they answer rather than with the checkbox gutter.
+
+   Equal shares of the width, so no option reads as the recommended one — the row's
+   note is where a recommendation would go if there were one. Each chip carries its own
+   sentence as a tooltip, which is what keeps three behaviors explainable in one line.
+*/
+.setting-choice {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.setting-choice .chip {
+  flex: 1;
+  justify-content: center;
+  font-size: 12px;
 }
 
 /* When a setting applies only in some context, this is where it says so —

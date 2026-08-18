@@ -143,9 +143,12 @@ fn app() -> Element {
     let panels = PanelLayout {
         order: use_signal(|| PanelId::ALL.to_vec()),
         hidden: use_signal(layout::stored_hidden),
+        collapsed: use_signal(layout::stored_collapsed),
         drag: use_signal(|| None),
         heights: use_signal(PanelLayout::default_heights),
         resize: use_signal(|| None),
+        scroll: use_signal(Default::default),
+        thumb: use_signal(|| None),
     };
     use_context_provider(|| panels);
 

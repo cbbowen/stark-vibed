@@ -64,6 +64,10 @@ pub struct Prefs {
     pub assist: bool,
     /// Whether the chrome over the canvas drops its words and keeps its marks.
     pub minimal: bool,
+    /// Whether the chrome gets out of the way while you paint, and for how long
+    /// (§11). Not a `bool`, and the one preference here that is not: the two
+    /// mechanisms behind it are three states, not four (`layout::ChromeHiding`).
+    pub chrome_hiding: crate::layout::ChromeHiding,
     /// Whether collaborators' selections are outlined alongside your own (§17.3).
     pub show_peer_selections: bool,
     /// Whether the guided tour offers its lessons (§24).
@@ -92,6 +96,11 @@ impl Default for Prefs {
             // Off, because the words are how the chrome is *learned*; minimal mode
             // is what you turn on once you no longer need them.
             minimal: false,
+            // What Stark did before there was a choice, so the default is not a new
+            // opinion — it is the behavior every existing browser already has, and
+            // the ones that stored their preferences before this field existed read
+            // as it (`ChromeHiding::default`).
+            chrome_hiding: crate::layout::ChromeHiding::default(),
             // Off, because a second contour over the artwork is paid for on every
             // frame you look at it (§17.3).
             show_peer_selections: false,
@@ -119,6 +128,7 @@ impl Prefs {
         Self {
             assist: *state.assist.enabled.peek(),
             minimal: *state.minimal.peek(),
+            chrome_hiding: *state.chrome_hiding.peek(),
             show_peer_selections: state
                 .obs
                 .peek()
@@ -143,9 +153,11 @@ impl Prefs {
         let mut assist = state.assist.enabled;
         let mut minimal = state.minimal;
         let mut tips = state.tutor.enabled;
+        let mut hiding = state.chrome_hiding;
         assist.set(self.assist);
         minimal.set(self.minimal);
         tips.set(self.tips);
+        hiding.set(self.chrome_hiding);
     }
 
     /// Push the preferences the **engine** owns, as commands. Needs a renderer;

@@ -57,20 +57,42 @@ pub fn BrushPanel() -> Element {
             oninput: move |v| update_brush(state, move |b| b.radius = v) }
         Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: MAX_FLOW, value: brush.dynamics.add,
             oninput: move |v| update_brush(state, move |b| b.dynamics.add = v) }
-        // A wrench, not a brush: the panel this button sits in is already the brush,
-        // and what the dialog opens is the place it gets adjusted (`icons::EDIT_BRUSH`).
-        button {
-            class: "be-open",
-            onclick: move |_| {
-                let mut open = state.brush_editor_open;
-                open.set(true);
-                // The dialog is frontend state and reaches no engine, so there is no
-                // command for the tour to read (§24.2). Its series of cards is the
-                // one thing this click owes anybody.
-                crate::tutor::did(state, crate::tutor::Deed::OpenedBrushEditor);
-            },
-            {icon(icons::EDIT_BRUSH)}
-            {label("Edit brush\u{2026}")}
+        // The panel's two doors, side by side: adjust the brush you have, or keep it.
+        // One line rather than two because they are the same size of thing — a button
+        // that opens a dialog — and the panel's scarcest dimension is height, which
+        // every panel below it in the column pays for. They read left to right in the
+        // order the work happens: tune it, then save it.
+        div { class: "brush-actions",
+            // A wrench, not a brush: the panel this button sits in is already the brush,
+            // and what the dialog opens is the place it gets adjusted (`icons::EDIT_BRUSH`).
+            button {
+                class: "be-open",
+                title: "Open the full brush editor",
+                onclick: move |_| {
+                    let mut open = state.brush_editor_open;
+                    open.set(true);
+                    // The dialog is frontend state and reaches no engine, so there is no
+                    // command for the tour to read (§24.2). Its series of cards is the
+                    // one thing this click owes anybody.
+                    crate::tutor::did(state, crate::tutor::Deed::OpenedBrushEditor);
+                },
+                {icon(icons::EDIT_BRUSH)}
+                {label("Edit brush\u{2026}")}
+            }
+            // Moved up here from the preset list's own header, where it cost that
+            // header its whole reason to exist. It says "Save preset" rather than
+            // "Save" now that it no longer sits on the list it saves into: a button
+            // beside "Edit brush…" has to name its own subject.
+            button {
+                class: "be-open",
+                title: "Save the current brush as a preset",
+                onclick: move |_| {
+                    let mut open = state.preset_save_open;
+                    open.set(true);
+                },
+                {icon(icons::SAVE)}
+                {label("Save preset\u{2026}")}
+            }
         }
 
         hr {}
@@ -117,18 +139,13 @@ fn PresetSection() -> Element {
         // it back when the grip shortens the panel) — see `.panel.resizable` in the
         // stylesheet. The Brush panel's only growable part.
         div { class: "preset-section panel-grow",
+            // The word alone now that Save sits with Edit brush above (`BrushPanel`) —
+            // and so the first thing minimal mode drops here, since a heading naming
+            // the only list in the panel is exactly the kind of word that mode is for.
+            // Not wrapped in `label()`: this is prose about what follows rather than a
+            // control's name, and what stands in for it is the list itself.
             div { class: "preset-header",
                 span { class: "preset-header-title", "Presets" }
-                button {
-                    class: "chip preset-save",
-                    title: "Save the current brush as a preset",
-                    onclick: move |_| {
-                        let mut open = state.preset_save_open;
-                        open.set(true);
-                    },
-                    {icon(icons::SAVE)}
-                    {label("Save")}
-                }
             }
             div { class: "preset-list",
                 if entries.is_empty() {

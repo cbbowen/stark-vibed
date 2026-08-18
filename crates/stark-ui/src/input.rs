@@ -1526,9 +1526,13 @@ pub fn end_interaction(mut state: AppState, paint: Paint, nav: Nav, tune: Tune) 
     // Brush panel (see the two `canvas_active` comments in `main.rs`) — and putting the
     // stack to sleep on the way out of those would hide the panel the gesture was for.
     // Read before the clear, since the clear is what makes it false.
+    //
+    // Whether it sleeps at all is this browser's own choice, and that question is
+    // asked inside `sleep_panels` rather than here — one door, so the setting reaches
+    // every caller (`layout::ChromeHiding`, §11).
     let was_faded = *state.canvas_active.peek();
     state.canvas_active.set(false);
     if was_faded {
-        state.panels_asleep.set(true);
+        crate::layout::sleep_panels(state);
     }
 }

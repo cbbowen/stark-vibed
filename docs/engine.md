@@ -595,6 +595,24 @@ which the engine draws into directly. DOM chrome surrounds it.
   and handles live elsewhere on screen, and latching those off until the pointer
   had visited the right edge would be controls you cannot reach by reaching for
   them.
+- **How much of that happens is the artist's to choose** (`layout::ChromeHiding`,
+  a ⚙ row): *Always show*, *Hide while painting*, *Hide after painting*. The two
+  mechanisms above were one behavior with no switch, and which of them is wanted
+  turns out to be a fact about the hardware rather than a matter of taste — a pen
+  on a tablet crosses the panel column on the way to everything, so the wake
+  gesture costs it nothing and it gets the whole window back, while a mouse
+  reaching for a slider between strokes pays the reach every time. Three states
+  and not two switches, because the fourth combination does not exist: a stack
+  that stays down after a gesture it never faded for is a panel vanishing at the
+  moment the artist stopped painting. `AppState::canvas_active` still says the
+  canvas is in hand whatever this holds — half a dozen things ask that for their
+  own reasons — so what the setting changes is who *looks* faded: one function
+  decides the class (`layout::fading`) and one decides whether the stack sleeps
+  (`layout::sleep_panels`, the one door, so the release that ends a stroke and the
+  tour revealing its own lesson both obey it). The tour's card about the wake
+  gesture steps aside entirely where the gesture is switched off — a lesson that
+  can neither be shown nor dismissed would stall the three behind it
+  (`tutor::Lesson::applies`, asked in `due`).
 - **Every panel starts closed, and what is open follows the browser.** The
   opening screen is the painting and nothing else; the panels that come back next
   visit are the ones the artist actually reached for (`layout::stored_hidden`,
@@ -610,14 +628,45 @@ which the engine draws into directly. DOM chrome surrounds it.
   a panel added in a later release arrives closed like everything else instead of
   appearing unbidden in the stack of every existing user.
 - **Panels are first-class.** `PanelId` + a `PanelLayout` context (order, hidden
-  set, drag state, mounted refs) make the stack data-driven: each panel has a
-  header with a drag handle and a ✕, a "Panels" menubar menu reopens closed ones
-  into their original slot, and dragging a title bar reorders with a FLIP
-  animation (measure previous tops, apply an inverted transform with no
+  set, folded set, drag state, mounted refs) make the stack data-driven: each
+  panel has a header with a drag handle and a ✕, a "Panels" menubar menu reopens
+  closed ones into their original slot, and dragging a title bar reorders with a
+  FLIP animation (measure previous tops, apply an inverted transform with no
   transition, then play to zero). `key:` on each panel must be the stable
   `PanelId` so reordering *moves* existing nodes rather than recreating them —
   that is what preserves each panel's internal signal state and makes FLIP
   possible. Lives in `layout.rs` + `assets/stark.css`.
+  - **A title bar is one grip with two gestures**: a press that travels reorders,
+    and a press that does not **folds the panel to its bar**
+    (`layout::release_title`, told apart by the drag's own `GRAB_SLOP` so there is
+    no distance in between that does neither). A fold is deliberately not a close
+    — the panel keeps its slot, its height and its subtree, which is why the
+    content is hidden by the stylesheet rather than left out of the render: one of
+    them owns a `wgpu::Surface`. It is remembered with which panels are open, as a
+    second *field* on the same stored line, so the two states cross a version in
+    either direction without a migration. Opening a panel unfolds it: a panel that
+    came back as a bare title bar would be a menu entry that ticks itself and shows
+    nothing.
+  - **Nothing in the stack is selectable text** (`user-select: none` on
+    `.panel-stack`, form fields excepted). Leaving it selectable cost the reorder
+    drag: a title-bar drag that travels sweeps a selection down through whatever
+    the pointer crosses, and the *next* press on that selection starts the
+    browser's own text drag instead — a transparent ghost of the panel's words
+    following the pointer while the panel stays put, with no way to clear it
+    anybody would guess. `.panel-title`'s own `user-select` could not prevent it,
+    because the selection it makes is in everything *below* the grip.
+  - **The column has its own scrollbar** (`layout::PanelScrollbar`), in the strip
+    of padding down its right edge, shown while the pointer is in the column and
+    draggable. The wheel was the only way to reach the rest of a column taller than
+    the window, which is fine for a mouse and no use to a hand holding a pen. It is
+    the app's own rail rather than a styled `::-webkit-scrollbar` because a native
+    one takes its width out of the *content* box: every panel would narrow by ten
+    pixels the moment the column overflowed and widen again when one closed. It is
+    a **sibling** of the stack, not a child — an absolutely positioned child of a
+    scroll container scrolls away with the content it describes — so its box comes
+    in inline from the measurement (`layout::Scroll`, re-read on the stack's scroll
+    event, on the pointer arriving, and after any render that could change the
+    column's height).
 - **Z-order is declared, not inherited from DOM order.** The canvas overlay
   (frame handles, transform widget) sits at `z-index: 10`; every piece of
   floating chrome is 20+. `.panel-stack` must declare its `z-index` explicitly —
