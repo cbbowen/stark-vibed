@@ -647,7 +647,7 @@ static LESSONS: &[Lesson] = &[
     Lesson {
         key: "shape-assist",
         deed: Deed::Undo,
-        after: 10,
+        after: 5,
         // The painting, and pointing down into it. The assist has no chrome at all
         // — it is a thing you do with the pen, on the canvas — so every other
         // anchor would have put the card beside a control that has nothing to do
@@ -848,6 +848,25 @@ pub fn did(state: AppState, deed: Deed) {
         return;
     }
     tally(state, deed);
+}
+
+/// Whether a card on screen is pointing **into the panel stack**.
+///
+/// Asked by `layout::standing_down`, which is what the stack's fade and its wake
+/// slice are decided by. The stack has a second way to be out of the way that no
+/// other chrome has — it stays down after a gesture until the pointer reaches for it
+/// (§11) — and a card that pointed at a panel which had faded out from under it
+/// would be an arrow aimed at nothing.
+///
+/// Only [`Anchor::Panel`]. The lesson about the panel *column* is the one that wants
+/// the stack down, since a strip you reach into to bring the panels back is
+/// unteachable with the panels already up (§24.5); it holds nothing.
+///
+/// A subscribing read, since the caller is a render.
+pub fn holding_panels(state: AppState) -> bool {
+    (state.tutor.showing)()
+        .and_then(|i| LESSONS.get(i))
+        .is_some_and(|l| matches!(l.anchor, Anchor::Panel(_)))
 }
 
 /// Read one of the user's commands as a deed, and bring a lesson due if that was
@@ -1111,6 +1130,15 @@ fn retire(state: AppState, i: usize) -> Option<Deed> {
     let mut showing = state.tutor.showing;
     showing.set(None);
     let lesson = LESSONS.get(i)?;
+    // A card pointing into the stack was holding it up ([`holding_panels`]), and
+    // letting go of it is not the same as asking for the panels to go away: without
+    // this the stack would fade the instant "Got it" was pressed, which reads as the
+    // acknowledgement having *closed* the thing it was about. Waking it properly
+    // leaves it where every other route to a panel leaves it — up until the next
+    // gesture.
+    if matches!(lesson.anchor, Anchor::Panel(_)) {
+        crate::layout::wake_panels(state);
+    }
     let mut ledger = state.tutor.ledger;
     let mut book = ledger.peek().clone();
     book.given.insert(lesson.key.to_string());

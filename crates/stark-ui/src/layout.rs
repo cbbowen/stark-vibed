@@ -268,16 +268,39 @@ fn dim_class(base: &str, out: bool) -> String {
 fn stack_class(state: AppState) -> String {
     dim_class(
         "panel-stack",
-        (state.canvas_active)() || (state.panels_asleep)(),
+        (state.canvas_active)() || standing_down(state),
     )
+}
+
+/// Whether the stack is out of the way **and nothing is holding it up** — the
+/// question both the fade and the wake slice actually want, rather than
+/// [`AppState::panels_asleep`](crate::state::AppState::panels_asleep) raw.
+///
+/// The tour holds it up for as long as a card is pointing into it (§24.3). Without
+/// that, the first stroke after a lesson appeared would put the panels back to sleep
+/// underneath it and leave an arrow aimed at nothing — the card fades for the gesture
+/// like all the chrome and comes back, and the panel it is about would not.
+///
+/// Asked in **two** places and so stated once: the class that fades the stack, and
+/// the slice that exists to wake it. A slice mounted over a stack that is plainly on
+/// screen would be an invisible box taking presses to perform a wake that has already
+/// happened, which is precisely the thing `PanelStack`'s own comment argues must not
+/// exist.
+fn standing_down(state: AppState) -> bool {
+    // Short-circuits, so a stack that is awake never reads the tour at all and the
+    // component does not subscribe to it — and it does not need to, because coming
+    // back from asleep is itself a write of the signal on the left.
+    (state.panels_asleep)() && !crate::tutor::holding_panels(state)
 }
 
 /// Wake the stack: whatever it was still standing down from, the panels are wanted.
 ///
-/// Called from the slice the pointer reaches into ([`PanelStack`]) and from
-/// [`open_panel`]. Idempotent, and free when it is already awake — a signal set to
-/// the value it holds wakes no reader.
-fn wake_panels(state: AppState) {
+/// Called from the slice the pointer reaches into ([`PanelStack`]), from
+/// [`open_panel`], and by the tour when it puts away a card that was pointing into
+/// the stack — so acknowledging a lesson leaves the panel it was about on screen
+/// rather than snapping it out from under the hand (§24.3). Idempotent, and free when
+/// it is already awake — a signal set to the value it holds wakes no reader.
+pub fn wake_panels(state: AppState) {
     let mut asleep = state.panels_asleep;
     // Read out into a `bool` first, so the borrow the peek takes is over before the
     // write — a signal read left inline in the condition is a panic in a handler that
@@ -463,7 +486,7 @@ pub fn PanelStack() -> Element {
     // Whether the slice below is standing by. Asleep says the panels are waiting to be
     // asked for; `!canvas_active` is what keeps the box out of a gesture's way, and it
     // is the whole safety argument for having one at all (below).
-    let reachable = (state.panels_asleep)() && !(state.canvas_active)();
+    let reachable = standing_down(state) && !(state.canvas_active)();
     rsx! {
         // **The slice the pointer reaches into to bring the panels back** (§11).
         //

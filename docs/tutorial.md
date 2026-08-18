@@ -336,6 +336,21 @@ comes due again on the very next deed of its kind. The same property is what mak
 a reload safe: a lesson is written into the ledger when it is **dismissed**, so a
 visit that ends with a card still open still owes it.
 
+**A card pointing into the panel stack holds it up.** The stack is the one piece of
+chrome with a second way to be out of the way: it stays down after a gesture until
+the pointer reaches for it (§11). Revealing a panel wakes it, but the next stroke
+would put it back to sleep underneath the card — which fades for the gesture like
+all the chrome and comes back, leaving an arrow aimed at a panel that did not. So
+`layout::standing_down` — the question the fade *and* the wake slice are both
+decided by — asks the tour first, and a lesson anchored at a panel answers. The
+lesson about the panel *column* deliberately does not: a strip you reach into to
+bring the panels back is unteachable with the panels already up.
+
+Letting go is a wake rather than a release, for the same reason. If the card merely
+stopped holding, the stack would fade the instant "Got it" was pressed, which reads
+as the acknowledgement having closed the thing it was about; waking it properly
+leaves it where every other route to a panel leaves it — up until the next gesture.
+
 **Closing the panel a card is about dismisses the card.** It is an answer, and
 taking it as one is also what keeps the state machine from latching: a lesson left
 showing beside a panel that no longer exists would block every lesson after it, and
