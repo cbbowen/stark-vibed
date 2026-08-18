@@ -339,17 +339,32 @@ hr {
   touch-action: none;
 }
 
-/* A panel folded to its title bar (`layout::toggle_collapse`). Everything but the
-   header goes — the resize grip with it, since a folded panel has no height to set.
+/* The panel's content, wrapped so that folding is one rule about one element
+   (`layout::Panel`). **`display: contents`**, so the wrapper is a selector and not a
+   box: its children go on being flex items of the panel exactly as they were, which is
+   what lets the resizable column's rules below reach straight through it. */
+.panel-body {
+  display: contents;
+}
 
-   `display: none` on the children rather than the children being left out of the
-   render, which is the whole reason this is a stylesheet rule: a panel keeps its
-   subtree while folded, so unfolding is instant and nothing inside is rebuilt. One of
-   them owns a `wgpu::Surface` (the navigator) and another a scrolled list.
+/* A panel folded to its title bar (`layout::toggle_collapse`): the body goes, and the
+   resize grip is not rendered at all, a folded panel having no height to set.
+
+   Hidden by the stylesheet rather than left out of the render, which is the whole
+   reason this is a rule and not an `if`: a panel keeps its subtree while folded, so
+   unfolding is instant and nothing inside is rebuilt. One of them owns a
+   `wgpu::Surface` (the navigator) and another a scrolled list.
+
+   On the **wrapper** rather than on the children, and that is not tidiness. Minimal
+   mode re-lays some of those children by name (`.app-root.minimal .panel
+   .slider-row.marked`, five classes), so a `display: none` aimed at the same elements
+   lost to it and a folded Brush panel went on showing its sliders. A hidden ancestor
+   cannot be undone by any rule about a descendant, whatever its specificity — which
+   rules out the next such addition as well as this one.
 
    The header's bottom margin goes too, or the bar would stand in a panel a third
    taller than itself. */
-.panel.collapsed > :not(.panel-header) {
+.panel.collapsed .panel-body {
   display: none;
 }
 
@@ -399,11 +414,12 @@ hr {
    or takes the difference. Without this, flex's default shrink would squash the
    sliders — every one of them a little wrong — to protect a list that is the very
    thing that should be absorbing the change. */
-.panel.resizable > * {
+.panel.resizable > *,
+.panel.resizable > .panel-body > * {
   flex: none;
 }
 
-.panel.resizable > .panel-grow {
+.panel.resizable > .panel-body > .panel-grow {
   flex: 1;
   /* `auto` (the default) refuses to shrink below the content's own height, which is
      what would otherwise stop the list inside from ever scrolling. */

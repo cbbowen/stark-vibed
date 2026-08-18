@@ -642,7 +642,12 @@ which the engine draws into directly. DOM chrome surrounds it.
     no distance in between that does neither). A fold is deliberately not a close
     — the panel keeps its slot, its height and its subtree, which is why the
     content is hidden by the stylesheet rather than left out of the render: one of
-    them owns a `wgpu::Surface`. It is remembered with which panels are open, as a
+    them owns a `wgpu::Surface`. It is hidden by one rule about the *wrapper*
+    around that content (`.panel-body`, `display: contents` so it is a selector and
+    not a box), never by rules about the children: minimal mode re-lays some of
+    those children by name, out-specifies anything aimed at the same elements, and
+    left a folded panel showing its sliders. A hidden ancestor cannot be undone by
+    a rule about a descendant, whatever its specificity. It is remembered with which panels are open, as a
     second *field* on the same stored line, so the two states cross a version in
     either direction without a migration. Opening a panel unfolds it: a panel that
     came back as a bare title bar would be a menu entry that ticks itself and shows

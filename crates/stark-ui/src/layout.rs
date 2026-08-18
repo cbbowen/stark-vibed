@@ -1057,7 +1057,18 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
                     {icon(icons::CLOSE)}
                 }
             }
-            {children}
+            // The panel's content as **one** thing, so folding it away is one rule
+            // about an ancestor rather than a rule about each of the children.
+            //
+            // That distinction is the whole reason the wrapper exists. Minimal mode
+            // re-lays some of those children by name (`.app-root.minimal .panel
+            // .slider-row.marked`), and a `display: none` on the same elements loses
+            // to it on specificity — a folded Brush panel went on showing its sliders.
+            // A hidden *ancestor* cannot be undone by any rule about a descendant, so
+            // this cannot be beaten by the next such addition either. The wrapper is
+            // `display: contents`, so it is a selector and not a box: its children go
+            // on being flex items of the panel exactly as they were.
+            div { class: "panel-body", {children} }
             if height.is_some() {
                 // Sits in the panel's own bottom padding, so it costs no layout: the
                 // grip is a place to press, and the bar it draws only appears once the
