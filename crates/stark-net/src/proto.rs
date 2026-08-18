@@ -36,7 +36,16 @@ use crate::mirror::{Mirror, Served};
 /// number; a message is encoded against the schema the far end is assumed to hold, so
 /// it does — the trade [`codec`](crate::codec) explains. Bump it whenever the *shape*
 /// of anything gossip carries changes: an action's fields or variants, a presence
-/// frame's, or the envelope's. Past bumps (1: `FillOp`'s parcel; 2: the matte's paint
+/// frame's, or the envelope's.
+///
+/// **And whenever an action's *meaning* changes, which the shape rule does not
+/// cover.** Retiring an action is the case that made this worth saying: §19 lets a
+/// file keep opening while producing something different, so an action is retired by
+/// keeping its variant and taking away what it does (`ActionKind`'s tombstone rule).
+/// The wire shape is then untouched — and two peers, one still applying it and one
+/// ignoring it, would fold the same log into two different documents, with pixels
+/// unable to show which path ran (§12.6). A file may be read by a build that disagrees
+/// with it; a *session* may not, which is what this number is for. Past bumps (1: `FillOp`'s parcel; 2: the matte's paint
 /// and anchor, §22.4, §15.4; 3: a fill's strength became one field and a coverage,
 /// §6.8; 4: `SelectionOp` gained its opacity, §6.8; 5: `BlendMode::Drago` gained its
 /// bend, §6.3; 6: a response opens with a [`Tag`], so a member with nothing to serve

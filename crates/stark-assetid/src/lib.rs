@@ -35,6 +35,16 @@
 //! derived from the decoded field, so a change to the decode, the downsample or
 //! the caps re-names content that is already on disk and already referenced by
 //! saved logs. Treat the constants and all three `id` derivations as frozen.
+//!
+//! **And the three dimension caps are a one-way ratchet: they may only ever go up.**
+//! They are enforced on the way *in*, so lowering one refuses content that a bundle
+//! already carries — and a document whose content will not decode does not open at
+//! all, since replay refuses rather than substituting a stand-in
+//! (`DocError::MissingContent`, §6.4). That makes them part of the §19 promise that
+//! old files keep loading, which is easy to miss because they read like tuning
+//! constants, and because what one of them bounds downstream (`stark-model`'s
+//! `MAX_IMAGE_TILES`) is *derived* from a cap rather than chosen. Raising one is
+//! free: it only admits content no older file contains.
 
 use std::io::Cursor;
 

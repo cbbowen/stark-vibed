@@ -166,6 +166,14 @@ The workspace is on **nightly** for exactly one reason: `history`'s
   refused. Renaming needs `#[serde(alias)]`. The **wire** is the other way round
   (`stark-net::codec`): a message carries no schema, so reshaping anything gossip
   touches means bumping the ALPN.
+- **An action is retired by tombstoning it, never by deleting the variant**
+  (§8, §19). A variant this enum no longer declares makes every file that used it
+  unloadable — and the whole log is one value, so one retired action refuses the
+  document. Keep the variant, hollow its payload to what is still read, make it a
+  no-op with an empty `Footprint` — but keep any field that is load-bearing outside
+  the fold, `minted_layers`' ids above all (§17.9). Retiring an action changes what
+  a log *means* with its shape untouched, so it bumps the ALPN too: a file may be
+  read by a build that disagrees with it, a live session may not.
 - **A new type in the log needs `#[derive(carbonite::Schema)]`** (§8), and the
   compiler says so. Two attributes cover what a plain derive cannot:
   `#[carbonite(as = "Wire")]` on a type that keeps invariants its wire form does

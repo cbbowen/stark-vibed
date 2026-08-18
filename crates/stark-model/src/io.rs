@@ -28,6 +28,17 @@
 //! pre-carbonite container and say so, since postcard wrote no field names and those
 //! bytes cannot be read without the exact schema that produced them.
 //!
+//! ## Two doors
+//!
+//! [`DocumentFile::from_bytes`] opens a file the user owns;
+//! [`DocumentFile::from_untrusted_bytes`] opens one that arrived from somewhere else
+//! (§12.4). They differ in one thing — whether the decompressed body is bounded —
+//! and the split exists because a single answer was wrong in both directions. A
+//! bound low enough to be worth having against a stranger is one an honest document
+//! can cross, since nothing caps how many pictures a document places (§23); so the
+//! one bound refused paintings this very build had saved. There is no threat model
+//! in which the artist's own file is the attacker.
+//!
 //! ## File size
 //!
 //! Two levers keep files small:
@@ -51,20 +62,27 @@ use crate::ColorSpaceId;
 use crate::SurfaceId;
 use crate::document::Action;
 use crate::error::{DocError, Result};
-use crate::geom::TILE_SIZE;
 
 /// Container magic; identifies a Stark document.
 const MAGIC: &[u8; 8] = b"STARKDOC";
 
-/// Largest decompressed container this build will hold, in bytes.
+/// Largest decompressed container [`DocumentFile::from_untrusted_bytes`] will
+/// hold, in bytes.
 ///
 /// A ceiling on what a *stranger* can make this process allocate, which is the
-/// only reason there is one: a document arrives from a peer as readily as from
-/// disk (§12.4), and deflate's ratio means a few kilobytes on the wire can name
-/// as many gigabytes as it likes. Generous against real documents — the log is
-/// a few MB at ten thousand actions, and the bundle is dominated by ground height
-/// maps at ~3 MB each — so this is roughly two orders of magnitude of headroom
-/// over anything a session produces, and refuses only what no session would.
+/// only reason there is one: deflate's ratio means a few kilobytes on the wire
+/// can name as many gigabytes as it likes. Generous against real documents — the
+/// log is a few MB at ten thousand actions, and the bundle is dominated by ground
+/// height maps at ~3 MB each — so this is roughly two orders of magnitude of
+/// headroom over anything a *session* produces.
+///
+/// **It does not bound [`DocumentFile::from_bytes`], and that is the fix rather
+/// than an oversight.** Applied to both doors it was a bound on the writer that
+/// only the reader enforced: nothing caps how many pictures a document places
+/// (§23), each is up to `MAX_PICTURE_DIM²` of RGBA, and a dozen photographic
+/// placements clear this — so Stark saved a file it then refused to open, which is
+/// the one failure a save format may not have. The bound belongs where the bytes
+/// are a stranger's, and a painting on the artist's own disk is not that.
 const MAX_DECOMPRESSED: u64 = 256 << 20;
 
 /// The last schema version the **pre-carbonite** container carried, and the only
@@ -93,26 +111,22 @@ impl Default for BuildId {
 }
 
 /// Canvas-wide metadata needed to reproduce the document (§8).
+///
+/// **The tile stride is deliberately not here.** It was recorded on every save and
+/// then, once something finally read it, used to *refuse* a file written against a
+/// different `TILE_SIZE` — on the argument that every tile boundary moves with it,
+/// so there was nothing to degrade to. The argument was about pixels, and it proves
+/// less than it looks: nothing in a log is expressed in tile units. `TileCoord`,
+/// `TileRect` and `Extent2` are not `Serialize` at all, and every action states
+/// itself in canvas px. So the stride reaches only *derived* things — which tiles a
+/// footprint quantizes to (§12.6), where an apron sits (§6.4), whether an action
+/// clears a tile cap — and a document whose pixels come back slightly differently is
+/// exactly what §19 permits. Recording it bought one thing: making `TILE_SIZE`
+/// unchangeable for the life of the format, since the first change would orphan
+/// every file ever saved. An implementation detail is not a fact about a painting,
+/// and a field older files carry is skipped on the way in like any other (§8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub struct CanvasMeta {
-    /// The tile stride the log was recorded against, in canvas px
-    /// ([`TILE_SIZE`](crate::geom::TILE_SIZE)).
-    ///
-    /// **Checked on load, which is what makes it worth writing.** It was recorded
-    /// on every save and read by nothing at all — so a file from a build with a
-    /// different stride loaded silently and rendered wrong, which is precisely the
-    /// reproducibility question the field was added to answer. Every tile boundary
-    /// moves with this number: a stroke's footprint quantizes against it (§12.6),
-    /// an apron sits one texel inside it (§6.4), and a fill's written tiles are
-    /// derived from it. None of that degrades gracefully.
-    ///
-    /// A constant rather than something a document may choose. It is stored so the
-    /// file can be *refused* by a build that would read it differently — and it is now
-    /// the **only** thing in a document that is refused rather than reconciled, which
-    /// is the contrast worth holding onto: a field carbonite can match by name it
-    /// matches, while the stride every coordinate is derived from is not a schema
-    /// question. See [`DocError::TileSize`](crate::DocError::TileSize).
-    pub tile_size: u32,
     pub color_space: ColorSpaceId,
     /// The ground the log *starts* from — the initial condition of the empty
     /// document it replays onto, exactly as `color_space` is (§6.4). A
@@ -128,7 +142,6 @@ pub struct CanvasMeta {
 impl Default for CanvasMeta {
     fn default() -> Self {
         Self {
-            tile_size: TILE_SIZE,
             color_space: ColorSpaceId::Oklab,
             surface: SurfaceId::Flat,
         }
@@ -217,51 +230,60 @@ impl DocumentFile {
         Ok(out)
     }
 
-    /// Decode a container produced by [`DocumentFile::to_bytes`].
+    /// Decode a container produced by [`DocumentFile::to_bytes`] that **this user
+    /// owns** — a file off their own disk, or bytes this process just wrote.
+    ///
+    /// Unbounded in what it will expand to, which is what
+    /// [`from_untrusted_bytes`](Self::from_untrusted_bytes) exists to be the other
+    /// half of. A painting is as large as the artist made it: nothing caps how many
+    /// pictures a document places (§23), so a bound low enough to be worth having
+    /// against a stranger is one an honest document can cross — and refusing to open
+    /// a painting this very build saved is a worse failure than any it prevents. The
+    /// bytes here came from somewhere the user already trusts with their files.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        Self::decode(bytes, None)
+    }
+
+    /// Decode a container that **arrived from somewhere else** — a peer's snapshot
+    /// (§12.4), or any bytes whose author is not the person opening them.
+    ///
+    /// Identical to [`from_bytes`](Self::from_bytes) except that it refuses a body
+    /// expanding past [`MAX_DECOMPRESSED`], since deflate's ratio means a few
+    /// kilobytes on the wire can name as many gigabytes as they like.
+    pub fn from_untrusted_bytes(bytes: &[u8]) -> Result<Self> {
+        Self::decode(bytes, Some(MAX_DECOMPRESSED))
+    }
+
+    fn decode(bytes: &[u8], limit: Option<u64>) -> Result<Self> {
         let Some(body) = bytes.strip_prefix(&MAGIC[..]) else {
             return Err(DocError::BadMagic);
         };
-        Self::inflate_and_decode(body)
-    }
 
-    fn inflate_and_decode(body: &[u8]) -> Result<Self> {
-        // Bounded before it is expanded, not after: deflate takes a long run down
-        // to almost nothing, so the compressed length says nothing about the
-        // decompressed one and a reader that finds out by expanding has already
-        // spent the memory. `take` one byte past the limit, so "filled the buffer"
-        // and "reached the limit" are distinguishable.
+        // A bound, where there is one, is applied *before* the body is expanded and
+        // not after: deflate takes a long run down to almost nothing, so the
+        // compressed length says nothing about the decompressed one, and a reader
+        // that finds out by expanding has already spent the memory. `take` one byte
+        // past the limit, so "filled the buffer" and "reached the limit" stay
+        // distinguishable — `u64::MAX` being the unbounded door's way of saying it
+        // will never reach one.
         let mut frame = Vec::new();
+        let ceiling = limit.map_or(u64::MAX, |limit| limit + 1);
         DeflateDecoder::new(body)
-            .take(MAX_DECOMPRESSED + 1)
+            .take(ceiling)
             .read_to_end(&mut frame)
-            // A pre-carbonite container fails *here*, and only here: its four
-            // version bytes sit exactly where the deflate stream has to start, and
-            // none of the thirteen makes a well-formed one. So the sniff hangs off
-            // the inflate error rather than running first — a current file that
-            // inflates is never asked whether it looks old.
+            // A pre-carbonite container fails *here*, and only here: its four version
+            // bytes sit exactly where the deflate stream has to start, and none of the
+            // thirteen makes a well-formed one. So the sniff hangs off the inflate error
+            // rather than running first — a current file that inflates is never asked
+            // whether it looks old.
             .map_err(|e| legacy_header(body).unwrap_or(DocError::Io(e)))?;
-        if frame.len() as u64 > MAX_DECOMPRESSED {
-            return Err(DocError::TooLarge {
-                limit: MAX_DECOMPRESSED,
-            });
-        }
-        let file: Self = carbonite::from_slice_static(&frame).map_err(DocError::Deserialize)?;
-
-        // Refused rather than read, and the one thing left in a document that can
-        // be: the bytes decode perfectly and simply do not mean what this build
-        // would read them as. Every tile boundary in the document moves with this
-        // number (see `CanvasMeta::tile_size`), so there is nothing to degrade to —
-        // which is exactly what distinguishes it from a *schema* difference, where
-        // reconciling by name is a real answer.
-        if file.canvas.tile_size != TILE_SIZE {
-            return Err(DocError::TileSize {
-                expected: TILE_SIZE,
-                found: file.canvas.tile_size,
-            });
+        if let Some(limit) = limit
+            && frame.len() as u64 > limit
+        {
+            return Err(DocError::TooLarge { limit });
         }
 
-        Ok(file)
+        carbonite::from_slice_static(&frame).map_err(DocError::Deserialize)
     }
 }
 
@@ -312,15 +334,16 @@ mod tests {
         ));
     }
 
-    /// A container whose body expands past the cap is **refused rather than
-    /// expanded**, and refused without ever holding the expansion.
+    /// **The cap is the stranger's door, and only the stranger's.**
     ///
-    /// Deflate takes a long run down to almost nothing, so the compressed length
-    /// says nothing about the decompressed one — the whole point of the bound.
-    /// The body here is a few KB on the wire and a third of a gigabyte off it,
-    /// which is exactly the shape a peer can send (§12.4).
+    /// One body, the two doors, opposite answers. Deflate takes a long run down to
+    /// almost nothing, so the compressed length says nothing about the decompressed
+    /// one — the whole point of the bound, and exactly the shape a peer can send
+    /// (§12.4). The same bytes off the artist's own disk are expanded, because a
+    /// bound low enough to stop that is one an honest document can cross, and a save
+    /// format that will not open what it wrote is the worse failure.
     #[test]
-    fn refuses_a_body_that_expands_past_the_cap() {
+    fn the_cap_guards_the_untrusted_door_and_not_the_trusted_one() {
         let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
         let zeros = vec![0u8; 1 << 20];
         for _ in 0..((MAX_DECOMPRESSED >> 20) + 8) {
@@ -335,37 +358,28 @@ mod tests {
             bytes.len(),
         );
         assert!(matches!(
-            DocumentFile::from_bytes(&bytes),
+            DocumentFile::from_untrusted_bytes(&bytes),
             Err(DocError::TooLarge { limit }) if limit == MAX_DECOMPRESSED
         ));
+        // The trusted door expands it and then finds it is not a document — which is
+        // the assertion that matters: it got *past* the size, so a real painting of
+        // this weight would open.
+        assert!(
+            matches!(
+                DocumentFile::from_bytes(&bytes),
+                Err(DocError::Deserialize(_))
+            ),
+            "the trusted door must not refuse on size",
+        );
     }
 
-    /// …and the cap is nowhere near an honest document: the roundtrip above has to
-    /// keep working, which is what stops the bound being tightened into a bug.
+    /// …and the cap is nowhere near an honest document, so the untrusted door still
+    /// opens everything a session actually produces.
     #[test]
     fn an_ordinary_document_is_nowhere_near_the_cap() {
         let bytes = sample_doc().to_bytes().expect("encode");
         assert!((bytes.len() as u64) < MAX_DECOMPRESSED / 1000);
-        assert!(DocumentFile::from_bytes(&bytes).is_ok());
-    }
-
-    /// A stride this build does not address is **refused**, not loaded.
-    ///
-    /// The field was written on every save and read by nothing, so this file used
-    /// to open clean — and then quantize every footprint, apron and fill against a
-    /// grid the log was not recorded on.
-    #[test]
-    fn rejects_a_document_recorded_on_another_tile_grid() {
-        let mut doc = sample_doc();
-        doc.canvas.tile_size = TILE_SIZE * 2;
-        let bytes = doc.to_bytes().expect("encode");
-        assert!(matches!(
-            DocumentFile::from_bytes(&bytes),
-            Err(DocError::TileSize { expected, found })
-                if expected == TILE_SIZE && found == TILE_SIZE * 2
-        ));
-        // …and this build's own stride is of course accepted.
-        assert!(DocumentFile::from_bytes(&sample_doc().to_bytes().expect("encode")).is_ok());
+        assert!(DocumentFile::from_untrusted_bytes(&bytes).is_ok());
     }
 
     #[test]
@@ -439,19 +453,22 @@ mod tests {
     ///
     /// `Old` is what `DocumentFile` and `CanvasMeta` looked like at some earlier
     /// build — no `surface` on the canvas (a field this build added), and a
-    /// `dpi` this build has since dropped — spelled with the names the real types
-    /// carry, because names are what carbonite reconciles on. Both moves are
+    /// `tile_size` this build has since dropped — spelled with the names the real
+    /// types carry, because names are what carbonite reconciles on. Both moves are
     /// exercised at once: the added field arrives from its `#[serde(default)]`, the
     /// removed one is skipped, and everything either shape shares comes through.
+    ///
+    /// `tile_size` is not a hypothetical here: every document written before the
+    /// stride stopped being recorded carries one, and this is the assertion that
+    /// those files still open (see [`CanvasMeta`]).
     #[test]
     fn a_file_written_against_an_older_shape_still_loads() {
         #[derive(Serialize, Deserialize, carbonite::Schema)]
         #[serde(rename = "CanvasMeta")]
         struct OldCanvas {
+            /// Carried then, gone now: a reader has to step over its column.
             tile_size: u32,
             color_space: ColorSpaceId,
-            /// Carried then, gone now: a reader has to step over its column.
-            dpi: f32,
         }
 
         #[derive(Serialize, Deserialize, carbonite::Schema)]
@@ -468,9 +485,8 @@ mod tests {
         let old = OldFile {
             app_build: BuildId::default(),
             canvas: OldCanvas {
-                tile_size: TILE_SIZE,
+                tile_size: crate::geom::TILE_SIZE,
                 color_space: ColorSpaceId::Oklab,
-                dpi: 96.0,
             },
             actions: sample_doc().actions,
             assets: Vec::new(),

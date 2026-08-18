@@ -599,7 +599,7 @@ dependencies = [
 [[package]]
 name = "carbonite"
 version = "1.0.0"
-source = "git+https://github.com/cbbowen/carbonite#ad35240896c080304a3bc1850bd40c4c658d9665"
+source = "git+https://github.com/cbbowen/carbonite#298e144c3fd32f6526d5a0cde3d9505cd886034e"
 dependencies = [
  "carbonite-derive",
  "glam 0.33.3",
@@ -610,7 +610,7 @@ dependencies = [
 [[package]]
 name = "carbonite-derive"
 version = "1.0.0"
-source = "git+https://github.com/cbbowen/carbonite#ad35240896c080304a3bc1850bd40c4c658d9665"
+source = "git+https://github.com/cbbowen/carbonite#298e144c3fd32f6526d5a0cde3d9505cd886034e"
 dependencies = [
  "proc-macro2",
  "quote",

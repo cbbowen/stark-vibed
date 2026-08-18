@@ -54,34 +54,20 @@ pub enum DocError {
     )]
     Legacy(u32),
 
-    /// The container's compressed body expands past what this build will hold in
-    /// memory at once (`io::MAX_DECOMPRESSED`).
+    /// A container that **arrived from somewhere else** expands past
+    /// `io::MAX_DECOMPRESSED` — raised by `DocumentFile::from_untrusted_bytes` and
+    /// by nothing else (§8, §12.4).
     ///
     /// A refusal rather than a decode error, and its own variant rather than an
     /// `Io`, because the bytes may be perfectly well-formed: deflate compresses a
     /// long run to almost nothing, so a small file can name an enormous one, and a
     /// reader that expands first and asks afterwards has already spent the memory.
-    /// Documents arrive from peers as well as from disk (§12.4), which is the case
-    /// the bound is actually for.
+    ///
+    /// **Opening the user's own file cannot produce this**, which is the half worth
+    /// stating: a document is as large as the artist made it, so the bound is about
+    /// who wrote the bytes rather than about how many there are.
     #[error("document expands to more than {limit} bytes")]
     TooLarge { limit: u64 },
-
-    /// The document was recorded against a different tile stride than this build
-    /// addresses the canvas with (`CanvasMeta::tile_size`).
-    ///
-    /// A refusal for [`Self::TooLarge`]'s reason: the bytes are well-formed and
-    /// well-understood, and what is wrong is that they do not mean here what they
-    /// meant where they were written. Every tile boundary moves with the stride, so
-    /// there is no partial reading to fall back on — and the field was stored on
-    /// every save and read by nothing until this existed, so the mismatch used to
-    /// load clean and render wrong.
-    ///
-    /// **The one thing a document still carries that this build may refuse**, and
-    /// the contrast that says what the format change did and did not buy (§8): a
-    /// field carbonite can reconcile by name is reconciled, while a *constant* the
-    /// whole coordinate system is derived from is not a schema question at all.
-    #[error("document uses a tile size of {found}; this build addresses tiles of {expected}")]
-    TileSize { expected: u32, found: u32 },
 
     /// The document names a color space this build does not carry — today only
     /// [`ColorSpaceId::Mixbox`] in a build without the `mixbox` cargo feature.

@@ -48,6 +48,20 @@ pub struct GradientStop {
 /// nothing drives `try_from` to find out what the type looks like, and a stored list
 /// that names no ramp is turned away instead of having to be accepted so that the type
 /// could describe itself.
+///
+/// **Which makes these invariants unable to tighten without repair.** This is the one
+/// refusing funnel on the load path, and it takes the whole document with it — a ramp
+/// sits inside a `MattePaint`, a `Filter::GradientMap`, and a
+/// [`FillOp`](crate::document::FillOp)'s parcel, where it is refused *before* that
+/// op's own clamp can run. `RawFillOp` states the opposite policy for a reason that
+/// applies here too: a fill that will not open is worse than one whose opacity was
+/// pulled into range. Today nothing this build writes can fail the gate, so the two
+/// coexist. But adding a condition — a stop-count bound, monotonic lightness — would
+/// retroactively unload files that were valid when saved, which §19 does not permit.
+/// A tightened invariant has to arrive as **repair on the way in** (drop the
+/// offending stops, spread coincident positions, fall back to a two-stop ramp) with
+/// [`new`](Self::new) left refusing for the *authoring* path, where a caller who
+/// traced a line does need to hear that the samples describe no ramp.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, carbonite::Schema)]
 #[serde(try_from = "Vec<GradientStop>", into = "Vec<GradientStop>")]
 #[carbonite(as = "Vec<GradientStop>")]

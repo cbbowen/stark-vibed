@@ -67,7 +67,13 @@ pub struct ActionId {
 /// because from the frontend's point of view they are the same interaction: press,
 /// drag, release. But which of them was in hand is not part of what a document
 /// *is*; the stroke or the op it produced is, and that is what the log carries.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
+///
+/// So it is **not serializable**, which is the paragraph above enforced rather than
+/// asserted. It carried `Serialize`/`Deserialize`/`Schema` while reachable from no
+/// saved or sent type at all — a standing counterexample to the crate's own placement
+/// rule, *if a type is serializable it is a fact about the document and lives here*
+/// (`lib.rs`), which is the rule the next type is placed by.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
     #[default]
     Brush,
@@ -113,7 +119,7 @@ pub struct StrokeRecord {
 
 /// What an action does to the document.
 ///
-/// # Adding to this enum
+/// # Changing this enum
 ///
 /// This is the document's vocabulary, so it is also the thing every saved file is
 /// read against — and the rules for changing it are **not** the ones that used to
@@ -126,13 +132,48 @@ pub struct StrokeRecord {
 ///   an older file's missing column is filled from. Without it, that file fails to
 ///   load and says which field it wanted.
 /// - A **renamed** field or variant needs `#[serde(alias = "…")]` to keep older files
-///   readable; a renamed one without an alias is a break, and the only kind left.
+///   readable; a renamed one without an alias is a break.
 /// - A **removed** field is skipped by readers that no longer declare it.
+/// - A variant's **shape** may change — every shape is a product of its fields in
+///   order, so a unit may gain fields and a payload may be taken away. Moving to
+///   *named* fields needs `#[serde(alias = "0")]` on the field taking each position.
 ///
-/// What has not changed is that the *meaning* of an existing variant is fixed. Reusing
-/// a name for something else, or narrowing what a field may hold, is a change no
+/// ## Retiring an action: tombstone it, never delete it
+///
+/// **A variant removed from this enum makes every file that ever used it
+/// unloadable** — and not just that action: the whole log is one value, so one
+/// retired action in ten thousand refuses the document with `unknown variant`.
+/// That is the one change the encoding cannot absorb, and it is the reverse of the
+/// intuition the rules above build, which is why it is spelled out here.
+///
+/// §19's beta rung promises old files keep opening while promising nothing about what
+/// they produce, so retiring an action is spelled as **keeping the variant and taking
+/// away what it does**:
+///
+/// 1. Keep the variant, under its own name.
+/// 2. Hollow the payload out to what is still read — often `{}`, since a reader
+///    steps over columns no field claims. The types behind it can go.
+/// 3. Make it a no-op in `DocState::fold`, and give it an empty [`Footprint`], so it
+///    reads and writes nothing and commutes with everything.
+///
+/// **Keep any field that is load-bearing outside the fold**, which is the trap here
+/// rather than the payload's size. An `Add…` variant's `id` is one:
+/// [`minted_layers`](Self::minted_layers) reports the ordinals a client's counter has
+/// to resume past (§17.9), and a tombstone that dropped its `id` would let a reload
+/// mint that layer id a second time — two layers under one id, the convergence
+/// failure per-client identity exists to rule out.
+///
+/// **A tombstone is a wire change, not only a file change.** Two peers where one
+/// still applies the action and the other ignores it diverge silently, and pixels
+/// cannot show which path ran (§12.6). So retiring an action bumps the ALPN, exactly
+/// as reshaping anything gossip touches does (`stark-net::codec`).
+///
+/// What has not changed is that the *meaning* of a live variant is fixed. Reusing a
+/// name for something else, or narrowing what a field may hold, is a change no
 /// encoding can absorb — replay would put back a different picture, which no file can
 /// notice on its own.
+///
+/// [`Footprint`]: super::footprint::Footprint
 #[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
 pub enum ActionKind {
     CommitStroke(StrokeRecord),

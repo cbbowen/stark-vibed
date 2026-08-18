@@ -363,7 +363,9 @@ impl CollabSession {
         };
         let snapshot = catchup.request(request).await?;
         catchup.close().await;
-        let file = DocumentFile::from_bytes(&snapshot)?;
+        // The untrusted door: these bytes are a peer's, and deflate's ratio means a
+        // few kilobytes of them can name as many gigabytes as they like (§8, §12.4).
+        let file = DocumentFile::from_untrusted_bytes(&snapshot)?;
         // What the log names but the bundle no longer carries — the bill for the
         // promise. Worked out by the file itself rather than here, because it is
         // the same question loading a document off disk asks, and one definition

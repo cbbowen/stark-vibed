@@ -144,15 +144,27 @@ The native format is **the serialized action log**:
 
 ```rust
 pub struct DocumentFile {
-    pub format_version: u32,
     pub app_build: BuildId,            // shaders/algorithm version for fidelity notes
-    pub canvas: CanvasMeta,            // tile size, channel set, color space, surface
+    pub canvas: CanvasMeta,            // color space, and the ground it starts on
     pub actions: Vec<Action>,          // the full, replayable log (each id-tagged)
     pub assets: Vec<(AssetId, Bytes)>, // content-addressed brush images (§6.6)
     pub surfaces: Vec<(SurfaceId, Bytes)>, // the canvas grounds it names (§6.4)
+    pub pictures: Vec<(AssetId, Bytes)>,   // the images it places (§23)
     pub checkpoints: Vec<Checkpoint>,  // OPTIONAL cached rasters (see below)
 }
 ```
+
+There is no `format_version`, and there is no tile size. The first went with the
+encoding that needed it (§8.1). The second was recorded on every save and then, once
+something read it, used to *refuse* a file written against a different `TILE_SIZE` —
+on the argument that every tile boundary moves with the stride. But nothing in a log
+is expressed in tile units: `TileCoord`, `TileRect` and `Extent2` are not
+`Serialize` at all, and every action states itself in canvas px. The stride reaches
+only *derived* things — which tiles a footprint quantizes to (§12.6), where an apron
+sits (§6.4), whether an action clears a tile cap — and a document whose pixels come
+back a little differently is exactly what §19 permits. All the field bought was making
+`TILE_SIZE` unchangeable for the life of the format, since the first change would
+orphan every file ever saved. An implementation detail is not a fact about a painting.
 
 `assets` bundles every brush image any stroke references and `surfaces` every
 canvas ground the log names, so the file is self-contained and replayable;
@@ -244,13 +256,40 @@ against this build's types **by name**, exactly as reading JSON would, so:
 | A new field **without** a default | refused, naming the field it wanted |
 | A **renamed** field or variant, with `#[serde(alias)]` | found through the alias |
 | A **removed** field | skipped |
+| A variant's **shape** changed (unit ↔ fields, payload taken away) | reconciled as a product of fields in order |
 | An **integer widened** (`u32` → `u64`) | read and widened |
+| A **removed variant** | **refuses the whole document** |
 
 That list is the contract, and `a_file_written_against_an_older_shape_still_loads`
-(`io.rs`) is what holds it. What is left that no encoding can absorb is a rename
-without an alias, and a **meaning** changed with the names untouched — reusing a
-variant for something else, or narrowing what a field may hold. Nothing in a file can
-notice the second; it is not a format problem and never was.
+(`io.rs`) is what holds it.
+
+**The last row is the one to know.** A variant is matched by name and an unknown one
+has nothing to fall back on, so a file that used it is refused — and because a log is
+one value, one retired action in ten thousand takes the document with it. §19 promises
+old files keep opening while promising nothing about what they produce, so an action
+is retired by **tombstoning** it: keep the variant, hollow the payload out to what is
+still read, make it a no-op with an empty footprint. Keep whatever is load-bearing
+outside the fold, though — an `Add…` variant's `id` is still owed to `minted_layers`,
+or a reload mints that layer id a second time (§17.9). And a tombstone changes what a
+log *means* with its shape untouched, so it bumps the ALPN: a file may be read by a
+build that disagrees with it, a live session may not (§12.6).
+
+What is left that no encoding can absorb is a rename without an alias, and a
+**meaning** changed with the names untouched — reusing a variant for something else,
+or narrowing what a field may hold. Nothing in a file can notice the second; it is not
+a format problem and never was. One consequence reaches the invariant funnels: a gate
+that *refuses* on the way in (`Gradient`, alone in this) cannot be tightened later
+without unloading files that were valid when saved, so a new condition there has to
+arrive as repair rather than refusal.
+
+**Two doors, and only one is bounded.** `DocumentFile::from_bytes` opens a file the
+user owns; `from_untrusted_bytes` opens a peer's snapshot (§12.4) and refuses a body
+expanding past 256 MB, since deflate's ratio lets a few kilobytes name as many
+gigabytes as they like. One bound served both until it was noticed that nothing caps
+how many pictures a document places (§23) — so a dozen photographic placements crossed
+it and Stark refused to open a file it had itself saved, which is the one failure a
+save format may not have. There is no threat model in which the artist's own file is
+the attacker.
 
 One thing that follows is easy to miss: the rules that used to hang off nearly every
 `ActionKind` variant — *appended last so postcard keeps decoding older files* — are gone,

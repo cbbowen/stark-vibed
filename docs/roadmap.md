@@ -762,12 +762,30 @@ What alpha still means, then, is narrower and more honest than it was:
   picture and nothing in the file can notice. This is the one that needs discipline.
 - **Pixels** are not promised across builds (`app_build`, §8): the renderer is still
   moving, and a document is a program for it.
-- **Constants the coordinate system is derived from** are refused, not reconciled. A
-  document recorded against a different `TILE_SIZE` is turned away
-  (`DocError::TileSize`), because every footprint, apron and fill quantizes against it.
+- **Vocabulary only grows.** A variant is matched by name and an unknown one has
+  nothing to fall back on, so a variant *removed* from `ActionKind` — or from any enum
+  the log names — refuses every file that used it, and refuses the whole document
+  rather than the one action. An action is retired by tombstoning it instead: the
+  variant stays, its payload is hollowed out to what is still read, and it folds to
+  nothing (§8).
+- **Content caps only rise.** `MAX_SHAPE_DIM`, `MAX_GROUND_DIM` and `MAX_PICTURE_DIM`
+  are enforced on the way in, so lowering one refuses content a bundle already carries
+  — and a document whose content will not decode does not open at all.
 - **Content must be resolvable.** A lean file names its grounds and brush shapes by
   content id (§8, §12.4), and one whose content is neither bundled nor loaded refuses
   to replay rather than substituting a stand-in.
+
+**What beta adds is a promise about the first two of those, and it is weaker than it
+sounds in one direction and stronger in another.** Weaker: a file must *open*, not
+come back the same — meaning is still unversioned, so an action may be retired outright
+and the painting that used it opens without it. Stronger: "may be lost or changed" is
+not a licence to refuse. Every refusal on the load path is a beta violation unless it
+is one of the two the promise names — a document naming a color space this build was
+not compiled with (`DocError::UnsupportedColorSpace`, a licensing constraint, §6.7),
+and one whose content cannot be resolved. So the discipline the rung actually asks for
+is: tombstone rather than delete, let the caps only rise, and let a value that has
+gone out of range be *repaired* on the way in rather than turned away — the policy
+`FillOp` already states and `Gradient` is the one exception to (§8).
 
 ---
 
