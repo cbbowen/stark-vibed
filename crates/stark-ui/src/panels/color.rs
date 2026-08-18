@@ -8,7 +8,7 @@
 
 use dioxus::prelude::*;
 
-use crate::platform::capture_pointer;
+use crate::platform::{capture_pointer, pointer_fraction};
 use crate::state::{AppState, update_brush};
 use stark_model::color::{oklab_to_srgb, srgb_to_oklab};
 
@@ -45,16 +45,18 @@ pub fn ColorPanel() -> Element {
     }
 }
 
-/// Oklab a/b picker field, on screen (px) — a square `a`×`b` plane at the current `L`.
-const FIELD_PX: f32 = 220.0;
-/// Oklab `L` slider height, on screen (px).
-const L_H: f32 = 220.0;
+// The picker's on-screen sizes are the stylesheet's alone (`.ab-field`,
+// `.l-slider`): the markers are placed in percentages and a pick reads the
+// pointer as a fraction of the element it landed in (`platform::pointer_fraction`),
+// so nothing here has to mirror a px value — which is what lets minimal mode
+// resize the plane with one CSS rule and no second copy to drift.
+
 /// Half-extent of the `a`/`b` axes shown in the field. Symmetric, so it covers most of
 /// the sRGB gamut (blue reaches b ≈ −0.31); out-of-gamut corners clamp.
 const AB: f32 = 0.32;
-/// Rendered resolution of the a/b field BMP (CSS scales it to `FIELD_PX`, smoothly —
-/// the plane is low-frequency, and a small BMP keeps the data URL cheap to regenerate
-/// while dragging `L`). `N·3` is a multiple of 4, so BMP rows need no padding.
+/// Rendered resolution of the a/b field BMP (CSS scales it to the field's size,
+/// smoothly — the plane is low-frequency, and a small BMP keeps the data URL cheap to
+/// regenerate while dragging `L`). `N·3` is a multiple of 4, so BMP rows need no padding.
 const FIELD_N: usize = 96;
 
 /// Reusable Oklab color picker: a vertical `L` slider + a 2D `a`/`b` field. Seeds its
@@ -110,9 +112,10 @@ pub fn OklabPicker(
     // memoize it (no rebuild while dragging in the field, which moves only `a`/`b`).
     let field = use_memo(move || ab_field_data_url(l(), AB));
 
-    let ax = (a() / AB * 0.5 + 0.5) * FIELD_PX; // a: −AB→left, +AB→right
-    let by = (0.5 - b() / AB * 0.5) * FIELD_PX; // b: +AB→top (warm), −AB→bottom (cool)
-    let ly = (1.0 - l()) * L_H; // L: 1→top, 0→bottom
+    // Percentages of the field's own box, whatever size the stylesheet gave it.
+    let ax = (a() / AB * 0.5 + 0.5) * 100.0; // a: −AB→left, +AB→right
+    let by = (0.5 - b() / AB * 0.5) * 100.0; // b: +AB→top (warm), −AB→bottom (cool)
+    let ly = (1.0 - l()) * 100.0; // L: 1→top, 0→bottom
     // Exact 1-D oklab gradient for the L track at the current chroma (CSS interpolates
     // in oklab when asked, so the ramp is perceptually even).
     let l_grad = format!(
@@ -132,7 +135,7 @@ pub fn OklabPicker(
                 onpointermove: move |e| { if picking_ab() { pick_ab(onchange, a, b, l, &e); } },
                 onpointerup: move |_| end_pick(oncommit, picking_ab, l, a, b),
                 onpointercancel: move |_| end_pick(oncommit, picking_ab, l, a, b),
-                div { class: "ab-marker", style: "left:{ax}px; top:{by}px;" }
+                div { class: "ab-marker", style: "left:{ax}%; top:{by}%;" }
             }
             div {
                 class: "l-slider",
@@ -141,7 +144,7 @@ pub fn OklabPicker(
                 onpointermove: move |e| { if picking_l() { pick_l(onchange, l, a, b, &e); } },
                 onpointerup: move |_| end_pick(oncommit, picking_l, l, a, b),
                 onpointercancel: move |_| end_pick(oncommit, picking_l, l, a, b),
-                div { class: "l-marker", style: "top:{ly}px;" }
+                div { class: "l-marker", style: "top:{ly}%;" }
             }
         }
     }
@@ -190,9 +193,11 @@ fn pick_ab(
     l: Signal<f32>,
     e: &Event<PointerData>,
 ) {
-    let c = e.element_coordinates();
-    a.set(((c.x as f32 / FIELD_PX) * 2.0 - 1.0).clamp(-1.0, 1.0) * AB);
-    b.set((1.0 - (c.y as f32 / FIELD_PX) * 2.0).clamp(-1.0, 1.0) * AB);
+    let Some((fx, fy)) = pointer_fraction(e) else {
+        return;
+    };
+    a.set((fx * 2.0 - 1.0).clamp(-1.0, 1.0) * AB);
+    b.set((1.0 - fy * 2.0).clamp(-1.0, 1.0) * AB);
     apply_color(onchange, l, a, b);
 }
 
@@ -204,8 +209,10 @@ fn pick_l(
     b: Signal<f32>,
     e: &Event<PointerData>,
 ) {
-    let c = e.element_coordinates();
-    l.set((1.0 - c.y as f32 / L_H).clamp(0.0, 1.0));
+    let Some((_, fy)) = pointer_fraction(e) else {
+        return;
+    };
+    l.set((1.0 - fy).clamp(0.0, 1.0));
     apply_color(onchange, l, a, b);
 }
 

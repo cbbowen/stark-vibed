@@ -703,6 +703,39 @@ pub fn capture_pointer(e: &Event<PointerData>) {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn capture_pointer(_e: &Event<PointerData>) {}
 
+/// Where a pointer event landed, as a fraction of its target element's box —
+/// `(0, 0)` the top-left corner, `(1, 1)` the bottom-right, unclamped past the
+/// edges. `None` off wasm, or for a target with no box to measure.
+///
+/// Read off the event's own target, which under pointer capture
+/// ([`capture_pointer`]) stays the element that took the press — so a drag
+/// keeps measuring the box it started in wherever the pointer goes. Fractions
+/// rather than px so a control's geometry is the stylesheet's alone: the Oklab
+/// picker's plane is one size in its panel and another where minimal mode takes
+/// the panel's padding, and no Rust constant has to mirror either
+/// (`panels::color`).
+#[cfg(target_arch = "wasm32")]
+pub fn pointer_fraction(e: &Event<PointerData>) -> Option<(f32, f32)> {
+    use dioxus::web::WebEventExt;
+    use wasm_bindgen::JsCast;
+    let ev = e.try_as_web_event()?;
+    let rect = ev
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())?
+        .get_bounding_client_rect();
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return None;
+    }
+    Some((
+        ((ev.client_x() as f64 - rect.left()) / rect.width()) as f32,
+        ((ev.client_y() as f64 - rect.top()) / rect.height()) as f32,
+    ))
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn pointer_fraction(_e: &Event<PointerData>) -> Option<(f32, f32)> {
+    None
+}
+
 /// Select all the text in the element `e` was mounted on — a no-op unless it is a
 /// text field.
 ///

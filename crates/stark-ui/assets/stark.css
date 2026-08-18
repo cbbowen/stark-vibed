@@ -562,9 +562,13 @@ hr {
   gap: 10px;
 }
 
+/* The picker's sizes are stated here alone: the markers ride percentages and a
+   pick reads the pointer as a fraction of the element it landed in
+   (`platform::pointer_fraction`), so no Rust constant mirrors these — which is
+   what lets minimal mode restate them below with one rule. */
 .ab-field {
   position: relative;
-  width: 220px; /* mirrors FIELD_PX in main.rs */
+  width: 220px;
   height: 220px;
   border-radius: 6px;
   cursor: crosshair;
@@ -586,7 +590,7 @@ hr {
 .l-slider {
   position: relative;
   width: 22px;
-  height: 220px; /* mirrors L_H in main.rs */
+  height: 220px; /* the field's, so the pair read as one instrument */
   border-radius: 6px;
   cursor: ns-resize;
   touch-action: none;
@@ -817,6 +821,55 @@ hr {
 .app-root.minimal .panel.stack-last {
   border-bottom-left-radius: 12px;
   border-bottom-right-radius: 12px;
+}
+
+/* Two panels whose content is a picture — the navigator's miniature, the color
+   panel's a/b plane — give up their padding in minimal mode: in a flush column
+   a picture reads best bled to the panel's own edges, and the padding was the
+   one thing between them. The header keeps the inset the panel gave up (its
+   words still need a margin to sit in), restoring its bottom half only on a
+   folded panel, where the header's edge *is* the panel's. Each picture's other
+   half is elsewhere: the miniature is fitted to the widened inner width
+   (`navigator.rs`), and the picker's geometry is fractional, so the sizes
+   below are free to state. */
+.app-root.minimal .panel[data-panel="Navigator"],
+.app-root.minimal .panel[data-panel="Color"] {
+  padding: 0;
+}
+
+.app-root.minimal .panel[data-panel="Navigator"] .panel-header,
+.app-root.minimal .panel[data-panel="Color"] .panel-header {
+  padding: 12px 14px 0;
+}
+
+.app-root.minimal .panel.collapsed[data-panel="Navigator"] .panel-header,
+.app-root.minimal .panel.collapsed[data-panel="Color"] .panel-header {
+  padding-bottom: 12px;
+}
+
+/* The row centres the shrink-wrapped frame with `text-align`, which stands the
+   inline-block frame on a text baseline — a ~4px strip under the picture that
+   the panel's padding used to swallow. Flush against the panel's bottom edge
+   it would read as a mistake, so the flush mode centres with flex, which has
+   no baseline to stand on. */
+.app-root.minimal .panel[data-panel="Navigator"] .nav-thumb-row {
+  display: flex;
+  justify-content: center;
+}
+
+/* The a/b plane widened to the padding it gained, the `L` track matching: the
+   pair still fill the row exactly (248 + 10 gap + 22 = 280), and the plane
+   stays square so equal spans of `a` and `b` stay equal distances. Corners
+   squared where they meet the panel's now-shared edges. */
+.app-root.minimal .panel[data-panel="Color"] .ab-field {
+  width: 248px;
+  height: 248px;
+  border-radius: 0;
+}
+
+.app-root.minimal .panel[data-panel="Color"] .l-slider {
+  height: 248px;
+  border-radius: 0;
 }
 
 /* A chip that has lost its word should be a square around its mark, not a pill still
