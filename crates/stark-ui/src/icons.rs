@@ -327,9 +327,18 @@ icons! {
     // to draw (§6.2) — which is why it can be overwritten like any other slot and
     // the mark still tells the truth about which one it is.
     ERASER => "eraser-bold",
+    // The eyedropper's reach (§18.0.2), drawn as the stack growing: one plane,
+    // two, three — the row reads as one question, *how far does this sample
+    // see*, and the marks count the answer.
     ONE_LAYER => "stack-single-bold",
-    ALL_LAYERS => "stack-simple-bold",
-    ALL_LAYERS_AND_CANVAS => "stack-bold",
+    AND_BELOW => "stack-simple-bold",
+    ALL_LAYERS => "stack-bold",
+    // The eyedropper's group fence: only what the selected layer shares a
+    // carrier with answers. Two circles, the shared part filled — "what we have
+    // in common" — at the circles' weight deliberately, since the selection
+    // row's set operations wear the squares ([`SELECTION_ISECT`]) and this is a
+    // different control asking a different question.
+    GROUP_ONLY => "intersect-bold",
     // The brush editor, off the Brush panel. A wrench rather than a brush: the panel
     // that hosts the button already wears the brush ([`BRUSH`]), and what this opens
     // is the place where the brush is *adjusted*, not another brush.

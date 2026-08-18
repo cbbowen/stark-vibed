@@ -128,17 +128,27 @@ mounted only while Alt arms the tool — the same present-or-absent argument the
 selection and frame bars make, and what makes a modifier binding discoverable
 rather than secret.
 
-There are three sources, not two, and the third is the one exception to *bare
-canvas answers nothing*: the composite **over the substrate** (§15.5), which fills
-in the canvas color wherever the paint does not cover. The other two answer with
-the paint that is stored at a point; this one answers with the color that is
-*seen* there, which is the question being asked when the paint is a glaze — and
-the only source whose answer can be a color no layer holds. It runs the same
+The bar asks two questions, not one list of modes. The **reach** — this layer /
+this layer and below / all layers — says how far up the stack a sample sees:
+"and below" is the document as the screen would show it with everything above
+the selected layer switched off, ancestors of a nested layer included as far as
+they reach beneath it, their own modes and opacities applied to what remains.
+The **group fence** ("Group", on by default) says what the reach runs through:
+on, only the selected layer's composite group answers — its siblings and the
+carrier's own content, composited as the group composites internally, with the
+carrier's outward params dropped by the one-layer source's argument below; a
+root layer reads the whole root stack as its group. Off, the reach runs through
+the whole document **over the substrate** (§15.5), the canvas color filling in
+wherever the paint does not cover — the one exception to *bare canvas answers
+nothing*, and the only answer that can be a color no layer holds. The canvas
+rides the fence rather than being a mode of its own because it is a fact about
+the picture, not about any group of paint: a group is sampled for what is *on*
+it, the document for what is *seen*. The over-substrate blend runs the same
 `over` the media pass runs, in the same latent channels, so it agrees with the
-screen rather than offering a second opinion about it. It is also the one place a
-sample stops being an opacity-weighted mean: with the ground behind it every texel
-is opaque, so a patch half-covered by a stroke reads as a mixture of paint and
-canvas instead of as the stroke alone.
+screen rather than offering a second opinion about it. It is also the one place
+a sample stops being an opacity-weighted mean: with the ground behind it every
+texel is opaque, so a patch half-covered by a stroke reads as a mixture of paint
+and canvas instead of as the stroke alone.
 
 The **sample-one-layer** source drops that layer's composite params entirely —
 blend, clip and opacity (§14.4.3). All three say how the layer meets what is beneath

@@ -46,6 +46,33 @@ pub enum PickSource {
     /// setting above zero is a layer that is there and turned down, and zero is a
     /// layer that is switched off.
     Layer(LayerId),
+    /// The interior of the group that carries `layer` (§14.2): the layer, its
+    /// siblings, and the carrier's own content, composited exactly as the group
+    /// composites internally — members keep their modes and clips, since a
+    /// sibling's blend against the base is part of what the group *is*. What is
+    /// dropped is the carrier's own outward params, by [`Layer`](Self::Layer)'s
+    /// argument: they say how the group meets what is beneath it, and beneath it
+    /// is exactly what this source excludes. For a layer in the root stack the
+    /// interior is the whole document and this answers as [`Composite`](Self::Composite)
+    /// does — the root "group" has no substrate in it, so bare canvas still
+    /// answers nothing.
+    ///
+    /// `below` cuts the interior above the layer: only the layer itself, members
+    /// beneath it, and the carrier's base content answer, as though the members
+    /// above had been switched off.
+    Group { layer: LayerId, below: bool },
+    /// Every visible layer at or beneath `layer` — the document as the screen
+    /// would show it with everything above the layer switched off, **over the
+    /// substrate** (§15.5). Ancestors of a nested layer are included as far as
+    /// they reach beneath it: their bases, the members below the chain, and
+    /// their own outward params applied to that partial whole, which is exactly
+    /// what hiding the layers above would leave on screen.
+    ///
+    /// The substrate is in the question, as it is for
+    /// [`CompositeOverSubstrate`](Self::CompositeOverSubstrate): "what would I
+    /// see here without the layers over this one" is asked of a canvas, not of
+    /// paint floating in the void — so bare canvas answers with the ground.
+    Below(LayerId),
 }
 
 /// How an eyedropper sample is taken (§18.0.2).
@@ -262,17 +289,18 @@ impl Engine {
         self.flush_live();
         let radius = options.radius.min(MAX_PICK_RADIUS);
         let size = Extent2::new(2 * radius + 1, 2 * radius + 1);
-        let only = match options.source {
-            PickSource::Composite | PickSource::CompositeOverSubstrate => None,
-            PickSource::Layer(id) => Some(id),
-        };
         // Read here rather than in the future, because it is document state and
-        // the future deliberately does not borrow the engine. That the other two
-        // sources have no ground is why this is a third *source* rather than a
-        // flag on the other two: asking one layer for its own color and asking
-        // what the canvas shows are different questions, and only the second one
-        // has a substrate in it.
-        let ground = matches!(options.source, PickSource::CompositeOverSubstrate).then(|| {
+        // the future deliberately does not borrow the engine. That the other
+        // sources have no ground is why the substrate rides the *source* rather
+        // than a flag beside it: asking paint for its own color and asking what
+        // the canvas shows are different questions, and only the second kind has
+        // a substrate in it — `CompositeOverSubstrate` and `Below` are both that
+        // kind.
+        let ground = matches!(
+            options.source,
+            PickSource::CompositeOverSubstrate | PickSource::Below(_)
+        )
+        .then(|| {
             let bg = self.presented().background;
             (
                 self.shared.color_space.rgb_to_channels(bg),
@@ -304,7 +332,7 @@ impl Engine {
         // substrate color mid-drag on the picker that sets it (§15.5).
         let groups = {
             let doc = self.presented();
-            self.composite_groups(doc, only, patch_cull(points, size))
+            self.pick_groups(doc, options.source, patch_cull(points, size))
         };
 
         let mut colors = Vec::with_capacity(points.len());

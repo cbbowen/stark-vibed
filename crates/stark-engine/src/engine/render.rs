@@ -731,6 +731,165 @@ impl Engine {
         self.composite_stack(doc.root().iter(), visible, false)
     }
 
+    /// The draw list for an eyedropper source (§18.0.2) — [`composite_groups`]
+    /// (fn@Self::composite_groups) for the whole-document and one-layer questions,
+    /// plus the two scoped ones: a group's interior, and the document cut above a
+    /// layer. Here rather than in `engine::pick` because it is draw-list
+    /// arithmetic: everything it does is a restriction of `composite_stack`'s
+    /// walk, and keeping the restrictions beside the walk is what keeps a sample
+    /// coming off the same stack the screen draws.
+    pub(super) fn pick_groups(
+        &self,
+        doc: &DocState,
+        source: super::pick::PickSource,
+        visible: Option<TileRect>,
+    ) -> Vec<CompositeGroup> {
+        use super::pick::PickSource;
+        match source {
+            PickSource::Composite | PickSource::CompositeOverSubstrate => {
+                self.composite_groups(doc, None, visible)
+            }
+            PickSource::Layer(id) => self.composite_groups(doc, Some(id), visible),
+            PickSource::Group { layer, below } => self.group_interior(doc, layer, below, visible),
+            PickSource::Below(layer) => self.below_groups(doc, layer, visible),
+        }
+    }
+
+    /// The interior of the group that carries `layer`: the carrier's own content at
+    /// the bottom, then the members — all of them, or with `below` only those up to
+    /// and including `layer` (`PickSource::Group`).
+    ///
+    /// This is `composite_stack`'s group branch with the carrier's outward params
+    /// dropped instead of applied — the same trade `composite_groups` makes for one
+    /// layer, for the same reason: the params say how the group meets what is
+    /// beneath it, and beneath it is what this source excludes. The members keep
+    /// theirs, because a sibling's mode against the base is part of what the group
+    /// looks like *inside*. A layer in the root stack reads the root as its group,
+    /// which makes this the whole document — `Composite`, built by the same walk.
+    ///
+    /// A carrier that is hidden or turned all the way down contributes nothing to
+    /// the screen, so its interior answers nothing — the `Layer` source's rule. The
+    /// layer itself is only the anchor: hidden or not, its *group* is still what is
+    /// being asked about, and the member walk already skips it like the screen does.
+    fn group_interior(
+        &self,
+        doc: &DocState,
+        layer: LayerId,
+        below: bool,
+        visible: Option<TileRect>,
+    ) -> Vec<CompositeGroup> {
+        let (base, members): (Option<&Layer>, &rpds::Vector<Layer>) = match doc.carrier_of(layer) {
+            Some(cid) => {
+                let Some(carrier) = doc
+                    .layer(cid)
+                    .filter(|l| l.visible && l.composite.opacity > 0.0)
+                else {
+                    return Vec::new();
+                };
+                (Some(carrier), &carrier.carries)
+            }
+            // `carrier_of` answers `None` for a root layer and for a layer that
+            // does not exist, and only the first has a group to sample.
+            None if doc.contains_layer(layer) => (None, doc.root()),
+            None => return Vec::new(),
+        };
+        // The anchor is in `members` by construction — `carrier_of` just said so.
+        let end = match members.iter().position(|l| l.id == layer) {
+            Some(at) if below => at + 1,
+            _ => members.len(),
+        };
+        let own = base.map_or_else(Vec::new, |b| self.layer_items(b, visible));
+        let mut groups = Vec::new();
+        if !own.is_empty() {
+            groups.push(CompositeGroup::leaf(CompositeParams::IDENTITY, own));
+        }
+        let under = !groups.is_empty();
+        groups.extend(self.composite_stack(members.iter().take(end), visible, under));
+        groups
+    }
+
+    /// The document with everything above `layer` switched off, bottom of the tree
+    /// up to and including the layer itself (`PickSource::Below`).
+    ///
+    /// The chain of carriers from the root down to the layer is the only part of
+    /// the tree that is *partially* included, so the walk follows exactly that
+    /// path: whole stacks beneath each ancestor, then the ancestor cut above the
+    /// next link ([`stack_below`](fn@Self::stack_below)).
+    fn below_groups(
+        &self,
+        doc: &DocState,
+        layer: LayerId,
+        visible: Option<TileRect>,
+    ) -> Vec<CompositeGroup> {
+        if !doc.contains_layer(layer) {
+            return Vec::new();
+        }
+        // Root-first: the last link is the layer itself.
+        let mut path = vec![layer];
+        let mut cur = layer;
+        while let Some(carrier) = doc.carrier_of(cur) {
+            path.push(carrier);
+            cur = carrier;
+        }
+        path.reverse();
+        self.stack_below(doc.root(), &path, visible, false)
+    }
+
+    /// One stack's worth of [`below_groups`](fn@Self::below_groups): everything
+    /// beneath `path[0]` whole, then `path[0]` itself — whole when it is the target,
+    /// cut above `path[1]` when it is an ancestor carrying the rest of the chain.
+    ///
+    /// The ancestor's own composite params are **kept** and applied to the partial
+    /// group, unlike the one-layer and group-interior sources — because this source
+    /// asks what the screen would show with the upper layers hidden, and hiding a
+    /// member does not lift the group's mode, clip or opacity off what remains. An
+    /// ancestor that is itself hidden or turned off takes the whole chain with it,
+    /// exactly as it does on screen; the layers beneath it still answer.
+    fn stack_below(
+        &self,
+        layers: &rpds::Vector<Layer>,
+        path: &[LayerId],
+        visible: Option<TileRect>,
+        under: bool,
+    ) -> Vec<CompositeGroup> {
+        let Some(&head) = path.first() else {
+            return Vec::new();
+        };
+        let Some(at) = layers.iter().position(|l| l.id == head) else {
+            return Vec::new();
+        };
+        if path.len() == 1 {
+            // The target itself: it and everything beneath it in this stack,
+            // whole — the ordinary walk, stopped early.
+            return self.composite_stack(layers.iter().take(at + 1), visible, under);
+        }
+        let mut groups = self.composite_stack(layers.iter().take(at), visible, under);
+        let ancestor = layers.get(at).expect("position() names an element");
+        if !ancestor.visible || ancestor.composite.opacity <= 0.0 {
+            return groups;
+        }
+        // `composite_stack`'s group branch, with the carried stack cut by the rest
+        // of the path. An ancestor is a carrier, and a filter never carries
+        // (§21.2), so the filter branch cannot arise here.
+        let own = self.layer_items(ancestor, visible);
+        let carried = self.stack_below(&ancestor.carries, &path[1..], visible, !own.is_empty());
+        if own.is_empty() && carried.is_empty() {
+            return groups;
+        }
+        let group = if carried.is_empty() {
+            CompositeGroup::leaf(ancestor.composite, own)
+        } else {
+            let mut members = Vec::with_capacity(carried.len() + 1);
+            if !own.is_empty() {
+                members.push(CompositeGroup::leaf(CompositeParams::IDENTITY, own));
+            }
+            members.extend(carried);
+            CompositeGroup::stack(ancestor.composite, members)
+        };
+        groups.push(group);
+        groups
+    }
+
     /// One stack's worth of groups — the root's, or a layer's carried stack.
     ///
     /// `under` says whether something already composites beneath this stack's first

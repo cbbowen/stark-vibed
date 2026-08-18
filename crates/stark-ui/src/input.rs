@@ -1207,17 +1207,29 @@ pub fn pick_color(state: AppState, pos: Vec2) {
     if *busy.peek() {
         return;
     }
-    // The *choice* is what the panel holds; which layer it means is resolved here,
+    // The *choice* is what the bar holds; which layer it means is resolved here,
     // against whichever layer is selected at the moment of the sample — and a
-    // document with no layer selected falls back to the composite rather than
-    // sampling nothing.
+    // document with no layer selected falls back to the whole document rather
+    // than sampling nothing. The canvas color stands behind the sample exactly
+    // when the group fence is down (`PickState::group_only`): a group is paint,
+    // and the whole document is a picture on a canvas.
     let scope = *state.pick.scope.peek();
+    let group_only = *state.pick.group_only.peek();
     let active = state.obs.peek().as_ref().map(|o| o.active_layer);
     let options = PickOptions {
         source: match (scope, active) {
             (PickScope::ThisLayer, Some(id)) => PickSource::Layer(id),
-            (PickScope::AllLayersAndCanvas, _) => PickSource::CompositeOverSubstrate,
-            _ => PickSource::Composite,
+            (PickScope::AndBelow, Some(id)) if group_only => PickSource::Group {
+                layer: id,
+                below: true,
+            },
+            (PickScope::AndBelow, Some(id)) => PickSource::Below(id),
+            (PickScope::AllLayers, Some(id)) if group_only => PickSource::Group {
+                layer: id,
+                below: false,
+            },
+            _ if group_only => PickSource::Composite,
+            _ => PickSource::CompositeOverSubstrate,
         },
         radius: *state.pick.radius.peek(),
     };

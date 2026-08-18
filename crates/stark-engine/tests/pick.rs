@@ -5,8 +5,8 @@
 //! mixed, and in a Mixbox document a pigment mixture that can be picked back up
 //! (§6.7). These check the things that would quietly betray that: that a
 //! painted color survives the round trip in *both* color spaces, that bare canvas
-//! answers "nothing" instead of the paper color, and that the layer and radius
-//! options select what they say they do.
+//! answers "nothing" instead of the paper color, and that the layer, group, below
+//! and radius options select what they say they do.
 //!
 //! The one source that *does* answer on bare canvas is the composite over the
 //! substrate, and what it has to be held to is the opposite pair: that the ground
@@ -411,6 +411,192 @@ fn radius_averages_the_patch() {
     assert!(
         wide[2] < BLUE[2] && wide[0] > BLUE[0],
         "and it is a mixture, not a jump to the other bar: {wide:?}"
+    );
+}
+
+const GREEN: [f32; 4] = [0.1, 0.7, 0.2, 1.0];
+const YELLOW: [f32; 4] = [0.85, 0.8, 0.1, 1.0];
+
+/// Bars for the scoped-source tests, spatially separated so a point sample says
+/// which layer answered.
+const BAR_100: &[Vec2] = &[Vec2::new(-40.0, 100.0), Vec2::new(40.0, 100.0)];
+const BAR_200: &[Vec2] = &[Vec2::new(-40.0, 200.0), Vec2::new(40.0, 200.0)];
+
+/// The document the two scoped sources are held against, and the ids that name
+/// its parts:
+///
+/// ```text
+/// root:  L1 [ M2 yellow @100, M1 blue @100, base green @200 ]   (the group)
+///        L0 red @0
+/// ```
+///
+/// M2 and M1 share a bar so "above within the group" is a real occlusion; L0's
+/// red and the base's green sit outside every other bar so a sample at their y
+/// can only have come from them.
+fn scoped_doc(engine: &mut Engine) -> (LayerId, LayerId, LayerId, LayerId) {
+    let l0 = engine.observe().active_layer;
+    paint(engine, RED, 24.0, BAR);
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    let l1 = engine.observe().active_layer;
+    paint(engine, GREEN, 24.0, BAR_200);
+    engine.process(DocCommand::AddLayer {
+        carrier: Some(l1),
+        above: None,
+    });
+    let m1 = engine.observe().active_layer;
+    paint(engine, BLUE, 24.0, BAR_100);
+    engine.process(DocCommand::AddLayer {
+        carrier: Some(l1),
+        above: None,
+    });
+    let m2 = engine.observe().active_layer;
+    paint(engine, YELLOW, 24.0, BAR_100);
+    (l0, l1, m1, m2)
+}
+
+fn source(source: PickSource) -> PickOptions {
+    PickOptions {
+        source,
+        ..PickOptions::default()
+    }
+}
+
+/// The group source samples the interior of the layer's group — its siblings and
+/// the carrier's own content — and nothing outside it: paint that only another
+/// part of the document holds answers `None`, the fence the source is for. With
+/// `below`, members above the layer are cut, as though switched off.
+#[test]
+fn the_group_source_samples_the_group_and_nothing_outside_it() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let (_l0, _l1, m1, _m2) = scoped_doc(&mut engine);
+    let whole = |layer| {
+        source(PickSource::Group {
+            layer,
+            below: false,
+        })
+    };
+
+    // 0.1 rather than 0.05 where one bar occludes another: a single stroke pass
+    // does not reach full coverage (the slab law, §6.1), so a few percent of the
+    // layer beneath bleeds through — still a channel away from the blue it hides.
+    assert_near(
+        pick(&mut engine, Vec2::new(0.0, 100.0), whole(m1)),
+        YELLOW,
+        0.1,
+        "the whole interior shows the member over m1",
+    );
+    assert_near(
+        pick(&mut engine, Vec2::new(0.0, 200.0), whole(m1)),
+        GREEN,
+        0.05,
+        "the carrier's own content is part of the group",
+    );
+    assert_eq!(
+        pick(&mut engine, Vec2::ZERO, whole(m1)),
+        None,
+        "paint outside the group is behind the fence",
+    );
+    assert_near(
+        pick(&mut engine, Vec2::ZERO, PickOptions::default()),
+        RED,
+        0.05,
+        "…and it is the fence that hid it, not the paint being absent",
+    );
+    assert_near(
+        pick(
+            &mut engine,
+            Vec2::new(0.0, 100.0),
+            source(PickSource::Group {
+                layer: m1,
+                below: true,
+            }),
+        ),
+        BLUE,
+        0.05,
+        "`below` cuts the member above m1, uncovering m1's own paint",
+    );
+}
+
+/// A root layer's group is the root stack, so the group source there is the whole
+/// document — and still no substrate: the root "group" is paint, not canvas.
+#[test]
+fn a_root_layer_reads_the_root_stack_as_its_group() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let (l0, _l1, _m1, _m2) = scoped_doc(&mut engine);
+    let whole = source(PickSource::Group {
+        layer: l0,
+        below: false,
+    });
+
+    // 0.1 for the occlusion bleed, as in the group test above.
+    assert_near(
+        pick(&mut engine, Vec2::new(0.0, 100.0), whole),
+        YELLOW,
+        0.1,
+        "a root anchor sees the whole document",
+    );
+    assert_eq!(
+        pick(&mut engine, Vec2::new(0.0, -200.0), whole),
+        None,
+        "and bare canvas still answers nothing",
+    );
+}
+
+/// The below source is the document with everything above the layer switched
+/// off, over the substrate: layers beneath the ancestor chain answer, members
+/// above the layer do not, and bare canvas answers with the ground.
+#[test]
+fn the_below_source_cuts_the_stack_above_the_layer() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    const GROUND: [f32; 3] = [0.2, 0.55, 0.35];
+    engine.process(DocCommand::SetBackground(GROUND));
+    let (l0, _l1, m1, _m2) = scoped_doc(&mut engine);
+    let below = |layer| source(PickSource::Below(layer));
+
+    assert_near(
+        pick(&mut engine, Vec2::new(0.0, 100.0), below(m1)),
+        BLUE,
+        0.05,
+        "the member above m1 is switched off",
+    );
+    assert_near(
+        pick(&mut engine, Vec2::ZERO, below(m1)),
+        RED,
+        0.05,
+        "root layers beneath m1's carrier still answer",
+    );
+    assert_near(
+        pick(&mut engine, Vec2::new(0.0, 200.0), below(m1)),
+        GREEN,
+        0.05,
+        "the carrier's own content sits beneath its members (§14.2)",
+    );
+    assert_near(
+        pick(&mut engine, Vec2::new(0.0, -200.0), below(m1)),
+        [GROUND[0], GROUND[1], GROUND[2], 1.0],
+        0.02,
+        "the substrate rides this source: bare canvas is the canvas color",
+    );
+    assert_near(
+        pick(&mut engine, Vec2::new(0.0, 100.0), below(l0)),
+        [GROUND[0], GROUND[1], GROUND[2], 1.0],
+        0.02,
+        "below the bottom layer, everything else is switched off",
+    );
+    assert_near(
+        pick(&mut engine, Vec2::ZERO, below(l0)),
+        RED,
+        0.05,
+        "…while the layer itself still answers",
     );
 }
 

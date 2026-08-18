@@ -28,13 +28,15 @@ const PATCHES: [(&str, u32); 4] = [
     ("11\u{00D7}11", 5),
 ];
 
-/// What a sample comes off, as `(scope, icon, label, what it means)`.
+/// How far a sample sees, as `(scope, icon, label, what it means)`.
 ///
-/// Ordered by how much each one lets in — one layer, then the whole stack, then the
-/// stack over the ground it was painted on — so the row reads as one question, *how
-/// far does this sample see*, rather than as three unrelated buttons. The default
-/// sits where that ordering puts it rather than at the head of the row, which is what
-/// an ordering worth having costs.
+/// Ordered by how much each one lets in — one layer, the layers beneath it too,
+/// then every layer — so the row reads as one question, *how far does this sample
+/// see*, rather than as three unrelated buttons. The default sits where that
+/// ordering puts it rather than at the head of the row, which is what an ordering
+/// worth having costs. What the reach runs *through* — the selected layer's group,
+/// or the whole document over the canvas color — is the Group chip beside the row
+/// (§18.0.2).
 const SOURCES: [(PickScope, &str, &str, &str); 3] = [
     (
         PickScope::ThisLayer,
@@ -43,17 +45,17 @@ const SOURCES: [(PickScope, &str, &str, &str); 3] = [
         "Sample the selected layer alone, ignoring anything over or under it",
     ),
     (
+        PickScope::AndBelow,
+        icons::AND_BELOW,
+        "+ Below",
+        "Sample the selected layer and everything beneath it \u{2014} what the \
+         canvas would show with the layers above switched off",
+    ),
+    (
         PickScope::AllLayers,
         icons::ALL_LAYERS,
         "All layers",
-        "Sample the color the canvas shows, through every visible layer",
-    ),
-    (
-        PickScope::AllLayersAndCanvas,
-        icons::ALL_LAYERS_AND_CANVAS,
-        "+ Canvas",
-        "Sample every visible layer over the canvas color, so bare canvas and thin \
-         paint answer with what the eye sees rather than nothing",
+        "Sample every visible layer \u{2014} the color the canvas shows",
     ),
 ];
 
@@ -74,7 +76,8 @@ pub fn PickBar() -> Element {
     }
 
     let (mut scope, mut radius) = (state.pick.scope, state.pick.radius);
-    let (source, r) = (scope(), radius());
+    let mut group_only = state.pick.group_only;
+    let (source, r, grouped) = (scope(), radius(), group_only());
     let chip = |on: bool| if on { "chip active" } else { "chip" };
 
     rsx! {
@@ -101,6 +104,24 @@ pub fn PickBar() -> Element {
                         {label(name)}
                     }
                 }
+            }
+
+            // The fence the reach runs inside — a toggle beside the row rather
+            // than a fourth position in it, because it composes with every
+            // reach instead of competing with them. On, only the selected
+            // layer's group answers; off, the whole document does, and the
+            // canvas color stands behind it — the canvas is a fact about the
+            // picture, not about any group of paint, so it arrives exactly when
+            // the fence comes down.
+            button {
+                class: chip(grouped),
+                title: "Only the selected layer's group answers \u{2014} its \
+                        siblings and the layer carrying them. Turn off to sample \
+                        the whole document over the canvas color, so bare canvas \
+                        and thin paint answer with what the eye sees",
+                onclick: move |_| group_only.set(!grouped),
+                {icon(icons::GROUP_ONLY)}
+                {label("Group")}
             }
 
             span { class: "bar-sep" }

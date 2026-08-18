@@ -424,6 +424,7 @@ impl AppState {
             color_epoch: root_signal(|| 0),
             pick: PickState {
                 scope: root_signal(PickScope::default),
+                group_only: root_signal(|| true),
                 radius: root_signal(|| 0),
                 busy: root_signal(|| false),
                 alt_down: root_signal(|| false),
@@ -640,8 +641,16 @@ pub struct TimelineState {
 /// `observe()` would be state with no owner.
 #[derive(Clone, Copy)]
 pub struct PickState {
-    /// Which layers a sample comes off, and whether the canvas stands behind them.
+    /// How far a sample sees: the selected layer, it and what is beneath it, or
+    /// every layer.
     pub scope: Signal<PickScope>,
+    /// Whether the sample is confined to the selected layer's **group** — its
+    /// siblings and the layer carrying them (§14.2). On by default: sampling near
+    /// paint usually means sampling the passage being worked, not whatever other
+    /// group happens to show through at that point. Off, the whole document
+    /// answers, over the canvas color — the canvas is behind the picker exactly
+    /// when this is off, since a group is paint and the document is a picture.
+    pub group_only: Signal<bool>,
     /// Half-width of the averaged square, in canvas px (0 = point sample).
     pub radius: Signal<u32>,
     /// Whether a sample is in flight — see [`crate::input::pick_color`].
@@ -657,7 +666,8 @@ pub struct PickState {
     pub dragging: Signal<bool>,
 }
 
-/// Which of the eyedropper's three sources the bar has selected (§18.0.2).
+/// How far the eyedropper sees, before [`PickState::group_only`] narrows it
+/// (§18.0.2).
 ///
 /// The *choice*, not [`PickSource`](stark_engine::PickSource): which layer "this layer"
 /// means is resolved against the selected layer at the moment of the sample
@@ -666,14 +676,14 @@ pub struct PickState {
 /// clamped one in the engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PickScope {
-    /// Every visible layer — the paint the canvas shows.
-    #[default]
-    AllLayers,
-    /// Every visible layer over the substrate color, so bare canvas and thin paint
-    /// answer with what the eye sees rather than with nothing and with the glaze.
-    AllLayersAndCanvas,
     /// The selected layer alone, ignoring anything over or under it.
     ThisLayer,
+    /// The selected layer and everything beneath it — what the canvas would show
+    /// with the layers above switched off.
+    AndBelow,
+    /// Every visible layer.
+    #[default]
+    AllLayers,
 }
 
 /// The shared-session signals, grouped because they share one lifecycle: they are
