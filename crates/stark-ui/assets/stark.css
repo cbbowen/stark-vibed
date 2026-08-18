@@ -132,11 +132,10 @@ hr {
      and last panel. Taking the inset off both ends leaves the matching 4px at the
      foot. */
   box-sizing: border-box;
-  top: var(--panel-inset);
   right: var(--panel-inset);
   padding: 10px;
   width: var(--panel-column);
-  max-height: calc(100% - var(--panel-inset) * 2);
+  max-height: 100%;
   overflow-y: auto;
   /* Only the vertical axis is a scroller. Left to `visible`, the horizontal axis is
      forced to `auto` alongside it, and a row that overruns its panel by a pixel or

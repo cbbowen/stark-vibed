@@ -95,8 +95,6 @@ pub fn BrushPanel() -> Element {
             }
         }
 
-        hr {}
-
         PresetSection {}
     }
 }
