@@ -253,6 +253,35 @@ pub enum AssistShape {
     },
 }
 
+/// Which family a held gesture snapped to (§6.9) — as much of [`AssistShape`] as
+/// anything outside the engine has needed to know.
+///
+/// A second, smaller enum rather than exporting the shape itself, because what a
+/// caller out there wants is *which kind* and what the shape carries is geometry —
+/// two points, a frame, a winding, the plane it is a circle on. Publishing those
+/// would fix the assist's internals as an interface for the sake of a question
+/// answered by one bit. It gains a field the day something outside needs one.
+///
+/// The caller outside the crate is the guided tour (§24.2), which counts an assisted
+/// stroke and tells a line from a loop.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Assisted {
+    /// A straight segment.
+    Line,
+    /// A closed loop.
+    Ellipse,
+}
+
+impl AssistShape {
+    /// Which family this is.
+    pub fn family(&self) -> Assisted {
+        match self {
+            AssistShape::Line { .. } => Assisted::Line,
+            AssistShape::Ellipse { .. } => Assisted::Ellipse,
+        }
+    }
+}
+
 /// The shape `trace` resembles, or `None` to leave the stroke as it was drawn.
 ///
 /// `tolerance` is the gesture's input tolerance in canvas px — the device's own grain,

@@ -149,18 +149,38 @@ pub enum Deed {
     /// A preset put on from the Brush panel's library. Not on the command stream —
     /// reported by the row that was clicked ([`did`]).
     AppliedPreset,
+    /// An undo — the user's own, not the timeline transport's.
+    Undo,
+    /// A panel closed. Not on the command stream either: which panels are open is
+    /// the frontend's alone, so `layout::close_panel` reports it ([`did`]).
+    ClosedPanel,
+    /// A stroke that snapped to a line or an ellipse (§6.9).
+    ///
+    /// A [`Stroke`](Self::Stroke) as well, always — the two are counted together and
+    /// neither is the other's expense. It is only knowable by asking the engine what
+    /// the hold found ([`Engine::assisted`](stark_engine::Engine::assisted)), and
+    /// only before the gesture ends.
+    AssistedStroke,
+    /// A stroke that snapped to a **line** while a perspective guide was on screen
+    /// (§20.6) — the state in which the grid is about to start aiming strokes,
+    /// whether or not this one landed near enough for it to.
+    GuidedLine,
 }
 
 impl Deed {
     /// Every deed. The order **is** the tally's slot order, so this is
     /// [`Deed::slot`]'s only authority.
-    const ALL: [Deed; 6] = [
+    const ALL: [Deed; 10] = [
         Deed::Stroke,
         Deed::TunedBrush,
         Deed::LongPan,
         Deed::ChangedColor,
         Deed::Redo,
         Deed::AppliedPreset,
+        Deed::Undo,
+        Deed::ClosedPanel,
+        Deed::AssistedStroke,
+        Deed::GuidedLine,
     ];
 
     /// How many there are, so the tally can be an array rather than a map.
@@ -190,6 +210,10 @@ impl Deed {
             Deed::ChangedColor => "color",
             Deed::Redo => "redo",
             Deed::AppliedPreset => "preset",
+            Deed::Undo => "undo",
+            Deed::ClosedPanel => "closed-panel",
+            Deed::AssistedStroke => "assisted",
+            Deed::GuidedLine => "guided-line",
         }
     }
 
@@ -290,6 +314,18 @@ pub enum Anchor {
     PanelColumn,
     /// The quick-brush rack down the left (§18.1.8).
     QuickSlots,
+    /// The command rail in the top-left corner (§11) — the ☰ and Panels menus and
+    /// the ⚙. Always on screen, so nothing has to reveal it and nothing can close
+    /// it.
+    CommandRail,
+    /// The painting itself.
+    ///
+    /// Not a control, and that is what it is for: a lesson about a gesture made
+    /// **on the canvas** has nothing to stand beside, and standing it beside a
+    /// panel would say the panel had something to do with it. Pointed at from
+    /// [`Side::Inside`], which is the only placement that goes *over* its anchor
+    /// rather than next to it.
+    Canvas,
     /// Timeline mode's bar across the foot of the window (§18.2.4).
     TimelineBar,
 }
@@ -308,6 +344,11 @@ impl Anchor {
             }
             Anchor::PanelColumn => ".panel-wake".to_string(),
             Anchor::QuickSlots => ".slot-overlay".to_string(),
+            Anchor::CommandRail => ".command-rail".to_string(),
+            // By the id the app already gives it, rather than by its class: the
+            // canvas is named once (`render::CANVAS_ID`) and this is that name,
+            // so there is no second spelling to fall out of step.
+            Anchor::Canvas => format!("#{}", crate::render::CANVAS_ID),
             Anchor::TimelineBar => ".timeline-bar".to_string(),
         }
     }
@@ -336,6 +377,10 @@ impl Anchor {
                 asleep && PanelId::ALL.iter().any(|id| !hidden.contains(id))
             }
             Anchor::QuickSlots => (state.slots.pinned)(),
+            // Always. Both are mounted for the life of the page and neither has a
+            // control that puts it away, so these lessons are dismissed the ordinary
+            // way and by nothing else.
+            Anchor::CommandRail | Anchor::Canvas => true,
             Anchor::TimelineBar => (state.timeline.open)(),
         }
     }
@@ -359,6 +404,9 @@ impl Anchor {
                 let mut pinned = state.slots.pinned;
                 pinned.set(true);
             }
+            // Nothing to do: both are always there. Arms that say so, rather than a
+            // catch-all, so a variant added later has to decide.
+            Anchor::CommandRail | Anchor::Canvas => {}
             Anchor::TimelineBar => crate::panels::timeline::set_open(state, true),
         }
     }
@@ -384,6 +432,9 @@ enum Side {
     /// Left of the anchor, centred on it. For an anchor that is a whole edge of the
     /// window and so has no meaningful top — the panel column.
     LeftAtMiddle,
+    /// Right of the anchor, their top edges level. For a box down the left that
+    /// hugs its contents — the command rail.
+    RightAtTop,
     /// Right of the anchor, centred on it, for the chrome down the left.
     ///
     /// The mirror of [`LeftAtMiddle`](Self::LeftAtMiddle) rather than of
@@ -394,7 +445,26 @@ enum Side {
     RightAtMiddle,
     /// Above the anchor, centred on it.
     Above,
+    /// **Over** the anchor rather than beside it: centred across it,
+    /// [`INSIDE_DEPTH`] of the way down from its top, pointing down into it.
+    ///
+    /// The odd one out, and it earns it. Every other placement puts the card next
+    /// to a control and says *this thing here*; this one is for an anchor that is
+    /// not a control but a **place** — the canvas, where a gesture happens and
+    /// where standing beside it would mean standing beside the window. A card in
+    /// the middle of the painting, pointing down at it, is the only arrangement
+    /// that says "the thing I am describing happens *there*".
+    Inside,
 }
+
+/// How far down its anchor a [`Side::Inside`] card sits, as a fraction of the
+/// anchor's height.
+///
+/// Far enough down to leave the arrow pointing into the middle of the picture
+/// rather than at its top edge, and not so far that the card is over the middle of
+/// the work. A quarter is also about where a hand starts a stroke it means to drag
+/// downward, which is the gesture the one lesson placed this way is about.
+const INSIDE_DEPTH: f32 = 0.25;
 
 /// One lesson: the deed it waits for, how many it waits for, and what it says.
 struct Lesson {
@@ -432,9 +502,11 @@ struct Lesson {
 /// The counts are set from what each deed *costs* to keep doing the hard way. Two
 /// strokes is no commitment at all, but a painter with no color picker has already
 /// wanted one; ten trips to the size slider is somebody who has decided this is how
-/// they work, which is exactly when the drag is worth knowing. None of them fires on
-/// a first try, deliberately: a tip in the first minute is noise, because nothing has
-/// been wanted yet.
+/// they work, which is exactly when the drag is worth knowing. Almost none fires on a
+/// first try, deliberately: a tip in the first minute is noise, because nothing has
+/// been wanted yet. The two that do are argued for where the rule is tested
+/// (`tests::AT_ONCE`) — one answers a question its own deed raises, and the other
+/// waits on a deed nobody reaches by accident.
 static LESSONS: &[Lesson] = &[
     Lesson {
         key: "color-panel",
@@ -474,6 +546,18 @@ static LESSONS: &[Lesson] = &[
                below \u{2014} click a row to put it back in your hand.",
     },
     Lesson {
+        key: "panels-menu",
+        deed: Deed::ClosedPanel,
+        after: 1,
+        anchor: Anchor::CommandRail,
+        side: Side::RightAtTop,
+        title: "Nothing is lost by closing it",
+        body: "The Panels button here lists all eight with a tick beside the ones on \
+               screen \u{2014} click any of them to bring it back, in the slot it had. \
+               What you leave open is remembered for next time, so the stack ends up \
+               being the one you actually use.",
+    },
+    Lesson {
         key: "tune-drag",
         deed: Deed::TunedBrush,
         after: 10,
@@ -496,6 +580,49 @@ static LESSONS: &[Lesson] = &[
                let go and the brush you had is back. A number is a tool you borrow for \
                a few strokes rather than one you switch to. Tune a slot while you hold \
                it and the slot keeps the change; the pen's other end holds 0.",
+    },
+    Lesson {
+        key: "shape-assist",
+        deed: Deed::Undo,
+        after: 10,
+        // The painting, and pointing down into it. The assist has no chrome at all
+        // — it is a thing you do with the pen, on the canvas — so every other
+        // anchor would have put the card beside a control that has nothing to do
+        // with it. This is the one lesson whose subject *is* the place it is shown.
+        anchor: Anchor::Canvas,
+        side: Side::Inside,
+        title: "Let go of drawing it straight",
+        body: "Draw a rough line or ellipse and then hold the pen still without \
+               lifting: the stroke snaps to the shape you meant, and the rest of the \
+               drag steers it \u{2014} lengthen the line, turn it, resize the ellipse. \
+               Lift to keep it. It is still your stroke, with your pressure and your \
+               brush; only the path is tidied. Settings (\u{2699}, top left) turns \
+               it off if you would rather your lines stayed crooked.",
+    },
+    Lesson {
+        key: "guides-panel",
+        deed: Deed::AssistedStroke,
+        after: 3,
+        anchor: Anchor::Panel(PanelId::Guides),
+        side: Side::LeftAtTop,
+        title: "Straight is one thing. Straight *to somewhere* is another",
+        body: "Add a perspective guide here \u{2014} one, two or three point \u{2014} and \
+               the grid draws itself over the canvas. It is one camera behind all three, \
+               so you can drag the horizon and the vanishing points around and the \
+               construction stays true.",
+    },
+    Lesson {
+        key: "perspective-assist",
+        deed: Deed::GuidedLine,
+        after: 1,
+        anchor: Anchor::Panel(PanelId::Guides),
+        side: Side::LeftAtTop,
+        title: "Your held lines know about the grid",
+        body: "With a guide on screen, a line you draw-and-hold near one of its axes is \
+               aimed exactly down that axis \u{2014} and the rest of the drag runs the \
+               end out along it instead of steering it off. The line stays where you put \
+               it; only its angle comes from the grid. Hold a rough circle on a plane \
+               and it comes out a circle in perspective.",
     },
     Lesson {
         key: "navigator",
@@ -610,51 +737,101 @@ pub fn observe(state: AppState, command: &InputCommand) {
     if !*state.tutor.armed.peek() {
         return;
     }
-    if let Some(deed) = read(state, command) {
+    for deed in read(state, command) {
         tally(state, deed);
     }
 }
 
-/// Which deed, if any, `command` is a report of.
+/// The deeds `command` reports — usually none, sometimes one, and for a stroke that
+/// snapped along a guide three at once (see [`stroke`]).
 ///
-/// Split from [`observe`] because this is the half with the judgement in it, and
-/// the half that writes nothing but the pan run it is obliged to accumulate.
-fn read(state: AppState, command: &InputCommand) -> Option<Deed> {
+/// Split from [`observe`] because this is the half with the judgement in it, and the
+/// half that writes nothing but the pan run it is obliged to accumulate. A `Vec`
+/// where most of these arms answer with one deed or none, and it costs nothing where
+/// it matters: `Vec::new()` does not allocate, and that is what every command at
+/// pointer rate gets.
+fn read(state: AppState, command: &InputCommand) -> Vec<Deed> {
     match command {
         // A commit, not a start: a stroke abandoned by a second finger (§18.1.7)
         // arrives as `Cancel` and left no paint, and counting it would be counting
         // a mark that is not on the canvas.
-        InputCommand::Gesture(GestureCommand::End) => {
-            // Which tool the gesture was is not on the command — but it is on the
-            // projection, which is where the whole app asks (§6.8).
-            let tool = state.obs.peek().as_ref().map(|o| o.tool)?;
-            (!tool.is_selection()).then_some(Deed::Stroke)
-        }
-        // Not the transport's. The playback loop drives the playhead with this very
-        // command (§18.2.4) and would otherwise score eight redos a second; the
-        // user's own redo stops playback *before* it dispatches
+        InputCommand::Gesture(GestureCommand::End) => stroke(state),
+        // Neither of these is the transport's. The playback loop drives the playhead
+        // with these very commands (§18.2.4) and would otherwise score eight a
+        // second; the user's own stops playback *before* it dispatches
         // (`input::edit_history`), so this reads false by the time it is asked.
-        InputCommand::Doc(DocCommand::Redo) => {
-            (!crate::panels::timeline::is_playing(state)).then_some(Deed::Redo)
-        }
+        InputCommand::Doc(DocCommand::Redo) => one(Deed::Redo, !playing(state)),
+        InputCommand::Doc(DocCommand::Undo) => one(Deed::Undo, !playing(state)),
         // Not one that anybody reached for a control to make — see [`not_reaching`].
         InputCommand::View(ViewCommand::SetBrush(_)) if *state.tutor.not_reaching.peek() > 0 => {
-            None
+            Vec::new()
         }
         InputCommand::View(ViewCommand::SetBrush(next)) => {
-            let held = state.obs.peek().as_ref().map(|o| o.brush)?;
-            brush_deed(&held, next)
+            let Some(held) = state.obs.peek().as_ref().map(|o| o.brush) else {
+                return Vec::new();
+            };
+            brush_deed(&held, next).into_iter().collect()
         }
         // Both shapes of pan the app can make: the one-pointer drags and the last
         // finger of a two-finger gesture arrive as `Pan`, and the pair itself as
         // `Pinch`, whose translation is the distance between its two anchors. A
         // `Zoom` is deliberately not travel — same gesture family, different act.
-        InputCommand::View(ViewCommand::Pan { delta }) => pan(state, delta.length()),
-        InputCommand::View(ViewCommand::Pinch { anchor, to, .. }) => {
-            pan(state, (*to - *anchor).length())
+        InputCommand::View(ViewCommand::Pan { delta }) => {
+            pan(state, delta.length()).into_iter().collect()
         }
-        _ => None,
+        InputCommand::View(ViewCommand::Pinch { anchor, to, .. }) => {
+            pan(state, (*to - *anchor).length()).into_iter().collect()
+        }
+        _ => Vec::new(),
     }
+}
+
+/// `deed` if `counts`, as the list [`read`] answers with.
+fn one(deed: Deed, counts: bool) -> Vec<Deed> {
+    if counts { vec![deed] } else { Vec::new() }
+}
+
+/// Whether the timeline transport is moving the playhead right now (§18.2.4).
+fn playing(state: AppState) -> bool {
+    crate::panels::timeline::is_playing(state)
+}
+
+/// What a committed gesture was: nothing for a selection drag, and otherwise a
+/// stroke plus whatever the shape assist made of it (§6.9).
+///
+/// **Up to three deeds for one command, and they are not alternatives.** A stroke
+/// that snapped along a vanishing line is a stroke, an assisted stroke and a guided
+/// line all at once, and each feeds a different lesson: counting only the most
+/// specific would stall the two behind it for somebody who works entirely on a grid.
+///
+/// Every read here happens **before** the command reaches the engine, which is the
+/// only moment two of them answer: the assist lives on the gesture and goes with it
+/// (`Engine::assisted`), so a line asked for after the `End` is a line nobody can
+/// see any more.
+fn stroke(state: AppState) -> Vec<Deed> {
+    // Which tool the gesture was is not on the command — but it is on the
+    // projection, which is where the whole app asks (§6.8).
+    let Some(obs) = state.obs.peek().clone() else {
+        return Vec::new();
+    };
+    if obs.tool.is_selection() {
+        return Vec::new();
+    }
+    let mut deeds = vec![Deed::Stroke];
+    // The engine rather than the projection, because a gesture in flight is not
+    // projected: `observe` is what refreshes the chrome, and it runs after this.
+    let assisted = crate::state::with_engine_quiet(state, |r| r.assisted()).flatten();
+    if let Some(shape) = assisted {
+        deeds.push(Deed::AssistedStroke);
+        // A guide on the screen is what makes the grid's aiming reachable (§20.6) —
+        // whether *this* line landed near enough for it to take is not the question,
+        // because the lesson is about the thing that is about to start happening.
+        let guided = shape == stark_engine::Assisted::Line && obs.guides.iter().any(|g| g.visible);
+        if guided {
+            deeds.push(Deed::GuidedLine);
+        }
+    }
+    deeds
 }
 
 /// What moved between two brushes, as a deed — or `None` where the answer is "too
@@ -971,12 +1148,24 @@ pub fn TutorCard() -> Element {
                 at.mid_y()
             ),
         ),
+        Side::RightAtTop => (
+            "side-right",
+            format!("left: {:.1}px; top: {:.1}px;", at.right() + GAP, at.top),
+        ),
         Side::RightAtMiddle => (
             "side-right-middle",
             format!(
                 "left: {:.1}px; top: {:.1}px; transform: translateY(-50%);",
                 at.right() + GAP,
                 at.mid_y()
+            ),
+        ),
+        Side::Inside => (
+            "side-inside",
+            format!(
+                "left: {:.1}px; top: {:.1}px; transform: translateX(-50%);",
+                at.mid_x(),
+                at.top + at.height * INSIDE_DEPTH
             ),
         ),
         Side::Above => (
@@ -1052,12 +1241,46 @@ mod tests {
         assert_eq!(keys.len(), LESSONS.len(), "two lessons share a key");
     }
 
-    /// A lesson at one would fire on the user's first try, which is the one thing
-    /// the whole design is against.
+    /// The lessons that may fire on a **first** deed, and everything else waits for
+    /// a second.
+    ///
+    /// An exception list rather than a blanket rule, because there are two — and an
+    /// *exception* list rather than a list of the ordinary ones, so a lesson added
+    /// later is held to the strict rule by default. That is the safe direction: the
+    /// cost of getting this wrong is a tip in somebody's first minute.
+    ///
+    /// - `panels-menu` answers a question its own deed **raises**. Close a panel and
+    ///   "where did that go?" is immediate; answering on the second close would be
+    ///   answering it late, and the artist would have spent the gap thinking the
+    ///   panel was gone.
+    /// - `perspective-assist` waits on a deed nobody performs by accident: you have
+    ///   to have made a guide, left it visible, drawn a stroke *and* held it still.
+    ///   Having done all four once is stronger evidence of intent than ten of
+    ///   anything else on this list.
+    const AT_ONCE: [&str; 2] = ["panels-menu", "perspective-assist"];
+
+    /// A lesson at one fires on the user's first try, which the design is against
+    /// everywhere it has not said otherwise — see [`AT_ONCE`].
     #[test]
     fn no_lesson_fires_on_a_first_try() {
         for l in LESSONS {
+            if AT_ONCE.contains(&l.key) {
+                assert_eq!(l.after, 1, "{} is listed as firing at once", l.key);
+                continue;
+            }
             assert!(l.after >= 2, "{} fires after {}", l.key, l.after);
+        }
+    }
+
+    /// Every name in [`AT_ONCE`] is a lesson. A key left behind by a renamed or
+    /// deleted lesson would quietly exempt nothing and be impossible to notice.
+    #[test]
+    fn the_exceptions_name_real_lessons() {
+        for key in AT_ONCE {
+            assert!(
+                LESSONS.iter().any(|l| l.key == key),
+                "{key} is exempted and does not exist",
+            );
         }
     }
 

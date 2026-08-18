@@ -1382,6 +1382,23 @@ impl Engine {
         self.session.tow_string()
     }
 
+    /// What the stroke in flight has snapped to (§6.9), or `None` where there is no
+    /// stroke or the hold found nothing.
+    ///
+    /// A named read like [`view`](Self::view) and [`tow_string`](Self::tow_string),
+    /// and it exists for the reason the split in §6.9 exists: the frontend owns the
+    /// *dwell* — how long a pause has to be is a fact about a hand and there is no
+    /// clock here — while the engine owns what a hold **means**. So whether a hold
+    /// found anything is knowable only on this side, and a frontend that wants to
+    /// know has to ask.
+    ///
+    /// Read **before** the gesture's `End`, which is the only moment it answers: what
+    /// is committed is the path the shape produced, not the shape, and the assist goes
+    /// with the gesture (`assist::AssistShape`).
+    pub fn assisted(&self) -> Option<crate::assist::Assisted> {
+        self.session.assisted()
+    }
+
     /// A snapshot of UI-facing state (§7).
     /// The layer list for `shown`, **rebuilt only when the document it describes
     /// has moved**.

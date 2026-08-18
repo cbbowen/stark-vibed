@@ -695,9 +695,17 @@ impl Session {
         true
     }
 
-    /// Whether the stroke in flight has snapped to a shape (§6.9).
-    pub fn is_assisted(&self) -> bool {
-        self.in_flight.as_ref().is_some_and(|b| b.assist.is_some())
+    /// Which shape the stroke in flight has snapped to (§6.9), or `None` where
+    /// there is no stroke or the hold found nothing to snap it to.
+    ///
+    /// The family rather than the shape (`assist::Assisted`): the geometry is the
+    /// assist's own business, and what is asked from outside the crate is only
+    /// whether a hold landed and whether it landed on a line.
+    pub fn assisted(&self) -> Option<crate::assist::Assisted> {
+        self.in_flight
+            .as_ref()
+            .and_then(|b| b.assist.as_ref())
+            .map(|a| a.shape.family())
     }
 
     /// This client's gesture in flight as the preview fold wants it, authored by

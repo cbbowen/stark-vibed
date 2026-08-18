@@ -115,6 +115,7 @@ pub(crate) fn unpoisoned<'a, T>(
 }
 
 pub use assets::AssetStore;
+pub use assist::Assisted;
 pub use colorspace::ColorSpace;
 pub use command::{InputCommand, InputSample};
 pub use document::Selection;

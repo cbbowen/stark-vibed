@@ -45,9 +45,16 @@ is at worst redundant, and its cost is paid by the one person it was aimed at.
 
 Two consequences follow and are not negotiable:
 
-- **No lesson fires on a first try.** `no_lesson_fires_on_a_first_try` refuses a
-  threshold below two. The first minute in a new app is the minute with the least
-  attention to spare.
+- **Almost no lesson fires on a first try.** `no_lesson_fires_on_a_first_try`
+  refuses a threshold below two for every lesson but the two it names, and it is an
+  *exception* list so that a lesson added later is held to the strict rule by
+  default. The first minute in a new app is the minute with the least attention to
+  spare. The two exceptions are each for a reason the rule does not cover: one
+  answers a question its own deed **raises** (close a panel and "where did that go?"
+  is immediate — answering on the second close would be answering it late), and the
+  other waits on a deed nobody reaches by accident (a guided line needs a guide
+  made, left visible, a stroke drawn *and* held; having done all four once is
+  stronger evidence of intent than ten of anything else).
 - **The tally spans sessions.** "The third stroke" is not a claim about one visit,
   so the ledger follows the browser the way the shape and preset libraries do
   (§24.4).
@@ -148,18 +155,50 @@ let that swap's close cancel the drag's. A bracket left open by a caller that fa
 to close it costs *counting*, never a wrong card — which is the failure direction to
 have, since the other one is a card nobody asked for.
 
-#### The one deed that is not in the stream at all
+#### The deeds that are not in the stream at all
 
-Clicking a row in the preset library is reported outright (`tutor::did`, one
-caller). The command it leads to says a brush changed and cannot say a row was
-clicked — and the quick slots, which that lesson goes on to teach, emit a command of
-exactly the same shape.
+Two are reported outright (`tutor::did`):
+
+- **A preset put on from the library.** The command it leads to says a brush
+  changed and cannot say a row was clicked — and the quick slots, which that lesson
+  goes on to teach, emit a command of exactly the same shape.
+- **A panel closed.** Which panels are open is the frontend's alone and reaches no
+  engine at all, so there is no command to read. `layout::close_panel` reports it,
+  and only where a panel actually went away.
 
 `not_reaching` and `did` are the only two things the tour asks of the rest of the
 app, and they are opposites: one says a command should not be read, the other says
 something happened that no command describes. Both earn the exception on the grounds
 the hold does (§6.9): what a gesture *is* cannot be derived from the commands it
 emits, so the side that knows is the side that says.
+
+#### And one the engine has to be asked for
+
+Whether a held stroke **snapped** is the mirror image of the hold itself. §6.9
+splits that gesture down the middle: the frontend owns the dwell, because how long a
+pause has to be is a fact about a hand and the engine has no clock; the engine owns
+what a hold *means*. So whether a hold found anything is knowable only on the engine
+side, and `Engine::assisted` is the named read that answers — a request in §4's
+sense, alongside `view` and `tow_string`.
+
+It answers **only before the gesture's `End`**, which is exactly when `observe`
+runs. What a stroke commits is the path the shape produced, not the shape, so the
+assist goes with the gesture; asked a moment later there would be nothing to see.
+That the tour reads the engine before the command reaches it — already load-bearing
+for `brush_deed` — is what makes this possible at all.
+
+The read answers a two-variant `Assisted { Line, Ellipse }` rather than the assist's
+own `AssistShape`. What a caller out there wants is which kind; what the shape
+carries is geometry — two points, a frame, a winding, the plane it is a circle on —
+and publishing those would fix the assist's internals as an interface for the sake
+of a question answered by one bit.
+
+**One command, three deeds.** A stroke that snapped along a vanishing line is a
+stroke, an assisted stroke and a guided line all at once, and each feeds a different
+lesson, so `read` answers with a list rather than an `Option`. Counting only the
+most specific would stall the two behind it for somebody who works entirely on a
+grid — and the list costs nothing where it matters, since `Vec::new()` does not
+allocate and that is what every command at pointer rate gets.
 
 Panning is the one deed that is a *measurement* rather than a report: no single
 `Pan` is long. Its run accumulates across `Pan` **and** `Pinch` — a two-finger pan
@@ -198,15 +237,30 @@ that mean nothing:
 |---|---|---|
 | `LeftAtTop` | the panels | a box hanging from the top of its column, so the top edge is the one always on screen |
 | `LeftAtMiddle` | the panel column | a whole edge of the window, with no meaningful top to line up with |
+| `RightAtTop` | the command rail | a box down the left that hugs its contents |
 | `RightAtMiddle` | the quick-brush rack | the chrome down the left, and a box that centres its rows in a column running to the foot of the window — so its top edge is a long way above anything drawn |
 | `Above` | the timeline bar | across the foot of the window |
+| `Inside` | the canvas | not a control at all but a *place* — see below |
 
 Panels are found by `layout::panel_key` — the same function that writes the
 `data-panel` attribute — rather than by a selector spelled out in the lesson table.
 A box matched to the wrong panel is measured in silence (§11), and here it would
 show as a card in the corner of the window with nothing beside it to explain.
 
-**One anchor is invisible, and that is the point.** The panel column's wake slice
+**One anchor is the painting, and one placement goes over it.** A lesson about a
+gesture made *on the canvas* has nothing to stand beside, and standing it beside a
+panel would say the panel had something to do with it. So `Side::Inside` puts the
+card in the middle of the picture a quarter of the way down, pointing down into it —
+the only arrangement that says *the thing I am describing happens there*.
+
+That is the one card that sits over the middle of the work, which is why **every**
+card declines the pointer and lets its two buttons take it back — the
+`.slot-overlay` bargain (§18.1.8). A press on a card's own background is far more
+likely to have been the start of a stroke than an attempt to click a paragraph, so
+it paints. The `.chrome` fade takes the buttons' events away as well for the length
+of every gesture.
+
+**One anchor is invisible, and that is also the point.** The panel column's wake slice
 (`.panel-wake`, §11) is a box with nothing drawn in it, so the card is the only
 thing that can say where it is — which is exactly the lesson. It also gets the
 best dismissal in the set: reaching into the column wakes the panels, the slice
@@ -299,6 +353,10 @@ anywhere else unless it counts a deed nothing counts yet.
 | 2 | a long pan | Navigator panel | Drag inside the miniature to travel; right-drag to turn the canvas |
 | 5 | the color moved *by a control* | Color panel | Alt + drag samples off the painting, and the bar that comes up says what the sample sees (§18.0.2) |
 | 2 | a redo | Timeline bar | The history is a place you can stand in, not a stack you pop (§18.2.4) |
+| 1 | a panel closed | the command rail | Nothing is lost: the Panels menu lists all eight, and what you leave open is remembered (§11) |
+| 10 | an undo | the canvas | Draw a rough line or ellipse and *hold* — it snaps to what you meant, and the drag steers it (§6.9) |
+| 3 | a shape-assisted stroke | Drawing Guides panel | Straight is one thing; straight *to somewhere* is another — add a perspective guide (§20) |
+| 1 | an assisted **line** with a guide visible | Drawing Guides panel | The grid aims held lines down its own axes, and turns a held circle into one in perspective (§20.6, §20.7) |
 
 **Order decides ties**, and the first three all wait on a stroke. Listed in that
 order, so a stroke satisfying more than one gives the earliest still owed — which
@@ -317,7 +375,30 @@ The counts are set from what each deed *costs* to keep doing the hard way. Two
 strokes is no commitment at all, but a painter with no color picker has already
 wanted one. Ten trips to the size slider is somebody who has decided that this is
 how they work, which is exactly the moment the drag is worth knowing and well past
-the moment it would have been an interruption.
+the moment it would have been an interruption. Ten undos is the same argument in a
+different key: it is not a request for anything, it is somebody visibly not getting
+the line they wanted, which is the one moment "draw it roughly and hold" reads as
+help rather than as trivia.
+
+The assist row is the one card shown **on the painting** rather than beside a
+control, and the placement is the message: what it describes is a thing you do with
+the pen, in the middle of the canvas, and there is no control anywhere that it could
+have pointed at instead.
+
+The last four rows are a **chain**, and it is the part of the table worth reading as
+a sequence. Undos bring the shape assist; assisted strokes bring the perspective
+guides, because a held line is exactly the stroke a grid has something to say about;
+and a held line drawn with a guide on screen brings the fact that the two have
+already been wired together (§20.6). Each lesson is the reason the next one's deed
+starts happening, so the tour walks somebody from *my lines are wobbly* to *my lines
+are on the vanishing point* without ever telling them anything they had not just
+asked for.
+
+One honest limit: the undo count is **undos**, not stroke-undos. Nothing in the
+projection says what the next undo would remove, and asking would mean a new method
+on `Timeline` with two implementors — a lot of engine surface for a threshold. In a
+painting app almost every undo is a stroke's, and the ones that are not point in the
+same direction anyway.
 
 "By a control" in two of those rows is `not_reaching` doing its work: the deed is
 *reaching for the slider*, not *the size changing*, so the artist who already drags

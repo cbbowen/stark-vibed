@@ -342,13 +342,16 @@ pub fn stored_hidden() -> HashSet<PanelId> {
 /// [`open_panel`], which the tour calls for a panel that is very often already open
 /// (§24.3) — and a `Signal` write dirties every subscriber whether or not the value
 /// moved.
-fn set_open(layout: PanelLayout, id: PanelId, open: bool) {
+///
+/// Answers whether it **moved**, which is what keeps the tour from reading a panel
+/// opened onto a panel that was already open as anything at all (§24.2).
+fn set_open(layout: PanelLayout, id: PanelId, open: bool) -> bool {
     let mut hidden = layout.hidden;
     // Into a local before the write: a read guard held across one is the shape that
     // has borrow-panicked in this crate before.
     let was_open = !hidden.peek().contains(&id);
     if was_open == open {
-        return;
+        return false;
     }
     if open {
         hidden.write().remove(&id);
@@ -364,12 +367,18 @@ fn set_open(layout: PanelLayout, id: PanelId, open: bool) {
             .filter(|id| !hidden.contains(id))
             .map(panel_key),
     );
+    true
 }
 
 /// Close `id`, and remember it — a panel's own ✕ ([`Panel`]) and the closing half of
 /// the Panels menu.
-pub fn close_panel(layout: PanelLayout, id: PanelId) {
-    set_open(layout, id, false);
+pub fn close_panel(state: AppState, layout: PanelLayout, id: PanelId) {
+    if set_open(layout, id, false) {
+        // Only where a panel actually went away. The tour answers the question this
+        // raises — *where did it go?* — and answering it about a panel that was
+        // already closed would be answering nobody (§24.5).
+        crate::tutor::did(state, crate::tutor::Deed::ClosedPanel);
+    }
 }
 
 /// Show `id`, and wake the stack. **The only way a panel is opened**, which is what
@@ -394,7 +403,7 @@ pub fn toggle_panel(state: AppState, layout: PanelLayout, id: PanelId) {
     if was_hidden {
         open_panel(state, layout, id);
     } else {
-        close_panel(layout, id);
+        close_panel(state, layout, id);
     }
 }
 
@@ -549,6 +558,7 @@ pub fn PanelStack() -> Element {
 #[component]
 pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: Element) -> Element {
     let layout = use_context::<PanelLayout>();
+    let state = use_context::<AppState>();
     // `map` on the default, so a panel that is not resizable never reads either signal
     // and so never re-renders for someone else's resize.
     let height = id
@@ -623,7 +633,7 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
                 button {
                     class: "panel-close",
                     title: "Close panel",
-                    onclick: move |_| close_panel(layout, id),
+                    onclick: move |_| close_panel(state, layout, id),
                     {icon(icons::CLOSE)}
                 }
             }

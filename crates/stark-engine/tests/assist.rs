@@ -14,6 +14,7 @@
 //! the level the whole feature lives at.
 
 use glam::Quat;
+use stark_engine::Assisted;
 use stark_engine::PerspectiveGuide;
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
@@ -81,7 +82,7 @@ fn holding_snaps_a_rough_drag_to_a_line() {
 
     let ordinal = session.gesture_ordinal();
     assert!(session.assist_stroke(), "a rough drag is a line");
-    assert!(session.is_assisted());
+    assert_eq!(session.assisted(), Some(Assisted::Line));
     let snapped = bow(&session);
     assert!(snapped < 0.05, "the snap bows {snapped}px");
     // ...and it is the line that was drawn, not some other one.
@@ -150,7 +151,7 @@ fn holding_on_a_squiggle_changes_nothing() {
     let before = session.preview_record().expect("in flight").path;
 
     assert!(!session.assist_stroke(), "a squiggle is not a shape");
-    assert!(!session.is_assisted());
+    assert_eq!(session.assisted(), None);
     assert_eq!(
         session.preview_record().expect("in flight").path,
         before,

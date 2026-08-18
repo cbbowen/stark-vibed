@@ -4341,14 +4341,18 @@ button.layer-remove:hover {
    what it points at includes that bar. Still below the dialogs (100), which are
    the one thing that should cover it.
 
-   Deliberately not `pointer-events: none`: this is the one box over the canvas
-   the user is meant to click, and there are two buttons in it. It is small, it
-   never sits over the middle of the window, and the `.chrome` fade takes its
-   pointer events away for the length of every gesture — which is the whole of
-   when a press near it would have been meant for the painting. */
+   **The card declines the pointer and its two buttons take it back** — the
+   `.slot-overlay` bargain, and for the same reason: this stands over the painting
+   rather than inside a panel, so every pixel of it that is not a control is canvas
+   the artist would rather still have. It matters most for the one placement that
+   sits over the middle of the picture (`tutor::Side::Inside`), where a press on the
+   card's own background is far more likely to have been the start of a stroke than
+   an attempt to click a paragraph. The `.chrome` fade takes the buttons' events away
+   too for the length of every gesture. */
 .tutor-card {
   position: absolute;
   z-index: 26;
+  pointer-events: none;
   /* Wide enough for three or four lines of the body at this size, and never
      wider than the window has room for — the translate that places it works off
      the anchor and cannot know the viewport, so the clamp is here. */
@@ -4420,9 +4424,13 @@ button.layer-remove:hover {
   transform: rotate(225deg);
 }
 
-/* Above its anchor: a quarter turn on, so it points down, centred on the bottom
-   edge. */
-.tutor-card.side-above::after {
+/* Pointing down, centred on the bottom edge: shared by the card that sits above
+   its anchor and the one that sits *inside* it a quarter of the way down
+   (`tutor::Side::Above`, `tutor::Side::Inside`). Two placements, one arrow —
+   because from the arrow's point of view they are the same picture, and the
+   difference between them is only how far above the thing the card ended up. */
+.tutor-card.side-above::after,
+.tutor-card.side-inside::after {
   bottom: -6px;
   left: calc(50% - 6px);
   transform: rotate(135deg);
@@ -4495,6 +4503,13 @@ button.layer-remove:hover {
 
 .tutor-done {
   flex: none;
+}
+
+/* The two things in the card that are controls, taking back the pointer the card
+   itself declines — see `.tutor-card`. */
+.tutor-quiet,
+.tutor-done {
+  pointer-events: auto;
 }
 
 /* Minimal mode drops the words from the chrome (§11) and this card is nothing

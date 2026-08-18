@@ -205,6 +205,12 @@ impl Renderer {
         self.engine.tow_string()
     }
 
+    /// What the stroke in flight has snapped to (§6.9), for the tour's count of
+    /// shape-assisted strokes (§24.2). Only answers before the gesture ends.
+    pub fn assisted(&self) -> Option<stark_engine::Assisted> {
+        self.engine.assisted()
+    }
+
     /// The document's current color space (§6.7).
     pub fn color_space(&self) -> ColorSpaceId {
         self.engine.color_space()
