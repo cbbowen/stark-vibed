@@ -18,6 +18,7 @@
   --panel-column: 300px;
   --panel-inset: 4px;
   --panel-shadow: 0px 0px 8px 0px black;
+  --panel-color: #e8e8ea;
   --panel-background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.12'/%3E%3C/svg%3E"), rgba(21, 20, 19, 0.9);
 }
 
@@ -306,7 +307,7 @@ hr {
      scroll. Its height is state the user set with the grip, not slack. */
   flex: none;
   background: var(--panel-background);
-  color: #e8e8ea;
+  color: var(--panel-color);
   border-radius: 12px;
   padding: 12px 14px;
   box-shadow: var(--panel-shadow);
@@ -511,7 +512,7 @@ hr {
   align-items: center;
   border: none;
   background: transparent;
-  color: #e8e8ea;
+  color: var(--panel-color);
   opacity: 0.45;
   cursor: pointer;
   line-height: 1;
@@ -1089,7 +1090,7 @@ hr {
   border: none;
   border-radius: 50%;
   background: transparent;
-  color: #e8e8ea;
+  color: var(--panel-color);
   /* Lifted off the thumbnail the row now wears, like the name. */
   filter: drop-shadow(0 1px 2px #000c);
   line-height: 1;
@@ -1143,7 +1144,7 @@ hr {
   justify-content: center;
   width: 18px;
   height: 18px;
-  color: #e8e8ea;
+  color: var(--panel-color);
   /* Lifted off the thumbnail like the name; a touch more present than the
      0.35 it wore on a flat row, or the shadowed mark sinks into the paint. */
   filter: drop-shadow(0 1px 2px #000c);
@@ -1393,10 +1394,10 @@ hr {
   gap: 8px;
   padding: 7px 10px;
   border-radius: 10px;
+  color: var(--panel-color);
   background: var(--panel-background);
   box-shadow: var(--panel-shadow);
   backdrop-filter: blur(8px);
-  color: #e8e8ea;
 }
 
 /* The label is the indicator; the controls beside it are the commands. A glyph may ride
@@ -2222,7 +2223,7 @@ button.layer-remove:hover {
   border: none;
   border-radius: 8px;
   background: none;
-  color: #e8e8ea;
+  color: var(--panel-color);
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
@@ -2257,8 +2258,8 @@ button.layer-remove:hover {
 .modal-dialog {
   width: 360px;
   max-width: calc(100vw - 28px);
+  color: var(--panel-color);
   background: var(--panel-background);
-  color: #e8e8ea;
   border-radius: 14px;
   padding: 20px;
   box-shadow: var(--panel-shadow);
@@ -2377,8 +2378,8 @@ button.layer-remove:hover {
   padding: 10px 12px;
   border-radius: 8px;
   border: 1px solid #ffffff14;
+  color: var(--panel-color);
   background: #ffffff08;
-  color: #e8e8ea;
   opacity: 0.75;
   font-family: ui-monospace, monospace;
   font-size: 11px;
@@ -2524,8 +2525,8 @@ button.layer-remove:hover {
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid #ffffff1f;
+  color: var(--panel-color);
   background: #ffffff08;
-  color: #e8e8ea;
   font-family: ui-monospace, monospace;
   font-size: 11px;
   text-overflow: ellipsis;
@@ -2685,8 +2686,8 @@ button.layer-remove:hover {
   padding: 6px 0;
   border: 1px solid #ffffff1f;
   border-radius: 6px;
+  color: var(--panel-color);
   background: transparent;
-  color: #e8e8ea;
   font-size: 12px;
   cursor: pointer;
   transition: background-color 100ms ease;
@@ -2810,8 +2811,8 @@ button.layer-remove:hover {
   gap: 8px;
   padding: 10px 2px;
   border: none;
+  color: var(--panel-color);
   background: none;
-  color: #e8e8ea;
   font: inherit;
   font-size: 13px;
   font-weight: 600;
@@ -2872,8 +2873,8 @@ button.layer-remove:hover {
   padding: 2px 7px;
   border: 1px solid #ffffff1f;
   border-radius: 999px;
+  color: var(--panel-color);
   background: none;
-  color: #e8e8ea;
   font: inherit;
   font-size: 11px;
   line-height: 16px;
@@ -2990,7 +2991,7 @@ button.layer-remove:hover {
 
 /* The procedural round tip has no image: a soft disc, drawn in CSS. */
 .shape-thumb.round {
-  background: radial-gradient(circle, #e8e8ea 0%, #e8e8ea 52%, transparent 71%);
+  background: radial-gradient(circle, var(--panel-color) 0%, var(--panel-color) 52%, transparent 71%);
 }
 
 /* The import tile's plus, drawn rather than typed — and big, because it stands in a
@@ -3029,8 +3030,8 @@ button.layer-remove:hover {
   padding: 0;
   border: none;
   border-radius: 50%;
+  color: var(--panel-color);
   background: #000000a0;
-  color: #e8e8ea;
   line-height: 1;
   cursor: pointer;
   opacity: 0;
@@ -3080,7 +3081,7 @@ button.layer-remove:hover {
 
 .btn-secondary {
   background: #33333a;
-  color: #e8e8ea;
+  color: var(--panel-color);
 }
 
 .btn-primary {
@@ -3628,10 +3629,10 @@ button.layer-remove:hover {
   gap: 8px;
   padding: 7px 10px;
   border-radius: 10px;
+  color: var(--panel-color);
   background: var(--panel-background);
   box-shadow: var(--panel-shadow);
   backdrop-filter: blur(8px);
-  color: #e8e8ea;
 }
 
 /* The filter bar: the selected filter's own numbers, mounted only while a filter
@@ -3644,10 +3645,10 @@ button.layer-remove:hover {
   gap: 8px;
   padding: 7px 10px;
   border-radius: 10px;
+  color: var(--panel-color);
   background: var(--panel-background);
   box-shadow: var(--panel-shadow);
   backdrop-filter: blur(8px);
-  color: #e8e8ea;
 }
 
 .filter-bar .chip {
@@ -3919,10 +3920,10 @@ button.layer-remove:hover {
   gap: 8px;
   padding: 7px 10px;
   border-radius: 10px;
+  color: var(--panel-color);
   background: var(--panel-background);
   box-shadow: var(--panel-shadow);
   backdrop-filter: blur(8px);
-  color: #e8e8ea;
   animation: pick-bar-in 120ms ease-out;
 }
 
@@ -4180,7 +4181,7 @@ button.layer-remove:hover {
   align-items: baseline;
   gap: 8px;
   font-size: 13px;
-  color: #e8e8ea;
+  color: var(--panel-color);
 }
 
 /* The chosen notch's name, at the end of the label line — where the eye lands
@@ -4258,10 +4259,10 @@ button.layer-remove:hover {
   gap: 14px;
   padding: 9px 12px;
   border-radius: 10px;
+  color: var(--panel-color);
   background: var(--panel-background);
   box-shadow: var(--panel-shadow);
   backdrop-filter: blur(8px);
-  color: #e8e8ea;
 }
 
 /* The bottom-centre column shares this edge, so it moves up out of the way for as
@@ -4407,7 +4408,7 @@ button.layer-remove:hover {
   gap: 1px;
   font-size: 12px;
   line-height: 1.25;
-  color: #e8e8ea;
+  color: var(--panel-color);
 }
 
 .timeline-position {
@@ -4538,6 +4539,7 @@ button.layer-remove:hover {
   pointer-events: none;
   padding: 6px 14px;
   border-radius: 999px;
+  color: var(--panel-color);
   background: var(--panel-background);
   box-shadow: var(--panel-shadow);
   backdrop-filter: blur(8px);
@@ -4797,10 +4799,10 @@ button.layer-remove:hover {
   box-sizing: border-box;
   padding: 12px 14px;
   border-radius: 12px;
+  color: var(--panel-color);
   background: var(--panel-background);
   box-shadow: var(--panel-shadow);
   backdrop-filter: blur(8px);
-  color: #e8e8ea;
   /* A hairline in the tip's own color, which is what separates it from the panel
      it is pointing at: two identical slabs side by side read as one wider panel,
      and the whole gesture depends on them reading as two things. */
@@ -4938,11 +4940,11 @@ button.layer-remove:hover {
    buttons would present them as a choice between equals. */
 .tutor-quiet {
   border: none;
-  background: none;
   padding: 0;
+  color: #e8e8ea;
+  background: none;
   font: inherit;
   font-size: 11px;
-  color: #e8e8ea;
   opacity: 0.5;
   cursor: pointer;
   text-decoration: underline;
