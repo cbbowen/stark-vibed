@@ -447,7 +447,16 @@ pub const CASES: &[Case] = &[
             // where `arc_weights` does the most work, and which samples fall in the
             // solve window — and therefore what the weights normalize against — moves
             // with the tolerance. 0.8 before the weights existed, 1.36 measured after.
-            refine: 1.5,
+            //
+            // 2.50 measured once `SMOOTHING` went to 0.05, and this bound was raised
+            // to admit it. The ridge is weighted `SMOOTHING × n/m` (`spline::m_step`),
+            // so the control-point count is *in* the penalty — refitting 4× finer
+            // moves m, moves the weight, and moves the curve. That is a second way
+            // for this stroke to answer to its tolerance, on top of the windowing
+            // above, and it scales with the ridge: 1.57 at 0.03, 1.88 at 0.035, 2.58
+            // at 0.04. The number is what the ridge costs, not what the fit converges
+            // to, which is the honest reading of this row now.
+            refine: 4.0,
             lift: 0.0,
         },
     },
@@ -493,11 +502,21 @@ pub const CASES: &[Case] = &[
             // costs (`PathFitter::solve`). The curve's last control value is held at
             // its neighbour rather than pinned to the last report, so the final span
             // does not complete the ramp; where that neighbour sits depends on the knot
-            // count, and the knot count moves with the tolerance. That is the whole
-            // 0.067% of it. A linear ramp is still fitted exactly everywhere the end
-            // condition does not reach, and giving up the last sliver of one is what
+            // count, and the knot count moves with the tolerance. That was the whole
+            // 0.067% of it, back when a linear ramp was fitted exactly everywhere the
+            // end condition did not reach; giving up the last sliver of one is what
             // buys a stroke that survives the pen coming off it (`Tol::lift`).
-            refine: 0.1,
+            //
+            // 0.427% at `SMOOTHING` 0.05, and this bound was raised to admit it. The
+            // end condition is still the only *source* — a straight, linear-pressure
+            // stroke has zero bending energy, so the ridge has nothing of its own to
+            // pull on — but the ridge couples each control point to its neighbours,
+            // so it spreads the tail perturbation back along the polygon instead of
+            // leaving it in the last span. How far it spreads is what `SMOOTHING`
+            // sets: 0.209% at 0.03, 0.284% at 0.035, 0.351% at 0.04. So this row no
+            // longer reads "a straight stroke is fitted exactly at any tolerance" —
+            // it reads how far the ridge carries the one place it is not.
+            refine: 0.7,
             lift: 0.0,
         },
     },

@@ -284,10 +284,11 @@ fn check_save_load(
 /// nearest cover is each case's golden, which is why the corpus bothers to paint a
 /// pressure ramp and a stamp around a curve at all.
 ///
-/// It is a convergence check, not an equality. The straight cases (`line`,
-/// `pressure_ramp`) are fitted exactly at any tolerance and move by nothing at
-/// all; a path with real curvature genuinely shifts under a better fit, and its bound
-/// records how much.
+/// It is a convergence check, not an equality. `line` is fitted exactly at any
+/// tolerance and moves by nothing at all; a path with real curvature genuinely shifts
+/// under a better fit, and its bound records how much. `pressure_ramp` used to sit
+/// with `line` and no longer does — see its bound for what the curvature ridge costs
+/// a stroke that has no curvature of its own.
 ///
 /// **This is the one check measured by area rather than by worst texel**, and the two
 /// other checks' preference for the maximum is exactly why. A seam is a step: loud in

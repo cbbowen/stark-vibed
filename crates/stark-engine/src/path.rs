@@ -2222,12 +2222,14 @@ mod tests {
             stair.push(sample(b + 2.0, b)); // 2px right
             stair.push(sample(b + 2.0, b + 2.0)); // 2px up
         }
-        // **Known weakness.** 25 control points for a 48px staircase: the fit is
-        // tracing the quantization rather than smoothing it, because the arc-length
-        // guess is not the curve's own parameterization and the residual that
-        // mismatch leaves reads as error the growth rule tries to buy away. What is
-        // still right is the *shape* — the curve splits the corners rather than
-        // following them, which is what the error bound below checks.
+        // Nine control points for a 48px staircase, against the two the diagonal
+        // underneath it is worth. Most of that gap used to be much wider — the
+        // arc-length guess is not the curve's own parameterization, and the residual
+        // that mismatch leaves reads as error the growth rule tries to buy away;
+        // `SMOOTHING` is what now charges the polygon for the curvature it would buy.
+        // What the count never showed either way is the *shape* — the curve splits
+        // the corners rather than following them, which is what the error bound below
+        // checks.
         // Traced, it would sit ~0 from every sample; smoothed, it splits the corners.
         let err = fit_error(&stair);
         assert!(
@@ -2249,9 +2251,36 @@ mod tests {
         }
         let fine = fit_with_tolerance(&stair, DEFAULT_TOLERANCE).len();
         let coarse = fit_with_tolerance(&stair, 2.0).len();
+        // What the *shape* is worth, with the quantization taken out: the same
+        // reports projected onto the diagonal they are a staircase of. Declaring the
+        // grid can only buy back what the zigzag costs, never what the stroke is, so
+        // that is the baseline both counts are measured from. Priced as a bare ratio
+        // of totals instead, this read as a regression the moment `SMOOTHING` moved —
+        // the finer fit had got better too, which is not the thing under test.
+        let ideal = fit_with_tolerance(
+            &stair
+                .iter()
+                .map(|s| {
+                    let d = 0.5 * (s.pos.x + s.pos.y);
+                    InputSample {
+                        pos: Vec2::splat(d),
+                        ..*s
+                    }
+                })
+                .collect::<Vec<_>>(),
+            DEFAULT_TOLERANCE,
+        )
+        .len();
+        // The premise. At 1px the zigzag is above the declared grain, so the fit does
+        // pay for some of it; without this the comparison below could be satisfied by
+        // both fits being perfect, and the test would have stopped testing anything.
         assert!(
-            coarse * 2 <= fine,
-            "2px grid declared: {coarse} control points against {fine} — not smoothed"
+            fine > ideal,
+            "nothing left to smooth: {fine} control points over a shape worth {ideal}"
+        );
+        assert!(
+            coarse.saturating_sub(ideal) * 2 <= fine.saturating_sub(ideal),
+            "2px grid declared: {coarse} against {fine} control points, over a shape worth {ideal} — not smoothed"
         );
         // And what is left is still the diagonal, not a shortcut across it: every
         // sample is within a step of the curve.
