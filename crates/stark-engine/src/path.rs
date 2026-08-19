@@ -121,7 +121,7 @@ pub const MAX_TOLERANCE: f32 = 64.0;
 /// milder problem than it was, but a control point at the very end of the window
 /// still has little holding it, and this is what settles it onto its neighbours'
 /// continuation.
-const SMOOTHING: f32 = 0.02;
+const SMOOTHING: f32 = 0.05;
 
 /// Per-point channels carried alongside the geometry: pressure, tilt x/y, time.
 const CHANNELS: usize = 4;
