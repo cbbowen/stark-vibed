@@ -339,32 +339,27 @@ impl Engine {
         let mut resids = Vec::with_capacity(points.len());
         for &at in points {
             let view = patch_view(at, size);
+            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT |
+             // Used by some filters.
+             wgpu::TextureUsages::TEXTURE_BINDING;
             let color = self.offscreen_target(
                 "stark pick color",
                 formats.color,
                 size,
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                usage | wgpu::TextureUsages::COPY_SRC,
             );
-            // Written by pass A and never read: the height it accumulates says how *much*
-            // paint is there, not what color it is.
-            let aux = self.offscreen_target(
-                "stark pick aux",
-                formats.aux,
-                size,
-                wgpu::TextureUsages::RENDER_ATTACHMENT,
-            );
-            // The residual, and unlike the aux it **is** read back: in a pigment space it
-            // is half the color, so an eyedropper that sampled only the concentrations
-            // would report the polynomial's nearest reachable color — black as `#383838`
-            // — which is precisely the defect this channel exists to fix (§6.7).
+            // In a pigment space, the residual is just more color channels, and so it treated identically.
             let resid = formats.resid.map(|f| {
                 self.offscreen_target(
                     "stark pick resid",
                     f,
                     size,
-                    wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    usage | wgpu::TextureUsages::COPY_SRC,
                 )
             });
+            // Written by pass A and never read: the height it accumulates says how *much*
+            // paint is there, not what color it is.
+            let aux = self.offscreen_target("stark pick aux", formats.aux, size, usage);
             // Named rather than inlined into the call: a `Targets` borrows its three
             // views, so they have to outlive it.
             let default = wgpu::TextureViewDescriptor::default();
