@@ -60,7 +60,7 @@ use hotkeys::Hotkey;
 use icons::{icon, icon_large};
 use input::{
     Nav, Paint, Tune, bind_context_menu, bind_pen, bind_shortcuts, elem_xy, end_interaction,
-    hover_at, hover_gone, pick_color, sample,
+    hover_at, hover_gone, hover_stroke, pick_color, sample,
 };
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, resize_end, resize_move};
 use panels::brush::PresetSaveModal;
@@ -725,11 +725,13 @@ fn Canvas() -> Element {
                         // Alt+drag keeps sampling; `pick_color` drops a move that
                         // arrives while the last sample is still settling.
                         pick_color(state, s.pos);
-                    } else {
-                        // The paint gesture takes it if it has one in flight, and
-                        // says so — a move with no gesture behind it is only a
-                        // cursor to report below (`input::Paint::advance`).
-                        paint.advance(&e);
+                    } else if !paint.advance(&e) {
+                        // The paint gesture takes the move if it has one in
+                        // flight, and says so. A move with no gesture behind it
+                        // is a *hover*, and the mark preview rides it
+                        // (§18.1.10): the engine pairs this sample with the last
+                        // and folds the stroke the two would have painted.
+                        hover_stroke(state, s, &e);
                     }
                     // Where collaborators see this client's pointer
                     // (§17.4). Quiet: it changes nothing *this* client renders — the
@@ -826,12 +828,12 @@ fn PeerCursors() -> Element {
 /// one memo — a bracket tap or a wheel notch resizes the circle where it stands,
 /// and a pan, which moves neither factor, wakes nothing here at all.
 ///
-/// A circle, though the brush may be any shape (§6.6) — and here, unlike
-/// [`BrushSizeRing`], that is a placeholder rather than the honest answer: the
-/// hover is precisely a promise about the mark, and the mark's true picture is
-/// the engine's to render, from the hover's last samples through the same stroke
-/// pipeline as a real dab (§18.1.10's unbuilt half). The hover signal this reads
-/// is the seam that preview will feed from.
+/// A circle, though the brush may be any shape (§6.6) — deliberately, even now
+/// that the real thing renders beneath it: the engine folds the actual mark the
+/// last two hover reports would have painted (§18.1.10,
+/// `ViewCommand::PreviewHover`, fed by the same move handler), and the two
+/// halves divide the work — the mark says what the paint would *do*, the ring
+/// says how far the brush *reaches*, which a soft tip's mark understates.
 #[component]
 fn BrushCursor() -> Element {
     let state = use_context::<AppState>();

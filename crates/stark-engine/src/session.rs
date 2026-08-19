@@ -274,8 +274,23 @@ pub struct Session {
 
     in_flight: Option<StrokeBuilder>,
     selecting: Option<ShapeDrag>,
+    /// The hover mark (§18.1.10): the stroke the last two hover reports would
+    /// have painted, previewed under the resting pointer. `None` when the
+    /// pointer is elsewhere or the hand is doing something other than hovering.
+    ///
+    /// Beside [`in_flight`](Self::in_flight) because it is the same kind of
+    /// thing — an uncommitted stroke the fold draws — and deliberately **not**
+    /// it: this one never commits, never publishes (the wire half,
+    /// [`gesture_source`](Self::gesture_source), reads only the two slots
+    /// above), and never sets [`is_stroking`](Self::is_stroking). A real
+    /// gesture always outranks it ([`hover_view`](Self::hover_view)).
+    hover: Option<HoverStroke>,
     /// Bumped on every gesture start, so a peer can tell a restart from a
-    /// continuation without a clock.
+    /// continuation without a clock — and on every hover update, so the
+    /// renderer's per-actor head cache can never mistake one hover's render
+    /// for the next's, or for a real gesture's. **One counter for both on
+    /// purpose**: two counters could collide, and a collision revives a cached
+    /// head — including one still holding a cancelled stroke's paint.
     gesture_ordinal: u64,
 
     // Publish bookkeeping — the latch, not a queue (§17.5).
@@ -308,6 +323,7 @@ impl Session {
             cursor: None,
             in_flight: None,
             selecting: None,
+            hover: None,
             gesture_ordinal: 0,
             published: None,
             boot: 0,
@@ -505,6 +521,10 @@ impl Session {
     pub fn start_selection(&mut self, tool: Tool, pos: Vec2) {
         self.tool = tool;
         self.in_flight = None;
+        // The press supersedes the hover it interrupted — and the pair must not
+        // survive the gesture, or the mark would reappear at the pre-press
+        // position the moment the hand lifted (§18.1.10).
+        self.hover = None;
         self.gesture_ordinal += 1;
         let [r, g, b, _] = self.brush.color;
         self.selecting = Some(ShapeDrag {
@@ -580,6 +600,9 @@ impl Session {
     ) {
         self.tool = tool;
         self.selecting = None;
+        // For `start_selection`'s reason: a stale pair outliving the stroke
+        // would resurrect a pre-press mark at pen-up (§18.1.10).
+        self.hover = None;
         self.gesture_ordinal += 1;
         let mut fitter = PathFitter::with_tolerance(tolerance);
         fitter.push(sample);
@@ -784,11 +807,109 @@ impl Session {
             .map(Tow::string)
     }
 
-    /// Discard the in-flight stroke without committing.
+    /// Discard the in-flight stroke without committing. Takes the hover mark
+    /// with it: every caller — a pinch's cancel, a tool switch, the reset before
+    /// a load — is a moment the hypothesis stopped describing anything, and the
+    /// next hover report re-seeds it.
     pub fn cancel_stroke(&mut self) {
         self.in_flight = None;
         self.selecting = None;
+        self.hover = None;
     }
+
+    // --- the hover mark (§18.1.10) --------------------------------------------
+
+    /// Feed the hover mark one report: pair it with the report before and fit
+    /// the two-sample path a gesture made of them would commit. The engine keeps
+    /// the pair so the frontend sends one sample per move, exactly as it does
+    /// for a stroke; the first report of a fresh hover pairs with itself, which
+    /// fits the path a *click* would commit.
+    ///
+    /// `tolerance` is the frontend's statement of its input grain, as
+    /// [`start_stroke`](Self::start_stroke) takes it. A non-finite report is
+    /// refused at the door for [`stroke_to`](Self::stroke_to)'s reason — the
+    /// pair *remembers*. A report that went nowhere is dropped rather than
+    /// paired: pairing it would collapse the path to a point and blink the mark
+    /// out under a resting pen, whose tilt jitter can re-report a position.
+    pub fn hover_to(&mut self, sample: InputSample, tolerance: f32) {
+        if !sample.is_finite() {
+            return;
+        }
+        if let Some(h) = self.hover.as_ref()
+            && h.last.pos == sample.pos
+        {
+            return;
+        }
+        let prev = self.hover.take().map_or(sample, |h| h.last);
+        let mut fitter = PathFitter::with_tolerance(tolerance);
+        fitter.push(prev);
+        fitter.push(sample);
+        // Finished, because it is: the pair is the whole gesture, so the path is
+        // the one `End` would adopt — which is what makes the mark the commit's
+        // pixels rather than nearly so.
+        fitter.finish();
+        self.gesture_ordinal += 1;
+        self.hover = Some(HoverStroke {
+            path: fitter.path(),
+            last: sample,
+            ordinal: self.gesture_ordinal,
+        });
+    }
+
+    /// Drop the hover mark. Answers whether there was one to drop, so a caller
+    /// can skip the refold — and the repaint — when there was not.
+    pub fn clear_hover(&mut self) -> bool {
+        self.hover.take().is_some()
+    }
+
+    /// Whether a hover mark is held — what the frontend peeks before spending a
+    /// command (and the frame behind it) taking one down.
+    pub fn hover_held(&self) -> bool {
+        self.hover.is_some()
+    }
+
+    /// The hover mark as the fold wants it, authored by `actor` with `seed` —
+    /// the same [`GestureView`] shape a real gesture folds as, so the renderer
+    /// cannot tell them apart and `hover == committed` is inherited rather than
+    /// maintained.
+    ///
+    /// `None` while a real gesture is in flight — a fact always outranks a
+    /// hypothesis, and the fold may hold at most one gesture per actor — and
+    /// under a selection tool, which drags a shape rather than the brush. An
+    /// unpaintable active layer needs no test here: the stroke renderer refuses
+    /// it exactly as a commit would.
+    pub fn hover_view(&self, actor: ActorId, seed: u64) -> Option<GestureView> {
+        if self.in_flight.is_some() || self.selecting.is_some() || self.tool.is_selection() {
+            return None;
+        }
+        let h = self.hover.as_ref()?;
+        Some(GestureView {
+            actor,
+            gesture: LiveGesture::Stroke(StrokeRecord {
+                layer: self.active_layer,
+                brush: self.brush,
+                path: h.path.clone(),
+                seed,
+            }),
+            ordinal: h.ordinal,
+            // Nothing settles: both samples move with every report, so the whole
+            // mark is live tail — the same answer a marquee gives.
+            frozen_spans: 0,
+        })
+    }
+}
+
+/// The hover mark's state (§18.1.10): what the last two hover reports would have
+/// painted, and the bookkeeping that keeps its renders distinct.
+struct HoverStroke {
+    /// The fitted two-report path — what a gesture of exactly these samples
+    /// would commit.
+    path: Vec<ControlPoint>,
+    /// The newest report, kept to pair with the next one.
+    last: InputSample,
+    /// This update's slot in the session's gesture-ordinal space (see
+    /// [`Session::gesture_ordinal`]).
+    ordinal: u64,
 }
 
 impl StrokeBuilder {

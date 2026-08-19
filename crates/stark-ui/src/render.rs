@@ -205,6 +205,13 @@ impl Renderer {
         self.engine.tow_string()
     }
 
+    /// Whether the engine holds a hover mark (§18.1.10) — peeked before taking
+    /// one down, so the clear costs a command and a repaint only when there is
+    /// one to remove (`input::clear_hover_mark`).
+    pub fn hover_held(&self) -> bool {
+        self.engine.hover_held()
+    }
+
     /// What the stroke in flight has snapped to (§6.9), for the tour's count of
     /// shape-assisted strokes (§24.2). Only answers before the gesture ends.
     pub fn assisted(&self) -> Option<stark_engine::Assisted> {

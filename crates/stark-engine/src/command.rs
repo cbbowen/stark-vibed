@@ -610,6 +610,28 @@ pub enum ViewCommand {
     /// paint — affordable at pointer rate for the reason the two above are.
     PreviewLayerBlend(Option<(LayerId, BlendMode)>),
 
+    /// Show the mark the brush would make under the **hovering** pointer,
+    /// **without logging it** — the brush cursor's painted half (§18.1.10).
+    /// `None` drops the mark.
+    ///
+    /// Each report carries the newest hover sample and the gesture tolerance
+    /// ([`GestureCommand::Start`]'s own field, stated per report because the
+    /// zoom it derives from can change mid-hover); the engine pairs it with the
+    /// report before, so what is folded is the stroke the last two reports
+    /// *would have committed* — fitted by the same fitter, rendered by the same
+    /// renderer, through the selection mask and onto the paint already there,
+    /// wet-mixing included. The first report of a fresh hover pairs with
+    /// itself: the mark a click would make.
+    ///
+    /// Unlike the rest of the `Preview*` family this is not the in-flight half
+    /// of any commit — it is a hypothesis, and three things follow. It is
+    /// **outranked** by a real gesture (the fold holds one gesture per actor,
+    /// and a fact beats a guess); it is **dropped** by anything that ends its
+    /// premise — a gesture starting, a tool switch, a load; and it may never
+    /// reach a file — a `Rendered::Live` export takes it down first, because an
+    /// export is not a moment the hand is painting in.
+    PreviewHover(Option<(InputSample, f32)>),
+
     /// Tune the media/lighting pass (§6.3). Changes how the canvas
     /// looks, not what it is.
     SetMediaParams(MediaParams),

@@ -607,7 +607,15 @@ impl Engine {
             )));
         }
         // No chrome: a selection outline or any other on-canvas affordance is a
-        // thing to draw *with*, never a thing to ship.
+        // thing to draw *with*, never a thing to ship. The hover mark (§18.1.10)
+        // is the same statement made of paint — a hypothesis about the *next*
+        // stroke, not work — and it may never reach a file. Dropped rather than
+        // excluded per-render, because the fold is one cached document; honestly
+        // so, since a moment worth exporting is not one the hand is painting in,
+        // and the next hover report re-seeds it.
+        if matches!(content, Rendered::Live) && self.session.clear_hover() {
+            self.mark_live_stale();
+        }
         let (target, size) =
             self.render_offscreen(into, view, only, background, Chrome::Hidden, content);
         // Captured, not read through `self`: the future deliberately does not

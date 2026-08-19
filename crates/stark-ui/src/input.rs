@@ -1056,6 +1056,10 @@ fn handle_keydown(mut state: AppState, e: &platform::KeyEvent) {
     match e.key() {
         Key::Character(c) if c.eq_ignore_ascii_case(" ") => {
             state.space_down.set(true);
+            // Space arms the pan: a hover mark left standing would promise
+            // paint the press will not make (§18.1.10). Self-guarding, so the
+            // key's auto-repeat costs a peek and nothing else.
+            clear_hover_mark(state);
             e.prevent_default();
         }
         // Alt on its own focuses the browser's menu bar on Windows and Linux, which
@@ -1128,6 +1132,13 @@ fn track_alt(state: AppState, m: Modifiers) {
     let mut held = state.pick.alt_down;
     if *held.peek() != alt {
         held.set(alt);
+        // Alt arms the eyedropper, and a sample reads the *shown* canvas
+        // (`Engine::pick_colors`) — so the hover mark has to leave the screen
+        // with the same keystroke, or a press could read the hypothesis back
+        // as paint (§18.1.10).
+        if alt {
+            clear_hover_mark(state);
+        }
     }
 }
 
@@ -1406,10 +1417,60 @@ pub fn hover_at(state: AppState, at: Vec2) {
     hover.set(Some(at));
 }
 
+/// Feed the hover mark one report (§18.1.10): the engine pairs `s` with the
+/// report before and folds the stroke the two would have committed — the
+/// painted half of the brush cursor, under the circle [`hover_at`] places.
+///
+/// Gated on the states that promise the press to something other than paint —
+/// space's pan, Alt's eyedropper (armed or dragging), and playback, where a
+/// stroke would be refused (`panels::timeline::is_playing`). The engine gates
+/// the rest itself: a selection tool folds no mark, an unpaintable layer
+/// refuses the render, and a real gesture always outranks the hypothesis.
+///
+/// The report's pressure is replaced with **full pressure**: a hovering pen
+/// (and a mouse) reports zero, which would honestly preview no mark at all.
+/// Full rather than a middle weight so the mark fills the size circle drawn
+/// over it — two overlays about one brush must not disagree about its reach.
+/// Tilt is kept: a hovering pen reports it, and the mark should lean as the
+/// stroke would.
+pub fn hover_stroke(state: AppState, s: InputSample, e: &Event<PointerData>) {
+    if *state.space_down.peek()
+        || *state.pick.alt_down.peek()
+        || *state.pick.dragging.peek()
+        || crate::panels::timeline::is_playing(state)
+    {
+        return;
+    }
+    let Some(tolerance) = input_tolerance(state, e) else {
+        return;
+    };
+    let sample = InputSample { pressure: 1.0, ..s };
+    crate::state::dispatch_hover(state, ViewCommand::PreviewHover(Some((sample, tolerance))));
+}
+
+/// Take the engine's hover mark down, if one is up (§18.1.10) — the half of
+/// [`hover_gone`] that owns pixels rather than a `<div>`: the circle hides
+/// reactively, but the mark is paint in the frame, and only a command (and the
+/// repaint it asks for) removes it. The peek is the other half of the bargain —
+/// an idle call must not spend a command or schedule a frame, and this runs per
+/// move of a pan and on auto-repeating keydowns.
+pub fn clear_hover_mark(state: AppState) {
+    let held = state
+        .renderer
+        .peek()
+        .as_ref()
+        .is_some_and(crate::render::Renderer::hover_held);
+    if held {
+        crate::state::dispatch_hover(state, ViewCommand::PreviewHover(None));
+    }
+}
+
 /// The hover is over — the pointer left the canvas, or the gesture in hand
 /// stopped being paint (a pinch, a pan, a tuning drag). Written only on a
-/// change, since a pan calls this per move and an idle call must dirty no scope.
+/// change, since a pan calls this per move and an idle call must dirty no scope
+/// — [`clear_hover_mark`] guards itself the same way.
 pub fn hover_gone(state: AppState) {
+    clear_hover_mark(state);
     let mut hover = state.brush_cursor;
     if hover.peek().is_some() {
         hover.set(None);

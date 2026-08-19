@@ -744,14 +744,49 @@ hover is wearing that size on the way back to the work.
 - **Below a few screen px it hides**: inside the crosshair the circle is
   noise, and the crosshair is the better picture of a fine tip.
 
-**Not built**: the honest cursor. A circle is a placeholder for the *mark* —
-the real tip may be any shape (§6.6), soft, textured, tilted, and what it
-would deposit depends on what is already on the canvas (§6.2). The plan is a
-preview the engine renders from the hover's last two input samples through the
-same stroke pipeline as a real dab — `preview == committed` (§3) extended to
-the moment before the press — which would show the actual deposit, shape and
-softness and color and all, under the resting pen. `AppState::brush_cursor` is
-the seam that preview will feed from.
+**And the honest half — the mark itself — is built.** The circle says how far
+the brush reaches; under it the engine folds *the mark the last two hover
+reports would have committed*: shape, softness, color, tilt, taper, the
+selection mask, and the wet-mixing against whatever paint is already there
+(§6.2, §6.4). `preview == committed` (§1.3) extended to the moment before the
+press — and inherited rather than maintained, which is the whole design:
+
+- **One report per move, paired in the engine.** The canvas's move handler
+  feeds `ViewCommand::PreviewHover` the newest sample (`input::hover_stroke`);
+  the session pairs it with the one before, fits the pair with the same
+  `PathFitter` a gesture uses, and keeps the path `End` would adopt. The first
+  report of a fresh hover pairs with itself — the mark a *click* would make.
+  Pressure is replaced with **full pressure** (a hovering pen, and a mouse,
+  reports zero — which would honestly preview no mark at all), full rather
+  than a middle weight so the mark fills the circle over it: two overlays
+  about one brush must not disagree about its reach. Tilt is kept — a
+  hovering pen reports it, and the mark should lean as the stroke would.
+- **Folded as a gesture, outranked by one.** The fold receives the mark in
+  the very `GestureView` shape a real gesture folds as
+  (`Session::hover_view`), so the renderer cannot tell them apart — that is
+  what makes `hover == committed` free. An actor folds at most one gesture,
+  and a fact beats a hypothesis: a real gesture takes the mark's slot *and*
+  drops the pair, so no pre-press mark can resurface at pen-up. Its ordinals
+  are drawn from the same counter as real gestures', so the renderer's
+  per-actor head cache can never mistake one render for another. Presence
+  never carries it — the wire half reads only the real gesture slots — and
+  `is_stroking` stays false.
+- **A hypothesis may never become work.** It commits nothing and moves no
+  revision (`tests/hover.rs` holds `hover == committed` at *zero* tolerance,
+  and the rest of the ledger with it). A `Rendered::Live` export takes the
+  mark down before rendering — an export is not a moment the hand is painting
+  in — and the eyedropper's arming (Alt) takes it down with the same
+  keystroke, because a sample reads the shown canvas and must not read the
+  hypothesis back as paint. Space's pan and playback gate it off UI-side; a
+  selection tool folds no mark, and an unpaintable layer refuses it exactly
+  as it refuses a stroke — the same renderer answers both, so there is no
+  gate to forget (§15.7).
+- **The price is painting's, paid only while the hover moves.** Each report
+  costs a two-sample fit (its own timing row, `input.hover`, so following the
+  pointer is never priced as painting), a short-stroke render and a refold —
+  what a moving pen costs mid-stroke. A resting pointer reports nothing and
+  costs nothing; a report that went nowhere is dropped rather than paired, so
+  a resting pen's tilt jitter cannot blink the mark out.
 
 ### 18.2 Tier 2 — where we can beat the prior art
 

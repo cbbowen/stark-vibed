@@ -983,6 +983,11 @@ impl Engine {
             PeerCommand::SetActiveLayer(id) => {
                 if self.document().contains_layer(id) {
                     self.session.active_layer = id;
+                    // The hover mark follows the brush's target (§18.1.10): it
+                    // is built against the active layer at fold time, so moving
+                    // the selection has to re-lay it there. Free when nothing is
+                    // in flight — a clean fold's rebuild is an early return.
+                    self.mark_live_stale();
                 }
             }
             PeerCommand::SetCursor(pos) => self.session.cursor = pos,
@@ -1325,6 +1330,21 @@ impl Engine {
                 let preview = f.and_then(|(layer, op)| self.preview_fill(layer, &op));
                 self.set_doc_preview(preview);
             }
+            ViewCommand::PreviewHover(report) => match report {
+                Some((sample, tolerance)) => {
+                    // The CPU half of a hover report — the two-sample fit — on
+                    // its own row, so the cost of following a resting pointer is
+                    // never folded into what painting costs (`input.fit`, §7.1).
+                    crate::timing::span!("input.hover");
+                    self.session.hover_to(sample, tolerance);
+                    self.mark_live_stale();
+                }
+                None => {
+                    if self.session.clear_hover() {
+                        self.mark_live_stale();
+                    }
+                }
+            },
             ViewCommand::SetMediaParams(params) => self.compositor_pipeline.set_media(params),
             ViewCommand::SetEnvironment(id) => self.set_environment(id),
             ViewCommand::SetHistoryBudget(bytes) => self.history_budget = bytes,
@@ -1380,6 +1400,14 @@ impl Engine {
     /// or the gesture has snapped to a shape).
     pub fn tow_string(&self) -> Option<crate::tow::TowString> {
         self.session.tow_string()
+    }
+
+    /// Whether a hover mark is folded into the shown canvas (§18.1.10) — what a
+    /// frontend peeks before spending a [`ViewCommand::PreviewHover`]`(None)`,
+    /// so taking the mark down costs a command and a repaint only when there is
+    /// one to take down.
+    pub fn hover_held(&self) -> bool {
+        self.session.hover_held()
     }
 
     /// What the stroke in flight has snapped to (§6.9), or `None` where there is no

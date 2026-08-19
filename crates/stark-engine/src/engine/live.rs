@@ -486,9 +486,21 @@ impl Engine {
     /// the roster: copying it there would make two sources of truth for the one thing
     /// the `preview == committed` invariant rests on. Merging the two here is what
     /// gives the uniform ordering without the duplication (§17.4).
+    ///
+    /// A hand that is only *hovering* folds the §18.1.10 mark instead — the
+    /// stroke its last two reports would have committed, in the same
+    /// [`GestureView`] shape, so the fold cannot tell it from a real gesture and
+    /// `hover == committed` is inherited rather than maintained. The `match` is
+    /// the guarantee the two never coexist: an actor folds at most one gesture,
+    /// and a fact always outranks a hypothesis. The seed is the one a gesture
+    /// starting this instant would take (`GestureCommand::Start`), which is
+    /// exactly the claim the mark makes.
     fn live_gestures(&self) -> Vec<GestureView> {
         let mut out: Vec<GestureView> = Vec::new();
-        out.extend(self.session.gesture_view(self.actor()));
+        match self.session.gesture_view(self.actor()) {
+            Some(g) => out.push(g),
+            None => out.extend(self.session.hover_view(self.actor(), self.authoring.clock)),
+        }
         out.extend(self.peers.iter().filter_map(Peer::gesture_view));
         out.sort_by_key(|g| g.actor);
         out
