@@ -54,13 +54,12 @@ use stark_engine::command::ViewCommand;
 use stark_model::document::LayerId;
 use stark_model::geom::{Extent2, Vec2};
 
-/// The largest miniature, in CSS px. The width is the panel's inner width (see
-/// `.panel-stack` / `.panel` in `stark.css`) — the full panel where minimal
-/// mode has taken this panel's padding — so a landscape piece reaches both
-/// edges; the height is a cap on how much of the panel stack one overview may
-/// take, which a tall piece runs into instead.
-const MAX_WIDTH: u32 = 252;
-const MAX_WIDTH_MINIMAL: u32 = 280;
+/// The largest miniature, in CSS px. The width is the panel's inner width — the
+/// full panel, this one having shed its padding to bleed the picture to its
+/// edges (`.panel[data-panel="Navigator"]` in `stark.css`) — so a landscape
+/// piece reaches both of them; the height is a cap on how much of the panel
+/// stack one overview may take, which a tall piece runs into instead.
+const MAX_WIDTH: u32 = 280;
 const MAX_HEIGHT: u32 = 176;
 
 /// How long a change has to stop arriving before the miniature is re-rendered.
@@ -108,20 +107,11 @@ struct Overview {
 /// Synchronous throughout: there is no readback, so nothing here awaits and nothing
 /// has to survive an await.
 fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
-    // Peeked: this runs from renders and effects alike, and which box to fit is
-    // the acting value — the *subscription* to the mode is the effect's
-    // (`NavigatorPanel`), so a toggle re-renders the picture rather than this
-    // read waking anything itself.
-    let width = if *state.minimal.peek() {
-        MAX_WIDTH_MINIMAL
-    } else {
-        MAX_WIDTH
-    };
     // Quiet: a miniature is a second render of state this panel is *reading*. It
     // runs from a render and from the mount handler, either of which publishing
     // would be a component asking to be re-rendered while rendering.
     crate::state::with_engine_quiet(state, |r| {
-        let fit = ExportScale::Fit(Extent2::new(width, MAX_HEIGHT));
+        let fit = ExportScale::Fit(Extent2::new(MAX_WIDTH, MAX_HEIGHT));
         let plan = r.export_plan(frame, fit).ok()?;
         r.paint_overview(&plan).then_some(Overview {
             min: plan.min,
@@ -248,10 +238,6 @@ pub fn NavigatorPanel() -> Element {
     });
 
     use_effect(move || {
-        // Read for the subscription: the fit box depends on the mode (minimal
-        // widens the panel's inner width — `draw_overview`), so a toggle has to
-        // re-render the miniature at its new size like any other change.
-        let _ = (state.minimal)();
         let Some((_, frame)) = subject() else { return };
         let mine = *ticket.peek() + 1;
         ticket.set(mine);

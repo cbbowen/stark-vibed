@@ -711,8 +711,8 @@ pub fn capture_pointer(_e: &Event<PointerData>) {}
 /// ([`capture_pointer`]) stays the element that took the press — so a drag
 /// keeps measuring the box it started in wherever the pointer goes. Fractions
 /// rather than px so a control's geometry is the stylesheet's alone: the Oklab
-/// picker's plane is one size in its panel and another where minimal mode takes
-/// the panel's padding, and no Rust constant has to mirror either
+/// picker's plane is one size in the Color panel and another in the pop-outs
+/// and the Lighting panel, and no Rust constant has to mirror any of them
 /// (`panels::color`).
 #[cfg(target_arch = "wasm32")]
 pub fn pointer_fraction(e: &Event<PointerData>) -> Option<(f32, f32)> {

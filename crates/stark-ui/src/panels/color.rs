@@ -48,8 +48,8 @@ pub fn ColorPanel() -> Element {
 // The picker's on-screen sizes are the stylesheet's alone (`.ab-field`,
 // `.l-slider`): the markers are placed in percentages and a pick reads the
 // pointer as a fraction of the element it landed in (`platform::pointer_fraction`),
-// so nothing here has to mirror a px value — which is what lets minimal mode
-// resize the plane with one CSS rule and no second copy to drift.
+// so nothing here has to mirror a px value — which is what lets each of the
+// picker's homes size the plane with one CSS rule and no second copy to drift.
 
 /// Half-extent of the `a`/`b` axes shown in the field. Symmetric, so it covers most of
 /// the sRGB gamut (blue reaches b ≈ −0.31); out-of-gamut corners clamp.

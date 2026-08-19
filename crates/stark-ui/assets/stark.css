@@ -313,6 +313,40 @@ hr {
   backdrop-filter: blur(8px);
 }
 
+/* The two panels whose content is one picture — the navigator's miniature, the
+   color panel's a/b plane — shed their padding: a picture reads best bled to the
+   panel's own edges, and the padding was the one thing between them. The header
+   carries the inset the panel gave up (its words still need a margin to sit in),
+   restoring its bottom half only on a folded panel, where the header's edge *is*
+   the panel's. Each picture's other half is elsewhere: the miniature is fitted
+   to the full inner width (`navigator.rs`), and the picker's geometry is
+   fractional, so its panel size is one rule below (`.ab-field`). */
+.panel[data-panel="Navigator"],
+.panel[data-panel="Color"] {
+  padding: 0;
+}
+
+.panel[data-panel="Navigator"] .panel-header,
+.panel[data-panel="Color"] .panel-header {
+  padding: 12px 14px 0;
+}
+
+.panel.collapsed[data-panel="Navigator"] .panel-header,
+.panel.collapsed[data-panel="Color"] .panel-header {
+  padding-bottom: 12px;
+}
+
+/* Where a flush picture meets a panel corner, the panel clips it to its own
+   radius. Scoped rather than said of `.panel` once: the layer tree bleeds too,
+   but its bands sit between two inset sections and cannot reach a corner — and
+   clipping that panel would cut its dragged row the moment a drag poked it past
+   an edge. */
+.panel[data-panel="Navigator"],
+.panel[data-panel="Color"],
+.panel[data-panel="Brush"] {
+  overflow: clip;
+}
+
 /* Title bar: title (also the drag handle) + close button. */
 .panel-header {
   display: flex;
@@ -564,7 +598,9 @@ hr {
 /* The picker's sizes are stated here alone: the markers ride percentages and a
    pick reads the pointer as a fraction of the element it landed in
    (`platform::pointer_fraction`), so no Rust constant mirrors these — which is
-   what lets minimal mode restate them below with one rule. */
+   what lets each home restate them with one rule. This base size is the
+   pop-outs' and the Lighting panel's, whose boxes keep their padding; the Color
+   panel's is below. */
 .ab-field {
   position: relative;
   width: 220px;
@@ -593,6 +629,22 @@ hr {
   border-radius: 6px;
   cursor: ns-resize;
   touch-action: none;
+}
+
+/* In the Color panel the plane fills the padding the panel shed (248 + 10 gap +
+   22 = 280, the panel's full inner width), stays square so equal spans of `a`
+   and `b` stay equal distances, and squares its corners against the edges the
+   panel now owns and clips. Scoped by name: the same picker sits inline in the
+   Lighting panel and flies out of the bars' wells at the base size above. */
+.panel[data-panel="Color"] .ab-field {
+  width: 248px;
+  height: 248px;
+  border-radius: 0;
+}
+
+.panel[data-panel="Color"] .l-slider {
+  height: 248px;
+  border-radius: 0;
 }
 
 .l-marker {
@@ -822,100 +874,16 @@ hr {
   border-bottom-right-radius: 12px;
 }
 
-/* Two panels whose content is a picture — the navigator's miniature, the color
-   panel's a/b plane — give up their padding in minimal mode: in a flush column
-   a picture reads best bled to the panel's own edges, and the padding was the
-   one thing between them. The header keeps the inset the panel gave up (its
-   words still need a margin to sit in), restoring its bottom half only on a
-   folded panel, where the header's edge *is* the panel's. Each picture's other
-   half is elsewhere: the miniature is fitted to the widened inner width
-   (`navigator.rs`), and the picker's geometry is fractional, so the sizes
-   below are free to state. */
-.app-root.minimal .panel[data-panel="Navigator"],
-.app-root.minimal .panel[data-panel="Color"] {
-  padding: 0;
-}
-
-.app-root.minimal .panel[data-panel="Navigator"] .panel-header,
-.app-root.minimal .panel[data-panel="Color"] .panel-header {
-  padding: 12px 14px 0;
-}
-
-.app-root.minimal .panel.collapsed[data-panel="Navigator"] .panel-header,
-.app-root.minimal .panel.collapsed[data-panel="Color"] .panel-header {
-  padding-bottom: 12px;
-}
-
-/* The row centres the shrink-wrapped frame with `text-align`, which stands the
-   inline-block frame on a text baseline — a ~4px strip under the picture that
-   the panel's padding used to swallow. Flush against the panel's bottom edge
-   it would read as a mistake, so the flush mode centres with flex, which has
-   no baseline to stand on. */
-.app-root.minimal .panel[data-panel="Navigator"] .nav-thumb-row {
-  display: flex;
-  justify-content: center;
-}
-
-/* The Brush panel's preset strip gets the same flush treatment: its rows are
-   pictures too (the rendered strokes), already butted into a filmstrip, and
-   minimal mode has dropped the heading above them (`.preset-header`). Here the
-   *section* escapes the panel's padding rather than the panel losing it — the
-   sliders and chips above still need their inset — so the margins restate the
-   panel's own padding, negated: 14px each side, and 14px below because this
-   panel is resizable and `.panel.resizable` deepens the bottom padding for the
-   grip. The list's scrollbar clearance goes with them, so the strip truly
-   meets the edges; the grip's press strip now overlays the last row's bottom
-   sliver, which is the same 12px it was always given. The top is the one side
-   that stays in: with the heading gone its 8px of padding went too, and without
-   this the strip butts straight into the buttons above — 8px is the panel's own
-   block rhythm (`.slider-row`), and the same gap the heading gives normal mode. */
+/* The full-bleed surfaces — the miniature, the color plane, the preset strip
+   and the layer tree's well — are not restated here: they bleed in both modes
+   now, each at its subject (`.panel[data-panel=…]`, `.ab-field`,
+   `.preset-section`, `.layer-tree`); minimal mode only flushes the column they
+   sit in. One remainder is this mode's own: with the preset heading dropped
+   (`.preset-header` below), the strip needs the 8px the heading's padding was
+   giving — the panel's block rhythm (`.slider-row`) — or it butts straight
+   into the buttons above. */
 .app-root.minimal .panel[data-panel="Brush"] .preset-section {
-  margin: 8px -14px -14px;
-}
-
-.app-root.minimal .panel[data-panel="Brush"] .preset-list {
-  padding-right: 0;
-}
-
-/* Where a flush picture meets a corner the column still rounds (`.stack-first`
-   / `.stack-last`), the panel clips it to its own radius. Scoped rather than
-   said of `.panel` once: the layer tree below also bleeds, but its bands sit
-   between two inset sections and cannot reach a corner — and clipping that
-   panel would cut its dragged row the moment a drag poked it past an edge. */
-.app-root.minimal .panel[data-panel="Navigator"],
-.app-root.minimal .panel[data-panel="Color"],
-.app-root.minimal .panel[data-panel="Brush"] {
-  overflow: clip;
-}
-
-/* The layer tree joins the flush lists — with its geometry kept. Its rows are
-   control bands rather than pictures, and the tree's two marks are spatial
-   (§14.6): the indent *is* membership and the rail rides the row's own left
-   edge, so the bleed moves the whole tree outward rather than flattening rows
-   to one width — a depth-0 band runs edge to edge, an indented one keeps its
-   step, now measured from the panel's own edge, and the rail, the strata and
-   Release move with the rows they belong to. It is the *well* that bleeds
-   (`.layer-tree`), squared like every flush surface here; the rows were
-   already flat bands inside it. The header above and the properties below the
-   `hr` keep their inset, so the well sits between two quiet inset sections. */
-.app-root.minimal .panel[data-panel="Layers"] .layer-tree {
-  margin: 0 -14px;
-  border-radius: 0;
-}
-
-/* The a/b plane widened to the padding it gained, the `L` track matching: the
-   pair still fill the row exactly (248 + 10 gap + 22 = 280), and the plane
-   stays square so equal spans of `a` and `b` stay equal distances. Corners
-   squared where they meet the panel's now-shared edges. */
-.app-root.minimal .panel[data-panel="Color"] .ab-field {
-  width: 248px;
-  height: 248px;
-  border-radius: 0;
-}
-
-.app-root.minimal .panel[data-panel="Color"] .l-slider {
-  height: 248px;
-  border-radius: 0;
+  margin-top: 8px;
 }
 
 /* A chip that has lost its word should be a square around its mark, not a pill still
@@ -953,10 +921,20 @@ hr {
 /* --- brush panel: the preset library at the panel's foot ---
    The section is the Brush panel's growable part (it carries `panel-grow`, which is
    what hands it the panel's spare height); a column of its own so the list under the
-   header can take that height in turn. */
+   header can take that height in turn.
+
+   The section escapes the panel's padding — its rows are pictures (the rendered
+   strokes), butted into a filmstrip that reads best bled to the panel's own
+   edges — while the sliders and chips above keep their inset. The margins
+   restate the panel's padding, negated: 14px each side, and 14px below because
+   this panel is resizable and `.panel.resizable` deepens the bottom padding for
+   the grip, whose press strip now overlays the last row's bottom sliver — the
+   same 12px it was always given. The header and the empty line, still inside
+   the bled section, carry the inset themselves. */
 .preset-section {
   display: flex;
   flex-direction: column;
+  margin: 0 -14px -14px;
 }
 
 /* The list's heading, and only that: Save moved up beside "Edit brush…"
@@ -965,7 +943,7 @@ hr {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 2px;
+  padding: 8px 16px;
 }
 
 .preset-header-title {
@@ -995,7 +973,6 @@ hr {
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
-  padding-right: 4px;
   scrollbar-width: thin;
   scrollbar-color: #ffffff33 transparent;
 }
@@ -1025,7 +1002,7 @@ hr {
 /* An empty library says what fills it, rather than leaving the panel's largest
    area blank and unexplained. */
 .preset-empty {
-  padding: 6px 2px;
+  padding: 6px 16px;
   font-size: 12px;
   opacity: 0.5;
 }
@@ -1446,9 +1423,13 @@ hr {
    width or a height — a CSS size would stretch a portrait piece to the panel's
    proportions, and the viewport marker, positioned in percentages of this box, would
    then sit over a picture it does not describe. The row centres it instead, and
-   `.nav-frame` shrink-wraps it to become the marker's containing block. */
+   `.nav-frame` shrink-wraps it to become the marker's containing block. Centred
+   with flex, not `text-align`: that stood the inline-block frame on a text
+   baseline, a ~4px strip under a picture that sits flush on the panel's own
+   bottom edge. */
 .nav-thumb-row {
-  text-align: center;
+  display: flex;
+  justify-content: center;
 }
 
 .nav-frame {
@@ -1587,11 +1568,16 @@ hr {
 /* The tree's own ground: a well a step darker than the panel, translucent so the
    panel's paper still shows through it — the thumbnail well's ink, because it is
    the same statement made larger: this region is a *picture* (the stack, drawn),
-   and the ground under a picture is not the ground the controls stand on. */
+   and the ground under a picture is not the ground the controls stand on. Bled
+   to the panel's edges like every picture here (the margins negate the panel's
+   padding), and square for it; the header above and the properties below keep
+   their inset, so the well sits between two quiet sections — which is also why
+   this panel needs no corner clip, and must not have one (its dragged row rides
+   over the panel's edge mid-reorder). */
 .layer-tree {
   position: relative;
+  margin: 0 -14px;
   padding: 2px 0;
-  border-radius: 6px;
   background: #00000038;
 }
 
