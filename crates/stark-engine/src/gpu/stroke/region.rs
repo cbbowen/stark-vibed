@@ -20,7 +20,7 @@ use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 
 use super::budget::{MAX_REGION_DIM, MAX_STAMPS};
 use super::dynamics::BLEED_TRAVEL_QUANTUM;
-use super::segments::{BleedFire, DAB_TRAVEL, Segment, Sweep, tip_reach};
+use super::segments::{BleedFire, Segment, Sweep, tip_reach};
 
 /// Call `f(segment index, tile)` for every tile whose *texture* (interior + apron) a
 /// segment's swept capsule overlaps, in segment order.
@@ -292,8 +292,7 @@ pub(super) fn chunk_segments(segments: &[Segment], fires: &[BleedFire]) -> Vec<R
 ///
 /// Bounded rather than measured, since it has to hold for segments that do not exist
 /// yet: radius peaks at the brush's own (pressure only scales it down), travel at the
-/// flattening cap — or at the [`DAB_TRAVEL`] radii a touch-down dab sweeps, which
-/// ignores the cap — and a coverage box of a given extent spans at most one tile more
+/// flattening cap, and a coverage box of a given extent spans at most one tile more
 /// than it covers, whichever tile boundary it happens to straddle.
 pub(super) fn segment_fits_region(b: &BrushParams, tol: crate::path::FlattenTolerance) -> bool {
     let radius = b.radius.max(0.5);
@@ -310,7 +309,7 @@ pub(super) fn segment_fits_region(b: &BrushParams, tol: crate::path::FlattenTole
     } else {
         0.0
     };
-    let length = tol.max_len.max(DAB_TRAVEL * radius) * 1.1 + bleed;
+    let length = tol.max_len * 1.1 + bleed;
     // The tip's reach rather than its radius, for [`coverage_bounds`]' reason: a
     // stamp that fills its mask's corners occupies a `√2`-wider box, and this is the
     // bound that decides whether the loop may draw the brush at all.

@@ -236,12 +236,10 @@ Two places the obvious implementation is wrong:
   span is settled only once it is a trailing taper's length clear of the live end
   *and* a leading taper's length past the start — which together also prove the
   stroke has outgrown the "scale both zones to fit" compression that keeps a
-  short flick a small pointed mark rather than a sliver. The touch-down dab
-  (below) is the other whole-stroke quantity and rides the same rule: a span is
-  held back until it is a dab's travel past the start, which proves the stroke
-  has outrun the dab for good. All three tests use chords, which under-estimate
-  arc length, so what they admit is genuinely final; and an admitted prefix stays
-  admitted however the stroke continues (`gpu::stroke::incremental::safe_frozen`).
+  short flick a small pointed mark rather than a sliver. Both tests use chords,
+  which under-estimate arc length, so what they admit is genuinely final; and an
+  admitted prefix stays admitted however the stroke continues
+  (`gpu::stroke::incremental::safe_frozen`).
 
 **Incremental repaint.** Freezing is what keeps a long stroke responsive. Drawing
 a live stroke costs (segments × tiles covered), both growing with length, so
@@ -341,21 +339,22 @@ multiplicative in `(1−α)`, hence additive in **optical depth** `τ = −ln(1�
 Segments need only be short enough that the line + constant-radius approximation
 holds, so the sweep uses *fewer* primitives than the dab model. Caveats:
 per-stamp angle jitter no longer applies (the brush follows the tangent
-continuously); the round tip's prefix depends on `hardness`, so it is generated
-per stroke (image brushes precompute theirs at import, §6.6); and a stroke that
-has not travelled needs a **touch-down dab**, since a definite integral over no
-travel is no paint.
+continuously); and the round tip's prefix depends on `hardness`, so it is
+generated per stroke (image brushes precompute theirs at import, §6.6).
 
-The dab is that minimum: a stroke sweeps at least 0.6 radii, and a stroke short
-of it gets a dwell segment of the difference, swept symmetrically about its own
-midpoint. A click is the limiting case — the whole dab, centred on the point
-pressed, at full width whatever taper the brush carries (zero length compresses
-both taper zones to nothing, so the profile is exactly 1 there). Centred rather
-than led from the point because a click has no tangent for a dab to lead along;
-swept from the point it reads as a short dash in whatever direction the fallback
-names. Because the dwell shrinks as the stroke travels, the mark grows
-continuously from a dot into a stroke rather than jumping between the two — the
-first pixel of a drag no longer replaces a dab with a twentieth of one.
+A stroke deposits **exactly its own travel** — a definite integral over no
+travel is no paint, and the tool says so honestly. A press that has not moved
+lays nothing and, having nothing to show for itself, commits nothing either
+(`Session::end_stroke`, the answer a marquee click has always been given), so no
+undo step is spent invisibly. There used to be a fabricated minimum here — the
+`DAB_TRAVEL` dwell, 0.6 radii swept about the stroke's midpoint so that a click
+dotted and a short drag was topped up — retired for two reasons that arrived
+together (§18.1.10, §6.2's run-up): the brush cursor now previews exactly what a
+press would lay *before* it is made, which answers the "why did my click do
+nothing?" the dwell existed to forestall; and the dwell overrode precisely the
+entry geometry the run-up now conditions honestly — a short flick's mark was its
+midpoint-padded stand-in, length forced to 0.6 radii whatever the hand did, led
+by an arbitrary `+x` where a click had no tangent to give.
 
 **Live vs. replay unification:** live painting renders the in-flight fitted
 stroke onto CoW preview tiles; commit/replay render the same `StrokeRecord`
@@ -1043,8 +1042,7 @@ stops matching its own brush:
   in a frame that much larger for the mask inside it to land at the radius the
   brush asked for. `Segment::frame` carries it and is the only radius the shaders
   see; `Segment::radius` stays the tip's own, which is what keeps a nib's bleed
-  cadence, stencil and touch-down dab the size of the tip rather than of the box
-  around it.
+  cadence and stencil the size of the tip rather than of the box around it.
 - **The column width the τ integral is taken at.** A padded column is narrower in
   texels while standing for the same width of *mask*, so `build_prefix_tau` takes
   its `dx` as a parameter rather than as `2/width`. Take it from the texture and

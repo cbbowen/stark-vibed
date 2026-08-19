@@ -63,7 +63,6 @@ battery!(
     hairpin,
     pressure_ramp,
     taper,
-    dab,
     stamp_arc,
     pen_stamp,
     tooth_arc,
@@ -286,7 +285,7 @@ fn check_save_load(
 /// pressure ramp and a stamp around a curve at all.
 ///
 /// It is a convergence check, not an equality. The straight cases (`line`,
-/// `pressure_ramp`, `dab`) are fitted exactly at any tolerance and move by nothing at
+/// `pressure_ramp`) are fitted exactly at any tolerance and move by nothing at
 /// all; a path with real curvature genuinely shifts under a better fit, and its bound
 /// records how much.
 ///

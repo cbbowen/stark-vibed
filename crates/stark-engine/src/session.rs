@@ -787,20 +787,27 @@ impl Session {
         })
     }
 
-    /// Finish the stroke, returning the record to commit (`None` if empty).
+    /// Finish the stroke, returning the record to commit — `None` if empty, and
+    /// `None` for a record that cannot deposit: a click's lone knot spans no
+    /// travel, a swept deposit is a definite integral over travel, and a step
+    /// in the log that changes no pixel would spend an undo step invisibly.
+    /// The same answer a marquee click has always been given ([`Self::end_shape`]).
     pub fn end_stroke(&mut self) -> Option<StrokeRecord> {
-        self.in_flight.take().map(|mut b| {
-            // A snapped stroke's path is the shape's, not the fit's — there is nothing
-            // left for a last solve to settle.
-            if b.assist.is_none() {
-                // The towed tip needs nothing at pen-up (§6.11): lifting stops
-                // pulling the string rather than reeling the tip in, so the fit
-                // closes on the last towed sample and the mark ends where the
-                // rope had towed it to — the trace the preview was showing.
-                b.fitter.finish();
-            }
-            b.to_record()
-        })
+        self.in_flight
+            .take()
+            .map(|mut b| {
+                // A snapped stroke's path is the shape's, not the fit's — there is
+                // nothing left for a last solve to settle.
+                if b.assist.is_none() {
+                    // The towed tip needs nothing at pen-up (§6.11): lifting stops
+                    // pulling the string rather than reeling the tip in, so the fit
+                    // closes on the last towed sample and the mark ends where the
+                    // rope had towed it to — the trace the preview was showing.
+                    b.fitter.finish();
+                }
+                b.to_record()
+            })
+            .filter(|rec| rec.path.len() >= 2)
     }
 
     /// The in-flight tow, for the frontend's string overlay (§6.11): `None`
@@ -895,9 +902,9 @@ impl Session {
                     },
                 ],
             ),
-            // One report, or a trace too tangled to carry a heading: the
-            // honest prediction of a press with no motion behind it is the
-            // touch-down alone — the record a click would commit.
+            // One report, or a trace too tangled to carry a heading: the honest
+            // prediction of a press with no motion behind it is a click's — a
+            // lone knot, which deposits nothing, exactly as the click would.
             None => fit_finished(tolerance, [sample]),
         };
         self.gesture_ordinal += 1;

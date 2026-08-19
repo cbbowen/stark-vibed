@@ -1688,18 +1688,15 @@ mod tests {
         );
     }
 
-    /// A click has no travel to measure a direction over — a lone control point is not
-    /// a curve, so there is no polyline to walk — and still gets a real frame: the
-    /// dab's own, which `generate_segments_in` gave it deliberately.
+    /// A click has no travel, and — since the `DAB_TRAVEL` dwell was retired — no
+    /// segments either: nothing is exchanged, so there is nothing for a settle to
+    /// have a frame for. The paused-hand test above is where the settle frame's
+    /// real mechanism lives.
     #[test]
-    fn a_click_settles_along_its_dab() {
+    fn a_click_exchanges_nothing_to_settle() {
         let rec = record(smearing(10.0), &[Vec2::new(4.0, -7.0)]);
         let segs = segments_of(&rec, 0..crate::path::span_count(rec.path.len()));
-        assert_eq!(segs.len(), 1, "a click is one swept dab");
-        assert_eq!(
-            settle_tangent(&rec, flatten_tolerance(&rec.brush), &segs),
-            segs[0].sweep.dir,
-        );
+        assert!(segs.is_empty(), "a click swept segments with no travel");
     }
 
     // --- the dispatch rects fit the scratch --------------------------------

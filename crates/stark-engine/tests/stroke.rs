@@ -302,107 +302,46 @@ fn the_taper_widens_without_a_step() {
     }
 }
 
-/// A tapered brush still **dots**: a click has no length for a taper to run along, so
-/// tapping with an inking brush has to leave a full-size mark rather than the
-/// invisible speck a taper read literally would give.
+/// **A click paints nothing, and commits nothing.** A swept deposit is a
+/// definite integral over travel, and a press that has not moved integrates
+/// over nothing — the tool now says so honestly instead of fabricating a
+/// minimum (the retired `DAB_TRAVEL` dwell). What tells the artist *before*
+/// the press is the brush cursor: the hover's mark previews exactly what a
+/// press would lay (§18.1.10), which for a stationary press is nothing.
+///
+/// Nothing in the picture means nothing in the log, either: a record that
+/// cannot deposit would spend an undo step invisibly, so the release declines
+/// it — the same answer a marquee click has always been given.
 #[test]
-fn a_tapered_brush_still_dots() {
+fn a_click_paints_nothing_and_commits_nothing() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
-    engine.process(ViewCommand::SetBrush(inking_brush(6.0, 6.0)));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(Vec2::ZERO),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::End);
-
-    let img = engine.render_to_image();
-    assert!(is_red(center(&img)), "a tapered brush left no dot at all");
-    assert!(
-        painted_height(&img, 128) > 20,
-        "the dot is a speck, not the brush's own size ({}px)",
-        painted_height(&img, 128)
-    );
-}
-
-/// The painted span of screen row/column `at`, as `(first, last)`.
-fn painted_span(img: &stark_engine::RgbaImage, along_x: bool, at: u32) -> (u32, u32) {
-    let n = if along_x { img.width } else { img.height };
-    let px = |i| {
-        if along_x {
-            img.pixel(i, at)
-        } else {
-            img.pixel(at, i)
-        }
-    };
-    let painted: Vec<u32> = (0..n).filter(|&i| is_red(px(i))).collect();
-    (
-        *painted.first().expect("some paint"),
-        *painted.last().expect("some paint"),
-    )
-}
-
-/// **A click leaves a dab, centred where it was pressed** — and so does the same
-/// press nudged by a pixel, which is the half of it that is easy to get wrong.
-///
-/// A swept deposit is a definite integral over travel, so a press that has not moved
-/// integrates over nothing. The minimum travel that fixes it (`segments::DAB_TRAVEL`)
-/// must be centred on the point rather than swept *from* it: swept from the point, in
-/// the `+x` a click's absent tangent falls back to, it is a whole tip's width of
-/// travel all on one side, which reads as a short dash pointing right rather than as a
-/// dot. And applying only to a stroke with no travel at all, one pixel of movement
-/// replaces it with a twentieth of a dab — the dot vanishes the moment the hand moves
-/// and comes back a tip's width later.
-///
-/// So both are asserted here against the *same* threshold: a click is round and
-/// centred, and one pixel of movement changes it hardly at all.
-#[test]
-fn a_click_dabs_where_it_was_pressed_and_a_nudge_keeps_it() {
-    let dab = |nudge: f32| {
-        let mut engine = engine_or_skip_blue()?;
-        engine.process(ViewCommand::SetBrush(brush(RED, 40.0)));
+    // Tapered as well as not: the taper compresses on short strokes rather
+    // than gating them, so it must not resurrect a mark here either.
+    for b in [brush(RED, 40.0), inking_brush(6.0, 6.0)] {
+        engine.process(ViewCommand::SetBrush(b));
+        let before = engine.render_to_image();
+        // The committed document as it stands — `engine_or_skip_blue` already
+        // banked a `SetBackground`, so "nothing committed" is a revision that
+        // did not move, never an undo stack that is empty.
+        let rev = engine.observe().doc_revision;
         engine.process(GestureCommand::Start {
             tool: Tool::Brush,
             sample: InputSample::at(Vec2::ZERO),
             tolerance: DEFAULT_TOLERANCE,
             rope: 0.0,
         });
-        if nudge > 0.0 {
-            engine.process(GestureCommand::To {
-                sample: InputSample::at(Vec2::new(nudge, 0.0)),
-            });
-        }
         engine.process(GestureCommand::End);
-        Some(engine.render_to_image())
-    };
-    let Some(click) = dab(0.0) else {
-        return;
-    };
-    let Some(nudged) = dab(1.0) else {
-        return;
-    };
-
-    assert!(is_red(center(&click)), "a click left no mark at all");
-    assert!(
-        is_red(center(&nudged)),
-        "a one-pixel drag left no mark at all"
-    );
-
-    // Canvas (0,0) is screen (128,128) at the default 1:1 view.
-    for (what, img) in [("a click", &click), ("a one-pixel drag", &nudged)] {
-        let (x0, x1) = painted_span(img, true, 128);
-        let (y0, y1) = painted_span(img, false, 128);
-        let centre = (x0 + x1) as i32 / 2;
         assert!(
-            (centre - 128).abs() <= 3,
-            "{what}'s mark spans {x0}..{x1}, centred at {centre} rather than on the \
-             128 that was pressed"
+            images_match(&before, &engine.render_to_image(), 0),
+            "a click changed the canvas"
         );
-        let (w, h) = ((x1 - x0) as f32, (y1 - y0) as f32);
-        assert!(w / h < 1.25, "{what} left a {w}x{h} dash rather than a dab");
+        assert_eq!(
+            engine.observe().doc_revision,
+            rev,
+            "a click left an undo step with nothing under it"
+        );
     }
 }
 

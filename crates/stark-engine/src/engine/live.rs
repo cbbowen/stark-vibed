@@ -268,14 +268,13 @@ impl Preview {
         contested: bool,
     ) -> (FrozenHead, DocState) {
         // A stroke cannot freeze a span whose pixels are still measured against a
-        // length the stroke has not reached — the taper, from the *ends* of the whole
-        // stroke, and the touch-down dab, which the stroke has not yet outrun. Both
-        // are ends still under the pointer. Held back here rather than in the fitter
-        // because it is a fact about the brush, not about the curve — the same control
-        // points freeze at the same place for every brush of the same size (see
-        // `safe_frozen`). An already-kept head is unaffected: a prefix this admitted
-        // once stays admissible, so the clamp can only slow the head down, never
-        // invalidate it.
+        // length the stroke has not reached — the taper, from the *ends* of the
+        // whole stroke, which are still under the pointer. Held back here rather
+        // than in the fitter because it is a fact about the brush, not about the
+        // curve — the same control points freeze at the same place for every brush
+        // of the same size (see `safe_frozen`). An already-kept head is unaffected:
+        // a prefix this admitted once stays admissible, so the clamp can only slow
+        // the head down, never invalidate it.
         let frozen = crate::gpu::stroke::safe_frozen(rec, frozen);
         // Nothing cached, or the fit went backwards (a new stroke): start over from
         // the committed document, with a fresh (uncharged) brush.

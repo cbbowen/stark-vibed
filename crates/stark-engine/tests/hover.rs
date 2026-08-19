@@ -97,7 +97,7 @@ fn the_mark_is_the_brushs_own_paint() {
     hover_ab(&mut engine);
     assert!(
         red_dominant(center(&engine.render_to_image())),
-        "the touch-down under the cursor is not the brush's paint"
+        "the mark under the cursor is not the brush's paint"
     );
 }
 
@@ -120,7 +120,7 @@ fn the_mark_reaches_ahead_of_the_cursor_not_behind() {
     );
     assert!(
         red_dominant(center(&img)),
-        "the touch-down should land under the cursor"
+        "the mark should begin under the cursor"
     );
     assert!(
         !red_dominant(img.pixel(img.width / 2 - 25, img.height / 2)),

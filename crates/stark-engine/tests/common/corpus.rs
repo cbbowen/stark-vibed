@@ -526,29 +526,11 @@ pub const CASES: &[Case] = &[
             lift: 0.0,
         },
     },
-    Case {
-        name: "dab",
-        what: "A stroke with no travel at all: a click, with a taper on it. A swept \
-               deposit is an integral over travel, so this is the case that integrates \
-               over nothing and has to be rescued (`segments::DAB_TRAVEL`) — and a \
-               taper read literally would shrink the rescue to an invisible speck.",
-        view: SIZE,
-        prepare: |_, _| {
-            let mut b = brush(RED, 40.0);
-            b.shape = BrushShape::Round { hardness: 0.9 };
-            b.drain = 0.0;
-            b.start_taper_length = 6.0;
-            b.end_taper_length = 6.0;
-            b
-        },
-        path: || at(&[(0.0, 0.0)]),
-        tol: Tol {
-            golden: 6,
-            seam: 2,
-            refine: 0.0,
-            lift: 0.0,
-        },
-    },
+    // The "dab" case — a click, once rescued by `segments::DAB_TRAVEL`'s
+    // fabricated minimum travel — retired with the dwell itself: a swept deposit
+    // is a definite integral over travel, and a press that has not moved now
+    // honestly lays nothing and commits nothing (`tests/stroke.rs` holds the new
+    // truth), while this corpus asserts marks.
     Case {
         name: "stamp_arc",
         what: "An anisotropic stamp around a half turn, orientation following the \

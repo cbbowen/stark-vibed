@@ -746,9 +746,9 @@ hover is wearing that size on the way back to the work.
 
 **And the honest half — the mark itself — is built.** The circle says how far
 the brush reaches; under it the engine folds *the mark a drag begun this
-instant would open*: the touch-down under the cursor and the stroke it would
-lay carrying the hover's motion forward — shape, softness, color, tilt, taper,
-the selection mask, and the wet-mixing against whatever paint is already there
+instant would open*: the stroke it would lay from under the cursor, carrying
+the hover's motion forward — shape, softness, color, tilt, taper, the
+selection mask, and the wet-mixing against whatever paint is already there
 (§6.2, §6.4). `preview == committed` (§1.3) extended to the moment before the
 press — and inherited rather than maintained, which is the whole design:
 

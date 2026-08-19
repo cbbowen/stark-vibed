@@ -304,29 +304,6 @@ const TAPER_MAX_SLOPE: f32 = 1.5;
 /// shape a ramp does not already carry exactly.
 const TAPER_MAX_CURVATURE: f32 = 3.0;
 
-/// The travel a stroke deposits at its very shortest, in radii of the tip in force
-/// (§6.2) — the **touch-down dab**.
-///
-/// A swept deposit is a definite integral over travel, so a press that has not moved
-/// integrates over nothing and lays nothing, and the first pixel of a drag lays a
-/// twentieth of one radius' worth. Taken literally that is a tool that draws nothing
-/// until the hand has moved a tip's width, which is not what pressing a loaded brush
-/// to paper does.
-///
-/// So a stroke travels at least this far: whatever it is short by is made up by a
-/// *dwell* segment swept about the stroke's own midpoint. A click is the limiting
-/// case — the whole dab, centred on the one point that was pressed — and the dwell
-/// shrinks to nothing by the time the tip has travelled this far under its own steam,
-/// so the mark grows continuously from a dot into a stroke instead of jumping between
-/// the two.
-///
-/// The value is what the mark *looks* like rather than a bound on anything: 0.6
-/// radii of dwell is a little over a third of the optical depth a full pass lays,
-/// which the slab law (§6.1) renders as a dot around 90% as opaque as the stroke the
-/// same brush draws — a dab, and a round-looking one, since it stretches the tip's
-/// own footprint by less than a third.
-pub(super) const DAB_TRAVEL: f32 = 0.6;
-
 /// How far the drawn outline may sit from the true cone, in **canvas px**, where the
 /// tip is too hard (or too thin) for its own falloff to hide anything.
 ///
@@ -611,12 +588,17 @@ struct Track {
 /// emitted polyline rather than recomputed, so the range that resumes from it starts
 /// on the exact accumulator these segments were built with.
 ///
-/// Two things here are measured against the stroke's **whole** length, which only a
+/// One thing here is measured against the stroke's **whole** length, which only a
 /// range that reaches its final span knows: the trailing taper (a range that stops
-/// short takes the leading taper alone, [`Taper::resolve`]) and the touch-down dab
-/// ([`DAB_TRAVEL`], which a partial range never has). Both are sound rather than
+/// short takes the leading taper alone, [`Taper::resolve`]). It is sound rather than
 /// approximate, and [`safe_frozen`](super::safe_frozen) is the one rule that makes
-/// them so.
+/// it so.
+///
+/// A stroke deposits exactly its own travel — a swept deposit is a definite
+/// integral, so a press that has not moved lays nothing, and the tool says so
+/// honestly rather than padding a minimum (the retired `DAB_TRAVEL` dwell): the
+/// hover's mark previews what a press would lay before it is made (§18.1.10),
+/// and a release that cannot deposit commits nothing (`Session::end_stroke`).
 pub(super) fn generate_segments_in(
     rec: &StrokeRecord,
     tol: crate::path::FlattenTolerance,
@@ -625,7 +607,6 @@ pub(super) fn generate_segments_in(
     let b = &rec.brush;
     let dist0 = spans.dist;
     let reaches_end = spans.range.end >= crate::path::span_count(rec.path.len());
-    let from_start = spans.range.start == 0;
     let pts = crate::path::flatten_spans(&rec.path, spans.range, dist0, tol);
     let end_dist = pts.last().map_or(dist0, |p| p.dist);
     let mut segs = Vec::new();
@@ -791,101 +772,7 @@ pub(super) fn generate_segments_in(
         }
     }
 
-    // The touch-down dab ([`DAB_TRAVEL`]): a stroke that has not yet travelled a dab's
-    // worth sweeps the difference about its own **midpoint**, so a click leaves the
-    // whole dab centred where it was pressed and every longer stroke grows out of that
-    // one continuously. Centred rather than led from the start point because a dab has
-    // no direction to lead in: a click has no tangent at all (the fitter gives a lone
-    // knot none), and swept from the point it would read as a short dash in whatever
-    // direction the fallback happened to name.
-    //
-    // Only a range that is the **whole** stroke may add it, for the trailing taper's
-    // reason exactly — the length it is measured against is the stroke's, which a
-    // partial range does not know. And for the same reason it is sound rather than
-    // approximate: [`safe_frozen`](super::safe_frozen) refuses to freeze anything
-    // until the stroke has travelled a whole dab, so a partial range is always one
-    // whose dab is zero, and the commit computes zero for it too.
-    //
-    // `dab_bound` is the longest dwell any stroke of this brush could owe — the size
-    // mapping and the taper only ever scale the tip *down* (a modulation is a factor
-    // in [0, 1] by construction, `Modulation`), and the fitter clamps the pen
-    // attributes to the curve as well as to its control points. So a stroke past it
-    // is past every dab, and an ordinary stroke leaves here without so much as
-    // walking its own polyline.
-    let dab_bound = DAB_TRAVEL * b.radius.max(0.5);
-    if reaches_end && from_start && end_dist < dab_bound {
-        // `range.start == 0` is what makes `end_dist` the whole stroke's arc length:
-        // `dist` is the arc *before* the range, and before the first span there is none.
-        let mid = end_dist * 0.5;
-        let (pos, dir, pressure, tilt) = sample_at(&pts, mid);
-        // The tip in force at the midpoint — where a stroke short enough to want a dab
-        // is at its widest, its two compressed taper zones meeting there (`Taper`). A
-        // click is the limit of that: zero length compresses both zones to nothing, so
-        // `factor` is exactly 1 and a tapered brush dots at full size rather than
-        // leaving the invisible speck a taper read literally would give.
-        let tap = taper.factor(mid);
-        let tip = tip_at(pressure, tilt, tap);
-        let dwell = DAB_TRAVEL * tip - end_dist;
-        if dwell > 0.0 {
-            segs.insert(
-                0,
-                make(
-                    At {
-                        pos: pos - dir * (dwell * 0.5),
-                        pressure,
-                        tilt,
-                    },
-                    Track {
-                        dir,
-                        mid_dir: dir,
-                        curvature: 0.0,
-                        length: dwell,
-                        // The dwell is *at* the stroke, not before it: it must not run
-                        // the arc-length clock — which `drain` and the color noise are
-                        // measured on — backwards past the stroke's own start.
-                        dist: (mid - dwell * 0.5).max(0.0),
-                    },
-                    // A dab does not ramp: it is one tip pressed at one point, and the
-                    // travel it sweeps is a dwell rather than a stretch of the path.
-                    (tip, tip),
-                ),
-            );
-        }
-    }
     (segs, end_dist)
-}
-
-/// The stroke's state at arc length `arc` along a flattened polyline: position, unit
-/// travel direction, pressure and tilt. Only the touch-down dab asks
-/// ([`DAB_TRAVEL`]), and only ever about the midpoint of a stroke that is at most a
-/// dab long.
-///
-/// `+x` where the stroke has no direction to give — a click, whose one knot the
-/// fitter leaves with no tangent, and a press that reported the same position twice.
-/// Which direction that is cannot matter, because the dab is swept symmetrically
-/// about the point it is asked for.
-fn sample_at(pts: &[crate::path::IntermediateSample], arc: f32) -> (Vec2, Vec2, f32, Vec2) {
-    for w in pts.windows(2) {
-        let (a, c) = (w[0], w[1]);
-        let span = c.dist - a.dist;
-        if span > 0.0 && arc <= c.dist {
-            let t = ((arc - a.dist) / span).clamp(0.0, 1.0);
-            let v = c.pos - a.pos;
-            let len = v.length();
-            return (
-                a.pos + v * t,
-                if len > 1e-5 {
-                    v / len
-                } else {
-                    Vec2::new(1.0, 0.0)
-                },
-                a.pressure + (c.pressure - a.pressure) * t,
-                a.tilt + (c.tilt - a.tilt) * t,
-            );
-        }
-    }
-    let p = pts.last().expect("a flattened range is never empty here");
-    (p.pos, Vec2::new(1.0, 0.0), p.pressure, p.tilt)
 }
 
 /// How far a tip of this shape deposits from the centreline, as a multiple of the
@@ -1384,138 +1271,32 @@ mod tests {
                 "a {len}px stroke only reached radius {widest} of {radius}"
             );
         }
-        // A click has no length for a taper to run along at all, and still dots at
-        // full size — the limit of the compression above rather than a special case:
-        // zero length scales both zones to nothing, so the profile is 1 at the dab.
+        // A click has no length for a taper to run along — and no travel for a
+        // deposit to integrate over. It sweeps nothing: what a press will lay is
+        // the hover's mark to say before it is made (§18.1.10), and a release
+        // with nothing to deposit commits nothing (`Session::end_stroke`).
         let mut dot = tapered_record(radius, 6.0, 6.0, 0.0);
         dot.path.truncate(1);
-        let segs = whole(&dot);
-        assert_eq!(segs.len(), 1, "a click is one swept dab");
-        assert_eq!(segs[0].radius, radius, "a tapered brush should still dot");
-    }
-
-    // --- the touch-down dab ------------------------------------------------
-
-    /// A click leaves a dab **centred on the point that was pressed**, of the travel
-    /// [`DAB_TRAVEL`] names.
-    ///
-    /// The centring is the whole of it. A click has no tangent — the fitter leaves a
-    /// lone knot without one — so a dab swept *from* the point goes off in whatever
-    /// direction the fallback happens to name, and reads as a short dash rather than a
-    /// dot: a full tip's width of travel, all of it on one side, on a mark only two
-    /// radii across. Swept about the point, the same travel is a dot a little wider
-    /// than it is tall, and the arbitrary direction stops being visible at all.
-    #[test]
-    fn a_click_dabs_symmetrically_about_the_point() {
-        let radius = 20.0;
-        let at = Vec2::new(37.0, -11.0);
-        let rec = record(
-            BrushParams {
-                radius,
-                ..BrushParams::default()
-            },
-            &[at],
-        );
-        let segs = whole(&rec);
-        assert_eq!(segs.len(), 1, "a click is one swept dab");
-        let dab = segs[0];
-        assert_eq!(dab.curvature, 0.0, "a dab does not bend");
         assert!(
-            (dab.length - DAB_TRAVEL * radius).abs() < 1e-4,
-            "the dab swept {} of the {} it owes",
-            dab.length,
-            DAB_TRAVEL * radius
-        );
-        let centre = dab.start + dab.dir * (dab.length * 0.5);
-        assert!(
-            (centre - at).length() < 1e-4,
-            "the dab is centred at {centre:?}, not on the {at:?} that was pressed"
+            whole(&dot).is_empty(),
+            "a click swept segments though it has no travel"
         );
     }
 
-    /// The dab and the stroke are one continuum, not two cases: a stroke sweeps
-    /// `max(travel, dab)`, so the mark grows out of the dot instead of replacing it.
-    ///
-    /// The jump this rules out was the visible one. A press deposited a dab; the first
-    /// pixel of movement made the stroke "long enough" to stand on its own and
-    /// deposited a twentieth of one, so the dot vanished the instant the hand moved
-    /// and came back only once the stroke had travelled a tip's width.
+    /// A stroke sweeps exactly its own travel, however short. The retired
+    /// `DAB_TRAVEL` dwell used to top every stroke up to 0.6 radii — a fabricated
+    /// minimum that overrode precisely the entry geometry the fit now carries
+    /// honestly (§6.2's run-up). A short flick is short; the deposit says so.
     #[test]
-    fn a_short_stroke_is_topped_up_to_a_whole_dab() {
+    fn a_short_stroke_sweeps_only_its_own_travel() {
         let radius = 20.0;
-        let dab = DAB_TRAVEL * radius;
-        for len in [0.0f32, 0.5, 2.0, 6.0, dab - 0.5, dab + 0.5, 40.0] {
+        for len in [0.5f32, 2.0, 6.0, 11.5, 12.5, 40.0] {
             let rec = tapered_record(radius, 0.0, 0.0, len);
-            let segs = whole(&rec);
-            let travel: f32 = segs.iter().map(|s| s.length).sum();
+            let travel: f32 = whole(&rec).iter().map(|s| s.length).sum();
             assert!(
-                (travel - len.max(dab)).abs() < 0.05,
-                "a {len}px stroke swept {travel}, not the {} it owes",
-                len.max(dab)
+                (travel - len).abs() < 0.05,
+                "a {len}px stroke swept {travel}"
             );
-            // And the dwell is swept about the stroke's own midpoint, so it can only
-            // fatten the mark symmetrically — never lead it off in one direction.
-            if len < dab {
-                let d = segs[0];
-                let centre = d.start + d.dir * (d.length * 0.5);
-                assert!(
-                    (centre - Vec2::new(len * 0.5, 0.0)).length() < 0.05,
-                    "a {len}px stroke's dab sits at {centre:?}, not on its midpoint"
-                );
-            }
-        }
-    }
-
-    /// Nothing may freeze while the dab is still in play, and this is what says so.
-    ///
-    /// The dab is measured against the *whole* stroke's travel, exactly as the
-    /// trailing taper is against its length, so a span frozen before the stroke has
-    /// outrun its dab would keep a dab the commit does not draw — live == committed
-    /// (§1.3) failing where it cannot be repainted. Held back until the frozen prefix
-    /// alone is a dab long, which proves the whole stroke is.
-    #[test]
-    fn nothing_freezes_until_the_stroke_has_outrun_its_dab() {
-        let radius = 60.0; // dab = 36px, so a stroke can be many spans and still owe one
-        let untapered = |len: f32| {
-            let rec = tapered_record(radius, 0.0, 0.0, len);
-            let all = crate::path::span_count(rec.path.len());
-            (safe_frozen(&rec, all), rec)
-        };
-        let (frozen, _) = untapered(20.0);
-        assert_eq!(frozen, 0, "a stroke inside its own dab froze a span");
-        let (frozen, rec) = untapered(600.0);
-        assert!(frozen > 0, "a long stroke never froze anything");
-
-        // And what it admits really is dab-free: the head it hands over renders the
-        // same segments the commit does, which is the property the whole rule is for.
-        let tol = flatten_tolerance(&rec.brush);
-        let all = crate::path::span_count(rec.path.len());
-        let (head, dist) = generate_segments_in(
-            &rec,
-            tol,
-            StrokeSpans {
-                range: 0..frozen,
-                dist: 0.0,
-            },
-        );
-        let (tail, _) = generate_segments_in(
-            &rec,
-            tol,
-            StrokeSpans {
-                range: frozen..all,
-                dist,
-            },
-        );
-        let one_pass = whole(&rec);
-        assert_eq!(
-            head.len() + tail.len(),
-            one_pass.len(),
-            "the split re-cut it"
-        );
-        let split = sweeps(head.into_iter().chain(tail).collect());
-        for (i, (a, b)) in split.iter().zip(&one_pass).enumerate() {
-            assert_eq!(a.start, b.start, "segment {i}: start differs");
-            assert_eq!(a.length, b.length, "segment {i}: length differs");
         }
     }
 
