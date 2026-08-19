@@ -9,6 +9,7 @@ use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
 use crate::collab::now_seconds;
+use crate::hotkeys;
 use crate::panels::brush::{MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use crate::panels::select::{current_action, modifier_mode};
 use crate::platform::{
@@ -19,9 +20,8 @@ use crate::slots::{self, Grip};
 use crate::state::{AppState, BrushRing, Dwell, PickScope, TowUi, dispatch, update_brush};
 use stark_engine::InputSample;
 use stark_engine::ViewTransform;
-use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
+use stark_engine::command::{GestureCommand, ViewCommand};
 use stark_engine::{PickOptions, PickSource};
-use stark_model::document::SelectionOp;
 use stark_model::document::{ShapeAction, Tool};
 use stark_model::geom::Vec2;
 
@@ -444,7 +444,7 @@ pub fn is_contact(e: &Event<PointerData>) -> bool {
 /// shortcuts have always accepted both, and a binding that insisted on Ctrl would be
 /// unreachable on the one platform where Ctrl+drag is how the browser reports a
 /// secondary click in the first place.
-fn accel(m: Modifiers) -> bool {
+pub(crate) fn accel(m: Modifiers) -> bool {
     m.contains(Modifiers::CONTROL) || m.contains(Modifiers::META)
 }
 
@@ -1066,97 +1066,34 @@ fn handle_keydown(mut state: AppState, e: &platform::KeyEvent) {
 
     let m = e.modifiers();
     track_alt(state, m);
-    if !accel(m) {
-        // Unmodified keys: the view bindings and the quick-brush rack. Checked
-        // here, after the modifier set is known, so `Ctrl+H` stays the browser's
-        // and only a bare press is ours.
-        if m.contains(Modifiers::ALT) {
-            return;
-        }
-        // A digit holds its brush for as long as it is down (§18.1.8). Shift is
-        // not excluded: on most layouts it is what the digit row types under, and
-        // a hand resting on it should not silently disarm the rack. `slots::hold`
-        // ignores a press while a hold is in flight, which is what makes the key's
-        // own auto-repeat harmless.
-        if let Some(slot) = slots::of_code(&e.code()) {
-            slots::hold(state, slot, Grip::Key);
-            e.prevent_default();
-        } else if let Key::Character(c) = e.key()
-            && c.eq_ignore_ascii_case("h")
-        {
-            // Screen-relative, so it swaps the left of the screen with the right
-            // whatever angle the canvas is at (`ViewTransform::mirror_screen_h`).
-            dispatch(state, ViewCommand::MirrorH);
-            e.prevent_default();
-        }
+    // The quick-brush rack, claimed before the hotkey table is consulted so a
+    // future row on a digit could never shadow it. A digit is not a row there:
+    // it is a *hold*, owning both edges of its key (§18.1.8); it reads the
+    // physical row so a layout that types `&é"'` on it still has a rack; and
+    // Shift is deliberately tolerated — on most layouts it is what the digit
+    // row types under, and a hand resting on it should not silently disarm the
+    // rack — where the table's chords are exact. `slots::hold` ignores a press
+    // while a hold is in flight, which is what makes the key's own auto-repeat
+    // harmless. Alt is not tolerated: bare Alt is the eyedropper's, and only a
+    // bare digit is ours.
+    if !accel(m)
+        && !m.contains(Modifiers::ALT)
+        && let Some(slot) = slots::of_code(&e.code())
+    {
+        slots::hold(state, slot, Grip::Key);
+        e.prevent_default();
         return;
     }
-    match e.key() {
-        Key::Character(c) if c.eq_ignore_ascii_case("z") => {
-            let cmd = if m.contains(Modifiers::SHIFT) {
-                DocCommand::Redo
-            } else {
-                DocCommand::Undo
-            };
-            edit_history(state, cmd);
-            e.prevent_default();
-        }
-        Key::Character(c) if c.eq_ignore_ascii_case("y") => edit_history(state, DocCommand::Redo),
-        // Selection commands (§6.8). "Select all" and "Deselect" are the
-        // same edit here — a selection covering the whole canvas *is* no selection —
-        // so both shortcuts land on the same op.
-        //
-        // `prevent_default` whether or not the edit is accepted: the browser's own
-        // Ctrl+A would select the page's text, and a refusal that let that through
-        // would answer a declined command with a highlighted user interface.
-        Key::Character(c) if c.eq_ignore_ascii_case("a") || c.eq_ignore_ascii_case("d") => {
-            if may_edit(state) {
-                dispatch(state, DocCommand::Select(SelectionOp::select_all()));
-            }
-            e.prevent_default();
-        }
-        Key::Character(c) if c.eq_ignore_ascii_case("i") && m.contains(Modifiers::SHIFT) => {
-            if may_edit(state) {
-                dispatch(state, DocCommand::InvertSelection);
-            }
-            e.prevent_default();
-        }
-        _ => {}
+    // Everything else a keydown may simply *mean* is a row in the hotkey table
+    // (`crate::hotkeys`), and the claim on a matched chord is uniform:
+    // `prevent_default` whether or not the act was accepted, because the
+    // browser's own Ctrl+A would select the page's text, and a refusal that
+    // let that through would answer a declined command with a highlighted
+    // user interface.
+    if let Some(hotkey) = hotkeys::find(e) {
+        hotkey.run(state);
+        e.prevent_default();
     }
-}
-
-/// Whether a **document edit** may be accepted from the keyboard right now.
-///
-/// The two questions the canvas already asks of a press, asked of the shortcuts —
-/// which were the one door into the document that asked neither:
-///
-/// - **The playhead is moving.** A commit clears the withheld half of the
-///   timeline, so an edit laid under a running playback deletes the rest of the
-///   piece (`crate::panels::timeline`). The canvas refuses a press for this;
-///   Ctrl+A went through and truncated the history from the keyboard.
-/// - **A mode is composing.** Its preview is computed against the committed
-///   document (`crate::modes`), and the bar that carries these very commands has
-///   stood down for the mode's own — deselecting mid-transform would move the
-///   wrong region on "Done" (`crate::panels::select::SelectionBar`). The keyboard
-///   says what the screen says.
-fn may_edit(state: AppState) -> bool {
-    !crate::panels::timeline::is_playing(state) && !crate::modes::is_composing(state)
-}
-
-/// Undo or redo, having first put down whatever was in hand.
-///
-/// Not [`may_edit`]'s flat refusal, because these two are not refusable in the
-/// same sense. Nothing on screen says undo is unavailable — no bar stood down to
-/// carry the message — so a shortcut that silently did nothing would read as a
-/// broken keyboard rather than as a rule. Editing the history is instead an
-/// unambiguous statement that the composition in flight is over, so it ends the
-/// way scrubbing ends one: the preview dropped, nothing committed. Playback
-/// stops for the same reason it stops when the transport is touched — the hand
-/// has taken the playhead back off the loop that was moving it.
-fn edit_history(state: AppState, command: DocCommand) {
-    crate::panels::timeline::stop(state);
-    crate::modes::leave(state);
-    dispatch(state, command);
 }
 
 fn handle_keyup(mut state: AppState, e: &platform::KeyEvent) {

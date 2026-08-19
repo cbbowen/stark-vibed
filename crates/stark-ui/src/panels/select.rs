@@ -4,6 +4,7 @@
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
 
+use crate::hotkeys::{self, Hotkey};
 use crate::icons::{self, icon, icon_tinted, label};
 use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch, use_obs};
@@ -257,14 +258,14 @@ pub fn SelectionBar() -> Element {
                 }
                 button {
                     class: "chip",
-                    title: "Invert selection (Ctrl+Shift+I)",
+                    title: format!("Invert selection ({})", hotkeys::label(Hotkey::InvertSelection)),
                     onclick: move |_| dispatch(state, DocCommand::InvertSelection),
                     {icon(icons::SELECTION_INVERT)}
                     {label("Invert")}
                 }
                 button {
                     class: "chip",
-                    title: "Deselect (Ctrl+D)",
+                    title: format!("Deselect ({})", hotkeys::label(Hotkey::SelectAll)),
                     onclick: move |_| {
                         dispatch(state, DocCommand::Select(SelectionOp::select_all()))
                     },

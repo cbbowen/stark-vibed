@@ -536,6 +536,28 @@ which the engine draws into directly. DOM chrome surrounds it.
   at the call site — the canvas fades the chrome while it navigates and cancels
   the stroke a second finger interrupted, the transform overlay deliberately does
   neither.
+- **A simple shortcut is a row in a table, not an arm in a match.** `hotkeys`
+  declares every chord → act pair as one row of data. A chord names the
+  accelerator tier (Ctrl or Command, `input::accel`), the Shift bit, and a key
+  that is either the *character* it types — a mnemonic follows the layout,
+  because Z undoes wherever the layout puts the Z — or the *position* it sits
+  at — a spatial pair is about adjacency, and `[`/`]` step the brush precisely
+  because they are side by side (`slots::of_code`'s argument, §18.1.8). Chords
+  are exact: Ctrl+Shift+Z is its own row rather than Ctrl+Z plus a bystander,
+  and Alt in any combination matches nothing, since AltGr arrives as Ctrl+Alt
+  and a table that shrugged at Alt would fire its Ctrl rows under a layout's
+  ordinary typing. The keydown handler asks the table once and claims a matched
+  chord wholly (`prevent_default`) whether or not its act was accepted — a
+  declined Ctrl+A must not answer with the browser highlighting the page — and
+  each act's own gate lives on the act (`Hotkey::run`), not at the call site.
+  The chrome advertises from the same rows: `hotkeys::label` prints the menu's
+  shortcut column and the selection bar's tooltip suffixes, so what the menu
+  claims and what the keyboard answers cannot drift. What is *not* a row is
+  anything owning both edges of its key — a held digit (§18.1.8), space's pan,
+  Alt's eyedropper stay in `input`, which owns keyup — and Ctrl+V, which is not
+  a command but data arriving (§23). Rebinding, when it comes, is this table
+  becoming user state: the acts are the stable names a stored binding will key
+  on, and `find`/`label` are already the only readers.
 - **A composing mode is a state, not a stacking order.** Four gestures take the
   canvas away from the brush for the length of a composition: the transform
   widget (§16.6), the perspective-guide edit (§20.5), the gradient trace (§22.2)

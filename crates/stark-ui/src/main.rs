@@ -25,6 +25,7 @@ mod files;
 mod gesture;
 mod gradients;
 mod grounds;
+mod hotkeys;
 mod icons;
 mod identity;
 mod images;
@@ -55,6 +56,7 @@ use dioxus::prelude::*;
 use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use credits::CreditsModal;
+use hotkeys::Hotkey;
 use icons::{icon, icon_large};
 use input::{
     Nav, Paint, Tune, bind_context_menu, bind_pen, bind_shortcuts, end_interaction, pick_color,
@@ -924,6 +926,11 @@ fn CommandRail() -> Element {
                             value: "import-image".to_string(),
                             on_select: move |_| images::import_image(state),
                             span { class: "menu-item", {icon(icons::IMPORT_IMAGE)} "Import image\u{2026}" }
+                            // The one shortcut written by hand rather than read
+                            // off the hotkey table: a paste is not a binding of
+                            // ours at all — the browser delivers the clipboard
+                            // with its own event (`images::bind_paste`) — so
+                            // there is no row for this label to print.
                             span { class: "menu-shortcut", "Ctrl+V" }
                         }
                         MenubarItem {
@@ -953,7 +960,10 @@ fn CommandRail() -> Element {
                             disabled: !can_undo,
                             on_select: move |_| dispatch(state, DocCommand::Undo),
                             span { class: "menu-item", {icon(icons::UNDO)} "Undo" }
-                            span { class: "menu-shortcut", "Ctrl+Z" }
+                            // Printed from the binding itself (`hotkeys::label`),
+                            // as every shortcut column below is, so what the menu
+                            // claims and what the keyboard answers cannot drift.
+                            span { class: "menu-shortcut", {hotkeys::label(Hotkey::Undo)} }
                         }
                         MenubarItem {
                             index: 1usize,
@@ -961,7 +971,7 @@ fn CommandRail() -> Element {
                             disabled: !can_redo,
                             on_select: move |_| dispatch(state, DocCommand::Redo),
                             span { class: "menu-item", {icon(icons::REDO)} "Redo" }
-                            span { class: "menu-shortcut", "Ctrl+Y" }
+                            span { class: "menu-shortcut", {hotkeys::label(Hotkey::Redo)} }
                         }
                         // The same two glyphs the selection bar's chips wear. One
                         // command reached two ways has to look like one command,
@@ -975,7 +985,7 @@ fn CommandRail() -> Element {
                                 dispatch(state, DocCommand::Select(SelectionOp::select_all()))
                             },
                             span { class: "menu-item", {icon(icons::SELECTION_NONE)} "Deselect" }
-                            span { class: "menu-shortcut", "Ctrl+D" }
+                            span { class: "menu-shortcut", {hotkeys::label(Hotkey::SelectAll)} }
                         }
                         MenubarItem {
                             index: 9usize,
@@ -986,7 +996,7 @@ fn CommandRail() -> Element {
                                 {icon(icons::SELECTION_INVERT)}
                                 "Invert selection"
                             }
-                            span { class: "menu-shortcut", "Ctrl+Shift+I" }
+                            span { class: "menu-shortcut", {hotkeys::label(Hotkey::InvertSelection)} }
                         }
                         // A mode rather than a command, so it carries a check like
                         // the Panels menu's entries do — the menu says whether you

@@ -687,6 +687,15 @@ existed, and neither the engine nor the panels learn anything.
   It clamps to the sliders' own bounds (`panels::brush::MIN_RADIUS`,
   `MAX_RADIUS`, `MAX_FLOW` — now named once for both readers), so a drag cannot
   put the brush somewhere the panel is unable to show or take back.
+- **The bracket keys step the same knob** (`hotkeys::Hotkey::BrushSmaller` /
+  `BrushLarger`): a bare `[` or `]` is one tap of Size, a tenth either way —
+  equal *ratios*, because the hand feels radius proportionally, and the +1px
+  that is a visible jump on a 5px liner is nothing on a 300px wash — through
+  the same `update_brush` and the same clamps, so the key's own auto-repeat
+  sweeps the whole range in a couple of seconds of holding and stops where the
+  slider stops. Bound by position (`BracketLeft`/`BracketRight`), the rack's
+  argument (§18.1.8): a pair chosen for its adjacency has to survive the
+  layouts that type other things there.
 - **The chrome does *not* fade** while tuning, unlike every other canvas
   gesture, for the eyedropper's reason (§18.0.2): the Brush panel is where this
   gesture's answer is read, and fading it out would hide the one thing the drag
