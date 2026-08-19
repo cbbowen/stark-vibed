@@ -3176,6 +3176,14 @@ button.layer-remove:hover {
   border: 1px solid #0000008c;
   border-radius: 2px;
   box-sizing: border-box;
+  /* A grip is a place to press, and a *pen* press is a touch as far as the browser
+     is concerned: without this a corner drag is a page gesture — back or forward
+     sideways, refresh downwards — and the resize hears a `pointercancel` where it
+     asked for moves. Every other drag surface in the chrome states the same line
+     (`.panel-title`, `.panel-resize`, `.nav-frame`, `.layer-name`), and the
+     overlay above cannot state it for them: it declines the pointer entirely, so
+     the grip is the element a press is hit-tested to. */
+  touch-action: none;
 }
 
 /* Corners: 10px squares centred on each corner. */
