@@ -1428,7 +1428,7 @@ pub fn hover_at(state: AppState, at: Vec2) {
 /// shrink and grow together. The *smoothing* does not ride this number: the
 /// heading's estimator window is grain-relative inside the engine, so its
 /// steadiness survives every zoom.
-const HOVER_REACH_CANVAS_PX: f32 = 40.0;
+const HOVER_REACH_CANVAS_PX: f32 = 8.0;
 
 /// Feed the hover mark one report (§18.1.10): the engine appends `s` to its
 /// trailing window and folds the probe — the stroke a drag begun this instant
