@@ -745,22 +745,42 @@ hover is wearing that size on the way back to the work.
   noise, and the crosshair is the better picture of a fine tip.
 
 **And the honest half — the mark itself — is built.** The circle says how far
-the brush reaches; under it the engine folds *the mark the last two hover
+the brush reaches; under it the engine folds *the mark the hover's recent
 reports would have committed*: shape, softness, color, tilt, taper, the
 selection mask, and the wet-mixing against whatever paint is already there
 (§6.2, §6.4). `preview == committed` (§1.3) extended to the moment before the
 press — and inherited rather than maintained, which is the whole design:
 
-- **One report per move, paired in the engine.** The canvas's move handler
+- **One report per move, windowed in the engine.** The canvas's move handler
   feeds `ViewCommand::PreviewHover` the newest sample (`input::hover_stroke`);
-  the session pairs it with the one before, fits the pair with the same
-  `PathFitter` a gesture uses, and keeps the path `End` would adopt. The first
-  report of a fresh hover pairs with itself — the mark a *click* would make.
+  the session appends it to a trailing window of recent reports, refits the
+  window with the same `PathFitter` a gesture uses, and keeps the path `End`
+  would adopt. The first report of a fresh hover is a window of one — the
+  mark a *click* would make. **The window is the smoothing**: reports are
+  quantized to the device grain, so the heading of two adjacent reports snaps
+  between the eight compass points — jitter in the *input*, which the fitter
+  is precisely the machinery to price against detail, but only given
+  redundancy a bare pair never had. The dash therefore holds a heading the
+  raw staircase cannot (`tests/hover.rs` fits a pixel-stepped shallow line to
+  within a few degrees where the raw pair misses by thirty), with the same
+  steadiness a drawn stroke's tail already has, from the same solve.
   Pressure is replaced with **full pressure** (a hovering pen, and a mouse,
   reports zero — which would honestly preview no mark at all), full rather
   than a middle weight so the mark fills the circle over it: two overlays
   about one brush must not disagree about its reach. Tilt is kept — a
   hovering pen reports it, and the mark should lean as the stroke would.
+- **The trail is the mark's length, and it is policy.** The window is pruned
+  to a trailing arc the frontend states per report — 40 screen px, carried
+  through the view like the rope (§6.11), because the dash is a cursor
+  affordance sized for the eye and should read the same at every zoom — but
+  never below the newest pair, so a flick whose one step outruns the trail
+  still shows its whole honest dash. The length does double duty: it is what
+  the eye sees, and it is the redundancy the fit smooths over — on a mouse it
+  spans ~40 grains. A count ceiling behind it bounds what a report's refit
+  can cost where motion is dense at the grain, and a report within a grain of
+  the last is dropped entirely — it carries nothing the fit could use, and a
+  resting pen's sub-grain drift would otherwise buy a refit and a refold per
+  report.
 - **Folded as a gesture, outranked by one.** The fold receives the mark in
   the very `GestureView` shape a real gesture folds as
   (`Session::hover_view`), so the renderer cannot tell them apart — that is
@@ -781,12 +801,11 @@ press — and inherited rather than maintained, which is the whole design:
   selection tool folds no mark, and an unpaintable layer refuses it exactly
   as it refuses a stroke — the same renderer answers both, so there is no
   gate to forget (§15.7).
-- **The price is painting's, paid only while the hover moves.** Each report
-  costs a two-sample fit (its own timing row, `input.hover`, so following the
-  pointer is never priced as painting), a short-stroke render and a refold —
-  what a moving pen costs mid-stroke. A resting pointer reports nothing and
-  costs nothing; a report that went nowhere is dropped rather than paired, so
-  a resting pen's tilt jitter cannot blink the mark out.
+- **The price is painting's, paid only while the hover moves.** Each accepted
+  report costs a refit of the window (its own timing row, `input.hover`, so
+  following the pointer is never priced as painting), a short-stroke render
+  and a refold — a moving pen's price, with the refit bounded by the window's
+  count ceiling. A resting pointer reports nothing and costs nothing.
 
 ### 18.2 Tier 2 — where we can beat the prior art
 

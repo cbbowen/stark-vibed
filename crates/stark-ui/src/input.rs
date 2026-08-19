@@ -20,7 +20,7 @@ use crate::slots::{self, Grip};
 use crate::state::{AppState, BrushRing, Dwell, PickScope, TowUi, dispatch, update_brush};
 use stark_engine::InputSample;
 use stark_engine::ViewTransform;
-use stark_engine::command::{GestureCommand, ViewCommand};
+use stark_engine::command::{GestureCommand, HoverReport, ViewCommand};
 use stark_engine::{PickOptions, PickSource};
 use stark_model::document::{ShapeAction, Tool};
 use stark_model::geom::Vec2;
@@ -1417,9 +1417,21 @@ pub fn hover_at(state: AppState, at: Vec2) {
     hover.set(Some(at));
 }
 
-/// Feed the hover mark one report (§18.1.10): the engine pairs `s` with the
-/// report before and folds the stroke the two would have committed — the
-/// painted half of the brush cursor, under the circle [`hover_at`] places.
+/// How much recent motion the hover mark re-draws, in **screen px** (§18.1.10).
+///
+/// Screen px because the mark is a cursor affordance, sized for the eye like
+/// the rope (§6.11): the same dash should read the same at every zoom, and
+/// what the zoom changes is the canvas arc it covers. The length does double
+/// duty — it is what the eye sees, and it is the window the fitter smooths
+/// over, so on a mouse it spans ~40 grains and prices the grid's compass
+/// jitter down to about a degree. Long enough to show heading and curvature;
+/// short enough to stay a cursor rather than a snake.
+const HOVER_TRAIL_SCREEN_PX: f32 = 40.0;
+
+/// Feed the hover mark one report (§18.1.10): the engine appends `s` to its
+/// trailing window and folds the fitted stroke those reports would have
+/// committed — the painted half of the brush cursor, under the circle
+/// [`hover_at`] places.
 ///
 /// Gated on the states that promise the press to something other than paint —
 /// space's pan, Alt's eyedropper (armed or dragging), and playback, where a
@@ -1441,11 +1453,15 @@ pub fn hover_stroke(state: AppState, s: InputSample, e: &Event<PointerData>) {
     {
         return;
     }
-    let Some(tolerance) = input_tolerance(state, e) else {
+    let Some(view) = view_of(state) else {
         return;
     };
-    let sample = InputSample { pressure: 1.0, ..s };
-    crate::state::dispatch_hover(state, ViewCommand::PreviewHover(Some((sample, tolerance))));
+    let report = HoverReport {
+        sample: InputSample { pressure: 1.0, ..s },
+        tolerance: input_tolerance_in(view, e),
+        trail: HOVER_TRAIL_SCREEN_PX / view.zoom,
+    };
+    crate::state::dispatch_hover(state, ViewCommand::PreviewHover(Some(report)));
 }
 
 /// Take the engine's hover mark down, if one is up (§18.1.10) — the half of

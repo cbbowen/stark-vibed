@@ -488,7 +488,7 @@ impl Engine {
     /// gives the uniform ordering without the duplication (§17.4).
     ///
     /// A hand that is only *hovering* folds the §18.1.10 mark instead — the
-    /// stroke its last two reports would have committed, in the same
+    /// stroke its recent reports would have committed, in the same
     /// [`GestureView`] shape, so the fold cannot tell it from a real gesture and
     /// `hover == committed` is inherited rather than maintained. The `match` is
     /// the guarantee the two never coexist: an actor folds at most one gesture,

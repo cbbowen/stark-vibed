@@ -100,6 +100,28 @@ impl Default for InputSample {
     }
 }
 
+/// One hover report for [`ViewCommand::PreviewHover`] (§18.1.10).
+///
+/// A struct rather than a tuple because two of its fields are canvas-px
+/// lengths: unnamed they could be silently transposed, which is the
+/// arrangement this codebase's argument lints already guard against.
+///
+/// Both lengths are the frontend's to state, and per report, because both are
+/// denominated on the screen and the zoom that converts them can change
+/// mid-hover: `tolerance` is the input grain, exactly
+/// [`GestureCommand::Start`]'s field; `trail` is how much recent motion the
+/// mark keeps — the dash's arc — a cursor affordance sized for the eye like
+/// the rope (§6.11), so it is fixed in screen px and what the zoom changes is
+/// the canvas arc it covers.
+#[derive(Copy, Clone, Debug)]
+pub struct HoverReport {
+    pub sample: InputSample,
+    /// How finely this hover's input resolves position, canvas px.
+    pub tolerance: f32,
+    /// Trailing arc of motion the mark keeps, canvas px.
+    pub trail: f32,
+}
+
 /// Every stateful interaction the backend accepts (§4).
 ///
 /// Construct the inner enums directly and rely on `Into` — `engine.process(
@@ -614,14 +636,16 @@ pub enum ViewCommand {
     /// **without logging it** — the brush cursor's painted half (§18.1.10).
     /// `None` drops the mark.
     ///
-    /// Each report carries the newest hover sample and the gesture tolerance
-    /// ([`GestureCommand::Start`]'s own field, stated per report because the
-    /// zoom it derives from can change mid-hover); the engine pairs it with the
-    /// report before, so what is folded is the stroke the last two reports
-    /// *would have committed* — fitted by the same fitter, rendered by the same
-    /// renderer, through the selection mask and onto the paint already there,
-    /// wet-mixing included. The first report of a fresh hover pairs with
-    /// itself: the mark a click would make.
+    /// Each report carries the newest hover sample ([`HoverReport`]); the
+    /// engine appends it to a trailing window of recent reports, prunes the
+    /// window to the report's `trail`, and folds the fit of the window — the
+    /// stroke those reports *would have committed*, fitted by the same fitter,
+    /// rendered by the same renderer, through the selection mask and onto the
+    /// paint already there, wet-mixing included. A window rather than the
+    /// newest pair because the smoothing lives in the fit: reports are
+    /// quantized to the device grain, a lone pair's heading snaps between the
+    /// eight compass points, and only redundancy lets the tolerance price that
+    /// jitter away (`Session::hover_to`).
     ///
     /// Unlike the rest of the `Preview*` family this is not the in-flight half
     /// of any commit — it is a hypothesis, and three things follow. It is
@@ -630,7 +654,7 @@ pub enum ViewCommand {
     /// premise — a gesture starting, a tool switch, a load; and it may never
     /// reach a file — a `Rendered::Live` export takes it down first, because an
     /// export is not a moment the hand is painting in.
-    PreviewHover(Option<(InputSample, f32)>),
+    PreviewHover(Option<HoverReport>),
 
     /// Tune the media/lighting pass (§6.3). Changes how the canvas
     /// looks, not what it is.

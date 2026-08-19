@@ -274,7 +274,7 @@ pub struct Session {
 
     in_flight: Option<StrokeBuilder>,
     selecting: Option<ShapeDrag>,
-    /// The hover mark (§18.1.10): the stroke the last two hover reports would
+    /// The hover mark (§18.1.10): the stroke the hover's recent reports would
     /// have painted, previewed under the resting pointer. `None` when the
     /// pointer is elsewhere or the hand is doing something other than hovering.
     ///
@@ -521,8 +521,8 @@ impl Session {
     pub fn start_selection(&mut self, tool: Tool, pos: Vec2) {
         self.tool = tool;
         self.in_flight = None;
-        // The press supersedes the hover it interrupted — and the pair must not
-        // survive the gesture, or the mark would reappear at the pre-press
+        // The press supersedes the hover it interrupted — and the window must
+        // not survive the gesture, or the mark would reappear at the pre-press
         // position the moment the hand lifted (§18.1.10).
         self.hover = None;
         self.gesture_ordinal += 1;
@@ -600,7 +600,7 @@ impl Session {
     ) {
         self.tool = tool;
         self.selecting = None;
-        // For `start_selection`'s reason: a stale pair outliving the stroke
+        // For `start_selection`'s reason: a stale window outliving the stroke
         // would resurrect a pre-press mark at pen-up (§18.1.10).
         self.hover = None;
         self.gesture_ordinal += 1;
@@ -819,41 +819,65 @@ impl Session {
 
     // --- the hover mark (§18.1.10) --------------------------------------------
 
-    /// Feed the hover mark one report: pair it with the report before and fit
-    /// the two-sample path a gesture made of them would commit. The engine keeps
-    /// the pair so the frontend sends one sample per move, exactly as it does
-    /// for a stroke; the first report of a fresh hover pairs with itself, which
-    /// fits the path a *click* would commit.
+    /// Feed the hover mark one report: append it to the trailing window of
+    /// recent reports and refit the whole window — the path a gesture of
+    /// exactly those samples would commit. The engine keeps the window, so the
+    /// frontend sends one sample per move exactly as it does for a stroke; the
+    /// first report of a fresh hover is a window of one, the path a *click*
+    /// would commit.
+    ///
+    /// **A window rather than a pair, and the window is the smoothing** (§6.2).
+    /// Reports are quantized to the device grain, so the heading of two
+    /// adjacent reports snaps between the eight compass points — the jitter is
+    /// in the *input*, and the fitter is precisely the machinery built to
+    /// price jitter against detail. But it can only do that given redundancy:
+    /// a pair gave it none, and the tolerance was powerless. The window hands
+    /// the mark the same steadiness a drawn stroke's tail already has, from
+    /// the same solve.
     ///
     /// `tolerance` is the frontend's statement of its input grain, as
-    /// [`start_stroke`](Self::start_stroke) takes it. A non-finite report is
-    /// refused at the door for [`stroke_to`](Self::stroke_to)'s reason — the
-    /// pair *remembers*. A report that went nowhere is dropped rather than
-    /// paired: pairing it would collapse the path to a point and blink the mark
-    /// out under a resting pen, whose tilt jitter can re-report a position.
-    pub fn hover_to(&mut self, sample: InputSample, tolerance: f32) {
-        if !sample.is_finite() {
-            return;
+    /// [`start_stroke`](Self::start_stroke) takes it, and `trail` of how much
+    /// recent motion the mark keeps — both canvas px, both the frontend's to
+    /// state (the trail is denominated on the screen, like the rope, and only
+    /// the frontend holds the view that converts it). The window is pruned to
+    /// the trail's arc but never below the newest pair, so a flick whose one
+    /// step outruns the trail still shows its whole honest dash.
+    ///
+    /// A non-finite report is refused at the door for
+    /// [`stroke_to`](Self::stroke_to)'s reason — the window *remembers* — and
+    /// a report within a grain of the last is dropped: it carries nothing the
+    /// fit could use, and a resting pen's sub-grain drift would otherwise buy
+    /// a whole-window refit per report. Hence the answer: whether anything
+    /// changed, so a caller can skip the refold for a report that changed
+    /// nothing.
+    pub fn hover_to(&mut self, sample: InputSample, tolerance: f32, trail: f32) -> bool {
+        if !sample.is_finite() || !trail.is_finite() {
+            return false;
         }
         if let Some(h) = self.hover.as_ref()
-            && h.last.pos == sample.pos
+            && let Some(last) = h.window.last()
+            && (last.pos == sample.pos || last.pos.distance(sample.pos) < tolerance)
         {
-            return;
+            return false;
         }
-        let prev = self.hover.take().map_or(sample, |h| h.last);
+        let mut window = self.hover.take().map(|h| h.window).unwrap_or_default();
+        window.push(sample);
+        prune_window(&mut window, trail);
         let mut fitter = PathFitter::with_tolerance(tolerance);
-        fitter.push(prev);
-        fitter.push(sample);
-        // Finished, because it is: the pair is the whole gesture, so the path is
-        // the one `End` would adopt — which is what makes the mark the commit's
-        // pixels rather than nearly so.
+        for s in &window {
+            fitter.push(*s);
+        }
+        // Finished, because it is: the window is the whole gesture, so the path
+        // is the one `End` would adopt — which is what makes the mark the
+        // commit's pixels rather than nearly so.
         fitter.finish();
         self.gesture_ordinal += 1;
         self.hover = Some(HoverStroke {
             path: fitter.path(),
-            last: sample,
+            window,
             ordinal: self.gesture_ordinal,
         });
+        true
     }
 
     /// Drop the hover mark. Answers whether there was one to drop, so a caller
@@ -899,17 +923,43 @@ impl Session {
     }
 }
 
-/// The hover mark's state (§18.1.10): what the last two hover reports would have
-/// painted, and the bookkeeping that keeps its renders distinct.
+/// The hover mark's state (§18.1.10): the trailing window of recent reports,
+/// the fit of that window, and the bookkeeping that keeps its renders distinct.
 struct HoverStroke {
-    /// The fitted two-report path — what a gesture of exactly these samples
-    /// would commit.
+    /// The window, oldest first. Every entry is a report the hand really made —
+    /// which is what keeps the record a stroke somebody could have drawn, and
+    /// `hover == committed` a statement about input rather than about a
+    /// synthesis.
+    window: Vec<InputSample>,
+    /// The fitted window — what a gesture of exactly these samples would
+    /// commit. Rebuilt per accepted report, kept so a fold costs a clone.
     path: Vec<ControlPoint>,
-    /// The newest report, kept to pair with the next one.
-    last: InputSample,
     /// This update's slot in the session's gesture-ordinal space (see
     /// [`Session::gesture_ordinal`]).
     ordinal: u64,
+}
+
+/// Most reports the hover window keeps ([`Session::hover_to`]).
+///
+/// The trail's arc is the policy; this is the cost ceiling behind it. Every
+/// accepted report refits the whole window, so this bounds what a report can
+/// cost — and it binds only where motion is dense at the grain (a pen crawling
+/// pitch by pitch), where the window is this many *grains* long and the
+/// heading has long since settled.
+const HOVER_WINDOW: usize = 32;
+
+/// Prune `window` from its old end until its arc fits `trail` and its count
+/// fits [`HOVER_WINDOW`] — but never below the newest **pair**: a flick whose
+/// one step outruns the trail still owes the mark its direction, and a long
+/// dash is the honest picture of a fast hand.
+fn prune_window(window: &mut Vec<InputSample>, trail: f32) {
+    let mut arc: f32 = window.windows(2).map(|w| w[0].pos.distance(w[1].pos)).sum();
+    let mut from = 0;
+    while window.len() - from > 2 && (window.len() - from > HOVER_WINDOW || arc > trail) {
+        arc -= window[from].pos.distance(window[from + 1].pos);
+        from += 1;
+    }
+    window.drain(..from);
 }
 
 impl StrokeBuilder {

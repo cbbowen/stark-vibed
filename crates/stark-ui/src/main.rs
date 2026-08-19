@@ -729,8 +729,9 @@ fn Canvas() -> Element {
                         // The paint gesture takes the move if it has one in
                         // flight, and says so. A move with no gesture behind it
                         // is a *hover*, and the mark preview rides it
-                        // (§18.1.10): the engine pairs this sample with the last
-                        // and folds the stroke the two would have painted.
+                        // (§18.1.10): the engine adds this sample to its
+                        // trailing window and folds the stroke those reports
+                        // would have painted.
                         hover_stroke(state, s, &e);
                     }
                     // Where collaborators see this client's pointer
@@ -830,7 +831,7 @@ fn PeerCursors() -> Element {
 ///
 /// A circle, though the brush may be any shape (§6.6) — deliberately, even now
 /// that the real thing renders beneath it: the engine folds the actual mark the
-/// last two hover reports would have painted (§18.1.10,
+/// hover's recent reports would have painted (§18.1.10,
 /// `ViewCommand::PreviewHover`, fed by the same move handler), and the two
 /// halves divide the work — the mark says what the paint would *do*, the ring
 /// says how far the brush *reaches*, which a soft tip's mark understates.

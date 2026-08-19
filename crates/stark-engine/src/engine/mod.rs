@@ -1331,13 +1331,16 @@ impl Engine {
                 self.set_doc_preview(preview);
             }
             ViewCommand::PreviewHover(report) => match report {
-                Some((sample, tolerance)) => {
-                    // The CPU half of a hover report — the two-sample fit — on
-                    // its own row, so the cost of following a resting pointer is
+                Some(r) => {
+                    // The CPU half of a hover report — the window refit — on its
+                    // own row, so the cost of following a resting pointer is
                     // never folded into what painting costs (`input.fit`, §7.1).
                     crate::timing::span!("input.hover");
-                    self.session.hover_to(sample, tolerance);
-                    self.mark_live_stale();
+                    // A report the window declined — sub-grain drift under a
+                    // resting pen — refolds nothing.
+                    if self.session.hover_to(r.sample, r.tolerance, r.trail) {
+                        self.mark_live_stale();
+                    }
                 }
                 None => {
                     if self.session.clear_hover() {
