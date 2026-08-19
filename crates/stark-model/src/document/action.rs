@@ -115,6 +115,24 @@ pub struct StrokeRecord {
     /// Seed for any brush jitter, making replay reproducible. Unused by the MVP
     /// brush but recorded so the format is stable.
     pub seed: u64,
+    /// Where on [`path`](Self::path)'s curve the stroke itself begins — a curve
+    /// parameter in span units, `0 ≤ start ≤` the path's span count (§6.2).
+    ///
+    /// The curve may extend *before* the press: the hover trail the engine was
+    /// already watching becomes the stroke's **run-up**, fitted into the same
+    /// curve so the entry's direction and curvature are measured from real
+    /// motion rather than guessed from the first grain-quantized steps. This
+    /// marker records where on that curve the press really happened, and the
+    /// deposit begins exactly there — everything before it is evidence, never
+    /// paint. Rendering honours it in one place (the flattening funnel,
+    /// `stark-engine`'s `generate_segments_in`), so replay, live preview and
+    /// peers cannot disagree about it.
+    ///
+    /// `0` — the curve's own head — for a stroke with no run-up, which is also
+    /// what a file from before this field existed means by its absence: the
+    /// whole curve is the stroke, and such files replay bit-identically.
+    #[serde(default)]
+    pub start: f32,
 }
 
 /// What an action does to the document.
@@ -535,6 +553,15 @@ impl ActionKind {
         match self {
             ActionKind::CommitStroke(rec) => ActionKind::CommitStroke(StrokeRecord {
                 brush: rec.brush.sanitized(),
+                // The marker's ceiling is the path's span count, which is the
+                // flattening's to know — it clamps the top end itself. What the
+                // record can state alone is held here: finite, and not before
+                // the curve it marks a point on.
+                start: if rec.start.is_finite() {
+                    rec.start.max(0.0)
+                } else {
+                    0.0
+                },
                 ..rec
             }),
             ActionKind::Fill { layer, op } => ActionKind::Fill {
@@ -676,6 +703,8 @@ mod tests {
             },
             path: Vec::new(),
             seed: 0,
+            // A marker before the curve names no place; the funnel floors it.
+            start: -2.0,
         })
         .sanitized();
         let ActionKind::CommitStroke(rec) = &stroke else {
@@ -683,6 +712,7 @@ mod tests {
         };
         assert!(rec.brush.radius.is_finite());
         assert_eq!(rec.brush.tooth, 1.0);
+        assert_eq!(rec.start, 0.0);
 
         let fill = ActionKind::Fill {
             layer: LayerId(0),
@@ -736,6 +766,7 @@ mod tests {
                 brush: BrushParams::default(),
                 path: vec![crate::path::ControlPoint::at(Vec2::splat(4.0))],
                 seed: 1,
+                start: 0.0,
             }),
             ActionKind::AddLayer {
                 id,

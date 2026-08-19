@@ -101,23 +101,32 @@ sample each update (and freezes there on release), which also keeps the preview
 under the cursor.
 
 A stroke that begins after a watched hover takes its window as a **run-up**
-(`PathFitter::seed_context`; §18.1.10 is where the window comes from). The entry
+(`PathFitter::seed_runup`; §18.1.10 is where the window comes from). The entry
 is otherwise the fit's blind spot: the clamped ends squash the first span into a
 fraction of a pixel of arc, so its heading is decided by where one control point
-lands against grain-quantized samples — measured on a staircase drag, the cold
-entry read −144° on a stroke drawn at 14°, and the conditioned one 13.6°. The
-run-up's reports enter the solve as observation rows on the first span's
-**polynomial extension** — negative parameters (`spline::span_and_local_extended`)
-— so they *condition* the entry's direction and curvature without the curve
-starting any earlier: the start stays pinned at the press, the emitted path is
-unchanged in kind, and nothing about the record, the wire or replay moves.
-Context pressure is replaced with the press's own (pressure begins at contact;
-tilt and time are continuous through it and kept); depth is capped at two spans
-of extension, where a row's vote — the far control point's basis weight,
-`|u|³/6` — is strong but bounded; and the rows fall out of the solve on their
-own once the entry control points freeze. A stroke with no run-up behind it is
-bit-identical to what it always was, and so is a straight tap, whose two pinned
-endpoints leave nothing free to condition.
+lands against grain-quantized samples. The run-up's reports are adopted as real
+leading samples — **the fitted curve extends back through them** — and the
+record marks where on that curve the press really happened
+(`StrokeRecord::start`, a span-unit parameter, `#[serde(default)]` so a file
+from before the field means 0: the whole curve is the stroke). The deposit
+begins at the marker and everything before it is evidence, never paint; the one
+flattening funnel both render paths share honours it
+(`path::flatten_spans_from`), with the arc accumulator reading 0 there, so the
+tapers, the `drain` falloff and the dynamics loop all measure the stroke from
+the press. The front pin moves with the curve — the run-up's first report is
+the pinned head, the press an *interior* sample — so the entry is smoothed
+through the press exactly as every later report is, which is the point: the
+pinned start was the last unsmoothed place on the stroke. Measured on a
+staircase drag, the entry at the marker reads 14.4° on a line drawn at 14.04°,
+0.2 px off the press, where the cold entry reads 12.4°. Run-up pressure is
+replaced with the press's own (pressure begins at contact; tilt and time are
+continuous through it and kept). The marker refines while the entry spans are
+still free and settles the moment the frozen prefix's arc covers it — which is
+why a cached head can bake spans behind it, and why presence sends it per frame
+rather than in the stroke's invariant head (§17.5). A stroke with no run-up
+behind it carries marker 0 and is bit-identical to what it always was; a click
+at the end of a watched approach has its marker at the very end of its curve,
+deposits nothing, and commits nothing.
 
 Every report is weighted by **the arc it stands for** (`arc_weights`), which is
 what makes the solve a fit to the stroke rather than to the hand. A pointer

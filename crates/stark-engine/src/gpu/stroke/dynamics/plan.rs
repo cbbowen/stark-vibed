@@ -1563,6 +1563,7 @@ mod tests {
                 .map(|p| stark_model::path::ControlPoint::at(*p))
                 .collect(),
             seed: 0,
+            start: 0.0,
         }
     }
 

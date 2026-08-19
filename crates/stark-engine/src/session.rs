@@ -478,23 +478,27 @@ impl Session {
     /// the GPU.
     fn gesture_source(&self) -> Option<GestureSource> {
         match self.in_flight.as_ref() {
-            Some(b) => Some(GestureSource::Stroke {
-                head: StrokeHead {
-                    layer: b.layer,
-                    brush: b.brush,
-                    seed: b.seed,
-                },
-                path: b.path(),
-                // A snapped stroke has **no settled prefix**: steering it moves every
-                // control point at once, so nothing may be retired. The whole path
-                // therefore rides every frame — which it can afford to, being a shape.
-                // The ordinal bump in `assist_stroke` is what lets the watermark drop
-                // back to zero without walking backwards within one gesture (§17.5).
-                frozen: b
-                    .assist
-                    .as_ref()
-                    .map_or_else(|| b.fitter.frozen_points(), |_| 0),
-            }),
+            Some(b) => {
+                let (path, start) = b.fitted();
+                Some(GestureSource::Stroke {
+                    head: StrokeHead {
+                        layer: b.layer,
+                        brush: b.brush,
+                        seed: b.seed,
+                    },
+                    path,
+                    // A snapped stroke has **no settled prefix**: steering it moves every
+                    // control point at once, so nothing may be retired. The whole path
+                    // therefore rides every frame — which it can afford to, being a shape.
+                    // The ordinal bump in `assist_stroke` is what lets the watermark drop
+                    // back to zero without walking backwards within one gesture (§17.5).
+                    frozen: b
+                        .assist
+                        .as_ref()
+                        .map_or_else(|| b.fitter.frozen_points(), |_| 0),
+                    start,
+                })
+            }
             None => self.preview_shape().map(|r| match r {
                 ShapeResult::Select(op) => GestureSource::Selection(op),
                 ShapeResult::Fill(op) => GestureSource::Fill(op),
@@ -602,17 +606,18 @@ impl Session {
         self.tool = tool;
         self.selecting = None;
         // The press supersedes the hover — but not before its window is put to
-        // work: the estimator becomes the stroke's **run-up**, seeding the fit
-        // with the motion the engine was already watching, so the entry
-        // direction and curvature of the record are conditioned rather than
-        // guessed from the first grain-quantized steps (§6.2,
-        // `PathFitter::seed_context`). Taking the window here also keeps
+        // work: the estimator becomes the stroke's **run-up**, real leading
+        // samples the fitted curve extends back through, with the record's
+        // marker saying where on that curve the stroke itself begins — so the
+        // entry's direction and curvature are measured from watched motion
+        // rather than guessed from the first grain-quantized steps (§6.2,
+        // `PathFitter::seed_runup`). Taking the window here also keeps
         // `start_selection`'s promise: a stale one outliving the gesture would
         // resurrect a pre-press mark at pen-up (§18.1.10).
-        let context = self.take_hover_context(sample.pos, tolerance);
+        let runup = self.take_hover_context(sample.pos, tolerance);
         self.gesture_ordinal += 1;
         let mut fitter = PathFitter::with_tolerance(tolerance);
-        fitter.seed_context(&context);
+        fitter.seed_runup(&runup);
         fitter.push(sample);
         self.in_flight = Some(StrokeBuilder {
             brush: self.brush,
@@ -788,14 +793,17 @@ impl Session {
     }
 
     /// Finish the stroke, returning the record to commit — `None` if empty, and
-    /// `None` for a record that cannot deposit: a click's lone knot spans no
-    /// travel, a swept deposit is a definite integral over travel, and a step
-    /// in the log that changes no pixel would spend an undo step invisibly.
-    /// The same answer a marquee click has always been given ([`Self::end_shape`]).
+    /// `None` for a record that cannot deposit: a swept deposit is a definite
+    /// integral over travel, and a step in the log that changes no pixel would
+    /// spend an undo step invisibly. The travel that counts starts at the
+    /// record's marker, so a click at the end of a watched approach is still a
+    /// click — its curve holds the whole run-up, and its marker sits at the
+    /// very end of it ([`PathFitter::painted`]). The same answer a marquee
+    /// click has always been given ([`Self::end_shape`]).
     pub fn end_stroke(&mut self) -> Option<StrokeRecord> {
         self.in_flight
             .take()
-            .map(|mut b| {
+            .and_then(|mut b| {
                 // A snapped stroke's path is the shape's, not the fit's — there is
                 // nothing left for a last solve to settle.
                 if b.assist.is_none() {
@@ -804,8 +812,11 @@ impl Session {
                     // closes on the last towed sample and the mark ends where the
                     // rope had towed it to — the trace the preview was showing.
                     b.fitter.finish();
+                    if !b.fitter.painted() {
+                        return None;
+                    }
                 }
-                b.to_record()
+                Some(b.to_record())
             })
             .filter(|rec| rec.path.len() >= 2)
     }
@@ -968,6 +979,10 @@ impl Session {
                 brush: self.brush,
                 path: h.path.clone(),
                 seed,
+                // The probe is the whole prediction: two synthesized samples,
+                // no run-up ahead of them, so the mark starts where its curve
+                // does — exactly as the gesture it predicts would record it.
+                start: 0.0,
             }),
             ordinal: h.ordinal,
             // Nothing settles: both samples move with every report, so the whole
@@ -1055,33 +1070,38 @@ fn probe_heading(trace: &[ControlPoint]) -> Option<Vec2> {
 }
 
 impl StrokeBuilder {
-    /// The stroke's path as it now stands: the fit's, or — once the gesture has
-    /// snapped — the shape's (§6.9).
+    /// The stroke's path and start marker as they now stand: the fit's, or —
+    /// once the gesture has snapped — the shape's (§6.9), whose marker is 0
+    /// because a snapped path *is* the gesture, with no run-up in it.
     ///
     /// The one place the two are chosen between, which is what keeps the assist a
     /// *path transform between the fitter and the renderer* (§18.1.3) rather than a
-    /// second kind of stroke. Everything above this reads a `Vec<ControlPoint>` and
-    /// cannot tell which it got.
-    fn path(&self) -> Vec<ControlPoint> {
+    /// second kind of stroke. Everything above this reads the pair and cannot
+    /// tell which it got.
+    fn fitted(&self) -> (Vec<ControlPoint>, f32) {
         match self.assist.as_ref() {
-            Some(a) => a.path.clone(),
+            Some(a) => (a.path.clone(), 0.0),
             // The fitted control points **as `finish` would leave them** (§6.2): the
             // free window re-solves at pen-up, so rendering the mid-stroke window
             // would put the preview on a curve the commit is not on — sub-pixel, but
             // a step wherever a lookup is discontinuous in position (the tooth,
             // §6.4). As-finished, `End` adopts this very solve and live == committed
-            // holds bit for bit. The last control point is pinned to the newest
-            // sample either way, so the preview still reaches the cursor.
-            None => self.fitter.path_as_finished(),
+            // holds bit for bit — the marker included, since it comes from the
+            // same solve's own arc profile. The last control point is pinned to
+            // the newest sample either way, so the preview still reaches the
+            // cursor.
+            None => self.fitter.as_finished(),
         }
     }
 
     fn to_record(&self) -> StrokeRecord {
+        let (path, start) = self.fitted();
         StrokeRecord {
             layer: self.layer,
             brush: self.brush,
-            path: self.path(),
+            path,
             seed: self.seed,
+            start,
         }
     }
 }

@@ -205,6 +205,7 @@ mod tests {
             },
             path: Vec::new(),
             seed: 0,
+            start: 0.0,
         }))
     }
 

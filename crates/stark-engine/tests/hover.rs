@@ -6,8 +6,9 @@
 //! the cursor rather than re-draw the trail behind it, and it must behave as a
 //! prediction everywhere else — commit nothing, publish nothing, stand down for
 //! a real gesture, and never reach a file. The estimator's own claim — the
-//! probe holds a heading the raw pixel-stepped reports cannot — closes the
-//! file.
+//! probe holds a heading the raw pixel-stepped reports cannot — and its
+//! afterlife as a stroke's run-up, extending the committed curve behind a
+//! marker that is never painted (§6.2), close the file.
 //!
 //! Presence and absence are probed by **exact image equality against a
 //! baseline** wherever possible, so the checks hold under `debug-unfrozen` too
@@ -133,6 +134,13 @@ fn the_mark_reaches_ahead_of_the_cursor_not_behind() {
 /// along the hover's heading — would land. The prediction is synthesized; the
 /// rendering of it is not, and this is the test that pins the difference.
 ///
+/// The window is surrendered before the press, deliberately: a press made
+/// *while hovering* takes the window as its run-up and smooths its entry
+/// through the watched motion (§6.2) — the right stroke, and a different
+/// record from the two-sample gesture the probe stands for. What is pinned
+/// here is the probe's own claim; what a run-up press lays is
+/// [`the_run_up_is_evidence_never_paint`]'s.
+///
 /// Gated for its comparison's sake: under `debug-unfrozen` the hover renders
 /// as live tail (magenta) while the commit lands in the stroke's color.
 #[cfg(not(feature = "debug-unfrozen"))]
@@ -146,7 +154,9 @@ fn the_mark_is_what_committing_the_prediction_would_land() {
     let hovered = engine.render_to_image();
 
     // The predicted gesture, made real — with the same Lamport seed, since the
-    // hover banked nothing that could have advanced it.
+    // hover banked nothing that could have advanced it, and without the window,
+    // which would otherwise become the gesture's run-up (see above).
+    engine.process(ViewCommand::PreviewHover(None));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(B),
@@ -355,23 +365,25 @@ fn a_pixel_staircase_holds_its_heading() {
 }
 
 /// The estimator outlives the hover: the window a press interrupts becomes the
-/// stroke's **run-up**, conditioning the fit's entry with the motion the engine
-/// was already watching (§6.2, `PathFitter::seed_context`).
+/// stroke's **run-up** — real leading samples the fitted curve extends back
+/// through, with the record's marker (`StrokeRecord::start`) saying where on
+/// that curve the stroke itself begins (§6.2, `PathFitter::seed_runup`).
 ///
-/// The scenario is the jitter pathology at full strength. A stroke's entry span
-/// is squashed by the clamped ends into a fraction of a pixel, so its heading
-/// is decided by where one control point lands against grain-quantized samples
-/// — on the staircase drag below, the cold entry reads **−144°**, pointing
-/// backwards out of a stroke drawn at 14°. The same drag after a watched
-/// approach commits an entry of 13.6°. The record still starts exactly at the
-/// press — context conditions, it never extends — and a press nowhere near the
-/// trail takes no context at all.
+/// The scenario is the jitter pathology at full strength: a 14° line reported
+/// as a 1-in-4 pixel staircase. Cold, the entry's heading is decided by where
+/// one control point lands against grain-quantized samples; after a watched
+/// approach, the press is an *interior* sample of a longer curve and the entry
+/// is smoothed through it. Measured when this was written: the conditioned
+/// entry reads 14.4° at the marker on the 14.04° line, 0.19 px off the press,
+/// where the cold entry reads 12.4° — every bound below is set wide of its
+/// measurement, not tight to it. A press nowhere near the trail takes no
+/// run-up at all, to the bit.
 ///
 /// Session-level and CPU-only, like the staircase test and for its reason.
 #[test]
 fn the_run_up_conditions_the_strokes_entry() {
     use stark_engine::ViewTransform;
-    use stark_engine::path::span_end;
+    use stark_engine::path::{point_at, span_count, span_end};
     use stark_engine::session::Session;
     use stark_model::document::LayerId;
     use stark_model::geom::Extent2;
@@ -417,8 +429,10 @@ fn the_run_up_conditions_the_strokes_entry() {
         }
         s.end_stroke().expect("the drag commits a stroke")
     };
+    // The entry's heading: where the deposit begins to where the curve is one
+    // span later — the stretch the stroke actually opens with.
     let entry = |rec: &stark_model::document::StrokeRecord| {
-        let d = span_end(&rec.path, 0) - rec.path[0].pos;
+        let d = point_at(&rec.path, rec.start + 1.0) - point_at(&rec.path, rec.start);
         d.y.atan2(d.x)
     };
 
@@ -428,22 +442,39 @@ fn the_run_up_conditions_the_strokes_entry() {
         warm.hover_to(*s, DEFAULT_TOLERANCE, 50.0);
     }
     let conditioned = stroke(&mut warm, press);
+
+    // The curve extends; the stroke does not. The record's path reaches back
+    // to the approach's first report — pinned there, as the curve's head
+    // always is — while the marker holds the deposit to the press.
+    assert!(
+        conditioned.start > 0.0,
+        "a run-up seeded stroke must carry a marker past the curve's head"
+    );
     assert_eq!(
-        conditioned.path[0].pos, press,
-        "the run-up must condition the entry, never move the start off the press"
+        conditioned.path[0].pos,
+        Vec2::new(-32.0, -8.0),
+        "the curve's head is the approach's first report, pinned"
+    );
+    let entry_point = point_at(&conditioned.path, conditioned.start);
+    assert!(
+        entry_point.distance(press) < 1.0,
+        "the marker sits {} px off the press — the entry is smoothed through \
+         the press, not moved away from it",
+        entry_point.distance(press),
+    );
+    // The other pin is untouched: the mark still ends where the hand did.
+    let tip = span_end(
+        &conditioned.path,
+        span_count(conditioned.path.len()).saturating_sub(1),
+    );
+    assert!(
+        tip.distance(Vec2::new(20.0, 5.0)) < 1e-3,
+        "the curve's tip must stay pinned to the drag's last report"
     );
 
     let cold = stroke(&mut session(), press);
-    assert_ne!(
-        conditioned.path, cold.path,
-        "the run-up changed nothing, so the comparison below is vacuous"
-    );
+    assert_eq!(cold.start, 0.0, "a cold stroke has no run-up to mark off");
 
-    // Measured when this was written: conditioned 13.6° on a 14.0° line, cold
-    // −144.1° — noise, since a squashed entry span's heading is decided by
-    // sub-pixel placement. The bound is set wide of the measurement, not tight
-    // to it; the cold comparison asserts only an improvement, because noise is
-    // allowed to land anywhere — including, on some other staircase, close.
     let err_conditioned = (entry(&conditioned) - true_heading).abs();
     let err_cold = (entry(&cold) - true_heading).abs();
     assert!(
@@ -453,7 +484,7 @@ fn the_run_up_conditions_the_strokes_entry() {
         entry(&cold).to_degrees(),
     );
     assert!(
-        err_conditioned < 8_f32.to_radians(),
+        err_conditioned < 4_f32.to_radians(),
         "the conditioned entry is {:.1}° where the line is {:.1}°",
         entry(&conditioned).to_degrees(),
         true_heading.to_degrees(),
@@ -469,9 +500,96 @@ fn the_run_up_conditions_the_strokes_entry() {
     let gated = stroke(&mut teleported, far);
     let cold_far = stroke(&mut session(), far);
     assert_eq!(
-        gated.path, cold_far.path,
+        (gated.path, gated.start),
+        (cold_far.path, cold_far.start),
         "a teleported press still took the stale trail as its run-up"
     );
+}
+
+/// The run-up is evidence, never paint: a stroke begun off a watched approach
+/// lays its paint from the press on, the approach's trail stays bare, and —
+/// because the marker is trimmed in the one flattening funnel both render
+/// paths share — the mid-gesture preview already agrees with the commit about
+/// all of it, to the bit (§1.3, §6.2).
+#[test]
+fn the_run_up_is_evidence_never_paint() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.process(ViewCommand::SetBrush(brush(RED, 10.0)));
+    let bare = engine.render_to_image();
+
+    // A watched approach along −x, ending under the press...
+    for i in 0..21 {
+        engine.process(report(Vec2::new(-80.0 + 4.0 * i as f32, 0.0)));
+    }
+    // ...then the press at the origin, dragging on to +40.
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(B),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    engine.process(GestureCommand::To {
+        sample: InputSample::at(Vec2::new(40.0, 0.0)),
+    });
+    // Captured only where it can equal the commit: the tail tint repaints a
+    // live stroke magenta by design under `debug-unfrozen`.
+    #[cfg(not(feature = "debug-unfrozen"))]
+    let live = engine.render_to_image();
+    engine.process(GestureCommand::End);
+    let committed = engine.render_to_image();
+
+    #[cfg(not(feature = "debug-unfrozen"))]
+    {
+        assert!(
+            images_match(&live, &committed, 0),
+            "a run-up stroke's preview is not the commit's own pixels"
+        );
+        assert!(
+            red_dominant(committed.pixel(committed.width / 2 + 20, committed.height / 2)),
+            "the drag from the press must lay its paint"
+        );
+    }
+    // Mid-approach, several radii from the press: bare before, bare after.
+    for dx in [40, 60] {
+        assert_eq!(
+            committed.pixel(committed.width / 2 - dx, committed.height / 2),
+            bare.pixel(bare.width / 2 - dx, bare.height / 2),
+            "the approach's trail was painted, {dx} px behind the press"
+        );
+    }
+}
+
+/// A click at the end of a watched approach is still a click: its curve holds
+/// the whole run-up, its marker sits at the very end of it, so it can deposit
+/// nothing — and a release that cannot deposit commits nothing (§6.2,
+/// `Session::end_stroke`).
+#[test]
+fn a_click_after_a_watched_approach_commits_nothing() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.process(ViewCommand::SetBrush(brush(RED, 10.0)));
+    let before = engine.render_to_image();
+    let rev = engine.observe().doc_revision;
+
+    hover_ab(&mut engine);
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(B),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    engine.process(GestureCommand::End);
+
+    assert!(
+        images_match(&before, &engine.render_to_image(), 0),
+        "a hovered click left paint"
+    );
+    let obs = engine.observe();
+    assert!(!obs.can_undo, "a hovered click left something to undo");
+    assert_eq!(obs.doc_revision, rev, "a hovered click moved the document");
 }
 
 /// One `Rendered::Live` export at the viewport, blocking — the shape every

@@ -308,6 +308,7 @@ async fn custom_shapes_replicate_mid_session() {
                 }),
                 from: 0,
                 points: vec![],
+                start: 0.0,
             }),
             leaving: false,
         })

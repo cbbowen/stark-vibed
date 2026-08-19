@@ -46,6 +46,11 @@ pub(crate) enum GestureSource {
         path: Vec<ControlPoint>,
         /// How many leading control points are final (§6.2).
         frozen: usize,
+        /// Where on `path`'s curve the stroke begins
+        /// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)).
+        /// Read fresh per frame, like the provisional tail and for its reason:
+        /// it can refine until the entry spans freeze.
+        start: f32,
     },
     Selection(SelectionOp),
     /// A region being dragged out to fill (§18.0.4). No layer: the
@@ -125,7 +130,12 @@ impl GestureTx {
                 self.sent = 0;
                 Some(GestureFrame::Fill { id, op })
             }
-            GestureSource::Stroke { head, path, frozen } => {
+            GestureSource::Stroke {
+                head,
+                path,
+                frozen,
+                start,
+            } => {
                 let frozen = frozen.min(path.len());
                 debug_assert!(
                     self.sent_id != Some(id) || frozen >= self.sent,
@@ -143,6 +153,7 @@ impl GestureTx {
                     head: fresh.then_some(head),
                     from: from as u32,
                     points,
+                    start,
                 })
             }
         }
@@ -178,6 +189,11 @@ struct StrokeAssembly {
     /// froze. The receiver learns this for free from the delta's `from`, and it is
     /// exactly what the incremental repaint needs to know (§17.6).
     frozen: usize,
+    /// The stroke's start marker as of the newest spliced frame
+    /// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)) —
+    /// overwritten per frame, since it refines until the sender freezes the
+    /// entry spans, and final by the time any of them could be baked (§6.2).
+    start: f32,
 }
 
 impl GestureRx {
@@ -257,6 +273,7 @@ impl GestureRx {
                 head,
                 from,
                 points,
+                start,
             } => {
                 let from = from as usize;
                 // Start (or restart, on a resync frame) whenever the head is present.
@@ -287,6 +304,7 @@ impl GestureRx {
                         head,
                         path: Vec::new(),
                         frozen,
+                        start,
                     });
                     self.last_seq = None;
                 }
@@ -329,6 +347,10 @@ impl GestureRx {
                 self.last_seq = Some(seq);
                 assembly.path.truncate(from);
                 assembly.path.extend(points);
+                // The marker as this frame states it — newest wins, unlike the
+                // watermark below, because it is a statement about the curve
+                // rather than a count of what was sent.
+                assembly.start = start;
                 // The watermark only ever advances (`max`) — a resync frame, whose
                 // `from` is 0, leaves the carried-over count standing. Clamped rather
                 // than asserted against the path: an honest sender never resends
@@ -339,6 +361,7 @@ impl GestureRx {
                     brush: assembly.head.brush,
                     path: assembly.path.clone(),
                     seed: assembly.head.seed,
+                    start: assembly.start,
                 }));
                 true
             }
@@ -541,12 +564,20 @@ mod tests {
             head: head.clone(),
             path: path[..n].to_vec(),
             frozen,
+            start: 0.25,
         };
 
         // The gesture's first frame lands, and the receiver is exact.
         let first = tx.encode(0, Some(stroke(3, 1)), false).expect("a frame");
         assert!(rx.apply(first, 1, layer));
         assert_eq!(shown(&rx), path[..3], "the first frame carries the head");
+        let Some(LiveGesture::Stroke(rec)) = rx.drawn() else {
+            panic!("a stroke frame draws a stroke");
+        };
+        assert_eq!(
+            rec.start, 0.25,
+            "the marker rides every frame into the drawn record"
+        );
 
         // Then every frame for a while is sent and lost. The watermarks move — they
         // record what the wire was *told*, and the wire was told — so the sender goes

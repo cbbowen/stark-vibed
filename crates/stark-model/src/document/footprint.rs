@@ -237,6 +237,12 @@ fn stroke_pad(brush: &BrushParams) -> f32 {
 /// are painting on the same tiles. Deliberately the *same* answer the commit's
 /// footprint gives, so the fold cannot decide two strokes are independent where the
 /// log would decide they conflict.
+///
+/// The box covers the **whole** recorded curve, run-up included: the deposit
+/// begins at [`StrokeRecord::start`], so the pre-marker stretch only ever
+/// *over*-declares — the safe direction (§12.6), and the price of keeping this a
+/// fold over control points with no span arithmetic in the model. A run-up is
+/// bounded by the hover window's own scale, so the slack is a few dozen grains.
 pub fn stroke_rect(rec: &StrokeRecord) -> TileRect {
     let mut min = Vec2::splat(f32::INFINITY);
     let mut max = Vec2::splat(f32::NEG_INFINITY);
@@ -535,6 +541,7 @@ mod tests {
                 },
                 path: vec![point(from), point(to)],
                 seed: 0,
+                start: 0.0,
             }),
         )
     }
@@ -775,6 +782,7 @@ mod tests {
                 },
                 path: vec![point(Vec2::splat(600.0)), point(Vec2::splat(700.0))],
                 seed: 0,
+                start: 0.0,
             })
         };
         let (plain, drawn_out) = (rect(0.0), rect(0.875));

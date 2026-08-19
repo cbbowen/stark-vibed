@@ -460,6 +460,11 @@ pub struct GestureFrame {
     /// Everything frozen since the last frame, plus the provisional knot under
     /// the cursor.
     pub points: Vec<ControlPoint>,
+    /// Where on the assembled curve the stroke begins (`StrokeRecord::start`,
+    /// §6.2). Per frame, not in the head: a curve *parameter* names a
+    /// different place as the path grows, and it refines until the entry
+    /// spans freeze — after which it is final before any cached head bakes it.
+    pub start: f32,
 }
 ```
 

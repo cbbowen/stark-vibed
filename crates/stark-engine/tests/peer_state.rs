@@ -484,6 +484,7 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
                 .iter()
                 .map(|p| stark_model::path::ControlPoint::at(*p))
                 .collect(),
+            start: 0.0,
         }),
         leaving: false,
     };
@@ -529,6 +530,7 @@ fn stroking(seq: u64, points: &[Vec2]) -> PeerFrame {
                 .iter()
                 .map(|p| stark_model::path::ControlPoint::at(*p))
                 .collect(),
+            start: 0.0,
         }),
         leaving: false,
     }

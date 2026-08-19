@@ -599,6 +599,17 @@ struct Track {
 /// honestly rather than padding a minimum (the retired `DAB_TRAVEL` dwell): the
 /// hover's mark previews what a press would lay before it is made (§18.1.10),
 /// and a release that cannot deposit commits nothing (`Session::end_stroke`).
+///
+/// And the stroke's own travel begins at the record's **marker**
+/// ([`StrokeRecord::start`]): the curve may extend back through the run-up —
+/// motion from before the press, fitted in so the entry's direction and
+/// curvature are measured rather than guessed (§6.2) — and the flattening
+/// leaves everything before the marker out
+/// ([`flatten_spans_from`](crate::path::flatten_spans_from)). Because the trim
+/// happens here, in the funnel both render paths share, the run-up is invisible
+/// to everything downstream: `dist` reads 0 at the marker, so the tapers, the
+/// `drain` falloff and the dynamics loop all measure the stroke from where the
+/// press happened, exactly as they measured it when the curve began there.
 pub(super) fn generate_segments_in(
     rec: &StrokeRecord,
     tol: crate::path::FlattenTolerance,
@@ -607,7 +618,7 @@ pub(super) fn generate_segments_in(
     let b = &rec.brush;
     let dist0 = spans.dist;
     let reaches_end = spans.range.end >= crate::path::span_count(rec.path.len());
-    let pts = crate::path::flatten_spans(&rec.path, spans.range, dist0, tol);
+    let pts = crate::path::flatten_spans_from(&rec.path, rec.start, spans.range, dist0, tol);
     let end_dist = pts.last().map_or(dist0, |p| p.dist);
     let mut segs = Vec::new();
     if pts.is_empty() {
@@ -1029,6 +1040,7 @@ mod tests {
             },
             path,
             seed: 0,
+            start: 0.0,
         }
     }
 
@@ -1227,6 +1239,7 @@ mod tests {
             },
             path,
             seed: 0,
+            start: 0.0,
         };
         let segs = whole(&rec);
         assert_outline_is_continuous(&segs);
@@ -1404,6 +1417,7 @@ mod tests {
             },
             path,
             seed: 0,
+            start: 0.0,
         }
     }
 
@@ -1751,6 +1765,7 @@ mod tests {
                 .map(|p| stark_model::path::ControlPoint::at(*p))
                 .collect(),
             seed: 0,
+            start: 0.0,
         }
     }
 

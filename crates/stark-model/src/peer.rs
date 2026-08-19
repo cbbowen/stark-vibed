@@ -80,6 +80,17 @@ pub enum GestureFrame {
         /// Index of the first control point in `points`; 0 on a resync frame.
         from: u32,
         points: Vec<ControlPoint>,
+        /// Where on the assembled curve the stroke begins
+        /// ([`StrokeRecord::start`](crate::document::StrokeRecord::start)).
+        ///
+        /// On every frame rather than in the head, and not by generosity: it is
+        /// a curve *parameter*, so the same number names a different place as
+        /// the path grows, and it refines while the entry spans are still free.
+        /// It stops moving exactly when the sender freezes the spans behind it
+        /// — the arc profile that places it settles with them — so by the time
+        /// a receiver's cached head could bake it in, it is final (§6.2).
+        #[serde(default)]
+        start: f32,
     },
     /// A marquee or lasso being dragged. Sent whole: it is already decimated
     /// (`LASSO_MIN_STEP`), and unlike a stroke path its tail is not append-only —

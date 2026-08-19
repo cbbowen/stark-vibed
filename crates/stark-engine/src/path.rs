@@ -289,13 +289,12 @@ pub struct PathFitter {
     /// it. Kept whole — a few hundred is nothing — while the solve only ever looks
     /// at the tail (see `first_live`).
     pts: Vec<Accepted>,
-    /// The **run-up** (§6.2): reports from before the stroke's first sample, at
-    /// negative arcs measured back from it — see [`Self::seed_context`]. Never
-    /// part of the emitted path; evidence for the solve alone.
-    context: Vec<Accepted>,
-    /// Run-up reports awaiting the first push, which is what their arcs, times
-    /// and pressures are converted against ([`Self::adopt_context`]).
-    pending_context: Vec<InputSample>,
+    /// The **run-up** (§6.2): reports from before the stroke's first sample,
+    /// awaiting that sample — whose pressure and clock they are converted
+    /// against ([`Self::adopt_runup`]). Once adopted they are ordinary rows of
+    /// `pts` *ahead of the press*: the curve genuinely extends back through
+    /// them, and `start_arc` remembers where the stroke itself begins.
+    runup: Vec<InputSample>,
     /// First sample that can still reach a control point being solved for.
     first_live: usize,
     /// Control points: geometry, and the pen channels riding the same knots.
@@ -312,6 +311,17 @@ pub struct PathFitter {
     tolerance: f32,
     /// Absolute time of the first sample; channel times are relative to it.
     t0: f64,
+    /// Arc at the stroke's own first sample — the press, which the run-up
+    /// precedes ([`Self::seed_runup`]). `None` until it arrives; 0 for a stroke
+    /// with no run-up. Fixed at the press and never revised: it is measured
+    /// along the accepted reports, which are append-only.
+    start_arc: Option<f32>,
+    /// The marker `start_arc` resolves to on the **adopted** fit's curve
+    /// ([`Self::start_on`]) — what the committed record's
+    /// [`start`](stark_model::document::StrokeRecord::start) is once the stroke
+    /// is finished. A mid-stroke preview reads the as-finished solve's own
+    /// instead ([`Self::as_finished`]).
+    start_param: f32,
     finished: bool,
 }
 
@@ -362,8 +372,7 @@ impl PathFitter {
     pub fn with_tolerance(tolerance: f32) -> Self {
         Self {
             pts: Vec::new(),
-            context: Vec::new(),
-            pending_context: Vec::new(),
+            runup: Vec::new(),
             first_live: 0,
             geom: GeomCtrl::zeros_generic(Dyn(0), Const::<2>),
             attr: ChannelCtrl::zeros_generic(Dyn(0), Const::<CHANNELS>),
@@ -377,7 +386,63 @@ impl PathFitter {
                 DEFAULT_TOLERANCE
             },
             t0: 0.0,
+            start_arc: None,
+            start_param: 0.0,
             finished: false,
+        }
+    }
+
+    /// Seed the stroke's **run-up**: reports from before its first sample — the
+    /// hover trail the engine was already watching (§18.1.10) — adopted as real
+    /// leading samples, so the fitted curve *extends back through them* and the
+    /// entry's direction and curvature are measured from motion the fit could
+    /// otherwise only guess at from its first, grain-quantized steps (§6.2).
+    ///
+    /// **The curve extends; the stroke does not.** Where on the extended curve
+    /// the stroke itself begins is recorded — the arc of the first pushed
+    /// sample, resolved to a curve parameter by the same map the solve places
+    /// samples with ([`Self::start_on`]) — and it lands in the record as
+    /// [`StrokeRecord::start`](stark_model::document::StrokeRecord::start),
+    /// where the one flattening funnel begins the deposit. The press is then an
+    /// *interior* sample: the curve is pinned to the run-up's first report and
+    /// to the live tip, and the entry is smoothed **through** the press exactly
+    /// as every later report is — which is the point, since a start pinned to
+    /// one grain-quantized report was the last unsmoothed place on the stroke.
+    /// A fitter seeded with nothing is bit-identical to one that never had this
+    /// called, and its marker is 0.
+    ///
+    /// Call before the first [`push`](Self::push); afterwards it is ignored, as
+    /// are non-finite reports. The reports' pressures are replaced with the
+    /// first pushed sample's at adoption: pressure begins at the press — a
+    /// hovering pen reports none — and geometry is what the run-up is evidence
+    /// of. Tilt and time are kept; both are continuous through a press.
+    pub fn seed_runup(&mut self, samples: &[InputSample]) {
+        if !self.pts.is_empty() || self.finished {
+            return;
+        }
+        self.runup = samples.iter().copied().filter(|s| s.is_finite()).collect();
+    }
+
+    /// Adopt the pending run-up against the stroke's first sample: its reports
+    /// walk in as ordinary accepted rows *ahead of the press*, times re-based
+    /// on its clock and pressures replaced with its own — see
+    /// [`seed_runup`](Self::seed_runup).
+    fn adopt_runup(&mut self, first: &InputSample) {
+        let pending = std::mem::take(&mut self.runup);
+        for s in pending {
+            if let Some(prev) = self.pts.last() {
+                let step = (s.pos - prev.pos).length();
+                // The same zero-step gate `push` applies, for the same reason.
+                if step < 1e-6 {
+                    continue;
+                }
+                self.arc += step;
+            }
+            self.pts.push(Accepted {
+                pos: s.pos,
+                channels: [first.pressure, s.tilt.x, s.tilt.y, self.rel_time(s.time)],
+                arc: self.arc,
+            });
         }
     }
 
@@ -395,86 +460,44 @@ impl PathFitter {
     /// stroke the finite reports describe.
     ///
     /// [`InputSample::is_finite`]: crate::command::InputSample::is_finite
-    /// Seed the stroke's **run-up**: reports from before its first sample — the
-    /// hover trail the engine was already watching (§18.1.10) — offered to the
-    /// solve as evidence of how the hand was moving when the stroke began.
-    ///
-    /// **Context conditions; it never extends.** The fitted curve still starts
-    /// at the first pushed sample, pinned exactly as ever, and the emitted path
-    /// is unchanged in kind. What the run-up reaches is the *solve*: its reports
-    /// become observation rows on the first span's polynomial extension —
-    /// negative parameters (`spline::span_and_local_extended`) — so the entry
-    /// direction and curvature of the committed record are informed by motion
-    /// the fit could otherwise only guess at from its first, grain-quantized
-    /// steps ([`Self::context_rows`]). The rows fall out of the solve on their
-    /// own once the entry control points freeze, and a fitter seeded with
-    /// nothing is bit-identical to one that never had this called.
-    ///
-    /// Call before the first [`push`](Self::push); afterwards it is ignored, as
-    /// are non-finite reports. The reports' pressures are replaced with the
-    /// first pushed sample's at conversion: pressure begins at the press — a
-    /// hovering pen reports none — and geometry is what the run-up is evidence
-    /// of. Tilt and time are kept; both are continuous through a press.
-    ///
-    /// A stroke that never grows past its two pinned endpoints has nothing free
-    /// for the run-up to condition: a straight tap stays exactly the chord it
-    /// always was, which is right — inventing curvature there would fabricate a
-    /// mark the hand never made.
-    pub fn seed_context(&mut self, samples: &[InputSample]) {
-        if !self.pts.is_empty() || self.finished {
-            return;
-        }
-        self.pending_context = samples.iter().copied().filter(|s| s.is_finite()).collect();
-    }
-
-    /// Convert the pending run-up against the stroke's first sample: arcs walk
-    /// back from it (negative), times are re-based on it, and pressures are
-    /// replaced with its own — see [`seed_context`](Self::seed_context).
-    fn adopt_context(&mut self, first: &InputSample) {
-        let pending = std::mem::take(&mut self.pending_context);
-        let mut arc = 0.0;
-        let mut ahead = first.pos;
-        self.context = pending
-            .iter()
-            .rev()
-            .map(|s| {
-                arc -= (ahead - s.pos).length();
-                ahead = s.pos;
-                Accepted {
-                    pos: s.pos,
-                    channels: [first.pressure, s.tilt.x, s.tilt.y, self.rel_time(s.time)],
-                    arc,
-                }
-            })
-            .collect();
-        self.context.reverse();
-    }
-
     pub fn push(&mut self, s: InputSample) {
         if self.finished || !s.is_finite() {
             return;
         }
-        match self.pts.last() {
-            None => {
-                self.t0 = s.time;
-                self.adopt_context(&s);
-            }
-            Some(prev) => {
-                let step = (s.pos - prev.pos).length();
-                // A report that did not move carries no geometry, and a run of them
-                // would put several samples at one parameter. Its attributes are no
-                // loss: they apply to a zero-length piece of path.
-                if step < 1e-6 {
-                    return;
+        if self.pts.is_empty() {
+            // The stroke's own first report: the clock every channel time is
+            // relative to, and the sample the pending run-up is converted
+            // against — after which `pts` holds the run-up and this report is
+            // appended behind it like any later one.
+            self.t0 = s.time;
+            self.adopt_runup(&s);
+        }
+        // Whether this is the stroke's own first report — where the marker
+        // lands, even for a report the spacing gate drops.
+        let pressed = self.start_arc.is_none();
+        if let Some(prev) = self.pts.last() {
+            let step = (s.pos - prev.pos).length();
+            // A report that did not move carries no geometry, and a run of them
+            // would put several samples at one parameter. Its attributes are no
+            // loss: they apply to a zero-length piece of path. A press that
+            // coincides with the run-up's newest report still marks the start —
+            // the marker is a place on the curve, and the place exists.
+            if step < 1e-6 {
+                if pressed {
+                    self.start_arc = Some(self.arc);
                 }
-                self.arc += step;
+                return;
             }
+            self.arc += step;
         }
         self.pts.push(Accepted {
             pos: s.pos,
             channels: self.channels(s),
             arc: self.arc,
         });
+        if pressed {
+            self.start_arc = Some(self.arc);
+        }
         if self.pts.len() < 2 {
             return;
         }
@@ -509,8 +532,12 @@ impl PathFitter {
         }
     }
 
-    /// Every accepted report's position, in order — the **raw trace**, which the
-    /// drawing assist recognizes a shape from (§6.9).
+    /// Every accepted report's position **from the stroke's own first sample
+    /// on**, in order — the **raw trace**, which the drawing assist recognizes
+    /// a shape from (§6.9). The run-up is left out: it is evidence about the
+    /// entry, not part of the gesture, and a circle drawn after a watched
+    /// approach has to read as the circle rather than as the approach with a
+    /// circle appended.
     ///
     /// Deliberately the reports rather than [`path`](Self::path): the fit is a curve
     /// pulled *towards* its control points, so those sit off the stroke by design and
@@ -518,7 +545,12 @@ impl PathFitter {
     /// downstream stores these — they are already held here only because the window
     /// solve reads its own tail, and a few hundred `Vec2`s is nothing.
     pub fn trace(&self) -> Vec<Vec2> {
-        self.pts.iter().map(|s| s.pos).collect()
+        let from = self.start_arc.unwrap_or(0.0);
+        self.pts
+            .iter()
+            .filter(|s| s.arc >= from)
+            .map(|s| s.pos)
+            .collect()
     }
 
     /// End the stroke: commit the whole polygon, so every control point is final.
@@ -557,8 +589,10 @@ impl PathFitter {
         control_points(&self.geom, &self.attr)
     }
 
-    /// The path exactly as [`finish`](Self::finish) would leave it, as a pure query:
-    /// the one last solve with the window still free, *not* adopted.
+    /// The path and the start marker exactly as [`finish`](Self::finish) would
+    /// leave them, as a pure query: the one last solve with the window still
+    /// free, *not* adopted — and one solve for both halves, so the marker names
+    /// a place on the very curve beside it.
     ///
     /// This is what a live preview must render (§1.3): the stroke that would be
     /// committed if the pen lifted now. The free window's control points sit
@@ -568,13 +602,22 @@ impl PathFitter {
     /// lookup (the tooth's nearest-sampled ground, §6.4) turns position into a step.
     /// Rendering the as-finished path instead makes `End` a no-op on the record by
     /// construction: nothing is pushed between the last preview and the commit, so
-    /// [`finish`](Self::finish) adopts this very solve, bit for bit.
-    pub fn path_as_finished(&self) -> Vec<ControlPoint> {
+    /// [`finish`](Self::finish) adopts this very solve, bit for bit. The marker
+    /// rides the same argument: it is a function of the solve's own arc profile
+    /// ([`Self::start_on`]), so preview and commit place it identically.
+    pub fn as_finished(&self) -> (Vec<ControlPoint>, f32) {
         if self.finished || self.geom.nrows() < 2 {
-            return self.path();
+            return (self.path(), self.start_param);
         }
         let f = self.solve(self.geom.nrows());
-        control_points(&f.geom, &f.attr)
+        let start = self.start_on(&f.profile);
+        (control_points(&f.geom, &f.attr), start)
+    }
+
+    /// [`as_finished`](Self::as_finished)'s path alone, for callers with no use
+    /// for the marker.
+    pub fn path_as_finished(&self) -> Vec<ControlPoint> {
+        self.as_finished().0
     }
 
     /// How many leading spans of [`path`](Self::path) are settled — their geometry,
@@ -698,7 +741,7 @@ impl PathFitter {
         // minimized over — see [`window_indices`], which is the whole of why this
         // costs what it costs rather than what the digitizer charges for it.
         let idx = window_indices(&self.pts, lo);
-        let mut pos: Vec<[f32; 2]> = idx.iter().map(|&i| self.pts[i].pos.to_array()).collect();
+        let pos: Vec<[f32; 2]> = idx.iter().map(|&i| self.pts[i].pos.to_array()).collect();
 
         // Distance along the stroke is only a *first guess* at where a sample sits on
         // the curve, because a clamped B-spline is not parameterized by arc: the
@@ -713,16 +756,11 @@ impl PathFitter {
         // non-decreasing, so a sample can slide a little along the curve but can
         // never overtake its neighbours — the reordering that makes a searched
         // correspondence dangerous is ruled out by construction.
-        let mut ts: Vec<f32> = idx.iter().map(|&i| param(self.pts[i].arc)).collect();
+        let ts: Vec<f32> = idx.iter().map(|&i| param(self.pts[i].arc)).collect();
         // What each report stands for, so the solve minimizes over the *stroke* rather
         // than over the reporting clock ([`arc_weights`]).
-        let mut qs = arc_weights(&self.pts, &idx);
-        let mut vals: Vec<[f32; CHANNELS]> = idx.iter().map(|&i| self.pts[i].channels).collect();
-        // The run-up's rows, while the entry control points are still free —
-        // negative parameters on the first span's polynomial extension
-        // ([`Self::seed_context`]). After every real row, so nothing about the
-        // window's own bookkeeping moves.
-        self.context_rows(frozen, &profile, &mut ts, &mut pos, &mut vals, &mut qs);
+        let qs = arc_weights(&self.pts, &idx);
+        let vals: Vec<[f32; CHANNELS]> = idx.iter().map(|&i| self.pts[i].channels).collect();
         // Solved **into** the candidate polygon rather than into a fresh one: the
         // prior and the result are the same buffer, which is sound because the solve
         // reads every row it uses as a prior before it writes any
@@ -819,6 +857,9 @@ impl PathFitter {
         self.geom = f.geom;
         self.attr = f.attr;
         self.first_live = f.lo;
+        // The marker on the curve just adopted — before the profile is cut down
+        // to its settled prefix, since the marker may still sit past it.
+        self.start_param = self.start_on(&f.profile);
         // Keep only the part of the profile the frozen spans determine: those
         // control points are held, so that length is settled for good.
         let settled = self.frozen_spans() * ARC_SAMPLES_PER_SPAN;
@@ -851,90 +892,38 @@ impl PathFitter {
         (t - self.t0) as f32
     }
 
-    /// Append the run-up's observation rows ([`Self::seed_context`]) — while the
-    /// entry control points are still free, and only as deep as the extension
-    /// can be trusted.
+    /// The marker: where `start_arc` sits on the curve `profile` measures, as a
+    /// span-unit parameter —
+    /// [`StrokeRecord::start`](stark_model::document::StrokeRecord::start)'s
+    /// value for that curve.
     ///
-    /// Each row sits at a **negative parameter**: the report's arc behind the
-    /// stroke's start, carried onto the extension at the curve's **mean** arc
-    /// density. Deliberately the mean and not the density the curve begins with:
-    /// the clamped ends squash the first span into a fraction of the arc an
-    /// interior one covers, but the squash is the triple knot's artifact, and
-    /// the extension has no knots — mapped at the start's own density, a whole
-    /// run-up fit inside a fraction of a pixel and reached nothing. Depth is
-    /// capped at [`CONTEXT_REACH`]. The rows are weighted by the trapezoid rule
-    /// among themselves and normalized to average one — the same statement
-    /// [`arc_weights`] makes for the window, made locally.
-    ///
-    /// Not built at all once `frozen` reaches the rows the extension touches:
-    /// span 0 reads the first two distinct control points, so past `frozen == 1`
-    /// the rows could no longer move anything `m_step` solves for (its own
-    /// reach test would drop them anyway).
-    #[allow(clippy::too_many_arguments)]
-    fn context_rows(
-        &self,
-        frozen: usize,
-        profile: &[f32],
-        ts: &mut Vec<f32>,
-        pos: &mut Vec<[f32; 2]>,
-        vals: &mut Vec<[f32; CHANNELS]>,
-        qs: &mut Vec<f32>,
-    ) {
-        if frozen >= 2 || self.context.is_empty() {
-            return;
-        }
-        let total = *profile.last().expect("profile is never empty");
-        if total <= 1e-6 {
-            return;
-        }
-        let spans = (profile.len() - 1) as f32 / ARC_SAMPLES_PER_SPAN as f32;
-        let density = spans / total;
-        // Context arcs ascend towards zero, so the kept suffix is the near end.
-        let from = self
-            .context
-            .partition_point(|c| c.arc * density < -CONTEXT_REACH);
-        let kept = &self.context[from..];
-        if kept.is_empty() {
-            return;
-        }
-        let mut w: Vec<f32> = (0..kept.len())
-            .map(|j| {
-                // The stroke's own start closes the run on the near side, so the
-                // newest context report spans a full interval like the rest.
-                let hi = if j + 1 < kept.len() {
-                    kept[j + 1].arc
-                } else {
-                    0.0
-                };
-                let lo = if j > 0 { kept[j - 1].arc } else { kept[j].arc };
-                (hi - lo) * 0.5
-            })
-            .collect();
-        let sum: f32 = w.iter().sum();
-        if sum <= 1e-6 {
-            return;
-        }
-        let scale = kept.len() as f32 / sum;
-        for (c, wj) in kept.iter().zip(&mut w) {
-            *wj *= scale;
-            ts.push(c.arc * density);
-            pos.push(c.pos.to_array());
-            vals.push(c.channels);
-            qs.push(*wj);
-        }
+    /// Resolved through the same [`param_at`] map the solve places samples
+    /// with, so the marker is exactly where the press's report was fitted. It
+    /// refines while the entry is still being solved, and settles the moment
+    /// the frozen prefix's arc covers it: [`param_at`] reads only profile
+    /// entries up to the marker's own arc, and those are carried over verbatim
+    /// once frozen ([`arc_profile`]). Which is what lets a renderer bake spans
+    /// behind the marker into a cached head (§6.2): whether the marker lies
+    /// behind a frozen boundary is settled *by* that boundary freezing, so it
+    /// can never move across one afterwards.
+    fn start_on(&self, profile: &[f32]) -> f32 {
+        let Some(a) = self.start_arc.filter(|a| *a > 0.0) else {
+            return 0.0;
+        };
+        let spans = ((profile.len() - 1) / ARC_SAMPLES_PER_SPAN) as f32;
+        param_at(profile, spans, a / self.arc.max(1e-6))
+    }
+
+    /// Whether the stroke has any travel of its own — reports accepted after
+    /// its first sample. What separates a stroke from a click
+    /// (`Session::end_stroke`): a swept deposit is a definite integral over
+    /// travel, and the travel that counts starts at the marker — the run-up is
+    /// evidence, never deposit, so a click at the end of a watched approach is
+    /// still a click.
+    pub fn painted(&self) -> bool {
+        self.start_arc.is_some_and(|a| self.arc > a)
     }
 }
-
-/// How deep into the pre-domain extension a run-up row may sit, in spans
-/// ([`PathFitter::context_rows`]).
-///
-/// The bound is on the row's **vote**, not on numeric stability. A row on span
-/// 0's extension reaches the solve only through the far control point's basis
-/// weight, `|u|³ / 6` — about 1.3 at two spans back, a strong but bounded say,
-/// comparable to a couple of on-curve reports — and it grows with the cube from
-/// there, until evidence extrapolated far off the curve would outvote the data
-/// actually on it.
-const CONTEXT_REACH: f32 = 2.0;
 
 /// **How much stroke each report speaks for**: the arc from halfway back to its
 /// predecessor to halfway on to its successor, normalized so the weights average one.
@@ -1481,6 +1470,27 @@ pub fn span_end(knots: &[ControlPoint], k: usize) -> Vec2 {
     }
 }
 
+/// The curve point at parameter `t`, in span units, clamped to the domain — the
+/// general position [`span_end`] answers at whole spans. What a caller
+/// measuring against a stroke's marker uses
+/// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)): the
+/// marker names a place mid-span, where the deposit begins. A non-finite `t`
+/// reads the curve's own start — records arrive from files and peers.
+pub fn point_at(knots: &[ControlPoint], t: f32) -> Vec2 {
+    match span_count(knots.len()) {
+        0 => knots.first().map_or(Vec2::ZERO, |k| k.pos),
+        last => {
+            let t = if t.is_finite() {
+                t.clamp(0.0, last as f32)
+            } else {
+                0.0
+            };
+            let k = (t.floor() as usize).min(last - 1);
+            span(knots, k).eval(t - k as f32).pos
+        }
+    }
+}
+
 /// Expand `knots` into a polyline, subdividing only where the error budget
 /// requires it (§6.2).
 pub fn flatten(knots: &[ControlPoint], tol: FlattenTolerance) -> Vec<IntermediateSample> {
@@ -1500,11 +1510,48 @@ pub fn flatten_spans(
     dist0: f32,
     tol: FlattenTolerance,
 ) -> Vec<IntermediateSample> {
+    flatten_spans_from(knots, 0.0, spans, dist0, tol)
+}
+
+/// [`flatten_spans`] with everything before curve parameter `from` left out —
+/// the stroke's marker
+/// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)),
+/// honoured here, in the one place both render paths flatten through, so a live
+/// tail, a commit, a replay and a peer all trim identically (§6.2).
+///
+/// `from` at or before the range's start is the identity — bit for bit, since
+/// it then takes the very code path the untrimmed call takes — which is what
+/// keeps every record with `start == 0`, including every record from before the
+/// marker existed, on exactly the floats it always flattened to. A range
+/// entirely behind the marker comes back **empty**: its spans are real spans of
+/// the record's curve, but no travel of the *stroke*, and the segment builder
+/// treats an empty polyline as exactly that.
+///
+/// The accumulator therefore reads `dist0` — 0, for a whole-stroke render — at
+/// the marker itself, which re-bases every distance-parameterized quantity (the
+/// tapers, the `drain` falloff, the color-dynamics noise, the reservoir
+/// cadence) onto the stroke's own travel: the run-up is not painted, and it is
+/// not aged over either.
+///
+/// `from` is clamped to the domain and a non-finite `from` reads 0 — records
+/// arrive from files and peers, and flattening one must not panic.
+pub fn flatten_spans_from(
+    knots: &[ControlPoint],
+    from: f32,
+    spans: Range<usize>,
+    dist0: f32,
+    tol: FlattenTolerance,
+) -> Vec<IntermediateSample> {
     if knots.is_empty() {
         return Vec::new();
     }
     let last_span = span_count(knots.len()); // one past the last valid span index
     let spans = spans.start.min(last_span)..spans.end.min(last_span);
+    let from = if from.is_finite() {
+        from.clamp(0.0, last_span as f32)
+    } else {
+        0.0
+    };
     if spans.is_empty() {
         // A lone control point (a click): the path is that one point, no direction.
         let k = knots[spans.start.min(knots.len() - 1)];
@@ -1517,21 +1564,34 @@ pub fn flatten_spans(
             dist: dist0,
         }];
     }
+    if from >= spans.end as f32 {
+        // The whole range is behind the marker: spans of the curve, none of
+        // the stroke.
+        return Vec::new();
+    }
+    // Where the polyline begins: the range's own start, or the marker mid-span.
+    let (first_span, u0) = if from > spans.start as f32 {
+        let k = (from.floor() as usize).min(last_span - 1);
+        (k, from - k as f32)
+    } else {
+        (spans.start, 0.0)
+    };
 
-    let mut out = Vec::with_capacity(spans.len() * 4);
-    let first = span(knots, spans.start);
-    let mut start = first.eval(0.0);
+    let mut out = Vec::with_capacity((spans.end - first_span) * 4);
+    let first = span(knots, first_span);
+    let mut start = first.eval(u0);
     start.dist = dist0;
     out.push(start);
-    for i in spans {
+    for i in first_span..spans.end {
         let sp = span(knots, i);
+        let u = if i == first_span { u0 } else { 0.0 };
         // The span's own start sample: same position as the last emitted point
-        // (both are the shared knot, bit-for-bit), but with *this* span's
-        // derivative, so the error test compares like with like.
-        let mut a = sp.eval(0.0);
+        // (both are the shared knot — or the marker — bit-for-bit), but with
+        // *this* span's derivative, so the error test compares like with like.
+        let mut a = sp.eval(u);
         a.dist = out.last().expect("start sample").dist;
         let ends = (
-            End { u: 0.0, s: a },
+            End { u, s: a },
             End {
                 u: 1.0,
                 s: sp.eval(1.0),
@@ -2509,6 +2569,64 @@ mod tests {
                 head.iter().chain(tail[1..].iter()).copied().collect();
             assert_eq!(joined, whole, "cut at span {cut}");
         }
+    }
+
+    /// The marker trim (§6.2): [`flatten_spans_from`] starts the polyline at
+    /// exactly the asked parameter with the accumulator at `dist0`, leaves
+    /// everything behind it out, and still tiles with later ranges — while a
+    /// marker at or before the range is the untrimmed call, so every
+    /// `start == 0` record keeps the floats it always flattened to.
+    #[test]
+    fn flattening_from_a_marker_trims_and_only_trims() {
+        let knots = [
+            knot(0.0, 0.0),
+            knot(20.0, 30.0),
+            knot(60.0, 30.0),
+            knot(90.0, 0.0),
+            knot(120.0, -40.0),
+        ];
+        let all = span_count(knots.len());
+        let whole = flatten(&knots, FLATTEN_TOLERANCE);
+
+        let from = 2.4_f32;
+        let cut = flatten_spans_from(&knots, from, 0..all, 0.0, FLATTEN_TOLERANCE);
+        let first = cut.first().expect("a trimmed polyline still starts");
+        assert_eq!(
+            first.pos,
+            point_at(&knots, from),
+            "the polyline must start at the marker"
+        );
+        assert_eq!(first.dist, 0.0, "the accumulator reads dist0 at the marker");
+        assert!(
+            cut.windows(2).all(|w| w[0].dist <= w[1].dist),
+            "arc must accumulate along the trimmed polyline"
+        );
+        assert_eq!(
+            cut.last().unwrap().pos,
+            whole.last().unwrap().pos,
+            "the tail past the marker is untouched"
+        );
+
+        // A range entirely behind the marker: spans of the curve, none of the
+        // stroke. A marker past the whole curve leaves nothing at all.
+        assert!(flatten_spans_from(&knots, from, 0..2, 0.0, FLATTEN_TOLERANCE).is_empty());
+        assert!(flatten_spans_from(&knots, all as f32, 0..all, 0.0, FLATTEN_TOLERANCE).is_empty());
+
+        // Ranges still tile around a marker mid-range: the cut point is shared.
+        let head = flatten_spans_from(&knots, from, 0..4, 0.0, FLATTEN_TOLERANCE);
+        let tail = flatten_spans_from(
+            &knots,
+            from,
+            4..all,
+            head.last().unwrap().dist,
+            FLATTEN_TOLERANCE,
+        );
+        let joined: Vec<IntermediateSample> =
+            head.iter().chain(tail[1..].iter()).copied().collect();
+        assert_eq!(
+            joined, cut,
+            "trimmed head + tail must equal the trimmed whole"
+        );
     }
 
     #[test]

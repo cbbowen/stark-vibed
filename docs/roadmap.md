@@ -819,16 +819,25 @@ press — and inherited rather than maintained, which is the whole design:
   and a refold — a moving pen's price, with the refit bounded by the window's
   count ceiling. A resting pointer reports nothing and costs nothing.
 - **The estimator outlives the hover: a press takes the window as the
-  stroke's run-up** (§6.2, `PathFitter::seed_context`). The stroke's entry is
+  stroke's run-up** (§6.2, `PathFitter::seed_runup`). The stroke's entry is
   the fit's blind spot — the clamped ends squash the first span into a
   fraction of a pixel, so its heading is decided by sub-pixel control-point
-  placement against grain-quantized samples — and the run-up conditions it
-  with the motion the engine was already watching: measured on a staircase
-  drag, a cold entry read −144° on a stroke drawn at 14°, the conditioned one
-  13.6° (`tests/hover.rs`). Conditioning, never extension — the record still
-  starts at the press, pinned as ever, and nothing about the format, the wire
-  or replay moves. A press nowhere near the trail takes no context, and a
-  stroke with no hover behind it is bit-identical to what it always was.
+  placement against grain-quantized samples. The run-up's reports become real
+  leading samples: **the fitted curve extends back through them**, and the
+  record marks where on it the press happened (`StrokeRecord::start`, a
+  span-unit parameter with `#[serde(default)]` — an older file's absent field
+  means 0, the whole curve, so old logs replay bit-identically). The deposit
+  begins at the marker — the flattening funnel both render paths share trims
+  before it and re-bases every distance-parameterized rate there — so the
+  entry is *smoothed through* the press rather than pinned to one
+  grain-quantized report: measured on a staircase drag, the entry at the
+  marker reads 14.4° on a 14.04° line, 0.2 px off the press, against 12.4°
+  cold (`tests/hover.rs`). The marker rides presence per frame (it refines
+  until the entry spans freeze, then is final before any cached head can bake
+  it), a press nowhere near the trail takes no run-up to the bit, a stroke
+  with no hover behind it carries marker 0 unchanged — and a click at the end
+  of a watched approach has its marker at its curve's very end, deposits
+  nothing, and commits nothing.
 
 ### 18.2 Tier 2 — where we can beat the prior art
 

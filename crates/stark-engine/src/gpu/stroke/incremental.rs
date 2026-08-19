@@ -104,13 +104,23 @@ pub struct StrokeCarry {
 /// increases monotonically along the stroke, so it is the hardest case, and once a
 /// prefix is admitted it stays admissible however the stroke continues (which is what
 /// lets a kept head survive this shrinking under it).
+///
+/// The stroke's start is its **marker** ([`StrokeRecord::start`]), not the
+/// curve's head: the leading taper is measured from where the deposit begins
+/// (§6.2). A cut behind the marker passes or fails these chord tests
+/// meaninglessly and harmlessly — a prefix that ends behind the marker renders
+/// nothing, and final pixels of nothing are final. Freezing a span past a
+/// marker that could still move is ruled out structurally: the marker is placed
+/// by the fitter's arc profile, whose prefix settles exactly as spans freeze,
+/// so by the time a span beyond it may freeze the marker is already final
+/// (`PathFitter::start_on`).
 pub(crate) fn safe_frozen(rec: &StrokeRecord, frozen: usize) -> usize {
     let (start_px, end_px) = rec.brush.taper_px();
     let last = crate::path::span_count(rec.path.len());
     if last == 0 {
         return frozen;
     }
-    let head = rec.path[0].pos;
+    let head = crate::path::point_at(&rec.path, rec.start);
     let tip = crate::path::span_end(&rec.path, last - 1);
     let mut spans = frozen.min(last);
     while spans > 0 {
