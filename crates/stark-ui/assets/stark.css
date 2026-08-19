@@ -1520,31 +1520,6 @@ hr {
   pointer-events: none;
 }
 
-/* Before the first miniature has been rendered (the engine is still starting, or a
-   frame has been dragged to nothing, or there is nothing painted yet).
-
-   A line of words in the corner rather than nothing at all: the menu entry has just
-   ticked itself, and an overview that answered by leaving the screen exactly as it
-   was would read as a control that does not work. It hugs its words — no reserved
-   height, unlike the panel's version, because this box hangs from the foot of the
-   window and grows upward, so there is no jump to head off when the picture lands.
-
-   It is a sibling of `.navigator-overlay` rather than a child (the component returns
-   one or the other), so it states the two things that box would otherwise have given
-   it. */
-.nav-empty {
-  flex: none;
-  margin-top: 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--panel-background);
-  box-shadow: var(--panel-shadow);
-  backdrop-filter: blur(8px);
-  color: rgba(232, 232, 234, 0.45);
-  font-size: 12px;
-  pointer-events: none;
-}
-
 /* --- layer panel --- */
 .layer-header {
   display: flex;

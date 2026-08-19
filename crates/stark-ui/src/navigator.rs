@@ -341,26 +341,13 @@ pub fn NavigatorOverlay() -> Element {
         });
     });
 
-    if !(state.navigator)() {
+    if !(state.navigator)() || subject().is_none() {
         return rsx! {};
-    }
-    // The two states with no picture to show, as a line of text in the corner rather
-    // than as nothing: the Panels menu has just ticked itself, and an overview that
-    // answered that by leaving the screen exactly as it was would read as a control
-    // that does not work. They carry `chrome` for the reason the miniature does, and
-    // they hug their words — a bottom-anchored box grows upward, so there is no
-    // reserved height here to keep the picture from jumping when it arrives.
-    if subject().is_none() {
-        return rsx! {
-            div { class: chrome_class(state, "nav-empty"), "Paint something, or add a frame" }
-        };
     }
 
     // The live view: where the marker goes, and what a turn-drag measures from.
     let Some(view) = state.obs.read().as_ref().map(|o| o.view) else {
-        return rsx! {
-            div { class: chrome_class(state, "nav-empty"), "Rendering the overview\u{2026}" }
-        };
+        return rsx! {};
     };
     // The canvas is mounted whatever state the picture is in, because it *is* the
     // picture — there is nothing to show it with before it exists. Until the first
