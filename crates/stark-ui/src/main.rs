@@ -59,8 +59,8 @@ use credits::CreditsModal;
 use hotkeys::Hotkey;
 use icons::{icon, icon_large};
 use input::{
-    Nav, Paint, Tune, bind_context_menu, bind_pen, bind_shortcuts, end_interaction, pick_color,
-    sample,
+    Nav, Paint, Tune, bind_context_menu, bind_pen, bind_shortcuts, elem_xy, end_interaction,
+    hover_at, hover_gone, pick_color, sample,
 };
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, resize_end, resize_move};
 use panels::brush::PresetSaveModal;
@@ -398,6 +398,11 @@ fn app() -> Element {
             // (§17.4). Empty and free when solo.
             PeerCursors {}
 
+            // The live brush under the resting pointer (§18.1.10), same layer:
+            // the size the next stroke would land at, riding the hover. Empty
+            // and free while the pointer is off the canvas.
+            BrushCursor {}
+
             // The brush-tuning drag's size ring, in the same layer and mounted for
             // the same reason (§18.1.9). Empty and free unless one is in flight.
             BrushSizeRing {}
@@ -591,6 +596,9 @@ fn Canvas() -> Element {
                     // the opening half of a pinch (§18.1.7). Cancelled rather
                     // than committed, so reaching for the canvas leaves no mark.
                     paint.abandon();
+                    // And the press is navigation, so the hover's promise of paint
+                    // is withdrawn with it (§18.1.10).
+                    hover_gone(state);
                     canvas_active.set(true);
                     return;
                 }
@@ -607,6 +615,9 @@ fn Canvas() -> Element {
                     // one; it can no longer be finished by this press, and a
                     // gesture the hand has walked away from must leave no mark.
                     paint.abandon();
+                    // The ring at the press is the size's readout now (§18.1.9);
+                    // a second circle under it would be two sizes for one brush.
+                    hover_gone(state);
                     return;
                 }
                 // Nothing may be *committed* while the playhead is moving: a
@@ -665,12 +676,14 @@ fn Canvas() -> Element {
                     // would be mapped through the view as it was *before* the move,
                     // and with two fingers down there is no single pointer to report
                     // as a cursor anyway.
+                    hover_gone(state);
                     return;
                 }
                 // The brush moved rather than the pointer's meaning on the canvas
                 // (§18.1.9): nothing below applies, since this press was never
                 // painting and a peer has no use for a cursor being used as a knob.
                 if tune.advance(&e) {
+                    hover_gone(state);
                     return;
                 }
                 // A composing mode opened under the hand (`crate::modes`). Its
@@ -694,8 +707,15 @@ fn Canvas() -> Element {
                     // be faded and taking no clicks (§11) until the pen lifted,
                     // which is the one control the artist now needs.
                     canvas_active.set(false);
+                    hover_gone(state);
                     return;
                 }
+                // The hover, ahead of the mapping below on purpose: the brush
+                // cursor rides the pointer in the element's own px and needs no
+                // view, so it is honest from the first frame — while the engine
+                // is still being built, its overlay simply has no size to give
+                // the position (§18.1.10).
+                hover_at(state, elem_xy(&e));
                 // The canvas takes pointer events from the first frame, while the
                 // engine is still being built asynchronously — so there may be no
                 // view to map through yet, and a move with nowhere to land simply
@@ -724,6 +744,11 @@ fn Canvas() -> Element {
                 }
             },
             onpointerleave: move |_| {
+                // The hover ends where the canvas does — for the brush cursor
+                // (§18.1.10) exactly as for the cursor peers see. A finger's lift
+                // arrives here too: pointer types that cannot hover are owed a
+                // leave after every up, so a touch never strands the circle.
+                hover_gone(state);
                 if state.collab.active() {
                     dispatch_quiet(state, PeerCommand::SetCursor(None));
                 }
@@ -783,6 +808,72 @@ fn PeerCursors() -> Element {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// The brush cursor (§18.1.10): a circle of the live brush's size riding the
+/// resting pointer, so the canvas says how much of it the next stroke would take
+/// before the stroke is made. The crosshair stays — it is the hotspot; this is
+/// the footprint.
+///
+/// DOM rather than a compositor pass, for [`PeerCursors`]'s reason — it is
+/// chrome, and it must never reach an export. The split of who re-renders is the
+/// point of its shape: the *position* is its own signal written per pointer
+/// report ([`AppState::brush_cursor`]), so only this component moves at pointer
+/// rate, while the *size* is the projection's `brush.radius × view.zoom` through
+/// one memo — a bracket tap or a wheel notch resizes the circle where it stands,
+/// and a pan, which moves neither factor, wakes nothing here at all.
+///
+/// A circle, though the brush may be any shape (§6.6) — and here, unlike
+/// [`BrushSizeRing`], that is a placeholder rather than the honest answer: the
+/// hover is precisely a promise about the mark, and the mark's true picture is
+/// the engine's to render, from the hover's last samples through the same stroke
+/// pipeline as a real dab (§18.1.10's unbuilt half). The hover signal this reads
+/// is the seam that preview will feed from.
+#[component]
+fn BrushCursor() -> Element {
+    let state = use_context::<AppState>();
+    // The memo ahead of the early returns — a hook, like any `use_*`.
+    let look = use_obs(state, |o| {
+        let paintable = o
+            .layers
+            .iter()
+            .any(|l| l.id == o.active_layer && l.is_paintable());
+        (o.brush.radius * o.view.zoom, paintable, o.tool)
+    });
+    let Some(at) = (state.brush_cursor)() else {
+        return rsx! {};
+    };
+    let Some((r, paintable, tool)) = look() else {
+        return rsx! {};
+    };
+    // Shown exactly where the crosshair itself promises paint: not over a layer
+    // that takes none (the cursor already says not-allowed — §15.7), not under a
+    // marquee tool, whose mark is the shape dragged rather than the brush, and
+    // not while space arms a pan or Alt the eyedropper — the modifiers announce
+    // themselves through the cursor, and the circle must not outbid them. It
+    // stays up through a stroke, where it goes on being true.
+    if !paintable
+        || tool.is_selection()
+        || (state.space_down)()
+        || (state.pick.alt_down)()
+        || (state.pick.dragging)()
+    {
+        return rsx! {};
+    }
+    // A circle smaller than the crosshair is noise inside it: for a tip this
+    // fine the crosshair is the better picture, so the circle waits for a size
+    // worth drawing.
+    if r < 3.0 {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "brush-cursor",
+            div {
+                class: "brush-ring-circle",
+                style: "left:{at.x - r}px; top:{at.y - r}px; width:{2.0 * r}px; height:{2.0 * r}px",
             }
         }
     }

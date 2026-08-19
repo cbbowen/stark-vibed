@@ -1397,6 +1397,25 @@ pub fn refresh_tow(state: AppState) {
     }
 }
 
+/// Report the pointer hovering over the canvas at `at`, element (CSS) px — what
+/// the brush cursor is drawn on (§18.1.10, `BrushCursor`). Unconditional, unlike
+/// [`hover_gone`]: a move's position is news by definition, and only the overlay
+/// subscribes.
+pub fn hover_at(state: AppState, at: Vec2) {
+    let mut hover = state.brush_cursor;
+    hover.set(Some(at));
+}
+
+/// The hover is over — the pointer left the canvas, or the gesture in hand
+/// stopped being paint (a pinch, a pan, a tuning drag). Written only on a
+/// change, since a pan calls this per move and an idle call must dirty no scope.
+pub fn hover_gone(state: AppState) {
+    let mut hover = state.brush_cursor;
+    if hover.peek().is_some() {
+        hover.set(None);
+    }
+}
+
 /// Map an element-relative pointer position to a canvas-space input sample; `None`
 /// before the engine exists, since there is no view to map through yet.
 pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {

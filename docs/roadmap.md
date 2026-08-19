@@ -705,12 +705,53 @@ existed, and neither the engine nor the panels learn anything.
   that insisted on Ctrl would be unreachable on the one platform where Ctrl+drag
   is how the browser reports a secondary click.
 
-**Still missing**: the number beside the ring, an indicator for flow (which is why
-its drag is the one whose only readout is the panel), and a ring under the resting
-cursor rather than only during a drag. Deliberately *no* cursor change while the
-accelerator is merely held, unlike Alt and the eyedropper: Ctrl is also the front
-half of Ctrl+Z, and flashing a resize cursor over the artwork on every undo would
-cost more than the hint is worth — the press is early enough to say it.
+**Still missing**: the number beside the ring, and an indicator for flow (which
+is why its drag is the one whose only readout is the panel). The ring under the
+resting cursor left this list when it was built — it is §18.1.10. Deliberately
+*no* cursor change while the accelerator is merely held, unlike Alt and the
+eyedropper: Ctrl is also the front half of Ctrl+Z, and flashing a resize cursor
+over the artwork on every undo would cost more than the hint is worth — the
+press is early enough to say it.
+
+#### 18.1.10 The brush cursor — built
+
+The circle every raster editor draws under the resting pointer: the live brush's
+radius through the view's zoom, centred on the hover, so the canvas says how
+much of itself the next stroke would take *before* the stroke is made. The
+crosshair stays — it is the hotspot, and the circle is the footprint. It also
+closes the loop §18.1.9 left open: Ctrl-drag the ring to a new size and the
+hover is wearing that size on the way back to the work.
+
+- **Who re-renders is the design.** The position is its own signal
+  (`state::AppState::brush_cursor`), written per pointer report from the
+  canvas's own move handler — element px, a drawing instruction, on
+  `BrushRing`'s argument — so only the little overlay (`BrushCursor`) moves at
+  pointer rate. The size is the projection's, `brush.radius × view.zoom`
+  through one `use_obs` memo: a bracket tap (§18.1.9) or a wheel notch resizes
+  the circle where it stands, no pointer move needed, and a pan — which moves
+  neither factor — wakes nothing here at all.
+- **It shows exactly where the crosshair promises paint.** Not over a layer
+  that takes none (the cursor already says not-allowed, §15.7); not under a
+  marquee tool, whose mark is the shape dragged rather than the brush; not
+  while space arms a pan or Alt the eyedropper (§18.0.2), whose cursors it
+  must not outbid; and not during a pinch, a pan or a tuning drag, each of
+  which takes the hover down on its way in. It rides along during a stroke,
+  where it goes on being true.
+- **A `<div>` wearing `.brush-ring-circle`** — the peer cursors' bargain
+  (chrome, never in an export), §18.1.9's affordability argument (a circle
+  through the zoom is the whole transform), and one definition of "the brush
+  drawn as a hairline circle" between the hover and the tuning drag.
+- **Below a few screen px it hides**: inside the crosshair the circle is
+  noise, and the crosshair is the better picture of a fine tip.
+
+**Not built**: the honest cursor. A circle is a placeholder for the *mark* —
+the real tip may be any shape (§6.6), soft, textured, tilted, and what it
+would deposit depends on what is already on the canvas (§6.2). The plan is a
+preview the engine renders from the hover's last two input samples through the
+same stroke pipeline as a real dab — `preview == committed` (§3) extended to
+the moment before the press — which would show the actual deposit, shape and
+softness and color and all, under the resting pen. `AppState::brush_cursor` is
+the seam that preview will feed from.
 
 ### 18.2 Tier 2 — where we can beat the prior art
 

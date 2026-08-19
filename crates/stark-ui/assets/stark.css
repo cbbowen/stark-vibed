@@ -4043,7 +4043,9 @@ button.layer-remove:hover {
 /* Legible on bare canvas and on ink alike, which no single color is: a dark hairline
    with a light one just outside it, so whichever the paint matches, the other one
    reads. `box-shadow` for the second ring rather than a second element — it follows
-   the border radius for free and costs no layout. */
+   the border radius for free and costs no layout. Shared with the brush cursor
+   (§18.1.10): one definition of "the brush drawn as a hairline circle", so the
+   hover and the tuning drag cannot disagree about what a brush looks like. */
 .brush-ring-circle {
   position: absolute;
   box-sizing: border-box;
@@ -4059,6 +4061,17 @@ button.layer-remove:hover {
   border-style: dashed;
   border-color: #00000073;
   box-shadow: none;
+}
+
+/* --- the brush cursor (§18.1.10) ---
+   The live brush's footprint under the resting pointer: the same layer bargain as
+   the ring above — over the canvas, under the panels, taking no pointer events,
+   since the pointer it follows is directly beneath it. */
+.brush-cursor {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
 }
 
 /* The tow string (§6.11): a hairline from the towed tip to the pointer while a

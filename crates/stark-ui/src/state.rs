@@ -186,6 +186,18 @@ pub struct AppState {
     /// `<div>` cannot be drawn from inside a `<canvas>`'s handler without somewhere
     /// for both to read.
     pub brush_ring: Signal<Option<BrushRing>>,
+    /// Where the pointer hovers over the canvas, in the canvas element's own px —
+    /// `None` while it is elsewhere, or while the gesture in hand is not paint (a
+    /// pinch, a pan, a tuning drag). The brush cursor rides it (`BrushCursor`,
+    /// §18.1.10): a circle of the live brush's size under the resting pointer.
+    ///
+    /// Its own signal for [`brush_ring`](Self::brush_ring)'s reason: it moves per
+    /// pointer report, and only the little overlay may re-render at that rate.
+    /// **Position only** — the size half of the picture is the projection's
+    /// (`brush.radius × view.zoom`), read in the overlay through a memo, so a
+    /// bracket tap or a wheel notch resizes the circle where it stands, with no
+    /// pointer move needed to notice.
+    pub brush_cursor: Signal<Option<Vec2>>,
     /// The live brush's stroke-smoothing amount, 0..=1 (§6.11). Frontend state
     /// beside the engine's own `BrushParams`, never inside them: the stored
     /// path already embodies the smoothing, so a field there would be one that
@@ -431,6 +443,7 @@ impl AppState {
                 dragging: root_signal(|| false),
             },
             brush_ring: root_signal(|| None),
+            brush_cursor: root_signal(|| None),
             smoothing: root_signal(|| 0.0),
             tow: root_signal(|| None),
             assist: AssistState {
