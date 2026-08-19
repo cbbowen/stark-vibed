@@ -497,10 +497,15 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         // paint a stroke lays rather than of a whole layer.
                         Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: brush.color[3],
                             oninput: move |v| edit(state, preview, move |b| b.color[3] = v) }
-                        // Depletion per px travelled — the stroke runs dry. 0 is what a
-                        // pen or a digital brush wants; not behind "Show more", because
-                        // it is the only knob that decides whether a tool runs out.
-                        Slider { label: "Drain", min: 0.0, max: 0.01, value: brush.drain,
+                        // Depletion per *radius* travelled — the stroke runs dry. 0 is
+                        // what a pen or a digital brush wants; not behind "Show more",
+                        // because it is the only knob that decides whether a tool runs
+                        // out. In radii, so this slider's top means the same thing at
+                        // every brush size (§6.2): dry two radii past the press. Quoted
+                        // per canvas px it did not — the same setting was a gentle fade
+                        // on a small tip and a stub on a large one, which is the whole
+                        // of why `radius` had to be read as something other than scale.
+                        Slider { label: "Drain", min: 0.0, max: 0.5, value: brush.drain,
                             oninput: move |v| edit(state, preview, move |b| b.drain = v) }
                     }
 

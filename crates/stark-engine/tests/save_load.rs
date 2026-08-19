@@ -31,7 +31,7 @@ fn paint_toothed(engine: &mut Engine) {
             color: RED,
             radius: 30.0,
             tooth: 0.55,
-            drain: 0.005,
+            drain: 0.15,
             ..Default::default()
         },
         &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)],

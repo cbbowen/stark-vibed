@@ -429,7 +429,7 @@ async fn a_peer_paints_on_a_ground_it_has_never_seen() {
         color: [0.85, 0.15, 0.1, 1.0],
         radius: 30.0,
         tooth: 0.55,
-        drain: 0.005,
+        drain: 0.15,
         ..Default::default()
     };
     paint_with(
@@ -642,7 +642,7 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
             color: [0.85, 0.15, 0.1, 1.0],
             radius: 30.0,
             tooth: 0.55,
-            drain: 0.005,
+            drain: 0.15,
             ..Default::default()
         },
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
@@ -782,7 +782,7 @@ async fn a_promised_ground_is_asked_of_the_frontend_mid_session() {
             color: [0.85, 0.15, 0.1, 1.0],
             radius: 30.0,
             tooth: 0.55,
-            drain: 0.005,
+            drain: 0.15,
             ..Default::default()
         },
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],

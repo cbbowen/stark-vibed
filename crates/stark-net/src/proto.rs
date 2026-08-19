@@ -50,8 +50,10 @@ use crate::mirror::{Mirror, Served};
 /// §6.8; 4: `SelectionOp` gained its opacity, §6.8; 5: `BlendMode::Drago` gained its
 /// bend, §6.3; 6: a response opens with a [`Tag`], so a member with nothing to serve
 /// can say so instead of answering; 7: carbonite replaced postcard, so every payload
-/// is columnar).
-pub(crate) const ALPN: &[u8] = b"stark/collab/7";
+/// is columnar; 8: `BrushParams::drain` became a rate per *radius* rather than per
+/// canvas px, §6.2 — the field's shape untouched and every stroke already in a log
+/// rendering differently, which is the meaning rule above and not the shape one).
+pub(crate) const ALPN: &[u8] = b"stark/collab/8";
 
 /// The first byte of every response.
 ///

@@ -374,7 +374,7 @@ impl StrokeRenderer {
                 ],
                 color: k.channels,
                 resid: k.resid,
-                paint: [rec.brush.drain, k.grain_uv, 0.0, 0.0],
+                paint: [rec.brush.drain_px(), k.grain_uv, 0.0, 0.0],
                 noise_freq: k.nfreq,
                 noise_amp: k.namp,
                 noise_off: k.noff,

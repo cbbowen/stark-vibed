@@ -207,7 +207,13 @@ pub fn brush(color: [f32; 4], radius: f32) -> BrushParams {
     BrushParams {
         color,
         radius,
-        drain: 0.0015,
+        // `drain` is quoted per *radius* (§6.2), and this helper's radius is its
+        // caller's — so the old flat `0.0015` per canvas px is written as the product
+        // that restores it at whatever tip is asked for. Every golden that comes
+        // through here therefore renders the exact stroke it was blessed on, which is
+        // the point: the unit change is a change of interpretation, and no test in
+        // the suite was measuring the interpretation.
+        drain: 0.0015 * radius,
         shape: BrushShape::Round { hardness: 0.8 },
         ..BrushParams::default()
     }

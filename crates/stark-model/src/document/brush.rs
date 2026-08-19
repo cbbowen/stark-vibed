@@ -611,10 +611,19 @@ pub struct BrushParams {
     pub color: [f32; 4],
     /// Stamp radius in canvas pixels at full pressure.
     pub radius: f32,
-    /// Reservoir depletion per canvas pixel travelled: the stroke thins as paint
-    /// runs out (§6.2). 0 = inexhaustible — which is what a pen, a
-    /// charcoal stick, or an ordinary digital brush wants; a physical loaded
-    /// brush wants a small positive value.
+    /// Reservoir depletion per **radius** travelled: the stroke thins as paint runs
+    /// out (§6.2). 0 = inexhaustible — which is what a pen, a charcoal
+    /// stick, or an ordinary digital brush wants; a physical loaded brush wants a
+    /// small positive value, and 1 is a tool bone dry one radius past the press.
+    ///
+    /// In radii rather than canvas px for the reason the tapers are
+    /// ([`start_taper_length`](Self::start_taper_length)), and it is the stronger
+    /// case of the two: [`radius`](Self::radius) is meant to be a pure *scale* on
+    /// the mark, and a falloff quoted in canvas px is exactly what that scale does
+    /// not carry — enlarge such a brush and it runs dry a fraction of the way into
+    /// its own tip, which is not a bigger version of anything.
+    /// [`drain_px`](Self::drain_px) is where it becomes the per-px rate both render
+    /// paths read.
     pub drain: f32,
     /// Brush tip shape (§6.6).
     pub shape: BrushShape,
@@ -734,6 +743,22 @@ impl BrushParams {
         (px(self.start_taper_length), px(self.end_taper_length))
     }
 
+    /// The drain falloff in **canvas px⁻¹**: the stored rate (per radius, see
+    /// [`drain`](Self::drain)) over [`radius`](Self::radius) — [`taper_px`](Self::taper_px)
+    /// for the reciprocal quantity, and guarding itself the same way, because the
+    /// number arrives from files, presets and peers.
+    ///
+    /// A radius of zero has no reciprocal, so it reads as **inexhaustible** rather
+    /// than as the infinity a shader would turn into a NaN falloff. That is the
+    /// honest answer as well as the safe one: a tip with no width lays nothing, and
+    /// what lays nothing cannot run out.
+    pub fn drain_px(&self) -> f32 {
+        // `f32::max` returns the non-NaN operand, so a NaN in either field lands on
+        // the `is_finite` fallback below by way of a NaN quotient — as does 0/0.
+        let px = self.drain.max(0.0) / self.radius.max(0.0);
+        if px.is_finite() { px } else { 0.0 }
+    }
+
     /// Whether either end of a stroke with this brush tapers.
     pub fn tapers(&self) -> bool {
         let (start, end) = self.taper_px();
@@ -791,10 +816,10 @@ impl BrushParams {
     /// slider ends rather than facts about the quantity, and clamping a document to
     /// one this crate does not own would rewrite brushes that were never wrong.
     ///
-    /// Every guard this replaces stays where it is. `taper_px`, `elongation` and
-    /// `stroke_rect` defend themselves against values that never came through here,
-    /// which is what keeps a footprint honest for a record built by hand in a test
-    /// or arriving down a path this funnel does not cover (§12.6).
+    /// Every guard this replaces stays where it is. `taper_px`, `drain_px`,
+    /// `elongation` and `stroke_rect` defend themselves against values that never
+    /// came through here, which is what keeps a footprint honest for a record built
+    /// by hand in a test or arriving down a path this funnel does not cover (§12.6).
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         Self {
@@ -1063,6 +1088,47 @@ mod tests {
             ..BrushParams::default()
         };
         assert_eq!(ordinary.sanitized(), ordinary);
+    }
+
+    /// **`radius` is a pure scale on the mark**, which is the whole of why `drain` is
+    /// quoted per radius (§6.2): enlarge the tip and the stroke has to run dry
+    /// proportionally further along, not at the same canvas distance.
+    ///
+    /// Stated on the *reach* — the travel at which the load reaches zero,
+    /// `1/drain_px` — because that is the length the falloff actually draws, and the
+    /// claim is that it grows with the tip instead of standing still. A per-canvas-px
+    /// `drain` fails this at every radius but the one it was tuned at.
+    #[test]
+    fn a_bigger_brush_runs_dry_proportionally_further() {
+        let at = |radius: f32| BrushParams {
+            radius,
+            drain: 0.25,
+            ..BrushParams::default()
+        };
+        for radius in [1.0, 8.0, 16.0, 100.0, 1000.0] {
+            let reach = 1.0 / at(radius).drain_px();
+            assert!(
+                (reach - 4.0 * radius).abs() <= 1e-3 * radius,
+                "0.25 per radius must reach four radii at radius {radius}, not {reach} px"
+            );
+        }
+        // A tip with no width cannot run out, so the reciprocal that does not exist
+        // reads as inexhaustible rather than as an infinity the shader would turn into
+        // a NaN falloff — the same class the poison test above rules out for the
+        // stored fields, asked of the derived one.
+        for radius in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let b = BrushParams { radius, ..at(16.0) };
+            assert_eq!(b.drain_px(), 0.0, "radius {radius} must drain nothing");
+        }
+        // And zero stays zero at every size, so a brush that never heard of drain
+        // takes the shader's identity path whatever it is scaled to.
+        for radius in [1.0, 16.0, 1000.0] {
+            let b = BrushParams {
+                drain: 0.0,
+                ..at(radius)
+            };
+            assert_eq!(b.drain_px(), 0.0);
+        }
     }
 
     /// A modulation is a pure function of floats, so replay, goldens and peers agree

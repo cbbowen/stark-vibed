@@ -122,7 +122,7 @@ fn main() {
     };
     let b = &rec.brush;
     println!(
-        "last stroke: action #{last}, {} control points, radius {}, drain {}, \
+        "last stroke: action #{last}, {} control points, radius {}, drain {}/radius, \
          add {}, lift {}, deposit {}, charge {}, bleed {}, alpha {}",
         rec.path.len(),
         b.radius,

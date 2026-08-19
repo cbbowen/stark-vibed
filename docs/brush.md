@@ -250,6 +250,26 @@ Two places the obvious implementation is wrong:
   admitted prefix stays admitted however the stroke continues
   (`gpu::stroke::incremental::safe_frozen`).
 
+**Running dry.** `drain` fades what the brush lays, linearly with distance
+travelled, until the stroke is bone dry. It is quoted **per brush radius** for the
+taper's reason, and it is the stronger case of the two: `radius` is meant to read
+as a pure *scale* on the mark — turn it up and get the same gesture, bigger — and
+a falloff denominated in canvas px is exactly what such a scale fails to carry.
+One setting that fades a 16px tip gently over a dozen of its own widths leaves a
+160px one dry barely past its first, so the size knob quietly doubles as a dryness
+knob, which is not a thing anyone reached for it to do. `BrushParams::drain_px` divides
+by the radius on the way out of the model, and nothing below it moved: both render
+paths measure arc in canvas px, so the rate they read has to be per canvas px, and
+`stroke_drain` is untouched in both shaders. A radius of zero reads as
+*inexhaustible* rather than as the infinity the division suggests — a tip with no
+width lays nothing, and what lays nothing cannot run out.
+
+Reinterpreting a field is the case §8's wire rule names but the *shape* rule does
+not cover: the encoding is identical and every stroke already in a log renders
+differently, so it bumped the ALPN (to 8). A file may be read by a build that
+disagrees with it — an alpha-era document simply comes back with tamer drains,
+which is the trade §19 makes deliberately — but a live session may not.
+
 **Incremental repaint.** Freezing is what keeps a long stroke responsive. Drawing
 a live stroke costs (segments × tiles covered), both growing with length, so
 re-rendering the whole thing per pointer move is quadratic. Instead the engine

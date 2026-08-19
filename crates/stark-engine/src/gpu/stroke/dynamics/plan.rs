@@ -189,7 +189,9 @@ struct Slot {
     rect_origin: Vec2,
     /// Shape orientation in turns ∈ [0, 1) — picks the prefix-τ slice (§6.6).
     orient: f32,
-    /// The `drain` falloff per canvas px.
+    /// The `drain` falloff per canvas px — [`BrushParams::drain_px`], the brush's own
+    /// per-*radius* knob already divided, so the shader's arc length (canvas px) and
+    /// this rate are in the same units.
     drain: f32,
     /// The `add` source rate per unit exposure, **undrained** like the opacity.
     add: f32,
@@ -702,7 +704,7 @@ pub(super) fn dynamics_plan(
                         rect_origin: rect.origin,
                         orient: sw.orient,
                         stretch: sw.stretch,
-                        drain: b.drain,
+                        drain: b.drain_px(),
                         // The `add` source rate is passed through **unscaled**, exactly
                         // as `stamp.wesl` takes it. A gain here would make the same
                         // slider mean two different amounts of paint depending on
@@ -820,7 +822,7 @@ pub(super) fn dynamics_plan(
                         rect_origin: rect.origin,
                         orient: sw.orient,
                         stretch: sw.stretch,
-                        drain: b.drain,
+                        drain: b.drain_px(),
                         // The last segment's tooth: the settle delivers what the pass
                         // still owed, and it owes it through the same ground the pass
                         // was laying through. What the valleys do not take stays on the

@@ -1969,14 +1969,15 @@ mod tests {
             // `drain` costs **nothing**, which is the point of this row: the falloff is
             // evaluated per fragment from its own arc length, so it asks the flattener
             // for no segments at all and this comes out identical to the smearing row
-            // above. Bought per segment it would bind at `0.02 / drain` = 4px, and for
-            // a quantity that is exact rather than merely finely sampled.
+            // above. Bought per segment it would bind at `0.02 / drain_px` = 4px, and
+            // for a quantity that is exact rather than merely finely sampled.
             (
                 "straight, draining tip",
                 118,
                 record(
                     BrushParams {
-                        drain: 0.005,
+                        // Per radius, so 0.1 on this 20px tip is 0.005 per canvas px.
+                        drain: 0.1,
                         ..smearing(20.0)
                     },
                     &straight,

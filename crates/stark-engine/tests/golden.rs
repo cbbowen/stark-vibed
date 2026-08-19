@@ -178,7 +178,8 @@ fn golden_canvas_surface() {
         ..Default::default()
     }));
     let mut brush = brush(RED, 60.0);
-    brush.drain = 0.005;
+    // Per radius (§6.2): 0.3 over a 60px tip is the 0.005 per canvas px this was.
+    brush.drain = 0.3;
     engine.process(ViewCommand::SetBrush(brush));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
@@ -203,7 +204,8 @@ fn golden_lift_end_regression() {
     let brush = BrushParams {
         radius: 80.0,
         shape: BrushShape::Round { hardness: 0.95 },
-        drain: 0.005,
+        // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
+        drain: 0.4,
         dynamics: BrushDynamics {
             add: 1.0,
             lift: 0.95,
@@ -276,7 +278,8 @@ fn golden_drained_brush_length_independent() {
     let brush = BrushParams {
         radius: 80.0,
         shape: BrushShape::Round { hardness: 0.95 },
-        drain: 0.005,
+        // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
+        drain: 0.4,
         dynamics: BrushDynamics {
             add: 1.0,
             lift: 0.95,

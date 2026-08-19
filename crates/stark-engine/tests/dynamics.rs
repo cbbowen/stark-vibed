@@ -500,7 +500,8 @@ fn dynamics_stroke_reads_as_one_continuous_mark() {
     // the profile should be smooth and monotone. Banding shows as ripple against
     // that ramp.
     let b = BrushParams {
-        drain: 0.004,
+        // 0.24 per radius = 0.004 per canvas px at this 60px tip: 250px to bone dry.
+        drain: 0.24,
         ..dyn_brush(
             RED,
             60.0,
@@ -845,11 +846,12 @@ fn a_barely_lifting_brush_reads_as_one_that_does_not_lift() {
 /// table — so the quantity it converges in belongs in the suite, not just in a comment.
 ///
 /// The five strokes are collinear, so the *geometry* of the visible stretch is
-/// identical in all five; the brush runs dry (`drain = 0.005`, so 200px) a whole tip
-/// before entering view, so every visible pixel arrived through the reservoir. All that
-/// differs is where the flattener's bisection put the segment boundaries, which depends
-/// on the whole path's length. Any spread at all is the loop's first-order splitting
-/// error printing as a delay line ringing at the segment cadence.
+/// identical in all five; the brush runs dry (`drain = 0.4` per radius, so 200px on
+/// this 80px tip) a whole tip before entering view, so every visible pixel arrived
+/// through the reservoir. All that differs is where the flattener's bisection put the
+/// segment boundaries, which depends on the whole path's length. Any spread at all is
+/// the loop's first-order splitting error printing as a delay line ringing at the
+/// segment cadence.
 ///
 /// The bound is set above the 8-bit quantization floor the step was converged to and
 /// below the ~6.6 levels the step before it produced, so it fails on a regression of
@@ -862,7 +864,8 @@ fn a_carried_stroke_is_independent_of_how_the_path_was_cut() {
     let brush = BrushParams {
         radius: 80.0,
         shape: BrushShape::Round { hardness: 0.95 },
-        drain: 0.005,
+        // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
+        drain: 0.4,
         dynamics: BrushDynamics {
             add: 1.0,
             lift: 0.95,
@@ -1692,7 +1695,8 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
     let brush = BrushParams {
         radius: 80.0,
         shape: BrushShape::Round { hardness: 0.95 },
-        drain: 0.005,
+        // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
+        drain: 0.4,
         dynamics: BrushDynamics {
             add: 1.0,
             lift: 0.95,
@@ -1743,7 +1747,7 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
         let after = engine.render_to_image();
 
         // Sanity: the stroke landed, and heavily. Sampled early in the body — at
-        // drain 0.005 the brush is dry long before a long stroke's mid-trail.
+        // drain 0.4 per radius the brush is dry long before a long stroke's mid-trail.
         let start_px = (points[0].x as i32 + 800).max(0) as u32;
         let body = (start_px..start_px + 300)
             .map(|x| level(&before, &after, x, WIDE.height / 2))

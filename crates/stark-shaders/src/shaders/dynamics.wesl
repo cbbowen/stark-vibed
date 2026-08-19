@@ -189,7 +189,8 @@ struct Stamp {
     arc_at_start: f32,
     // Per color-channel noise amplitude; all zero is jitter off.
     noise_amp: vec3<f32>,
-    // The `drain` falloff per canvas px.
+    // The `drain` falloff per canvas px (`BrushParams::drain_px`: the brush's own
+    // knob is per *radius*, and the host divides before it gets here).
     drain: f32,
     // The tip **drawn out along its facing axis** (§6.6), solved into the map that
     // carries a point of the reference travel frame into the frame the prefix-τ volume
