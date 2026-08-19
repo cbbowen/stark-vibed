@@ -435,6 +435,31 @@ impl Anchor {
         matches!(self, Anchor::BrushEditor(_))
     }
 
+    /// The window edge this anchor's box is up against — the one there is no room
+    /// beside, so a card that grew that way would grow off the screen. `None` for the
+    /// anchors clear of both: the panel column and the canvas run the height of the
+    /// window, the rack takes only what the miniature under it leaves, and a dialog
+    /// is centred in what is left.
+    ///
+    /// Asked by [`tests::a_card_is_never_hung_into_the_edge_it_stands_on`] and by
+    /// nothing at runtime, which is why it is compiled only for the test: a placement
+    /// is *stated* on the lesson ([`Side`]) rather than derived, so this exists to
+    /// check that statement and not to make it.
+    #[cfg(test)]
+    fn against(self) -> Option<Edge> {
+        match self {
+            // The stack hangs from the top of its column, which is the same edge
+            // `Side::LeftAtTop` lines a card up with.
+            Anchor::Panel(_) | Anchor::CommandRail => Some(Edge::Top),
+            // Both sit on the foot of the window (`.left-chrome`, `.timeline-bar`).
+            Anchor::Navigator | Anchor::TimelineBar => Some(Edge::Bottom),
+            // The column and the canvas are the full height of the window, the rack
+            // is what the navigator under it leaves, and a dialog is centred.
+            Anchor::PanelColumn | Anchor::QuickSlots | Anchor::Canvas => None,
+            Anchor::BrushEditor(_) => None,
+        }
+    }
+
     /// Put this anchor on screen, so there is something for the card to point at.
     ///
     /// Derived from the anchor rather than named separately on the lesson: "what it
@@ -474,9 +499,9 @@ impl Anchor {
 /// meaningful top edge to line up with. Both are the lesson author's to know, which
 /// is why this is a field on the lesson and not something measured.
 ///
-/// Named for the picture rather than composed out of a side and an alignment: four
-/// variants say exactly the four placements the lessons use, where two enums would
-/// also spell several that mean nothing.
+/// Named for the picture rather than composed out of a side and an alignment: each
+/// variant is exactly one placement the lessons use, where two enums would also
+/// spell several that mean nothing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Side {
     /// Left of the anchor, their top edges level. For a box that hangs from the top
@@ -497,11 +522,28 @@ enum Side {
     /// from under the command rail to the foot of the window and centres its rows in
     /// that, so the *box's* top edge is a long way above anything drawn. Lining up
     /// with it would put the card level with nothing.
-    ///
-    /// The navigator, sharing that column, wants it for the opposite reason: its box
-    /// *is* the picture, but the picture sits on the foot of the window, so a card
-    /// hung from its top edge would run off the bottom of the screen.
     RightAtMiddle,
+    /// Right of the anchor, their **bottom** edges level. For a box that sits on the
+    /// foot of the window — the navigator's miniature in the corner.
+    ///
+    /// [`LeftAtTop`](Self::LeftAtTop)'s argument read the other way up: a card hangs
+    /// from whichever of the anchor's edges the window cannot push off screen, and
+    /// for a box pinned to the bottom that is the bottom one. Centring on the middle
+    /// instead — which is what the navigator's lesson did when the miniature left the
+    /// panel stack — hangs half a card below the anchor's middle, and the corner has
+    /// no room for it: the miniature stands [`EDGE`] off the foot of the window, so
+    /// everything below its middle is over the edge. Nothing catches that later,
+    /// either. Sideways a card narrows to fit ([`room_left`]); there is no vertical
+    /// equivalent, because a card narrowed to fit its width is a card that has grown
+    /// *taller*. Which is why the placement is the whole of the fix, and why
+    /// [`tests::a_card_is_never_hung_into_the_edge_it_stands_on`] is the guard.
+    ///
+    /// The arrow cannot be a constant here the way it is for every other placement:
+    /// the miniature's height is the artwork's own aspect fitted into a box
+    /// (`navigator::MAX_HEIGHT`), so it is anything from a sliver to the full 200px.
+    /// What goes to the stylesheet instead is how far above that shared bottom edge
+    /// the anchor's middle lies (`--tutor-reach`), and the arrow rides there.
+    RightAtBottom,
     /// Above the anchor, centred on it.
     Above,
     /// **Over** the anchor rather than beside it: centred across it,
@@ -514,6 +556,33 @@ enum Side {
     /// the middle of the painting, pointing down at it, is the only arrangement
     /// that says "the thing I am describing happens *there*".
     Inside,
+}
+
+/// An edge of the window, for the one question asked about both of them: which one a
+/// piece of chrome sits against, and which one a card grows toward.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Edge {
+    Top,
+    Bottom,
+}
+
+#[cfg(test)]
+impl Side {
+    /// Which edge of the window the card reaches toward from the point it is hung
+    /// at. `None` where it reaches both ways at once, which is every placement
+    /// centred on its anchor — and which is why a centred card needs an anchor clear
+    /// of both edges.
+    fn grows(self) -> Option<Edge> {
+        match self {
+            // Hung level with the anchor's top and hanging down from it — and
+            // `Inside` starts lower still.
+            Side::LeftAtTop | Side::RightAtTop | Side::Inside => Some(Edge::Bottom),
+            // Hung level with the anchor's bottom, or clear above it, and rising.
+            Side::RightAtBottom | Side::Above => Some(Edge::Top),
+            Side::LeftAtMiddle | Side::RightAtMiddle => None,
+        }
+    }
 }
 
 /// How far down its anchor a [`Side::Inside`] card sits, as a fraction of the
@@ -700,7 +769,7 @@ static LESSONS: &[Lesson] = &[
         deed: Deed::LongPan,
         after: 2,
         anchor: Anchor::Navigator,
-        side: Side::RightAtMiddle,
+        side: Side::RightAtBottom,
         title: "You don't have to drag that far",
         body: "The navigator is the whole piece at a glance. Click or drag inside it to go somewhere. Drag with the right button to rotate the canvas.",
     },
@@ -1135,6 +1204,40 @@ fn abandon(state: AppState, i: usize) {
     retire(state, i);
 }
 
+/// Turn the tour on or off — ⚙ → Tips, and the card's own "Stop tips".
+///
+/// **Writing the switch is not the whole of turning the tour off.** [`tally`] reads
+/// it on the way *in*, so it keeps new lessons from coming due and says nothing about
+/// the card already on screen — which was promoted under the old answer and would sit
+/// there until it was answered, a preference that leaves the very thing it governs
+/// standing. So the two go together, and they go together *here*: the switch has two
+/// controls, and a rule kept in one of them is a rule the other disagrees with.
+///
+/// Nothing is retired on the way out. Somebody who turned the tour off has not been
+/// taught the lesson they were looking at, and turning it back on should still owe it
+/// to them — which is what the switch's own note in the dialog promises.
+/// [`TutorState::due`] is left alone for the same reason: what keeps it down meanwhile
+/// is a guard in the card's promotion effect, so a lesson brought due by any route at
+/// all — the [`dismiss`] chain included — stays off the screen while the tour is off,
+/// rather than only the ones that came through here.
+///
+/// Persisting is the caller's, and both callers already do it: the dialog saves after
+/// every row it changes (`settings::SettingToggle`), and the button saves for itself.
+pub fn set_enabled(state: AppState, on: bool) {
+    let mut enabled = state.tutor.enabled;
+    enabled.set(on);
+    if on {
+        return;
+    }
+    let mut showing = state.tutor.showing;
+    // Out into a local before the write, for the borrow reason `pan` gives.
+    let up = *showing.peek();
+    showing.set(None);
+    if let Some(lesson) = up.and_then(|i| LESSONS.get(i)) {
+        release_panels(state, lesson);
+    }
+}
+
 /// The half both ways out share: take the card down and write the lesson into the
 /// ledger. Answers the deed it was waiting on, or `None` for an index that names no
 /// lesson.
@@ -1142,21 +1245,31 @@ fn retire(state: AppState, i: usize) -> Option<Deed> {
     let mut showing = state.tutor.showing;
     showing.set(None);
     let lesson = LESSONS.get(i)?;
-    // A card pointing into the stack was holding it up ([`holding_panels`]), and
-    // letting go of it is not the same as asking for the panels to go away: without
-    // this the stack would fade the instant "Got it" was pressed, which reads as the
-    // acknowledgement having *closed* the thing it was about. Waking it properly
-    // leaves it where every other route to a panel leaves it — up until the next
-    // gesture.
-    if matches!(lesson.anchor, Anchor::Panel(_)) {
-        crate::layout::wake_panels(state);
-    }
+    release_panels(state, lesson);
     let mut ledger = state.tutor.ledger;
     let mut book = ledger.peek().clone();
     book.given.insert(lesson.key.to_string());
     ledger.set(book);
     save(state);
     Some(lesson.deed)
+}
+
+/// Let go of the panel stack that `lesson`'s card was holding up
+/// ([`holding_panels`]).
+///
+/// Letting go of it is not the same as asking for the panels to go away: without this
+/// the stack would fade the instant the card came down, which reads as whatever took
+/// the card down having *closed* the thing it was about. Waking it properly leaves it
+/// where every other route to a panel leaves it — up until the next gesture.
+///
+/// Shared by every way out of a card rather than written into the one that
+/// acknowledges it, because the argument is about the *stack* and not about the
+/// answer: "Got it", "Stop tips" and the switch in the dialog all read the same way to
+/// a panel that vanished as they were pressed.
+fn release_panels(state: AppState, lesson: &Lesson) {
+    if matches!(lesson.anchor, Anchor::Panel(_)) {
+        crate::layout::wake_panels(state);
+    }
 }
 
 /// What this browser has stored, or an empty ledger — a browser that has stored
@@ -1334,6 +1447,16 @@ pub fn TutorCard() -> Element {
     use_effect(move || {
         let Some(i) = (state.tutor.due)() else { return };
         let Some(lesson) = LESSONS.get(i) else { return };
+        // The switch, read here as well as in `tally`. That one is the way *in* — it
+        // keeps a deed from bringing anything due while the tour is off — and this is
+        // the way out, which is a separate question: `due` is also written by the
+        // `dismiss` chain and can be left set by a lesson that was still owed when the
+        // tour was switched off, and neither of those comes back through `tally`. A
+        // subscribing read, so switching the tour back on offers what it still owed
+        // rather than waiting for the next deed.
+        if !(state.tutor.enabled)() {
+            return;
+        }
         // A dialog is over everything a card could point at — except when the card
         // *is* pointing at the dialog, which is the whole of why this asks the anchor
         // (`Anchor::inside_dialog`). The preset-save dialog is over even those, being
@@ -1476,6 +1599,26 @@ pub fn TutorCard() -> Element {
                 room_about(at.mid_x()),
             ),
         ),
+        // The one placement that hands the stylesheet a measurement as well as a
+        // position: where its arrow goes depends on how tall the anchor is, and this
+        // is the only side whose anchor is sized by the artwork (`RightAtBottom`).
+        //
+        // A custom property is safe to write from one arm only, where a plain
+        // declaration would not be: an inline style is applied property by property
+        // in Dioxus, so a name this arm sets is *stranded* on the element when
+        // another arm renders next. Nothing reads it there — the rule that does is
+        // turned on by the side's class, and the class is rewritten whole.
+        Side::RightAtBottom => (
+            "side-right-bottom",
+            format!(
+                "left: {:.1}px; top: {:.1}px; transform: translateY(-100%); \
+                 --tutor-reach: {:.1}px; {}",
+                at.right() + GAP,
+                at.bottom(),
+                at.height * 0.5,
+                room_right(at.right() + GAP),
+            ),
+        ),
         Side::Above => (
             "side-above",
             format!(
@@ -1506,13 +1649,10 @@ pub fn TutorCard() -> Element {
                     class: "tutor-quiet",
                     title: "Stop showing tips. Settings has the switch to turn them back on.",
                     onclick: move |_| {
-                        let mut enabled = state.tutor.enabled;
-                        enabled.set(false);
-                        let mut showing = state.tutor.showing;
-                        showing.set(None);
-                        // Deliberately not marked as given: somebody who turned the
-                        // tour off has not been taught this one, and turning it back
-                        // on should still owe it to them.
+                        // The same door the dialog's switch goes through, which is
+                        // what takes this card down as well as ending the tour — and,
+                        // deliberately, does not mark it given ([`set_enabled`]).
+                        set_enabled(state, false);
                         crate::prefs::save(state);
                     },
                     "Stop tips"
@@ -1543,6 +1683,35 @@ mod tests {
             assert!(
                 LESSONS.iter().any(|l| l.deed == deed),
                 "{deed:?} is counted and no lesson waits for it",
+            );
+        }
+    }
+
+    /// A card grows away from the window edge its anchor stands on.
+    ///
+    /// The only thing about a placement that can be checked without a browser, and it
+    /// is worth checking because nothing at runtime does. A card too *wide* narrows to
+    /// fit ([`room_left`]); a card too *tall* has no equivalent — narrowing one only
+    /// makes it taller — so a placement that hangs a card into an edge is simply a
+    /// card half off the screen.
+    ///
+    /// The regression it exists for happened: the navigator's lesson kept
+    /// [`Side::RightAtMiddle`] when the miniature moved out of the panel stack into
+    /// the bottom-left corner, and a card centred on a box that stands [`EDGE`] off
+    /// the foot of the window hangs its lower half over the edge.
+    #[test]
+    fn a_card_is_never_hung_into_the_edge_it_stands_on() {
+        for lesson in LESSONS {
+            let Some(edge) = lesson.anchor.against() else {
+                continue;
+            };
+            assert!(
+                lesson.side.grows().is_some_and(|toward| toward != edge),
+                "{}: {:?} is against the {edge:?} of the window, and a {:?} card \
+                 reaches that way — it would be drawn off the screen",
+                lesson.key,
+                lesson.anchor,
+                lesson.side,
             );
         }
     }

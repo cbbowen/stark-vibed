@@ -369,6 +369,12 @@ impl ElementBox {
         self.left + self.width
     }
 
+    /// The box's bottom edge — what a card hung off a box that sits on the foot of
+    /// the window is lined up with (`tutor::Side::RightAtBottom`).
+    pub fn bottom(&self) -> f32 {
+        self.top + self.height
+    }
+
     /// The horizontal middle of the box.
     pub fn mid_x(&self) -> f32 {
         self.left + self.width * 0.5

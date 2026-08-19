@@ -246,7 +246,7 @@ click that had earned it.
 *Where* it sits is the lesson's to declare, because neither half is in the DOM:
 which side has room is a fact about where that chrome lives in the window, and
 whether the anchor has a meaningful top edge to line up with is a fact about what
-kind of thing it is. Four placements, named for the picture rather than composed
+kind of thing it is. The placements are named for the picture rather than composed
 out of a side and an alignment — two enums would also spell several combinations
 that mean nothing:
 
@@ -256,6 +256,7 @@ that mean nothing:
 | `LeftAtMiddle` | the panel column | a whole edge of the window, with no meaningful top to line up with |
 | `RightAtTop` | the command rail | a box down the left that hugs its contents |
 | `RightAtMiddle` | the quick-brush rack | the chrome down the left, and a box that centres its rows in a column running to the foot of the window — so its top edge is a long way above anything drawn |
+| `RightAtBottom` | the navigator's miniature | a box that *sits on* the foot of the window, so the bottom edge is the one always on screen — and whose height is the artwork's aspect, so its arrow is placed from a measurement rather than from a constant |
 | `Above` | the timeline bar | across the foot of the window |
 | `Inside` | the canvas | not a control at all but a *place* — see below |
 
@@ -270,6 +271,19 @@ viewport is what constrains it, so nothing has to be measured and nothing has to
 know the card's width. A card that *shifted* to stay on screen would leave its arrow
 pointing at nothing, and the arrow is the half that says which thing is being talked
 about.
+
+**Vertically there is no such move, so the placement has to be right.** A card
+narrowed to fit its width is a card that has grown *taller*, which is why the trick
+above has no mirror image: nothing at runtime can rescue a card hung into an edge.
+What decides it is the choice of edge to hang from — always the one the window
+cannot push off screen, which is the top for a box in the panel stack and the bottom
+for one standing in the corner. That is a claim about where each piece of chrome
+lives, and `tutor`'s own test asserts it lesson by lesson: an anchor against an edge
+of the window may not carry a placement that reaches toward it. The regression it
+was written for is real — the navigator's lesson kept its centred placement when the
+miniature moved out of the panel stack into the bottom-left corner (§11), and a card
+centred on a box that stands 14px off the foot of the window hangs its lower half
+over the edge.
 
 **One anchor is the painting, and one placement goes over it.** A lesson about a
 gesture made *on the canvas* has nothing to stand beside, and standing it beside a
@@ -405,6 +419,15 @@ record of what happened. Deeds are tallied whether or not tips are shown, so
 turning them back on resumes rather than restarts, and turning them off is not a
 way to lose your place.
 
+Turning it off also **takes down the card that is already up** — it was promoted
+under the old answer, and a preference that leaves the very thing it governs
+standing on screen is one nobody would believe. The card is not marked as given on
+the way out, for the same reason the rest of the ledger survives the switch: nobody
+was taught a lesson they switched off mid-sentence. Both controls go through one
+function (`tutor::set_enabled`) rather than writing the signal themselves — the
+dialog's row and the card's own "Stop tips" are two controls for one switch, and a
+rule kept in one of them is a rule the other disagrees with.
+
 ### 24.5 The lessons
 
 The table is the whole feature: a lesson is a row, and adding one costs no code
@@ -417,7 +440,7 @@ anywhere else unless it counts a deed nothing counts yet.
 | 5 | a brush stroke | Brush panel | Size and Flow, the brush editor's live test stroke, and that the list below is a library |
 | 10 | size or flow moved *by a control* | Brush panel | Ctrl (⌘) + drag on the canvas — sideways for size, up and down for flow (§18.1.9) |
 | 5 | a preset put on from the library | the quick-brush rack | A held number is a brush you *borrow*; tuning under the hold keeps the change (§18.1.8) |
-| 2 | a long pan | Navigator panel | Drag inside the miniature to travel; right-drag to turn the canvas |
+| 2 | a long pan | the navigator's miniature | Drag inside the miniature to travel; right-drag to turn the canvas |
 | 5 | the color moved *by a control* | Color panel | Alt + drag samples off the painting, and the bar that comes up says what the sample sees (§18.0.2) |
 | 2 | a redo | Timeline bar | The history is a place you can stand in, not a stack you pop (§18.2.4) |
 | 1 | a panel closed | the command rail | Nothing is lost: the Panels menu lists all eight, and what you leave open is remembered (§11) |

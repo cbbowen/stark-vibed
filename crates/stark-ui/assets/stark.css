@@ -4878,6 +4878,24 @@ button.layer-remove:hover {
   transform: rotate(225deg);
 }
 
+/* And the same arrow on a card hung by its *bottom* edge, level with a box that
+   sits on the foot of the window (`tutor::Side::RightAtBottom`). The one arrow the
+   stylesheet cannot place on its own: the anchor there is the navigator's miniature,
+   whose height is the artwork's aspect and so is anything from a sliver to 200px, and
+   what the card is level with is its bottom rather than its middle. Rust passes the
+   distance from that shared edge up to the anchor's middle (`--tutor-reach`) and the
+   arrow rides it — measured down from the card's top, because a percentage of the
+   card's own height is the only way to say "and never past my far corner".
+
+   The clamp is that: the arrow's centre stays 20px inside either corner, which is
+   exactly where the other four sides put theirs. A miniature taller than the card is
+   what it is for. */
+.tutor-card.side-right-bottom::after {
+  left: -6px;
+  top: clamp(14px, calc(100% - var(--tutor-reach) - 6px), calc(100% - 26px));
+  transform: rotate(225deg);
+}
+
 /* Pointing down, centred on the bottom edge: shared by the card that sits above
    its anchor and the one that sits *inside* it a quarter of the way down
    (`tutor::Side::Above`, `tutor::Side::Inside`). Two placements, one arrow —

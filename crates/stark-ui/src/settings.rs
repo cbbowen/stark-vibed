@@ -51,8 +51,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
     let assist = assist_enabled();
     let mut minimal_enabled = state.minimal;
     let minimal = minimal_enabled();
-    let mut tips_enabled = state.tutor.enabled;
-    let tips = tips_enabled();
+    let tips = (state.tutor.enabled)();
     let mut chrome_hiding = state.chrome_hiding;
     let hiding = chrome_hiding();
     // Read off the engine's projection, like the peer-outline row above: the engine
@@ -153,7 +152,11 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                     // still owes you.
                     note: Some("A tip never interrupts a stroke and never covers the canvas. Turning this off keeps your place \u{2014} the tips you haven't seen are still waiting if you turn it back on.".to_string()),
                     checked: tips,
-                    onchange: move |v| tips_enabled.set(v),
+                    // Through the tour's own door rather than straight onto the
+                    // signal: turning tips off has to take down the card that is
+                    // already up, which is a fact about the tour and is kept there
+                    // (`tutor::set_enabled`).
+                    onchange: move |v| crate::tutor::set_enabled(state, v),
                 }
 
                 div { class: "modal-section-label", "COLLABORATION" }
