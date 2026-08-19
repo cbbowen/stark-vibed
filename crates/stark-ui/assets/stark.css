@@ -875,14 +875,38 @@ hr {
 }
 
 /* Where a flush picture meets a corner the column still rounds (`.stack-first`
-   / `.stack-last`), the panel clips it to its own radius. Scoped to the three
-   bleeding panels rather than said of `.panel` once, because a clip on every
-   panel would also cut the layer list's dragged row the moment a drag poked it
-   past an edge. */
+   / `.stack-last`), the panel clips it to its own radius. Scoped rather than
+   said of `.panel` once: the layer tree below also bleeds, but its bands sit
+   between two inset sections and cannot reach a corner — and clipping that
+   panel would cut its dragged row the moment a drag poked it past an edge. */
 .app-root.minimal .panel[data-panel="Navigator"],
 .app-root.minimal .panel[data-panel="Color"],
 .app-root.minimal .panel[data-panel="Brush"] {
   overflow: clip;
+}
+
+/* The layer tree joins the flush lists — with its geometry kept. Its rows are
+   control bands rather than pictures, and the tree's two marks are spatial
+   (§14.6): the indent *is* membership and the rail rides the row's own left
+   edge, so the bleed moves the whole tree outward rather than flattening rows
+   to one width — a depth-0 band runs edge to edge, an indented one keeps its
+   step, now measured from the panel's own edge, and the rail and Release move
+   with the rows they belong to. Content keeps the row's own padding, the
+   preset strip's bargain. The header above and the properties below the `hr`
+   keep their inset, so the bands sit between two quiet inset sections. */
+.app-root.minimal .panel[data-panel="Layers"] .layer-item {
+  margin: 4px -14px;
+}
+
+/* Flat bands, the flush column's own idiom — a rounded corner against an edge
+   the row now owns would read as a chip that failed to fit. The thumb slot's
+   corners follow, being the row's radius restated. */
+.app-root.minimal .panel[data-panel="Layers"] .layer-row {
+  border-radius: 0;
+}
+
+.app-root.minimal .panel[data-panel="Layers"] .layer-thumb {
+  border-radius: 0;
 }
 
 /* The a/b plane widened to the padding it gained, the `L` track matching: the
