@@ -865,9 +865,12 @@ hr {
    panel is resizable and `.panel.resizable` deepens the bottom padding for the
    grip. The list's scrollbar clearance goes with them, so the strip truly
    meets the edges; the grip's press strip now overlays the last row's bottom
-   sliver, which is the same 12px it was always given. */
+   sliver, which is the same 12px it was always given. The top is the one side
+   that stays in: with the heading gone its 8px of padding went too, and without
+   this the strip butts straight into the buttons above — 8px is the panel's own
+   block rhythm (`.slider-row`), and the same gap the heading gives normal mode. */
 .app-root.minimal .panel[data-panel="Brush"] .preset-section {
-  margin: 0 -14px -14px;
+  margin: 8px -14px -14px;
 }
 
 .app-root.minimal .panel[data-panel="Brush"] .preset-list {
