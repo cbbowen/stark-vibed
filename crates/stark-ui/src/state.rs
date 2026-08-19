@@ -235,6 +235,17 @@ pub struct AppState {
     /// for its paint. View state on [`transform`]'s model — the engine sees
     /// only previews and the one commit on "Done".
     pub gradient_bar: Signal<Option<GradientUi>>,
+    /// The gradient-bar gesture a **trace** set aside (§22.2), to be handed back
+    /// when the trace ends. `None` whenever no trace is armed.
+    ///
+    /// Arming a trace from the bar's own well is not abandoning the composition
+    /// — it is reaching into the library the bar is holding — but the trace's
+    /// catcher cannot share the canvas with the axis catcher, so the gesture is
+    /// parked here for the mode's life rather than dropped
+    /// (`panels::gradient_bar::suspend`). Deliberately *not* a second live
+    /// gradient mode: nothing previews off this, and `modes` never sees it, so
+    /// "one mode composing at a time" stays true while it is held.
+    pub gradient_resume: Signal<Option<GradientUi>>,
     /// The drawing-guide edit mode (§20.5): `Some` while a guide is selected
     /// for composing — the canvas drags the camera, and the Perspective Guide
     /// bar stands in at the bottom. View state through and through: the engine
@@ -469,6 +480,7 @@ impl AppState {
             minimal: root_signal(|| Prefs::default().minimal),
             transform: root_signal(|| None),
             gradient_bar: root_signal(|| None),
+            gradient_resume: root_signal(|| None),
             guide_edit: root_signal(|| None),
             paint_queued: root_signal(|| false),
             collab: CollabState {

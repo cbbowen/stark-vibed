@@ -131,19 +131,38 @@ pub fn load(state: AppState) {
 /// Arm or disarm the trace mode. Arming clears the notice — the answer to "no
 /// paint found" is another trace, and the line has done its job the moment one
 /// starts.
+///
+/// A gradient bar composing when the trace is armed is **set aside and handed
+/// back**, not abandoned (`panels::gradient_bar::suspend`). Every other mode
+/// this displaces is put down for good, and rightly — reaching for the
+/// transform is choosing to stop composing a fill. Reaching for Trace is not:
+/// the trace was armed from the well *on that bar*, to get a ramp to lay with
+/// it, and a mode that closed the bar the artist was working in to fetch what
+/// they wanted to work with would take the tool away at the moment they had
+/// finally chosen it.
 pub fn set_armed(state: AppState, on: bool) {
+    let mut armed = state.gradients.armed;
     if on {
+        // Suspended *before* `leave`, which drops what it finds for good, and
+        // parked *after* it, since putting the trace down is what clears the
+        // stash — so the order here is the one that neither loses the gesture
+        // nor leaves it behind after the mode it belongs to has ended.
+        let held = crate::panels::gradient_bar::suspend(state);
         // One composing mode at a time (`crate::modes`): the trace's catcher is
         // the last of the four to be stacked, so arming while a transform is
         // composing would leave two of them over one pointer. `leave` writes
         // this signal itself rather than calling back through here.
         crate::modes::leave(state);
-    }
-    let mut armed = state.gradients.armed;
-    armed.set(on);
-    if on {
+        armed.set(true);
+        let mut resume = state.gradient_resume;
+        resume.set(held);
         let mut notice = state.gradients.notice;
         notice.set(None);
+    } else {
+        // Disarmed before the bar comes back up, so there is no instant in
+        // which `modes::composing` could answer with two of them live.
+        armed.set(false);
+        crate::panels::gradient_bar::resume(state);
     }
 }
 
@@ -190,12 +209,24 @@ pub fn capture(state: AppState, path: Vec<Vec2>) {
         };
         notice.set(None);
         let mut entries = state.gradients.entries;
-        {
+        let name = {
             let mut list = entries.write();
             let name = next_name(&list);
-            list.push(GradientEntry { name, gradient });
-        }
+            list.push(GradientEntry {
+                name: name.clone(),
+                gradient,
+            });
+            name
+        };
         persist(&entries.read());
+        // And take it in hand. A trace is a *choosing* gesture — the line was
+        // drawn to get this ramp — so the capture lands selected rather than at
+        // the foot of the library with something else still the highlighted
+        // row. Which is the same click a library row is, and reaches the same
+        // consumers through it: the gradient bar the trace was armed from comes
+        // back already previewing with it (`gradient_bar::refresh`), a
+        // gradient-map filter takes it (§21.11).
+        select(state, &name);
     });
 }
 

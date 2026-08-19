@@ -72,9 +72,11 @@ pub fn GradientWell(strip: Option<String>, title: &'static str) -> Element {
 ///
 /// Mounted only while open, like the frame bar's color pop-out — so it re-reads
 /// the library each time and holds no state worth losing. Arming the trace
-/// closes it (the catcher wants the canvas the pop-out is floating over); under
-/// the gradient bar the mode's exclusivity unmounts the whole bar anyway
-/// (`crate::modes`), and the well comes back when the composition does.
+/// closes it (the catcher wants the canvas the pop-out is floating over), and
+/// under the gradient bar the mode's exclusivity takes the whole bar down with
+/// it — but that bar is *set aside*, not abandoned
+/// (`gradient_bar::suspend`), and stands back up when the trace ends, wearing
+/// the ramp the trace just captured.
 #[component]
 fn GradientPopout(open: Signal<bool>) -> Element {
     let mut open = open;
@@ -104,7 +106,10 @@ fn GradientPopout(open: Signal<bool>) -> Element {
                         let arm = !armed;
                         if arm {
                             // The catcher takes the canvas this pop-out floats
-                            // over; the strip reopens it when the trace is done.
+                            // over. Closed, not remembered: the trace ends with
+                            // its capture already in hand on the strip, so
+                            // reopening the list over the fresh preview would
+                            // cover the answer with the question.
                             open.set(false);
                         }
                         gradients::set_armed(state, arm);
@@ -270,12 +275,19 @@ pub fn GradientTraceOverlay() -> Element {
             return;
         };
         points.push(to_canvas(e));
-        // Release always ends the mode: a good trace captures, a stray click
-        // cancels — either way the canvas is handed back.
-        gradients::set_armed(state, false);
+        // The capture goes first, and the order is load-bearing: it samples the
+        // **composite** at the instant it is called (§22.2), while ending the
+        // mode stands the suspended gradient bar back up *with its preview*
+        // (`gradient_bar::resume`). The other way round, a fill preview would be
+        // traced as if it were paint and the new ramp fitted through the one it
+        // was drawn to replace.
         if gradients::trace_long_enough(&points) {
             gradients::capture(state, points);
         }
+        // Release always ends the mode: a good trace captures, a stray click
+        // cancels — either way the canvas is handed back, to the bar the trace
+        // was armed from if there was one.
+        gradients::set_armed(state, false);
     };
 
     let panning = (state.space_down)();

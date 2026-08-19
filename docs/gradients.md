@@ -173,6 +173,28 @@ pop-out (the catcher wants the canvas it floats over) and a floating hint
 takes over the instruction; the button stays lit for the mode's life, the
 mode's indicator as well as its switch.
 
+A trace armed from the **gradient bar's** well takes that bar down with it —
+one composing mode at a time (§22.4) — but the bar is *set aside*, not
+abandoned: the gesture it was composing (target, kind, and the axis already
+dragged) is parked for the trace's life and stands back up when the mode ends,
+captured or cancelled. Reaching for Trace from a bar is reaching into the
+library that bar is holding, and a mode that closed the bar the artist was
+working in to fetch what they wanted to work *with* would take the tool away at
+the moment they had finally chosen it. Only the modes that genuinely displace
+one another are abandoned. The preview does go down for the trace's length, and
+that is not tidiness: a capture samples the **composite** (§22.2), so a fill
+preview left standing would be traced as if it were paint and the new ramp
+fitted through the one it was drawn to replace — which is why release captures
+*first* and hands the canvas back second.
+
+And the capture is **taken in hand**: it lands selected, exactly as if its row
+had been clicked. A trace is a choosing gesture — the line was drawn to get
+*that* ramp — so the resumed bar returns already previewing with it, and a
+gradient-map filter being tuned from its own well takes it the moment it is
+fitted (§21.11). A capture that landed at the foot of the library with the old
+row still highlighted would make the artist choose twice, the second time from
+a list where the one they had just made looks like every other entry.
+
 ### 22.4 The gradient fill: a parcel that varies with position
 
 The fill §18.0.4 promised, at exactly the seam it named: `FillOp`'s paint
@@ -222,7 +244,9 @@ that issues `ViewCommand::PreviewFill` — the same `FillRenderer::apply` the
 commit runs over the committed tiles, so **preview == commit bit-exactly**
 (pinned in `tests/fill.rs`) and re-dragging previews one fill, never a stack of
 glazes. "Done" commits a single `DocCommand::Fill`; entering Timeline mode
-abandons the composition the way it abandons a transform. Nothing about strength
+abandons the composition the way it abandons a transform — while a trace armed
+from the bar's own well *suspends* it, the one displacement that is not an
+abandonment (§22.3). Nothing about strength
 is captured at entry, unlike the brush opacity and `add` this mode used to take:
 a gradient fill lays opaque paint through the selection, so how strongly it lands
 is the selection's own coverage to say (§6.8).

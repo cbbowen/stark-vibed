@@ -187,6 +187,46 @@ impl Laid {
     }
 }
 
+/// Set the composing gesture aside for the **trace** (§22.2), and hand it to the
+/// caller to hold — the half of the mode swap that is not an abandonment.
+///
+/// Arming a trace from this bar's own well is the artist reaching into the
+/// library the bar is holding, not putting the bar down; but the trace mounts a
+/// catcher of its own and two of those cannot share the canvas (`crate::modes`),
+/// so the gesture — target, kind, and the axis already dragged — is parked
+/// rather than lost. [`resume`] brings it back.
+///
+/// The preview goes down with it, and that is not tidiness: a capture samples the
+/// **composite** (§22.2), so a fill preview left standing would be traced as if it
+/// were paint and the new ramp would be fitted through the old one.
+pub fn suspend(state: AppState) -> Option<GradientUi> {
+    // `take` into a local, so the write guard is not still held when
+    // `clear_preview` dispatches (`crate::modes::leave`'s reason).
+    let mut mode = state.gradient_bar;
+    let held = mode.write().take();
+    if let Some(ui) = &held {
+        clear_preview(state, &ui.target);
+    }
+    held
+}
+
+/// Take the suspended gesture back up, if there is one — [`suspend`]'s other
+/// half, called when the trace mode ends however it ended.
+///
+/// Through [`update`], so the preview returns with the bar instead of the axis
+/// coming back to a canvas showing nothing: what it composes against is whatever
+/// ramp is now in hand. A capture is still in flight at this point (the sampling
+/// is a readback), so the ramp it lands is delivered a moment later by the
+/// [`refresh`] inside [`gradients::select`] — and a trace that captured nothing
+/// leaves the bar exactly as it was picked up.
+pub fn resume(state: AppState) {
+    let mut held = state.gradient_resume;
+    let Some(ui) = held.write().take() else {
+        return;
+    };
+    update(state, ui);
+}
+
 /// Drop whichever preview a gesture aimed at `target` is showing.
 ///
 /// The one place that answers "which preview does this target use" for the case

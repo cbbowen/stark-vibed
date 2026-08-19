@@ -115,6 +115,15 @@ pub fn leave(state: AppState) {
     if *armed.peek() {
         armed.set(false);
     }
+    // And with it, the gradient bar a trace set aside to be handed back
+    // (`state::gradient_resume`). Dropped rather than resumed: this is the
+    // abandoning path, and a gesture parked for a trace has no better claim on
+    // the canvas than one that was composing when the transform opened. Its
+    // preview went down at `suspend`, so there is nothing to clear.
+    let mut resume = state.gradient_resume;
+    if resume.peek().is_some() {
+        resume.set(None);
+    }
 
     // Which preview the fill was showing depends on what it was aimed at (§22.4)
     // — and the module that composes it is the one that answers, rather than a
