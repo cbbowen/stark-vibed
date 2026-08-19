@@ -194,67 +194,72 @@ pub fn LayerPanel() -> Element {
         }
 
         // Top of the document first, which is what a stack looks like from in front
-        // of it — and within a group, what it carries above its base.
-        for (i, row) in display.iter().enumerate() {
-            LayerRow {
-                // Keyed by the layer, so a reorder *moves* the row's element instead
-                // of repainting whichever row now stands in that position. Positional
-                // diffing was harmless while the panel only ever grew and shrank; a
-                // drop reorders, and it would leave the click that follows the release
-                // landing on the row that took the dragged one's place.
-                key: "{row.info.id.0}",
-                row: row.clone(),
-                motion: land.map_or_else(Motion::default, |l| l.motion(i)),
-                // The one mark that is about a row *other* than the one moving: the
-                // layer that would carry the drop. Beside `motion` rather than in it
-                // because it is a fact about the landing's meaning, which is this
-                // panel's alone — a flat roster has no such row.
-                carrying: land.is_some_and(|l| l.carrier == Some(row.info.id)),
-                active: selected_id == Some(row.info.id),
-                drag,
-                ontoggle: move |id| {
-                    let mut shut = collapsed.write();
-                    if !shut.remove(&id) {
-                        shut.insert(id);
-                    }
-                },
-                onland: move |id: LayerId| {
-                    // A press that never travelled is a click, and the browser is
-                    // about to send one; nothing here has anything to say about it.
-                    if drag.peek().as_ref().is_none_or(|d| !d.live()) {
-                        drag.set(None);
-                        return;
-                    }
-                    // **The disarm goes first**, and for the reason the panel stack's
-                    // does: a row's shift is stated against the panel as it stood when
-                    // the press landed, so a frame carrying the new order while the
-                    // transforms are still on would be the move applied twice. It is
-                    // *spent* rather than dropped so the click behind the release can
-                    // be recognized and swallowed (`reorder::claimed`) — on a panel
-                    // that has just reordered, that click names whichever row took
-                    // this one's place.
-                    if let Some(d) = drag.write().as_mut() {
-                        d.spend();
-                    }
-                    // Dragging a layer selects it, drop or no drop: it is the one you
-                    // just had in your hand. Said here rather than left to the click
-                    // that follows, which this gesture has taken.
-                    dispatch(state, PeerCommand::SetActiveLayer(id));
-                    let Some(l) = land.filter(|l| !l.inert) else {
-                        return;
-                    };
-                    // A layer dropped into a folded group would otherwise vanish into
-                    // it. Opening the fold is not a second decision — it is the panel
-                    // showing the move it just made.
-                    if let Some(c) = l.carrier {
-                        collapsed.write().remove(&c);
-                    }
-                    dispatch(state, DocCommand::MoveLayer {
-                        id,
-                        carrier: l.carrier,
-                        at: l.at,
-                    });
-                },
+        // of it — and within a group, what it carries above its base. In a well of
+        // its own (`.layer-tree`): the rows are the panel's one *picture* — the
+        // stack, drawn — and the ground under a picture is not the ground the
+        // controls stand on.
+        div { class: "layer-tree",
+            for (i, row) in display.iter().enumerate() {
+                LayerRow {
+                    // Keyed by the layer, so a reorder *moves* the row's element instead
+                    // of repainting whichever row now stands in that position. Positional
+                    // diffing was harmless while the panel only ever grew and shrank; a
+                    // drop reorders, and it would leave the click that follows the release
+                    // landing on the row that took the dragged one's place.
+                    key: "{row.info.id.0}",
+                    row: row.clone(),
+                    motion: land.map_or_else(Motion::default, |l| l.motion(i)),
+                    // The one mark that is about a row *other* than the one moving: the
+                    // layer that would carry the drop. Beside `motion` rather than in it
+                    // because it is a fact about the landing's meaning, which is this
+                    // panel's alone — a flat roster has no such row.
+                    carrying: land.is_some_and(|l| l.carrier == Some(row.info.id)),
+                    active: selected_id == Some(row.info.id),
+                    drag,
+                    ontoggle: move |id| {
+                        let mut shut = collapsed.write();
+                        if !shut.remove(&id) {
+                            shut.insert(id);
+                        }
+                    },
+                    onland: move |id: LayerId| {
+                        // A press that never travelled is a click, and the browser is
+                        // about to send one; nothing here has anything to say about it.
+                        if drag.peek().as_ref().is_none_or(|d| !d.live()) {
+                            drag.set(None);
+                            return;
+                        }
+                        // **The disarm goes first**, and for the reason the panel stack's
+                        // does: a row's shift is stated against the panel as it stood when
+                        // the press landed, so a frame carrying the new order while the
+                        // transforms are still on would be the move applied twice. It is
+                        // *spent* rather than dropped so the click behind the release can
+                        // be recognized and swallowed (`reorder::claimed`) — on a panel
+                        // that has just reordered, that click names whichever row took
+                        // this one's place.
+                        if let Some(d) = drag.write().as_mut() {
+                            d.spend();
+                        }
+                        // Dragging a layer selects it, drop or no drop: it is the one you
+                        // just had in your hand. Said here rather than left to the click
+                        // that follows, which this gesture has taken.
+                        dispatch(state, PeerCommand::SetActiveLayer(id));
+                        let Some(l) = land.filter(|l| !l.inert) else {
+                            return;
+                        };
+                        // A layer dropped into a folded group would otherwise vanish into
+                        // it. Opening the fold is not a second decision — it is the panel
+                        // showing the move it just made.
+                        if let Some(c) = l.carrier {
+                            collapsed.write().remove(&c);
+                        }
+                        dispatch(state, DocCommand::MoveLayer {
+                            id,
+                            carrier: l.carrier,
+                            at: l.at,
+                        });
+                    },
+                }
             }
         }
 
@@ -723,9 +728,12 @@ pub fn LayerRow(
     rsx! {
         // The indent is padding on the wrapper rather than a margin on the row,
         // because the space it opens is not empty any more: Release is drawn in it.
+        // Stated twice on purpose: as the padding that lays the row out, and as
+        // `--indent` for the stylesheet's stratum band, which paints exactly the
+        // gutter the padding opens (`.layer-item::before`) — one value, two hands.
         div {
             class: "{item_class}",
-            style: "padding-left:{indent}px; {shift}",
+            style: "--indent:{indent}px; padding-left:{indent}px; {shift}",
             // Which layer this element is, for `platform::layer_boxes` to read back.
             // A drag measures the DOM and then talks about rows, so the two have to
             // agree; this is what lets it match on identity rather than assume an

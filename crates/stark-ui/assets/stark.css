@@ -890,22 +890,13 @@ hr {
    (§14.6): the indent *is* membership and the rail rides the row's own left
    edge, so the bleed moves the whole tree outward rather than flattening rows
    to one width — a depth-0 band runs edge to edge, an indented one keeps its
-   step, now measured from the panel's own edge, and the rail and Release move
-   with the rows they belong to. Content keeps the row's own padding, the
-   preset strip's bargain. The header above and the properties below the `hr`
-   keep their inset, so the bands sit between two quiet inset sections. */
-.app-root.minimal .panel[data-panel="Layers"] .layer-item {
-  margin: 4px -14px;
-}
-
-/* Flat bands, the flush column's own idiom — a rounded corner against an edge
-   the row now owns would read as a chip that failed to fit. The thumb slot's
-   corners follow, being the row's radius restated. */
-.app-root.minimal .panel[data-panel="Layers"] .layer-row {
-  border-radius: 0;
-}
-
-.app-root.minimal .panel[data-panel="Layers"] .layer-thumb {
+   step, now measured from the panel's own edge, and the rail, the strata and
+   Release move with the rows they belong to. It is the *well* that bleeds
+   (`.layer-tree`), squared like every flush surface here; the rows were
+   already flat bands inside it. The header above and the properties below the
+   `hr` keep their inset, so the well sits between two quiet inset sections. */
+.app-root.minimal .panel[data-panel="Layers"] .layer-tree {
+  margin: 0 -14px;
   border-radius: 0;
 }
 
@@ -1590,6 +1581,17 @@ hr {
   background: #3a6ea5;
 }
 
+/* The tree's own ground: a well a step darker than the panel, translucent so the
+   panel's paper still shows through it — the thumbnail well's ink, because it is
+   the same statement made larger: this region is a *picture* (the stack, drawn),
+   and the ground under a picture is not the ground the controls stand on. */
+.layer-tree {
+  position: relative;
+  padding: 2px 0;
+  border-radius: 6px;
+  background: #00000038;
+}
+
 /* One entry in the tree: the row, plus the indent its own membership opens to the
    left of it. The indent is padding *here* rather than a margin on the row because
    that space is not empty any more — its last step holds the row's Release, so it has
@@ -1599,11 +1601,39 @@ hr {
   margin: 4px 0;
 }
 
+/* The strata: each row's indent gutter, painted. Contiguous members of a group
+   share a depth, so their bands merge into one column the eye reads as "this
+   block is carried" — a deeper block paints a wider band, which is depth made
+   legible at a glance the way the eyes' column is. Each band runs 4px past its
+   own row to bridge the seam *below*, toward the base a carried block ends at;
+   nothing is bridged upward, because what is above the topmost member is not
+   part of the group. The width is `--indent`, the very value the item's padding
+   lays the row out with (`panels::layer`), so band and gutter cannot disagree.
+   Behind the row (`.layer-row` is positioned) and inert to the pointer, which
+   the Release button standing in the same gutter still owns. */
+.layer-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: -4px;
+  width: var(--indent, 0px);
+  /* One 14px stripe per step of depth (the period is `layer_tree::INDENT`),
+     parted by a quieter seam — so a doubly-carried row's gutter reads as two
+     strata rather than one wide slab, and the seams line up down the column
+     into the tree's contour lines. */
+  background: repeating-linear-gradient(to right, #ffffff1f 0 13px, #ffffff08 13px 14px);
+  pointer-events: none;
+}
+
 .layer-row {
   /* The ground the fold triangle is positioned against; it hangs off the top edge. */
   position: relative;
   padding: 5px 6px;
-  border-radius: 6px;
+  /* Flat bands in the well, both modes: the well provides the list's shape, and a
+     rounded corner on a full-width band inside it would read as a chip that
+     failed to fit — the flush lists' idiom (`.preset-row`). */
+  border-radius: 0;
   background: #33333a;
   font-size: 12px;
 }
@@ -1746,10 +1776,10 @@ button.layer-release:hover {
    Flush with the row's right edge and as tall as the row. `align-self: stretch` takes
    the row's content height, and the negative margins eat the row's own `5px 6px`
    padding on the three sides it meets, so the slot goes edge to edge instead of
-   floating in a gutter. The right corners take the row's own 6px radius for the same
-   reason: it is part of the row's rectangle rather than a chip sitting on it. Those
-   three numbers are the only coupling — if `.layer-row`'s padding or radius moves,
-   these move with it.
+   floating in a gutter — part of the row's rectangle rather than a chip sitting on
+   it, which is also why its corners follow the row's (square, now that the rows are
+   flat bands in the tree's well). The padding numbers are the only coupling — if
+   `.layer-row`'s padding moves, these move with it.
 
    `pointer-events: none` because **the whole row is the grip**: a drag starts anywhere
    along it, and an element at the end of the row that swallowed the press would put a
@@ -1771,7 +1801,9 @@ button.layer-release:hover {
   flex: none;
   align-self: stretch;
   margin: -5px -6px -5px 0;
-  border-radius: 0 6px 6px 0;
+  /* Square, as the row now is — the corners here were the row's own radius,
+     restated, and they follow it to 0. */
+  border-radius: 0;
   background-color: #00000038;
   background-repeat: no-repeat;
   background-position: center;
