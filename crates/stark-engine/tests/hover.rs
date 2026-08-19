@@ -354,6 +354,126 @@ fn a_pixel_staircase_holds_its_heading() {
     );
 }
 
+/// The estimator outlives the hover: the window a press interrupts becomes the
+/// stroke's **run-up**, conditioning the fit's entry with the motion the engine
+/// was already watching (§6.2, `PathFitter::seed_context`).
+///
+/// The scenario is the jitter pathology at full strength. A stroke's entry span
+/// is squashed by the clamped ends into a fraction of a pixel, so its heading
+/// is decided by where one control point lands against grain-quantized samples
+/// — on the staircase drag below, the cold entry reads **−144°**, pointing
+/// backwards out of a stroke drawn at 14°. The same drag after a watched
+/// approach commits an entry of 13.6°. The record still starts exactly at the
+/// press — context conditions, it never extends — and a press nowhere near the
+/// trail takes no context at all.
+///
+/// Session-level and CPU-only, like the staircase test and for its reason.
+#[test]
+fn the_run_up_conditions_the_strokes_entry() {
+    use stark_engine::ViewTransform;
+    use stark_engine::path::span_end;
+    use stark_engine::session::Session;
+    use stark_model::document::LayerId;
+    use stark_model::geom::Extent2;
+
+    let session = || Session::new(ViewTransform::identity(Extent2::new(512, 512)), LayerId(0));
+    let true_heading = 0.25_f32.atan();
+
+    // The 1-in-4 staircase — the grid's rendering of the 14° line — from
+    // `from`, with the rise pattern offset by `phase` so the approach and the
+    // drag quantize differently, as two stretches of one line would.
+    let stair = |n: usize, from: Vec2, phase: usize, t0: f64| {
+        let mut y = 0;
+        (0..n)
+            .map(|i| {
+                if (i + phase) % 4 == 3 {
+                    y += 1;
+                }
+                InputSample {
+                    pos: from + Vec2::new(i as f32 + 1.0, y as f32),
+                    time: t0 + i as f64 * 0.016,
+                    ..Default::default()
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    // The watched approach ends where the press begins.
+    let hover = stair(32, Vec2::new(-33.0, -8.0), 0, 0.0);
+    let after_hover = 32.0 * 0.016;
+    let stroke = |s: &mut Session, press: Vec2| {
+        s.start_stroke(
+            Tool::Brush,
+            InputSample {
+                pos: press,
+                time: after_hover,
+                ..Default::default()
+            },
+            0,
+            DEFAULT_TOLERANCE,
+            0.0,
+        );
+        for m in stair(20, press, 1, after_hover + 0.016) {
+            s.stroke_to(m);
+        }
+        s.end_stroke().expect("the drag commits a stroke")
+    };
+    let entry = |rec: &stark_model::document::StrokeRecord| {
+        let d = span_end(&rec.path, 0) - rec.path[0].pos;
+        d.y.atan2(d.x)
+    };
+
+    let press = Vec2::ZERO;
+    let mut warm = session();
+    for s in &hover {
+        warm.hover_to(*s, DEFAULT_TOLERANCE, 50.0);
+    }
+    let conditioned = stroke(&mut warm, press);
+    assert_eq!(
+        conditioned.path[0].pos, press,
+        "the run-up must condition the entry, never move the start off the press"
+    );
+
+    let cold = stroke(&mut session(), press);
+    assert_ne!(
+        conditioned.path, cold.path,
+        "the run-up changed nothing, so the comparison below is vacuous"
+    );
+
+    // Measured when this was written: conditioned 13.6° on a 14.0° line, cold
+    // −144.1° — noise, since a squashed entry span's heading is decided by
+    // sub-pixel placement. The bound is set wide of the measurement, not tight
+    // to it; the cold comparison asserts only an improvement, because noise is
+    // allowed to land anywhere — including, on some other staircase, close.
+    let err_conditioned = (entry(&conditioned) - true_heading).abs();
+    let err_cold = (entry(&cold) - true_heading).abs();
+    assert!(
+        err_conditioned < err_cold,
+        "the run-up made the entry worse: {:.1}° vs {:.1}° cold",
+        entry(&conditioned).to_degrees(),
+        entry(&cold).to_degrees(),
+    );
+    assert!(
+        err_conditioned < 8_f32.to_radians(),
+        "the conditioned entry is {:.1}° where the line is {:.1}°",
+        entry(&conditioned).to_degrees(),
+        true_heading.to_degrees(),
+    );
+
+    // A press nowhere near the trail: the window is history from somewhere
+    // else, and the stroke fits exactly as if it had begun cold.
+    let far = press + Vec2::new(500.0, 0.0);
+    let mut teleported = session();
+    for s in &hover {
+        teleported.hover_to(*s, DEFAULT_TOLERANCE, 50.0);
+    }
+    let gated = stroke(&mut teleported, far);
+    let cold_far = stroke(&mut session(), far);
+    assert_eq!(
+        gated.path, cold_far.path,
+        "a teleported press still took the stale trail as its run-up"
+    );
+}
+
 /// One `Rendered::Live` export at the viewport, blocking — the shape every
 /// export test in `export.rs` uses, without a frame so the fallback rect is
 /// the same viewport `render_to_image` shows.

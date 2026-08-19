@@ -100,6 +100,25 @@ start is set and frozen at the first sample; the live end moves to the newest
 sample each update (and freezes there on release), which also keeps the preview
 under the cursor.
 
+A stroke that begins after a watched hover takes its window as a **run-up**
+(`PathFitter::seed_context`; §18.1.10 is where the window comes from). The entry
+is otherwise the fit's blind spot: the clamped ends squash the first span into a
+fraction of a pixel of arc, so its heading is decided by where one control point
+lands against grain-quantized samples — measured on a staircase drag, the cold
+entry read −144° on a stroke drawn at 14°, and the conditioned one 13.6°. The
+run-up's reports enter the solve as observation rows on the first span's
+**polynomial extension** — negative parameters (`spline::span_and_local_extended`)
+— so they *condition* the entry's direction and curvature without the curve
+starting any earlier: the start stays pinned at the press, the emitted path is
+unchanged in kind, and nothing about the record, the wire or replay moves.
+Context pressure is replaced with the press's own (pressure begins at contact;
+tilt and time are continuous through it and kept); depth is capped at two spans
+of extension, where a row's vote — the far control point's basis weight,
+`|u|³/6` — is strong but bounded; and the rows fall out of the solve on their
+own once the entry control points freeze. A stroke with no run-up behind it is
+bit-identical to what it always was, and so is a straight tap, whose two pinned
+endpoints leave nothing free to condition.
+
 Every report is weighted by **the arc it stands for** (`arc_weights`), which is
 what makes the solve a fit to the stroke rather than to the hand. A pointer
 reports on a clock, not on a ruler, so the same stretch of curve carries as many

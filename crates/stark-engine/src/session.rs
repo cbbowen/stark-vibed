@@ -601,11 +601,18 @@ impl Session {
     ) {
         self.tool = tool;
         self.selecting = None;
-        // For `start_selection`'s reason: a stale window outliving the stroke
-        // would resurrect a pre-press mark at pen-up (§18.1.10).
-        self.hover = None;
+        // The press supersedes the hover — but not before its window is put to
+        // work: the estimator becomes the stroke's **run-up**, seeding the fit
+        // with the motion the engine was already watching, so the entry
+        // direction and curvature of the record are conditioned rather than
+        // guessed from the first grain-quantized steps (§6.2,
+        // `PathFitter::seed_context`). Taking the window here also keeps
+        // `start_selection`'s promise: a stale one outliving the gesture would
+        // resurrect a pre-press mark at pen-up (§18.1.10).
+        let context = self.take_hover_context(sample.pos, tolerance);
         self.gesture_ordinal += 1;
         let mut fitter = PathFitter::with_tolerance(tolerance);
+        fitter.seed_context(&context);
         fitter.push(sample);
         self.in_flight = Some(StrokeBuilder {
             brush: self.brush,
@@ -906,6 +913,23 @@ impl Session {
     /// can skip the refold — and the repaint — when there was not.
     pub fn clear_hover(&mut self) -> bool {
         self.hover.take().is_some()
+    }
+
+    /// The hover window, surrendered as a stroke's run-up (§6.2) — empty when
+    /// there is none, or when it does not lead up to `press`: a window whose
+    /// newest report sits farther from the press than the window's own scale
+    /// (the same grain-derived arc that bounds it, [`WINDOW_ARC_GRAINS`]) is
+    /// history from somewhere else — a teleported pointer, a trail gone stale —
+    /// and evidence about nothing this stroke does.
+    fn take_hover_context(&mut self, press: Vec2, tolerance: f32) -> Vec<InputSample> {
+        let Some(h) = self.hover.take() else {
+            return Vec::new();
+        };
+        let near = h
+            .window
+            .last()
+            .is_some_and(|last| last.pos.distance(press) <= WINDOW_ARC_GRAINS * tolerance);
+        if near { h.window } else { Vec::new() }
     }
 
     /// Whether a hover mark is held — what the frontend peeks before spending a

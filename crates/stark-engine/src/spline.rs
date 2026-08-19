@@ -128,6 +128,28 @@ impl SplineIndex {
         (k, tf - k as f32)
     }
 
+    /// [`span_and_local`](Self::span_and_local), admitting the **polynomial
+    /// extension before the domain**: a negative `t` reads span 0 at a negative
+    /// local coordinate.
+    ///
+    /// Sound because each span's basis weights are plain polynomials in `u` —
+    /// they exist at any `u`, still sum to one identically, and at `u < 0`
+    /// describe span 0's own cubic carried backwards. That is what lets a fit be
+    /// *conditioned* by observations from before a curve starts — a stroke's
+    /// run-up (§6.2) — without the curve itself starting any earlier: the domain,
+    /// the pins, and everything that evaluates the curve are untouched, which is
+    /// why [`evaluate`](CubicBSpline::evaluate) deliberately keeps the clamp.
+    ///
+    /// Only the least-squares row builder uses this ([`m_step`](Self::m_step)),
+    /// and only the stroke fitter supplies negative parameters.
+    fn span_and_local_extended(self, t: f32) -> (usize, f32) {
+        if t < 0.0 {
+            (0, t)
+        } else {
+            self.span_and_local(t)
+        }
+    }
+
     /// The uniform B-spline basis matrix: entry `(a, i)` is the coefficient of `u^i`
     /// in the polynomial weight of conceptual control point `k + a` on any span `k`,
     /// with `u = t - k`. Thanks to the duplicating knot view, this one matrix serves
@@ -344,7 +366,7 @@ impl SplineIndex {
         let mut btb = OMatrix::<f32, Dyn, Dyn>::zeros(w, w);
         let mut btp = OMatrix::<f32, Dyn, Const<E>>::zeros_generic(Dyn(w), Const::<E>);
         for (i, (&t, p)) in ts.iter().zip(points).enumerate() {
-            let (k, u) = self.span_and_local(t);
+            let (k, u) = self.span_and_local_extended(t);
             // Cannot reach a free row, so contributes nothing to what is solved.
             if self.knot_row(k + ORDER - 1) < frozen {
                 continue;

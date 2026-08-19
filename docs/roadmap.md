@@ -818,6 +818,17 @@ press — and inherited rather than maintained, which is the whole design:
   following the pointer is never priced as painting), a short-stroke render
   and a refold — a moving pen's price, with the refit bounded by the window's
   count ceiling. A resting pointer reports nothing and costs nothing.
+- **The estimator outlives the hover: a press takes the window as the
+  stroke's run-up** (§6.2, `PathFitter::seed_context`). The stroke's entry is
+  the fit's blind spot — the clamped ends squash the first span into a
+  fraction of a pixel, so its heading is decided by sub-pixel control-point
+  placement against grain-quantized samples — and the run-up conditions it
+  with the motion the engine was already watching: measured on a staircase
+  drag, a cold entry read −144° on a stroke drawn at 14°, the conditioned one
+  13.6° (`tests/hover.rs`). Conditioning, never extension — the record still
+  starts at the press, pinned as ever, and nothing about the format, the wire
+  or replay moves. A press nowhere near the trail takes no context, and a
+  stroke with no hover behind it is bit-identical to what it always was.
 
 ### 18.2 Tier 2 — where we can beat the prior art
 

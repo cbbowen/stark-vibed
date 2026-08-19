@@ -289,6 +289,13 @@ pub struct PathFitter {
     /// it. Kept whole — a few hundred is nothing — while the solve only ever looks
     /// at the tail (see `first_live`).
     pts: Vec<Accepted>,
+    /// The **run-up** (§6.2): reports from before the stroke's first sample, at
+    /// negative arcs measured back from it — see [`Self::seed_context`]. Never
+    /// part of the emitted path; evidence for the solve alone.
+    context: Vec<Accepted>,
+    /// Run-up reports awaiting the first push, which is what their arcs, times
+    /// and pressures are converted against ([`Self::adopt_context`]).
+    pending_context: Vec<InputSample>,
     /// First sample that can still reach a control point being solved for.
     first_live: usize,
     /// Control points: geometry, and the pen channels riding the same knots.
@@ -355,6 +362,8 @@ impl PathFitter {
     pub fn with_tolerance(tolerance: f32) -> Self {
         Self {
             pts: Vec::new(),
+            context: Vec::new(),
+            pending_context: Vec::new(),
             first_live: 0,
             geom: GeomCtrl::zeros_generic(Dyn(0), Const::<2>),
             attr: ChannelCtrl::zeros_generic(Dyn(0), Const::<CHANNELS>),
@@ -386,12 +395,70 @@ impl PathFitter {
     /// stroke the finite reports describe.
     ///
     /// [`InputSample::is_finite`]: crate::command::InputSample::is_finite
+    /// Seed the stroke's **run-up**: reports from before its first sample — the
+    /// hover trail the engine was already watching (§18.1.10) — offered to the
+    /// solve as evidence of how the hand was moving when the stroke began.
+    ///
+    /// **Context conditions; it never extends.** The fitted curve still starts
+    /// at the first pushed sample, pinned exactly as ever, and the emitted path
+    /// is unchanged in kind. What the run-up reaches is the *solve*: its reports
+    /// become observation rows on the first span's polynomial extension —
+    /// negative parameters (`spline::span_and_local_extended`) — so the entry
+    /// direction and curvature of the committed record are informed by motion
+    /// the fit could otherwise only guess at from its first, grain-quantized
+    /// steps ([`Self::context_rows`]). The rows fall out of the solve on their
+    /// own once the entry control points freeze, and a fitter seeded with
+    /// nothing is bit-identical to one that never had this called.
+    ///
+    /// Call before the first [`push`](Self::push); afterwards it is ignored, as
+    /// are non-finite reports. The reports' pressures are replaced with the
+    /// first pushed sample's at conversion: pressure begins at the press — a
+    /// hovering pen reports none — and geometry is what the run-up is evidence
+    /// of. Tilt and time are kept; both are continuous through a press.
+    ///
+    /// A stroke that never grows past its two pinned endpoints has nothing free
+    /// for the run-up to condition: a straight tap stays exactly the chord it
+    /// always was, which is right — inventing curvature there would fabricate a
+    /// mark the hand never made.
+    pub fn seed_context(&mut self, samples: &[InputSample]) {
+        if !self.pts.is_empty() || self.finished {
+            return;
+        }
+        self.pending_context = samples.iter().copied().filter(|s| s.is_finite()).collect();
+    }
+
+    /// Convert the pending run-up against the stroke's first sample: arcs walk
+    /// back from it (negative), times are re-based on it, and pressures are
+    /// replaced with its own — see [`seed_context`](Self::seed_context).
+    fn adopt_context(&mut self, first: &InputSample) {
+        let pending = std::mem::take(&mut self.pending_context);
+        let mut arc = 0.0;
+        let mut ahead = first.pos;
+        self.context = pending
+            .iter()
+            .rev()
+            .map(|s| {
+                arc -= (ahead - s.pos).length();
+                ahead = s.pos;
+                Accepted {
+                    pos: s.pos,
+                    channels: [first.pressure, s.tilt.x, s.tilt.y, self.rel_time(s.time)],
+                    arc,
+                }
+            })
+            .collect();
+        self.context.reverse();
+    }
+
     pub fn push(&mut self, s: InputSample) {
         if self.finished || !s.is_finite() {
             return;
         }
         match self.pts.last() {
-            None => self.t0 = s.time,
+            None => {
+                self.t0 = s.time;
+                self.adopt_context(&s);
+            }
             Some(prev) => {
                 let step = (s.pos - prev.pos).length();
                 // A report that did not move carries no geometry, and a run of them
@@ -631,7 +698,7 @@ impl PathFitter {
         // minimized over — see [`window_indices`], which is the whole of why this
         // costs what it costs rather than what the digitizer charges for it.
         let idx = window_indices(&self.pts, lo);
-        let pos: Vec<[f32; 2]> = idx.iter().map(|&i| self.pts[i].pos.to_array()).collect();
+        let mut pos: Vec<[f32; 2]> = idx.iter().map(|&i| self.pts[i].pos.to_array()).collect();
 
         // Distance along the stroke is only a *first guess* at where a sample sits on
         // the curve, because a clamped B-spline is not parameterized by arc: the
@@ -646,10 +713,16 @@ impl PathFitter {
         // non-decreasing, so a sample can slide a little along the curve but can
         // never overtake its neighbours — the reordering that makes a searched
         // correspondence dangerous is ruled out by construction.
-        let ts: Vec<f32> = idx.iter().map(|&i| param(self.pts[i].arc)).collect();
+        let mut ts: Vec<f32> = idx.iter().map(|&i| param(self.pts[i].arc)).collect();
         // What each report stands for, so the solve minimizes over the *stroke* rather
         // than over the reporting clock ([`arc_weights`]).
-        let qs = arc_weights(&self.pts, &idx);
+        let mut qs = arc_weights(&self.pts, &idx);
+        let mut vals: Vec<[f32; CHANNELS]> = idx.iter().map(|&i| self.pts[i].channels).collect();
+        // The run-up's rows, while the entry control points are still free —
+        // negative parameters on the first span's polynomial extension
+        // ([`Self::seed_context`]). After every real row, so nothing about the
+        // window's own bookkeeping moves.
+        self.context_rows(frozen, &profile, &mut ts, &mut pos, &mut vals, &mut qs);
         // Solved **into** the candidate polygon rather than into a fresh one: the
         // prior and the result are the same buffer, which is sound because the solve
         // reads every row it uses as a prior before it writes any
@@ -671,7 +744,6 @@ impl PathFitter {
         // the same solve with a different payload — unsmoothed, since a pressure ramp
         // is not a shape and has no curvature to penalize. Its end is held (the `1`)
         // for the reason set out where that row is written, above.
-        let vals: Vec<[f32; CHANNELS]> = idx.iter().map(|&i| self.pts[i].channels).collect();
         index.fit_into(
             Observations {
                 ts: &ts,
@@ -778,7 +850,91 @@ impl PathFitter {
     fn rel_time(&self, t: f64) -> f32 {
         (t - self.t0) as f32
     }
+
+    /// Append the run-up's observation rows ([`Self::seed_context`]) — while the
+    /// entry control points are still free, and only as deep as the extension
+    /// can be trusted.
+    ///
+    /// Each row sits at a **negative parameter**: the report's arc behind the
+    /// stroke's start, carried onto the extension at the curve's **mean** arc
+    /// density. Deliberately the mean and not the density the curve begins with:
+    /// the clamped ends squash the first span into a fraction of the arc an
+    /// interior one covers, but the squash is the triple knot's artifact, and
+    /// the extension has no knots — mapped at the start's own density, a whole
+    /// run-up fit inside a fraction of a pixel and reached nothing. Depth is
+    /// capped at [`CONTEXT_REACH`]. The rows are weighted by the trapezoid rule
+    /// among themselves and normalized to average one — the same statement
+    /// [`arc_weights`] makes for the window, made locally.
+    ///
+    /// Not built at all once `frozen` reaches the rows the extension touches:
+    /// span 0 reads the first two distinct control points, so past `frozen == 1`
+    /// the rows could no longer move anything `m_step` solves for (its own
+    /// reach test would drop them anyway).
+    #[allow(clippy::too_many_arguments)]
+    fn context_rows(
+        &self,
+        frozen: usize,
+        profile: &[f32],
+        ts: &mut Vec<f32>,
+        pos: &mut Vec<[f32; 2]>,
+        vals: &mut Vec<[f32; CHANNELS]>,
+        qs: &mut Vec<f32>,
+    ) {
+        if frozen >= 2 || self.context.is_empty() {
+            return;
+        }
+        let total = *profile.last().expect("profile is never empty");
+        if total <= 1e-6 {
+            return;
+        }
+        let spans = (profile.len() - 1) as f32 / ARC_SAMPLES_PER_SPAN as f32;
+        let density = spans / total;
+        // Context arcs ascend towards zero, so the kept suffix is the near end.
+        let from = self
+            .context
+            .partition_point(|c| c.arc * density < -CONTEXT_REACH);
+        let kept = &self.context[from..];
+        if kept.is_empty() {
+            return;
+        }
+        let mut w: Vec<f32> = (0..kept.len())
+            .map(|j| {
+                // The stroke's own start closes the run on the near side, so the
+                // newest context report spans a full interval like the rest.
+                let hi = if j + 1 < kept.len() {
+                    kept[j + 1].arc
+                } else {
+                    0.0
+                };
+                let lo = if j > 0 { kept[j - 1].arc } else { kept[j].arc };
+                (hi - lo) * 0.5
+            })
+            .collect();
+        let sum: f32 = w.iter().sum();
+        if sum <= 1e-6 {
+            return;
+        }
+        let scale = kept.len() as f32 / sum;
+        for (c, wj) in kept.iter().zip(&mut w) {
+            *wj *= scale;
+            ts.push(c.arc * density);
+            pos.push(c.pos.to_array());
+            vals.push(c.channels);
+            qs.push(*wj);
+        }
+    }
 }
+
+/// How deep into the pre-domain extension a run-up row may sit, in spans
+/// ([`PathFitter::context_rows`]).
+///
+/// The bound is on the row's **vote**, not on numeric stability. A row on span
+/// 0's extension reaches the solve only through the far control point's basis
+/// weight, `|u|³ / 6` — about 1.3 at two spans back, a strong but bounded say,
+/// comparable to a couple of on-curve reports — and it grows with the cube from
+/// there, until evidence extrapolated far off the curve would outvote the data
+/// actually on it.
+const CONTEXT_REACH: f32 = 2.0;
 
 /// **How much stroke each report speaks for**: the arc from halfway back to its
 /// predecessor to halfway on to its successor, normalized so the weights average one.
