@@ -332,6 +332,10 @@ pub enum Anchor {
     PanelColumn,
     /// The quick-brush rack down the left (§18.1.8).
     QuickSlots,
+    /// The navigator's miniature, in the bottom-left corner (§11) — the
+    /// other half of that column, and the other thing the Panels menu shows
+    /// and hides that is not a panel.
+    Navigator,
     /// The command rail in the top-left corner (§11) — the ☰ and Panels menus and
     /// the ⚙. Always on screen, so nothing has to reveal it and nothing can close
     /// it.
@@ -370,6 +374,7 @@ impl Anchor {
             }
             Anchor::PanelColumn => ".panel-wake".to_string(),
             Anchor::QuickSlots => ".slot-overlay".to_string(),
+            Anchor::Navigator => ".navigator-overlay".to_string(),
             Anchor::CommandRail => ".command-rail".to_string(),
             // By the id the app already gives it, rather than by its class: the
             // canvas is named once (`render::CANVAS_ID`) and this is that name,
@@ -407,6 +412,7 @@ impl Anchor {
                 asleep && PanelId::ALL.iter().any(|id| !hidden.contains(id))
             }
             Anchor::QuickSlots => (state.slots.pinned)(),
+            Anchor::Navigator => (state.navigator)(),
             // Always. Both are mounted for the life of the page and neither has a
             // control that puts it away, so these lessons are dismissed the ordinary
             // way and by nothing else.
@@ -448,6 +454,7 @@ impl Anchor {
                 let mut pinned = state.slots.pinned;
                 pinned.set(true);
             }
+            Anchor::Navigator => crate::navigator::set_open(state, true),
             // Nothing to do: both are always there. Arms that say so, rather than a
             // catch-all, so a variant added later has to decide.
             // Nor here, and this one is a decision rather than a fact: the deed
@@ -490,6 +497,10 @@ enum Side {
     /// from under the command rail to the foot of the window and centres its rows in
     /// that, so the *box's* top edge is a long way above anything drawn. Lining up
     /// with it would put the card level with nothing.
+    ///
+    /// The navigator, sharing that column, wants it for the opposite reason: its box
+    /// *is* the picture, but the picture sits on the foot of the window, so a card
+    /// hung from its top edge would run off the bottom of the screen.
     RightAtMiddle,
     /// Above the anchor, centred on it.
     Above,
@@ -688,8 +699,8 @@ static LESSONS: &[Lesson] = &[
         key: "navigator",
         deed: Deed::LongPan,
         after: 2,
-        anchor: Anchor::Panel(PanelId::Navigator),
-        side: Side::LeftAtTop,
+        anchor: Anchor::Navigator,
+        side: Side::RightAtMiddle,
         title: "You don't have to drag that far",
         body: "The navigator is the whole piece at a glance. Click or drag inside it to go somewhere. Drag with the right button to rotate the canvas.",
     },

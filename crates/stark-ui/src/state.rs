@@ -269,6 +269,16 @@ pub struct AppState {
     pub gradients: crate::gradients::GradientsState,
     /// The ten brushes under the hand (§18.1.8; `crate::slots`).
     pub slots: SlotState,
+    /// Whether the Navigator's miniature is showing in the bottom-left corner
+    /// (§11; `crate::navigator`) — the Panels menu's "Navigator".
+    ///
+    /// A signal here rather than an entry in `PanelLayout::hidden`, because the
+    /// overview is no longer a panel in the stack: it wears no title bar, its box
+    /// is the artwork's aspect rather than a column's width, and it stands in a
+    /// corner of the window. What it keeps from the stack is durability — written
+    /// only by [`navigator::set_open`](crate::navigator::set_open), which persists
+    /// after every change.
+    pub navigator: Signal<bool>,
     /// The guided tour (§24; `crate::tutor`): what the user has done often enough
     /// to be told about, and the lesson on screen.
     ///
@@ -299,10 +309,12 @@ pub struct SlotState {
     /// "Quick brushes" (§18.1.8). What it buys is a rack that can be *clicked*,
     /// which is the only way to a slot for a hand with no keyboard under it.
     ///
-    /// Not persisted, like the panel stack's own visibility (`layout::PanelLayout`
-    /// — which this is not part of, the rack being chrome of its own down the
-    /// left rather than a panel in the stack): the menu says what is on screen
-    /// now, and none of its entries claims to say what will be next time.
+    /// **Not** persisted, unlike the panel stack's visibility and the navigator's
+    /// ([`AppState::navigator`]) — the two other things that menu shows and hides.
+    /// The rack is a picture of what the *keyboard* holds, and pinning it is asking
+    /// to see that once; a rack that came back next visit would be a column of
+    /// chrome standing over the painting because of something the artist did last
+    /// week.
     pub pinned: Signal<bool>,
 }
 
@@ -502,6 +514,7 @@ impl AppState {
                 held: root_signal(|| None),
                 pinned: root_signal(|| false),
             },
+            navigator: root_signal(|| false),
             tutor: crate::tutor::TutorState {
                 ledger: root_signal(Default::default),
                 recent: root_signal(Default::default),

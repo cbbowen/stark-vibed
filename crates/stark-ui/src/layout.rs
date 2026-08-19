@@ -42,9 +42,7 @@ use dioxus::prelude::*;
 
 use crate::icons::{self, icon};
 use crate::panels::reorder::{Grab, Motion, Slide};
-use crate::panels::{
-    BrushPanel, ColorPanel, GuidesPanel, LayerPanel, LightingPanel, NavigatorPanel, SelectPanel,
-};
+use crate::panels::{BrushPanel, ColorPanel, GuidesPanel, LayerPanel, LightingPanel, SelectPanel};
 use crate::platform;
 use crate::state::AppState;
 
@@ -52,7 +50,6 @@ use crate::state::AppState;
 /// order and which are open (§11).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PanelId {
-    Navigator,
     Color,
     Brush,
     Select,
@@ -62,11 +59,10 @@ pub enum PanelId {
 }
 
 impl PanelId {
-    /// Every panel, in the default top-to-bottom order. The navigator leads: it is
-    /// the only one that says where you *are* rather than what the next stroke will
-    /// be, and it is read at a glance rather than operated.
-    pub const ALL: [PanelId; 7] = [
-        PanelId::Navigator,
+    /// Every panel, in the default top-to-bottom order. Color leads: it is what the
+    /// next stroke is made of, and the one panel an artist reaches for between
+    /// nearly every pair of them.
+    pub const ALL: [PanelId; 6] = [
         PanelId::Color,
         PanelId::Brush,
         PanelId::Select,
@@ -88,7 +84,6 @@ impl PanelId {
     /// The panel's title-bar label.
     pub fn title(self) -> &'static str {
         match self {
-            PanelId::Navigator => "Navigator",
             PanelId::Color => "Color",
             PanelId::Brush => "Brush",
             PanelId::Select => "Select",
@@ -111,7 +106,6 @@ impl PanelId {
     /// views of one subject, so they are one mark.
     pub fn glyph(self) -> &'static str {
         match self {
-            PanelId::Navigator => icons::NAVIGATOR,
             PanelId::Color => icons::COLOR,
             PanelId::Brush => icons::BRUSH,
             PanelId::Select => icons::SELECTION,
@@ -624,13 +618,13 @@ fn persist(layout: PanelLayout) {
 /// Fold `id` to its title bar, or unfold it — what clicking a title does
 /// ([`Panel`]), and remembered like everything else about the stack.
 ///
-/// A fold is deliberately *not* a close. The panel keeps its slot, its height and its
-/// place in the drag order, and everything inside it goes on existing — the navigator
-/// keeps its surface, the layer list its scroll — because the point of folding is to
-/// spend less of the column on a panel you are still working with. Which is also why
-/// the content is hidden by the stylesheet rather than left out of the render: an
-/// unmounted panel would rebuild itself on every unfold, and one of them owns a
-/// `wgpu::Surface`.
+/// A fold is deliberately *not* a close. The panel keeps its slot, its height and
+/// its place in the drag order, and everything inside it goes on existing — the layer
+/// list keeps its scroll, the preset library its place in the roster — because the
+/// point of folding is to spend less of the column on a panel you are still working
+/// with. Which is also why the content is hidden by the stylesheet rather than left
+/// out of the render: an unmounted panel would rebuild itself, and everything it had
+/// scrolled to or measured, on every unfold.
 pub fn toggle_collapse(layout: PanelLayout, id: PanelId) {
     let mut collapsed = layout.collapsed;
     // Answered into a `bool` first: a `peek` in the condition stays borrowed through
@@ -698,9 +692,9 @@ pub fn toggle_panel(state: AppState, layout: PanelLayout, id: PanelId) {
 ///
 /// So the stack's order is not in the DOM: slot *k* renders panel *k* for the life of the
 /// app, and a reorder changes an integer rather than moving anything. What that buys is
-/// that a panel keeps its own element and its own subtree — the navigator's canvas and the
-/// layer list survive being dragged up the stack, where reordering the children would
-/// rebuild whichever panels changed slots.
+/// that a panel keeps its own element and its own subtree — the layer list's scroll and
+/// the preset library's survive being dragged up the stack, where reordering the children
+/// would rebuild whichever panels changed slots.
 ///
 /// It costs the stack `:first-child` / `:last-child`, since the first child is now
 /// whichever panel leads `PanelId::ALL` rather than the top of the column; `Panel` names
@@ -826,7 +820,6 @@ pub fn PanelStack() -> Element {
                             |(s, dy)| s.motion(slot, (0.0, dy)),
                         ),
                         match id {
-                            PanelId::Navigator => rsx! { NavigatorPanel {} },
                             PanelId::Color => rsx! { ColorPanel {} },
                             PanelId::Brush => rsx! { BrushPanel {} },
                             PanelId::Select => rsx! { SelectPanel {} },
@@ -1307,7 +1300,7 @@ mod tests {
     /// Three open panels and the boxes `platform::panel_boxes` would report for them
     /// — **keyed the way the DOM keys them**, which is the round trip under test.
     fn stack() -> (Vec<PanelId>, Vec<(String, f32, f32)>) {
-        let open = vec![PanelId::Navigator, PanelId::Color, PanelId::Brush];
+        let open = vec![PanelId::Color, PanelId::Brush, PanelId::Select];
         let boxes = open
             .iter()
             .enumerate()
@@ -1329,7 +1322,7 @@ mod tests {
     #[test]
     fn a_grab_resolves_against_the_key_the_panel_wears() {
         let (open, boxes) = stack();
-        let grab = Grab::begin(panel_key(PanelId::Color), boxes, (0.0, 0.0));
+        let grab = Grab::begin(panel_key(PanelId::Brush), boxes, (0.0, 0.0));
         let keys: Vec<String> = open.iter().copied().map(panel_key).collect();
         assert_eq!(grab.resolve(&keys).map(|(i, _)| i), Some(1));
     }
@@ -1340,7 +1333,7 @@ mod tests {
     fn a_panel_lands_in_the_slot_it_was_dragged_to() {
         let (open, boxes) = stack();
         for (dy, gap) in [(0.0, 0), (STEP, 1), (2.0 * STEP, 2), (9.0 * STEP, 2)] {
-            let slide = dragged(&open, boxes.clone(), PanelId::Navigator, dy);
+            let slide = dragged(&open, boxes.clone(), PanelId::Color, dy);
             assert_eq!(slide.gap, gap, "{dy}px down");
         }
     }
@@ -1351,11 +1344,11 @@ mod tests {
     #[test]
     fn a_drag_that_goes_nowhere_commits_nothing() {
         let (open, boxes) = stack();
-        let mut grab = Grab::begin(panel_key(PanelId::Color), boxes.clone(), (0.0, 0.0));
+        let mut grab = Grab::begin(panel_key(PanelId::Brush), boxes.clone(), (0.0, 0.0));
         grab.track((0.0, 1.0), true);
         assert!(!grab.live(), "a press under the slop is still a press");
         assert!(
-            dragged(&open, boxes, PanelId::Color, 0.0).inert(),
+            dragged(&open, boxes, PanelId::Brush, 0.0).inert(),
             "and a drag back to where it started is not a move"
         );
     }
@@ -1366,7 +1359,7 @@ mod tests {
     #[test]
     fn an_unmeasured_panel_abandons_the_gesture() {
         let (mut open, boxes) = stack();
-        let mut grab = Grab::begin(panel_key(PanelId::Navigator), boxes, (0.0, 0.0));
+        let mut grab = Grab::begin(panel_key(PanelId::Color), boxes, (0.0, 0.0));
         grab.track((0.0, 4.0 * STEP), true);
         open.push(PanelId::Layers);
         assert!(landing(&open, &grab).is_none(), "Layers has no box");

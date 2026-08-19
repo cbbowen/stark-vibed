@@ -1,5 +1,28 @@
-//! The Navigator panel: a miniature of the whole piece, the viewport marked on it,
-//! and a click to go there (§11).
+//! The Navigator: a miniature of the whole piece in the bottom-left corner, the
+//! viewport marked on it, and a click to go there (§11).
+//!
+//! # Why it is not a panel
+//!
+//! It was one, and the three things wrong with that are the three things this
+//! module now is:
+//!
+//! - **It has no title to wear.** A picture of the piece is the one piece of
+//!   chrome that says what it is by being looked at, so a bar naming it was a
+//!   row of pixels spent restating the obvious — and a ✕ on a thing the Panels
+//!   menu already toggles.
+//! - **Its aspect is the artwork's**, not the stack's. A panel is a fixed-width
+//!   column, so a portrait piece left two empty gutters and a landscape one a
+//!   band under the picture; free of the column the box is exactly the miniature
+//!   and the corner of the window keeps the difference.
+//! - **It is read, not operated.** It earns its place by being glanceable, which
+//!   is an argument for a corner rather than for a slot in the queue of things
+//!   you reach for between strokes.
+//!
+//! So it is chrome of its own, like the quick-brush rack it shares a column with
+//! (`crate::slots`): no background, no header, a shadow to lift it off the paint,
+//! and the Panels menu to show and hide it. Unlike the rack it is **remembered** —
+//! an artist who wants the overview up wants it up next time, which is the bargain
+//! the panel stack makes ([`set_open`], and `layout::set_open` before it).
 //!
 //! # What "the whole piece" means
 //!
@@ -15,8 +38,8 @@
 //!
 //! # It is a surface, not an image
 //!
-//! The miniature is a second WebGPU surface bound to the panel's own `<canvas>`, and
-//! the engine renders the document straight into it
+//! The miniature is a second WebGPU surface bound to this component's own `<canvas>`,
+//! and the engine renders the document straight into it
 //! ([`Renderer::paint_overview`](crate::render::Renderer::paint_overview)) — the same
 //! arrangement as the painting canvas, one document seen twice. So this module holds
 //! **no pixels**: a refresh is one render and a present, synchronously, and what the
@@ -46,6 +69,7 @@ use dioxus::prelude::*;
 // (§18.1.7): "how square is square enough" has to mean one thing however the canvas
 // is being turned.
 use crate::input::{elem_xy, shortest_turn, snap_quarter};
+use crate::layout::chrome_class;
 use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch};
@@ -54,13 +78,21 @@ use stark_engine::command::ViewCommand;
 use stark_model::document::LayerId;
 use stark_model::geom::{Extent2, Vec2};
 
-/// The largest miniature, in CSS px. The width is the panel's inner width — the
-/// full panel, this one having shed its padding to bleed the picture to its
-/// edges (`.panel[data-panel="Navigator"]` in `stark.css`) — so a landscape
-/// piece reaches both of them; the height is a cap on how much of the panel
-/// stack one overview may take, which a tall piece runs into instead.
-const MAX_WIDTH: u32 = 280;
-const MAX_HEIGHT: u32 = 176;
+/// The box the miniature is fitted into, in CSS px — the largest it is ever drawn,
+/// on whichever axis the piece runs out of first.
+///
+/// A box rather than a width, and both numbers are caps in their own right: the
+/// overlay shrink-wraps whatever comes back, so a landscape piece spends the width,
+/// a portrait one spends the height, and neither pays for the axis it does not use.
+/// That is what leaving the panel stack bought, and it is why this is nearly square
+/// where the panel's box was a wide letterbox — a column's width was the constraint
+/// there, and the corner of a window is not a column.
+///
+/// The size itself is a bargain with the painting: every pixel of it is canvas the
+/// artist cannot see, and an overview too small to find the viewport marker in is
+/// not worth the ones it does spend.
+const MAX_WIDTH: u32 = 260;
+const MAX_HEIGHT: u32 = 200;
 
 /// How long a change has to stop arriving before the miniature is re-rendered.
 /// Long enough to collapse a burst — a held undo, a peer's actions landing, the
@@ -68,10 +100,50 @@ const MAX_HEIGHT: u32 = 176;
 /// overview appears while the artist is still looking at where it landed.
 const SETTLE_MS: i32 = 180;
 
+/// One key, namespaced and versioned like the other browser-local tables
+/// (`crate::storage`).
+const KEY_NAVIGATOR: &str = "stark.navigator.v1";
+
+/// What is stored while the overview is up. A key that is absent — or holds anything
+/// else, which is the damaged-store case — reads as put away, the same starting point
+/// every panel has (§11): the opening screen is the painting and nothing else.
+const SHOWN: &str = "1";
+
+/// Restore this browser's choice, at startup.
+pub fn load(state: AppState) {
+    let mut showing = state.navigator;
+    showing.set(crate::storage::get(KEY_NAVIGATOR).as_deref() == Some(SHOWN));
+}
+
+/// Show the overview or put it away, and remember it — **the only thing that writes
+/// [`AppState::navigator`](crate::state::AppState::navigator)**, which is what makes
+/// durability structural rather than a line every call site has to remember (the move
+/// `layout::set_open` makes for the panel stack, and `settings::SettingToggle` for the
+/// preferences).
+///
+/// Guarded on the value actually moving, since the tour calls it for an overview that
+/// is very often already up (§24.3) — and a `Signal` write dirties every subscriber
+/// whether or not the value changed.
+pub fn set_open(state: AppState, open: bool) {
+    let mut showing = state.navigator;
+    // Into a `bool` before the write: a read guard held across one is the shape that
+    // has borrow-panicked in this crate before.
+    let was = *showing.peek();
+    if was == open {
+        return;
+    }
+    showing.set(open);
+    crate::storage::set(
+        KEY_NAVIGATOR,
+        "whether the navigator is showing",
+        if open { SHOWN } else { "" },
+    );
+}
+
 /// Where the miniature sits in canvas space, and how large it is drawn.
 ///
-/// All the panel keeps: the picture itself lives on the GPU, in the surface bound to
-/// the panel's canvas. `Copy`, and four numbers wide, so the component that
+/// All the overlay keeps: the picture itself lives on the GPU, in the surface bound to
+/// its canvas. `Copy`, and four numbers wide, so the component that
 /// re-renders on every engine write can read it freely — where a readback path would
 /// keep a ~150 KB pixel buffer here and have to be careful never to clone it.
 #[derive(Clone, Copy, PartialEq)]
@@ -85,12 +157,12 @@ struct Overview {
     height: u32,
 }
 
-/// Draw the miniature: one render of the committed document into the panel's own
-/// surface, scaled to fit the panel's box.
+/// Draw the miniature: one render of the committed document into the overlay's own
+/// surface, scaled to fit [`MAX_WIDTH`] × [`MAX_HEIGHT`].
 ///
-/// `None` before the engine exists, before the panel's canvas has been attached to
+/// `None` before the engine exists, before the overlay's canvas has been attached to
 /// it, or when the overview rect has no area to render — a frame dragged to nothing,
-/// which [`export_plan`](stark_engine::Engine::export_plan) refuses; the panel then
+/// which [`export_plan`](stark_engine::Engine::export_plan) refuses; the overlay then
 /// keeps showing whatever it last drew rather than blinking.
 ///
 /// **One plan, asked for what is actually wanted.** Asking for a 1× plan first, purely
@@ -98,16 +170,16 @@ struct Overview {
 /// question in the way of the answer — one with a stricter precondition than the render
 /// it stands in for, since a 1× plan of a piece past the device's texture limit is
 /// refused as a texture it could not allocate. Past that much painting or frame the
-/// first call fails, `draw_overview` returns `None`, and the panel silently goes on
+/// first call fails, `draw_overview` returns `None`, and the overlay silently goes on
 /// showing a stale miniature at exactly the size where an overview earns its place.
-/// [`ExportScale::Fit`] asks the engine the question the panel has — "the largest that
+/// [`ExportScale::Fit`] asks the engine the question the overlay has — "the largest that
 /// fits this box" — and nothing about the size the picture *isn't* being rendered at
 /// can refuse it.
 ///
 /// Synchronous throughout: there is no readback, so nothing here awaits and nothing
 /// has to survive an await.
 fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
-    // Quiet: a miniature is a second render of state this panel is *reading*. It
+    // Quiet: a miniature is a second render of state this overlay is *reading*. It
     // runs from a render and from the mount handler, either of which publishing
     // would be a component asking to be re-rendered while rendering.
     crate::state::with_engine_quiet(state, |r| {
@@ -196,12 +268,13 @@ fn turn_to(view: stark_engine::ViewTransform, v: Vec2, was: f32) -> Option<f32> 
     Some(was + ease * shortest_turn(was, target))
 }
 
-/// The Navigator panel (see the module docs).
+/// The Navigator's miniature, down in the bottom-left corner (see the module docs).
 #[component]
-pub fn NavigatorPanel() -> Element {
+pub fn NavigatorOverlay() -> Element {
     let state = use_context::<AppState>();
     // Where the miniature currently sits in canvas space. Component-owned, and
-    // meaningless once the panel closes — the surface it describes goes with it.
+    // meaningless once the overview is put away — the surface it describes goes with
+    // it.
     let mut over = use_signal(|| None::<Overview>);
     // Which refresh is the current one. A burst of edits arms several, and each
     // checks this after its settle delay so all but the last stand down — the
@@ -238,6 +311,13 @@ pub fn NavigatorPanel() -> Element {
     });
 
     use_effect(move || {
+        // Subscribed to rather than peeked, which is what makes *showing* the
+        // overview schedule its first refresh. Put away there is no canvas mounted
+        // and so no surface to draw into, and a render would composite every tile in
+        // the document into nothing at all.
+        if !(state.navigator)() {
+            return;
+        }
         let Some((_, frame)) = subject() else { return };
         let mine = *ticket.peek() + 1;
         ticket.set(mine);
@@ -261,22 +341,31 @@ pub fn NavigatorPanel() -> Element {
         });
     });
 
+    if !(state.navigator)() {
+        return rsx! {};
+    }
+    // The two states with no picture to show, as a line of text in the corner rather
+    // than as nothing: the Panels menu has just ticked itself, and an overview that
+    // answered that by leaving the screen exactly as it was would read as a control
+    // that does not work. They carry `chrome` for the reason the miniature does, and
+    // they hug their words — a bottom-anchored box grows upward, so there is no
+    // reserved height here to keep the picture from jumping when it arrives.
     if subject().is_none() {
         return rsx! {
-            div { class: "nav-empty", "Paint something, or add a frame" }
+            div { class: chrome_class(state, "nav-empty"), "Paint something, or add a frame" }
         };
     }
 
     // The live view: where the marker goes, and what a turn-drag measures from.
     let Some(view) = state.obs.read().as_ref().map(|o| o.view) else {
         return rsx! {
-            div { class: "nav-empty", "Rendering the overview\u{2026}" }
+            div { class: chrome_class(state, "nav-empty"), "Rendering the overview\u{2026}" }
         };
     };
     // The canvas is mounted whatever state the picture is in, because it *is* the
     // picture — there is nothing to show it with before it exists. Until the first
     // render lands the marker is simply absent.
-    let placed = over().map(|o| (viewport_style(o, view), o.width, o.height));
+    let placed = over().map(|o| viewport_style(o, view));
 
     // Where a press in the miniature points, in canvas space. The surface is
     // presented 1:1, so the element's own coordinates are the picture's.
@@ -287,7 +376,16 @@ pub fn NavigatorPanel() -> Element {
     };
 
     rsx! {
-        div { class: "nav-thumb-row",
+        // Fades with the rest of the floating chrome while a canvas gesture is in
+        // flight, exactly as the panel that used to hold it did: mid-stroke the
+        // screen goes back to being the painting. Its own drag is deliberately not a
+        // canvas gesture (see the press handler), so this never fades what is being
+        // dragged.
+        //
+        // A wrapper around the frame rather than the frame itself, because the fade
+        // has to out-specify the pointer-events the corner hands back — see
+        // `.navigator-overlay` in the stylesheet, which is where that argument is.
+        div { class: chrome_class(state, "navigator-overlay"),
             div {
                 class: "nav-frame",
                 title: "Click to go there, or drag to move the view around the piece. \
@@ -343,12 +441,12 @@ pub fn NavigatorPanel() -> Element {
 
                 canvas {
                     class: "nav-thumb",
-                    // The panel's canvas *is* the render target, so mounting it is
-                    // what gives the engine somewhere to draw — and every remount
-                    // needs a fresh surface, since the element the old one was bound
-                    // to went with the panel. Drawing in the same handler is what
-                    // fills it before anyone sees it: the element is in the DOM by
-                    // now, and nothing here measures layout.
+                    // This canvas *is* the render target, so mounting it is what gives
+                    // the engine somewhere to draw — and every remount needs a fresh
+                    // surface, since the element the old one was bound to went with the
+                    // overlay. Drawing in the same handler is what fills it before
+                    // anyone sees it: the element is in the DOM by now, and nothing
+                    // here measures layout.
                     onmounted: move |e: Event<MountedData>| {
                         if let Some(canvas) = crate::platform::canvas_of(&e) {
                             crate::state::with_engine_quiet(state, |r| r.attach_overview(canvas));
@@ -358,7 +456,7 @@ pub fn NavigatorPanel() -> Element {
                         }
                     },
                 }
-                if let Some((marker, _, _)) = placed {
+                if let Some(marker) = placed {
                     div { class: "nav-view", style: "{marker}" }
                 }
             }

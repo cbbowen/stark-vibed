@@ -33,6 +33,7 @@ mod input;
 mod layer_thumbs;
 mod layout;
 mod modes;
+mod navigator;
 mod panels;
 mod platform;
 mod prefs;
@@ -63,6 +64,7 @@ use input::{
     hover_at, hover_gone, hover_stroke, pick_color, sample,
 };
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, resize_end, resize_move};
+use navigator::NavigatorOverlay;
 use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
 use panels::select::current_tool;
@@ -178,6 +180,10 @@ fn app() -> Element {
     // And so does the quick-brush rack (§18.1.8) — a browser that has never set
     // a slot is seeded below, once there is a preset library to seed it from.
     use_hook(|| slots::load(state));
+    // And whether the navigator's overview is up (§11), which follows the browser
+    // for the reason the panel stack's own visibility does: it is not a panel any
+    // more, but it is still a standing choice about what is on screen.
+    use_hook(|| navigator::load(state));
 
     // The ⚙ dialog's settings follow the browser the same way. Applied here, in the
     // root's own body, so the very first render is already in the mode the user left
@@ -414,11 +420,27 @@ fn app() -> Element {
             // Left command rail: rarely-used document commands, tucked away.
             CommandRail {}
 
-            // The quick-brush rack, down the left under the rail, while a number
-            // key is held (§18.1.8). Empty and free — and reading nothing — the
-            // rest of the time. It takes no pointer events, because the gesture
-            // it belongs to is hold-*and-draw*.
-            SlotOverlay {}
+            // The chrome down the left, under the rail: the quick-brush rack while
+            // a number key is held (§18.1.8), and the navigator's miniature in the
+            // corner (§11). Neither is a panel — one is summoned by a finger already
+            // on the keyboard, the other is a picture read at a glance — and both
+            // stand on this edge, which is the whole reason they share a box.
+            //
+            // A column rather than two independently placed overlays, because the
+            // two are sized by things that have nothing to do with each other: the
+            // rack by how many digits are filled, the miniature by the artwork's
+            // aspect. Any pair of fixed offsets that kept them apart on this window
+            // would put one over the other on a shorter one. Here the navigator
+            // takes what it needs from the bottom and the rack centres its rows in
+            // whatever is left, so "they do not overlap" is a fact about the layout
+            // rather than an arithmetic nobody re-checks.
+            //
+            // The box itself takes no pointer events; its children decide for
+            // themselves (the rack only while it is pinned, the miniature always).
+            div { class: "left-chrome",
+                SlotOverlay {}
+                NavigatorOverlay {}
+            }
 
             // Floating tool panels, stacked top-right — order + visibility are data-driven.
             PanelStack {}
@@ -984,6 +1006,7 @@ fn CommandRail() -> Element {
     let hidden = (layout.hidden)();
     let timeline_open = (state.timeline.open)();
     let rack_pinned = (state.slots.pinned)();
+    let nav_open = (state.navigator)();
 
     rsx! {
         div { class: chrome_class(state, "command-rail"),
@@ -1150,18 +1173,35 @@ fn CommandRail() -> Element {
                                 }
                             }
                         }
-                        // The quick-brush rack (§18.1.8), last and slightly apart:
-                        // it is the one thing this menu shows and hides that is not
-                        // a panel in the stack — it stands down the left, it has no
-                        // title bar to close itself from, and while a number is held
-                        // it appears whatever this entry says.
+                        // The two that are **not** panels, last and slightly apart:
+                        // both stand down the left of the window rather than in the
+                        // stack, and neither has a title bar to close itself from.
                         //
-                        // It belongs here all the same, because this menu is the map
-                        // of what is on screen, and because kept open the rack is
-                        // *clickable*: it is the mouse-only way to a slot, which a
-                        // hand with a pen and no keyboard has no other route to.
+                        // They belong here all the same, because this menu is the map
+                        // of what is on screen rather than a list of the panels — and
+                        // being in it is the only way to either of them.
+                        //
+                        // The navigator first: it is a standing readout, where the
+                        // rack below is a picture of what the keyboard is holding
+                        // (§11, §18.1.8).
                         MenubarItem {
                             index: PanelId::ALL.len(),
+                            value: "navigator".to_string(),
+                            on_select: move |_| navigator::set_open(state, !nav_open),
+                            span { class: "menu-item",
+                                {icon(icons::NAVIGATOR)}
+                                "Navigator"
+                            }
+                            span { class: "menu-check",
+                                if nav_open { {icon(icons::CHECK)} }
+                            }
+                        }
+                        // The quick-brush rack, and while a number is held it appears
+                        // whatever this entry says. What the entry buys is a rack that
+                        // is *clickable*: the mouse-only way to a slot, which a hand
+                        // with a pen and no keyboard has no other route to.
+                        MenubarItem {
+                            index: PanelId::ALL.len() + 1,
                             value: "quick-brushes".to_string(),
                             on_select: move |_| {
                                 let mut pin = state.slots.pinned;

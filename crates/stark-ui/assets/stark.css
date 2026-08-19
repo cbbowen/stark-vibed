@@ -313,25 +313,21 @@ hr {
   backdrop-filter: blur(8px);
 }
 
-/* The two panels whose content is one picture — the navigator's miniature, the
-   color panel's a/b plane — shed their padding: a picture reads best bled to the
-   panel's own edges, and the padding was the one thing between them. The header
-   carries the inset the panel gave up (its words still need a margin to sit in),
-   restoring its bottom half only on a folded panel, where the header's edge *is*
-   the panel's. Each picture's other half is elsewhere: the miniature is fitted
-   to the full inner width (`navigator.rs`), and the picker's geometry is
-   fractional, so its panel size is one rule below (`.ab-field`). */
-.panel[data-panel="Navigator"],
+/* The one panel whose content is a picture — the color panel's a/b plane — sheds
+   its padding: a picture reads best bled to the panel's own edges, and the padding
+   was the one thing between them. The header carries the inset the panel gave up
+   (its words still need a margin to sit in), restoring its bottom half only on a
+   folded panel, where the header's edge *is* the panel's. The picture's other half
+   is elsewhere: the picker's geometry is fractional, so its panel size is one rule
+   below (`.ab-field`). */
 .panel[data-panel="Color"] {
   padding: 0;
 }
 
-.panel[data-panel="Navigator"] .panel-header,
 .panel[data-panel="Color"] .panel-header {
   padding: 12px 14px 0;
 }
 
-.panel.collapsed[data-panel="Navigator"] .panel-header,
 .panel.collapsed[data-panel="Color"] .panel-header {
   padding-bottom: 12px;
 }
@@ -341,7 +337,6 @@ hr {
    but its bands sit between two inset sections and cannot reach a corner — and
    clipping that panel would cut its dragged row the moment a drag poked it past
    an edge. */
-.panel[data-panel="Navigator"],
 .panel[data-panel="Color"],
 .panel[data-panel="Brush"] {
   overflow: clip;
@@ -1160,17 +1155,58 @@ hr {
   height: 11px;
 }
 
-/* --- the quick-brush rack, while a number is held (§18.1.8) ---
-   A column down the left of the window of the brushes the digits carry, each drawn
-   with the preset row's recipe above. Where the chips it replaced were a permanent
-   row in the Brush panel, this is on screen only while a finger is on the key that
-   summons it — which is what lets it be this large.
+/* --- the chrome down the left (`main.rs`, `.left-chrome`) ---
+   Two things live on this edge and neither is a panel: the quick-brush rack while a
+   number key is held (§18.1.8), and the navigator's miniature in the corner (§11).
+   One column holds both, because the two are sized by facts that have nothing to do
+   with each other — the rack by how many digits are filled, the miniature by the
+   artwork's aspect — so any pair of fixed offsets that kept them apart on one window
+   would put one over the other on a shorter one.
 
-   Under the command rail rather than centred on the window, then centred in what is
-   left: the rail is the one other thing that lives on this edge, and a column that
-   floated up into it would collide on exactly the short windows where there is least
-   room to give. Overflow is clipped for the same reason — a rack taller than the gap
-   loses its ends rather than climbing over the rail.
+   Under the command rail rather than starting at the top of the window: the rail is
+   the third thing on this edge, and a column that floated up into it would collide on
+   exactly the short windows where there is least room to give.
+
+   The container never takes the pointer, so the gaps between its two halves are never
+   anything but painting; each half decides for itself. `justify-content` only matters
+   when the rack is absent — with it there the rack's `flex: 1` has already taken
+   everything the miniature left. */
+.left-chrome {
+  position: absolute;
+  left: 14px;
+  top: 148px;
+  bottom: 14px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  /* Each half is as wide as what it draws, not as wide as the widest of them: a
+     stretched box is chrome the artist cannot see standing over the painting, and
+     `pointer-events` is inherited, so it would be chrome that takes presses too. */
+  align-items: flex-start;
+  pointer-events: none;
+}
+
+/* Timeline mode plants a full-width bar across the foot of the window, so the column
+   stops above it rather than running into it — the same deference the panel stack and
+   the bottom bars pay. */
+.app-root.timeline-mode .left-chrome {
+  bottom: 68px;
+}
+
+/* --- the quick-brush rack, while a number is held (§18.1.8) ---
+   The brushes the digits carry, each drawn with the preset row's recipe above. Where
+   the chips it replaced were a permanent row in the Brush panel, this is on screen
+   only while a finger is on the key that summons it — which is what lets it be this
+   large.
+
+   It takes the whole column above the navigator and centres its rows in that, which
+   is what makes the pair safe at any window height: the miniature takes what its
+   aspect needs from the bottom and the rack is centred in the rest. `min-height: 0`
+   is what lets it *give* that room — a flex item's floor is its content, so without
+   it a full rack would push the miniature off the bottom rather than clipping. Which
+   is what the clip is for: a rack taller than the gap loses its ends rather than
+   climbing over the rail.
 
    The container never takes the pointer, so the gaps between rows and the empty
    column below the last one are never anything but painting. The rows take it only
@@ -1190,24 +1226,14 @@ hr {
    on the dim and the return, not on the insert, which is the right way round for a
    thing summoned by a finger that is already down. */
 .slot-overlay {
-  position: absolute;
-  left: 14px;
-  top: 148px;
-  bottom: 14px;
-  z-index: 20;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 4px;
   overflow: hidden;
   pointer-events: none;
-}
-
-/* Timeline mode plants a full-width bar across the foot of the window, so the column
-   stops above it rather than being centred into it — the same deference the panel
-   stack and the bottom bars pay. */
-.app-root.timeline-mode .slot-overlay {
-  bottom: 68px;
 }
 
 /* Wide enough for the thumbnail's own aspect (520x72) to land close to uncropped
@@ -1416,38 +1442,51 @@ hr {
   color: #eee;
 }
 
-/* --- navigator panel (panels/navigator.rs) ---
+/* --- the navigator's miniature, bottom-left (navigator.rs, §11) ---
    The miniature is a second WebGPU surface presented 1:1: the canvas carries the
    pixel size its plan was rendered at, set on the element together with the surface
    configuration (`Renderer::paint_overview`). So nothing here may give the canvas a
-   width or a height — a CSS size would stretch a portrait piece to the panel's
+   width or a height — a CSS size would stretch a portrait piece to some box's
    proportions, and the viewport marker, positioned in percentages of this box, would
-   then sit over a picture it does not describe. The row centres it instead, and
-   `.nav-frame` shrink-wraps it to become the marker's containing block. Centred
-   with flex, not `text-align`: that stood the inline-block frame on a text
-   baseline, a ~4px strip under a picture that sits flush on the panel's own
-   bottom edge. */
-.nav-thumb-row {
-  display: flex;
-  justify-content: center;
+   then sit over a picture it does not describe.
+
+   Which is the whole reason this is no longer a panel: a panel is a fixed-width
+   column, so the picture was letterboxed into it and the difference was spent on
+   nothing. Here the overlay shrink-wraps whatever the fit came back with, and the
+   corner keeps what a portrait piece does not use. `flex: none` says so to the
+   column above — the miniature's height is the artwork's, never slack for the rack
+   to take. */
+.navigator-overlay {
+  flex: none;
+  /* Clear of the rack when both are up. A margin rather than the column's `gap`,
+     because a hidden overlay leaves a comment node behind and `gap` cannot tell
+     the difference between that and a picture. */
+  margin-top: 10px;
+  /* The column declines the pointer for its empty half; this box *is* the picture,
+     so it takes it back — and `pointer-events` being inherited, that is also what
+     hands it to the frame inside. Stated on the overlay rather than on the frame so
+     `.chrome.dimmed` still out-specifies it: faded chrome must stop taking clicks,
+     and a rule on the child would win over the fade and go on answering presses the
+     artist can no longer see. */
+  pointer-events: auto;
 }
 
 .nav-frame {
   position: relative;
-  display: inline-block;
-  /* A frame in the literal sense: the piece's edge, so a light painting on the
-     light substrate still has a boundary against the panel's dark ground. An
-     *outline* rather than a border because this box is also the coordinate frame a
-     click is read in — an outline takes no space, so the element's own coordinates
-     stay the miniature's pixels. */
-  outline: 1px solid rgba(255, 255, 255, 0.14);
+  display: block;
+  /* Two shadows, one box. The hairline is the piece's edge, so a light painting on
+     a light substrate still has a boundary against the paint behind it; the soft
+     one is what lifts the picture off the canvas now that there is no panel under
+     it — the bargain `.slot-row` makes, and for the same reason. A *shadow* rather
+     than a border or an outline because this box is also the coordinate frame a
+     press is read in: neither spread takes any space, so the element's own
+     coordinates stay the miniature's pixels. */
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 2px 10px #0007;
   /* The viewport marker is drawn where it truly falls, so panning off the piece has
-     to *show* as the marker leaving — which means the box has to clip it. The
-     max-width rides along on that: a canvas awaiting its first render still has the
-     browser's intrinsic 300x150, and clipping it is better than letting it push the
-     panel wider. */
+     to *show* as the marker leaving — which means the box has to clip it. */
   overflow: hidden;
-  max-width: 100%;
   cursor: pointer;
   touch-action: none;
 }
@@ -1482,15 +1521,28 @@ hr {
 }
 
 /* Before the first miniature has been rendered (the engine is still starting, or a
-   frame has been dragged to nothing). Holds roughly the miniature's height so the
-   panel does not jump when the picture arrives. */
+   frame has been dragged to nothing, or there is nothing painted yet).
+
+   A line of words in the corner rather than nothing at all: the menu entry has just
+   ticked itself, and an overview that answered by leaving the screen exactly as it
+   was would read as a control that does not work. It hugs its words — no reserved
+   height, unlike the panel's version, because this box hangs from the foot of the
+   window and grows upward, so there is no jump to head off when the picture lands.
+
+   It is a sibling of `.navigator-overlay` rather than a child (the component returns
+   one or the other), so it states the two things that box would otherwise have given
+   it. */
 .nav-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 96px;
+  flex: none;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-background);
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
   color: rgba(232, 232, 234, 0.45);
   font-size: 12px;
+  pointer-events: none;
 }
 
 /* --- layer panel --- */

@@ -13,7 +13,6 @@ pub mod layer;
 /// Split from the panel it serves because it is the half that can be tested.
 pub mod layer_tree;
 pub mod lighting;
-pub mod navigator;
 pub mod pick;
 /// The drag that moves a row of a list — shared by the two panels that are
 /// rosters of a stack the artist arranges (the layer tree and the guide list).
@@ -31,7 +30,6 @@ pub use gradients::GradientTraceOverlay;
 pub use guides::{GuideEditOverlay, GuidesPanel, PerspectiveGuideBar};
 pub use layer::LayerPanel;
 pub use lighting::LightingPanel;
-pub use navigator::NavigatorPanel;
 pub use pick::PickBar;
 pub use select::{SelectPanel, SelectionBar};
 pub use timeline::TimelineBar;
