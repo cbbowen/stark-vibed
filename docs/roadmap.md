@@ -745,42 +745,53 @@ hover is wearing that size on the way back to the work.
   noise, and the crosshair is the better picture of a fine tip.
 
 **And the honest half — the mark itself — is built.** The circle says how far
-the brush reaches; under it the engine folds *the mark the hover's recent
-reports would have committed*: shape, softness, color, tilt, taper, the
-selection mask, and the wet-mixing against whatever paint is already there
+the brush reaches; under it the engine folds *the mark a drag begun this
+instant would open*: the touch-down under the cursor and the stroke it would
+lay carrying the hover's motion forward — shape, softness, color, tilt, taper,
+the selection mask, and the wet-mixing against whatever paint is already there
 (§6.2, §6.4). `preview == committed` (§1.3) extended to the moment before the
 press — and inherited rather than maintained, which is the whole design:
 
-- **One report per move, windowed in the engine.** The canvas's move handler
-  feeds `ViewCommand::PreviewHover` the newest sample (`input::hover_stroke`);
-  the session appends it to a trailing window of recent reports, refits the
-  window with the same `PathFitter` a gesture uses, and keeps the path `End`
-  would adopt. The first report of a fresh hover is a window of one — the
-  mark a *click* would make. **The window is the smoothing**: reports are
-  quantized to the device grain, so the heading of two adjacent reports snaps
-  between the eight compass points — jitter in the *input*, which the fitter
-  is precisely the machinery to price against detail, but only given
-  redundancy a bare pair never had. The dash therefore holds a heading the
-  raw staircase cannot (`tests/hover.rs` fits a pixel-stepped shallow line to
-  within a few degrees where the raw pair misses by thirty), with the same
-  steadiness a drawn stroke's tail already has, from the same solve.
-  Pressure is replaced with **full pressure** (a hovering pen, and a mouse,
-  reports zero — which would honestly preview no mark at all), full rather
-  than a middle weight so the mark fills the circle over it: two overlays
-  about one brush must not disagree about its reach. Tilt is kept — a
-  hovering pen reports it, and the mark should lean as the stroke would.
-- **The trail is the mark's length, and it is policy.** The window is pruned
-  to a trailing arc the frontend states per report — 40 screen px, carried
-  through the view like the rope (§6.11), because the dash is a cursor
-  affordance sized for the eye and should read the same at every zoom — but
-  never below the newest pair, so a flick whose one step outruns the trail
-  still shows its whole honest dash. The length does double duty: it is what
-  the eye sees, and it is the redundancy the fit smooths over — on a mouse it
-  spans ~40 grains. A count ceiling behind it bounds what a report's refit
-  can cost where motion is dense at the grain, and a report within a grain of
-  the last is dropped entirely — it carries nothing the fit could use, and a
-  resting pen's sub-grain drift would otherwise buy a refit and a refold per
-  report.
+- **One report per move, windowed in the engine — and the window is the
+  estimator, not the mark.** The canvas's move handler feeds
+  `ViewCommand::PreviewHover` the newest sample (`input::hover_stroke`); the
+  session appends it to a trailing window of recent reports and fits the
+  window with the same `PathFitter` a gesture uses. The fit is the smoothing:
+  reports are quantized to the device grain, so the heading of two adjacent
+  reports snaps between the eight compass points — jitter in the *input*,
+  which the fitter is precisely the machinery to price against detail, given
+  redundancy a bare pair never had. But what renders is not the window's own
+  trace — that is where the pointer *was*, which the screen already shows —
+  it is a **probe**: a straight stroke from the cursor along the trace's
+  extrapolated heading, built through the fitter from two synthesized samples
+  wearing the newest report's channels, so it is bit-for-bit the record a
+  real gesture of them would commit. Straight deliberately — continuing the
+  trace's curvature would double down on the very quantity the grain makes
+  noisiest, and "from here, this way" is all a press this instant can
+  honestly be said to do. The probe holds a heading the raw staircase cannot
+  (`tests/hover.rs` fits a pixel-stepped shallow line to within a few degrees
+  where the raw pair misses by thirty). Pressure is replaced with **full
+  pressure** (a hovering pen, and a mouse, reports zero — which would
+  honestly preview no mark at all), full rather than a middle weight so the
+  mark fills the circle over it: two overlays about one brush must not
+  disagree about its reach. Tilt is kept — a hovering pen reports it, and the
+  mark should lean as the stroke would. A fresh hover's single report has no
+  heading to carry forward, and honestly predicts a *click*.
+- **The reach is the mark's length, and it is canvas-denominated by
+  nature.** The probe extends 40 **canvas** px (`input::hover_stroke`) — not
+  screen px, and not by oversight: the mark is a hypothesis about paint,
+  paint is denominated on the canvas, and a screen-fixed length grew in
+  canvas terms as the view zoomed out, promising more painting the less
+  closely you looked. The circle over it already scales with the zoom, so the
+  two halves of the cursor shrink and grow together. The smoothing does not
+  ride the reach: the estimator's window is **grain**-denominated inside the
+  engine (~40 tolerances of arc — how much history the estimator needs is a
+  fact about the grain, so its steadiness survives every device and every
+  zoom), never pruned below the newest pair, with a count ceiling bounding
+  what a report's refit can cost where motion is dense at the grain. A report
+  within a grain of the last is dropped entirely — it carries nothing the fit
+  could use, and a resting pen's sub-grain drift would otherwise buy a refit
+  and a refold per report.
 - **Folded as a gesture, outranked by one.** The fold receives the mark in
   the very `GestureView` shape a real gesture folds as
   (`Session::hover_view`), so the renderer cannot tell them apart — that is
@@ -792,8 +803,9 @@ press — and inherited rather than maintained, which is the whole design:
   never carries it — the wire half reads only the real gesture slots — and
   `is_stroking` stays false.
 - **A hypothesis may never become work.** It commits nothing and moves no
-  revision (`tests/hover.rs` holds `hover == committed` at *zero* tolerance,
-  and the rest of the ledger with it). A `Rendered::Live` export takes the
+  revision (`tests/hover.rs` holds the probe against actually committing the
+  gesture it predicts at *zero* tolerance, and the rest of the ledger with
+  it). A `Rendered::Live` export takes the
   mark down before rendering — an export is not a moment the hand is painting
   in — and the eyedropper's arming (Alt) takes it down with the same
   keystroke, because a sample reads the shown canvas and must not read the

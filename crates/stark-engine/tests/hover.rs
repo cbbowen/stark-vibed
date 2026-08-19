@@ -1,11 +1,12 @@
-//! The hover mark (§18.1.10): the stroke the hover's recent reports would have
-//! committed, folded under the resting pointer — a hypothesis, never work.
+//! The hover mark (§18.1.10): the stroke a drag begun this instant would open,
+//! folded ahead of the resting pointer — a prediction, never work.
 //!
-//! What is checked is the word "would": the mark must be the commit's own pixels
-//! (`hover == committed`), and it must behave as a hypothesis everywhere else —
-//! commit nothing, publish nothing, stand down for a real gesture, and never
-//! reach a file. The window's own claims — the trail bounds it, and the fit
-//! over it holds a heading the raw pixel-stepped reports cannot — close the
+//! What is checked is the word "will": the mark must be the commit's own pixels
+//! for the gesture it predicts (`hover == committed`), it must reach *ahead* of
+//! the cursor rather than re-draw the trail behind it, and it must behave as a
+//! prediction everywhere else — commit nothing, publish nothing, stand down for
+//! a real gesture, and never reach a file. The estimator's own claim — the
+//! probe holds a heading the raw pixel-stepped reports cannot — closes the
 //! file.
 //!
 //! Presence and absence are probed by **exact image equality against a
@@ -24,21 +25,21 @@ use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 
-/// The two reports of the standard hover: a short travel straddling the canvas
-/// origin, where [`center`] reads.
-const A: Vec2 = Vec2::new(-20.0, 0.0);
-const B: Vec2 = Vec2::new(20.0, 0.0);
+/// The two reports of the standard hover, ending with the cursor at the canvas
+/// origin — where [`center`] reads, and where the probe's touch-down lands.
+const A: Vec2 = Vec2::new(-40.0, 0.0);
+const B: Vec2 = Vec2::new(0.0, 0.0);
 
-/// A trail generous enough that nothing in these tests is pruned: the window
-/// then holds exactly what was fed, which is what the commit comparisons need.
-const KEEP_ALL: f32 = 1.0e6;
+/// How far the probe reaches in these tests, canvas px. The standard hover
+/// runs along +x, so the mark spans the origin to `(REACH, 0)`.
+const REACH: f32 = 40.0;
 
-/// One hover report at `p`, trailing `trail` of motion.
-fn report(p: Vec2, trail: f32) -> ViewCommand {
+/// One hover report at `p`, asking for the standard reach.
+fn report(p: Vec2) -> ViewCommand {
     ViewCommand::PreviewHover(Some(HoverReport {
         sample: InputSample::at(p),
         tolerance: DEFAULT_TOLERANCE,
-        trail,
+        reach: REACH,
     }))
 }
 
@@ -46,7 +47,7 @@ fn report(p: Vec2, trail: f32) -> ViewCommand {
 /// sample per move, the engine holding the window.
 fn hover_ab(engine: &mut Engine) {
     for p in [A, B] {
-        engine.process(report(p, KEEP_ALL));
+        engine.process(report(p));
     }
 }
 
@@ -57,7 +58,7 @@ fn the_mark_appears_and_commits_nothing() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::SetBrush(brush(RED, 40.0)));
+    engine.process(ViewCommand::SetBrush(brush(RED, 10.0)));
     let before = engine.render_to_image();
     let rev = engine.observe().doc_revision;
 
@@ -92,60 +93,86 @@ fn the_mark_is_the_brushs_own_paint() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::SetBrush(brush(RED, 40.0)));
+    engine.process(ViewCommand::SetBrush(brush(RED, 10.0)));
     hover_ab(&mut engine);
     assert!(
         red_dominant(center(&engine.render_to_image())),
-        "the mark under the hover is not the brush's paint"
+        "the touch-down under the cursor is not the brush's paint"
     );
 }
 
-/// `hover == committed`: the mark is bit-for-bit what a gesture of exactly the
-/// same two samples commits. The strongest claim here, and the cheapest to
-/// hold — the mark is built by the same fitter and rendered by the same
-/// renderer with the same seed, so this is inherited, not maintained.
+/// The mark is a prediction, not a recording: it reaches **ahead** of the
+/// cursor along the hover's heading, and the trail behind — where the pointer
+/// actually was — stays bare. The screen already shows where you were; what is
+/// worth painting is where a press would go.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn the_mark_reaches_ahead_of_the_cursor_not_behind() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.process(ViewCommand::SetBrush(brush(RED, 10.0)));
+    hover_ab(&mut engine);
+    let img = engine.render_to_image();
+    assert!(
+        red_dominant(img.pixel(img.width / 2 + 20, img.height / 2)),
+        "the probe should paint ahead of the cursor"
+    );
+    assert!(
+        red_dominant(center(&img)),
+        "the touch-down should land under the cursor"
+    );
+    assert!(
+        !red_dominant(img.pixel(img.width / 2 - 25, img.height / 2)),
+        "the trail behind the cursor is not the mark"
+    );
+}
+
+/// `hover == committed`, prediction edition: the probe is bit-for-bit what
+/// committing the gesture it predicts — press at the cursor, drag `REACH`
+/// along the hover's heading — would land. The prediction is synthesized; the
+/// rendering of it is not, and this is the test that pins the difference.
 ///
 /// Gated for its comparison's sake: under `debug-unfrozen` the hover renders
 /// as live tail (magenta) while the commit lands in the stroke's color.
 #[cfg(not(feature = "debug-unfrozen"))]
 #[test]
-fn the_mark_is_what_the_same_samples_would_commit() {
+fn the_mark_is_what_committing_the_prediction_would_land() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::SetBrush(brush(RED, 40.0)));
+    engine.process(ViewCommand::SetBrush(brush(RED, 10.0)));
     hover_ab(&mut engine);
     let hovered = engine.render_to_image();
 
-    // The same two samples as a real gesture, on the same engine: `Start` takes
-    // the same Lamport seed the hover's fold used, since the hover banked
-    // nothing that could have advanced it.
+    // The predicted gesture, made real — with the same Lamport seed, since the
+    // hover banked nothing that could have advanced it.
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
-        sample: InputSample::at(A),
+        sample: InputSample::at(B),
         tolerance: DEFAULT_TOLERANCE,
         rope: 0.0,
     });
     engine.process(GestureCommand::To {
-        sample: InputSample::at(B),
+        sample: InputSample::at(Vec2::new(REACH, 0.0)),
     });
     engine.process(GestureCommand::End);
     let committed = engine.render_to_image();
     assert!(
         images_match(&hovered, &committed, 0),
-        "the mark is not the commit's own pixels"
+        "the probe is not the commit's own pixels"
     );
 }
 
-/// A real gesture outranks the hypothesis, and ends it: the mark leaves with
-/// the press and does not reappear at pen-up — a stale pair surviving the
+/// A real gesture outranks the prediction, and ends it: the mark leaves with
+/// the press and does not reappear at pen-up — a stale window surviving the
 /// stroke would resurrect a pre-press mark the moment the hand lifted.
 #[test]
 fn a_real_gesture_takes_the_mark_down() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::SetBrush(brush(RED, 40.0)));
+    engine.process(ViewCommand::SetBrush(brush(RED, 10.0)));
     let paper = center(&engine.render_to_image());
     hover_ab(&mut engine);
 
@@ -181,7 +208,7 @@ fn the_mark_never_reaches_a_live_export() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::SetBrush(brush(RED, 40.0)));
+    engine.process(ViewCommand::SetBrush(brush(RED, 10.0)));
     let screen_before = engine.render_to_image();
     let export_before = export_live(&mut engine);
 
@@ -209,7 +236,7 @@ fn a_selection_tool_folds_no_mark() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::SetBrush(brush(RED, 40.0)));
+    engine.process(ViewCommand::SetBrush(brush(RED, 10.0)));
     engine.process(ViewCommand::SetTool(Tool::SelectRect));
     let before = engine.render_to_image();
     hover_ab(&mut engine);
@@ -220,7 +247,7 @@ fn a_selection_tool_folds_no_mark() {
     engine.process(ViewCommand::SetTool(Tool::Brush));
     assert!(
         images_match(&before, &engine.render_to_image(), 0),
-        "a pair fed under the marquee resurfaced on the switch back"
+        "a window fed under the marquee resurfaced on the switch back"
     );
 }
 
@@ -231,7 +258,7 @@ fn an_unpaintable_layer_refuses_the_mark() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::SetBrush(brush(RED, 40.0)));
+    engine.process(ViewCommand::SetBrush(brush(RED, 10.0)));
     engine.process(stark_engine::command::DocCommand::AddMatte {
         carrier: None,
         at: Place::Top,
@@ -251,60 +278,16 @@ fn an_unpaintable_layer_refuses_the_mark() {
     );
 }
 
-/// The trail bounds the mark: a report older than its arc is pruned, so the
-/// dash is the *recent* motion — paint that a generous trail lays where the
-/// hover began is absent under a tight one. Color-reading, so gated like the
-/// suite's other paint probes.
-#[cfg(not(feature = "debug-unfrozen"))]
-#[test]
-fn the_trail_bounds_the_mark() {
-    let Some(mut engine) = engine_or_skip() else {
-        return;
-    };
-    engine.process(ViewCommand::SetBrush(brush(RED, 10.0)));
-    // Three reports along a line; the oldest sits 40 px behind the middle one.
-    let run = [Vec2::new(-60.0, 0.0), Vec2::new(-20.0, 0.0), B];
-    // Where the run began, in image px (the viewport shows ±128 about the
-    // origin) — inside the mark under a generous trail, pruned under a tight one.
-    let start = |img: &stark_engine::RgbaImage| img.pixel(img.width / 2 - 60, img.height / 2);
-
-    for p in run {
-        engine.process(report(p, KEEP_ALL));
-    }
-    let generous = engine.render_to_image();
-    assert!(
-        red_dominant(start(&generous)),
-        "with nothing pruned the mark should reach back to the first report"
-    );
-    assert!(red_dominant(center(&generous)));
-
-    engine.process(ViewCommand::PreviewHover(None));
-    // A 50 px trail keeps the newest pair (arc 40) and prunes the report 80
-    // back — so the mark's paint stops short of where the hover began.
-    for p in run {
-        engine.process(report(p, 50.0));
-    }
-    let tight = engine.render_to_image();
-    assert!(
-        !red_dominant(start(&tight)),
-        "the trail did not prune the report behind it"
-    );
-    assert!(
-        red_dominant(center(&tight)),
-        "pruning took the recent motion with it"
-    );
-}
-
-/// The window is the smoothing: a shallow line quantized to whole-pixel steps —
-/// the staircase a mouse reports — fits to a tail whose heading is the *line's*.
-/// The raw pair can only answer 0° or 45°, wrong by the whole heading; the
-/// claim is that the fit over the window prices that jitter away (§6.2).
+/// The window is the estimator: a shallow line quantized to whole-pixel steps —
+/// the staircase a mouse reports — yields a probe whose heading is the *line's*,
+/// carried forward from the cursor at exactly the asked reach. The raw pair can
+/// only answer 0° or 45°, wrong by the whole heading; the fit over the window
+/// prices that jitter away (§6.2).
 ///
-/// Session-level and CPU-only: the fit is the machinery under test, and it
-/// needs no GPU, so this runs even where the render suites skip.
+/// Session-level and CPU-only: the estimator is the machinery under test, and
+/// it needs no GPU, so this runs even where the render suites skip.
 #[test]
 fn a_pixel_staircase_holds_its_heading() {
-    use stark_engine::path::span_end;
     use stark_engine::peer::GestureView;
     use stark_engine::session::Session;
     use stark_engine::{LiveGesture, ViewTransform};
@@ -328,7 +311,7 @@ fn a_pixel_staircase_holds_its_heading() {
     }
     for s in &samples {
         // A mouse's grain at 1:1 — the tolerance the frontend would state.
-        assert!(session.hover_to(*s, 1.0, KEEP_ALL));
+        assert!(session.hover_to(*s, 1.0, 50.0));
     }
 
     // The jitter being claimed away: the newest raw pair's heading misses the
@@ -347,13 +330,25 @@ fn a_pixel_staircase_holds_its_heading() {
     else {
         panic!("a fed hover offers no view");
     };
-    // The heading at the cursor end: the chord of the fitted path's final span.
-    let spans = stark_engine::path::span_count(rec.path.len());
-    let d = span_end(&rec.path, spans - 1) - span_end(&rec.path, spans - 2);
+    // The probe starts under the cursor and spans the asked reach.
+    let (start, end) = (
+        rec.path.first().expect("a probe has knots").pos,
+        rec.path.last().expect("a probe has knots").pos,
+    );
+    assert_eq!(
+        start, samples[23].pos,
+        "the probe must start under the cursor"
+    );
+    let d = end - start;
+    assert!(
+        (d.length() - 50.0).abs() < 0.5,
+        "the probe spans {} canvas px where 50 were asked",
+        d.length()
+    );
     let heading = d.y.atan2(d.x);
     assert!(
         (heading - true_heading).abs() < 6_f32.to_radians(),
-        "the fitted tail's heading is {:.1}° where the line is {:.1}°",
+        "the probe's heading is {:.1}° where the line is {:.1}°",
         heading.to_degrees(),
         true_heading.to_degrees(),
     );

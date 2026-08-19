@@ -274,9 +274,10 @@ pub struct Session {
 
     in_flight: Option<StrokeBuilder>,
     selecting: Option<ShapeDrag>,
-    /// The hover mark (§18.1.10): the stroke the hover's recent reports would
-    /// have painted, previewed under the resting pointer. `None` when the
-    /// pointer is elsewhere or the hand is doing something other than hovering.
+    /// The hover mark (§18.1.10): the stroke a drag begun this instant would
+    /// open — laid from the cursor along the hover's extrapolated heading —
+    /// previewed under the resting pointer. `None` when the pointer is
+    /// elsewhere or the hand is doing something other than hovering.
     ///
     /// Beside [`in_flight`](Self::in_flight) because it is the same kind of
     /// thing — an uncommitted stroke the fold draws — and deliberately **not**
@@ -820,28 +821,37 @@ impl Session {
     // --- the hover mark (§18.1.10) --------------------------------------------
 
     /// Feed the hover mark one report: append it to the trailing window of
-    /// recent reports and refit the whole window — the path a gesture of
-    /// exactly those samples would commit. The engine keeps the window, so the
-    /// frontend sends one sample per move exactly as it does for a stroke; the
-    /// first report of a fresh hover is a window of one, the path a *click*
-    /// would commit.
+    /// recent reports, refit the window, and lay the **probe** — the stroke a
+    /// drag begun this instant would open, `reach` canvas px from the cursor
+    /// along the hover's extrapolated heading. The engine keeps the window, so
+    /// the frontend sends one sample per move exactly as it does for a stroke.
     ///
-    /// **A window rather than a pair, and the window is the smoothing** (§6.2).
-    /// Reports are quantized to the device grain, so the heading of two
-    /// adjacent reports snaps between the eight compass points — the jitter is
-    /// in the *input*, and the fitter is precisely the machinery built to
-    /// price jitter against detail. But it can only do that given redundancy:
-    /// a pair gave it none, and the tolerance was powerless. The window hands
-    /// the mark the same steadiness a drawn stroke's tail already has, from
-    /// the same solve.
+    /// **The window is the estimator, not the mark** (§6.2). Reports are
+    /// quantized to the device grain, so the heading of two adjacent reports
+    /// snaps between the eight compass points — jitter in the *input*, which
+    /// the fitter is precisely the machinery to price against detail, given
+    /// the redundancy a window carries and a bare pair never did. But what is
+    /// rendered is not the window's own trace — that is where the pointer
+    /// *was*, which the screen already shows — it is the trace's heading
+    /// carried forward from the cursor: a press is being predicted, and a
+    /// press starts where the pointer is.
+    ///
+    /// The probe is **straight**, deliberately: continuing the trace's
+    /// curvature would double down on the very quantity the grain makes
+    /// noisiest, and "from here, this way" is the whole of what a press this
+    /// instant can honestly be said to do. It is built through the fitter from
+    /// two synthesized samples wearing the newest report's own channels, so it
+    /// is bit-for-bit the record a real gesture of those two samples would
+    /// commit — the prediction is synthesized; the rendering of it is not.
     ///
     /// `tolerance` is the frontend's statement of its input grain, as
-    /// [`start_stroke`](Self::start_stroke) takes it, and `trail` of how much
-    /// recent motion the mark keeps — both canvas px, both the frontend's to
-    /// state (the trail is denominated on the screen, like the rope, and only
-    /// the frontend holds the view that converts it). The window is pruned to
-    /// the trail's arc but never below the newest pair, so a flick whose one
-    /// step outruns the trail still shows its whole honest dash.
+    /// [`start_stroke`](Self::start_stroke) takes it — the window's own extent
+    /// derives from it ([`WINDOW_ARC_GRAINS`]), since how much history the
+    /// estimator needs is a fact about the grain. `reach` is how far the probe
+    /// extends, in **canvas px by nature rather than by conversion**: the mark
+    /// is a hypothesis about paint, paint is denominated on the canvas, and a
+    /// screen-fixed length grew in canvas terms as the view zoomed out —
+    /// promising more painting the less closely you looked.
     ///
     /// A non-finite report is refused at the door for
     /// [`stroke_to`](Self::stroke_to)'s reason — the window *remembers* — and
@@ -850,8 +860,8 @@ impl Session {
     /// a whole-window refit per report. Hence the answer: whether anything
     /// changed, so a caller can skip the refold for a report that changed
     /// nothing.
-    pub fn hover_to(&mut self, sample: InputSample, tolerance: f32, trail: f32) -> bool {
-        if !sample.is_finite() || !trail.is_finite() {
+    pub fn hover_to(&mut self, sample: InputSample, tolerance: f32, reach: f32) -> bool {
+        if !sample.is_finite() || !reach.is_finite() {
             return false;
         }
         if let Some(h) = self.hover.as_ref()
@@ -862,18 +872,30 @@ impl Session {
         }
         let mut window = self.hover.take().map(|h| h.window).unwrap_or_default();
         window.push(sample);
-        prune_window(&mut window, trail);
-        let mut fitter = PathFitter::with_tolerance(tolerance);
-        for s in &window {
-            fitter.push(*s);
-        }
-        // Finished, because it is: the window is the whole gesture, so the path
-        // is the one `End` would adopt — which is what makes the mark the
-        // commit's pixels rather than nearly so.
-        fitter.finish();
+        prune_window(&mut window, WINDOW_ARC_GRAINS * tolerance);
+        // The estimator: the window's smoothed trace, wanted only for where it
+        // is going. Finished, so the heading is the one a pen-up would have
+        // settled on rather than the mid-solve one.
+        let trace = fit_finished(tolerance, window.iter().copied());
+        let path = match probe_heading(&trace) {
+            Some(dir) => fit_finished(
+                tolerance,
+                [
+                    sample,
+                    InputSample {
+                        pos: sample.pos + dir * reach,
+                        ..sample
+                    },
+                ],
+            ),
+            // One report, or a trace too tangled to carry a heading: the
+            // honest prediction of a press with no motion behind it is the
+            // touch-down alone — the record a click would commit.
+            None => fit_finished(tolerance, [sample]),
+        };
         self.gesture_ordinal += 1;
         self.hover = Some(HoverStroke {
-            path: fitter.path(),
+            path,
             window,
             ordinal: self.gesture_ordinal,
         });
@@ -894,8 +916,9 @@ impl Session {
 
     /// The hover mark as the fold wants it, authored by `actor` with `seed` —
     /// the same [`GestureView`] shape a real gesture folds as, so the renderer
-    /// cannot tell them apart and `hover == committed` is inherited rather than
-    /// maintained.
+    /// cannot tell them apart, and the probe renders as exactly the pixels its
+    /// gesture would commit: the prediction is synthesized, its rendering is
+    /// inherited.
     ///
     /// `None` while a real gesture is in flight — a fact always outranks a
     /// hypothesis, and the fold may hold at most one gesture per actor — and
@@ -923,43 +946,81 @@ impl Session {
     }
 }
 
-/// The hover mark's state (§18.1.10): the trailing window of recent reports,
-/// the fit of that window, and the bookkeeping that keeps its renders distinct.
+/// The hover mark's state (§18.1.10): the trailing window of recent reports —
+/// the heading's estimator — the probe laid from it, and the bookkeeping that
+/// keeps its renders distinct.
 struct HoverStroke {
-    /// The window, oldest first. Every entry is a report the hand really made —
-    /// which is what keeps the record a stroke somebody could have drawn, and
-    /// `hover == committed` a statement about input rather than about a
-    /// synthesis.
+    /// The estimator, oldest first: every entry a report the hand really made.
+    /// Never rendered — the mark is where a press would *go*, not where the
+    /// pointer was — but it is what the prediction is honest about.
     window: Vec<InputSample>,
-    /// The fitted window — what a gesture of exactly these samples would
-    /// commit. Rebuilt per accepted report, kept so a fold costs a clone.
+    /// The fitted probe — bit-for-bit the record a gesture of its two samples
+    /// would commit, from the cursor along the extrapolated heading. Rebuilt
+    /// per accepted report, kept so a fold costs a clone.
     path: Vec<ControlPoint>,
     /// This update's slot in the session's gesture-ordinal space (see
     /// [`Session::gesture_ordinal`]).
     ordinal: u64,
 }
 
+/// How much motion the estimator's window may span, in **grains** — units of
+/// the report's own tolerance ([`Session::hover_to`]).
+///
+/// Denominated on the grain because the grain is what the window exists to
+/// average away: this many grains of recent motion hold the heading to roughly
+/// `atan(1/this)` of noise, whatever the device and whatever the zoom — which
+/// is also why it is the engine's to derive rather than the frontend's to
+/// state, unlike the reach: nothing about it is a fact about the screen.
+const WINDOW_ARC_GRAINS: f32 = 40.0;
+
 /// Most reports the hover window keeps ([`Session::hover_to`]).
 ///
-/// The trail's arc is the policy; this is the cost ceiling behind it. Every
-/// accepted report refits the whole window, so this bounds what a report can
-/// cost — and it binds only where motion is dense at the grain (a pen crawling
-/// pitch by pitch), where the window is this many *grains* long and the
-/// heading has long since settled.
+/// The grain-derived arc ([`WINDOW_ARC_GRAINS`]) is the extent; this is the
+/// cost ceiling behind it. Every accepted report refits the whole window, so
+/// this bounds what a report can cost — and it binds only where motion is
+/// dense at the grain (a pen crawling pitch by pitch), where the window is
+/// this many *grains* long and the heading has long since settled.
 const HOVER_WINDOW: usize = 32;
 
-/// Prune `window` from its old end until its arc fits `trail` and its count
-/// fits [`HOVER_WINDOW`] — but never below the newest **pair**: a flick whose
-/// one step outruns the trail still owes the mark its direction, and a long
-/// dash is the honest picture of a fast hand.
-fn prune_window(window: &mut Vec<InputSample>, trail: f32) {
-    let mut arc: f32 = window.windows(2).map(|w| w[0].pos.distance(w[1].pos)).sum();
+/// Prune `window` from its old end until its arc fits `arc` and its count
+/// fits [`HOVER_WINDOW`] — but never below the newest **pair**, which is the
+/// least history a heading can be read from at all.
+fn prune_window(window: &mut Vec<InputSample>, arc: f32) {
+    let mut kept: f32 = window.windows(2).map(|w| w[0].pos.distance(w[1].pos)).sum();
     let mut from = 0;
-    while window.len() - from > 2 && (window.len() - from > HOVER_WINDOW || arc > trail) {
-        arc -= window[from].pos.distance(window[from + 1].pos);
+    while window.len() - from > 2 && (window.len() - from > HOVER_WINDOW || kept > arc) {
+        kept -= window[from].pos.distance(window[from + 1].pos);
         from += 1;
     }
     window.drain(..from);
+}
+
+/// Fit `samples` as a finished gesture — the path `End` would adopt, which is
+/// what makes anything built from it the commit's own pixels.
+fn fit_finished(
+    tolerance: f32,
+    samples: impl IntoIterator<Item = InputSample>,
+) -> Vec<ControlPoint> {
+    let mut fitter = PathFitter::with_tolerance(tolerance);
+    for s in samples {
+        fitter.push(s);
+    }
+    fitter.finish();
+    fitter.path()
+}
+
+/// The heading at the cursor end of the fitted trace — the chord of its final
+/// span, unit length — or `None` where the trace is too short to carry one (a
+/// lone report) or the chord degenerates (a trace that folds back onto its own
+/// end).
+fn probe_heading(trace: &[ControlPoint]) -> Option<Vec2> {
+    let spans = crate::path::span_count(trace.len());
+    if spans < 2 {
+        return None;
+    }
+    let d = crate::path::span_end(trace, spans - 1) - crate::path::span_end(trace, spans - 2);
+    let len = d.length();
+    (len.is_finite() && len > 1e-6).then(|| d / len)
 }
 
 impl StrokeBuilder {

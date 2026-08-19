@@ -1338,7 +1338,7 @@ impl Engine {
                     crate::timing::span!("input.hover");
                     // A report the window declined — sub-grain drift under a
                     // resting pen — refolds nothing.
-                    if self.session.hover_to(r.sample, r.tolerance, r.trail) {
+                    if self.session.hover_to(r.sample, r.tolerance, r.reach) {
                         self.mark_live_stale();
                     }
                 }

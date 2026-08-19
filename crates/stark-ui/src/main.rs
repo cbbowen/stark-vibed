@@ -730,8 +730,9 @@ fn Canvas() -> Element {
                         // flight, and says so. A move with no gesture behind it
                         // is a *hover*, and the mark preview rides it
                         // (§18.1.10): the engine adds this sample to its
-                        // trailing window and folds the stroke those reports
-                        // would have painted.
+                        // trailing window and folds the stroke a drag begun
+                        // this instant would open, continuing the hover's
+                        // heading from the cursor.
                         hover_stroke(state, s, &e);
                     }
                     // Where collaborators see this client's pointer
@@ -830,11 +831,11 @@ fn PeerCursors() -> Element {
 /// and a pan, which moves neither factor, wakes nothing here at all.
 ///
 /// A circle, though the brush may be any shape (§6.6) — deliberately, even now
-/// that the real thing renders beneath it: the engine folds the actual mark the
-/// hover's recent reports would have painted (§18.1.10,
-/// `ViewCommand::PreviewHover`, fed by the same move handler), and the two
-/// halves divide the work — the mark says what the paint would *do*, the ring
-/// says how far the brush *reaches*, which a soft tip's mark understates.
+/// that the real thing renders beneath it: the engine folds the mark a drag
+/// begun this instant would open (§18.1.10, `ViewCommand::PreviewHover`, fed by
+/// the same move handler), and the two halves divide the work — the mark says
+/// what the paint would *do*, the ring says how far the brush *reaches*, which
+/// a soft tip's mark understates.
 #[component]
 fn BrushCursor() -> Element {
     let state = use_context::<AppState>();

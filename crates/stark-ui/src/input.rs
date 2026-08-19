@@ -1417,21 +1417,23 @@ pub fn hover_at(state: AppState, at: Vec2) {
     hover.set(Some(at));
 }
 
-/// How much recent motion the hover mark re-draws, in **screen px** (§18.1.10).
+/// How far ahead of the cursor the hover mark reaches, in **canvas px**
+/// (§18.1.10).
 ///
-/// Screen px because the mark is a cursor affordance, sized for the eye like
-/// the rope (§6.11): the same dash should read the same at every zoom, and
-/// what the zoom changes is the canvas arc it covers. The length does double
-/// duty — it is what the eye sees, and it is the window the fitter smooths
-/// over, so on a mouse it spans ~40 grains and prices the grid's compass
-/// jitter down to about a degree. Long enough to show heading and curvature;
-/// short enough to stay a cursor rather than a snake.
-const HOVER_TRAIL_SCREEN_PX: f32 = 40.0;
+/// Canvas rather than screen px by nature, not oversight: the mark is a
+/// hypothesis about *paint*, and paint is denominated on the canvas — fixed on
+/// the screen, the predicted stroke grew in canvas terms as the view zoomed
+/// out, promising more painting the less closely you looked. The size circle
+/// over it already scales with the zoom, so the two halves of the cursor now
+/// shrink and grow together. The *smoothing* does not ride this number: the
+/// heading's estimator window is grain-relative inside the engine, so its
+/// steadiness survives every zoom.
+const HOVER_REACH_CANVAS_PX: f32 = 40.0;
 
 /// Feed the hover mark one report (§18.1.10): the engine appends `s` to its
-/// trailing window and folds the fitted stroke those reports would have
-/// committed — the painted half of the brush cursor, under the circle
-/// [`hover_at`] places.
+/// trailing window and folds the probe — the stroke a drag begun this instant
+/// would open, carrying the hover's heading forward from the cursor — the
+/// painted half of the brush cursor, under the circle [`hover_at`] places.
 ///
 /// Gated on the states that promise the press to something other than paint —
 /// space's pan, Alt's eyedropper (armed or dragging), and playback, where a
@@ -1453,13 +1455,13 @@ pub fn hover_stroke(state: AppState, s: InputSample, e: &Event<PointerData>) {
     {
         return;
     }
-    let Some(view) = view_of(state) else {
+    let Some(tolerance) = input_tolerance(state, e) else {
         return;
     };
     let report = HoverReport {
         sample: InputSample { pressure: 1.0, ..s },
-        tolerance: input_tolerance_in(view, e),
-        trail: HOVER_TRAIL_SCREEN_PX / view.zoom,
+        tolerance,
+        reach: HOVER_REACH_CANVAS_PX,
     };
     crate::state::dispatch_hover(state, ViewCommand::PreviewHover(Some(report)));
 }

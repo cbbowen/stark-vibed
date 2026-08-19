@@ -106,20 +106,22 @@ impl Default for InputSample {
 /// lengths: unnamed they could be silently transposed, which is the
 /// arrangement this codebase's argument lints already guard against.
 ///
-/// Both lengths are the frontend's to state, and per report, because both are
-/// denominated on the screen and the zoom that converts them can change
-/// mid-hover: `tolerance` is the input grain, exactly
-/// [`GestureCommand::Start`]'s field; `trail` is how much recent motion the
-/// mark keeps — the dash's arc — a cursor affordance sized for the eye like
-/// the rope (§6.11), so it is fixed in screen px and what the zoom changes is
-/// the canvas arc it covers.
+/// `tolerance` is the input grain, exactly [`GestureCommand::Start`]'s field,
+/// restated per report because the zoom it derives from can change mid-hover.
+/// `reach` is how far ahead of the cursor the predicted mark extends — canvas
+/// px **by nature rather than by conversion**: the mark is a hypothesis about
+/// paint, paint is denominated on the canvas, and a screen-fixed length grew
+/// in canvas terms as the view zoomed out, promising more painting the less
+/// closely you looked. The window the heading is estimated over rides neither
+/// field: it is a fact about the grain alone, so the engine derives it from
+/// `tolerance` (`session`'s `WINDOW_ARC_GRAINS`).
 #[derive(Copy, Clone, Debug)]
 pub struct HoverReport {
     pub sample: InputSample,
     /// How finely this hover's input resolves position, canvas px.
     pub tolerance: f32,
-    /// Trailing arc of motion the mark keeps, canvas px.
-    pub trail: f32,
+    /// How far ahead of the cursor the predicted mark extends, canvas px.
+    pub reach: f32,
 }
 
 /// Every stateful interaction the backend accepts (§4).
@@ -632,23 +634,24 @@ pub enum ViewCommand {
     /// paint — affordable at pointer rate for the reason the two above are.
     PreviewLayerBlend(Option<(LayerId, BlendMode)>),
 
-    /// Show the mark the brush would make under the **hovering** pointer,
+    /// Show the mark the brush **will** make if a drag begins this instant,
     /// **without logging it** — the brush cursor's painted half (§18.1.10).
     /// `None` drops the mark.
     ///
     /// Each report carries the newest hover sample ([`HoverReport`]); the
-    /// engine appends it to a trailing window of recent reports, prunes the
-    /// window to the report's `trail`, and folds the fit of the window — the
-    /// stroke those reports *would have committed*, fitted by the same fitter,
-    /// rendered by the same renderer, through the selection mask and onto the
-    /// paint already there, wet-mixing included. A window rather than the
-    /// newest pair because the smoothing lives in the fit: reports are
-    /// quantized to the device grain, a lone pair's heading snaps between the
-    /// eight compass points, and only redundancy lets the tolerance price that
-    /// jitter away (`Session::hover_to`).
+    /// engine appends it to a trailing window of recent reports, fits the
+    /// window, and folds a **probe**: a straight stroke from the cursor,
+    /// `reach` canvas px along the fit's extrapolated heading — rendered by
+    /// the same renderer, through the selection mask and onto the paint
+    /// already there, wet-mixing included, so it is exactly what committing
+    /// that gesture would land. A window rather than the newest pair because
+    /// the smoothing lives in the fit: reports are quantized to the device
+    /// grain, a lone pair's heading snaps between the eight compass points,
+    /// and only redundancy lets the tolerance price that jitter away
+    /// (`Session::hover_to`).
     ///
     /// Unlike the rest of the `Preview*` family this is not the in-flight half
-    /// of any commit — it is a hypothesis, and three things follow. It is
+    /// of any commit — it is a prediction, and three things follow. It is
     /// **outranked** by a real gesture (the fold holds one gesture per actor,
     /// and a fact beats a guess); it is **dropped** by anything that ends its
     /// premise — a gesture starting, a tool switch, a load; and it may never
