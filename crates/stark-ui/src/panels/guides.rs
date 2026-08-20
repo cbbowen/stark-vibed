@@ -38,12 +38,14 @@ use dioxus::html::Key;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
+use crate::commands::Command;
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
 use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, guide_boxes, select_all};
 use crate::state::{AppState, GuideEdit, dispatch};
+use crate::widgets::CommandButton;
 use stark_engine::command::ViewCommand;
 use stark_engine::{Lens, PairTrace, PerspectiveGuide};
 use stark_model::geom::Vec2;
@@ -142,8 +144,9 @@ fn end_guide_edit(state: AppState) {
 }
 
 /// Add a perspective guide where the artist is looking, and pick it up: adding
-/// *is* asking to shape it, so the mode opens on the new row.
-fn add_perspective(state: AppState) {
+/// *is* asking to shape it, so the mode opens on the new row
+/// (`Command::AddPerspective`).
+pub fn add_perspective(state: AppState) {
     let center = state
         .obs
         .read()
@@ -290,13 +293,7 @@ pub fn GuidesPanel() -> Element {
 
     rsx! {
         div { class: "layer-header",
-            button {
-                class: "layer-add",
-                title: "Add a perspective grid where you are looking",
-                onclick: move |_| add_perspective(state),
-                {icon(icons::ADD_LAYER)}
-                {label("Perspective")}
-            }
+            CommandButton { command: Command::AddPerspective, class: "layer-add" }
         }
         if guides.is_empty() {
             div { class: "guide-empty",

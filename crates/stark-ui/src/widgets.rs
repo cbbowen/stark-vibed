@@ -2,7 +2,37 @@
 
 use dioxus::prelude::*;
 
+use crate::commands::Command;
 use crate::icons::{icon, label as label_span};
+use crate::state::AppState;
+
+/// A button that runs a [`Command`], wearing the command's own mark, word and
+/// tooltip (`crate::commands`) — so a control and the act it reaches cannot
+/// describe each other differently, and a chord the act gains is advertised
+/// here without the button changing.
+///
+/// `class` stays the call site's because the registry deliberately says nothing
+/// about *where* a command is drawn: the same act is a `chip` on a bar and a
+/// `layer-add` in a panel header, and the stylesheet keys on the slot, not the
+/// act. What a call site may **not** vary is what the button says or does — a
+/// site needing that (the Fill chip's paint-tinted bucket) writes its own
+/// `button` and still reads the words off the command.
+#[component]
+pub fn CommandButton(
+    command: Command,
+    #[props(default = String::from("chip"))] class: String,
+) -> Element {
+    let state = use_context::<AppState>();
+    rsx! {
+        button {
+            class,
+            title: command.tooltip(),
+            onclick: move |_| command.run(state),
+            {icon(command.icon())}
+            {label_span(command.word())}
+        }
+    }
+}
 
 /// A labelled range control.
 ///

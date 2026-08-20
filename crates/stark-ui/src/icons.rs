@@ -148,6 +148,12 @@ icons! {
     // carry.
     FLIP_H => "flip-horizontal-bold",
     FLIP_V => "flip-vertical-bold",
+    // The H hotkey's act (`commands::Command::MirrorView`): the same picture as
+    // [`FLIP_H`] — a mirroring about the vertical axis — and a second name
+    // because the control is a different one: the flip moves the selected
+    // *paint*, this turns the whole view and moves nothing. The same argument
+    // [`DONE`] and [`CHECK`] are two names for one tick.
+    MIRROR_VIEW => "flip-horizontal-bold",
     // Per-row visibility. Unlike every other icon here this one is a *state* rather
     // than an act: the row shows the eye it currently is, not the one clicking would
     // give you. That is the way the tick-box it replaces read, and the way the same

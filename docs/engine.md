@@ -536,8 +536,22 @@ which the engine draws into directly. DOM chrome surrounds it.
   at the call site — the canvas fades the chrome while it navigates and cancels
   the stroke a second finger interrupted, the transform overlay deliberately does
   neither.
-- **A simple shortcut is a row in a table, not an arm in a match.** `hotkeys`
-  declares every chord → act pair as one row of data. A chord names the
+- **A simple command is a row in a registry, not an arm in a match.** `commands`
+  declares every simple act — one the chrome can ask for whole, with no argument
+  at the call site — as a variant of `Command` carrying its entire description:
+  display name, terse chip word, mark, tooltip, availability
+  (`Command::enabled`, what a menu row greys on), the gate its act must ask
+  (`Command::run`), and the chord that reaches it from the keyboard
+  (`BINDINGS`). The chrome *renders* a command rather than restating it — a bar
+  chip or panel-header button is `widgets::CommandButton`, a menu row is the
+  rail's `CmdItem`, and both print the shortcut column and tooltip suffixes from
+  `commands::label` — so what the menu claims, what a chip does and what the
+  keyboard answers cannot drift. They had: the menu's Undo skipped the
+  keyboard's stop-playback resolution, and its Deselect skipped the gate below
+  outright. What is deliberately *not* a variant is anything parameterized —
+  this layer's eye, that guide's trash name their target, and a registry of
+  every (act, target) pair would be a second copy of the panels.
+- **A chord names its key the way the binding means it.** A chord names the
   accelerator tier (Ctrl or Command, `input::accel`), the Shift bit, and a key
   that is either the *character* it types — a mnemonic follows the layout,
   because Z undoes wherever the layout puts the Z — or the *position* it sits
@@ -548,16 +562,13 @@ which the engine draws into directly. DOM chrome surrounds it.
   and a table that shrugged at Alt would fire its Ctrl rows under a layout's
   ordinary typing. The keydown handler asks the table once and claims a matched
   chord wholly (`prevent_default`) whether or not its act was accepted — a
-  declined Ctrl+A must not answer with the browser highlighting the page — and
-  each act's own gate lives on the act (`Hotkey::run`), not at the call site.
-  The chrome advertises from the same rows: `hotkeys::label` prints the menu's
-  shortcut column and the selection bar's tooltip suffixes, so what the menu
-  claims and what the keyboard answers cannot drift. What is *not* a row is
-  anything owning both edges of its key — a held digit (§18.1.8), space's pan,
-  Alt's eyedropper stay in `input`, which owns keyup — and Ctrl+V, which is not
-  a command but data arriving (§23). Rebinding, when it comes, is this table
-  becoming user state: the acts are the stable names a stored binding will key
-  on, and `find`/`label` are already the only readers.
+  declined Ctrl+A must not answer with the browser highlighting the page.
+  What is *not* a chord row is anything owning both edges of its key — a held
+  digit (§18.1.8), space's pan, Alt's eyedropper stay in `input`, which owns
+  keyup — and Ctrl+V, which is not a command but data arriving (§23). Rebinding,
+  when it comes, is the chord column becoming user state: the `Command` variants
+  are the stable names a stored binding will key on, and `find`/`label` are
+  already the only readers.
 - **A composing mode is a state, not a stacking order.** Four gestures take the
   canvas away from the brush for the length of a composition: the transform
   widget (§16.6), the perspective-guide edit (§20.5), the gradient trace (§22.2)
@@ -580,14 +591,17 @@ which the engine draws into directly. DOM chrome surrounds it.
     an undo or redo from the keyboard call it too: a preview is computed against
     the committed document, and moving the playhead out from under one leaves the
     widget pointing at paint that is no longer there.
-  - **The keyboard asks what the canvas asks.** A press is refused while the
+  - **Every door asks what the canvas asks.** A press is refused while the
     playhead is moving, because a commit clears the withheld half of the timeline
     (§18.2.4) — but `Ctrl+A` and `Ctrl+Shift+I` went through and truncated the
     history from the keyboard, and edited the very selection a transform was
     composing against while the bar carrying those same commands had stood down.
-    They now ask both questions. Undo and redo are not refused but *resolve*:
-    nothing on screen says they are unavailable, so instead they stop playback,
-    put down the composition, and act.
+    They now ask both questions — and because the gate lives on the act
+    (`Command::run`) rather than at a call site, the menu rows and bar chips that
+    carry the same acts ask them too, which the menu's Deselect once did not.
+    Undo and redo are not refused but *resolve*: nothing on screen says they are
+    unavailable, so instead they stop playback, put down the composition, and
+    act.
 - The engine (and its `wgpu::Surface`, both `!Send`) live in a signal; after each
   command the engine renders **straight into the surface texture**
   (`get_current_texture` → `render` → `present`) — no readback, no encode. The

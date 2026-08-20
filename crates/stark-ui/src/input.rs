@@ -9,7 +9,7 @@ use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
 use crate::collab::now_seconds;
-use crate::hotkeys;
+use crate::commands;
 use crate::panels::brush::{MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use crate::panels::select::{current_action, modifier_mode};
 use crate::platform::{
@@ -1070,7 +1070,7 @@ fn handle_keydown(mut state: AppState, e: &platform::KeyEvent) {
 
     let m = e.modifiers();
     track_alt(state, m);
-    // The quick-brush rack, claimed before the hotkey table is consulted so a
+    // The quick-brush rack, claimed before the chord table is consulted so a
     // future row on a digit could never shadow it. A digit is not a row there:
     // it is a *hold*, owning both edges of its key (§18.1.8); it reads the
     // physical row so a layout that types `&é"'` on it still has a rack; and
@@ -1088,14 +1088,14 @@ fn handle_keydown(mut state: AppState, e: &platform::KeyEvent) {
         e.prevent_default();
         return;
     }
-    // Everything else a keydown may simply *mean* is a row in the hotkey table
-    // (`crate::hotkeys`), and the claim on a matched chord is uniform:
+    // Everything else a keydown may simply *mean* is a chord row in the command
+    // registry (`crate::commands`), and the claim on a matched chord is uniform:
     // `prevent_default` whether or not the act was accepted, because the
     // browser's own Ctrl+A would select the page's text, and a refusal that
     // let that through would answer a declined command with a highlighted
     // user interface.
-    if let Some(hotkey) = hotkeys::find(e) {
-        hotkey.run(state);
+    if let Some(command) = commands::find(e) {
+        command.run(state);
         e.prevent_default();
     }
 }

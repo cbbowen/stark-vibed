@@ -375,9 +375,15 @@ pub fn NavigatorOverlay() -> Element {
         div { class: chrome_class(state, "navigator-overlay"),
             div {
                 class: "nav-frame",
-                title: "Click to go there, or drag to move the view around the piece. \
-                        Right-drag to turn the canvas: the direction you drag becomes up. \
-                        H mirrors it.",
+                // The mirror chord is printed from its own binding
+                // (`commands::label`), so this sentence cannot outlive a rebind.
+                title: format!(
+                    "Click to go there, or drag to move the view around the piece. \
+                     Right-drag to turn the canvas: the direction you drag becomes up. \
+                     {} mirrors it.",
+                    crate::commands::label(crate::commands::Command::MirrorView)
+                        .expect("MirrorView has a chord row"),
+                ),
                 // Deliberately *not* `canvas_active`: the chrome fade exists to hand
                 // the screen back to the painting mid-gesture, and fading this out
                 // would take away the very thing being dragged.

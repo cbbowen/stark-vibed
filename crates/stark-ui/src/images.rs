@@ -104,7 +104,7 @@ fn is_document(name: &str) -> bool {
 
 /// Place whatever image is pasted into the page — bound once, for the life of the page.
 ///
-/// Ctrl+V is not among [`crate::hotkeys`]' rows and deliberately is not: a paste is
+/// Ctrl+V is not among [`crate::commands`]' chord rows and deliberately is not: a paste is
 /// delivered as its own event carrying the clipboard with it, and a keystroke handler
 /// would have to go and *ask* for the clipboard afterwards, through an API that prompts
 /// for a permission and does not carry images in every browser

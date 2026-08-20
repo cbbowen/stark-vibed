@@ -39,19 +39,37 @@ use std::collections::HashSet;
 use dioxus::html::Key;
 use dioxus::prelude::*;
 
+use crate::commands::Command;
 use crate::icons::{self, icon, label};
 use crate::panels::filter::AddFilterButton;
-use crate::panels::frame::AddFrameButton;
 use crate::panels::layer_tree::{INDENT, Row, landing, rows};
 use crate::panels::reorder::{self, Grab, Motion};
 use crate::platform::{capture_pointer, layer_boxes, select_all};
 use crate::preview;
 use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch, use_obs};
+use crate::widgets::CommandButton;
 use stark_engine::LayerInfo;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::LayerId;
 use stark_model::document::{BlendMode, DRAGO_K_RANGE, Place};
+
+/// Add a paint layer where the artist is working (`Command::AddLayer`): into
+/// the selected layer's own stack, above it — not always the document's,
+/// because adding while working inside a group should land in that group,
+/// which is where you are looking.
+pub fn add_layer(state: AppState) {
+    let (carrier, above) = state
+        .obs
+        .peek()
+        .as_ref()
+        .map(|o| {
+            let selected = o.layers.iter().find(|l| l.id == o.active_layer);
+            (selected.and_then(|l| l.carrier), selected.map(|l| l.id))
+        })
+        .unwrap_or((None, None));
+    dispatch(state, DocCommand::AddLayer { carrier, above });
+}
 
 #[component]
 pub fn LayerPanel() -> Element {
@@ -158,31 +176,12 @@ pub fn LayerPanel() -> Element {
         Some(_) => !l.has_underlay,
         None => !l.has_backdrop,
     });
-    // Where "Add layer" puts one: into the selected layer's own stack, above it.
-    // Read out here rather than in the handler because the row block below consumes
-    // `selected`, and this is the only part of it the handler wants.
-    let add_at = (
-        selected.as_ref().map(|l| l.carrier).unwrap_or(None),
-        selected_id,
-    );
-
     rsx! {
         div { class: "layer-header",
             // A frame is a layer, so making one belongs here rather than in a
-            // panel of its own (§15.7).
-            button {
-                class: "layer-add",
-                title: "Add a paint layer above the selected one",
-                // Into the selected layer's own stack, not always the document's:
-                // adding a layer while working inside a group should land in that
-                // group, which is where you are looking.
-                onclick: move |_| {
-                    let (carrier, above) = add_at;
-                    dispatch(state, DocCommand::AddLayer { carrier, above });
-                },
-                {icon(icons::ADD_LAYER)}
-                {label("Layer")}
-            }
+            // panel of its own (§15.7). Both adds render their command whole
+            // ([`add_layer`], `panels::frame::add_frame`).
+            CommandButton { command: Command::AddLayer, class: "layer-add" }
             // No "+ Background" beside it: the ground is made at most once per
             // painting, so it is a chip in the frame bar instead (§15.5) rather
             // than a button standing here for the rest of the session.
@@ -190,7 +189,7 @@ pub fn LayerPanel() -> Element {
             // menu of its own, because that is what it is: a filter is a layer, and
             // where it lands is the whole of what it acts on.
             AddFilterButton {}
-            AddFrameButton {}
+            CommandButton { command: Command::AddFrame, class: "layer-add" }
         }
 
         // Top of the document first, which is what a stack looks like from in front

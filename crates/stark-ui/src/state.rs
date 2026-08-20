@@ -297,6 +297,34 @@ pub struct AppState {
     /// [`dispatch`] — the seam every command passes through — which is free
     /// function code belonging to no component's scope.
     pub tutor: crate::tutor::TutorState,
+    /// The root-mounted dialogs' visibility, one flag per modal (see [`Dialogs`]).
+    pub dialogs: Dialogs,
+}
+
+/// The root-mounted dialogs: one flag per modal, raised by the command that
+/// opens it (`crate::commands`) and lowered by the dialog's own `on_close`.
+///
+/// App state rather than locals of the rail that renders them, because opening
+/// one is a *command* — a thing a menu row, a chord, or whatever surface comes
+/// next may ask for — and a command can reach only what [`AppState`] holds. The
+/// brush panel's two dialogs made the same move earlier for their own reason
+/// ([`AppState::brush_editor_open`], [`AppState::preset_save_open`]) and keep
+/// their longer-standing fields.
+#[derive(Clone, Copy)]
+pub struct Dialogs {
+    /// "New document…" (`NewDocumentModal` in `main`).
+    pub new_document: Signal<bool>,
+    /// The share dialog (`collab::SessionModal`). Sharing starts on the command
+    /// that raises this; the dialog exists to hand over the link.
+    pub session: Signal<bool>,
+    /// "Export image…" (`files::ExportModal`).
+    pub export: Signal<bool>,
+    /// The ⚙ preferences (`settings::SettingsModal`).
+    pub settings: Signal<bool>,
+    /// Timing stats (§7.1, `timings::TimingModal`).
+    pub timing: Signal<bool>,
+    /// Credits (`credits::CreditsModal`).
+    pub credits: Signal<bool>,
 }
 
 /// The quick-brush rack's signals (§18.1.8), grouped because they are one
@@ -541,6 +569,14 @@ impl AppState {
                 enabled: root_signal(|| Prefs::default().tips),
                 epoch: root_signal(|| 0),
                 not_reaching: root_signal(|| 0),
+            },
+            dialogs: Dialogs {
+                new_document: root_signal(|| false),
+                session: root_signal(|| false),
+                export: root_signal(|| false),
+                settings: root_signal(|| false),
+                timing: root_signal(|| false),
+                credits: root_signal(|| false),
             },
         }
     }

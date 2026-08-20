@@ -977,7 +977,7 @@ fn read(state: AppState, command: &InputCommand) -> Vec<Deed> {
         // Neither of these is the transport's. The playback loop drives the playhead
         // with these very commands (§18.2.4) and would otherwise score eight a
         // second; the user's own stops playback *before* it dispatches
-        // (`input::edit_history`), so this reads false by the time it is asked.
+        // (`commands::edit_history`), so this reads false by the time it is asked.
         InputCommand::Doc(DocCommand::Redo) => one(Deed::Redo, !playing(state)),
         InputCommand::Doc(DocCommand::Undo) => one(Deed::Undo, !playing(state)),
         // Not one that anybody reached for a control to make — see [`not_reaching`].

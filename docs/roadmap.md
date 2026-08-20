@@ -687,7 +687,7 @@ existed, and neither the engine nor the panels learn anything.
   It clamps to the sliders' own bounds (`panels::brush::MIN_RADIUS`,
   `MAX_RADIUS`, `MAX_FLOW` — now named once for both readers), so a drag cannot
   put the brush somewhere the panel is unable to show or take back.
-- **The bracket keys step the same knob** (`hotkeys::Hotkey::BrushSmaller` /
+- **The bracket keys step the same knob** (`commands::Command::BrushSmaller` /
   `BrushLarger`): a bare `[` or `]` is one tap of Size, a tenth either way —
   equal *ratios*, because the hand feels radius proportionally, and the +1px
   that is a visible jump on a 5px liner is nothing on a 300px wash — through

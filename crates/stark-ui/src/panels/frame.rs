@@ -183,42 +183,32 @@ fn to_aspect(min: Vec2, max: Vec2, aspect: f32) -> (Vec2, Vec2) {
     (center - half, center + half)
 }
 
-/// The "+ Frame" button, for the Layers panel's header — a frame *is* a layer, so
-/// that is where making one belongs. The new frame is selected immediately, so its
-/// bar and handles come up without a second click.
-#[component]
-pub fn AddFrameButton() -> Element {
-    let state = use_context::<AppState>();
-    rsx! {
-        button {
-            class: "layer-add",
-            title: "Add a frame: it marks what the piece is, and clips nothing — \
-                    paint past it and re-crop whenever you like",
-            onclick: move |_| {
-                let (min, max) = default_rect(state);
-                dispatch(state, DocCommand::AddMatte {
-                    carrier: None,
-                    at: Place::Top,
-                    region: MatteRegion::OutsideRect { min, max },
-                    paint: MattePaint::Solid(DEFAULT_MATTE),
-                });
-                // Select it, so its bar and handles come up without a second click.
-                // `AddMatte` mints the id engine-side, so the new frame is the
-                // topmost matte in the layer stack that came back.
-                let new_id = state
-                    .obs
-                    .read()
-                    .as_ref()
-                    .and_then(|o| o.layers.iter().rev().find(|l| l.matte.is_some()).map(|l| l.id));
-                if let Some(id) = new_id {
-                    dispatch(state, PeerCommand::SetActiveLayer(id));
-                }
-            },
-            // The glyph carries the plus the label used to, so the word is just the
-            // noun: "+ Frame" beside a bordered-square-with-a-plus said it twice.
-            {icon(icons::ADD_FRAME)}
-            {label("Frame")}
-        }
+/// Make a frame and pick it up (`Command::AddFrame`) — a frame *is* a layer, so
+/// the button that runs this stands in the Layers panel's header. The new frame
+/// is selected immediately, so its bar and handles come up without a second
+/// click.
+pub fn add_frame(state: AppState) {
+    let (min, max) = default_rect(state);
+    dispatch(
+        state,
+        DocCommand::AddMatte {
+            carrier: None,
+            at: Place::Top,
+            region: MatteRegion::OutsideRect { min, max },
+            paint: MattePaint::Solid(DEFAULT_MATTE),
+        },
+    );
+    // Select it. `AddMatte` mints the id engine-side, so the new frame is the
+    // topmost matte in the layer stack that came back.
+    let new_id = state.obs.read().as_ref().and_then(|o| {
+        o.layers
+            .iter()
+            .rev()
+            .find(|l| l.matte.is_some())
+            .map(|l| l.id)
+    });
+    if let Some(id) = new_id {
+        dispatch(state, PeerCommand::SetActiveLayer(id));
     }
 }
 

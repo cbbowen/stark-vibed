@@ -18,6 +18,7 @@ mod brush_editor;
 mod builtin_ids;
 mod builtins;
 mod collab;
+mod commands;
 mod components;
 mod credits;
 mod failure;
@@ -25,7 +26,6 @@ mod files;
 mod gesture;
 mod gradients;
 mod grounds;
-mod hotkeys;
 mod icons;
 mod identity;
 mod images;
@@ -55,9 +55,9 @@ use dioxus::html::Modifiers;
 use dioxus::prelude::*;
 
 use brush_editor::BrushEditorModal;
+use commands::Command;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use credits::CreditsModal;
-use hotkeys::Hotkey;
 use icons::{icon, icon_large};
 use input::{
     Nav, Paint, Tune, bind_context_menu, bind_pen, bind_shortcuts, elem_xy, end_interaction,
@@ -77,10 +77,9 @@ use platform::{canvas_by_id, capture_pointer};
 use render::CANVAS_ID;
 use settings::SettingsModal;
 use slots::SlotOverlay;
-use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
+use stark_engine::command::{PeerCommand, ViewCommand};
 use stark_model::ColorSpaceId;
-use stark_model::document::SelectionOp;
-use state::{AppState, dispatch, dispatch_quiet, resize, update_brush, use_obs};
+use state::{AppState, dispatch_quiet, resize, update_brush, use_obs};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
 /// every component class referenced below. Linked once by [`app`] so the rsx!
@@ -990,19 +989,17 @@ fn TowStringOverlay() -> Element {
 fn CommandRail() -> Element {
     let state = use_context::<AppState>();
     let layout = use_context::<PanelLayout>();
-    let mut show_new_doc = use_signal(|| false);
-    let mut show_session = use_signal(|| false);
-    let mut show_export = use_signal(|| false);
-    let mut show_settings = use_signal(|| false);
-    let mut show_timing = use_signal(|| false);
-    let mut show_credits = use_signal(|| false);
+    // The dialogs' flags are app state (`state::Dialogs`), raised by the
+    // commands that open them — which is what lets the same act be a menu row
+    // today and whatever reaches for it tomorrow. Local names for the mounts
+    // and their `on_close` below; nothing in this component sets one `true`.
+    let mut show_new_doc = state.dialogs.new_document;
+    let mut show_session = state.dialogs.session;
+    let mut show_export = state.dialogs.export;
+    let mut show_settings = state.dialogs.settings;
+    let mut show_timing = state.dialogs.timing;
+    let mut show_credits = state.dialogs.credits;
     let live = (state.collab.phase)() == collab::CollabPhase::Shared;
-    // Through a memo: all three move on a commit and the rail is a menu of
-    // commands, so re-rendering it per pointer sample of a stroke would be to
-    // re-diff two dropdowns to enable the Undo entry that was already enabled
-    // (`state::use_obs`).
-    let flags = use_obs(state, |o| (o.can_undo, o.can_redo, o.has_selection));
-    let (can_undo, can_redo, has_selection) = flags().unwrap_or((false, false, false));
     let hidden = (layout.hidden)();
     let timeline_open = (state.timeline.open)();
     let rack_pinned = (state.slots.pinned)();
@@ -1015,121 +1012,56 @@ fn CommandRail() -> Element {
                     // The catch-all menu for infrequent commands.
                     MenubarTrigger { {icon_large(icons::MENU)} }
                     MenubarContent {
-                        MenubarItem {
-                            index: 2usize,
-                            value: "new-document".to_string(),
-                            on_select: move |_| show_new_doc.set(true),
-                            span { class: "menu-item", {icon(icons::ADD)} "New document…" }
-                        }
-                        MenubarItem {
-                            index: 3usize,
-                            value: "open-document".to_string(),
-                            on_select: move |_| files::open_document(state),
-                            span { class: "menu-item", {icon(icons::OPEN_DOC)} "Open\u{2026}" }
-                        }
-                        MenubarItem {
-                            index: 4usize,
-                            value: "save-document".to_string(),
-                            on_select: move |_| files::save_document(state),
-                            span { class: "menu-item", {icon(icons::SAVE)} "Save" }
-                        }
+                        CmdItem { index: 2usize, command: Command::NewDocument }
+                        CmdItem { index: 3usize, command: Command::OpenDocument }
+                        CmdItem { index: 4usize, command: Command::SaveDocument }
                         // Directly above Export, and named as its pair: one picture
                         // coming *in* and one going out, neither of which is the
-                        // painting itself (`crate::files`, `crate::images`). The
-                        // action it commits is a *placement* (§23) — what the
-                        // document does with the picture — where the menu says where
-                        // it came from, which is the question a menu answers.
+                        // painting itself (`crate::files`, `crate::images`).
                         MenubarItem {
                             index: 5usize,
                             value: "import-image".to_string(),
-                            on_select: move |_| images::import_image(state),
-                            span { class: "menu-item", {icon(icons::IMPORT_IMAGE)} "Import image\u{2026}" }
+                            on_select: move |_| Command::ImportImage.run(state),
+                            span { class: "menu-item",
+                                {icon(Command::ImportImage.icon())}
+                                {Command::ImportImage.name()}
+                            }
                             // The one shortcut written by hand rather than read
-                            // off the hotkey table: a paste is not a binding of
-                            // ours at all — the browser delivers the clipboard
-                            // with its own event (`images::bind_paste`) — so
-                            // there is no row for this label to print.
+                            // off the chord table — which is why this row is not a
+                            // `CmdItem`: a paste is not a binding of ours at all,
+                            // the browser delivers the clipboard with its own
+                            // event (`images::bind_paste`), so there is no row
+                            // for this label to print.
                             span { class: "menu-shortcut", "Ctrl+V" }
                         }
-                        MenubarItem {
-                            index: 6usize,
-                            value: "export-image".to_string(),
-                            on_select: move |_| show_export.set(true),
-                            span { class: "menu-item", {icon(icons::EXPORT)} "Export image\u{2026}" }
-                        }
+                        CmdItem { index: 6usize, command: Command::ExportImage }
+                        // Hand-written for the label alone: a live session marks
+                        // the entry ● where the command's own name says …, and
+                        // being in one is state the registry does not carry.
                         MenubarItem {
                             index: 7usize,
                             value: "share".to_string(),
-                            // Sharing starts on the click, not on a second button
-                            // inside the dialog: the dialog exists to hand over the
-                            // link. A no-op once the session is live.
-                            on_select: move |_| {
-                                collab::share(state);
-                                show_session.set(true);
-                            },
+                            on_select: move |_| Command::Share.run(state),
                             span { class: "menu-item",
-                                {icon(icons::SHARE)}
-                                if live { "Share \u{25CF}" } else { "Share…" }
+                                {icon(Command::Share.icon())}
+                                if live { "Share \u{25CF}" } else { {Command::Share.name()} }
                             }
                         }
-                        MenubarItem {
-                            index: 0usize,
-                            value: "undo".to_string(),
-                            disabled: !can_undo,
-                            on_select: move |_| dispatch(state, DocCommand::Undo),
-                            span { class: "menu-item", {icon(icons::UNDO)} "Undo" }
-                            // Printed from the binding itself (`hotkeys::label`),
-                            // as every shortcut column below is, so what the menu
-                            // claims and what the keyboard answers cannot drift.
-                            span { class: "menu-shortcut", {hotkeys::label(Hotkey::Undo)} }
-                        }
-                        MenubarItem {
-                            index: 1usize,
-                            value: "redo".to_string(),
-                            disabled: !can_redo,
-                            on_select: move |_| dispatch(state, DocCommand::Redo),
-                            span { class: "menu-item", {icon(icons::REDO)} "Redo" }
-                            span { class: "menu-shortcut", {hotkeys::label(Hotkey::Redo)} }
-                        }
-                        // The same two glyphs the selection bar's chips wear. One
+                        CmdItem { index: 0usize, command: Command::Undo }
+                        CmdItem { index: 1usize, command: Command::Redo }
+                        // The selection pair also stands on the selection bar; one
                         // command reached two ways has to look like one command,
-                        // and these are the only entries in the menu that have a
-                        // second home elsewhere in the chrome.
-                        MenubarItem {
-                            index: 8usize,
-                            value: "deselect".to_string(),
-                            disabled: !has_selection,
-                            on_select: move |_| {
-                                dispatch(state, DocCommand::Select(SelectionOp::select_all()))
-                            },
-                            span { class: "menu-item", {icon(icons::SELECTION_NONE)} "Deselect" }
-                            span { class: "menu-shortcut", {hotkeys::label(Hotkey::SelectAll)} }
-                        }
-                        MenubarItem {
-                            index: 9usize,
-                            value: "invert-selection".to_string(),
-                            disabled: !has_selection,
-                            on_select: move |_| dispatch(state, DocCommand::InvertSelection),
-                            span { class: "menu-item",
-                                {icon(icons::SELECTION_INVERT)}
-                                "Invert selection"
-                            }
-                            span { class: "menu-shortcut", {hotkeys::label(Hotkey::InvertSelection)} }
-                        }
-                        // A mode rather than a command, so it carries a check like
+                        // which rendering both homes from the registry guarantees.
+                        CmdItem { index: 8usize, command: Command::Deselect }
+                        CmdItem { index: 9usize, command: Command::InvertSelection }
+                        // A mode rather than a dialog, so it carries a check like
                         // the Panels menu's entries do — the menu says whether you
                         // are in it, not only how to get there
                         // (§18.2.4).
-                        MenubarItem {
+                        CmdItem {
                             index: 10usize,
-                            value: "timeline".to_string(),
-                            on_select: move |_| {
-                                panels::timeline::set_open(state, !timeline_open)
-                            },
-                            span { class: "menu-item", {icon(icons::TIMELINE)} "Timeline" }
-                            span { class: "menu-check",
-                                if timeline_open { {icon(icons::CHECK)} }
-                            }
+                            command: Command::ToggleTimeline,
+                            checked: timeline_open,
                         }
                         // The last two, and last for a reason: neither is a thing to
                         // *do* to the drawing. Timing Stats above Credits because it
@@ -1137,18 +1069,8 @@ fn CommandRail() -> Element {
                         // rather than a panel because a live frame-rate readout beside
                         // the canvas is a thing to watch instead of painting
                         // (§7.1, `crate::timings`).
-                        MenubarItem {
-                            index: 11usize,
-                            value: "timing".to_string(),
-                            on_select: move |_| show_timing.set(true),
-                            span { class: "menu-item", {icon(icons::TIMING)} "Timing stats\u{2026}" }
-                        }
-                        MenubarItem {
-                            index: 12usize,
-                            value: "credits".to_string(),
-                            on_select: move |_| show_credits.set(true),
-                            span { class: "menu-item", {icon(icons::CREDITS)} "Credits\u{2026}" }
-                        }
+                        CmdItem { index: 11usize, command: Command::TimingStats }
+                        CmdItem { index: 12usize, command: Command::Credits }
                     }
                 }
                 MenubarMenu { index: 1usize,
@@ -1184,36 +1106,19 @@ fn CommandRail() -> Element {
                         // The navigator first: it is a standing readout, where the
                         // rack below is a picture of what the keyboard is holding
                         // (§11, §18.1.8).
-                        MenubarItem {
+                        CmdItem {
                             index: PanelId::ALL.len(),
-                            value: "navigator".to_string(),
-                            on_select: move |_| navigator::set_open(state, !nav_open),
-                            span { class: "menu-item",
-                                {icon(icons::NAVIGATOR)}
-                                "Navigator"
-                            }
-                            span { class: "menu-check",
-                                if nav_open { {icon(icons::CHECK)} }
-                            }
+                            command: Command::ToggleNavigator,
+                            checked: nav_open,
                         }
                         // The quick-brush rack, and while a number is held it appears
                         // whatever this entry says. What the entry buys is a rack that
                         // is *clickable*: the mouse-only way to a slot, which a hand
                         // with a pen and no keyboard has no other route to.
-                        MenubarItem {
+                        CmdItem {
                             index: PanelId::ALL.len() + 1,
-                            value: "quick-brushes".to_string(),
-                            on_select: move |_| {
-                                let mut pin = state.slots.pinned;
-                                pin.set(!rack_pinned);
-                            },
-                            span { class: "menu-item",
-                                {icon(icons::QUICK_BRUSHES)}
-                                "Quick brushes"
-                            }
-                            span { class: "menu-check",
-                                if rack_pinned { {icon(icons::CHECK)} }
-                            }
+                            command: Command::ToggleQuickBrushes,
+                            checked: rack_pinned,
                         }
                     }
                 }
@@ -1227,9 +1132,9 @@ fn CommandRail() -> Element {
                     // menubar with a stray button in it.
                     role: "menuitem",
                     r#type: "button",
-                    title: "Settings",
-                    onclick: move |_| show_settings.set(true),
-                    {icon_large(icons::SETTINGS)}
+                    title: Command::Settings.name(),
+                    onclick: move |_| Command::Settings.run(state),
+                    {icon_large(Command::Settings.icon())}
                 }
             }
         }
@@ -1250,6 +1155,42 @@ fn CommandRail() -> Element {
         }
         if show_credits() {
             CreditsModal { on_close: move |_| show_credits.set(false) }
+        }
+    }
+}
+
+/// One row of the rail's menus, rendered from the command it runs
+/// (`crate::commands`): the word, the mark, the shortcut column and the greyed
+/// state are all the registry's, so what the menu shows and what a click does
+/// cannot drift — and a chord a command gains is advertised here without the
+/// row changing.
+///
+/// What stays a prop is the menu's own business: `index` is the menubar's
+/// roving-focus order, and `checked` is the tick a mode's entry carries
+/// (§18.2.4) — a fact about being *in* something, which the registry of acts
+/// does not hold.
+#[component]
+fn CmdItem(index: usize, command: Command, #[props(default)] checked: Option<bool>) -> Element {
+    let state = use_context::<AppState>();
+    // One memo per row, and rows are components, so each re-renders when its
+    // own answer changes rather than on every commit (`state::use_obs`'s
+    // argument, one field per component instead of a shared tuple).
+    let enabled = use_memo(move || command.enabled(state.obs.read().as_ref()));
+    rsx! {
+        MenubarItem {
+            index,
+            value: format!("{command:?}"),
+            disabled: !enabled(),
+            on_select: move |_| command.run(state),
+            span { class: "menu-item", {icon(command.icon())} {command.name()} }
+            if let Some(chord) = commands::label(command) {
+                span { class: "menu-shortcut", {chord} }
+            }
+            if let Some(on) = checked {
+                span { class: "menu-check",
+                    if on { {icon(icons::CHECK)} }
+                }
+            }
         }
     }
 }

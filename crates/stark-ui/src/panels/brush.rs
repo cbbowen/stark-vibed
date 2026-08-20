@@ -3,11 +3,12 @@
 
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon, label};
+use crate::commands::Command;
+use crate::icons::{self, icon};
 use crate::platform::select_all;
 use crate::presets;
 use crate::state::{AppState, update_brush};
-use crate::widgets::Slider;
+use crate::widgets::{CommandButton, Slider};
 use stark_model::document::{BrushShape, OrientationSource};
 
 /// The smallest brush radius (`BrushParams::radius`). A tip finer than a canvas
@@ -65,34 +66,12 @@ pub fn BrushPanel() -> Element {
         div { class: "brush-actions",
             // A wrench, not a brush: the panel this button sits in is already the brush,
             // and what the dialog opens is the place it gets adjusted (`icons::EDIT_BRUSH`).
-            button {
-                class: "be-open",
-                title: "Open the full brush editor",
-                onclick: move |_| {
-                    let mut open = state.brush_editor_open;
-                    open.set(true);
-                    // The dialog is frontend state and reaches no engine, so there is no
-                    // command for the tour to read (§24.2). Its series of cards is the
-                    // one thing this click owes anybody.
-                    crate::tutor::did(state, crate::tutor::Deed::OpenedBrushEditor);
-                },
-                {icon(icons::EDIT_BRUSH)}
-                {label("Edit brush\u{2026}")}
-            }
+            CommandButton { command: Command::EditBrush, class: "be-open" }
             // Moved up here from the preset list's own header, where it cost that
             // header its whole reason to exist. It says "Save preset" rather than
             // "Save" now that it no longer sits on the list it saves into: a button
             // beside "Edit brush…" has to name its own subject.
-            button {
-                class: "be-open",
-                title: "Save the current brush as a preset",
-                onclick: move |_| {
-                    let mut open = state.preset_save_open;
-                    open.set(true);
-                },
-                {icon(icons::SAVE)}
-                {label("Save preset\u{2026}")}
-            }
+            CommandButton { command: Command::SavePreset, class: "be-open" }
         }
 
         PresetSection {}

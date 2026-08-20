@@ -214,7 +214,7 @@ Two commands are read for what they are not. `GestureCommand::End` is a stroke a
 paint; and a `DocCommand::Redo` counts only while the timeline transport is not
 playing, since playback drives the playhead with that very command (§18.2.4) and
 would otherwise score eight redos a second. The user's own redo stops playback
-before it dispatches (`hotkeys::edit_history`), so the guard reads false exactly when
+before it dispatches (`commands::edit_history`), so the guard reads false exactly when
 it should.
 
 ### 24.3 The card, and what it may take

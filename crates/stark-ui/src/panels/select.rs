@@ -4,13 +4,13 @@
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
 
-use crate::hotkeys::{self, Hotkey};
+use crate::commands::Command;
 use crate::icons::{self, icon, icon_tinted, label};
 use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch, use_obs};
-use crate::widgets::Slider;
+use crate::widgets::{CommandButton, Slider};
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_model::document::{FillOp, SelectionMode, SelectionOp, ShapeAction, Tool};
+use stark_model::document::{FillOp, SelectionMode, ShapeAction, Tool};
 
 /// Shape tools (§6.8): rect / ellipse / lasso, what the next gesture does
 /// with the region they enclose, and the feather applied to its edge.
@@ -219,59 +219,35 @@ pub fn SelectionBar() -> Element {
 
                 span { class: "bar-sep" }
 
-                // Arrows out of a centre, not a box of grips: the widget this opens is
-                // an ellipse and has no handles to promise (see `icons::TRANSFORM`).
-                button {
-                    class: "chip",
-                    title: "Move, scale, flip, perspective or warp the selected paint (§16)",
-                    onclick: move |_| crate::panels::transform::begin_transform(state),
-                    {icon(icons::TRANSFORM)}
-                    {label("Transform")}
-                }
-                // The other reach for the same word. With a selection in force the
+                // Each chip is its command worn whole (`crate::commands`): the
+                // word, the mark, the tooltip with its advertised chord, and the
+                // gate the act asks are all the registry's, so the bar cannot
+                // say one thing about an act the menu says another about.
+                CommandButton { command: Command::Transform }
+                // The other reach for Fill's word. With a selection in force the
                 // region is already drawn, so a fill needs no gesture at all —
                 // which is also the one case `FillOp::of_selection` is defined for:
                 // the mask is what bounds it, and this bar exists only when there
                 // is one.
-                // The same bucket the panel's Fill chip wears, because it is the same
-                // command with its region already drawn — one glyph for one act, wherever
-                // it is reached from.
+                // Hand-written where its neighbours are `CommandButton`s, for the
+                // tint alone: the bucket wears the brush's own paint
+                // (`icons::icon_tinted`), which is the one thing here the
+                // registry cannot say. The words still come off the command.
                 button {
                     class: "chip",
-                    title: "Fill the selection with the brush's paint",
-                    onclick: move |_| fill_selection(state),
+                    title: Command::FillSelection.tooltip(),
+                    onclick: move |_| Command::FillSelection.run(state),
                     {icon_tinted(icons::PAINT_BUCKET, brush_color)}
-                    {label("Fill")}
+                    {label(Command::FillSelection.word())}
                 }
                 // The same act as Fill with the parcel varying along a dragged
                 // axis (§22.4) — a mode rather than a click, because
                 // the axis is composed by hand and judged by eye. Never
                 // disabled: the mode's own bar carries the library (§22.3), so
                 // it is the way to a first ramp as well as the way to lay one.
-                button {
-                    class: "chip",
-                    title: "Fill the selection with a gradient \u{2014} pick or \
-                            trace the ramp on the bar, drag the axis, then Done",
-                    onclick: move |_| crate::panels::gradient_bar::begin_fill(state),
-                    {icon(icons::GRADIENT)}
-                    {label("Gradient")}
-                }
-                button {
-                    class: "chip",
-                    title: format!("Invert selection ({})", hotkeys::label(Hotkey::InvertSelection)),
-                    onclick: move |_| dispatch(state, DocCommand::InvertSelection),
-                    {icon(icons::SELECTION_INVERT)}
-                    {label("Invert")}
-                }
-                button {
-                    class: "chip",
-                    title: format!("Deselect ({})", hotkeys::label(Hotkey::SelectAll)),
-                    onclick: move |_| {
-                        dispatch(state, DocCommand::Select(SelectionOp::select_all()))
-                    },
-                    {icon(icons::SELECTION_NONE)}
-                    {label("Deselect")}
-                }
+                CommandButton { command: Command::GradientFill }
+                CommandButton { command: Command::InvertSelection }
+                CommandButton { command: Command::Deselect }
             }
         }
     }
