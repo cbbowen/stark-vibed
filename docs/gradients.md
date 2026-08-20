@@ -134,9 +134,9 @@ A gradient is something the artist paints **with**, not part of what they have
 painted — the same classification call as brush presets and the shape library
 (§11), and the same consequences: entries live in the frontend
 (`stark-ui/src/gradients.rs`), follow this browser across documents via
-`localStorage` (`stark.gradients.v1`, one line per entry,
-`b64(name)|b64(json(stops))` — line-oriented so one damaged entry is skipped, JSON so a
-stored ramp stays legible in devtools and editable by hand), never enter the
+`localStorage` (`stark.gradients`, a JSON list of `{name, gradient}` read entry
+by entry, so one damaged entry is skipped and the rest of the library still loads —
+§25.6), never enter the
 document, and never reach a peer. When the gradient fill lands, the chosen ramp
 is **embedded in the `FillOp` it commits** — the way a stroke embeds its brush
 color — so documents stay self-contained and replayable with no reference

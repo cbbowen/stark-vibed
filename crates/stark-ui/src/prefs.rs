@@ -22,15 +22,22 @@
 //! A row of the dialog does not have to remember to save: [`save`] runs after
 //! every change made through the dialog's own controls (`crate::settings`).
 //!
-//! # Why JSON, and why every field defaults
+//! # Why every field defaults
 //!
 //! `localStorage` outlives app versions, so the stored form has to survive a
-//! [`Prefs`] that has gained or lost a field since it was written. JSON is
-//! self-describing, and `#[serde(default)]` on the struct means a preference
-//! added later reads as its default out of every value stored before it existed
-//! — rather than the whole blob failing to parse and silently resetting
-//! everything the user had set. Same reasoning as the preset library's, which
-//! keeps JSON for the same reason the save file does not (§8).
+//! [`Prefs`] that has gained or lost a field since it was written. `#[serde(default)]`
+//! on the struct is what makes that work: a preference added later reads as its
+//! default out of every value stored before it existed, rather than the whole record
+//! failing to parse and silently resetting everything the user had set. The format's
+//! side of that bargain — and the reason it is JSON — is `crate::storage`'s, and this
+//! record is the one it was first argued for (§25.6).
+//!
+//! It matters more here than in the libraries, because this is the one record where
+//! damage is **all-or-nothing**: a library is read entry by entry, so a bad entry costs
+//! one preset, while a `Prefs` nobody can read costs every setting at once. Which is
+//! still the right answer — a half-applied read is worse than the defaults — but it is
+//! why an enum stored in this struct must be lenient about a name it does not know
+//! (`crate::layout::ChromeHiding`) rather than refusing and taking its neighbours down.
 //!
 //! # Why loading happens twice
 //!
@@ -47,11 +54,8 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::state::{AppState, dispatch};
+use crate::storage::Store;
 use stark_engine::command::ViewCommand;
-
-/// One key, namespaced like the shape and preset libraries'; versioned so a
-/// future format change can migrate rather than mis-parse.
-const KEY_PREFS: &str = "stark.prefs.v1";
 
 /// Every preference the ⚙ dialog sets, in the form they are stored in.
 ///
@@ -186,17 +190,12 @@ pub fn load_engine(state: AppState) {
 /// Persist the app's current preferences. Called after every change made through
 /// the settings dialog, so no row has to remember to.
 pub fn save(state: AppState) {
-    let Ok(json) = serde_json::to_string(&Prefs::capture(state)) else {
-        return;
-    };
-    crate::storage::set(KEY_PREFS, "the settings", &json);
+    crate::storage::save(Store::Prefs, &Prefs::capture(state));
 }
 
 /// What this browser has stored, or the defaults — a browser that has never
 /// stored anything and one whose stored value is damaged are the same case, and
 /// both want the defaults rather than a half-applied read.
 fn stored() -> Prefs {
-    crate::storage::get(KEY_PREFS)
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default()
+    crate::storage::load(Store::Prefs).unwrap_or_default()
 }

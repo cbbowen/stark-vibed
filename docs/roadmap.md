@@ -525,7 +525,7 @@ of controls rather than an answer to "what is on 4". The live brush is untouched
 by it, exactly as removing a preset leaves it: what goes is the binding, not the
 tool. An empty row carries none, having nothing to take back, and a rack emptied
 to the last digit stays empty rather than re-seeding itself from the library on
-the next start — `storage::load_table` tells "never set" from "set to nothing"
+the next start — `storage::load_list` tells "never set" from "set to nothing"
 apart, which is the whole reason it returns an option of a vector.
 
 Transient, it takes no pointer at all: the gesture it belongs to then is

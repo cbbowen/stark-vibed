@@ -30,12 +30,25 @@
 //! degrades to the previous behaviour of a new identity per run, which costs the two
 //! properties above and breaks nothing.
 
-use crate::storage;
+use crate::storage::{self, Store};
 use stark_net::SecretKey;
 
-/// Storage keys. Namespaced because `localStorage` is shared per origin.
-const KEY_SECRET: &str = "stark.identity.secret";
-const KEY_BOOT: &str = "stark.identity.boot";
+/// What is kept between visits: the key itself, and how many runs have used it.
+///
+/// One record rather than the two keys this used to be, because they are one fact —
+/// a boot counter without the key it counts runs of has nothing to say — and because
+/// a half-written pair is a state nothing here could have made sense of.
+///
+/// No `#[serde(default)]` on either field: an absent or damaged record means a fresh
+/// identity, and a fresh identity is the safe answer precisely because it is new —
+/// nothing can be stale against it (see [`resolve`]). A defaulted secret would be a
+/// key everyone shares.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Stored {
+    #[serde(with = "storage::hex")]
+    secret: [u8; 32],
+    boot: u64,
+}
 
 /// This client's identity for the life of the process.
 #[derive(Clone)]
@@ -58,48 +71,23 @@ pub fn get() -> ClientIdentity {
 }
 
 fn resolve() -> ClientIdentity {
-    // A browser with no storage reads as one that has stored nothing, so this
-    // mints a fresh key per run — safe precisely because the id is new: nothing
-    // can be stale against it. The writes below then warn and carry on, and the
-    // whole arrangement degrades to what it was before any of this was persisted
-    // (`crate::storage`).
-    let secret = storage::get(KEY_SECRET)
-        .as_deref()
-        .and_then(decode_secret)
-        .unwrap_or_else(|| {
-            let fresh = SecretKey::generate();
-            storage::set(
-                KEY_SECRET,
-                "this browser's identity",
-                &encode_secret(&fresh),
-            );
-            fresh
-        });
+    // A browser with no storage reads as one that has stored nothing, so this mints a
+    // fresh key per run — safe precisely because the id is new: nothing can be stale
+    // against it. The write below then warns and carries on, and the whole arrangement
+    // degrades to what it was before any of this was persisted (`crate::storage`).
+    let stored = storage::load::<Stored>(Store::Identity);
+    let secret = stored
+        .as_ref()
+        .map_or_else(SecretKey::generate, |s| SecretKey::from_bytes(&s.secret));
     // Count this run. Wrapping is unreachable in practice and harmless if reached:
     // a peer that saw the old value drops us for `PEER_TIMEOUT` and re-adds us.
-    let boot = storage::get(KEY_BOOT)
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0)
-        .wrapping_add(1);
-    storage::set(KEY_BOOT, "this browser's identity", &boot.to_string());
+    let boot = stored.map_or(0, |s| s.boot).wrapping_add(1);
+    storage::save(
+        Store::Identity,
+        &Stored {
+            secret: secret.to_bytes(),
+            boot,
+        },
+    );
     ClientIdentity { secret, boot }
-}
-
-fn encode_secret(secret: &SecretKey) -> String {
-    secret
-        .to_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
-fn decode_secret(hex: &str) -> Option<SecretKey> {
-    if hex.len() != 64 {
-        return None;
-    }
-    let mut bytes = [0u8; 32];
-    for (i, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
-    }
-    Some(SecretKey::from_bytes(&bytes))
 }

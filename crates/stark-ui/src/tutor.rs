@@ -91,13 +91,10 @@ use crate::icons::{self, icon};
 use crate::layout::{ChromeHiding, PanelId, PanelLayout, chrome_class, open_panel, panel_key};
 use crate::platform::{self, ElementBox};
 use crate::state::AppState;
+use crate::storage::Store;
 use stark_engine::InputCommand;
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_model::document::BrushParams;
-
-/// One key, namespaced and versioned like the other browser-local tables
-/// (`crate::storage`).
-const KEY_LEDGER: &str = "stark.tutor.v1";
 
 /// How long a gap between two reports of the same deed makes them two deeds, in
 /// seconds.
@@ -138,26 +135,40 @@ const EDGE: f32 = 14.0;
 /// a lesson counts it, and one that nothing counts would be a tally kept for
 /// nobody (which is what `the_deeds_and_the_lessons_account_for_each_other`
 /// refuses).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// Each variant carries the name it is **stored** under as a `rename`, spelled out
+/// rather than derived from the identifier on purpose: the name is what a browser
+/// wrote last week, so a deed may be added, removed or reordered freely, and only
+/// editing the string forgets a tally. A name this build no longer knows costs its own
+/// row (`storage::load_list`) — a deed nothing counts has no lesson to feed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Deed {
     /// A brush stroke laid on the canvas and committed. A selection drag is not a
     /// stroke: it shares the gesture and produces a mask rather than paint (§6.8).
+    #[serde(rename = "stroke")]
     Stroke,
     /// The brush's size or flow moved, however it was moved.
+    #[serde(rename = "tune")]
     TunedBrush,
     /// One run of panning crossed [`LONG_PAN`].
+    #[serde(rename = "long-pan")]
     LongPan,
     /// The brush's color moved, however it was moved.
+    #[serde(rename = "color")]
     ChangedColor,
     /// A redo — the user's own, not the timeline transport's.
+    #[serde(rename = "redo")]
     Redo,
     /// A preset put on from the Brush panel's library. Not on the command stream —
     /// reported by the row that was clicked ([`did`]).
+    #[serde(rename = "preset")]
     AppliedPreset,
     /// An undo — the user's own, not the timeline transport's.
+    #[serde(rename = "undo")]
     Undo,
     /// A panel closed. Not on the command stream either: which panels are open is
     /// the frontend's alone, so `layout::close_panel` reports it ([`did`]).
+    #[serde(rename = "closed-panel")]
     ClosedPanel,
     /// A stroke that snapped to a line or an ellipse (§6.9).
     ///
@@ -165,19 +176,23 @@ pub enum Deed {
     /// neither is the other's expense. It is only knowable by asking the engine what
     /// the hold found ([`Engine::assisted`](stark_engine::Engine::assisted)), and
     /// only before the gesture ends.
+    #[serde(rename = "assisted")]
     AssistedStroke,
     /// A stroke that snapped to a **line** while a perspective guide was on screen
     /// (§20.6) — the state in which the grid is about to start aiming strokes,
     /// whether or not this one landed near enough for it to.
+    #[serde(rename = "guided-line")]
     GuidedLine,
     /// A marquee or lasso gesture that committed a **selection** (§6.8).
     ///
     /// The same gesture as a stroke, told apart by the tool and by what the panel's
     /// action says it builds: under Fill the drag lays paint instead, which is not
     /// a selection however much it looks like one from here (§18.0.4).
+    #[serde(rename = "selection")]
     Selection,
     /// The brush editor opened. Not on the command stream: the dialog is frontend
     /// state and reaches no engine, so the button reports it ([`did`]).
+    #[serde(rename = "brush-editor")]
     OpenedBrushEditor,
 }
 
@@ -211,34 +226,6 @@ impl Deed {
             .iter()
             .position(|d| *d == self)
             .expect("every Deed is in Deed::ALL")
-    }
-
-    /// The name this deed is stored under.
-    ///
-    /// Stable across edits of the enum, because it is what a browser wrote last
-    /// week: a deed may be added, removed or reordered freely, and only *renaming*
-    /// one forgets a tally.
-    fn key(self) -> &'static str {
-        match self {
-            Deed::Stroke => "stroke",
-            Deed::TunedBrush => "tune",
-            Deed::LongPan => "long-pan",
-            Deed::ChangedColor => "color",
-            Deed::Redo => "redo",
-            Deed::AppliedPreset => "preset",
-            Deed::Undo => "undo",
-            Deed::ClosedPanel => "closed-panel",
-            Deed::AssistedStroke => "assisted",
-            Deed::GuidedLine => "guided-line",
-            Deed::Selection => "selection",
-            Deed::OpenedBrushEditor => "brush-editor",
-        }
-    }
-
-    /// The deed `key` names, or `None` where this build has no such deed — a line
-    /// written by a version that counted something this one does not.
-    fn from_key(key: &str) -> Option<Deed> {
-        Deed::ALL.into_iter().find(|d| d.key() == key)
     }
 }
 
@@ -1272,65 +1259,60 @@ fn release_panels(state: AppState, lesson: &Lesson) {
     }
 }
 
+/// One row of the stored ledger: a deed and its count, or a lesson already given.
+///
+/// A **list** of rows rather than one record with two fields, and the reason is
+/// [`Ledger`]'s: the two halves forget differently, and only a row can be dropped on
+/// its own. A tally under a name this build does not know costs that row
+/// (`storage::load_list`), while the `given` names beside it survive — which they must,
+/// because somebody who has seen a tip should not be shown it again by a release that
+/// renamed its neighbour.
+///
+/// Untagged, so a row is `{"deed":"stroke","count":7}` or `{"given":"brush-panel"}`
+/// rather than either wrapped in a discriminant it already carries. The two shapes
+/// share no field, so nothing here is ambiguous.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum Row {
+    Deed { deed: Deed, count: u32 },
+    Given { given: String },
+}
+
 /// What this browser has stored, or an empty ledger — a browser that has stored
 /// nothing and one whose store is damaged want the same thing, which is to be
 /// treated as new.
-///
-/// A line naming a deed this build does not count is dropped and the rest of the
-/// ledger still loads, which is the property `storage`'s table format exists for.
 fn stored() -> Ledger {
-    let Some(rows) = crate::storage::load_table(KEY_LEDGER, parse) else {
+    let Some(rows) = crate::storage::load_list::<Row>(Store::Tutor) else {
         return Ledger::default();
     };
     let mut book = Ledger::default();
     for row in rows {
         match row {
-            Row::Deed(deed, n) => book.tally[deed.slot()] = n,
-            Row::Given(key) => {
-                book.given.insert(key);
+            Row::Deed { deed, count } => book.tally[deed.slot()] = count,
+            // Not checked against `LESSONS` — see [`Ledger`].
+            Row::Given { given } => {
+                book.given.insert(given);
             }
         }
     }
     book
 }
 
-/// One readable line of the stored ledger.
-enum Row {
-    Deed(Deed, u32),
-    Given(String),
-}
-
-/// One line of the stored ledger, or `None` for one this build cannot use — a
-/// damaged record, or a deed it no longer counts. Either way it costs that line and
-/// not the ledger (`crate::storage::load_table`).
-fn parse(line: &str) -> Option<Row> {
-    let mut fields = line.split(crate::storage::FIELD);
-    match fields.next()? {
-        "deed" => {
-            let deed = Deed::from_key(fields.next()?)?;
-            Some(Row::Deed(deed, fields.next()?.parse().ok()?))
-        }
-        // Not checked against `LESSONS` — see [`Ledger`].
-        "given" => Some(Row::Given(fields.next()?.to_string())),
-        _ => None,
-    }
-}
-
 /// Persist the ledger. Called after every deed, which is at most one write per
 /// [`COALESCE`] and only while the app is being used.
 fn save(state: AppState) {
     let book = state.tutor.ledger.peek().clone();
-    let deeds = Deed::ALL.into_iter().filter_map(|d| {
-        let n = book.tally[d.slot()];
-        // A deed nobody has done is the absence of a line rather than a line saying
-        // zero, so the table only ever holds what actually happened.
-        (n > 0).then(|| crate::storage::record(["deed", d.key(), &n.to_string()]))
+    let deeds = Deed::ALL.into_iter().filter_map(|deed| {
+        let count = book.tally[deed.slot()];
+        // A deed nobody has done is the absence of a row rather than a row saying
+        // zero, so the record only ever holds what actually happened.
+        (count > 0).then_some(Row::Deed { deed, count })
     });
-    let given = book
-        .given
-        .iter()
-        .map(|k| crate::storage::record(["given", k]));
-    crate::storage::save_table(KEY_LEDGER, "the tips you've seen", deeds.chain(given));
+    let given = book.given.iter().map(|k| Row::Given {
+        given: k.to_string(),
+    });
+    let rows: Vec<Row> = deeds.chain(given).collect();
+    crate::storage::save(Store::Tutor, &rows);
 }
 
 /// How wide a card whose **right** edge is pinned at `x` may be, as a declaration.
@@ -1804,18 +1786,26 @@ mod tests {
         );
     }
 
-    /// [`Deed::slot`] and [`Deed::key`] both have to be total and one-to-one — the
-    /// first indexes the tally, the second is what a stored line is found by.
+    /// [`Deed::slot`] and the stored name both have to be total and one-to-one — the
+    /// first indexes the tally, the second is what a stored row is found by.
+    ///
+    /// The names are `rename` attributes, so serde round-trips them by construction;
+    /// what it does *not* check is that no two variants were given the same string,
+    /// which would silently merge two tallies.
     #[test]
     fn every_deed_has_its_own_slot_and_its_own_name() {
         let slots: HashSet<usize> = Deed::ALL.into_iter().map(Deed::slot).collect();
         assert_eq!(slots.len(), Deed::COUNT);
-        let keys: HashSet<&str> = Deed::ALL.into_iter().map(Deed::key).collect();
-        assert_eq!(keys.len(), Deed::COUNT);
-        for d in Deed::ALL {
-            assert_eq!(Deed::from_key(d.key()), Some(d));
-        }
-        assert_eq!(Deed::from_key("a deed no build has"), None);
+        let names: HashSet<String> = Deed::ALL
+            .into_iter()
+            .map(|d| serde_json::to_string(&d).unwrap())
+            .collect();
+        assert_eq!(
+            names.len(),
+            Deed::COUNT,
+            "a name spelled twice merges tallies"
+        );
+        assert!(serde_json::from_str::<Deed>("\"a deed no build has\"").is_err());
     }
 
     /// The confinement rule, which is the whole of what keeps a preset click from
@@ -1855,22 +1845,28 @@ mod tests {
     }
 
     /// A ledger written by a build that counted something this one does not still
-    /// loads, and the half it understands survives — the rule
-    /// `crate::storage`'s format exists for, asked of this parser.
+    /// loads, and the half it understands survives — the rule `storage::load_list`
+    /// exists for, asked of these rows.
     #[test]
-    fn an_unknown_line_costs_itself_and_not_the_ledger() {
-        let text = "deed|stroke|7\n\
-                    deed|flying|3\n\
-                    deed|redo|not-a-number\n\
-                    nonsense\n\
-                    given|brush-panel\n\
-                    given|a-lesson-this-build-dropped";
+    fn an_unknown_row_costs_itself_and_not_the_ledger() {
+        let json = r#"[
+            {"deed":"stroke","count":7},
+            {"deed":"flying","count":3},
+            {"deed":"redo","count":"not a number"},
+            "nonsense",
+            {"given":"brush-panel"},
+            {"given":"a-lesson-this-build-dropped"}
+        ]"#;
         let mut book = Ledger::default();
-        for row in text.lines().filter_map(parse) {
+        let rows = serde_json::from_str::<Vec<serde_json::Value>>(json)
+            .unwrap()
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<Row>(v).ok());
+        for row in rows {
             match row {
-                Row::Deed(d, n) => book.tally[d.slot()] = n,
-                Row::Given(k) => {
-                    book.given.insert(k);
+                Row::Deed { deed, count } => book.tally[deed.slot()] = count,
+                Row::Given { given } => {
+                    book.given.insert(given);
                 }
             }
         }
@@ -1885,6 +1881,41 @@ mod tests {
             book.given.contains("a-lesson-this-build-dropped"),
             "a lesson name outlives the lesson, so a rename cannot re-teach it",
         );
+    }
+
+    /// What [`save`] writes is what [`stored`] reads.
+    ///
+    /// Worth asserting for [`Row`] and not for the other stored types, because it is
+    /// the one that is `untagged`: the writer emits a shape and the reader guesses
+    /// which variant a shape is, so the two are only joined by these field names
+    /// agreeing. A tagged enum could not come apart this way.
+    #[test]
+    fn the_rows_written_are_the_rows_read() {
+        let rows = vec![
+            Row::Deed {
+                deed: Deed::Stroke,
+                count: 7,
+            },
+            Row::Given {
+                given: "brush-panel".to_string(),
+            },
+        ];
+        let json = serde_json::to_string(&rows).unwrap();
+        assert_eq!(
+            json,
+            r#"[{"deed":"stroke","count":7},{"given":"brush-panel"}]"#
+        );
+        let mut book = Ledger::default();
+        for row in serde_json::from_str::<Vec<Row>>(&json).unwrap() {
+            match row {
+                Row::Deed { deed, count } => book.tally[deed.slot()] = count,
+                Row::Given { given } => {
+                    book.given.insert(given);
+                }
+            }
+        }
+        assert_eq!(book.tally[Deed::Stroke.slot()], 7);
+        assert!(book.given.contains("brush-panel"));
     }
 
     /// The threshold is a floor, not an equality: a count that ran past it while

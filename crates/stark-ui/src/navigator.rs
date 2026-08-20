@@ -73,6 +73,7 @@ use crate::layout::chrome_class;
 use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch};
+use crate::storage::Store;
 use stark_engine::ExportScale;
 use stark_engine::command::ViewCommand;
 use stark_model::document::LayerId;
@@ -100,19 +101,14 @@ const MAX_HEIGHT: u32 = 200;
 /// overview appears while the artist is still looking at where it landed.
 const SETTLE_MS: i32 = 180;
 
-/// One key, namespaced and versioned like the other browser-local tables
-/// (`crate::storage`).
-const KEY_NAVIGATOR: &str = "stark.navigator.v1";
-
-/// What is stored while the overview is up. A key that is absent — or holds anything
-/// else, which is the damaged-store case — reads as put away, the same starting point
-/// every panel has (§11): the opening screen is the painting and nothing else.
-const SHOWN: &str = "1";
-
 /// Restore this browser's choice, at startup.
+///
+/// A record that is absent — or damaged, which is the same case (`crate::storage`) —
+/// reads as put away, the same starting point every panel has (§11): the opening
+/// screen is the painting and nothing else.
 pub fn load(state: AppState) {
     let mut showing = state.navigator;
-    showing.set(crate::storage::get(KEY_NAVIGATOR).as_deref() == Some(SHOWN));
+    showing.set(crate::storage::load(Store::Navigator).unwrap_or(false));
 }
 
 /// Show the overview or put it away, and remember it — **the only thing that writes
@@ -133,11 +129,7 @@ pub fn set_open(state: AppState, open: bool) {
         return;
     }
     showing.set(open);
-    crate::storage::set(
-        KEY_NAVIGATOR,
-        "whether the navigator is showing",
-        if open { SHOWN } else { "" },
-    );
+    crate::storage::save(Store::Navigator, &open);
 }
 
 /// Where the miniature sits in canvas space, and how large it is drawn.

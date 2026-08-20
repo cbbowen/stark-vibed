@@ -41,14 +41,9 @@ use stark_model::document::{
 };
 
 use crate::builtins;
-use crate::platform::{base64_decode, base64_encode};
 use crate::slots;
 use crate::state::{AppState, update_brush};
-use crate::storage;
-
-/// One key, namespaced like the shape library's; versioned so a future format
-/// change can migrate rather than mis-parse.
-const KEY_PRESETS: &str = "stark.presets.v1";
+use crate::storage::{self, Store};
 
 /// A brush as the frontend carries it: the engine's own parameters plus the
 /// **feel** the frontend owns — today just the stroke-smoothing amount
@@ -60,14 +55,29 @@ const KEY_PRESETS: &str = "stark.presets.v1";
 /// [`BrushParams`] because the stored path already embodies the smoothing — a
 /// field there would be one that replay reads and ignores, and the log's encoding makes
 /// appending it a wire-version bump (§8).
-#[derive(Clone, Copy, PartialEq, Debug)]
+///
+/// Serde, because this is what both the preset library and the quick-brush rack store —
+/// one stored shape for one type, so the two libraries cannot come to disagree about
+/// what a stored brush is.
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Wearable {
     pub params: BrushParams,
     /// Stroke smoothing, 0..=1 (§6.11) — the knob, not the rope. The rope is
     /// derived at gesture start (`input::rope`), because the knob is
     /// denominated in the hand's own screen px and only a live view converts
     /// it.
+    ///
+    /// Defaulted so a brush stored before §6.11 reads as unsmoothed, and clamped on
+    /// the way in because the range **is** the number's meaning: a hand-edited store
+    /// must not be able to hand the fitter a rope it cannot use.
+    #[serde(default, deserialize_with = "stored_smoothing")]
     pub smoothing: f32,
+}
+
+/// [`Wearable::smoothing`]'s gate — see the field.
+fn stored_smoothing<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    use serde::Deserialize;
+    Ok(f32::deserialize(d)?.clamp(0.0, 1.0))
 }
 
 /// The live brush as a [`Wearable`]: the engine's parameters beside the feel
@@ -564,93 +574,57 @@ pub fn matches(current: &Wearable, preset: &Wearable) -> bool {
 
 // --- persistence ----------------------------------------------------------
 //
-// One storage key holding one line per **user** preset:
-// `b64(name)|b64(json(brush))|b64(json(feel))`. Line-oriented and
-// field-delimited like the shape library, so a single damaged entry is skipped
-// rather than poisoning the whole library. The brush itself is JSON rather than
-// the save file's columnar encoding because localStorage outlives app versions: JSON is
-// self-describing, so a `BrushParams` field added later (with
-// `#[serde(default)]`) still reads every stored preset instead of dropping the
-// lot. The feel (§6.11) is its own trailing field for the same reason
-// run the other way: a line saved before it exists simply has two fields, and
-// absent means zero.
+// One entry per **user** preset, through `crate::storage`, which is where the format
+// and the skip-a-damaged-entry rule live. What is this module's own is which entries
+// are written and which two fields are not:
 //
-// The app's own presets are filtered out on the way in and out, which is what
-// makes them updatable at all: there is one copy of a built-in, in
-// `default_presets`, so there is nothing stale for a new version to disagree
-// with. Neither of their two extra fields is written — `slot` belongs to the
-// definition and `builtin` is provenance, and a stored copy of either would be
-// a second opinion about a question the code already answers.
+// The app's own presets are filtered out on the way in and out, which is what makes
+// them updatable at all — there is one copy of a built-in, in `default_presets`, so
+// there is nothing stale for a new version to disagree with. Neither of their two
+// extra fields is stored: `slot` belongs to the definition and `builtin` is
+// provenance, and a stored copy of either would be a second opinion about a question
+// the code already answers.
 
-/// The feel half of a stored line (§6.11) — its own JSON object rather than a
-/// bare number, so a future feel field reads old lines through
-/// `#[serde(default)]` exactly as `BrushParams` does.
+/// One stored preset: a name and a whole brush ([`Wearable`], which the rack stores
+/// too).
+///
+/// A type of its own rather than [`PresetEntry`] with two fields skipped, because
+/// provenance is the point: everything storage holds is the user's by definition, so
+/// `builtin: false` is settled where the entry is *made* rather than carried in the
+/// record and trusted.
 #[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct StoredFeel {
-    #[serde(default)]
-    pub(crate) smoothing: f32,
-}
-
-/// The two brush fields of a stored line, shared with the rack's persistence
-/// (`crate::slots`): the same wire shape, so the two libraries cannot come to
-/// disagree about what a stored brush is.
-pub(crate) fn encode_wearable(w: &Wearable) -> Option<String> {
-    let brush = serde_json::to_string(&w.params).ok()?;
-    let feel = serde_json::to_string(&StoredFeel {
-        smoothing: w.smoothing,
-    })
-    .ok()?;
-    Some(storage::record([
-        base64_encode(brush.as_bytes()).as_str(),
-        base64_encode(feel.as_bytes()).as_str(),
-    ]))
-}
-
-/// Read a [`Wearable`] back off a line's remaining fields. The feel field is
-/// optional — a line saved before §6.11 has none, and absent means zero.
-pub(crate) fn decode_wearable<'a>(fields: &mut impl Iterator<Item = &'a str>) -> Option<Wearable> {
-    let params = serde_json::from_slice(&base64_decode(fields.next()?).ok()?).ok()?;
-    let smoothing = fields
-        .next()
-        .and_then(|f| base64_decode(f).ok())
-        .and_then(|b| serde_json::from_slice::<StoredFeel>(&b).ok())
-        .map_or(0.0, |f| f.smoothing.clamp(0.0, 1.0));
-    Some(Wearable { params, smoothing })
+struct StoredPreset {
+    name: String,
+    brush: Wearable,
 }
 
 fn persist(entries: &[PresetEntry]) {
-    storage::save_table(
-        KEY_PRESETS,
-        "the brush presets",
-        entries.iter().filter(|e| !e.builtin).filter_map(|e| {
-            Some(storage::record([
-                base64_encode(e.name.as_bytes()).as_str(),
-                encode_wearable(&e.brush)?.as_str(),
-            ]))
-        }),
-    );
+    let stored: Vec<StoredPreset> = entries
+        .iter()
+        .filter(|e| !e.builtin)
+        .map(|e| StoredPreset {
+            name: e.name.clone(),
+            brush: e.brush,
+        })
+        .collect();
+    storage::save(Store::Presets, &stored);
 }
 
 /// What this browser has saved, or `None` where it has saved nothing (or
 /// storage is unavailable). Either way the app's own presets arrive separately,
 /// so there is no "never seeded" state left to tell apart from an empty one.
 fn read_storage() -> Option<Vec<PresetEntry>> {
-    storage::load_table(KEY_PRESETS, parse_entry)
-}
-
-/// One stored line. Everything storage holds is the user's by definition — the
-/// app's own are never written — so provenance is settled here rather than
-/// carried in the line and trusted.
-fn parse_entry(line: &str) -> Option<PresetEntry> {
-    let mut fields = line.split(storage::FIELD);
-    let name = String::from_utf8(base64_decode(fields.next()?).ok()?).ok()?;
-    let brush = decode_wearable(&mut fields)?;
-    Some(PresetEntry {
-        name,
-        brush,
-        slot: None,
-        builtin: false,
-    })
+    Some(
+        storage::load_list::<StoredPreset>(Store::Presets)?
+            .into_iter()
+            .map(|e| PresetEntry {
+                name: e.name,
+                brush: e.brush,
+                slot: None,
+                builtin: false,
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]

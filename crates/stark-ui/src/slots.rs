@@ -60,11 +60,7 @@ use crate::icons::{self, icon};
 use crate::layout::chrome_class;
 use crate::presets::{self, Wearable};
 use crate::state::AppState;
-use crate::storage;
-
-/// One key, namespaced like the shape and preset libraries'; versioned so a
-/// future format change can migrate rather than mis-parse.
-const KEY_SLOTS: &str = "stark.slots.v1";
+use crate::storage::{self, Store};
 
 /// How many quick brushes there are — one per digit.
 pub const COUNT: usize = 10;
@@ -623,29 +619,32 @@ pub fn seed_defaults(state: AppState) {
 
 // --- persistence ----------------------------------------------------------
 //
-// One `crate::storage` table, a line per **assigned** slot: `digit|b64(json)`.
-// The format and the skip-a-damaged-line rule live there, so what is this
-// module's own is that the record is keyed by digit rather than positional: a
-// rack with holes stores as the few lines it has, and a line whose digit is out
-// of range is skipped instead of shifting its neighbours. JSON for the reason
-// the presets give: `localStorage` outlives app versions, and a `BrushParams`
-// field added later still reads every stored slot.
-// The brush fields themselves are the preset library's own wire shape
-// (`presets::encode_wearable`), so the two libraries cannot come to disagree
-// about what a stored brush is — including the trailing feel field (§6.11),
-// optional there and optional here.
+// One `crate::storage` entry per **assigned** slot. The format and the
+// skip-a-damaged-entry rule live there, so what is this module's own is that an entry
+// names its digit rather than sitting at a position: a rack with holes stores as the
+// few entries it has, and one whose digit is out of range is dropped instead of
+// shifting its neighbours. The brush is the preset library's own [`Wearable`], so the
+// two libraries cannot come to disagree about what a stored brush is.
+
+/// One assigned slot.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredSlot {
+    digit: usize,
+    brush: Wearable,
+}
 
 fn persist(rack: &Rack) {
-    storage::save_table(
-        KEY_SLOTS,
-        "the quick brushes",
-        rack.iter().enumerate().filter_map(|(slot, brush)| {
-            Some(storage::record([
-                slot.to_string().as_str(),
-                presets::encode_wearable(&(*brush)?)?.as_str(),
-            ]))
-        }),
-    );
+    let stored: Vec<StoredSlot> = rack
+        .iter()
+        .enumerate()
+        .filter_map(|(digit, brush)| {
+            Some(StoredSlot {
+                digit,
+                brush: (*brush)?,
+            })
+        })
+        .collect();
+    storage::save(Store::Slots, &stored);
 }
 
 /// `None` when this browser has never set a slot (or storage is unavailable) —
@@ -655,22 +654,17 @@ fn persist(rack: &Rack) {
 /// is seeded from the library ([`seed_defaults`]). A rack that re-seeded itself
 /// the moment it was emptied would make the trash on the last row do nothing at
 /// all — the same emptied-versus-absent case the preset library has, and
-/// `storage::load_table` keeps them apart for both.
+/// `storage::load_list` keeps them apart for both.
 fn read_storage() -> Option<Rack> {
     let mut rack: Rack = [None; COUNT];
-    for (slot, brush) in storage::load_table(KEY_SLOTS, parse_entry)? {
-        rack[slot] = Some(brush);
+    for entry in storage::load_list::<StoredSlot>(Store::Slots)? {
+        // A digit past the rack is an entry a shorter build cannot place, and
+        // dropping it is the only answer that does not move its neighbours.
+        if entry.digit < COUNT {
+            rack[entry.digit] = Some(entry.brush);
+        }
     }
     Some(rack)
-}
-
-fn parse_entry(line: &str) -> Option<(usize, Wearable)> {
-    let mut fields = line.split(storage::FIELD);
-    let slot: usize = fields.next()?.parse().ok()?;
-    if slot >= COUNT {
-        return None;
-    }
-    Some((slot, presets::decode_wearable(&mut fields)?))
 }
 
 #[cfg(test)]

@@ -113,6 +113,21 @@ impl std::fmt::Display for AssetId {
     }
 }
 
+// The newtype's two conversions, written down so a caller that has to name the hash
+// itself — a serde adapter spelling an id as hex rather than as 32 numbers
+// (`stark-ui`'s browser store) — can do it generically instead of reaching for `.0`.
+impl From<[u8; 32]> for AssetId {
+    fn from(hash: [u8; 32]) -> Self {
+        AssetId(hash)
+    }
+}
+
+impl From<AssetId> for [u8; 32] {
+    fn from(id: AssetId) -> Self {
+        id.0
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("asset: {0}")]
 pub struct AssetError(String);

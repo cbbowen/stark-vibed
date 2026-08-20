@@ -66,12 +66,10 @@ use crate::layout::PanelId;
 use crate::panels::brush::{MAX_RADIUS, MIN_RADIUS};
 use crate::platform;
 use crate::state::{AppState, dispatch, update_brush};
+use crate::storage::Store;
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::SelectionOp;
-
-/// One key, namespaced and versioned like the preference and library keys'.
-const KEY_BINDINGS: &str = "stark.bindings.v1";
 
 /// The key half of a binding: which modifier tier, and which key.
 ///
@@ -133,7 +131,13 @@ impl ChordKey {
 /// three surfaces may carry it (the menu, a bar chip, the keyboard), and a
 /// rebinding moves the chords while these names hold still: the stored table
 /// keys on the variant's name and nothing else ([`Bindings`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// Serde, because that name **is** the stored key — the derive spells a variant the
+/// way `Debug` does, so a rebinding is stored under `"Undo"` or
+/// `{"TogglePanel":"Layers"}` without anything here writing a name down twice.
+/// Renaming a variant orphans its stored binding, which is dropped on load
+/// (`storage::load_list`) rather than being an error.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Command {
     Undo,
     Redo,
@@ -373,31 +377,28 @@ impl Bindings {
     }
 }
 
-/// The stored form: overrides keyed by the variant's name, which is the stable
-/// identity rebinding was always going to hang on. An id today's build does not
-/// know is dropped on load — a binding for a retired command is a binding for
-/// nothing.
+/// One stored override: the command, and the chord that is now its whole binding —
+/// or none, for a command whose chord a later rebind stole.
+///
+/// A list of these rather than one record, so a command today's build does not know
+/// costs its own row and not the table (`storage::load_list`): a binding for a retired
+/// command is a binding for nothing, and the rest of the user's chords still load.
 #[derive(Serialize, Deserialize)]
-struct StoredBindings {
-    overrides: Vec<(String, Option<Chord>)>,
+struct StoredBinding {
+    command: Command,
+    #[serde(default)]
+    chord: Option<Chord>,
 }
 
 /// Seed [`AppState::bindings`](crate::state::AppState::bindings) from this
 /// browser's stored rebindings. Called once at app start, beside `prefs::load`.
 pub fn load(state: AppState) {
-    let Some(stored) = crate::storage::get(KEY_BINDINGS)
-        .and_then(|json| serde_json::from_str::<StoredBindings>(&json).ok())
-    else {
+    let Some(stored) = crate::storage::load_list::<StoredBinding>(Store::Bindings) else {
         return;
     };
     let overrides = stored
-        .overrides
         .into_iter()
-        .filter_map(|(id, chord)| {
-            ALL.iter()
-                .find(|c| format!("{c:?}") == id)
-                .map(|&c| (c, chord))
-        })
+        .map(|row| (row.command, row.chord))
         .collect();
     let mut bindings = state.bindings;
     bindings.set(Bindings { overrides });
@@ -424,17 +425,16 @@ fn edit(state: AppState, change: impl FnOnce(&mut Bindings)) {
     let mut next = bindings.peek().clone();
     change(&mut next);
     bindings.set(next);
-    let stored = StoredBindings {
-        overrides: bindings
-            .peek()
-            .overrides
-            .iter()
-            .map(|(c, chord)| (format!("{c:?}"), chord.clone()))
-            .collect(),
-    };
-    if let Ok(json) = serde_json::to_string(&stored) {
-        crate::storage::set(KEY_BINDINGS, "the shortcuts", &json);
-    }
+    let stored: Vec<StoredBinding> = bindings
+        .peek()
+        .overrides
+        .iter()
+        .map(|(command, chord)| StoredBinding {
+            command: *command,
+            chord: chord.clone(),
+        })
+        .collect();
+    crate::storage::save(Store::Bindings, &stored);
 }
 
 /// What a keydown means to a rebinding capture (`main::CommandSearch`): the
@@ -1382,6 +1382,12 @@ mod tests {
         assert_eq!(b.lookup(true, false, false, &ch("y"), "KeyY"), None);
     }
 
+    /// A rebinding survives the store, and a row for a command this build does not
+    /// have costs its own row.
+    ///
+    /// The reading half of `load` without the browser: `storage::load_list` is what
+    /// drops the unreadable row, and it is tested there — what is this module's own is
+    /// that a `Command` is spelled by its variant, payload included.
     #[test]
     fn stored_bindings_round_trip() {
         let mut b = stock();
@@ -1391,46 +1397,32 @@ mod tests {
             Command::TogglePanel(PanelId::Layers),
             chord(true, true, 'l'),
         );
-        let stored = StoredBindings {
-            overrides: b
-                .overrides
-                .iter()
-                .map(|(c, chord)| (format!("{c:?}"), chord.clone()))
-                .collect(),
-        };
-        // A payload rides inside the stored id — so renaming a PanelId variant
-        // orphans its stored binding exactly the way renaming a command does:
-        // dropped on load, never an error.
-        assert!(
-            stored
-                .overrides
-                .iter()
-                .any(|(id, _)| id == "TogglePanel(Layers)")
-        );
+        let stored: Vec<StoredBinding> = b
+            .overrides
+            .iter()
+            .map(|(command, chord)| StoredBinding {
+                command: *command,
+                chord: chord.clone(),
+            })
+            .collect();
         let json = serde_json::to_string(&stored).unwrap();
-        let back: StoredBindings = serde_json::from_str(&json).unwrap();
+        // The payload rides inside the stored name — so renaming a `PanelId` variant
+        // orphans its stored binding exactly the way renaming a command does.
+        assert!(
+            json.contains(r#"{"TogglePanel":"Layers"}"#),
+            "a command is its variant's name: {json}"
+        );
         let restored = Bindings {
-            overrides: back
-                .overrides
+            overrides: serde_json::from_str::<Vec<StoredBinding>>(&json)
+                .unwrap()
                 .into_iter()
-                .filter_map(|(id, chord)| {
-                    ALL.iter()
-                        .find(|c| format!("{c:?}") == id)
-                        .map(|&c| (c, chord))
-                })
+                .map(|row| (row.command, row.chord))
                 .collect(),
         };
         assert_eq!(restored, b);
-        // An id from a build that knew commands this one does not is dropped,
-        // not an error.
-        let stale: StoredBindings =
-            serde_json::from_str(r#"{"overrides":[["NoSuchCommand",null]]}"#).unwrap();
-        assert!(
-            stale
-                .overrides
-                .iter()
-                .all(|(id, _)| !ALL.iter().any(|c| format!("{c:?}") == *id))
-        );
+        // A name from a build that knew commands this one does not is unreadable as a
+        // row, which is what puts it in reach of the drop `load_list` does.
+        assert!(serde_json::from_str::<StoredBinding>(r#"{"command":"NoSuchCommand"}"#).is_err());
     }
 
     #[test]

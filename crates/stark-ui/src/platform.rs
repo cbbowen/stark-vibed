@@ -1019,6 +1019,17 @@ pub fn local_set(_key: &str, _value: &str) -> bool {
     false
 }
 
+/// Drop whatever is stored under `key`. Only [`crate::storage::drop_retired`] calls
+/// this, and it says how long either of them is worth keeping.
+#[cfg(target_arch = "wasm32")]
+pub fn local_remove(key: &str) {
+    if let Some(store) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = store.remove_item(key);
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn local_remove(_key: &str) {}
+
 /// Hand `bytes` to the browser as a file download named `filename`.
 ///
 /// A Blob behind an object URL, clicked through a synthetic `<a download>` — the

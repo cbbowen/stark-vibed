@@ -29,12 +29,8 @@ use stark_model::color::srgb_to_oklab;
 use stark_model::geom::Vec2;
 use stark_model::gradient::Gradient;
 
-use crate::platform::{base64_decode, base64_encode};
 use crate::state::AppState;
-use crate::storage;
-
-/// One key, namespaced and versioned like the preset library's.
-const KEY_GRADIENTS: &str = "stark.gradients.v1";
+use crate::storage::{self, Store};
 
 /// How wide a patch each trace sample averages, in canvas px (radius 2 = 5×5).
 ///
@@ -48,8 +44,9 @@ const TRACE_RADIUS: u32 = 2;
 /// gradient — release ends the mode without a capture.
 const MIN_TRACE_LEN: f32 = 8.0;
 
-/// One named gradient in the library.
-#[derive(Clone, PartialEq)]
+/// One named gradient in the library — and, unchanged, one stored entry: both fields
+/// are durable, so a second struct to map it onto would be a copy with nothing to say.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GradientEntry {
     /// Display name; unique in the library ([`next_name`] proposes the first
     /// free "Gradient N", and a capture never overwrites).
@@ -310,37 +307,19 @@ pub fn css_strip(g: &Gradient) -> String {
 
 // --- persistence ----------------------------------------------------------
 //
-// One `crate::storage` table, a line per entry: `b64(name)|b64(json(stops))`.
-// The format and the rule it exists for — one damaged entry is skipped rather
-// than poisoning the library — are stated there, once, for all four libraries.
-// What is this module's own is the *fields*: the stops are JSON rather than
-// the save file's encoding because `localStorage` outlives app versions, and
-// deserialization funnels through `Gradient`'s own gate, so a tampered line becomes a
-// skipped line rather than an unsampleable ramp.
+// [`GradientEntry`] is the stored entry, so there is nothing here but the two calls:
+// the format and the rule it exists for — one damaged entry is skipped rather than
+// poisoning the library — are stated in `crate::storage`, once, for all four
+// libraries. What this library leans on it for is `Gradient`'s own deserialization
+// gate: a tampered entry is refused there and dropped here, rather than becoming an
+// unsampleable ramp.
 
 fn persist(entries: &[GradientEntry]) {
-    storage::save_table(
-        KEY_GRADIENTS,
-        "the gradient library",
-        entries.iter().filter_map(|e| {
-            let json = serde_json::to_string(&e.gradient).ok()?;
-            Some(storage::record([
-                base64_encode(e.name.as_bytes()).as_str(),
-                base64_encode(json.as_bytes()).as_str(),
-            ]))
-        }),
-    );
+    storage::save(Store::Gradients, entries);
 }
 
 fn read_storage() -> Option<Vec<GradientEntry>> {
-    storage::load_table(KEY_GRADIENTS, parse_entry)
-}
-
-fn parse_entry(line: &str) -> Option<GradientEntry> {
-    let mut fields = line.split(storage::FIELD);
-    let name = String::from_utf8(base64_decode(fields.next()?).ok()?).ok()?;
-    let gradient = serde_json::from_slice(&base64_decode(fields.next()?).ok()?).ok()?;
-    Some(GradientEntry { name, gradient })
+    storage::load_list(Store::Gradients)
 }
 
 /// Arc length of a traced polyline, for the "was that a trace or a click"
@@ -398,28 +377,20 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_line_survives_the_round_trip_and_a_bad_one_is_skipped() {
+    fn a_stored_entry_survives_the_round_trip_and_a_bad_one_is_refused() {
         let entry = GradientEntry {
             name: "Dusk".into(),
             gradient: gradient(),
         };
-        let json = serde_json::to_string(&entry.gradient).unwrap();
-        let line = format!(
-            "{}|{}",
-            base64_encode(entry.name.as_bytes()),
-            base64_encode(json.as_bytes())
-        );
-        let back = parse_entry(&line).expect("round trip");
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: GradientEntry = serde_json::from_str(&json).expect("round trip");
         assert_eq!(back.name, "Dusk");
         assert_eq!(back.gradient, entry.gradient);
 
-        // One stop is not a gradient; the line is dropped by `Gradient`'s own
-        // deserialization gate rather than parsed into an unsampleable ramp.
-        let bad = format!(
-            "{}|{}",
-            base64_encode(b"Bad"),
-            base64_encode(br#"[{"t":0.5,"color":[0.0,0.0,0.0]}]"#)
-        );
-        assert!(parse_entry(&bad).is_none());
+        // One stop is not a gradient; the entry is refused by `Gradient`'s own
+        // deserialization gate rather than read into an unsampleable ramp — and an
+        // entry that will not read is one `storage::load_list` drops.
+        let bad = r#"{"name":"Bad","gradient":[{"t":0.5,"color":[0.0,0.0,0.0]}]}"#;
+        assert!(serde_json::from_str::<GradientEntry>(bad).is_err());
     }
 }

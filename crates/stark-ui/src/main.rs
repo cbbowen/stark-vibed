@@ -149,6 +149,11 @@ fn app() -> Element {
     // a right-click.
     use_hook(bind_context_menu);
 
+    // Before anything reads the browser's store: drop the keys the old formats were
+    // kept under, so their bytes are not still spending this origin's quota
+    // (`storage::drop_retired`, which says when to delete this line).
+    use_hook(storage::drop_retired);
+
     // The shape library follows the browser, not the document — load it before
     // the renderer exists so the gallery is populated on first open. The brush
     // presets follow the browser the same way (seeded with the built-ins on a

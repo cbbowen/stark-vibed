@@ -390,28 +390,33 @@ lesson the instant it appeared.
 
 ### 24.4 The ledger
 
-One `localStorage` key, `stark.tutor.v1`, in `crate::storage`'s line table — the
-format whose whole point is that a line nobody can read costs that line and not the
-library. Two kinds of record:
+One `localStorage` record, `stark.tutor` (§25.6) — a **list**, read row by row, so
+a row nobody can read costs that row and not the ledger. Two kinds of row:
 
-```
-deed|stroke|7
-given|brush-panel
+```json
+[{"deed": "stroke", "count": 7}, {"given": "brush-panel"}]
 ```
 
-The two halves forget differently, on purpose:
+A list rather than one object with two fields, because the two halves forget
+differently and only a row can be dropped on its own:
 
 - **A tally under a name this build does not know is dropped.** A deed no longer
   counted has no lesson to feed, so keeping the number would be keeping it for
   nobody.
 - **A lesson name is kept whatever the table now says.** Somebody who has seen a
-  tip must not be shown it again because a release renamed its neighbour. A key is
-  stable across edits of the table for exactly this reason — an index would move
-  the moment a lesson was inserted above it.
+  tip must not be shown it again because a release renamed its neighbour — which
+  is exactly what an object would do, since one unreadable deed would take the
+  `given` names beside it down too. A key is stable across edits of the table for
+  the same reason an index would not be: an index moves the moment a lesson is
+  inserted above it.
+
+A deed's stored name is a `#[serde(rename)]` on its variant rather than the
+identifier, so a deed may be added, removed or reordered freely and only editing
+that string forgets a tally.
 
 The tally is written after every deed, which is at most one write per `COALESCE`
 and only while the app is being used. A deed nobody has done is the *absence* of a
-line rather than a line saying zero, so the table only ever holds what happened.
+row rather than a row saying zero, so the record only ever holds what happened.
 
 The switch that turns the tour off is not here — it is a preference
 (`Prefs::tips`, ⚙ → Guidance), because it is a choice somebody made rather than a

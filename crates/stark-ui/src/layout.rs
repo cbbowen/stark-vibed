@@ -48,7 +48,13 @@ use crate::state::AppState;
 
 /// Identity of a floating tool panel. The set is fixed; `PanelLayout` tracks their
 /// order and which are open (§11).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+///
+/// Serde, because a panel is named in two stored records — which panels this browser
+/// left open, and a rebinding of `Command::TogglePanel` — and the derive spells a
+/// variant exactly as `Debug` does. So the stored name, the `data-panel` attribute and
+/// the drag key ([`panel_key`]) are one word by construction, and a variant renamed
+/// costs the stored row rather than mis-matching it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum PanelId {
     Color,
     Brush,
@@ -70,16 +76,6 @@ impl PanelId {
         PanelId::Guides,
         PanelId::Lighting,
     ];
-
-    /// The panel `key` names, or `None` where this build has no such panel — a
-    /// line written by a version whose stack had one this one does not.
-    ///
-    /// Reads [`ALL`](Self::ALL) through [`panel_key`] rather than matching on names
-    /// written out a second time, which is the same reason the attribute and the
-    /// drag share that function: a name spelled twice is a name that can differ.
-    fn from_key(key: &str) -> Option<PanelId> {
-        PanelId::ALL.into_iter().find(|id| panel_key(*id) == key)
-    }
 
     /// The panel's title-bar label.
     pub fn title(self) -> &'static str {
@@ -500,34 +496,29 @@ pub fn sleep_panels(state: AppState) {
     }
 }
 
-/// One key, namespaced and versioned like the other browser-local tables
-/// (`crate::storage`).
-const KEY_PANELS: &str = "stark.panels.v1";
-
-/// The mark a stored line wears when its panel was left **folded to its title bar**
-/// ([`PanelLayout::collapsed`]).
+/// One **open** panel, as this browser left it (`crate::storage`).
 ///
-/// A second *field* on the line rather than a table of its own, which is what the
-/// record format is for: a build that predates this reads the key and ignores what
-/// follows it (`stored_hidden` splits and takes the first field), and one that
-/// postdates a line without it reads an open panel — so the two states cross a
-/// version in either direction without a migration. A panel is only ever collapsed
-/// while it is open, so there is no line this could appear on alone.
-const COLLAPSED: &str = "c";
+/// Only the open ones are written, and the difference is what a panel added in a later
+/// release does: it is absent from every stored row, so it arrives closed like
+/// everything else rather than appearing unbidden in the stack of every existing user.
+/// Folding is a field on the row rather than a record of its own, because it is the
+/// same fact about the same panel — and a panel is only ever folded while it is open,
+/// so there is no row this could appear on alone. `#[serde(default)]` makes the field
+/// optional in both directions across a version.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredPanel {
+    panel: PanelId,
+    #[serde(default)]
+    collapsed: bool,
+}
 
 /// The panels this browser last had open, as [`PanelLayout::hidden`] — or every
 /// panel hidden, which is both the never-visited case and the damaged-store one.
 ///
-/// The **open** set is what is written, not the hidden one, and the difference is
-/// what a panel added in a later release does: it is absent from every stored line,
-/// so it arrives closed like everything else rather than appearing unbidden in the
-/// stack of every existing user. A line naming a panel this build no longer has
-/// costs that line and not the layout (`storage::load_table`).
+/// A row naming a panel this build no longer has costs that row and not the layout
+/// (`storage::load_list`).
 pub fn stored_hidden() -> HashSet<PanelId> {
-    let open: HashSet<PanelId> = stored_lines()
-        .into_iter()
-        .map(|(id, _)| id)
-        .collect::<HashSet<_>>();
+    let open: HashSet<PanelId> = stored_panels().map(|p| p.panel).collect();
     PanelId::ALL
         .into_iter()
         .filter(|id| !open.contains(id))
@@ -536,30 +527,19 @@ pub fn stored_hidden() -> HashSet<PanelId> {
 
 /// The panels this browser last had **folded** ([`PanelLayout::collapsed`]).
 ///
-/// Read from the same lines as [`stored_hidden`], since it is the same fact about
+/// Read from the same rows as [`stored_hidden`], since it is the same fact about
 /// the same panel; a panel that is not open cannot appear here at all.
 pub fn stored_collapsed() -> HashSet<PanelId> {
-    stored_lines()
-        .into_iter()
-        .filter(|(_, folded)| *folded)
-        .map(|(id, _)| id)
+    stored_panels()
+        .filter(|p| p.collapsed)
+        .map(|p| p.panel)
         .collect()
 }
 
-/// The stored table, as `(panel, folded)` — one line per **open** panel.
-fn stored_lines() -> Vec<(PanelId, bool)> {
-    crate::storage::load_table(KEY_PANELS, parse_line).unwrap_or_default()
-}
-
-/// One stored line: the panel it names, and whether it was left folded.
-///
-/// `None` for a panel this build does not have, which costs that line and not the
-/// layout (`storage::load_table`). A line with nothing after the key is an open,
-/// unfolded panel — which is every line any previous version ever wrote.
-fn parse_line(line: &str) -> Option<(PanelId, bool)> {
-    let mut fields = line.split(crate::storage::FIELD);
-    let id = PanelId::from_key(fields.next()?)?;
-    Some((id, fields.next() == Some(COLLAPSED)))
+fn stored_panels() -> impl Iterator<Item = StoredPanel> {
+    crate::storage::load_list::<StoredPanel>(crate::storage::Store::Panels)
+        .unwrap_or_default()
+        .into_iter()
 }
 
 /// Open or close `id`, and remember it. **The only thing that writes
@@ -591,8 +571,7 @@ fn set_open(layout: PanelLayout, id: PanelId, open: bool) -> bool {
     true
 }
 
-/// Write the stack's durable half: a line per open panel, marked [`COLLAPSED`] where
-/// it is folded.
+/// Write the stack's durable half: a [`StoredPanel`] per open panel.
 ///
 /// One writer for both facts, called by everything that changes either — which is
 /// what keeps durability structural (see [`set_open`]): a new way to open, close or
@@ -600,21 +579,15 @@ fn set_open(layout: PanelLayout, id: PanelId, open: bool) -> bool {
 fn persist(layout: PanelLayout) {
     let hidden = layout.hidden.peek().clone();
     let collapsed = layout.collapsed.peek().clone();
-    crate::storage::save_table(
-        KEY_PANELS,
-        "which panels are open",
-        PanelId::ALL
-            .into_iter()
-            .filter(|id| !hidden.contains(id))
-            .map(|id| {
-                let key = panel_key(id);
-                if collapsed.contains(&id) {
-                    crate::storage::record([key.as_str(), COLLAPSED])
-                } else {
-                    key
-                }
-            }),
-    );
+    let open: Vec<StoredPanel> = PanelId::ALL
+        .into_iter()
+        .filter(|id| !hidden.contains(id))
+        .map(|panel| StoredPanel {
+            panel,
+            collapsed: collapsed.contains(&panel),
+        })
+        .collect();
+    crate::storage::save(crate::storage::Store::Panels, &open);
 }
 
 /// Fold `id` to its title bar, or unfold it — what clicking a title does
@@ -1367,36 +1340,43 @@ mod tests {
         assert!(landing(&open, &grab).is_none(), "Layers has no box");
     }
 
-    /// The name a panel is stored under is the name it wears in the DOM, both ways.
+    /// The name a panel is stored under is the name it wears in the DOM.
     ///
-    /// [`stored_hidden`] reaches a browser store this test cannot, but the half that
-    /// can go wrong without anyone noticing is here: a `from_key` that failed to
-    /// invert `panel_key` would drop every line, and the symptom would be a stack
-    /// that silently forgot itself between visits rather than an error.
+    /// Both come off the variant — serde's for the store, `Debug`'s for the attribute
+    /// and the drag — so this cannot fail today; it is here because the day somebody
+    /// gives `PanelId` a `rename_all` or hand-writes `panel_key`, the symptom is a
+    /// stack that silently forgets itself between visits rather than an error.
     #[test]
-    fn a_panel_key_round_trips() {
+    fn a_panel_is_one_name_in_the_dom_and_in_the_store() {
         for id in PanelId::ALL {
-            assert_eq!(PanelId::from_key(&panel_key(id)), Some(id));
+            let stored = serde_json::to_string(&id).unwrap();
+            assert_eq!(stored, format!("\"{}\"", panel_key(id)));
+            assert_eq!(serde_json::from_str::<PanelId>(&stored).unwrap(), id);
         }
-        assert_eq!(PanelId::from_key("a panel no build has"), None);
-        assert_eq!(PanelId::from_key(""), None);
+        assert!(serde_json::from_str::<PanelId>("\"Atmosphere\"").is_err());
     }
 
-    /// A folded panel is a second **field** on its own line, so the two states cross
-    /// a version in both directions: a line written before folding existed reads as
-    /// an open panel, and one written by this build reads as an open panel to a
-    /// version that splits off the key and stops.
+    /// A folded panel is a **field** on its own row, so the two states cross a version
+    /// in both directions: a row written before folding existed reads as an open
+    /// panel, and one written by this build reads as an open panel to a version that
+    /// knows only the name.
     #[test]
-    fn a_stored_line_carries_whether_the_panel_was_folded() {
-        let open = crate::storage::record([panel_key(PanelId::Color).as_str()]);
-        let shut = crate::storage::record([panel_key(PanelId::Brush).as_str(), COLLAPSED]);
-        assert_eq!(parse_line(&open), Some((PanelId::Color, false)));
-        assert_eq!(parse_line(&shut), Some((PanelId::Brush, true)));
-        // What every version before this one wrote, and what a version after this one
-        // might: the key alone, and the key with something else after it.
-        assert_eq!(parse_line("Layers"), Some((PanelId::Layers, false)));
-        assert_eq!(parse_line("Layers|x"), Some((PanelId::Layers, false)));
-        assert_eq!(parse_line("Atmosphere|c"), None, "a panel this build lacks");
+    fn a_stored_row_carries_whether_the_panel_was_folded() {
+        let read =
+            |json: &str| serde_json::from_str::<StoredPanel>(json).map(|p| (p.panel, p.collapsed));
+        assert_eq!(
+            read(r#"{"panel":"Brush","collapsed":true}"#).unwrap(),
+            (PanelId::Brush, true)
+        );
+        // A row from before folding existed, and one from a build that has since
+        // dropped it: the name alone is an open panel.
+        assert_eq!(
+            read(r#"{"panel":"Layers"}"#).unwrap(),
+            (PanelId::Layers, false)
+        );
+        // And a panel this build lacks is unreadable as a row, which is what puts it
+        // in reach of the drop `storage::load_list` does.
+        assert!(read(r#"{"panel":"Atmosphere","collapsed":true}"#).is_err());
     }
 
     /// The stored name of a hiding mode is what the dialog offers and what
@@ -1490,15 +1470,18 @@ mod tests {
     }
 
     /// A stored layout names the panels that are **open**, so one this build does
-    /// not have costs its own line, and one it has that the line never mentioned
+    /// not have costs its own row, and one it has that the record never mentioned
     /// stays closed rather than appearing unbidden.
     #[test]
-    fn an_unknown_panel_costs_its_own_line() {
-        let text = "Color
-Atmosphere
-Brush";
+    fn an_unknown_panel_costs_its_own_row() {
+        let json = r#"[{"panel":"Color"},{"panel":"Atmosphere"},{"panel":"Brush"}]"#;
         let open: std::collections::HashSet<PanelId> =
-            text.lines().filter_map(PanelId::from_key).collect();
+            serde_json::from_str::<Vec<serde_json::Value>>(json)
+                .unwrap()
+                .into_iter()
+                .filter_map(|v| serde_json::from_value::<StoredPanel>(v).ok())
+                .map(|p| p.panel)
+                .collect();
         let hidden: HashSet<PanelId> = PanelId::ALL
             .into_iter()
             .filter(|id| !open.contains(id))

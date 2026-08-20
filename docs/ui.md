@@ -1,6 +1,7 @@
 # The chrome's registries
 
-Commands, chords and drag bindings — what a new UI feature joins, and how — §25.
+Commands, chords, drag bindings and the browser-local store — what a new UI
+feature joins, and how — §25.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
@@ -14,12 +15,14 @@ its whole description, with the keyboard as one rebindable column. The **drag
 table** (`stark-ui/src/drags.rs`) holds the canvas presses that open something
 other than painting — the brush-tuning drag (§18.1.9), the eyedropper (§18.0.2),
 the layer carry (§16.11) — each a row binding an exact chord+button to a
-`DragAction`. §11 tells both
-designs' history; this chapter is the working guide, written for the day a
-feature is added: which table the feature belongs to, if either, and the steps
-that keep the tables true.
+`DragAction`. A third registry sits one layer down and answers a different
+question — `Store` (§25.6), which enumerates every record the frontend keeps in
+this *browser*: the libraries, the settings, the chord table above. §11 tells the
+first two designs' history; this chapter is the working guide, written for the
+day a feature is added: which table the feature belongs to, if any, and the steps
+that keep them true.
 
-One law covers both, and it is the reason they exist: **one authority, and
+One law covers all three, and it is the reason they exist: **one authority, and
 surfaces render it rather than restating it.** Each table has one reader on its
 dispatch path — `commands::find` on the window's keydown, `drags::find` on the
 canvas's press — and every advertisement of a binding (a row's shortcut column,
@@ -281,3 +284,55 @@ checklist:
 - **Advertisements are as exact as their bindings.** `armed` and `find` read
   one table; a cursor that promises what a press will not do is the bug the
   pair exists to rule out.
+
+### 25.6 The browser-local store
+
+The third registry, and the one added last because it was learned the hard way.
+`Store` (`stark-ui/src/storage.rs`) enumerates every record this browser keeps —
+ten of them: the four libraries (shapes, presets, gradients, quick brushes), the
+⚙ dialog's settings, the chord table, which panels are open, whether the
+navigator is up, what the tour has seen, and this client's identity.
+
+One law, the same one: **one authority, and callers hand it typed values rather
+than spelling a format.**
+
+```rust
+storage::save(Store::Prefs, &prefs);              // any Serialize
+let prefs: Prefs = storage::load(Store::Prefs)?;  // whole record
+let shapes = storage::load_list(Store::Shapes)?;  // entry by entry
+```
+
+The registry row carries both facts about a record — its `localStorage` key and
+the name a quota warning calls it by — because they used to be a `const KEY` and
+a bare string three lines apart at each call site, and nine of those is how a
+codebase ends up with five formats. `get`/`set` are **private**: there is no
+untyped door, so there is nowhere for a sixth format to come from.
+
+**Adding a record**, in three steps:
+
+1. A `Store` variant, with its key and its human name on the one row.
+2. A serde type in the owning module. Give every field `#[serde(default)]` or a
+   `Default` on the struct — that, not a version suffix in the key, is how a
+   record survives the app version that adds or drops a field. Bytes go through
+   `storage::b64`, a content id or key through `storage::hex`.
+3. One writer, called by everything that changes the state — the move
+   `layout::set_open`, `navigator::set_open` and `settings::SettingToggle` all
+   make. Durability is then structural: a new way to change the thing is
+   remembered without its author thinking about storage.
+
+**Which loader**: `load_list` for a library, `load` for anything else. The
+difference is what damage costs. A list is read element by element, so one entry
+today's build cannot make sense of is dropped and the rest survive — which is
+what a library wants, and what every "a name this build does not know" case
+leans on: a binding for a retired command, a panel this build no longer has, a
+tally for a deed nothing counts. A whole record is all-or-nothing, which is what
+`Prefs` wants: a half-read settings blob is a worse answer than the defaults.
+`load_list` also tells `None` from `Some(vec![])`, and two callers need it — an
+untouched quick-brush rack is seeded from the preset library, an emptied one is
+left empty.
+
+**What is *not* stored here**: anything the document owns. A gradient, a preset
+and a brush shape follow this browser; the ramp a fill commits, the color a
+stroke carries and the shape's bytes are embedded **by value** in the action
+(§8, §22.4), so a document stays self-contained and the library stays personal.
+If a record would change what a peer sees, it is not this registry's.

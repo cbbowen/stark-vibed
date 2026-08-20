@@ -23,24 +23,27 @@ use dioxus::prelude::*;
 use stark_model::AssetId;
 use stark_model::document::BrushShape;
 
-use crate::platform::{base64_decode, base64_encode, normalize_shape_image};
+use crate::platform::{base64_encode, normalize_shape_image};
 use crate::state::{AppState, update_brush};
-use crate::storage;
+use crate::storage::{self, Store};
 
-/// One key, namespaced like `identity`'s; versioned so a future format change
-/// can migrate rather than mis-parse.
-const KEY_SHAPES: &str = "stark.shapes.v1";
-
-/// One custom shape in the library.
-#[derive(Clone, PartialEq)]
+/// One custom shape in the library — and, unchanged, one stored entry.
+///
+/// The live type *is* the stored type: every field here is durable, so a second struct
+/// to map it onto would be a copy with nothing to say. The two `with` adapters are
+/// what JSON cannot hold by itself (`crate::storage`) — the bytes as base64, the
+/// content id as the hex Stark spells an id in everywhere else.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ShapeEntry {
     /// Display name, defaulted from the imported file's stem.
     pub name: String,
     /// Canonical grayscale PNG (what the engine stores under `id`).
+    #[serde(with = "storage::b64")]
     pub png: Vec<u8>,
     /// Content id of `png`. Persisted alongside the bytes; if an engine
     /// upgrade ever re-canonicalizes differently, [`select`] heals the entry
     /// from the id the import actually returns.
+    #[serde(with = "storage::hex")]
     pub id: AssetId,
 }
 
@@ -131,9 +134,10 @@ pub fn import_dropped(state: AppState, files: Vec<dioxus::html::FileData>) {
     }
 }
 
-/// An entry id as hex — a stable rsx `key` for gallery items.
+/// An entry id as hex — a stable rsx `key` for gallery items, and the same spelling
+/// the entry is stored under (`storage::hex`).
 pub fn id_hex(id: AssetId) -> String {
-    hex_encode(&id.0)
+    id.to_hex()
 }
 
 /// Make `id` the active brush shape, importing the entry's bytes into the
@@ -247,51 +251,16 @@ fn display_name(file_name: &str) -> String {
 
 // --- persistence ----------------------------------------------------------
 //
-// One `crate::storage` table, a line per entry: `b64(name)|hex(id)|b64(png)`.
-// The format and the skip-a-damaged-line rule live there; the id is hex rather
-// than base64 because it is read by eye in a storage inspector more often than
-// the two blobs beside it, and both encodings are dependency-free.
+// [`ShapeEntry`] is the stored entry, so there is nothing here but the two calls: the
+// format, the encodings and the skip-a-damaged-entry rule are all `crate::storage`'s.
 
 fn persist(entries: &[ShapeEntry]) {
-    storage::save_table(
-        KEY_SHAPES,
-        "the shape library",
-        entries.iter().map(|e| {
-            storage::record([
-                base64_encode(e.name.as_bytes()).as_str(),
-                hex_encode(&e.id.0).as_str(),
-                base64_encode(&e.png).as_str(),
-            ])
-        }),
-    );
+    storage::save(Store::Shapes, entries);
 }
 
 /// What this browser has stored. An empty library and a browser that has stored
 /// nothing are the same thing here — unlike the preset rack, nothing is seeded —
 /// so the two answers are folded into one.
 fn read_storage() -> Vec<ShapeEntry> {
-    storage::load_table(KEY_SHAPES, parse_entry).unwrap_or_default()
-}
-
-fn parse_entry(line: &str) -> Option<ShapeEntry> {
-    let mut fields = line.split(storage::FIELD);
-    let name = String::from_utf8(base64_decode(fields.next()?).ok()?).ok()?;
-    let id = AssetId(hex_decode(fields.next()?)?);
-    let png = base64_decode(fields.next()?).ok()?;
-    Some(ShapeEntry { name, png, id })
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn hex_decode(hex: &str) -> Option<[u8; 32]> {
-    if hex.len() != 64 {
-        return None;
-    }
-    let mut bytes = [0u8; 32];
-    for (i, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
-    }
-    Some(bytes)
+    storage::load_list(Store::Shapes).unwrap_or_default()
 }
