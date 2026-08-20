@@ -450,7 +450,22 @@ fn app() -> Element {
             // each bar lands **above** the one it covers, the way a card lands
             // on a pile. A trace stands over the gradient bar it parked, a
             // mode over the standing bars it recessed.
+            //
+            // The covered bars leave the flow entirely (`.recessed` is
+            // absolute), which is what holds the live bar still: it is the
+            // column's one in-flow child, at the baseline whatever the stack
+            // holds, and the bars it covers peek out beneath it — lower and
+            // fainter with depth, priced by a sibling chain that this order
+            // is load-bearing for.
             div { class: "bottom-bars",
+                // The eyedropper's options, present only while Alt arms it
+                // (§18.0.2). First, deliberately: in a foot-anchored column a
+                // child mounting *above* the others moves none of them, so the
+                // rack coming and going with the Alt key never bumps the bar
+                // somebody is working in. It is no part of the stack below —
+                // it coexists with painting rather than covering anything — so
+                // it floats above the pile.
+                PickBar {}
                 // The trace's name and its Cancel while one is armed (§22.2) —
                 // the deepest the stack goes, since a trace is the one mode
                 // entered from inside another mode's bar. Before this bar the
@@ -480,12 +495,6 @@ fn app() -> Element {
                 // exclusive with it by construction, since both key off the single
                 // selected layer being of their kind.
                 FilterBar {}
-                // The eyedropper's options, present only while Alt arms it
-                // (§18.0.2). Not part of the stack above — it coexists
-                // with painting rather than covering anything — so it keeps the
-                // foot of the column, nearest the canvas: it is the most
-                // transient row here.
-                PickBar {}
             }
 
             // Timeline mode's own bar, below the bottom-bars column and spanning

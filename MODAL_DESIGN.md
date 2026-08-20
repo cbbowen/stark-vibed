@@ -197,10 +197,25 @@ lifted off, and the return destination was visible the whole time.
 report (the trace's bar had landed below the gradient bar it parked): the
 column is bottom-anchored, so an earlier child stands higher, and the order is
 now the stack's — trace, then the mode bars, then the standing bars — so each
-bar lands *above* the one it covers, the way a card lands on a pile. Recessed
-bars therefore sit below the live bar and tuck upward toward it
-(`translateY(-6px)`). The pick bar keeps the foot of the column: it coexists
-with painting rather than covering anything.
+bar lands *above* the one it covers, the way a card lands on a pile.
+
+**(as built, third round)** The live bar is **pinned**, on user request: the
+covered bars leave the flow entirely (`.recessed` is absolute), so the live
+bar is the column's one in-flow child and stands at the baseline whatever the
+stack holds — where a covered bar kept in the flow raised it by a row and
+mounting one bumped it. The covered bars peek out from beneath it as a pile
+read edge-on, each depth a little lower and a little fainter (8/14/18px,
+opacity 0.6/0.38/0.22), with depth priced by the `.recessed` sibling chain —
+which the column's deepest-first order is load-bearing for. Two consequences
+came with the pin: the pick bar moved to the *head* of the column (a child
+mounting above a foot-anchored column moves nothing, so Alt no longer bumps
+the stack; it is not part of the pile anyway), and FilterBar joined the
+recess family after all — under a trace armed from its own gradient well it
+is the return destination, and its sliders must not be pressable under a live
+catcher. The pin holds whenever a mode is live; two *independent* interactive
+bars (a selection with a frame selected, no mode) still stack as rows,
+because burying a usable bar under another would be a pile lying about what
+it covers.
 
 Implementation note: SelectionBar/FrameBar currently return empty rsx while
 composing, and a Dioxus unmount cannot be animated — recessing means keeping

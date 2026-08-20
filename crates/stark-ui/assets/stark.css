@@ -3778,7 +3778,7 @@ button.layer-remove:hover {
 .bottom-bars {
   position: absolute;
   left: 50%;
-  bottom: 18px;
+  bottom: 64px;
   transform: translateX(-50%);
   z-index: 20;
   display: flex;
@@ -3821,19 +3821,52 @@ button.layer-remove:hover {
   }
 }
 
-/* A standing bar a mode has stood down: recessed behind the mode's bar rather
-   than unmounted, so the place Done and Esc return to stays on screen. The
-   column stacks deepest-on-top (`main`), so a recessed bar sits *below* the
-   live one and tucks upward toward it, closing most of the column's gap.
+/* A bar a mode has stood down — and the gesture a trace parked: not a row of
+   the column but a *card* behind the live bar, out of the flow entirely. The
+   absolute position is what pins the live bar in place: with every covered
+   bar out of the flow, the live bar is the column's one in-flow child and
+   stands at the baseline whatever the stack holds — where a covered bar kept
+   in the flow would raise it by a row, and mounting one would bump it.
+
+   Each depth peeks a little lower from under the bar above and fades a
+   little further — a pile read edge-on. Depth is the sibling chain below:
+   the column mounts deepest-on-top (`main`), so every covered bar follows
+   the live one and "how many .recessed precede me" is exactly how deep this
+   one lies. The steps diminish (8, 14, 18) because the window grants the
+   column 18px of ground and a third card is depth, not reading matter.
+   Centered by the standalone `translate` property, NOT a translateX inside
+   `transform`: the transitions animate `transform`, so a -50% living there
+   would slide the card in sideways across the half-width the position jump
+   had just added — `translate` is untransitioned and lands with the
+   position, in the same frame.
+
    `filter: opacity()` rather than the `opacity` property, which the chrome
    fade owns (`.chrome.dimmed`). Inert twice over: pointer-events here, and
-   every chip a recessed bar carries runs an act gated by `commands::may_edit`,
-   which refuses while a mode is composing — so keyboard focus reaching one
-   presses a button that declines. */
+   every chip a recessed bar carries runs an act gated by
+   `commands::may_edit`, which refuses while a mode is composing — so
+   keyboard focus reaching one presses a button that declines. */
 .bottom-bars > .recessed {
-  transform: translateY(-6px) scale(0.955);
-  filter: opacity(0.5) saturate(0.6);
+  position: absolute;
+  bottom: -24px;
+  translate: -50%;
+  z-index: -1;
+  transform: scale(0.96);
+  filter: opacity(0.6) saturate(0.6);
   pointer-events: none;
+}
+
+.bottom-bars > .recessed ~ .recessed {
+  bottom: -36px;
+  z-index: -2;
+  transform: scale(0.93);
+  filter: opacity(0.38) saturate(0.5);
+}
+
+.bottom-bars > .recessed ~ .recessed ~ .recessed {
+  bottom: -42px;
+  z-index: -3;
+  transform: scale(0.9);
+  filter: opacity(0.22) saturate(0.4);
 }
 
 /* The frame bar: the composition controls, mounted only while a frame is selected

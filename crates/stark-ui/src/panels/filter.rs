@@ -1093,6 +1093,11 @@ pub fn FilterBar() -> Element {
     // hidden or empty. Said once, in the bar, rather than greying out the sliders,
     // which would each have to explain the same thing.
     let inert = !info.has_underlay;
+    // While a mode is composing, this bar recedes with the other standing bars
+    // (MODAL_DESIGN.md) — a trace armed from this bar's own gradient well is the
+    // live case: the bar is the place the capture returns to, and its sliders
+    // must not be pressable under a catcher that owns the pointer.
+    let composing = crate::modes::composing(state).is_some();
 
     // The whole-filter facts the chrome needs, read before the match consumes the
     // filter — its `Clone` is spent on the arms, not on the label.
@@ -1122,7 +1127,11 @@ pub fn FilterBar() -> Element {
     };
 
     rsx! {
-        div { class: chrome_class(state, "filter-bar"),
+        div {
+            class: chrome_class(
+                state,
+                if composing { "filter-bar recessed" } else { "filter-bar" },
+            ),
             // The glyph rides the bar's *label*, as the frame bar's crop marks do:
             // no single slider here is "the filter", so what the mark identifies is
             // the bar, and through it the layer you are tuning.
