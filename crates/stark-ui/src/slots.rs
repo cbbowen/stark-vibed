@@ -249,9 +249,9 @@ pub fn release(state: AppState, slot: usize, grip: Grip) {
 ///
 /// Alt+Tab with a number held would otherwise leave the swap in force for the
 /// rest of the session, with the key that would undo it now belonging to another
-/// window. The same class of bug the eyedropper's `track_alt` rules out by
-/// re-reading the modifier set, ruled out here by the event that says the
-/// keyboard has gone.
+/// window. The same class of bug the modifier tracker (`input`'s `track_mods`)
+/// rules out by re-reading the modifier set, ruled out here by the event that
+/// says the keyboard has gone.
 pub fn release_all(state: AppState) {
     let held = *state.slots.held.peek();
     if let Some(h) = held {

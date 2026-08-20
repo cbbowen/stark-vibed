@@ -10,6 +10,7 @@ use dioxus::prelude::*;
 
 use crate::collab::now_seconds;
 use crate::commands;
+use crate::drags;
 use crate::panels::brush::{MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use crate::panels::select::{current_action, modifier_mode};
 use crate::platform::{
@@ -517,9 +518,10 @@ const RADIUS_PER_DRAG: f32 = 0.25;
 /// is what makes a tenth of it a visible movement of the hand.
 const FLOW_DRAG_SPAN: f32 = 800.0;
 
-/// The brush-tuning drag: accelerator+drag over the canvas, sideways for **Size** and
-/// up-and-down for **Flow** — the Brush panel's two knobs, under the hand that is
-/// already on the painting (§18.1.9).
+/// The brush-tuning drag — sideways for **Size** and up-and-down for **Flow**,
+/// the Brush panel's two knobs under the hand that is already on the painting
+/// (§18.1.9). Which chord opens it is the drag table's row (`crate::drags`,
+/// accelerator+left-drag by default).
 ///
 /// A hook shaped like [`Nav`] and driven the same way — [`begin`](Self::begin) on
 /// press, [`advance`](Self::advance) on move, [`stop`](Self::stop) on release or
@@ -595,25 +597,23 @@ impl Tune {
         }
     }
 
-    /// Whether `e` is a press this takes as brush tuning — a contact with the
-    /// accelerator held — and if so, begin: capture the pointer and swallow the
-    /// event. `true` means "this press tunes the brush, it does not paint".
+    /// Begin the tuning drag at `e`: capture the pointer and raise the ring.
+    /// `true` means "this press tunes the brush, it does not paint".
     ///
-    /// Asked *after* [`Nav::begin`], which is what leaves space+accelerator a zoom
-    /// rather than a size drag.
+    /// *Which* press opens this is no longer asked here: the drag table names it
+    /// (`crate::drags` — the accelerator chord by default), and the canvas calls
+    /// this only for the press the table gave it, after [`Nav::begin`] — which is
+    /// what leaves space+accelerator a zoom rather than a size drag.
     ///
-    /// A [`is_contact`] rather than the primary button, and no test on the tool: the
-    /// eraser end tunes the eraser for the reason it erases (§18.1.8), and Size and
-    /// Flow are the live brush's whatever the canvas is set to do with it — a marquee
-    /// tool's Fill spends `add` as its opacity.
+    /// No test on the tool, deliberately: the eraser end tunes the eraser for the
+    /// reason it erases (§18.1.8), and Size and Flow are the live brush's whatever
+    /// the canvas is set to do with it — a marquee tool's Fill spends `add` as its
+    /// opacity.
     ///
     /// Declines before the engine exists, where there is neither a brush to tune nor a
     /// zoom to measure the drag against. The press then falls through to the paint
     /// path, which does nothing with it for the same reason.
     pub fn begin(self, e: &Event<PointerData>) -> bool {
-        if !(is_contact(e) && accel(e.modifiers())) {
-            return false;
-        }
         let Some(view) = view_of(self.state) else {
             return false;
         };
@@ -946,7 +946,7 @@ pub fn page_xy(e: &Event<PointerData>) -> Vec2 {
 /// [`platform::on_window_key`] for why an element cannot hold them.
 ///
 /// Only the **keydown** side is withheld from a field being typed into. Keyup is
-/// what disarms `space_down` and corrects `alt_down`, and focus can move between a
+/// what disarms `space_down` and corrects `held_mods`, and focus can move between a
 /// press and its release — a click into the rename field with space held — so a
 /// guarded keyup would leave the pan armed with nothing to release it. Nothing is
 /// given up by letting it through: on keyup there is no default action left to
@@ -1069,7 +1069,7 @@ fn handle_keydown(mut state: AppState, e: &platform::KeyEvent) {
     }
 
     let m = e.modifiers();
-    track_alt(state, m);
+    track_mods(state, m);
     // The quick-brush rack, claimed before the chord table is consulted so a
     // future row on a digit could never shadow it. A digit is not a row there:
     // it is a *hold*, owning both edges of its key (§18.1.8); it reads the
@@ -1116,27 +1116,27 @@ fn handle_keyup(mut state: AppState, e: &platform::KeyEvent) {
     if let Some(slot) = slots::of_code(&e.code()) {
         slots::release(state, slot, Grip::Key);
     }
-    track_alt(state, e.modifiers());
+    track_mods(state, e.modifiers());
 }
 
-/// Record whether Alt is held, so the canvas can wear the eyedropper cursor while it
-/// is (§18.0.2).
+/// Record which modifiers are held, so the resting cursor can say what a press
+/// would do — the drag table's advertisement half (`drags::armed`, §18.0.2).
 ///
-/// Read off the event's **modifier set** rather than off the Alt key itself: a
-/// keystroke that arrives after Alt was pressed or released while the window was not
-/// focused then corrects the flag, instead of leaving it stuck on a press whose
-/// release never came. Written only on a change, since every write re-renders the
-/// canvas component.
-fn track_alt(state: AppState, m: Modifiers) {
-    let alt = m.contains(Modifiers::ALT);
-    let mut held = state.pick.alt_down;
-    if *held.peek() != alt {
-        held.set(alt);
-        // Alt arms the eyedropper, and a sample reads the *shown* canvas
-        // (`Engine::pick_colors`) — so the hover mark has to leave the screen
-        // with the same keystroke, or a press could read the hypothesis back
-        // as paint (§18.1.10).
-        if alt {
+/// Read off the event's **modifier set** rather than off the keys themselves: a
+/// keystroke that arrives after a modifier was pressed or released while the
+/// window was not focused then corrects the triple, instead of leaving it stuck on
+/// a press whose release never came. Written only on a change, since every write
+/// re-renders the canvas component.
+fn track_mods(state: AppState, m: Modifiers) {
+    let now = drags::Mods::of(m);
+    let mut held = state.held_mods;
+    if *held.peek() != now {
+        held.set(now);
+        // These modifiers arm the eyedropper, and a sample reads the *shown*
+        // canvas (`Engine::pick_colors`) — so the hover mark has to leave the
+        // screen with the same keystroke, or a press could read the hypothesis
+        // back as paint (§18.1.10).
+        if drags::armed(now) == Some(drags::DragAction::PickColor) {
             clear_hover_mark(state);
         }
     }
@@ -1436,10 +1436,11 @@ const HOVER_REACH_CANVAS_PX: f32 = 8.0;
 /// painted half of the brush cursor, under the circle [`hover_at`] places.
 ///
 /// Gated on the states that promise the press to something other than paint —
-/// space's pan, Alt's eyedropper (armed or dragging), and playback, where a
-/// stroke would be refused (`panels::timeline::is_playing`). The engine gates
-/// the rest itself: a selection tool folds no mark, an unpaintable layer
-/// refuses the render, and a real gesture always outranks the hypothesis.
+/// space's pan, the eyedropper's chord (armed, by the drag table's own answer,
+/// or already dragging), and playback, where a stroke would be refused
+/// (`panels::timeline::is_playing`). The engine gates the rest itself: a
+/// selection tool folds no mark, an unpaintable layer refuses the render, and a
+/// real gesture always outranks the hypothesis.
 ///
 /// The report's pressure is replaced with **full pressure**: a hovering pen
 /// (and a mouse) reports zero, which would honestly preview no mark at all.
@@ -1449,7 +1450,7 @@ const HOVER_REACH_CANVAS_PX: f32 = 8.0;
 /// stroke would.
 pub fn hover_stroke(state: AppState, s: InputSample, e: &Event<PointerData>) {
     if *state.space_down.peek()
-        || *state.pick.alt_down.peek()
+        || drags::armed(*state.held_mods.peek()) == Some(drags::DragAction::PickColor)
         || *state.pick.dragging.peek()
         || crate::panels::timeline::is_playing(state)
     {

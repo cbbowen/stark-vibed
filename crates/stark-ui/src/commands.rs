@@ -1,5 +1,6 @@
-//! The command registry (§11): every simple act the chrome can ask for,
+//! The command registry (§11, §25): every simple act the chrome can ask for,
 //! declared as one variant of [`Command`] carrying its whole description.
+//! §25.2 is the checklist for adding one.
 //!
 //! A *simple* command is one that takes no argument at its call site — click
 //! "Undo", press Ctrl+Z, pick Undo from the rail's menu, and it is the same act
@@ -34,6 +35,10 @@
 //!   brush slot with a release (§18.1.8), space is a pan for as long as it is
 //!   down, Alt wears the eyedropper's cursor until it lifts. Those stay in
 //!   `input`, which owns keyup.
+//! - **A chord that opens a drag.** Ctrl+drag tunes the brush and Alt+drag
+//!   samples — gestures rather than acts, with a press, moves and a release —
+//!   so they are rows of the pointer's own table (`crate::drags`), not this
+//!   one.
 //! - **Ctrl+V.** A paste is data arriving, not a command: the browser delivers
 //!   the clipboard *with* the event, and must be left to (`crate::images`).
 //!

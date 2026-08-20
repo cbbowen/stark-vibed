@@ -120,6 +120,14 @@ pub struct AppState {
     pub renderer_ready: Signal<bool>,
     /// Whether the user is holding space.
     pub space_down: Signal<bool>,
+    /// The modifiers currently held, tracked off the window's key events
+    /// (`input`'s keydown and keyup) and self-correcting off every event's
+    /// modifier set, so a press or release that happened while the window was
+    /// not focused is caught up on the next keystroke. Only ever *shown*: the
+    /// resting cursor and the eyedropper's options bar ask the drag table what
+    /// a press under these would open (`drags::armed`), which is what makes a
+    /// modifier binding discoverable before it is used.
+    pub held_mods: Signal<crate::drags::Mods>,
     /// Whether a canvas gesture is in flight (a stroke, a selection drag, a pan,
     /// or a run of wheel zooming). The floating chrome fades out while it is set,
     /// handing the screen back to the painting — see
@@ -515,6 +523,7 @@ impl AppState {
             obs: ReadOnly(root_signal(|| None)),
             renderer_ready: root_signal(|| false),
             space_down: root_signal(|| false),
+            held_mods: root_signal(Default::default),
             canvas_active: root_signal(|| false),
             panels_asleep: root_signal(|| false),
             chrome_hiding: root_signal(Default::default),
@@ -526,7 +535,6 @@ impl AppState {
                 group_only: root_signal(|| true),
                 radius: root_signal(|| 0),
                 busy: root_signal(|| false),
-                alt_down: root_signal(|| false),
                 dragging: root_signal(|| false),
             },
             brush_ring: root_signal(|| None),
@@ -757,8 +765,11 @@ pub struct TimelineState {
 
 /// The eyedropper's signals (§18.0.2), grouped because they are one
 /// feature's worth of view state: the two options a sample is taken with, the latch
-/// that keeps Alt+drag from asking for samples faster than the GPU answers them, and
-/// the two flags that say where in the gesture we are.
+/// that keeps a picking drag from asking for samples faster than the GPU answers
+/// them, and the flag that says the drag is under way. (Whether the eyedropper is
+/// *armed* is no longer a flag of its own: it is the drag table's answer to the
+/// modifiers currently held — `drags::armed` over
+/// [`AppState::held_mods`].)
 ///
 /// The options live here rather than in the engine because nothing in the engine
 /// reads them between calls — [`Engine::pick_color`](stark_engine::Engine::pick_color)
@@ -780,14 +791,10 @@ pub struct PickState {
     pub radius: Signal<u32>,
     /// Whether a sample is in flight — see [`crate::input::pick_color`].
     pub busy: Signal<bool>,
-    /// Whether Alt is held. Only ever *shown*: the canvas wears the eyedropper
-    /// cursor while it is and the options bar comes up, so the modifier announces
-    /// itself before it is used — which is the whole reason a modifier binding is
-    /// discoverable at all.
-    pub alt_down: Signal<bool>,
-    /// Whether an Alt+drag is actually sampling. Shared rather than local to the
-    /// canvas, unlike `drawing`/`panning`, because the options bar is mounted on
-    /// *armed but not yet dragging* and so has to be able to tell the two apart.
+    /// Whether a picking drag is actually sampling. Shared rather than local to
+    /// the canvas, unlike `drawing`/`panning`, because the options bar is mounted
+    /// on *armed but not yet dragging* and so has to be able to tell the two
+    /// apart.
     pub dragging: Signal<bool>,
 }
 

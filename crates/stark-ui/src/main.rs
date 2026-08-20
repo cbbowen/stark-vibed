@@ -21,6 +21,7 @@ mod collab;
 mod commands;
 mod components;
 mod credits;
+mod drags;
 mod failure;
 mod files;
 mod gesture;
@@ -58,6 +59,7 @@ use brush_editor::BrushEditorModal;
 use commands::Command;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use credits::CreditsModal;
+use drags::DragAction;
 use icons::{icon, icon_large};
 use input::{
     Nav, Paint, Tune, accel, bind_context_menu, bind_pen, bind_shortcuts, elem_xy, end_interaction,
@@ -592,13 +594,17 @@ fn Canvas() -> Element {
         (paintable, o.tool)
     });
     let (paintable, tool) = look().unwrap_or((false, stark_model::document::Tool::Brush));
-    // Alt arms the eyedropper over the brush, and the cursor says so before it is
-    // used — the only thing that makes a modifier binding discoverable. Not over a
+    // The pick chord (Alt by default) arms the eyedropper over the brush, and the
+    // cursor says so before it is used — the only thing that makes a modifier
+    // binding discoverable. Asked of the drag table (`drags::armed`), the same
+    // table the press will ask, so the promise moves with the binding. Not over a
     // selection tool, where alt already means "subtract from the selection"
     // (§6.8), so the cursor promises the pick exactly where a press would
     // take one. It beats `no-paint`, because a layer that takes no paint can still
     // be sampled.
-    let sampling = (state.pick.alt_down)() && !(state.space_down)() && !tool.is_selection();
+    let sampling = drags::armed((state.held_mods)()) == Some(DragAction::PickColor)
+        && !(state.space_down)()
+        && !tool.is_selection();
     let canvas_class = if sampling {
         "paint-canvas picking"
     } else if paintable || (state.space_down)() {
@@ -637,23 +643,57 @@ fn Canvas() -> Element {
                     canvas_active.set(true);
                     return;
                 }
-                // Ctrl+drag tunes the brush rather than painting with it — Size
-                // sideways, Flow up and down (§18.1.9). Below `nav`, which is
-                // what leaves Ctrl+space a zoom; above the playback guard, because
-                // the brush is view state and tuning it commits nothing.
-                //
-                // Deliberately *not* `canvas_active`, for the eyedropper's reason
-                // below: the Brush panel is where this gesture's answer is read,
-                // so fading the chrome would hide the one thing it is for.
-                if tune.begin(&e) {
-                    // A stroke was in flight only if some *other* pointer opened
-                    // one; it can no longer be finished by this press, and a
-                    // gesture the hand has walked away from must leave no mark.
-                    paint.abandon();
-                    // The ring at the press is the size's readout now (§18.1.9);
-                    // a second circle under it would be two sizes for one brush.
-                    hover_gone(state);
-                    return;
+                // The drag table (`drags`): which bound gesture this press's
+                // chord+button opens, if any. Below `nav` — which is what leaves
+                // space+accelerator a zoom and space+Alt a pan — and above the
+                // playback guard, because whether an action survives playback is
+                // the action's own claim, asked inside `find`, not this ladder's
+                // ordering. An unbound or declined chord falls through to the
+                // paint path: over a selection tool Alt+drag is still the
+                // subtract marquee (§6.8).
+                match drags::find(state, &e) {
+                    // The brush-tuning drag — Size sideways, Flow up and down
+                    // (§18.1.9).
+                    //
+                    // Deliberately *not* `canvas_active`, for the eyedropper's
+                    // reason below: the Brush panel is where this gesture's
+                    // answer is read, so fading the chrome would hide the one
+                    // thing it is for.
+                    Some(DragAction::TuneBrush) => {
+                        if tune.begin(&e) {
+                            // A stroke was in flight only if some *other* pointer
+                            // opened one; it can no longer be finished by this
+                            // press, and a gesture the hand has walked away from
+                            // must leave no mark.
+                            paint.abandon();
+                            // The ring at the press is the size's readout now
+                            // (§18.1.9); a second circle under it would be two
+                            // sizes for one brush.
+                            hover_gone(state);
+                            return;
+                        }
+                        // No engine yet, so nothing to tune: the press falls
+                        // through to the paint path, which does nothing with it
+                        // for the same reason.
+                    }
+                    // The press samples the canvas instead of painting on it,
+                    // and the drag keeps sampling — the binding Clip Studio
+                    // Paint and Rebelle both put on Alt, so a color is picked
+                    // up without putting the brush down (§18.0.2).
+                    Some(DragAction::PickColor) => {
+                        capture_pointer(&e);
+                        // Deliberately *not* `canvas_active`: the chrome fade
+                        // exists to hand the screen back to the painting
+                        // mid-stroke, but the Color panel is where a pick's
+                        // answer shows up, so fading it out would hide the one
+                        // thing this gesture is for.
+                        picking.set(true);
+                        if let Some(s) = sample(state, &e) {
+                            pick_color(state, s.pos);
+                        }
+                        return;
+                    }
+                    None => {}
                 }
                 // Nothing may be *committed* while the playhead is moving: a
                 // commit clears the withheld half of the timeline, so a stroke
@@ -671,26 +711,6 @@ fn Canvas() -> Element {
                     // Painting and selecting are the same gesture from here — the
                     // tool decides what the engine builds (§6.8).
                     let tool = current_tool(state);
-                    // Alt+press samples the canvas instead of painting on it, and
-                    // Alt+drag keeps sampling — the binding Clip Studio Paint and
-                    // Rebelle both use, so a color is picked up without putting
-                    // the brush down (§18.0.2). Alt over a selection
-                    // tool is left alone: there it already means subtract.
-                    // (Space+Alt never reaches here — `nav` took it as a pan.)
-                    let alt_pick =
-                        e.modifiers().contains(Modifiers::ALT) && !tool.is_selection();
-                    if alt_pick {
-                        // Deliberately *not* `canvas_active`: the chrome fade
-                        // exists to hand the screen back to the painting
-                        // mid-stroke, but the Color panel is where a pick's answer
-                        // shows up, so fading it out would hide the one thing this
-                        // gesture is for.
-                        picking.set(true);
-                        if let Some(s) = sample(state, &e) {
-                            pick_color(state, s.pos);
-                        }
-                        return;
-                    }
                     canvas_active.set(true);
                     // From here the press is paint, and what it does with itself is
                     // the gesture's business rather than this handler's — including
@@ -897,7 +917,7 @@ fn BrushCursor() -> Element {
     if !paintable
         || tool.is_selection()
         || (state.space_down)()
-        || (state.pick.alt_down)()
+        || drags::armed((state.held_mods)()) == Some(DragAction::PickColor)
         || (state.pick.dragging)()
     {
         return rsx! {};

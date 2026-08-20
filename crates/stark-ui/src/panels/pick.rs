@@ -1,11 +1,12 @@
 //! The eyedropper's options, in a floating bar (§18.0.2).
 //!
-//! A bar rather than a panel, and mounted only while Alt is held, on the same
+//! A bar rather than a panel, and mounted only while the eyedropper's chord is
+//! held (Alt by default — the drag table's row, `crate::drags`), on the same
 //! argument the selection and frame bars are mounted only while the thing they act
-//! on exists: the eyedropper is not a tool you switch to — Alt over the brush *is*
-//! the binding, as in Clip Studio Paint and Rebelle — so it has no resting state for
-//! a panel to occupy. Coming up on the modifier also makes the binding
-//! discoverable, which is the standing problem with modifier bindings: press Alt and
+//! on exists: the eyedropper is not a tool you switch to — the chord over the brush
+//! *is* the binding, as in Clip Studio Paint and Rebelle — so it has no resting
+//! state for a panel to occupy. Coming up on the modifier also makes the binding
+//! discoverable, which is the standing problem with modifier bindings: press it and
 //! the options appear beside the cursor you are about to sample with.
 //!
 //! It goes away again the moment the drag starts, because from then on the thing to
@@ -13,6 +14,7 @@
 
 use dioxus::prelude::*;
 
+use crate::drags::{self, DragAction};
 use crate::icons::{self, icon, label};
 use crate::layout::chrome_class;
 use crate::panels::select::current_tool;
@@ -62,11 +64,13 @@ const SOURCES: [(PickScope, &str, &str, &str); 3] = [
 #[component]
 pub fn PickBar() -> Element {
     let state = use_context::<AppState>();
-    // Armed, but not yet in use. `canvas_active` covers a stroke or a pan already in
-    // hand — Alt pressed mid-stroke must not pop a bar up over the painting — and
-    // `dragging` covers the pick itself, which deliberately leaves `canvas_active`
-    // alone so the Color panel stays legible while sampling.
-    let armed = (state.pick.alt_down)()
+    // Armed, but not yet in use — the drag table's own answer to the held
+    // modifiers, so the bar comes up on whatever chord the pick actually wears.
+    // `canvas_active` covers a stroke or a pan already in hand — the chord pressed
+    // mid-stroke must not pop a bar up over the painting — and `dragging` covers
+    // the pick itself, which deliberately leaves `canvas_active` alone so the
+    // Color panel stays legible while sampling.
+    let armed = drags::armed((state.held_mods)()) == Some(DragAction::PickColor)
         && !(state.pick.dragging)()
         && !(state.canvas_active)()
         && !(state.space_down)()
