@@ -45,6 +45,16 @@
 //! instead — the obvious choice, and what the navigator can afford because it is
 //! one picture — would re-render every row on every commit.
 //!
+//! **That revision decides what to re-render, never what to show.** A row draws
+//! whatever picture we last took of its layer, current or not (`url`); the
+//! comparison lives in `first_stale`, which decides what to render next. Keying
+//! the display on it too is the natural reading and is wrong in one visible way: a
+//! commit invalidates the entry a whole settle and a readback before its
+//! replacement exists, so the row goes empty in between — once per stroke you
+//! commit, and once per stroke a *peer* commits (§12), which is where it was
+//! caught, since their work arrives while you are looking at the panel rather than
+//! at your own hand.
+//!
 //! Unlike the brush thumbnails ([`crate::thumbs`]) there is no sibling engine
 //! here: these are pictures of the live document, so they render through the
 //! *main* renderer and must take its borrow. That is the whole of what makes the
@@ -112,22 +122,39 @@ pub struct Thumb {
     pub url: String,
 }
 
-/// The thumbnail for `layer`, if the one we hold is still a picture of it.
-/// Subscribes, so a row showing a placeholder re-renders when its image lands.
+/// The picture we hold for `layer`, whatever it is a picture of.
+///
+/// At most one, because [`generate`] *replaces* a layer's entry rather than
+/// appending to it — which is what lets the two questions below be asked of the
+/// same entry.
+fn held(cache: &[Thumb], layer: LayerId) -> Option<&Thumb> {
+    cache.iter().find(|t| t.layer == layer)
+}
+
+/// The thumbnail to draw in `layer`'s row: **the last picture of it we rendered,
+/// current or not.** Subscribes, so a row re-renders when a fresher one lands.
+///
+/// **Deliberately not keyed on the revision, though the regeneration below is.**
+/// The instant a layer's tiles move, the picture we hold stops being current — but
+/// it does not stop being a picture of that layer, and it is a settle plus a render
+/// plus a readback away from being replaced. Serving nothing across that gap blanks
+/// the row on every commit, which is unmissable when the commits are a peer's
+/// (§12): the panel is the one place their work shows while you are looking
+/// elsewhere, and the row strobed once per stroke they finished. This is the
+/// statement §14.6 already makes about a *hidden* layer — the last thumbnail stands
+/// — held for the same reason, since in both cases the alternative is an empty box
+/// claiming the layer is empty.
 ///
 /// `None` for a layer with no tiles at all (a matte, a filter) — said through the
 /// same field that would have keyed the picture, `LayerInfo::content_revision`, so
 /// the row asks one question rather than two. Those rows fill the slot with their
 /// kind mark instead (§14.6), which is the panel's business and not this module's.
 pub fn url(state: AppState, layer: &LayerInfo) -> Option<String> {
-    let revision = layer.content_revision?;
-    state
-        .layer_thumbs
-        .cache
-        .read()
-        .iter()
-        .find(|t| t.layer == layer.id && t.revision == revision)
-        .map(|t| t.url.clone())
+    // Asked for its `None` alone: a layer that holds no tiles has no picture to
+    // show, whatever the cache may still hold under its id.
+    layer.content_revision?;
+    let cache = state.layer_thumbs.cache.read();
+    held(&cache, layer.id).map(|t| t.url.clone())
 }
 
 /// Whether `l` is worth rendering: it has tiles, it has some, and the isolate
@@ -147,23 +174,30 @@ fn worth_rendering(l: &LayerInfo) -> bool {
 /// The first layer whose thumbnail is missing or out of date, with the revision to
 /// render it at.
 ///
+/// **This is where the revision is the key** — it decides what to *re-render*, as
+/// against what to *show*, which is [`url`] above. A picture that has fallen behind
+/// still draws and still counts as stale, and those are not in tension: they are
+/// the two halves of replacing a thumbnail without a gap in the row.
+///
 /// Top-down, which is the order the panel draws in: the rows a user is looking at
 /// fill first.
-fn next_stale(state: AppState) -> Option<(LayerId, u64)> {
-    let obs = state.obs.peek();
-    let cache = state.layer_thumbs.cache.peek();
-    obs.as_ref()?
-        .layers
+fn first_stale(layers: &[LayerInfo], cache: &[Thumb]) -> Option<(LayerId, u64)> {
+    layers
         .iter()
         .rev()
         .filter(|l| worth_rendering(l))
         .find_map(|l| {
             let revision = l.content_revision?;
-            let fresh = cache
-                .iter()
-                .any(|t| t.layer == l.id && t.revision == revision);
+            let fresh = held(cache, l.id).map(|t| t.revision) == Some(revision);
             (!fresh).then_some((l.id, revision))
         })
+}
+
+/// [`first_stale`] against the live document and the live cache.
+fn next_stale(state: AppState) -> Option<(LayerId, u64)> {
+    let obs = state.obs.peek();
+    let cache = state.layer_thumbs.cache.peek();
+    first_stale(&obs.as_ref()?.layers, &cache)
 }
 
 /// Make sure every layer with a picture to show has an up-to-date thumbnail,
@@ -280,4 +314,77 @@ pub fn prune(state: AppState, live: &[LayerInfo]) {
     cache
         .write()
         .retain(|t| live.iter().any(|l| l.id == t.layer));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stark_model::document::BlendMode;
+
+    /// A paint layer at a given content revision. Every other field is a statement
+    /// about the tree, and nothing here reads one.
+    fn paint(id: u64, revision: u64) -> LayerInfo {
+        LayerInfo {
+            id: LayerId(id),
+            blend: BlendMode::Normal,
+            clip: false,
+            opacity: 1.0,
+            visible: true,
+            carrier: None,
+            depth: 0,
+            is_group: false,
+            has_backdrop: true,
+            name: None,
+            matte: None,
+            filter: None,
+            has_underlay: true,
+            merge_down: None,
+            content_revision: Some(revision),
+        }
+    }
+
+    fn thumb(id: u64, revision: u64) -> Thumb {
+        Thumb {
+            layer: LayerId(id),
+            revision,
+            url: format!("data:image/png;base64,r{revision}"),
+        }
+    }
+
+    /// The blank flash this split exists to rule out: a commit — a peer's, most
+    /// visibly (§12) — moves the layer's revision, and the row must go on showing
+    /// the picture we have until the replacement lands rather than emptying itself
+    /// for a settle and a readback.
+    #[test]
+    fn a_commit_does_not_take_the_row_s_picture_away() {
+        let cache = [thumb(1, 7)];
+        assert_eq!(
+            held(&cache, LayerId(1)).map(|t| t.url.as_str()),
+            Some("data:image/png;base64,r7")
+        );
+    }
+
+    /// And the other half: still shown is not still current. The same entry the row
+    /// draws is the one the generator is asked to replace.
+    #[test]
+    fn but_it_is_still_the_row_to_render_next() {
+        assert_eq!(
+            first_stale(&[paint(1, 8)], &[thumb(1, 7)]),
+            Some((LayerId(1), 8))
+        );
+        assert_eq!(first_stale(&[paint(1, 8)], &[thumb(1, 8)]), None);
+    }
+
+    /// A hidden layer is neither re-rendered nor emptied — the picture it had when
+    /// it was last visible stands, which is §14.6's statement and the one this fix
+    /// generalized. Its tiles moving underneath changes neither answer.
+    #[test]
+    fn a_hidden_layer_keeps_the_last_picture_and_asks_for_no_new_one() {
+        let hidden = LayerInfo {
+            visible: false,
+            ..paint(1, 8)
+        };
+        assert_eq!(first_stale(&[hidden], &[thumb(1, 7)]), None);
+        assert!(held(&[thumb(1, 7)], LayerId(1)).is_some());
+    }
 }

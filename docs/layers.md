@@ -346,6 +346,17 @@ deliberately — a sample must not report paint that is switched off — so the 
 declines to render it rather than replacing a good picture with an empty one at exactly
 the moment the row's own picture is the only remaining record of what is in it.
 
+A **repainted** layer keeps it too, for the length of time it takes to render the new
+one. The revision below decides what to *re-render*; what a row *shows* is simply the
+last picture taken of that layer, current or not. Keying the display on the revision as
+well is the natural reading and empties the row for a settle and a readback after every
+commit — once per stroke of your own, and once per stroke a collaborator commits (§12),
+which is where it was caught: their work arrives while you are looking at the panel
+rather than at your own hand, so the row strobed on every stroke they finished. The two
+answers are not in tension. A picture that has fallen behind is still a picture of that
+layer and still the row to render next, which is exactly what replacing it without a
+gap requires.
+
 ##### Why it costs nothing per stroke
 
 The obvious key is `doc_revision`, and it is the expensive one: it moves on every

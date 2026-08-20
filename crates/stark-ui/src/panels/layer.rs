@@ -615,9 +615,11 @@ pub fn LayerRow(
     // This layer's own paint in miniature, or `None` for a row that has no picture
     // to show (§14.6). The two `None`s are deliberately different things and the
     // `map` is what keeps them apart: a layer with no *tiles* gets no thumbnail box
-    // at all, while a paint layer whose render has not landed yet gets an empty one,
-    // so the row does not change shape underneath the pointer when the image
-    // arrives. Subscribes, which is how a row learns its picture is ready.
+    // at all, while a paint layer whose *first* render has not landed yet gets an
+    // empty one, so the row does not change shape underneath the pointer when the
+    // image arrives. Only the first: a later render replaces the picture in place
+    // rather than emptying the box while it works (§14.6). Subscribes, which is how
+    // a row learns its picture is ready.
     //
     // The style is built here rather than in the markup because it is one: an `if`
     // inside an rsx attribute is a Rust expression, so `{url}` in its arms is literal
