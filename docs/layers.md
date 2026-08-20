@@ -1421,8 +1421,8 @@ consistency:
 - **A mat board is chosen by lightness against the piece.** Too close and the
   frame stops reading as a frame; too far and it shouts over what it surrounds.
   Oklab puts that search on an axis you can drag along — `L` moves lightness with
-  hue and chroma held — where the sRGB triple a native color input offers moves
-  all three at once.
+  the hue held and the chroma tracking what that lightness can carry — where the
+  sRGB triple a native color input offers moves all three at once.
 - **The edges are the app's own.** The preview/commit split rests on
   `pointerup` / `pointercancel` over the picker's tracks, not on what a browser
   chooses to send when its color dialog closes. A cancelled pick still commits,
@@ -1432,9 +1432,9 @@ consistency:
 
 A commit to the color the matte already holds is refused engine-side (§14.6),
 so a pick that lands back where it started logs nothing while still superseding
-what it was showing. What was given up with the native input is typing a hex code
-and the OS eyedropper; the pop-out is the trade, and the picker is where either
-would be added.
+what it was showing. What was given up with the native input was typing a hex code
+and the OS eyedropper; the picker is where either would be added, and the hex
+field is now in it (§11), leaving the OS eyedropper as the whole remaining trade.
 
 Still to come: snapping while dragging (to content bounds, to other frames, to
 the canvas origin) is most of what makes a crop tool feel good and is cheap;

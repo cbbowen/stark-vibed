@@ -319,8 +319,8 @@ filter layer is **selected**.
 
 **The color filter's plane is a picture, not three tracks.** `hue`, `saturation` and
 `tint` are one affine map of the Oklab `(a, b)` plane (§21.5), and the honest picture
-of an affine map of a plane is *the image of a circle*. So the bar draws one, over the
-same Oklab slice the color picker shows, and every part of it is a fact rather than a
+of an affine map of a plane is *the image of a circle*. So the bar draws one, over a
+flat Oklab `(a, b)` slice, and every part of it is a fact rather than a
 decoration:
 
 | what is drawn | what it is |
@@ -338,7 +338,13 @@ that is the whole reason the reference locus is drawn *directed*.
 The plane is one fixed slice, at the mid-grey the contrast knob already pivots about,
 and there is no slice control: the map is a map of `(a, b)` alone and is identical at
 every `L`, so a second slice would show the same circle over a different backdrop and a
-control for it would be a control that cannot change a pixel (§1). By the same
+control for it would be a control that cannot change a pixel (§1). It is also the one
+place the flat `(a, b)` picture survives: the Color panel's own wheel is fitted to the
+sRGB gamut and so is *not* flat (§11), which is right for choosing a color and wrong
+under a handle whose whole claim is that it draws an affine map undistorted. The two
+still agree about orientation — `+a` right, `+b` up, warm at the top — and one function
+draws both backdrops (`panels::color::ab_field_data_url`), which is what keeps that
+much shared. By the same
 division, `exposure` and `contrast` keep their tracks — they move along the one axis a
 slice of constant lightness has nothing to say about. They stack in a column beside the
 dial rather than trailing off it in a row: the dial has already bought that height, two

@@ -440,7 +440,7 @@ anywhere else unless it counts a deed nothing counts yet.
 
 | After | Deed | Points at | What it says |
 |---|---|---|---|
-| 2 | a brush stroke | Color panel | Here is the first panel, and the picker is Oklab rather than a hue wheel — the slider is lightness (§6.5) |
+| 2 | a brush stroke | Color panel | Here is the first panel, and the picker is Oklab — the slider is lightness, and the wheel is every color the display has at it (§6.5, §11) |
 | 3 | a brush stroke | the panel column | The panels stand down while you paint; reach into the right-hand edge and they come back (§11) |
 | 5 | a brush stroke | Brush panel | Size and Flow, the brush editor's live test stroke, and that the list below is a library |
 | 10 | size or flow moved *by a control* | Brush panel | Ctrl (⌘) + drag on the canvas — sideways for size, up and down for flow (§18.1.9) |

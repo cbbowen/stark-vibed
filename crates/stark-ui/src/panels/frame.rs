@@ -403,8 +403,8 @@ pub fn FrameBar() -> Element {
             // *lightness against the piece*: a shade too close and the frame stops
             // reading as a frame, a shade too far and it shouts over what it
             // surrounds. Oklab puts that search on an axis you can drag along — `L`
-            // moves lightness with hue and chroma held — where an sRGB triple moves
-            // all three at once. It is the picker the canvas substrate already uses
+            // moves lightness with the hue held and the chroma tracking what that
+            // lightness can carry — where an sRGB triple moves all three at once. It is the picker the canvas substrate already uses
             // (`panels::lighting`), because it is the same question asked about a
             // different flat expanse.
             //

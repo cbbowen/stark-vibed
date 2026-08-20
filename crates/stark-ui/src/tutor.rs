@@ -651,7 +651,10 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::Panel(PanelId::Color),
         side: Side::LeftAtTop,
         title: "Every color, at your brush tip",
-        body: "This color picker uses a color space tuned to human perception, so your hue doesn't drift as you change lightnses, and every step feels uniform.",
+        body: "This color picker uses a color space tuned to human perception, so your \
+               hue doesn't drift as you change lightness, and every step feels uniform. \
+               The wheel holds every color your screen can show at that lightness \u{2014} \
+               its edge is where they run out.",
     },
     Lesson {
         key: "panel-column",

@@ -355,6 +355,51 @@ which the engine draws into directly. DOM chrome surrounds it.
   either viewer — the Brush panel closes, and the rack's overlay exists only
   while a key is held, which is far too late to start rendering what it is there
   to show.
+- **The color picker shows the gamut, not the box the gamut fits in**
+  (`panels::color`, one control in three homes — the Color panel, the frame bar's
+  matte well, the Lighting panel's substrate). It used to draw a fixed square of
+  the Oklab `(a, b)` plane, ±0.32 on each axis, because that is the box the *whole*
+  sRGB gamut fits in. But a picker shows one lightness at a time, and one lightness
+  is a thin slice of that box: at `L = 0.61` the slice is 28% of the square, at
+  `L = 0.2` it is 3.8%. The rest was colors the display cannot show, drawn clamped —
+  a flat wash answering every position with the same color, with everything the
+  artist was choosing between crowded into what was left. That is the whole of
+  *"the picker is too sensitive and I cannot see what I have"*: it was not the
+  gain, it was that four fifths of the control did nothing.
+  - **So the radius is chroma as a fraction of what this lightness and this hue can
+    hold.** The rim *is* the sRGB boundary, found by bisecting this build's own
+    conversion rather than by a fitted curve; every point inside is a distinct color
+    the display has, and the panel gives the choice between 2.8× and 20× the room it
+    did. Two things fall out. Dragging `L` now travels along a hue at constant
+    relative chroma instead of walking a fixed `(a, b)` in and out of gamut — *the
+    same color, lighter*, which is the move a painter makes constantly, and it is why
+    the lightness track is drawn per row rather than handed to CSS as a
+    `linear-gradient(in oklab …)`, which would clamp flat at both ends. And no state
+    the picker can hold is out of gamut, so nothing it shows is a lie about what the
+    brush will lay down.
+  - **Which gamut: sRGB, because that is the one the document has.** Color enters
+    through `srgb_to_oklab` and leaves through the media pass to an sRGB surface
+    (§6.5); a picker fitted to Display P3 would offer chroma that the ingest clamps
+    away — the same lie as the old square, moved from the corners to the rim. The
+    day the pipeline goes wide, the fit is one predicate (`in_srgb`) and the docs
+    are one paragraph.
+  - **The costs are stated where they are paid.** A slice at constant lightness has
+    corners, because the sRGB cube does, and per-hue normalization wears one as a
+    crease near the blue primary — kept rather than smoothed, since shaving it puts
+    `#0000ff` outside the wheel and rounding it outward puts clamped color back
+    inside (`RIM_N`). And the slice is not quite star-shaped about the achromatic
+    axis: the blue corner sits behind a hairline gap that a search from the centre
+    stops at, which one thousandth of a linear channel bridges (`GAMUT_BRIDGE`).
+  - **What is chosen is said, in a patch and in hex.** A 12px ring sitting on a
+    color is not a sample of it, and the cursor was parked on the one pixel the
+    control is about — so the pointer goes invisible for the duration of a drag, the
+    lightness marker became two carets biting in from the track's edges instead of a
+    line across the color it points at, and the readout under the picker carries a
+    well and an editable `#rrggbb`. The hex field is also the answer no drag can
+    give: a color named exactly. **Shift** on either track is the other half —
+    the value moves *with* the pointer at a fifth of its travel, from where it
+    already stood, so the press picks nothing and the hand spends the whole control
+    on a fraction of its range.
 - **Settings are one dialog, not a control tucked into whichever panel it came
   from.** Panels hold what you are painting *with* and change constantly
   mid-stroke; document dialogs hold what the drawing *is*. A standing per-client
