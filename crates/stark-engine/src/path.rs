@@ -112,6 +112,24 @@ pub const MIN_TOLERANCE: f32 = 1.0 / 64.0;
 /// See [`MIN_TOLERANCE`].
 pub const MAX_TOLERANCE: f32 = 64.0;
 
+/// A caller's declared input resolution held to the bounds above, with
+/// [`DEFAULT_TOLERANCE`] for a non-finite one — **the** statement of what a
+/// tolerance may be.
+///
+/// One function rather than a clamp at each door, because the grain is read by two
+/// stages of the input path and they have to agree about it: the fit prices its two
+/// thresholds in it ([`PathFitter::with_tolerance`]), and the towed tip measures
+/// against it how far its own bend is still worth sampling (§6.11). Two copies of
+/// the bounds would let a rope be measured against a grain the fitter had already
+/// clamped away.
+pub fn clamp_tolerance(tolerance: f32) -> f32 {
+    if tolerance.is_finite() {
+        tolerance.clamp(MIN_TOLERANCE, MAX_TOLERANCE)
+    } else {
+        DEFAULT_TOLERANCE
+    }
+}
+
 /// Curvature penalty on the control polygon, as a fraction of the data's own pull
 /// (see [`CubicBSpline::fit_channels`]).
 ///
@@ -380,11 +398,7 @@ impl PathFitter {
             settled_profile: Vec::new(),
             grown_at: 0.0,
             smoothing: SMOOTHING,
-            tolerance: if tolerance.is_finite() {
-                tolerance.clamp(MIN_TOLERANCE, MAX_TOLERANCE)
-            } else {
-                DEFAULT_TOLERANCE
-            },
+            tolerance: clamp_tolerance(tolerance),
             t0: 0.0,
             start_arc: None,
             start_param: 0.0,

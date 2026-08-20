@@ -1465,6 +1465,51 @@ own least-squares solve — pre-record, single-machine — so §12.1's bit-agree
 rules (the reason `taper_profile` is a polynomial and the modulation curve is
 rational) do not reach it.
 
+### What one pointer report costs
+
+The trajectory is exact; the *samples taken along it* are a separate choice, and
+the one place the tow can be expensive. They land on a grid of `L/4` — a quarter
+of the string — which is fine while the tip is bending and pure waste once it is
+not. A grid stated as a fraction of the string is inverse in the string, so a
+smoothing amount near zero asks for an unbounded number of samples per report,
+each one a full least-squares update in the fitter downstream: measured, one 4 px
+report at 8× zoom cost 320 fitter pushes at amount `0.05` and 2000 at amount
+`0.02` — 15 ms and 445 ms of fitting for a single pointer move, natively. Below
+that the accumulator `s += L/4` stopped advancing in `f32` at all and the loop did
+not terminate. A near-zero smoothing setting therefore froze the tab, and the
+frozen time was billed to `input.fit` (§7.1), which measures a pointer report
+rather than a fit.
+
+**So the grid is laid across the bend and no further.** The tip's offset from its
+straight asymptote is `2L·t/√(1+t²) ≤ 2L·t`, and the half-angle decays as
+`t = t₀·exp(−Δs/L)` with `t₀ ≤ 1`, so the bend is under the input's own grain —
+and therefore invisible to the fit that grain prices — after `L·ln(2L/grain)`.
+Past that the tip is trailing dead astern on a straight line that two samples
+describe exactly, so the run's final emission is the only one left worth making.
+The tow is handed the same `tolerance` the fitter is built with, held to the same
+bounds by the same function, because this is one more thing only the caller knows.
+
+Two properties follow, and both are why the bound is read off the tractrix rather
+than picked as a cap:
+
+- **A report costs `4·ln(2L/grain) + 1` emissions at worst** — under 30 across
+  the whole reachable range of the knob, at *any* zoom, since the string and the
+  grain are both carried through the view and only their ratio survives. Bounded
+  in the string rather than inverse in it. Counted up front rather than
+  accumulated, so the loop is an integer one and cannot fail to terminate however
+  degenerate the arithmetic.
+- **A string at or under half the grain reaches zero**, and the tow emits exactly
+  one sample per report — the untowed rate. The bottom of the knob *degrades* to
+  the untowed path rather than falling off a cliff into it, so there is no
+  threshold to discover and no dead region on the slider. The tip is still towed;
+  what goes quiet is the sampling.
+
+Goldens cannot catch a regression here, and that is structural rather than an
+oversight: every replay runs at `rope = 0` by construction (the point of the
+paragraph above about nothing downstream learning that smoothing exists), so the
+tow's own unit tests are the only thing standing under it. They pin the count,
+not just the trajectory.
+
 ### Attributes ride the pen, not the arc
 
 The towed sample carries the **current** report's pressure and tilt, not

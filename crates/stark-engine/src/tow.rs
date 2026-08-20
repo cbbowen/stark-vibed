@@ -40,7 +40,46 @@ use stark_model::geom::Vec2;
 /// measured along the **target's** travel. The tractrix bend mostly completes
 /// within a couple of rope-lengths of travel, so a quarter-rope grid gives the
 /// fitter several samples across it; the fit smooths through the rest.
+///
+/// How far the grid runs is [`bend_reach`], and the two are only meaningful
+/// together: this one is a fraction *of the rope*, so on its own it makes the cost
+/// of a pointer report inverse in the smoothing knob.
 const EMIT_SPACING: f32 = 0.25;
+
+/// How far past the taut crossing that grid is worth laying, in canvas px — the
+/// distance over which the tip is still *bending*, rather than trailing dead
+/// astern on a straight line the fitter would draw from two samples anyway.
+///
+/// **The spacing is a fraction of the rope, so without this the number of samples
+/// one pointer report costs goes as `1/rope`** — and a smoothing knob near zero is
+/// a rope near zero. Measured on the frontend's own mapping (`rope_in`: the 0..1
+/// amount squared, times 160 screen px), one 4 px report at 8× zoom cost 320 fitter
+/// pushes at amount 0.05 and 2000 at amount 0.02 — 15 ms and 445 ms of fitting for
+/// a single pointer move, natively. That is the whole of why a near-zero smoothing
+/// setting froze: not the fit being slow, but the input stage handing it thousands
+/// of samples per report. The loop also stopped terminating once the step fell under
+/// the f32 ULP of the distance it was accumulating into.
+///
+/// The bound is read off the tractrix rather than picked. The tip's offset from its
+/// straight asymptote is `2·rope·t/√(1+t²) ≤ 2·rope·t`, and the half-angle decays as
+/// `t = t₀·exp(−Δs/rope)` with `t₀ ≤ 1` — so the bend is under the input's own grain,
+/// and therefore invisible to the fit that grain prices ([`path::clamp_tolerance`]),
+/// after `rope · ln(2·rope/grain)`. Past it the run's final emission is the only one
+/// that carries anything.
+///
+/// Two properties follow, and both are the point:
+///
+/// * **A report costs `4·ln(2·rope/grain) + 1` emissions at worst** — under 30 across
+///   the whole reachable range of the knob, at any zoom, because rope and grain are
+///   both carried through the view and the ratio is what survives. Bounded in the
+///   rope rather than inverse in it.
+/// * **A rope at or under half the grain reaches zero**, so the tow emits exactly one
+///   sample per report: the same rate as no tow at all, which is the right answer for
+///   a string shorter than the pointer can resolve. The knob's bottom end degrades to
+///   the untowed path instead of falling off a cliff into it.
+fn bend_reach(rope: f32, grain: f32) -> f32 {
+    (2.0 * rope / grain).ln().max(0.0) * rope
+}
 
 /// The in-flight string, for the frontend's overlay (§6.11): drawn from the
 /// towed tip to the pointer, sagging while slack and straight while taut.
@@ -63,6 +102,11 @@ pub struct TowString {
 #[derive(Clone, Debug)]
 pub struct Tow {
     rope: f32,
+    /// The input's own positional resolution, in canvas px — the same grain the
+    /// fit prices its thresholds in (`PathFitter::with_tolerance`), held to the
+    /// same bounds. What it decides here is how far the emission grid runs: see
+    /// [`bend_reach`].
+    grain: f32,
     tip: Vec2,
     /// The last raw report — the target the string runs to. Kept whole (not
     /// just the position) because a run's emissions interpolate the pen
@@ -71,14 +115,23 @@ pub struct Tow {
 }
 
 impl Tow {
-    /// A tow of `rope` canvas px, tip parked on the first report.
+    /// A tow of `rope` canvas px over input that resolves to `grain` canvas px,
+    /// tip parked on the first report.
     ///
     /// Callers gate construction on `rope > 0` — a rope of zero is no tow, and
     /// the session simply feeds the fitter directly (bit-identical to the
-    /// pre-§6.11 path).
-    pub fn new(rope: f32, first: InputSample) -> Self {
+    /// pre-§6.11 path). A rope that is merely *small* needs no gate of its own:
+    /// [`bend_reach`] takes it to one emission a report, which is that same
+    /// rate.
+    ///
+    /// `grain` is the caller's declared input resolution, the one thing the tow
+    /// cannot work out for itself and the same number the fitter is built with —
+    /// so it is held to the same bounds by the same function, rather than by a
+    /// second copy of them here.
+    pub fn new(rope: f32, grain: f32, first: InputSample) -> Self {
         Self {
             rope,
+            grain: crate::path::clamp_tolerance(grain),
             tip: first.pos,
             target: first,
         }
@@ -146,25 +199,53 @@ impl Tow {
         // crosses zero.
         let n = if side >= 0.0 { perp } else { -perp };
         let t0 = side.abs() / (1.0 + cos0);
-        let step = self.rope * EMIT_SPACING;
-        let mut s = s0;
-        loop {
-            s = (s + step).min(len);
-            let t = t0 * (-(s - s0) / self.rope).exp();
+        // Where the tip is `s` into the run, and what the pen said there: the
+        // tractrix in closed form, with the attributes read off the *report*
+        // stream at that fraction of the run (§6.11).
+        let rope = self.rope;
+        let at = |s: f32| {
+            let t = t0 * (-(s - s0) / rope).exp();
             let m = 1.0 + t * t;
             let w = u * ((1.0 - t * t) / m) + n * (2.0 * t / m);
-            self.tip = prev.pos + u * s - w * self.rope;
             let f = s / len;
-            emit(InputSample {
-                pos: self.tip,
+            InputSample {
+                pos: prev.pos + u * s - w * rope,
                 pressure: prev.pressure + (next.pressure - prev.pressure) * f,
                 tilt: prev.tilt.lerp(next.tilt, f),
                 time: prev.time + (next.time - prev.time) * f as f64,
-            });
-            if s >= len {
-                return;
             }
+        };
+        let mut lay = |tip: &mut Vec2, s: f32| {
+            let sample = at(s);
+            *tip = sample.pos;
+            emit(sample);
+        };
+        // The grid, laid over the bend and no further ([`bend_reach`]), then the
+        // run's end — which is where the tip actually finishes and so is always
+        // emitted, grid or no grid.
+        //
+        // **Counted, not accumulated.** The old loop walked `s += step` until it
+        // reached `len`, which is a loop whose trip count is `1/rope` and which
+        // does not terminate at all once `step` falls under the f32 ULP of `s`.
+        // A count computed up front cannot do either: it is bounded by
+        // [`bend_reach`]'s own logarithm, and it is an integer.
+        let step = self.rope * EMIT_SPACING;
+        let reach = bend_reach(self.rope, self.grain).min(len - s0);
+        let steps = if step > 0.0 {
+            (reach / step) as usize
+        } else {
+            0
+        };
+        for i in 1..=steps {
+            let s = s0 + i as f32 * step;
+            // `steps` truncates, so the last grid point is short of `reach` and
+            // therefore of `len`; the guard is for the float that lands on it.
+            if s >= len {
+                break;
+            }
+            lay(&mut self.tip, s);
         }
+        lay(&mut self.tip, len);
     }
 }
 
@@ -181,9 +262,15 @@ mod tests {
         }
     }
 
-    /// Feed a polyline through a tow, collecting every emission.
+    /// Feed a polyline through a tow, collecting every emission. At
+    /// [`DEFAULT_TOLERANCE`](crate::path::DEFAULT_TOLERANCE), which is what a
+    /// replay declares and the coarsest grain any of these ropes meets.
     fn run(rope: f32, pts: &[Vec2]) -> (Tow, Vec<Vec2>) {
-        let mut tow = Tow::new(rope, InputSample::at(pts[0]));
+        let mut tow = Tow::new(
+            rope,
+            crate::path::DEFAULT_TOLERANCE,
+            InputSample::at(pts[0]),
+        );
         let mut out = Vec::new();
         for &p in &pts[1..] {
             tow.to(InputSample::at(p), &mut |s| out.push(s.pos));
@@ -295,7 +382,11 @@ mod tests {
         let pts: Vec<Vec2> = (0..12)
             .map(|i| Vec2::new(i as f32 * 80.0, if i % 2 == 0 { 0.0 } else { 120.0 }))
             .collect();
-        let mut tow = Tow::new(rope, InputSample::at(pts[0]));
+        let mut tow = Tow::new(
+            rope,
+            crate::path::DEFAULT_TOLERANCE,
+            InputSample::at(pts[0]),
+        );
         for pair in pts.windows(2) {
             let (a, b) = (pair[0], pair[1]);
             tow.to(InputSample::at(b), &mut |s| {
@@ -313,6 +404,95 @@ mod tests {
         }
     }
 
+    /// **What one pointer report may cost the fitter** — the property
+    /// [`bend_reach`] exists for, swept over the whole of what the frontend can
+    /// ask for.
+    ///
+    /// The spacing is a fraction of the rope, so the count was `1/rope` and a
+    /// smoothing knob near zero froze the tab: 2000 emissions for one 4 px report
+    /// at amount 0.02 and 8x zoom, each one a full least-squares update. The
+    /// frontend's own mapping is reproduced here rather than cited, because what is
+    /// being pinned is the composition of the two — a rope this module never sees
+    /// alone.
+    #[test]
+    fn one_report_costs_a_bounded_number_of_emissions() {
+        // `rope_in` / `input_tolerance_in`: both the string and the grain are the
+        // hand's, carried through the view, which is why the ratio that decides the
+        // count survives the zoom and the count does not blow up at either end.
+        let rope_in = |amount: f32, zoom: f32| amount * amount * 160.0 / zoom;
+        let grain_in = |res: f32, zoom: f32| res / zoom;
+        let mut worst = 0usize;
+        for &amount in &[1.0f32, 0.5, 0.25, 0.1, 0.05, 0.02, 0.01, 0.001, 1e-6] {
+            for &zoom in &[0.05f32, 1.0, 8.0, 64.0] {
+                // A mouse at dpr 1 and a pen at dpr 2 — the two ends of what
+                // `input_resolution` reports.
+                for &res in &[1.0f32, 0.25] {
+                    let rope = rope_in(amount, zoom);
+                    if rope <= 0.0 {
+                        continue;
+                    }
+                    let mut tow = Tow::new(rope, grain_in(res, zoom), sample(0.0, 0.0));
+                    // Reports 4 canvas px apart at this zoom: an unhurried hand at a
+                    // few hundred hertz, which is the case that used to cost seconds.
+                    let step = 4.0 / zoom;
+                    for i in 1..=40 {
+                        let mut n = 0usize;
+                        tow.to(sample(i as f32 * step, 0.0), &mut |_| n += 1);
+                        worst = worst.max(n);
+                        assert!(
+                            n <= 32,
+                            "amount {amount}, zoom {zoom}, res {res}: one report emitted {n}"
+                        );
+                    }
+                }
+            }
+        }
+        // Not vacuous: a real rope does spend its grid across the bend.
+        assert!(
+            worst > 4,
+            "no case emitted more than {worst} — the sweep is inert"
+        );
+    }
+
+    /// A rope the pointer cannot resolve is no rope: the tow costs exactly what
+    /// the untowed path costs, one emission a report, rather than falling off a
+    /// cliff into it at some threshold.
+    #[test]
+    fn a_rope_under_the_grain_emits_once_a_report() {
+        let mut tow = Tow::new(0.4, 1.0, sample(0.0, 0.0));
+        for i in 1..=20 {
+            let mut n = 0usize;
+            tow.to(sample(i as f32 * 4.0, 0.0), &mut |_| n += 1);
+            assert_eq!(n, 1, "report {i} emitted {n}");
+        }
+        // And the tip is still towed — it lags the pointer by the rope. The knob
+        // going quiet is about the *sampling*, not about the string.
+        let tip = tow.string().tip;
+        assert!(
+            (tip - Vec2::new(79.6, 0.0)).length() < 1e-2,
+            "tip at {tip}, expected a rope short of 80"
+        );
+    }
+
+    /// Cutting the grid short leaves the tip where the closed form puts it: the
+    /// trajectory is exact however few samples are taken along it (§6.11), so a
+    /// run far longer than the bend still finishes in the right place.
+    #[test]
+    fn cutting_the_grid_short_does_not_move_the_tip() {
+        // One report covering 4000 px at a 4 px rope — 4000 grid points under the
+        // old rule, one under this one.
+        let mut long = Tow::new(4.0, 1.0, sample(0.0, 0.0));
+        long.to(sample(4000.0, 0.0), &mut |_| {});
+        // The same travel delivered in reports short enough that the grid covers
+        // every one of them.
+        let mut fine = Tow::new(4.0, 1.0, sample(0.0, 0.0));
+        for i in 1..=1000 {
+            fine.to(sample(i as f32 * 4.0, 0.0), &mut |_| {});
+        }
+        let (a, b) = (long.string().tip, fine.string().tip);
+        assert!((a - b).length() < 1e-2, "coarse tip {a} against fine {b}");
+    }
+
     /// The wiring the session repeats (§6.11): tow into fitter, nothing at
     /// pen-up. A towed, fitted stroke starts at the press and ends at the tip —
     /// a rope short of the lift, with the towed samples in between.
@@ -321,7 +501,7 @@ mod tests {
         use crate::path::PathFitter;
         let mut fitter = PathFitter::new();
         let first = sample(0.0, 0.0);
-        let mut tow = Tow::new(25.0, first);
+        let mut tow = Tow::new(25.0, crate::path::DEFAULT_TOLERANCE, first);
         fitter.push(first);
         for i in 1..=60 {
             let s = sample(i as f32 * 4.0, (i as f32 * 0.1).sin() * 3.0);

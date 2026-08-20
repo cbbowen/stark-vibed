@@ -632,7 +632,7 @@ impl Session {
             // report on its own account, so the stroke is the one its finite reports
             // describe either way.
             tow: (rope.is_finite() && rope > 0.0 && sample.is_finite())
-                .then(|| Tow::new(rope, sample)),
+                .then(|| Tow::new(rope, tolerance, sample)),
         });
     }
 
