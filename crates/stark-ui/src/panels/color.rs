@@ -219,6 +219,52 @@ fn wheel_xy(hue: f32, sat: f32) -> (f32, f32) {
     (0.5 + 0.5 * sat * cos, 0.5 - 0.5 * sat * sin)
 }
 
+/// How much of the pointer's travel a fine drag spends. A fifth: the whole width of
+/// the wheel then covers a fifth of it, which is the difference between landing in
+/// *that red* and landing somewhere in the reds.
+const FINE_GAIN: f32 = 0.2;
+
+/// What a pointer sample on one of the picker's two controls means.
+///
+/// Decided once, on pointer-down, and held for the whole gesture — the reason the
+/// filter dial's `Grab` is decided once too: a drag that changed its mind about what
+/// the pointer meant halfway through would rewrite a value the hand was not on.
+#[derive(Copy, Clone)]
+enum Grab {
+    /// The pointer *is* the value: where it lands is what is picked, so a press with
+    /// no travel is already a complete pick.
+    At,
+    /// Shift: the value moves *with* the pointer at [`FINE_GAIN`], from where it
+    /// already stood. The press picks nothing at all, which is the point — the hand
+    /// gets the control's whole width to spend on a fraction of its range, and the
+    /// color under the marker does not jump away before the adjustment starts.
+    ///
+    /// `from` is the pointer fraction the press landed at, `held` the marker's place
+    /// at that moment; every later sample is `held` plus the geared-down travel.
+    Fine { from: (f32, f32), held: (f32, f32) },
+}
+
+impl Grab {
+    /// What this press means, given where the marker stood when it landed.
+    fn press(e: &Event<PointerData>, held: (f32, f32)) -> Grab {
+        match pointer_fraction(e) {
+            Some(from) if e.modifiers().contains(Modifiers::SHIFT) => Grab::Fine { from, held },
+            _ => Grab::At,
+        }
+    }
+
+    /// Where in the control's box this sample points, as a fraction of it.
+    fn place(self, p: (f32, f32)) -> (f32, f32) {
+        match self {
+            Grab::At => p,
+            Grab::Fine { from, held } => (
+                held.0 + (p.0 - from.0) * FINE_GAIN,
+                held.1 + (p.1 - from.1) * FINE_GAIN,
+            ),
+        }
+    }
+}
+
 /// Reusable Oklab color picker: a wheel of hue and chroma at one lightness, a
 /// vertical `L` slider beside it, and a readout of what has been chosen. Seeds its
 /// state from `init` (straight sRGB) when mounted and reports every pick through
@@ -269,8 +315,8 @@ pub fn OklabPicker(
     let mut l = use_signal(|| il);
     let mut hue = use_signal(|| ih);
     let mut sat = use_signal(|| is);
-    let mut picking_wheel = use_signal(|| false);
-    let mut picking_l = use_signal(|| false);
+    let mut wheel_grab = use_signal(|| None::<Grab>);
+    let mut l_grab = use_signal(|| None::<Grab>);
     // What is in the hex field while it is being typed in. `None` — the resting
     // state — is the field showing the color, live, including mid-drag.
     let mut draft = use_signal(|| None::<String>);
@@ -320,35 +366,37 @@ pub fn OklabPicker(
                 // sitting on the one pixel the whole control is about. Under pointer
                 // capture the hand cannot lose the wheel, so there is nothing left
                 // for it to do that the marker does not.
-                "data-picking": "{picking_wheel()}",
+                "data-picking": "{wheel_grab().is_some()}",
                 // Pointer capture: the drag keeps tracking while the button is held,
                 // even outside the wheel (picks past the rim slide along it).
                 onpointerdown: move |e| {
                     capture_pointer(&e);
-                    picking_wheel.set(true);
-                    pick_wheel(onchange, hue, sat, l, &e);
+                    let g = Grab::press(&e, wheel_xy(hue(), sat()));
+                    wheel_grab.set(Some(g));
+                    pick_wheel(onchange, hue, sat, l, g, &e);
                 },
                 onpointermove: move |e| {
-                    if picking_wheel() { pick_wheel(onchange, hue, sat, l, &e); }
+                    if let Some(g) = wheel_grab() { pick_wheel(onchange, hue, sat, l, g, &e); }
                 },
-                onpointerup: move |_| end_pick(oncommit, picking_wheel, l, hue, sat),
-                onpointercancel: move |_| end_pick(oncommit, picking_wheel, l, hue, sat),
+                onpointerup: move |_| end_pick(oncommit, wheel_grab, l, hue, sat),
+                onpointercancel: move |_| end_pick(oncommit, wheel_grab, l, hue, sat),
                 div { class: "wheel-marker", style: "left:{wx}%; top:{wy}%;" }
             }
             div {
                 class: "l-slider",
                 style: "background-image: {ramp()};",
-                "data-picking": "{picking_l()}",
+                "data-picking": "{l_grab().is_some()}",
                 onpointerdown: move |e| {
                     capture_pointer(&e);
-                    picking_l.set(true);
-                    pick_l(onchange, l, hue, sat, &e);
+                    let g = Grab::press(&e, (0.5, 1.0 - l()));
+                    l_grab.set(Some(g));
+                    pick_l(onchange, l, hue, sat, g, &e);
                 },
                 onpointermove: move |e| {
-                    if picking_l() { pick_l(onchange, l, hue, sat, &e); }
+                    if let Some(g) = l_grab() { pick_l(onchange, l, hue, sat, g, &e); }
                 },
-                onpointerup: move |_| end_pick(oncommit, picking_l, l, hue, sat),
-                onpointercancel: move |_| end_pick(oncommit, picking_l, l, hue, sat),
+                onpointerup: move |_| end_pick(oncommit, l_grab, l, hue, sat),
+                onpointercancel: move |_| end_pick(oncommit, l_grab, l, hue, sat),
                 div { class: "l-marker", style: "top:{ly}%;" }
             }
         }
@@ -393,7 +441,7 @@ fn apply_color(
     handler.call(wheel_color(l(), hue(), sat()));
 }
 
-/// End a drag on `picking`, reporting the settled color through `oncommit` once —
+/// End a drag on `grab`, reporting the settled color through `oncommit` once —
 /// the caller's cue to turn a run of `onchange` previews into one committed edit.
 /// A no-op when no drag was in progress, so a stray release commits nothing.
 ///
@@ -403,15 +451,14 @@ fn apply_color(
 /// would strand the caller's preview with no commit to supersede it.
 fn end_pick(
     oncommit: Option<EventHandler<[f32; 3]>>,
-    mut picking: Signal<bool>,
+    mut grab: Signal<Option<Grab>>,
     l: Signal<f32>,
     hue: Signal<f32>,
     sat: Signal<f32>,
 ) {
-    if !picking() {
+    if grab.write().take().is_none() {
         return;
     }
-    picking.set(false);
     if let Some(oncommit) = oncommit {
         apply_color(oncommit, l, hue, sat);
     }
@@ -424,11 +471,13 @@ fn pick_wheel(
     mut hue: Signal<f32>,
     mut sat: Signal<f32>,
     l: Signal<f32>,
+    grab: Grab,
     e: &Event<PointerData>,
 ) {
-    let Some((fx, fy)) = pointer_fraction(e) else {
+    let Some(p) = pointer_fraction(e) else {
         return;
     };
+    let (fx, fy) = grab.place(p);
     let (dx, dy) = (fx * 2.0 - 1.0, 1.0 - fy * 2.0);
     let r = (dx * dx + dy * dy).sqrt();
     // Crossing the centre must not spin the hue. There is no direction to read
@@ -448,12 +497,13 @@ fn pick_l(
     mut l: Signal<f32>,
     hue: Signal<f32>,
     sat: Signal<f32>,
+    grab: Grab,
     e: &Event<PointerData>,
 ) {
-    let Some((_, fy)) = pointer_fraction(e) else {
+    let Some(p) = pointer_fraction(e) else {
         return;
     };
-    l.set((1.0 - fy).clamp(0.0, 1.0));
+    l.set((1.0 - grab.place(p).1).clamp(0.0, 1.0));
     apply_color(onchange, l, hue, sat);
 }
 
