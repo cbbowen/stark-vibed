@@ -383,13 +383,14 @@ hr {
   backdrop-filter: blur(8px);
 }
 
-/* The one panel whose content is a picture — the color panel's a/b plane — sheds
-   its padding: a picture reads best bled to the panel's own edges, and the padding
-   was the one thing between them. The header carries the inset the panel gave up
-   (its words still need a margin to sit in), restoring its bottom half only on a
-   folded panel, where the header's edge *is* the panel's. The picture's other half
-   is elsewhere: the picker's geometry is fractional, so its panel size is one rule
-   below (`.ab-field`). */
+/* The one panel whose content is a picture — the color panel's wheel — sheds its
+   padding: a picture reads best bled to the panel's own edges, and the padding was
+   the one thing between them. The header carries the inset the panel gave up (its
+   words still need a margin to sit in), restoring its bottom half only on a folded
+   panel, where the header's edge *is* the panel's. The picture's other half is
+   elsewhere:
+   the picker's geometry is fractional, so its panel size is one rule below
+   (`.color-wheel`). */
 .panel[data-panel="Color"] {
   padding: 0;
 }
@@ -654,7 +655,7 @@ hr {
   width: 100%;
 }
 
-/* --- color panel (Oklab: a/b field + L slider) --- */
+/* --- color panel (Oklab: a gamut-fitted wheel + L slider) --- */
 .color-pick {
   display: flex;
   gap: 10px;
@@ -665,18 +666,25 @@ hr {
    (`platform::pointer_fraction`), so no Rust constant mirrors these — which is
    what lets each home restate them with one rule. This base size is the
    pop-outs' and the Lighting panel's, whose boxes keep their padding; the Color
-   panel's is below. */
-.ab-field {
+   panel's is below.
+
+   The radius is not decoration. The BMP behind it is square and its corners are
+   colors sRGB cannot show at this lightness, so the circle *is* the gamut
+   boundary and clipping to it is how the control stops offering what it cannot
+   deliver (`panels::color`). */
+.color-wheel {
   position: relative;
   width: 220px;
   height: 220px;
-  border-radius: 6px;
+  border-radius: 50%;
   cursor: crosshair;
-  background-size: 100% 100%; /* the small BMP plane scales up smoothly */
+  background-size: 100% 100%; /* the small BMP wheel scales up smoothly */
   touch-action: none;
 }
 
-.ab-marker {
+/* A ring, hollow: the color under the marker is the color being chosen, so
+   anything filling the middle would hide the answer. */
+.wheel-marker {
   position: absolute;
   width: 12px;
   height: 12px;
@@ -690,26 +698,24 @@ hr {
 .l-slider {
   position: relative;
   width: 22px;
-  height: 220px; /* the field's, so the pair read as one instrument */
-  border-radius: 6px;
+  height: 220px; /* the wheel's, so the pair read as one instrument */
+  border-radius: 11px; /* a pill, which is the wheel's roundness at this width */
+  background-size: 100% 100%; /* the one-pixel-wide BMP ramp, stretched across */
   cursor: ns-resize;
   touch-action: none;
 }
 
-/* In the Color panel the plane fills the padding the panel shed (248 + 10 gap +
-   22 = 280, the panel's full inner width), stays square so equal spans of `a`
-   and `b` stay equal distances, and squares its corners against the edges the
-   panel now owns and clips. Scoped by name: the same picker sits inline in the
-   Lighting panel and flies out of the bars' wells at the base size above. */
-.panel[data-panel="Color"] .ab-field {
+/* In the Color panel the picker fills the padding the panel shed (248 + 10 gap +
+   22 = 280, the panel's full inner width). Scoped by name: the same picker sits
+   inline in the Lighting panel and flies out of the bars' wells at the base size
+   above. */
+.panel[data-panel="Color"] .color-wheel {
   width: 248px;
   height: 248px;
-  border-radius: 0;
 }
 
 .panel[data-panel="Color"] .l-slider {
   height: 248px;
-  border-radius: 0;
 }
 
 .l-marker {
@@ -939,9 +945,9 @@ hr {
   border-bottom-right-radius: 12px;
 }
 
-/* The full-bleed surfaces — the miniature, the color plane, the preset strip
+/* The full-bleed surfaces — the miniature, the color wheel, the preset strip
    and the layer tree's well — are not restated here: they bleed in both modes
-   now, each at its subject (`.panel[data-panel=…]`, `.ab-field`,
+   now, each at its subject (`.panel[data-panel=…]`, `.color-wheel`,
    `.preset-section`, `.layer-tree`); minimal mode only flushes the column they
    sit in. One remainder is this mode's own: with the preset heading dropped
    (`.preset-header` below), the strip needs the 8px the heading's padding was
@@ -3594,11 +3600,13 @@ button.layer-remove:hover {
   color: var(--axis-b);
 }
 
-/* Interpolated `in oklab`, like the Color panel's L ramp and for the same
+/* Interpolated `in oklab`, like the gradient bar's ramps and for the same
    reason: sRGB's straight line between two hues dips through a greyer, darker
    midpoint — badly so between the red and the blue — where Oklab's holds the
    lightness the two ends share, so the fill reads as one color becoming
-   another rather than as two colors with a shadow between them. */
+   another rather than as two colors with a shadow between them. (The Color
+   panel's own L ramp asks for more than an interpolation can give and is drawn
+   per row instead — `panels::color`.) */
 .chip.plane-chip.active {
   background: linear-gradient(in oklab 100deg, var(--axis-a), var(--axis-b));
 }
