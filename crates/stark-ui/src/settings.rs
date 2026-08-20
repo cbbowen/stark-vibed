@@ -21,6 +21,10 @@
 //!   after calling its handler, so a row added here is durable by construction
 //!   and only its *value* has to be named, in `Prefs`. A future row that is not a
 //!   toggle is the one case that has to call [`prefs::save`] itself.
+//! - A row is **a label and one sentence**. The sentence says what turning it on
+//!   does; a note is added only for a caveat the label cannot carry — where the
+//!   row applies, or how to get out of the state it puts you in. A map is read
+//!   down its labels, and a paragraph under each is what stops it being one.
 //! - Every row is **always mounted**, including ones that only bite in some
 //!   contexts. A tool panel earns the opposite rule (a control that is present or
 //!   absent says whether the thing it governs exists — §6.8), but a
@@ -72,58 +76,74 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
             class: "modal-backdrop",
             onclick: move |_| on_close.call(()),
             div {
-                class: "modal-dialog",
+                // Wide, for the reason Credits and Timing Stats are: this is the
+                // dialog with the most to say, and at the standard width every
+                // sentence under a label ran to three lines. The same words in two
+                // take a hundred pixels off the dialog, which is a hundred fewer to
+                // scroll on the screens that made the cap necessary.
+                class: "modal-dialog modal-wide",
                 onclick: move |e| e.stop_propagation(),
 
                 div { class: "modal-title", "Settings" }
                 div { class: "modal-subtitle",
-                    "These apply to this browser, not to the drawing — nothing here is saved into the document or sent to anyone you share with."
+                    "These apply to this browser, not to the drawing."
                 }
 
-                div { class: "modal-section-label", "DRAWING" }
+                // Two sections, both full. The split is what a row is *about*: the
+                // canvas and the work on it, or the chrome around it. Sections that
+                // held one row each — one per feature that happened to have a
+                // preference — sorted the code rather than the reader.
+                div { class: "modal-section-label", "PAINTING" }
                 SettingToggle {
                     id: "drawing-assist",
                     label: "Snap shapes when you hold",
                     // Says what the gesture *is*, because a hold is not a control
                     // anybody can see — the dialog is the only place it is written
                     // down (§6.9).
-                    description: "Draw a rough line or ellipse and keep the pen down without moving: the stroke snaps to the perfect shape, and the rest of the drag steers it. Lift to finish.",
-                    // The one thing somebody turning it off is likely to be reacting
-                    // to, stated rather than left to be discovered.
-                    note: Some("Strokes that aren't close to a line or an ellipse are left exactly as you drew them.".to_string()),
+                    description: "Hold the pen still mid-stroke and a rough line or ellipse snaps to the perfect shape; the rest of the drag steers it. Anything else is left as you drew it.",
                     checked: assist,
                     onchange: move |v| assist_enabled.set(v),
                 }
+                SettingToggle {
+                    id: "show-peer-selections",
+                    label: "Show others' selections",
+                    description: "Outline the regions your collaborators have selected, each in their own color.",
+                    // A row that is inert right now explains itself rather than
+                    // vanishing — see the module comment.
+                    note: if shared { None } else { Some("Takes effect while you're sharing a session.".to_string()) },
+                    checked: show_peers,
+                    onchange: move |v| dispatch(state, ViewCommand::SetShowPeerSelections(v)),
+                }
+                SettingSlider {
+                    id: "history-budget",
+                    label: "Undo memory",
+                    // In the terms the artist has — how far back you can go, and what
+                    // it costs. Bytes are how it is measured and not what it is for,
+                    // so the number is on the readout and the sentence is the trade.
+                    description: "Graphics memory kept for undo. Past it the oldest steps are given up — saving and sharing always include the whole drawing.",
+                    steps: BUDGET_STEPS,
+                    value: budget,
+                    onchange: move |bytes| dispatch(state, ViewCommand::SetHistoryBudget(bytes)),
+                }
 
-                div { class: "modal-section-label", "APPEARANCE" }
+                div { class: "modal-section-label", "INTERFACE" }
                 SettingToggle {
                     id: "minimal-chrome",
                     label: "Minimal UI",
-                    // Says which text goes, because "minimal" on its own could mean
-                    // anything from a smaller font to hiding the panels outright — and
-                    // the one thing somebody needs to know before turning it on is that
-                    // nothing is taken away (§11). The panels closing up into one column
-                    // is the one thing that does move, so it is said rather than left to
-                    // be noticed.
-                    description: "Drop the words from the panels and the bars over the canvas, keeping the icons. Nothing is removed — the same controls, quieter, with the panels closed up into a single column.",
-                    // The reassurance that makes it safe to try, and the answer to the
-                    // question it raises: dialogs, menus, panel titles and anything you
-                    // have named keep their text, so nothing becomes unreadable.
-                    note: Some("Dialogs, menus, panel titles and your own layer and preset names keep their text. Hover any control for its name.".to_string()),
+                    // Says which text goes and that nothing goes with it, because
+                    // "minimal" alone could mean either (§11).
+                    description: "Drop the words from the panels and bars, keeping the icons — the same controls, in one column. Hover any of them for its name.",
                     checked: minimal,
                     onchange: move |v| minimal_enabled.set(v),
                 }
-
                 SettingChoice {
                     label: "Panels and bars while you paint",
-                    // Says what the chrome *does* today, because the behavior is the
-                    // thing being chosen and two of the three options are only
-                    // meaningful against it (§11).
-                    description: "The floating panels and bars sit over the canvas, so they get out of the way while a stroke is in flight and come back when it ends.",
-                    // The one thing somebody picking the last option has to know, since
-                    // it is a gesture rather than a control and nothing on screen says
-                    // it: how to get the panels back.
-                    note: Some("With \u{201C}Hide after painting\u{201D}, move the pointer to the right of the window \u{2014} or tap there on a tablet \u{2014} to bring the panels back.".to_string()),
+                    // Says what the chrome does today, since two of the three options
+                    // are only meaningful against it (§11).
+                    description: "They float over the canvas, so they can step aside for the length of a stroke.",
+                    // The one thing the last option has to say: getting them back is a
+                    // gesture, and nothing on screen names it.
+                    note: Some("With \u{201C}Hide after painting\u{201D}, reach for the right edge of the window to bring the panels back.".to_string()),
                     options: CHROME_CHOICES,
                     value: hiding.key(),
                     onchange: move |name: String| {
@@ -137,64 +157,18 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                         crate::layout::wake_panels(state);
                     },
                 }
-
-                div { class: "modal-section-label", "GUIDANCE" }
                 SettingToggle {
                     id: "tips",
                     label: "Show tips as you work",
-                    // Says what brings a tip and what one costs, because the thing
-                    // somebody wants to know before leaving this on is whether it
-                    // will interrupt them (§24). "Only ever once" is the answer.
-                    description: "Point out the parts of Stark that differ from the apps you came from \u{2014} but only after you've done the thing they're about a few times, and only ever once each.",
-                    // The two facts that make the switch safe to flick either way,
-                    // and neither is guessable from the label: a tip never takes the
-                    // canvas, and turning this off does not throw away what the tour
-                    // still owes you.
-                    note: Some("A tip never interrupts a stroke and never covers the canvas. Turning this off keeps your place \u{2014} the tips you haven't seen are still waiting if you turn it back on.".to_string()),
+                    // The thing somebody wants to know before leaving this on is
+                    // whether it will interrupt them (§24). "Once each" is the answer.
+                    description: "Point out where Stark differs from the apps you came from \u{2014} once each, never during a stroke, never over the canvas.",
                     checked: tips,
                     // Through the tour's own door rather than straight onto the
                     // signal: turning tips off has to take down the card that is
                     // already up, which is a fact about the tour and is kept there
                     // (`tutor::set_enabled`).
                     onchange: move |v| crate::tutor::set_enabled(state, v),
-                }
-
-                div { class: "modal-section-label", "COLLABORATION" }
-                SettingToggle {
-                    id: "show-peer-selections",
-                    label: "Show others' selections",
-                    // Says what it draws *and* what it costs, which is why it is off
-                    // by default (§17.3): a second contour over the
-                    // artwork is paid for on every frame you look at it.
-                    description: "Outline the regions your collaborators have selected, each in their own color, alongside your own.",
-                    // A row that is inert right now explains itself rather than
-                    // vanishing — see the module comment.
-                    note: if shared { None } else { Some("Takes effect while you're sharing a session.".to_string()) },
-                    checked: show_peers,
-                    onchange: move |v| dispatch(state, ViewCommand::SetShowPeerSelections(v)),
-                }
-
-                div { class: "modal-section-label", "MEMORY" }
-                SettingSlider {
-                    id: "history-budget",
-                    label: "Undo memory",
-                    // Says what the *setting* buys, in the terms the artist has:
-                    // undo steps. Bytes are how it is measured and not what it is
-                    // for, so the number is on the readout and the sentence is
-                    // about the trade.
-                    description: "How much graphics memory Stark keeps for undo. When a long session goes past it, the oldest steps are given up to free it — the drawing is never affected, only how far back you can go.",
-                    // The two things somebody moving this needs to know, and neither
-                    // is guessable: that the *file* is untouched however far it is
-                    // turned down (§1 — the document is its log, and folding an undo
-                    // step does not fold it out of the log), and that turning it up
-                    // costs memory rather than buying anything for free.
-                    note: Some(
-                        "Saving, sharing and exporting always include the whole drawing, whatever this is set to. Higher keeps more history and uses more memory."
-                            .to_string(),
-                    ),
-                    steps: BUDGET_STEPS,
-                    value: budget,
-                    onchange: move |bytes| dispatch(state, ViewCommand::SetHistoryBudget(bytes)),
                 }
 
                 div { class: "modal-actions",

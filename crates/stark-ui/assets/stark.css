@@ -19,7 +19,16 @@
   --panel-inset: 4px;
   --panel-shadow: 0px 0px 8px 0px black;
   --panel-color: #e8e8ea;
-  --panel-background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.12'/%3E%3C/svg%3E"), rgba(21, 20, 19, 0.9);
+  /* The two the chrome is built from, named so the opaque variant below is the same
+     chrome rather than a second opinion about what the panels are made of. */
+  --panel-noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.12'/%3E%3C/svg%3E");
+  --panel-ink: 21 20 19;
+  --panel-background: var(--panel-noise), rgb(var(--panel-ink) / 0.9);
+  /* The same chrome with the tenth of the canvas that shows through it closed up.
+     A panel floats over the painting and is worth seeing past; a dialog is modal —
+     nothing behind it is being read — and a title band with rows sliding under it
+     has to actually cover them. */
+  --panel-solid: var(--panel-noise), rgb(var(--panel-ink));
 }
 
 /* --- the world-axis hues (§20.3): the X/Y/Z semantics every 3D tool taught,
@@ -48,6 +57,66 @@
   --axis-x: oklab(0.667 0.1675 0.0664);
   --axis-y: oklab(0.667 -0.1237 0.0782);
   --axis-z: oklab(0.667 -0.0143 -0.1553);
+}
+
+/* --- the chrome's own scrollbar ---------------------------------------------
+
+   Every region in the chrome that scrolls its own overflow wears one bar: thin and
+   dim, because a full library or a long dialog should not put a bright rail down
+   something that floats over the painting. Written once and listed here rather than
+   copied per region — it was copied twice before, and a third copy was what made the
+   pair worth collapsing. The panel column is deliberately absent: its bar is a real
+   element (`.panel-scroll`), for reasons `.panel-stack` states. */
+.preset-list,
+.gradient-list,
+.modal-dialog,
+.timing-table,
+.be-sections,
+.credit-license {
+  scrollbar-width: thin;
+  scrollbar-color: #ffffff33 transparent;
+}
+
+.preset-list::-webkit-scrollbar,
+.gradient-list::-webkit-scrollbar,
+.modal-dialog::-webkit-scrollbar,
+.timing-table::-webkit-scrollbar,
+.be-sections::-webkit-scrollbar,
+.credit-license::-webkit-scrollbar {
+  width: 8px;
+}
+
+/* No stepper arrows: they are a pair of bright chevrons on a dark panel, for a
+   list that is scrolled with the wheel. */
+.preset-list::-webkit-scrollbar-button,
+.gradient-list::-webkit-scrollbar-button,
+.modal-dialog::-webkit-scrollbar-button,
+.timing-table::-webkit-scrollbar-button,
+.be-sections::-webkit-scrollbar-button,
+.credit-license::-webkit-scrollbar-button {
+  display: none;
+}
+
+.preset-list::-webkit-scrollbar-thumb,
+.gradient-list::-webkit-scrollbar-thumb,
+.modal-dialog::-webkit-scrollbar-thumb,
+.timing-table::-webkit-scrollbar-thumb,
+.be-sections::-webkit-scrollbar-thumb,
+.credit-license::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background: #ffffff33;
+  background-clip: content-box;
+}
+
+.preset-list::-webkit-scrollbar-thumb:hover,
+.gradient-list::-webkit-scrollbar-thumb:hover,
+.modal-dialog::-webkit-scrollbar-thumb:hover,
+.timing-table::-webkit-scrollbar-thumb:hover,
+.be-sections::-webkit-scrollbar-thumb:hover,
+.credit-license::-webkit-scrollbar-thumb:hover {
+  background: #ffffff59;
+  background-clip: content-box;
 }
 
 hr {
@@ -956,9 +1025,8 @@ hr {
   display: none;
 }
 
-/* The list takes the rest of the section and scrolls its own overflow. The scrollbar
-   is drawn thin and dim so a full library does not put a bright rail down the side of
-   a panel that floats over the painting. */
+/* The list takes the rest of the section and scrolls its own overflow; the bar it
+   scrolls with is the chrome's, at the top of this file. */
 .preset-list {
   flex: 1;
   min-height: 0;
@@ -969,30 +1037,6 @@ hr {
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
-  scrollbar-width: thin;
-  scrollbar-color: #ffffff33 transparent;
-}
-
-.preset-list::-webkit-scrollbar {
-  width: 8px;
-}
-
-/* No stepper arrows: they are a pair of bright chevrons on a dark panel, for a
-   list that is scrolled with the wheel. */
-.preset-list::-webkit-scrollbar-button {
-  display: none;
-}
-
-.preset-list::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: 4px;
-  background: #ffffff33;
-  background-clip: content-box;
-}
-
-.preset-list::-webkit-scrollbar-thumb:hover {
-  background: #ffffff59;
-  background-clip: content-box;
 }
 
 /* An empty library says what fills it, rather than leaving the panel's largest
@@ -2411,11 +2455,29 @@ button.layer-remove:hover {
   backdrop-filter: blur(2px);
 }
 
+/* Capped and scrolling **here** (§25.7), rather than in each dialog that turns out
+   to be long: a dialog grows a row at a time and the row that overruns a short screen is
+   never the one whose author was thinking about height. The cap is the class being
+   ruled out, not an instance of it — Credits and the brush editor had each solved it
+   for themselves, and a new dialog would have had to remember.
+
+   80vh so the backdrop still reads as a backdrop; the second term is the same 14px
+   inset `max-width` keeps, for a window shorter than the viewport. */
 .modal-dialog {
-  width: 360px;
+  /* Border-box so the two caps below mean what they say: measured on the content
+     box, a dialog at its `max-width` was 42px of padding and border *wider* than
+     the window it was being fitted to. The widths here and on `.modal-wide` /
+     `.be-dialog` carry that 42px so the boxes are the size they always were. */
+  box-sizing: border-box;
+  width: 402px;
   max-width: calc(100vw - 28px);
+  max-height: min(80vh, calc(100% - 28px));
+  overflow-y: auto;
+  /* A dialog that has hit its cap should not hand the rest of a flick to whatever
+     is behind it — the canvas, which would pan under a modal nobody dismissed. */
+  overscroll-behavior: contain;
   color: var(--panel-color);
-  background: var(--panel-background);
+  background: var(--panel-solid);
   border-radius: 14px;
   padding: 20px;
   box-shadow: var(--panel-shadow);
@@ -2426,6 +2488,27 @@ button.layer-remove:hover {
   font-weight: 600;
   font-size: 16px;
   margin-bottom: 4px;
+}
+
+/* A dialog's own title and buttons hold their edges while its middle scrolls: what
+   you are in and how to leave it are the two things that must not be scrolled away
+   from. Only as **direct children** — the brush editor puts its title inside a
+   header of its own, which lays itself out and would be broken by the bleed below.
+
+   The negative margins take the box out to the dialog's padding edge and its own
+   padding puts the text back where it was, so a dialog too short to scroll looks
+   exactly as it did — `sticky` is inert without a scrollport, and this is what
+   keeps the rest of the rule inert with it. */
+.modal-dialog > .modal-title {
+  position: sticky;
+  /* Minus the dialog's own padding: a sticky offset is measured from the scroll
+     container's *content* box, so `0` would park the title a padding's width below
+     the lip and let the rows slide through the gap above it. */
+  top: -20px;
+  z-index: 1;
+  margin: -20px -20px 4px;
+  padding: 20px 20px 0;
+  background: var(--panel-solid);
 }
 
 .modal-subtitle {
@@ -2441,11 +2524,30 @@ button.layer-remove:hover {
   letter-spacing: 0.02em;
 }
 
+/* A heading that opens a group after something else needs air above it, or it reads
+   as one more line of what it follows rather than as the start of the next set. Any
+   preceding sibling, rather than a list of the kinds that have turned up: adjacent
+   margins collapse, so a dialog whose subtitle or headline already opened that gap
+   keeps exactly the gap it had. */
+* + .modal-section-label {
+  margin-top: 16px;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 18px;
+}
+
+/* The footer's half of the same bargain — see `.modal-dialog > .modal-title`. */
+.modal-dialog > .modal-actions {
+  position: sticky;
+  bottom: -20px;
+  z-index: 1;
+  margin: 18px -20px -20px;
+  padding: 12px 20px 20px;
+  background: var(--panel-solid);
 }
 
 /* A dialog's single text field (the preset name). Full width — a dialog asking for
@@ -2482,11 +2584,12 @@ button.layer-remove:hover {
   opacity: 0.6;
 }
 
-/* A dialog whose content sets its own width — currently only Credits, which holds
-   licence text with line breaks of its own to respect. Still capped to the viewport by
-   `.modal-dialog`'s `max-width`. */
+/* A dialog whose content sets its width rather than taking the standard one: licence
+   text with line breaks of its own to respect (Credits), six numeric columns that must
+   not wrap (Timing Stats), a list of settings whose sentences would otherwise each run
+   to three lines. Still capped to the window by `.modal-dialog`'s `max-width`. */
 .modal-wide {
-  width: 520px;
+  width: 562px;
 }
 
 /* --- credits dialog (credits.rs) --- */
@@ -2543,12 +2646,6 @@ button.layer-remove:hover {
   white-space: pre-wrap;
 }
 
-.credits {
-  overflow-y: auto;
-  max-height: 50vh;
-  padding-right: 16px;
-}
-
 /* --- timing stats dialog (timings.rs) --- */
 
 /* The two end-to-end rates, given the size the table's rows are not: they are the
@@ -2588,9 +2685,11 @@ button.layer-remove:hover {
   opacity: 0.55;
 }
 
-/* Capped and scrolling, like the credits list: the row count grows with the
-   instrumentation, and a dialog that grows past the viewport with it would put its
-   own Done button off-screen. */
+/* Its own scroll region, kept after `.modal-dialog` grew one: the header row above
+   is what tells Mean from p99 from Max, so it is the thing that must hold still while
+   the rows move. That is the whole test for an inner region now — the credits list is
+   read down and lost its own, `.be-sections` keeps one because the preview beside it
+   is a fixed column. */
 .timing-table {
   max-height: 46vh;
   overflow-y: auto;
@@ -2857,9 +2956,14 @@ button.layer-remove:hover {
    scroll in the left one and the preview is the right. A stroke is long and
    thin, so the tall column is the shape that suits it — it shows a longer run of
    paint than a letterbox strip of the same area, and it stops the sliders and
-   the preview from sharing one narrow column when neither wants to. */
+   the preview from sharing one narrow column when neither wants to.
+
+   The one dialog that takes more than the shared 80% cap, and the one entitled to:
+   it is a working surface rather than something to read and dismiss, and the height
+   it takes goes to the preview and to a list that scrolls inside it — so the dialog
+   itself still never overflows. */
 .be-dialog {
-  width: 840px;
+  width: 882px;
   max-height: calc(100vh - 48px);
   display: grid;
   grid-template-columns: minmax(0, 1fr) 240px;
@@ -4815,8 +4919,8 @@ button.layer-remove:hover {
 }
 
 /* The list scrolls its own overflow inside the pop-out — the preset list's
-   scrollbar and overscroll containment, capped so a grown library scrolls
-   rather than climbing the screen. */
+   overscroll containment, capped so a grown library scrolls rather than climbing
+   the screen. */
 .gradient-list {
   max-height: 292px;
   overflow-y: auto;
@@ -4825,28 +4929,6 @@ button.layer-remove:hover {
   flex-direction: column;
   gap: 6px;
   padding-right: 4px;
-  scrollbar-width: thin;
-  scrollbar-color: #ffffff33 transparent;
-}
-
-.gradient-list::-webkit-scrollbar {
-  width: 8px;
-}
-
-.gradient-list::-webkit-scrollbar-button {
-  display: none;
-}
-
-.gradient-list::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: 4px;
-  background: #ffffff33;
-  background-clip: content-box;
-}
-
-.gradient-list::-webkit-scrollbar-thumb:hover {
-  background: #ffffff59;
-  background-clip: content-box;
 }
 
 /* An empty library says what fills it — and this one has more to say than the

@@ -42,12 +42,12 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [filters.md](docs/filters.md) | §21 | Filter layers: adjustment as a layer, where it sits *is* its scope, the color filter, the spectral chromatic aberration, the gradient map |
 | [gradients.md](docs/gradients.md) | §22 | Gradients: stops fitted from a line traced through the painting — the eyedropper generalized — the browser-local library of them, the gradient fill (a `FillOp` parcel that varies with position), and the shared gradient bar that also grades matte paint |
 | [images.md](docs/images.md) | §23 | Placing an image from a file or the clipboard: the one action that carries its content by value, why its tiles are built on the CPU with no shader at all, and the deposit that makes an import *paint* |
-| [engine.md](docs/engine.md) | §7–§11 | The actor target, the timing histograms, the save format, golden tests, the extensibility map, the Dioxus frontend |
+| [engine.md](docs/engine.md) | §7–§10 | The actor target, the timing histograms, the save format, golden tests, the extensibility map |
 | [collaboration.md](docs/collaboration.md) | §12, §17 | The CRDT over the action log, iroh transport, owned selections, the presence roster |
 | [roadmap.md](docs/roadmap.md) | §13, §18, §19 | Build order and status, the gap analysis against the prior art, file-format stability |
 | [drawing-guides.md](docs/drawing-guides.md) | §20 | The perspective grid: one projective camera behind 1/2/3-point, the fan parametrization, the guide overlay pass, aligning strokes to an axis and to circles on a plane, the stereographic fisheye lens |
 | [tutorial.md](docs/tutorial.md) | §24 | The guided tour: a lesson is owed rather than scheduled, deeds read off the `dispatch` seam, the anchored card and what it may take, the browser-local ledger |
-| [ui.md](docs/ui.md) | §25 | The chrome's registries: the command registry, the drag-binding table and the browser-local store — which one a new feature joins, if any, and the checklists that keep them true |
+| [ui.md](docs/ui.md) | §11, §25 | The Dioxus frontend: the one dispatch seam, the panels and the surface they float over. Then the chrome's registries — the command registry, the drag-binding table and the browser-local store, which one a new feature joins, if any, and what a dialog owes whatever it holds |
 
 §6 — "rendering the canvas" — is the one chapter split across files: the stroke
 path is in [brush.md](docs/brush.md), the compositing path in
