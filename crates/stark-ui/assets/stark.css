@@ -682,6 +682,15 @@ hr {
   touch-action: none;
 }
 
+/* Both tracks take the cursor away for the duration of a drag: it is an arrow
+   parked on the one pixel the control is about, and under pointer capture the
+   hand cannot lose the track it grabbed, so there is nothing left for it to say
+   that the marker does not. */
+.color-wheel[data-picking="true"],
+.l-slider[data-picking="true"] {
+  cursor: none;
+}
+
 /* A ring, hollow: the color under the marker is the color being chosen, so
    anything filling the middle would hide the answer. */
 .wheel-marker {
@@ -718,14 +727,37 @@ hr {
   height: 248px;
 }
 
+/* The lightness marker used to be a line across the track, which covered the one
+   row of color it was pointing at — the row being chosen. Two carets instead,
+   biting in from either edge, leaving the middle of the track clear. The shadow
+   is a `drop-shadow` rather than a `box-shadow` because these are border
+   triangles: a box shadow would outline the (empty) box, not the shape. */
 .l-marker {
   position: absolute;
   left: 0;
   right: 0;
-  margin-top: -2px;
-  border-top: 2px solid #fff;
-  box-shadow: 0 0 0 1px #0008;
+  height: 0;
   pointer-events: none;
+}
+
+.l-marker::before,
+.l-marker::after {
+  content: "";
+  position: absolute;
+  top: -5px;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  filter: drop-shadow(0 0 1px #000c);
+}
+
+.l-marker::before {
+  left: 0;
+  border-left: 5px solid #fff;
+}
+
+.l-marker::after {
+  right: 0;
+  border-right: 5px solid #fff;
 }
 
 /* A color well showing the current value; clicking toggles the pop-out picker. */

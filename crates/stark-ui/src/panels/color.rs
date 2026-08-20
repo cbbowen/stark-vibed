@@ -304,6 +304,11 @@ pub fn OklabPicker(
             div {
                 class: "color-wheel",
                 style: "background-image: {wheel()};",
+                // The cursor goes away for the duration of a drag: it is an arrow
+                // sitting on the one pixel the whole control is about. Under pointer
+                // capture the hand cannot lose the wheel, so there is nothing left
+                // for it to do that the marker does not.
+                "data-picking": "{picking_wheel()}",
                 // Pointer capture: the drag keeps tracking while the button is held,
                 // even outside the wheel (picks past the rim slide along it).
                 onpointerdown: move |e| {
@@ -321,6 +326,7 @@ pub fn OklabPicker(
             div {
                 class: "l-slider",
                 style: "background-image: {ramp()};",
+                "data-picking": "{picking_l()}",
                 onpointerdown: move |e| {
                     capture_pointer(&e);
                     picking_l.set(true);
