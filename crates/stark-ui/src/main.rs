@@ -60,7 +60,7 @@ use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, Men
 use credits::CreditsModal;
 use icons::{icon, icon_large};
 use input::{
-    Nav, Paint, Tune, bind_context_menu, bind_pen, bind_shortcuts, elem_xy, end_interaction,
+    Nav, Paint, Tune, accel, bind_context_menu, bind_pen, bind_shortcuts, elem_xy, end_interaction,
     hover_at, hover_gone, hover_stroke, pick_color, sample,
 };
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, resize_end, resize_move};
@@ -189,6 +189,9 @@ fn app() -> Element {
     // the app in — the engine-owned half of them waits for the renderer below
     // (`crate::prefs`).
     use_hook(|| prefs::load(state));
+    // And this browser's rebound shortcuts (`commands::Bindings`) — before the
+    // first keystroke could ask the table, like everything above it.
+    use_hook(|| commands::load(state));
 
     // Every brush with a picture to show wants a rendered stroke (`crate::thumbs`,
     // §11): the preset library's rows and the quick-brush rack's overlay
@@ -1110,7 +1113,7 @@ fn CmdItem(index: usize, command: Command) -> Element {
             disabled: !enabled(),
             on_select: move |_| command.run(state),
             span { class: "menu-item", {icon(command.icon())} {command.name()} }
-            if let Some(chord) = command.shortcut() {
+            if let Some(chord) = command.shortcut(&state.bindings.read()) {
                 span { class: "menu-shortcut", {chord} }
             }
             if let Some(on) = command.checked(state) {
@@ -1146,9 +1149,15 @@ fn CommandSearch() -> Element {
     // The highlighted row, moved by the arrows and spent by Enter. An index
     // into `shown`, reset with the query it indexes into.
     let mut sel = use_signal(|| 0usize);
+    // The command whose shortcut is being recaptured, if any — armed by its
+    // row's chip ([`BindChip`]), spent by the next chord the field hears.
+    let mut capturing: Signal<Option<Command>> = use_signal(|| None);
     // The palette's own DOM node, held for exactly one question: did that
     // focusout land inside me.
     let mut root: Signal<Option<Event<MountedData>>> = use_signal(|| None);
+    // The field's node, so a chip click can hand the keyboard back to it —
+    // the chord about to be pressed must land where the capture listens.
+    let mut field: Signal<Option<Event<MountedData>>> = use_signal(|| None);
     let shown = use_memo(move || commands::search(&query.read()));
 
     rsx! {
@@ -1170,10 +1179,12 @@ fn CommandSearch() -> Element {
                 onclick: move |_| {
                     let show = !open();
                     // A fresh open is a fresh question: the resting offer, not
-                    // whatever was typed before the last dismissal.
+                    // whatever was typed — or half-captured — before the last
+                    // dismissal.
                     if show {
                         query.set(String::new());
                         sel.set(0);
+                        capturing.set(None);
                     }
                     open.set(show);
                 },
@@ -1190,12 +1201,42 @@ fn CommandSearch() -> Element {
                         // the palette is *for* typing, and `input`'s window
                         // shortcuts already stand aside for a text field
                         // (`platform::KeyEvent::on_text_entry`).
-                        onmounted: move |e| platform::focus(&e),
+                        onmounted: move |e| {
+                            platform::focus(&e);
+                            field.set(Some(e));
+                        },
                         oninput: move |e| {
                             query.set(e.value());
                             sel.set(0);
                         },
                         onkeydown: move |e| {
+                            // While a capture is armed, every keystroke is the
+                            // capture's: none may reach the query, and none the
+                            // browser (`commands::capture` says what one means).
+                            if let Some(command) = capturing() {
+                                e.prevent_default();
+                                let m = e.modifiers();
+                                let code = e.code().to_string();
+                                match commands::capture(
+                                    accel(m),
+                                    m.contains(Modifiers::SHIFT),
+                                    m.contains(Modifiers::ALT),
+                                    &e.key(),
+                                    &code,
+                                ) {
+                                    commands::Capture::Chord(chord) => {
+                                        commands::rebind(state, command, chord);
+                                        capturing.set(None);
+                                    }
+                                    commands::Capture::Clear => {
+                                        commands::unbind(state, command);
+                                        capturing.set(None);
+                                    }
+                                    commands::Capture::Cancel => capturing.set(None),
+                                    commands::Capture::Pending => {}
+                                }
+                                return;
+                            }
                             let count = shown.read().len();
                             match e.key() {
                                 Key::Escape => open.set(false),
@@ -1226,18 +1267,27 @@ fn CommandSearch() -> Element {
                         button {
                             key: "{command:?}",
                             class: if i == sel() { "palette-row selected" } else { "palette-row" },
-                            // A native `disabled` rather than a data attribute:
-                            // it swallows the pointerdown too, so a greyed row
-                            // cannot run and cannot steal the field's focus.
-                            disabled: !command.enabled(state.obs.read().as_ref()),
+                            // Greyed by attribute, not by a native `disabled`,
+                            // though the row refuses to run either way
+                            // (`run_from_palette`): the trailing chip must stay
+                            // clickable — a shortcut is rebindable whether or
+                            // not the document offers the act right now, and
+                            // whether Undo has anything to undo is no fact
+                            // about its chord.
+                            "data-disabled": !command.enabled(state.obs.read().as_ref()),
                             // `pointerdown`, not `click`, for the filter
                             // picker's reason: it beats the blur that would
                             // fold the palette away under the pointer.
                             onpointerdown: move |_| run_from_palette(state, open, command),
-                            span { class: "menu-item", {icon(command.icon())} {command.name()} }
-                            if let Some(chord) = command.shortcut() {
-                                span { class: "menu-shortcut", {chord} }
+                            // A live act wears the select blue on its mark
+                            // (`Command::active`) — Share while a session runs —
+                            // where a toggle's "you are in it" is the tick below.
+                            span {
+                                class: if command.active(state) { "menu-item cmd-active" } else { "menu-item" },
+                                {icon(command.icon())}
+                                {command.name()}
                             }
+                            BindChip { command, capturing, field }
                             if let Some(on) = command.checked(state) {
                                 span { class: "menu-check",
                                     if on { {icon(icons::CHECK)} }
@@ -1256,15 +1306,74 @@ fn CommandSearch() -> Element {
 
 /// Run a palette row, palette closed first — a command may mount a dialog, and
 /// the palette has no business outliving the choice. Refused whole while the
-/// projection greys the row ([`Command::enabled`]): the pointer path cannot
-/// reach a disabled row (the button swallows it), so this guard is for Enter,
-/// which answers to the highlight rather than to a button.
+/// projection greys the row ([`Command::enabled`]): the row is not natively
+/// disabled — its chip must stay live for rebinding — so this guard is the
+/// entire refusal, for the pointer and for Enter alike, and a refused click
+/// leaves the palette standing rather than closing on nothing.
 fn run_from_palette(state: AppState, mut open: Signal<bool>, command: Command) {
     if !command.enabled(state.obs.peek().as_ref()) {
         return;
     }
     open.set(false);
     command.run(state);
+}
+
+/// A palette row's trailing shortcut, which is also the door to changing it:
+/// the chord as a clickable chip, a hover-revealed `+` where there is none yet,
+/// or the capture prompt while this row is the one listening. Click, then press
+/// the new chord — the field keeps the keyboard and reads it
+/// (`commands::capture`), so picking a binding is the same gesture as using one.
+///
+/// The one chip that only prints is Import's: its Ctrl+V is the browser's
+/// paste, true whatever the table says, so offering to move it would be
+/// offering a lie ([`Command::rebindable`]).
+#[component]
+fn BindChip(
+    command: Command,
+    capturing: Signal<Option<Command>>,
+    field: Signal<Option<Event<MountedData>>>,
+) -> Element {
+    let state = use_context::<AppState>();
+    let mut capturing = capturing;
+    let grab = move |e: Event<PointerData>| {
+        // The chip's press is the chip's alone: stopped so the row under it
+        // does not run, default-prevented so focus never leaves the field —
+        // which is where the chord about to be pressed must land.
+        e.stop_propagation();
+        e.prevent_default();
+        capturing.set(Some(command));
+        if let Some(f) = field.read().as_ref() {
+            platform::focus(f);
+        }
+    };
+    rsx! {
+        if capturing() == Some(command) {
+            span {
+                class: "menu-shortcut bind-chip capturing",
+                title: "Press the new shortcut \u{2014} Backspace removes it, \
+                        Escape keeps what was there",
+                "press keys\u{2026}"
+            }
+        } else if !command.rebindable() {
+            if let Some(chord) = command.shortcut(&state.bindings.read()) {
+                span { class: "menu-shortcut", title: "The browser's own paste", {chord} }
+            }
+        } else if let Some(chord) = command.shortcut(&state.bindings.read()) {
+            span {
+                class: "menu-shortcut bind-chip",
+                title: "Click, then press the new shortcut",
+                onpointerdown: grab,
+                {chord}
+            }
+        } else {
+            span {
+                class: "menu-shortcut bind-chip bind-add",
+                title: "Add a shortcut: click, then press it",
+                onpointerdown: grab,
+                {icon(icons::ADD)}
+            }
+        }
+    }
 }
 
 /// Modal for starting a fresh document. Today it carries the color-space choice

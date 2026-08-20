@@ -15,15 +15,18 @@
 //! cannot forget its rules: the rail's menu did exactly that, dispatching
 //! Deselect with no gate while the keyboard asked [`may_edit`] first.
 //!
-//! The keyboard is one column of the registry. Each simple chord is a
-//! `(Chord, Command)` row in [`BINDINGS`], the dispatch path asks [`find`] once
-//! (`input`'s keydown handler), and the chrome prints its advertisements — a
-//! row's shortcut column, a tooltip's parenthesis — from the same rows through
-//! [`shortcut`](Command::shortcut). One authority, so what the keyboard answers
-//! and what a row claims cannot drift apart. It is also the shape rebinding
-//! needs: the day chords become user state, [`Command`] is the stable name a
-//! stored binding keys on, the chord is the half that turns into data, and
-//! `find` and `shortcut` are already the only two readers.
+//! The keyboard is one column of the registry, and it is the user's. The
+//! shipped chords are `(Chord, Command)` rows in [`defaults`]; this browser's
+//! rebindings lie over them as [`Bindings`] — a signal on the app state, stored
+//! like the preset library, edited from the palette's own rows
+//! (`main::CommandSearch`: click a row's chord, press the new one). The
+//! dispatch path asks [`find`] once (`input`'s keydown handler), and the chrome
+//! prints its advertisements — a row's shortcut column, a tooltip's parenthesis
+//! — from the same table through [`shortcut`](Command::shortcut). One
+//! authority, so what the keyboard answers and what a row claims cannot drift
+//! apart, however the table has been rearranged: [`Command`] is the stable name
+//! a stored binding keys on, the chord is the half that is data, and `find` and
+//! `shortcut` are the only two readers.
 //!
 //! What is deliberately *not* a chord row:
 //!
@@ -46,6 +49,7 @@
 
 use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::{ReadableExt, Signal, WritableExt};
+use serde::{Deserialize, Serialize};
 
 use crate::icons;
 use crate::input::accel;
@@ -56,6 +60,9 @@ use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::SelectionOp;
 
+/// One key, namespaced and versioned like the preference and library keys'.
+const KEY_BINDINGS: &str = "stark.bindings.v1";
+
 /// The key half of a binding: which modifier tier, and which key.
 ///
 /// Chords are **exact** about their modifiers. Ctrl+Shift+Z is not Ctrl+Z with
@@ -64,7 +71,10 @@ use stark_model::document::SelectionOp;
 /// and a table that shrugged at Alt would fire its Ctrl rows under a layout's
 /// ordinary typing. (The digit rack tolerates Shift, and may: it is a hold in
 /// `input`, not a row here, and its reasons are its own — §18.1.8.)
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// Serde, because a chord the user set is stored with this browser's
+/// preferences and libraries — see [`Bindings`].
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Chord {
     /// Ctrl, or Command on a Mac.
     pub ctrl: bool,
@@ -81,19 +91,38 @@ pub struct Chord {
 /// down and up precisely because they are side by side — so it names the
 /// position (`KeyboardEvent.code`) and survives the layouts that type something
 /// else there, which is the rack's own argument (`slots::of_code`, §18.1.8).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// A capture makes the same choice ([`capture`]): a key that types a character
+/// is taken as the character, and a key that types nothing — an F-key, an
+/// arrow — has only its position to be named by.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum ChordKey {
-    /// The character the key types, caseless.
-    Char(&'static str),
+    /// The character the key types, caseless (stored lowercase).
+    Char(char),
     /// The physical position, by W3C `code` value.
-    Code(&'static str),
+    Code(String),
+}
+
+impl ChordKey {
+    /// Whether a keystroke's `key`/`code` pair is this key.
+    fn hit(&self, key: &Key, code: &str) -> bool {
+        match self {
+            ChordKey::Char(want) => matches!(key, Key::Character(c) if {
+                let mut chars = c.chars();
+                matches!((chars.next(), chars.next()),
+                    (Some(k), None) if k.eq_ignore_ascii_case(want))
+            }),
+            ChordKey::Code(want) => code == want,
+        }
+    }
 }
 
 /// One nameable thing the chrome can ask for whole: no argument at the call
 /// site, no gesture to compose. The variant, not any control or chord, is the
 /// act's identity — two chords may name the same act (Ctrl+Y and Ctrl+Shift+Z),
-/// three surfaces may carry it (the menu, a bar chip, the keyboard), and when
-/// rebinding arrives the chords move while these names hold still.
+/// three surfaces may carry it (the menu, a bar chip, the keyboard), and a
+/// rebinding moves the chords while these names hold still: the stored table
+/// keys on the variant's name and nothing else ([`Bindings`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
     Undo,
@@ -161,87 +190,284 @@ pub enum Command {
     AddPerspective,
 }
 
-/// The chord table. **A command's first row is the one the chrome advertises**
-/// ([`label`]): Ctrl+Y above Ctrl+Shift+Z because the menu has always said
-/// Ctrl+Y, and Ctrl+D above Ctrl+A because the entry doing the advertising is
-/// named "Deselect". Order carries no other meaning — chords are disjoint
-/// (`tests::chords_are_disjoint`), so no row can shadow another. Most commands
-/// have no row at all: a chord is one way to reach an act, not part of being
-/// one.
-pub const BINDINGS: &[(Chord, Command)] = &[
-    (
+/// The chord table Stark ships with. **A command's first row is the one the
+/// chrome advertises** ([`Bindings::of`]): Ctrl+Y above Ctrl+Shift+Z because
+/// the menu has always said Ctrl+Y, and Ctrl+D above Ctrl+A because the entry
+/// doing the advertising is named "Deselect". Order carries no other meaning —
+/// chords are disjoint (`tests::default_chords_are_disjoint`), so no row can
+/// shadow another. Most commands have no row at all: a chord is one way to
+/// reach an act, not part of being one.
+///
+/// A function rather than a const because [`ChordKey`] owns its strings now
+/// that chords are user state; what holds still is the *data*, which the user's
+/// own table is laid over rather than written into ([`Bindings`]).
+fn defaults() -> Vec<(Chord, Command)> {
+    fn ch(ctrl: bool, shift: bool, key: char) -> Chord {
         Chord {
-            ctrl: true,
-            shift: false,
-            key: ChordKey::Char("z"),
-        },
-        Command::Undo,
-    ),
-    (
-        Chord {
-            ctrl: true,
-            shift: false,
-            key: ChordKey::Char("y"),
-        },
-        Command::Redo,
-    ),
-    (
-        Chord {
-            ctrl: true,
-            shift: true,
-            key: ChordKey::Char("z"),
-        },
-        Command::Redo,
-    ),
-    (
-        Chord {
-            ctrl: true,
-            shift: false,
-            key: ChordKey::Char("d"),
-        },
-        Command::Deselect,
-    ),
-    (
-        Chord {
-            ctrl: true,
-            shift: false,
-            key: ChordKey::Char("a"),
-        },
-        Command::Deselect,
-    ),
-    (
-        Chord {
-            ctrl: true,
-            shift: true,
-            key: ChordKey::Char("i"),
-        },
-        Command::InvertSelection,
-    ),
-    (
+            ctrl,
+            shift,
+            key: ChordKey::Char(key),
+        }
+    }
+    fn code(key: &str) -> Chord {
         Chord {
             ctrl: false,
             shift: false,
-            key: ChordKey::Char("h"),
-        },
-        Command::MirrorView,
-    ),
-    (
-        Chord {
-            ctrl: false,
-            shift: false,
-            key: ChordKey::Code("BracketLeft"),
-        },
-        Command::BrushSmaller,
-    ),
-    (
-        Chord {
-            ctrl: false,
-            shift: false,
-            key: ChordKey::Code("BracketRight"),
-        },
-        Command::BrushLarger,
-    ),
-];
+            key: ChordKey::Code(key.to_string()),
+        }
+    }
+    vec![
+        (ch(true, false, 'z'), Command::Undo),
+        (ch(true, false, 'y'), Command::Redo),
+        (ch(true, true, 'z'), Command::Redo),
+        (ch(true, false, 'd'), Command::Deselect),
+        (ch(true, false, 'a'), Command::Deselect),
+        (ch(true, true, 'i'), Command::InvertSelection),
+        (ch(false, false, 'h'), Command::MirrorView),
+        (code("BracketLeft"), Command::BrushSmaller),
+        (code("BracketRight"), Command::BrushLarger),
+    ]
+}
+
+/// The chord table as this browser has it: [`defaults`] with the user's
+/// rebindings laid over them. Lives on [`AppState`](crate::state::AppState) as
+/// a signal, so a row's shortcut column re-renders the moment a rebind lands;
+/// stored under its own key like the preset library, since it is a table the
+/// palette edits rather than a ⚙ setting (`crate::prefs`'s remit).
+///
+/// Only the *overrides* are state. A command the user never touched keeps its
+/// default rows, minus any chord an override has claimed — so stealing Ctrl+Y
+/// leaves Redo advertising Ctrl+Shift+Z with nothing stored about Redo at all,
+/// and a default added in a later build shows up for a browser that stored
+/// this table before it existed.
+#[derive(Clone, Default, PartialEq, Debug)]
+pub struct Bindings {
+    /// The commands the user has taken over, each with the chord that is now
+    /// its **whole** binding — a rebind replaces every default row the command
+    /// had, secondary spellings included — or `None` for a command whose chord
+    /// was stolen by a later rebind and has nothing left.
+    overrides: Vec<(Command, Option<Chord>)>,
+}
+
+impl Bindings {
+    /// Whether an override has claimed `chord` — the question that kills a
+    /// default row: the user's table always wins over the shipped one.
+    fn taken(&self, chord: &Chord) -> bool {
+        self.overrides
+            .iter()
+            .any(|(_, c)| c.as_ref() == Some(chord))
+    }
+
+    /// The chord the chrome should advertise for `command`: its override, or
+    /// its first default row still standing. `None` is a command the keyboard
+    /// cannot reach — never bound, or rebound away.
+    pub fn of(&self, command: Command) -> Option<Chord> {
+        if let Some((_, chord)) = self.overrides.iter().find(|(c, _)| *c == command) {
+            return chord.clone();
+        }
+        defaults()
+            .into_iter()
+            .find(|(chord, c)| *c == command && !self.taken(chord))
+            .map(|(chord, _)| chord)
+    }
+
+    /// The command a keystroke asks for, if any. Overrides answer first —
+    /// though they can never disagree with each other ([`rebind`](Self::rebind)
+    /// steals a colliding chord) — and a default row answers only while its
+    /// command is untouched and its chord unclaimed.
+    fn lookup(
+        &self,
+        accel: bool,
+        shift: bool,
+        alt: bool,
+        key: &Key,
+        code: &str,
+    ) -> Option<Command> {
+        if alt {
+            return None;
+        }
+        let hit =
+            |chord: &Chord| chord.ctrl == accel && chord.shift == shift && chord.key.hit(key, code);
+        if let Some((command, _)) = self
+            .overrides
+            .iter()
+            .find(|(_, chord)| chord.as_ref().is_some_and(&hit))
+        {
+            return Some(*command);
+        }
+        defaults()
+            .into_iter()
+            .find(|(chord, command)| !self.overridden(*command) && !self.taken(chord) && hit(chord))
+            .map(|(_, command)| command)
+    }
+
+    /// Whether the user has taken this command's binding over (even to nothing).
+    fn overridden(&self, command: Command) -> bool {
+        self.overrides.iter().any(|(c, _)| *c == command)
+    }
+
+    /// Give `command` the chord as its whole binding. If another rebinding
+    /// held that chord it is stolen — the loser keeps an override saying so,
+    /// which is what its row shows — and a default elsewhere dies by
+    /// [`taken`](Self::taken) with nothing stored about it.
+    pub fn rebind(&mut self, command: Command, chord: Chord) {
+        for (other, held) in &mut self.overrides {
+            if *other != command && held.as_ref() == Some(&chord) {
+                *held = None;
+            }
+        }
+        self.set(command, Some(chord));
+    }
+
+    /// Take `command`'s binding away — deliberately, which is why it is an
+    /// override to nothing rather than a removed entry: the defaults must not
+    /// resurrect a chord the user just erased.
+    pub fn unbind(&mut self, command: Command) {
+        self.set(command, None);
+    }
+
+    fn set(&mut self, command: Command, chord: Option<Chord>) {
+        match self.overrides.iter_mut().find(|(c, _)| *c == command) {
+            Some((_, held)) => *held = chord,
+            None => self.overrides.push((command, chord)),
+        }
+    }
+}
+
+/// The stored form: overrides keyed by the variant's name, which is the stable
+/// identity rebinding was always going to hang on. An id today's build does not
+/// know is dropped on load — a binding for a retired command is a binding for
+/// nothing.
+#[derive(Serialize, Deserialize)]
+struct StoredBindings {
+    overrides: Vec<(String, Option<Chord>)>,
+}
+
+/// Seed [`AppState::bindings`](crate::state::AppState::bindings) from this
+/// browser's stored rebindings. Called once at app start, beside `prefs::load`.
+pub fn load(state: AppState) {
+    let Some(stored) = crate::storage::get(KEY_BINDINGS)
+        .and_then(|json| serde_json::from_str::<StoredBindings>(&json).ok())
+    else {
+        return;
+    };
+    let overrides = stored
+        .overrides
+        .into_iter()
+        .filter_map(|(id, chord)| {
+            ALL.iter()
+                .find(|c| format!("{c:?}") == id)
+                .map(|&c| (c, chord))
+        })
+        .collect();
+    let mut bindings = state.bindings;
+    bindings.set(Bindings { overrides });
+}
+
+/// Give `command` the captured chord, and persist the table — the palette's
+/// commit (`main::CommandSearch`), written through [`Bindings::rebind`] so a
+/// stolen chord and its victim's row change in the same write.
+pub fn rebind(state: AppState, command: Command, chord: Chord) {
+    edit(state, |b| b.rebind(command, chord));
+}
+
+/// Take `command`'s binding away and persist the table — the palette's other
+/// commit, Backspace where a chord would be.
+pub fn unbind(state: AppState, command: Command) {
+    edit(state, |b| b.unbind(command));
+}
+
+/// One change to the table, written to the signal and to storage as one act —
+/// so what the rows show, what the keyboard answers, and what the next visit
+/// loads cannot be three states.
+fn edit(state: AppState, change: impl FnOnce(&mut Bindings)) {
+    let mut bindings = state.bindings;
+    let mut next = bindings.peek().clone();
+    change(&mut next);
+    bindings.set(next);
+    let stored = StoredBindings {
+        overrides: bindings
+            .peek()
+            .overrides
+            .iter()
+            .map(|(c, chord)| (format!("{c:?}"), chord.clone()))
+            .collect(),
+    };
+    if let Ok(json) = serde_json::to_string(&stored) {
+        crate::storage::set(KEY_BINDINGS, "the shortcuts", &json);
+    }
+}
+
+/// What a keydown means to a rebinding capture (`main::CommandSearch`): the
+/// chord to commit, the capture called off, or nothing yet.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Capture {
+    /// A bindable chord — commit it.
+    Chord(Chord),
+    /// Backspace: the binding is erased rather than replaced. The one key a
+    /// capture spends on itself instead of taking as a chord — which also
+    /// means no command's shortcut can *be* Backspace, a bargain worth it for
+    /// an unbind that is the same gesture as clearing a field.
+    Clear,
+    /// Escape: the capture is called off, binding unchanged.
+    Cancel,
+    /// Not a chord — keep waiting. A bare modifier is a chord still being
+    /// formed, and the rest are keys a binding could never answer on, refused
+    /// here so the user cannot store a shortcut that silently never fires:
+    ///
+    /// - anything with **Alt**, which the table matches nothing on (AltGr);
+    /// - **space** and the **bare digits**, which are holds owning both edges
+    ///   of their key (`input`, §18.1.8) and are claimed before the table;
+    /// - **Ctrl+V**, which is not a binding of ours to give away — the paste
+    ///   import rides the browser's own event (§23), and a chord row would
+    ///   `prevent_default` it dead.
+    Pending,
+}
+
+/// Read one keydown as a capture — the policy half, taken apart from the DOM
+/// event the way [`Bindings::lookup`] is so a test can reach it.
+pub fn capture(accel: bool, shift: bool, alt: bool, key: &Key, code: &str) -> Capture {
+    if *key == Key::Escape {
+        return Capture::Cancel;
+    }
+    if *key == Key::Backspace {
+        return Capture::Clear;
+    }
+    if alt
+        || matches!(
+            key,
+            Key::Control | Key::Shift | Key::Alt | Key::AltGraph | Key::Meta
+        )
+    {
+        return Capture::Pending;
+    }
+    // The rack's own reading of the digit row, asked rather than restated.
+    if !accel && crate::slots::of_code(code).is_some() {
+        return Capture::Pending;
+    }
+    match key {
+        Key::Character(c) => {
+            let mut chars = c.chars();
+            let (Some(k), None) = (chars.next(), chars.next()) else {
+                return Capture::Pending;
+            };
+            if k == ' ' || (accel && !shift && k.eq_ignore_ascii_case(&'v')) {
+                return Capture::Pending;
+            }
+            Capture::Chord(Chord {
+                ctrl: accel,
+                shift,
+                key: ChordKey::Char(k.to_ascii_lowercase()),
+            })
+        }
+        _ if !code.is_empty() => Capture::Chord(Chord {
+            ctrl: accel,
+            shift,
+            key: ChordKey::Code(code.to_string()),
+        }),
+        _ => Capture::Pending,
+    }
+}
 
 /// Every command, in the order the search palette lists ties: the file family
 /// first (the resting offer, [`BASIC`]), then the acts on the document and the
@@ -321,37 +547,18 @@ pub fn search(query: &str) -> Vec<Command> {
     starts
 }
 
-/// The command `e` asks for, if any — the one reader on the dispatch path.
-pub fn find(e: &platform::KeyEvent) -> Option<Command> {
+/// The command `e` asks for, if any — the one reader on the dispatch path,
+/// asking this browser's own table ([`Bindings`]). `peek`: a keydown is no
+/// reason for anything to re-render.
+pub fn find(state: AppState, e: &platform::KeyEvent) -> Option<Command> {
     let m = e.modifiers();
-    lookup(
+    state.bindings.peek().lookup(
         accel(m),
         m.contains(Modifiers::SHIFT),
         m.contains(Modifiers::ALT),
         &e.key(),
         &e.code(),
     )
-}
-
-/// [`find`] with the event already taken apart — the half a test can reach,
-/// there being no way to construct a DOM keystroke off the page.
-fn lookup(accel: bool, shift: bool, alt: bool, key: &Key, code: &str) -> Option<Command> {
-    if alt {
-        return None;
-    }
-    BINDINGS
-        .iter()
-        .find(|(chord, _)| {
-            chord.ctrl == accel
-                && chord.shift == shift
-                && match chord.key {
-                    ChordKey::Char(want) => {
-                        matches!(key, Key::Character(c) if c.eq_ignore_ascii_case(want))
-                    }
-                    ChordKey::Code(want) => code == want,
-                }
-        })
-        .map(|&(_, command)| command)
 }
 
 impl Command {
@@ -470,47 +677,63 @@ impl Command {
 
     /// The `title` a control rendering this command carries: the hint, plus the
     /// advertised shortcut for the commands the keyboard can reach.
-    pub fn tooltip(self) -> String {
-        match self.shortcut() {
+    pub fn tooltip(self, bindings: &Bindings) -> String {
+        match self.shortcut(bindings) {
             Some(chord) => format!("{} ({chord})", self.hint()),
             None => self.hint().to_string(),
         }
     }
 
-    /// The shortcut the chrome prints beside this command's name — its first
-    /// chord row in [`BINDINGS`], or `None` for the many commands the keyboard
-    /// cannot reach yet. (When rebinding arrives, `None` is simply what an
-    /// unbound command stays.)
+    /// The shortcut the chrome prints beside this command's name — its
+    /// advertised chord in this browser's table ([`Bindings::of`]), or `None`
+    /// for a command the keyboard cannot reach: never bound, or rebound away.
     ///
     /// One command's advertisement is written by hand instead: Import's Ctrl+V
     /// is a paste, not a binding of ours — the browser delivers the clipboard
     /// *with* the event (`crate::images`) — so there is no row for it, and yet
     /// the shortcut is true and worth saying wherever the command is shown.
-    pub fn shortcut(self) -> Option<String> {
+    pub fn shortcut(self, bindings: &Bindings) -> Option<String> {
         match self {
             Command::ImportImage => Some("Ctrl+V".to_string()),
-            _ => label(self),
+            _ => bindings.of(self).map(|chord| chord_label(&chord)),
         }
     }
 
-    /// The tick a row carries for a command that toggles or enters something
-    /// the user can be *in* — Timeline mode, the navigator, the pinned rack, a
-    /// live share — and `None` for every act without a second state. On the
-    /// registry rather than at any one menu, because the search palette lists
-    /// these rows too, and a toggle that admitted its state in only one of its
-    /// homes would read as two different commands.
+    /// Whether the palette offers to change this command's shortcut. `false`
+    /// for exactly the advertisement that is not ours to move: Import's Ctrl+V
+    /// is the browser's paste, true whatever this table says, so a chip that
+    /// offered to change it would be offering a lie.
+    pub fn rebindable(self) -> bool {
+        !matches!(self, Command::ImportImage)
+    }
+
+    /// The tick a row carries for a command that toggles something the user
+    /// can be *in* — Timeline mode, the navigator, the pinned rack — and
+    /// `None` for every act without a second state. On the registry rather
+    /// than at any one menu, because the search palette lists these rows too,
+    /// and a toggle that admitted its state in only one of its homes would
+    /// read as two different commands. A tick answers "am I in it?" (§18.2.4);
+    /// what it does **not** say is that an act is still *running* — that is
+    /// [`active`](Self::active), worn differently.
     pub fn checked(self, state: AppState) -> Option<bool> {
         match self {
             Command::ToggleTimeline => Some(*state.timeline.open.read()),
             Command::ToggleNavigator => Some(*state.navigator.read()),
             Command::ToggleQuickBrushes => Some(*state.slots.pinned.read()),
-            // Not a toggle, but the same claim on the row: the tick says the
-            // session is already live, which is what the ● beside "Share" said
-            // when this was a hand-written menu entry.
-            Command::Share => {
-                Some(*state.collab.phase.read() == crate::collab::CollabPhase::Shared)
-            }
             _ => None,
+        }
+    }
+
+    /// Whether this command's act is live right now — Share while a session
+    /// runs, and today nothing else. Worn as the row's mark taking the select
+    /// blue rather than as a trailing tick, because it is not a mode the user
+    /// is in (the tick's claim, above) but a state the act started and left
+    /// standing — the same thing the ● beside "Share" said when it was a
+    /// hand-written menu entry.
+    pub fn active(self, state: AppState) -> bool {
+        match self {
+            Command::Share => *state.collab.phase.read() == crate::collab::CollabPhase::Shared,
+            _ => false,
         }
     }
 
@@ -696,14 +919,13 @@ fn edit_history(state: AppState, command: DocCommand) {
     dispatch(state, command);
 }
 
-/// `command`'s first chord row in [`BINDINGS`], spelled out. Private: the
-/// chrome asks [`Command::shortcut`], which is this plus the one advertisement
-/// that has no row.
+/// A chord spelled out for the chrome. Private: the chrome asks
+/// [`Command::shortcut`], which is this over [`Bindings::of`], plus the one
+/// advertisement that has no chord.
 /// "Ctrl" names the accelerator on every platform for now, as the menu always
 /// has — a ⌘ on the one platform that draws it is a presentation question, not
 /// a binding one.
-fn label(command: Command) -> Option<String> {
-    let (chord, _) = BINDINGS.iter().find(|&&(_, c)| c == command)?;
+fn chord_label(chord: &Chord) -> String {
     let mut s = String::new();
     if chord.ctrl {
         s.push_str("Ctrl+");
@@ -711,17 +933,27 @@ fn label(command: Command) -> Option<String> {
     if chord.shift {
         s.push_str("Shift+");
     }
-    match chord.key {
-        ChordKey::Char(c) => s.push_str(&c.to_ascii_uppercase()),
+    match &chord.key {
+        ChordKey::Char(c) => s.push(c.to_ascii_uppercase()),
         // A position's label is its US engraving: what the keycap most often
         // says, and the only honest answer short of asking the layout — which
-        // the web cannot portably do. Rebinding will let the label be wrong
-        // less often than the binding already is.
-        ChordKey::Code("BracketLeft") => s.push('['),
-        ChordKey::Code("BracketRight") => s.push(']'),
-        ChordKey::Code(code) => s.push_str(code),
+        // the web cannot portably do. Rebinding lets the label be wrong less
+        // often than a fixed binding already was.
+        ChordKey::Code(code) => match code.as_str() {
+            "BracketLeft" => s.push('['),
+            "BracketRight" => s.push(']'),
+            // "KeyQ" is engraved "Q", and the digit row's caps are their digits
+            // — the two families a captured spatial chord usually lands in.
+            code => match code
+                .strip_prefix("Key")
+                .or_else(|| code.strip_prefix("Digit"))
+            {
+                Some(cap) => s.push_str(cap),
+                None => s.push_str(code),
+            },
+        },
     }
-    Some(s)
+    s
 }
 
 #[cfg(test)]
@@ -732,10 +964,16 @@ mod tests {
         Key::Character(s.into())
     }
 
+    /// The stock table — what every browser has before its first rebind.
+    fn stock() -> Bindings {
+        Bindings::default()
+    }
+
     #[test]
-    fn chords_are_disjoint() {
-        for (i, (a, _)) in BINDINGS.iter().enumerate() {
-            for (b, _) in &BINDINGS[i + 1..] {
+    fn default_chords_are_disjoint() {
+        let rows = defaults();
+        for (i, (a, _)) in rows.iter().enumerate() {
+            for (b, _) in &rows[i + 1..] {
                 assert_ne!(a, b, "two rows on one chord: the table is not a function");
             }
         }
@@ -744,16 +982,16 @@ mod tests {
     #[test]
     fn shift_is_part_of_the_chord() {
         assert_eq!(
-            lookup(true, false, false, &ch("z"), "KeyZ"),
+            stock().lookup(true, false, false, &ch("z"), "KeyZ"),
             Some(Command::Undo)
         );
         assert_eq!(
-            lookup(true, true, false, &ch("Z"), "KeyZ"),
+            stock().lookup(true, true, false, &ch("Z"), "KeyZ"),
             Some(Command::Redo)
         );
         // Ctrl+Shift+Y is nobody's: an unclaimed chord falls through to the
         // browser rather than being Ctrl+Y plus a bystander.
-        assert_eq!(lookup(true, true, false, &ch("Y"), "KeyY"), None);
+        assert_eq!(stock().lookup(true, true, false, &ch("Y"), "KeyY"), None);
     }
 
     #[test]
@@ -761,7 +999,7 @@ mod tests {
         // CapsLock types "Z" with no Shift held; the chord reads the modifier,
         // never the letter's case.
         assert_eq!(
-            lookup(true, false, false, &ch("Z"), "KeyZ"),
+            stock().lookup(true, false, false, &ch("Z"), "KeyZ"),
             Some(Command::Undo)
         );
     }
@@ -770,42 +1008,234 @@ mod tests {
     fn alt_matches_nothing() {
         // AltGr arrives as Ctrl+Alt on Windows: a layout typing *through* Alt
         // must not find Ctrl rows under its ordinary characters.
-        assert_eq!(lookup(true, false, true, &ch("z"), "KeyZ"), None);
-        assert_eq!(lookup(false, false, true, &ch("h"), "KeyH"), None);
+        assert_eq!(stock().lookup(true, false, true, &ch("z"), "KeyZ"), None);
+        assert_eq!(stock().lookup(false, false, true, &ch("h"), "KeyH"), None);
     }
 
     #[test]
     fn brackets_are_positions() {
         // Whatever the layout types on them, the pair beside P steps the brush.
         assert_eq!(
-            lookup(false, false, false, &ch("ü"), "BracketLeft"),
+            stock().lookup(false, false, false, &ch("ü"), "BracketLeft"),
             Some(Command::BrushSmaller)
         );
         assert_eq!(
-            lookup(false, false, false, &ch("]"), "BracketRight"),
+            stock().lookup(false, false, false, &ch("]"), "BracketRight"),
             Some(Command::BrushLarger)
         );
-        assert_eq!(lookup(true, false, false, &ch("["), "BracketLeft"), None);
+        assert_eq!(
+            stock().lookup(true, false, false, &ch("["), "BracketLeft"),
+            None
+        );
     }
 
     #[test]
     fn advertised_chords() {
         // A command's first row is what the chrome prints; these strings are
         // the rows' shortcut column.
-        assert_eq!(Command::Undo.shortcut().as_deref(), Some("Ctrl+Z"));
-        assert_eq!(Command::Redo.shortcut().as_deref(), Some("Ctrl+Y"));
-        assert_eq!(Command::Deselect.shortcut().as_deref(), Some("Ctrl+D"));
+        let b = stock();
+        assert_eq!(Command::Undo.shortcut(&b).as_deref(), Some("Ctrl+Z"));
+        assert_eq!(Command::Redo.shortcut(&b).as_deref(), Some("Ctrl+Y"));
+        assert_eq!(Command::Deselect.shortcut(&b).as_deref(), Some("Ctrl+D"));
         assert_eq!(
-            Command::InvertSelection.shortcut().as_deref(),
+            Command::InvertSelection.shortcut(&b).as_deref(),
             Some("Ctrl+Shift+I")
         );
-        assert_eq!(Command::BrushLarger.shortcut().as_deref(), Some("]"));
+        assert_eq!(Command::BrushLarger.shortcut(&b).as_deref(), Some("]"));
         // The one advertisement with no chord row: a paste is the browser's
-        // binding, not ours, and the registry still says so.
-        assert_eq!(Command::ImportImage.shortcut().as_deref(), Some("Ctrl+V"));
+        // binding, not ours, and the registry still says so — and refuses to
+        // move it.
+        assert_eq!(Command::ImportImage.shortcut(&b).as_deref(), Some("Ctrl+V"));
+        assert!(!Command::ImportImage.rebindable());
         // And an unbound command advertises nothing rather than panicking in
         // the chrome — the shortcut column simply is not rendered.
-        assert_eq!(Command::SaveDocument.shortcut(), None);
+        assert_eq!(Command::SaveDocument.shortcut(&b), None);
+    }
+
+    /// A chord as a capture would build it.
+    fn chord(ctrl: bool, shift: bool, key: char) -> Chord {
+        Chord {
+            ctrl,
+            shift,
+            key: ChordKey::Char(key),
+        }
+    }
+
+    #[test]
+    fn rebind_moves_the_chord_whole() {
+        let mut b = stock();
+        b.rebind(Command::SaveDocument, chord(true, false, 's'));
+        assert_eq!(
+            Command::SaveDocument.shortcut(&b).as_deref(),
+            Some("Ctrl+S")
+        );
+        assert_eq!(
+            b.lookup(true, false, false, &ch("s"), "KeyS"),
+            Some(Command::SaveDocument)
+        );
+        // The rest of the table stands exactly as shipped.
+        assert_eq!(
+            b.lookup(true, false, false, &ch("z"), "KeyZ"),
+            Some(Command::Undo)
+        );
+    }
+
+    #[test]
+    fn rebind_steals_from_a_default() {
+        // Ctrl+Z now saves; Undo's only chord is dead with nothing stored
+        // about Undo, so its row shows unbound and the keystroke saves.
+        let mut b = stock();
+        b.rebind(Command::SaveDocument, chord(true, false, 'z'));
+        assert_eq!(
+            b.lookup(true, false, false, &ch("z"), "KeyZ"),
+            Some(Command::SaveDocument)
+        );
+        assert_eq!(Command::Undo.shortcut(&b), None);
+        // Redo loses only the stolen spelling: Ctrl+Y was untouched, so a
+        // command with a second default falls back to it in the same way.
+        b.rebind(Command::Settings, chord(true, false, 'y'));
+        assert_eq!(Command::Redo.shortcut(&b).as_deref(), Some("Ctrl+Shift+Z"));
+        assert_eq!(
+            b.lookup(true, true, false, &ch("Z"), "KeyZ"),
+            Some(Command::Redo)
+        );
+    }
+
+    #[test]
+    fn rebind_steals_from_an_override() {
+        // Two rebinds contest one chord: the later wins, and the earlier is
+        // left explicitly unbound — not fallen back to a default it replaced.
+        let mut b = stock();
+        b.rebind(Command::Undo, chord(true, false, 'q'));
+        b.rebind(Command::Redo, chord(true, false, 'q'));
+        assert_eq!(
+            b.lookup(true, false, false, &ch("q"), "KeyQ"),
+            Some(Command::Redo)
+        );
+        assert_eq!(Command::Undo.shortcut(&b), None);
+        // And the chords the overrides replaced are dead, not inherited: an
+        // override is the command's whole binding.
+        assert_eq!(b.lookup(true, false, false, &ch("z"), "KeyZ"), None);
+        assert_eq!(b.lookup(true, false, false, &ch("y"), "KeyY"), None);
+    }
+
+    #[test]
+    fn stored_bindings_round_trip() {
+        let mut b = stock();
+        b.rebind(Command::MirrorView, chord(false, true, 'm'));
+        b.rebind(Command::Undo, chord(false, true, 'm')); // steals; MirrorView None
+        let stored = StoredBindings {
+            overrides: b
+                .overrides
+                .iter()
+                .map(|(c, chord)| (format!("{c:?}"), chord.clone()))
+                .collect(),
+        };
+        let json = serde_json::to_string(&stored).unwrap();
+        let back: StoredBindings = serde_json::from_str(&json).unwrap();
+        let restored = Bindings {
+            overrides: back
+                .overrides
+                .into_iter()
+                .filter_map(|(id, chord)| {
+                    ALL.iter()
+                        .find(|c| format!("{c:?}") == id)
+                        .map(|&c| (c, chord))
+                })
+                .collect(),
+        };
+        assert_eq!(restored, b);
+        // An id from a build that knew commands this one does not is dropped,
+        // not an error.
+        let stale: StoredBindings =
+            serde_json::from_str(r#"{"overrides":[["NoSuchCommand",null]]}"#).unwrap();
+        assert!(
+            stale
+                .overrides
+                .iter()
+                .all(|(id, _)| !ALL.iter().any(|c| format!("{c:?}") == *id))
+        );
+    }
+
+    #[test]
+    fn capture_reads_a_chord() {
+        assert_eq!(
+            capture(true, false, false, &ch("s"), "KeyS"),
+            Capture::Chord(chord(true, false, 's'))
+        );
+        // Shift's uppercase is the chord's Shift bit, not the letter's case.
+        assert_eq!(
+            capture(false, true, false, &ch("M"), "KeyM"),
+            Capture::Chord(chord(false, true, 'm'))
+        );
+        // A key that types nothing is named by its position.
+        assert_eq!(
+            capture(false, false, false, &Key::F5, "F5"),
+            Capture::Chord(Chord {
+                ctrl: false,
+                shift: false,
+                key: ChordKey::Code("F5".to_string()),
+            })
+        );
+        assert_eq!(
+            capture(false, false, false, &Key::Escape, "Escape"),
+            Capture::Cancel
+        );
+        // Backspace is the capture's own eraser, so it can never be a chord.
+        assert_eq!(
+            capture(false, false, false, &Key::Backspace, "Backspace"),
+            Capture::Clear
+        );
+    }
+
+    #[test]
+    fn unbind_erases_rather_than_resets() {
+        let mut b = stock();
+        b.unbind(Command::Undo);
+        assert_eq!(Command::Undo.shortcut(&b), None);
+        assert_eq!(b.lookup(true, false, false, &ch("z"), "KeyZ"), None);
+        // The chord is anyone's to take now…
+        b.rebind(Command::SaveDocument, chord(true, false, 'z'));
+        assert_eq!(
+            b.lookup(true, false, false, &ch("z"), "KeyZ"),
+            Some(Command::SaveDocument)
+        );
+        // …and the erased command can be given a fresh one.
+        b.rebind(Command::Undo, chord(true, false, 'u'));
+        assert_eq!(Command::Undo.shortcut(&b).as_deref(), Some("Ctrl+U"));
+    }
+
+    #[test]
+    fn capture_refuses_what_could_never_fire() {
+        // A modifier alone is a chord still being formed.
+        assert_eq!(
+            capture(true, false, false, &Key::Control, "ControlLeft"),
+            Capture::Pending
+        );
+        // Alt in any combination matches nothing in the table (AltGr).
+        assert_eq!(
+            capture(false, false, true, &ch("x"), "KeyX"),
+            Capture::Pending
+        );
+        // Space and the bare digit row are holds, claimed before the table.
+        assert_eq!(
+            capture(false, false, false, &ch(" "), "Space"),
+            Capture::Pending
+        );
+        assert_eq!(
+            capture(false, false, false, &ch("1"), "Digit1"),
+            Capture::Pending
+        );
+        // …but a digit under the accelerator is nobody's hold.
+        assert_eq!(
+            capture(true, false, false, &ch("1"), "Digit1"),
+            Capture::Chord(chord(true, false, '1'))
+        );
+        // Ctrl+V is the paste's, and a row would prevent_default it dead.
+        assert_eq!(
+            capture(true, false, false, &ch("v"), "KeyV"),
+            Capture::Pending
+        );
     }
 
     #[test]
@@ -830,7 +1260,7 @@ mod tests {
     fn every_bound_command_is_findable() {
         // The chord table names acts; every one of them must also be a row the
         // palette can list, or a chord would reach a command search cannot.
-        for &(_, command) in BINDINGS {
+        for (_, command) in defaults() {
             assert!(
                 ALL.contains(&command),
                 "{command:?} has a chord but is missing from ALL"

@@ -235,7 +235,7 @@ pub fn SelectionBar() -> Element {
                 // registry cannot say. The words still come off the command.
                 button {
                     class: "chip",
-                    title: Command::FillSelection.tooltip(),
+                    title: Command::FillSelection.tooltip(&state.bindings.read()),
                     onclick: move |_| Command::FillSelection.run(state),
                     {icon_tinted(icons::PAINT_BUCKET, brush_color)}
                     {label(Command::FillSelection.word())}

@@ -299,6 +299,11 @@ pub struct AppState {
     pub tutor: crate::tutor::TutorState,
     /// The root-mounted dialogs' visibility, one flag per modal (see [`Dialogs`]).
     pub dialogs: Dialogs,
+    /// This browser's chord table (`commands::Bindings`): the shipped defaults
+    /// with the user's rebindings laid over them. A signal so a shortcut column
+    /// re-renders the moment a rebind lands; seeded from storage at app start
+    /// (`commands::load`) and written back on every rebind.
+    pub bindings: Signal<crate::commands::Bindings>,
 }
 
 /// The root-mounted dialogs: one flag per modal, raised by the command that
@@ -578,6 +583,7 @@ impl AppState {
                 timing: root_signal(|| false),
                 credits: root_signal(|| false),
             },
+            bindings: root_signal(Default::default),
         }
     }
 }

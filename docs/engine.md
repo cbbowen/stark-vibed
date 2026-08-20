@@ -541,9 +541,11 @@ which the engine draws into directly. DOM chrome surrounds it.
   at the call site — as a variant of `Command` carrying its entire description:
   display name, terse chip word, mark, tooltip, availability
   (`Command::enabled`, what a row greys on), the mode tick (`Command::checked`),
+  the live mark (`Command::active` — Share while a session runs, worn as the
+  icon taking the select blue rather than as a tick),
   the advertised shortcut (`Command::shortcut`), the gate its act must ask
   (`Command::run`), and the chord that reaches it from the keyboard
-  (`BINDINGS`). The chrome *renders* a command rather than restating it — a bar
+  (`commands::Bindings`). The chrome *renders* a command rather than restating it — a bar
   chip or panel-header button is `widgets::CommandButton`, a menu row is the
   rail's `CmdItem` — so what a menu claims, what a chip does and what the
   keyboard answers cannot drift. They had: the menu's Undo skipped the
@@ -578,10 +580,27 @@ which the engine draws into directly. DOM chrome surrounds it.
   declined Ctrl+A must not answer with the browser highlighting the page.
   What is *not* a chord row is anything owning both edges of its key — a held
   digit (§18.1.8), space's pan, Alt's eyedropper stay in `input`, which owns
-  keyup — and Ctrl+V, which is not a command but data arriving (§23). Rebinding,
-  when it comes, is the chord column becoming user state: the `Command` variants
-  are the stable names a stored binding will key on, and `find` and
-  `Command::shortcut` are already the only readers.
+  keyup — and Ctrl+V, which is not a command but data arriving (§23).
+- **The chord column is the user's** (`commands::Bindings`). The shipped rows
+  are only defaults; this browser's rebindings lie over them as a signal on the
+  app state, stored under their own key like the preset library, and `find` and
+  `Command::shortcut` read the overlaid table — so a rebind moves what the
+  keyboard answers and every advertisement of it in the same write. Only the
+  *overrides* are stored, keyed by the variant's name: stealing Ctrl+Y leaves
+  Redo advertising Ctrl+Shift+Z with nothing stored about Redo, and a default
+  added in a later build reaches browsers that stored their table before it
+  existed. Rebinding lives in the palette rather than a settings page: a row's
+  shortcut is a chip (a `+` where there is none), click it and press the new
+  chord — the field keeps the keyboard and `commands::capture` reads the one
+  keydown, refusing what could never fire (Alt combinations, space and the bare
+  digit holds, the paste's Ctrl+V), taking Escape as the way out and Backspace
+  as the eraser: an unbind is the same gesture as clearing a field, at the cost
+  that no shortcut can be Backspace itself. A capture
+  names a character key by what it types and anything else by where it sits,
+  which is `Chord`'s own mnemonic/spatial split applied at the moment of
+  capture. The one advertisement that will not move is Import's Ctrl+V — the
+  browser's paste is true whatever the table says
+  (`Command::rebindable`).
 - **A composing mode is a state, not a stacking order.** Four gestures take the
   canvas away from the brush for the length of a composition: the transform
   widget (§16.6), the perspective-guide edit (§20.5), the gradient trace (§22.2)

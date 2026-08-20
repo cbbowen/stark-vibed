@@ -2311,16 +2311,78 @@ button.layer-remove:hover {
   text-align: left;
 }
 
-.palette-row:disabled {
+/* Greyed by attribute rather than by a native `disabled` — the trailing chip
+   inside the row is the door to rebinding, and it stays clickable whatever the
+   document offers right now (`main::CommandSearch`). */
+.palette-row[data-disabled="true"] {
   color: #6a6a72;
-  cursor: not-allowed;
+  cursor: default;
   opacity: 0.5;
 }
 
-.palette-row:hover:not(:disabled),
-.palette-row.selected:not(:disabled) {
+.palette-row:hover:not([data-disabled="true"]),
+.palette-row.selected:not([data-disabled="true"]) {
   background: #3a6ea5;
   color: #fff;
+}
+
+/* A live act's mark takes the select blue (`Command::active` — Share while a
+   session runs): the state rides the icon rather than a trailing tick, which is
+   the mode toggles' claim ("am I in it?"). Lightened under the row's own blue
+   highlight, where the resting accent would disappear into it. */
+.cmd-active .icon {
+  color: #3a6ea5;
+}
+
+.palette-row:hover .cmd-active .icon,
+.palette-row.selected .cmd-active .icon {
+  color: #8fb0e8;
+}
+
+/* The shortcut as the door to changing it: resting, it is the ordinary
+   shortcut column; over a hovered row it stands up as a chip, and its own
+   hover deepens the claim. The whole affordance lives on hover because the
+   resting palette is a list of commands, not a bindings editor — the editor
+   appears exactly where the pointer is asking about it. */
+.bind-chip {
+  padding: 1px 6px;
+  margin: -1px -6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.palette-row:hover .bind-chip {
+  background: #ffffff1f;
+  color: #fff;
+}
+
+.bind-chip:hover {
+  background: #ffffff3d;
+}
+
+/* No binding yet: a `+` standing where the chord would, revealed by the row's
+   own hover so the resting list is not a column of twenty pluses. */
+.bind-add {
+  visibility: hidden;
+}
+
+.palette-row:hover .bind-add {
+  visibility: visible;
+}
+
+.bind-add .icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* The row that is listening. Not a hover state — it holds until a key or
+   Escape answers — so it wears the accent the hover would, steadily. */
+.bind-chip.capturing {
+  visibility: visible;
+  background: #3a6ea5;
+  color: #fff;
+  cursor: default;
+  font-style: italic;
 }
 
 /* A query nothing answers keeps the box from ending at the field's lip — the

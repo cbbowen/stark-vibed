@@ -26,7 +26,7 @@ pub fn CommandButton(
     rsx! {
         button {
             class,
-            title: command.tooltip(),
+            title: command.tooltip(&state.bindings.read()),
             onclick: move |_| command.run(state),
             {icon(command.icon())}
             {label_span(command.word())}

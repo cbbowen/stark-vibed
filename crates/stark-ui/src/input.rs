@@ -1094,7 +1094,7 @@ fn handle_keydown(mut state: AppState, e: &platform::KeyEvent) {
     // browser's own Ctrl+A would select the page's text, and a refusal that
     // let that through would answer a declined command with a highlighted
     // user interface.
-    if let Some(command) = commands::find(e) {
+    if let Some(command) = commands::find(state, e) {
         command.run(state);
         e.prevent_default();
     }
