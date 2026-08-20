@@ -277,6 +277,7 @@ icons! {
     // of the two loaded "add" marks above, because neither a document nor a stamp is
     // a layer or a frame.
     ADD => "plus-bold",
+    NEW_DOCUMENT => "file-bold",
     MODULATE => "wave-sine-bold",
     // The transform gesture (§16.6). Arrows out of a centre rather than a box of
     // handles, deliberately: the widget is an ellipse and the module's whole claim is

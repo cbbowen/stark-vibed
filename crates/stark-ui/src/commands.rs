@@ -626,7 +626,7 @@ impl Command {
             Command::InvertSelection => icons::SELECTION_INVERT,
             Command::MirrorView => icons::MIRROR_VIEW,
             Command::BrushSmaller | Command::BrushLarger => icons::SIZE,
-            Command::NewDocument => icons::ADD,
+            Command::NewDocument => icons::NEW_DOCUMENT,
             Command::OpenDocument => icons::OPEN_DOC,
             Command::SaveDocument => icons::SAVE,
             Command::ImportImage => icons::IMPORT_IMAGE,
