@@ -69,17 +69,64 @@ pub fn composing(state: AppState) -> Option<Composing> {
     }
 }
 
-/// Whether any mode is composing, asked from an event handler.
+/// The mode composing right now, asked from an event handler.
 ///
 /// `peek`, like [`panels::timeline::is_playing`](crate::panels::timeline::is_playing)
 /// and for its reason: a handler is not a render and has nothing to re-run, so
 /// subscribing to four signals from one would only widen what a pointer move
-/// wakes.
+/// wakes. [`composing`] is the render-time half.
+pub fn composing_now(state: AppState) -> Option<Composing> {
+    if state.transform.peek().is_some() {
+        Some(Composing::Transform)
+    } else if state.guide_edit.peek().is_some() {
+        Some(Composing::GuideEdit)
+    } else if *state.gradients.armed.peek() {
+        Some(Composing::GradientTrace)
+    } else if state.gradient_bar.peek().is_some() {
+        Some(Composing::GradientFill)
+    } else {
+        None
+    }
+}
+
+/// Whether any mode is composing, asked from an event handler —
+/// [`composing_now`] where only the fact matters.
 pub fn is_composing(state: AppState) -> bool {
-    state.transform.peek().is_some()
-        || state.guide_edit.peek().is_some()
-        || *state.gradients.armed.peek()
-        || state.gradient_bar.peek().is_some()
+    composing_now(state).is_some()
+}
+
+/// Commit the composing mode and leave — every mode bar's "Done" under one
+/// name, so a chord can carry it (`Command::FinishMode`, MODAL_DESIGN.md).
+/// Each arm is the same function its bar's own chip calls, deliberately: the
+/// key and the chip must be one act, not two spellings that could drift.
+///
+/// The trace has no commit of its own — the release *is* the capture (§22.2)
+/// — so its "finish" is the disarm, which hands back whatever bar it parked
+/// (`gradients::set_armed`).
+pub fn finish(state: AppState) {
+    match composing_now(state) {
+        Some(Composing::Transform) => crate::panels::transform::finish(state),
+        Some(Composing::GuideEdit) => crate::panels::guides::end_guide_edit(state),
+        Some(Composing::GradientTrace) => crate::gradients::set_armed(state, false),
+        Some(Composing::GradientFill) => crate::panels::gradient_bar::finish(state),
+        None => {}
+    }
+}
+
+/// [`leave`], as Esc means it (`Command::CancelMode`, MODAL_DESIGN.md): put
+/// the composing mode down, committing nothing — except that a trace pops back
+/// to the gradient bar it parked rather than dropping it too. The distinction
+/// is the trace's own: it was armed *from* that bar to fetch a ramp for it
+/// (`gradients::set_armed`), and a stray click already ends it exactly this
+/// way — Esc is the same "never mind", so it must not take more with it than
+/// the click does. Every other mode holds nothing on another mode's behalf,
+/// and cancelling it is leaving.
+pub fn cancel(state: AppState) {
+    if matches!(composing_now(state), Some(Composing::GradientTrace)) {
+        crate::gradients::set_armed(state, false);
+    } else {
+        leave(state);
+    }
 }
 
 /// Put down whatever is composing, dropping its preview and committing nothing.

@@ -27,6 +27,7 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
+use crate::commands::{self, Command};
 use crate::gradients;
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
@@ -35,6 +36,7 @@ use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, GradientAxisKind, GradientTarget, GradientUi};
+use crate::widgets::CommandButton;
 use stark_model::Gradient;
 use stark_model::document::{FillOp, GradientAxis, GradientParcel, MattePaint};
 use stark_model::geom::Vec2;
@@ -265,8 +267,8 @@ fn compose(state: AppState, ui: &GradientUi) -> Option<Laid> {
 /// there is nothing to lay. The commit clears the preview itself, so there is
 /// no intermediate frame showing the document without it (the transform's
 /// Done). For a matte, re-selecting the layer is untouched — the frame bar
-/// comes straight back.
-fn finish(state: AppState) {
+/// comes straight back. The bar's "Done", and Enter's (`crate::modes::finish`).
+pub fn finish(state: AppState) {
     let ui = state.gradient_bar.peek().clone();
     if let Some(ui) = ui {
         match compose(state, &ui) {
@@ -288,10 +290,20 @@ fn ramp_in_hand(state: AppState, ui: &GradientUi) -> Option<Gradient> {
 }
 
 /// The mode's bar, standing in for whichever bar raised it.
+///
+/// While a trace has the gesture parked (`suspend`), the bar stays on screen
+/// **recessed** rather than vanishing — the one genuine park-and-resume in the
+/// app, drawn as what it is: the place the trace hands back to
+/// (MODAL_DESIGN.md). Recessed chrome is inert (`pointer-events: none`), so
+/// its controls promise nothing the parked gesture cannot honour.
 #[component]
 pub fn GradientBar() -> Element {
     let state = use_context::<AppState>();
-    let Some(ui) = state.gradient_bar.read().clone() else {
+    let (ui, parked) = if let Some(ui) = state.gradient_bar.read().clone() {
+        (ui, false)
+    } else if let Some(ui) = state.gradient_resume.read().clone() {
+        (ui, true)
+    } else {
         return rsx! {};
     };
     // Read reactively so a pick in the library pop-out repaints the strip.
@@ -337,7 +349,18 @@ pub fn GradientBar() -> Element {
     };
 
     rsx! {
-        div { class: chrome_class(state, "selection-bar gradient-fill-bar"),
+        div {
+            // The composing register (`mode-bar`) comes off with the mode:
+            // parked, this is a shelved gesture behind the trace's bar, not
+            // the thing the canvas answers to.
+            class: chrome_class(
+                state,
+                if parked {
+                    "selection-bar gradient-fill-bar recessed"
+                } else {
+                    "selection-bar gradient-fill-bar mode-bar"
+                },
+            ),
             // The library's mark: the bar is that library's ramp being
             // put to work, so it wears the library's glyph.
             span { class: "bar-label",
@@ -351,9 +374,12 @@ pub fn GradientBar() -> Element {
             {kind_chip(GradientAxisKind::Linear, icons::GRADIENT_LINEAR, "Linear")}
             {kind_chip(GradientAxisKind::Radial, icons::GRADIENT_RADIAL, "Radial")}
             span { class: "bar-sep" }
+            // The way out that keeps nothing, worn whole off the registry with
+            // its Esc advertisement (MODAL_DESIGN.md).
+            CommandButton { command: Command::CancelMode }
             button {
                 class: "chip",
-                title: done_title,
+                title: commands::advertised(done_title, Command::FinishMode, &state.bindings.read()),
                 onclick: move |_| finish(state),
                 {icon(icons::DONE)}
                 {label("Done")}
@@ -385,6 +411,16 @@ pub fn GradientBarOverlay() -> Element {
         "gradient-catcher pan"
     } else {
         "gradient-catcher"
+    };
+    // What to do, said the way the trace says it (§22.2): the catcher is
+    // invisible and the axis has no chrome until it is dragged, so before the
+    // first drag the mode is a pointer that mysteriously stopped painting.
+    // Down once an axis exists — from there the chrome explains itself.
+    let axis_hint = match ui.kind {
+        GradientAxisKind::Linear => {
+            "Drag the axis: press where the ramp starts, release where it ends."
+        }
+        GradientAxisKind::Radial => "Drag the reach: press at the centre, release at the rim.",
     };
     let down_ui = ui.clone();
     let move_ui = ui.clone();
@@ -419,6 +455,10 @@ pub fn GradientBarOverlay() -> Element {
             onpointerup: move |e| if !nav.release(&e) { nav.stop(); dragging.set(false); },
             onpointercancel: move |e| if !nav.release(&e) { nav.stop(); dragging.set(false); },
             onwheel: move |e| nav.wheel(e),
+        }
+
+        if ui.drag.is_none() {
+            div { class: "gradient-trace-hint", {axis_hint} }
         }
 
         if let Some((from, to)) = ui.drag {

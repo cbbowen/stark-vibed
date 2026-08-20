@@ -277,10 +277,12 @@ pub fn FrameBar() -> Element {
     // While a mode is composing, its own bar stands in for this one — two bars
     // over the same bottom edge would fight, and the frame's numbers describe a
     // layer the composition may be about to move (`crate::modes`). The gradient
-    // bar composing *this matte's* paint (§22.4) is the case this began as.
-    if crate::modes::composing(state).is_some() {
-        return rsx! {};
-    }
+    // bar composing *this matte's* paint (§22.4) is the case this began as —
+    // and the case that reads best recessed rather than unmounted
+    // (MODAL_DESIGN.md): the mode was entered from this very bar, and this is
+    // where its Done and Esc return to. `.recessed` is inert, so nothing here
+    // can be pressed under the composition.
+    let composing = crate::modes::composing(state).is_some();
     // The rect half of the bar exists exactly when the region has a rect: an
     // `Everything` matte (a background, §15.5) frames nothing, so the
     // readout, the aspect and the fits stand down and the bar is its paint and
@@ -314,7 +316,11 @@ pub fn FrameBar() -> Element {
     };
 
     rsx! {
-        div { class: chrome_class(state, "frame-bar"),
+        div {
+            class: chrome_class(
+                state,
+                if composing { "frame-bar recessed" } else { "frame-bar" },
+            ),
             // The glyph rides the bar's *label*, not one of its buttons: no single
             // control here is "crop" — sizing to an aspect, fitting to the art and
             // fitting to the view are three ways of doing it — so what the mark

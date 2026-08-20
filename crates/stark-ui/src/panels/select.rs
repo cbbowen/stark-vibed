@@ -204,11 +204,21 @@ pub fn SelectionBar() -> Element {
     // selection preview — a trace or a guide edit owns the canvas just as
     // completely, and a bar offering to fill through a catcher promises something
     // the pointer cannot reach (`crate::modes`).
+    //
+    // Stood down by **receding**, not unmounting (MODAL_DESIGN.md): the bar
+    // stays on screen dimmed and inert behind the mode's own, so the place its
+    // Done and Esc return to is visible the whole time. Inert twice over —
+    // `.recessed` takes the pointer events, and every chip here runs an act
+    // that asks `commands::may_edit`, which refuses while a mode is composing.
     let composing = crate::modes::composing(state).is_some();
 
     rsx! {
-        if active && !composing {
-            div { class: chrome_class(state, "selection-bar"),
+        if active {
+            div {
+                class: chrome_class(
+                    state,
+                    if composing { "selection-bar recessed" } else { "selection-bar" },
+                ),
                 // The Select panel's own mark, on the bar the panel's gestures raise —
                 // the bar is *this panel's* state made visible, so it says so with the
                 // panel's glyph rather than a second picture of a marquee.

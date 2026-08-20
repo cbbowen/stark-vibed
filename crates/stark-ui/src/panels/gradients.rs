@@ -21,11 +21,14 @@ use dioxus::html::Key;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
+use crate::commands::Command;
 use crate::gradients;
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
+use crate::layout::chrome_class;
 use crate::platform::{capture_pointer, select_all};
 use crate::state::AppState;
+use crate::widgets::CommandButton;
 use stark_model::geom::Vec2;
 
 /// How far the pointer must move, in **screen** px, before the trace keeps
@@ -239,6 +242,32 @@ fn GradientRow(entry: gradients::GradientEntry, active: bool) -> Element {
                     gradients::remove(state, &remove_name);
                 },
                 {icon(icons::REMOVE)}
+            }
+        }
+    }
+}
+
+/// The trace mode's own bar, in the shared bottom column (MODAL_DESIGN.md).
+///
+/// The armed chip in the pop-out used to be the mode's only standing indicator
+/// — and it closes with the pop-out the moment the catcher takes the canvas.
+/// This names the mode where every other mode is named, and carries the one
+/// act a trace can offer: Cancel, which pops back to whatever the trace parked
+/// (`crate::modes::cancel`). There is no Done, because the release *is* the
+/// capture (§22.2) — a chip that committed nothing would wear commitment's
+/// tick.
+#[component]
+pub fn TraceBar() -> Element {
+    let state = use_context::<AppState>();
+    rsx! {
+        if (state.gradients.armed)() {
+            div { class: chrome_class(state, "selection-bar trace-bar mode-bar"),
+                span { class: "bar-label",
+                    {icon(icons::GRADIENT)}
+                    {label("Trace")}
+                }
+                span { class: "bar-sep" }
+                CommandButton { command: Command::CancelMode }
             }
         }
     }

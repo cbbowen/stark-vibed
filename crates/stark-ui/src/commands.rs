@@ -199,6 +199,18 @@ pub enum Command {
     /// Add a perspective guide where the artist is looking and pick it up
     /// (§20.5): adding *is* asking to shape it.
     AddPerspective,
+    /// Put down what is up — one rung per press (MODAL_DESIGN.md): the open
+    /// dialog, else the composing mode (committing nothing, `crate::modes`),
+    /// else Timeline. Esc's home, and the ✕ chip every mode bar wears.
+    ///
+    /// Deliberately **not** a rung: the selection. A selection is committed,
+    /// undoable document state, not a preview — Ctrl+D already names that act,
+    /// and an Esc that could destroy standing work is how a hand learns to
+    /// fear the key.
+    CancelMode,
+    /// Commit the composing mode and leave — the mode bar's own "Done" under
+    /// the one name a chord can carry (Enter, `crate::modes::finish`).
+    FinishMode,
 }
 
 /// The chord table Stark ships with. **A command's first row is the one the
@@ -237,6 +249,16 @@ fn defaults() -> Vec<(Chord, Command)> {
         (ch(false, false, 'h'), Command::MirrorView),
         (code("BracketLeft"), Command::BrushSmaller),
         (code("BracketRight"), Command::BrushLarger),
+        // Escape cannot be *re*captured (`capture` spends it on calling a
+        // capture off), so unlike every other row this one is one-way for a
+        // user who rebinds it: the chord can be moved off Escape, never back
+        // on. The right trade — an escape key a capture could take would be an
+        // escape key that could not end one.
+        (code("Escape"), Command::CancelMode),
+        // Claimed only while a mode is composing ([`Command::claims`]): bare
+        // Enter is the keyboard's activation of whatever control has focus,
+        // and a row that ate every Enter would press no button again.
+        (code("Enter"), Command::FinishMode),
     ]
 }
 
@@ -522,6 +544,8 @@ pub const ALL: &[Command] = &[
     Command::MirrorView,
     Command::BrushSmaller,
     Command::BrushLarger,
+    Command::CancelMode,
+    Command::FinishMode,
 ];
 
 /// The search palette's resting offer, shown before a first keystroke: the
@@ -576,13 +600,21 @@ pub fn search(query: &str) -> Vec<Command> {
 /// reason for anything to re-render.
 pub fn find(state: AppState, e: &platform::KeyEvent) -> Option<Command> {
     let m = e.modifiers();
-    state.bindings.peek().lookup(
-        accel(m),
-        m.contains(Modifiers::SHIFT),
-        m.contains(Modifiers::ALT),
-        &e.key(),
-        &e.code(),
-    )
+    state
+        .bindings
+        .peek()
+        .lookup(
+            accel(m),
+            m.contains(Modifiers::SHIFT),
+            m.contains(Modifiers::ALT),
+            &e.key(),
+            &e.code(),
+        )
+        // A row that matches may still decline the *keystroke* — today only
+        // FinishMode's bare Enter ([`Command::claims`]). Filtered here rather
+        // than in `run`, because the caller `prevent_default`s whatever this
+        // answers, and a claim is the one thing a declined Enter must not make.
+        .filter(|command| command.claims(state))
 }
 
 impl Command {
@@ -618,6 +650,8 @@ impl Command {
             Command::AddLayer => "Add layer",
             Command::AddFrame => "Add frame",
             Command::AddPerspective => "Add perspective grid",
+            Command::CancelMode => "Cancel mode",
+            Command::FinishMode => "Finish mode",
             // Named after the panel with "panel" said out loud, because a
             // search result stands alone: a row reading just "Color" would
             // claim the subject rather than the box that holds its controls.
@@ -647,6 +681,10 @@ impl Command {
             Command::AddLayer => "Layer",
             Command::AddFrame => "Frame",
             Command::AddPerspective => "Perspective",
+            // On a mode bar the mode is already named by the label; the chip
+            // says the act alone, as its Done neighbour always has.
+            Command::CancelMode => "Cancel",
+            Command::FinishMode => "Done",
             // The Panels menu is a picture of the stack, so its rows wear the
             // panels' own title-bar labels.
             Command::TogglePanel(id) => id.title(),
@@ -688,6 +726,8 @@ impl Command {
             // edge without deleting what lies past it.
             Command::AddFrame => &["Crop", "Canvas size"],
             Command::AddPerspective => &["Drawing guide", "Vanishing point"],
+            Command::CancelMode => &["Escape", "Abandon", "Leave mode", "Close dialog"],
+            Command::FinishMode => &["Done", "Apply", "Commit"],
             _ => &[],
         }
     }
@@ -725,6 +765,10 @@ impl Command {
             Command::AddLayer => icons::ADD_LAYER,
             Command::AddFrame => icons::ADD_FRAME,
             Command::AddPerspective => icons::ADD_LAYER,
+            // The dismissal mark every panel header wears, and the tick every
+            // Done chip does — the two acts these commands are the names of.
+            Command::CancelMode => icons::CLOSE,
+            Command::FinishMode => icons::DONE,
             // The mark its own title bar wears, so the menu and the palette
             // both stay a picture of the stack.
             Command::TogglePanel(id) => id.glyph(),
@@ -753,6 +797,13 @@ impl Command {
                  paint past it and re-crop whenever you like"
             }
             Command::AddPerspective => "Add a perspective grid where you are looking",
+            Command::CancelMode => {
+                "Put down what's in progress, keeping nothing \u{2014} close the \
+                 dialog, or cancel the composing mode, or leave Timeline"
+            }
+            Command::FinishMode => {
+                "Commit what the composing mode has made \u{2014} its bar's own Done"
+            }
             _ => self.name(),
         }
     }
@@ -796,7 +847,9 @@ impl Command {
             Command::ToggleNavigator => Some(*state.navigator.read()),
             Command::ToggleQuickBrushes => Some(*state.slots.pinned.read()),
             Command::TogglePanel(id) => Some(!state.panels.hidden.read().contains(&id)),
-            Command::Share => Some(*state.collab.phase.read() == crate::collab::CollabPhase::Shared),
+            Command::Share => {
+                Some(*state.collab.phase.read() == crate::collab::CollabPhase::Shared)
+            }
             _ => None,
         }
     }
@@ -920,6 +973,35 @@ impl Command {
             // edit of the document, and entering the shaping mode already puts
             // down whatever was composing (`modes::leave`).
             Command::AddPerspective => crate::panels::guides::add_perspective(state),
+            Command::CancelMode => escape(state),
+            // Gated on the dialogs where CancelMode ladders through them:
+            // Enter under a dialog belongs to the dialog's form, and a commit
+            // it could not see landing beneath it would be the worse surprise.
+            Command::FinishMode => {
+                if !dialog_open(state) {
+                    crate::modes::finish(state);
+                }
+            }
+        }
+    }
+
+    /// Whether this command claims its keystroke right now — asked by [`find`]
+    /// **before** the caller's `prevent_default`, where [`run`](Self::run)'s
+    /// own gates decide only what happens after the claim.
+    ///
+    /// `true` for almost everything: a declined act still claims its chord,
+    /// because the browser's default would answer it with something worse (see
+    /// `input`'s keydown handler). The exception is bare **Enter**, which is
+    /// the keyboard's activation of whatever control has focus — a Done that
+    /// claimed it unconditionally would eat every focused button and dialog
+    /// form in the app, so FinishMode claims it only while there is a mode for
+    /// it to finish and no dialog over that mode. Esc has no such double life:
+    /// outside text entry (already carved out before the table is consulted),
+    /// the browser does nothing with it worth keeping.
+    fn claims(self, state: AppState) -> bool {
+        match self {
+            Command::FinishMode => crate::modes::is_composing(state) && !dialog_open(state),
+            _ => true,
         }
     }
 }
@@ -967,12 +1049,59 @@ fn step_radius(state: AppState, factor: f32) {
 ///   menu's Deselect kept doing it after the keyboard was fixed, which is what
 ///   putting the gate on the act rather than the call site is for.
 /// - **A mode is composing.** Its preview is computed against the committed
-///   document (`crate::modes`), and the bar that carries these very commands has
-///   stood down for the mode's own — deselecting mid-transform would move the
-///   wrong region on "Done" (`crate::panels::select::SelectionBar`). The chrome
-///   says what the screen says.
+///   document (`crate::modes`), and the bar that carries these very commands
+///   stands recessed and inert behind the mode's own — deselecting
+///   mid-transform would move the wrong region on "Done"
+///   (`crate::panels::select::SelectionBar`). The chrome says what the screen
+///   says — and this gate is also what lets a recessed bar keep its chips
+///   mounted: a click that somehow reached one would be refused here.
 fn may_edit(state: AppState) -> bool {
     !crate::panels::timeline::is_playing(state) && !crate::modes::is_composing(state)
+}
+
+/// Esc's ladder (MODAL_DESIGN.md), one rung per press: the open dialog, else
+/// the composing mode, else Timeline. Ordered outermost-in — a dialog stands
+/// over a mode, a mode over the timeline's bar — so each press peels the layer
+/// the eye reads as topmost, and never two at once.
+///
+/// The dialogs are closed *here*, not declined in deference to their own Esc
+/// handlers, because outside a text field they have none: every element-level
+/// Escape in the app lives on an input (the palette's field, the rename and
+/// name drafts), where the window's keydown binding is already withheld
+/// (`platform::KeyEvent::on_text_entry`). One actor per keystroke, so the
+/// dioxus-vs-window handler ordering that a second actor would hang on never
+/// gets asked.
+fn escape(state: AppState) {
+    if close_dialogs(state) {
+        return;
+    }
+    if crate::modes::is_composing(state) {
+        crate::modes::cancel(state);
+        return;
+    }
+    if *state.timeline.open.peek() {
+        crate::panels::timeline::set_open(state, false);
+    }
+}
+
+/// Whether any root-mounted dialog is up — Esc's first rung, and the fact that
+/// stands FinishMode down ([`Command::claims`]).
+fn dialog_open(state: AppState) -> bool {
+    state.root_dialogs().iter().any(|flag| *flag.peek())
+}
+
+/// Lower whichever root dialogs are up; `true` if any was. Lowering the flag
+/// *is* the dialog's own close — every `on_close` in `main` does nothing else
+/// (`AppState::root_dialogs`).
+fn close_dialogs(state: AppState) -> bool {
+    let mut any = false;
+    for mut flag in state.root_dialogs() {
+        if *flag.peek() {
+            flag.set(false);
+            any = true;
+        }
+    }
+    any
 }
 
 /// Undo or redo, having first put down whatever was in hand.
@@ -989,6 +1118,17 @@ fn edit_history(state: AppState, command: DocCommand) {
     crate::panels::timeline::stop(state);
     crate::modes::leave(state);
     dispatch(state, command);
+}
+
+/// `hint` with `command`'s advertised chord appended, the way
+/// [`Command::tooltip`] spells its own — for a control whose words are its
+/// mode's (a bar's Done says what *this* Done lays) but whose key is the
+/// registry's (Enter, via [`Command::FinishMode`]).
+pub fn advertised(hint: &str, command: Command, bindings: &Bindings) -> String {
+    match command.shortcut(bindings) {
+        Some(chord) => format!("{hint} ({chord})"),
+        None => hint.to_string(),
+    }
 }
 
 /// A chord spelled out for the chrome. Private: the chrome asks
@@ -1064,6 +1204,26 @@ mod tests {
         // Ctrl+Shift+Y is nobody's: an unclaimed chord falls through to the
         // browser rather than being Ctrl+Y plus a bystander.
         assert_eq!(stock().lookup(true, true, false, &ch("Y"), "KeyY"), None);
+    }
+
+    #[test]
+    fn escape_and_enter_are_rows() {
+        // The two bare-key rows (MODAL_DESIGN.md). Spatial (`code`), so a
+        // layout that types something exotic on them changes nothing.
+        assert_eq!(
+            stock().lookup(false, false, false, &Key::Escape, "Escape"),
+            Some(Command::CancelMode)
+        );
+        assert_eq!(
+            stock().lookup(false, false, false, &Key::Enter, "Enter"),
+            Some(Command::FinishMode)
+        );
+        // With a modifier held they are nobody's: Ctrl+Enter is not Enter plus
+        // a bystander, exactly as every chord row reads its modifiers.
+        assert_eq!(
+            stock().lookup(true, false, false, &Key::Enter, "Enter"),
+            None
+        );
     }
 
     #[test]

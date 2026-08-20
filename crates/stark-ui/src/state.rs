@@ -338,6 +338,31 @@ pub struct Dialogs {
     pub credits: Signal<bool>,
 }
 
+impl AppState {
+    /// Every root-mounted dialog's flag, the two long-standing brush fields
+    /// included — what Esc's first rung asks and lowers (`crate::commands`,
+    /// MODAL_DESIGN.md). Lowering a flag here *is* the dialog's own close:
+    /// each `on_close` in `main` does nothing else.
+    ///
+    /// Kept beside [`Dialogs`] so a new modal's flag joins this list in the
+    /// same edit that adds its field — the one list in the app that has to
+    /// know every dialog, stated once. The GPU-failure modal is deliberately
+    /// absent: it has no flag because it may not be dismissed (§5).
+    pub fn root_dialogs(self) -> [Signal<bool>; 8] {
+        let d = self.dialogs;
+        [
+            d.new_document,
+            d.session,
+            d.export,
+            d.settings,
+            d.timing,
+            d.credits,
+            self.brush_editor_open,
+            self.preset_save_open,
+        ]
+    }
+}
+
 /// The quick-brush rack's signals (§18.1.8), grouped because they are one
 /// feature's worth of state and because the second is meaningless without the
 /// first: a hold names a slot in the rack.

@@ -26,7 +26,7 @@ pub use color::ColorPanel;
 pub use filter::FilterBar;
 pub use frame::{FrameBar, FrameOverlay};
 pub use gradient_bar::{GradientBar, GradientBarOverlay};
-pub use gradients::GradientTraceOverlay;
+pub use gradients::{GradientTraceOverlay, TraceBar};
 pub use guides::{GuideEditOverlay, GuidesPanel, PerspectiveGuideBar};
 pub use layer::LayerPanel;
 pub use lighting::LightingPanel;

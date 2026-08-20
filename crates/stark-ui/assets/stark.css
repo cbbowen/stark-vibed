@@ -3399,6 +3399,11 @@ button.layer-remove:hover {
      two-finger gesture (§18.1.7), so the browser must not scroll or zoom the
      page out from under one. */
   touch-action: none;
+  /* The first hover says the pointer composes, it does not paint — the
+     gradient catcher's crosshair, in this mode's own verb (MODAL_DESIGN.md).
+     `move` is the widget's commonest reading (inside translates); the widget
+     refines what its rim and corners mean. */
+  cursor: move;
 }
 
 /* Space is held: the catcher is a pan surface until it lifts. */
@@ -3414,6 +3419,9 @@ button.layer-remove:hover {
   inset: 0;
   z-index: 9;
   touch-action: none;
+  /* The transform catcher's answer to the same question: the pointer moves
+     the construction (orbits the camera, drags the lens), it does not paint. */
+  cursor: move;
 }
 
 .guide-catcher.pan {
@@ -3782,6 +3790,48 @@ button.layer-remove:hover {
 
 .bottom-bars > * {
   pointer-events: auto;
+  /* Opacity keeps `.chrome`'s own fade-in timing (this rule is later, so it
+     wins the tie — the fade-out is `.chrome.dimmed`'s, which out-specifies
+     both); transform and filter animate the recess below. */
+  transition: opacity 140ms ease-out, transform 180ms ease, filter 180ms ease;
+}
+
+/* A composing mode's bar wears a register of its own (MODAL_DESIGN.md): the
+   armed accent (`.gradient-trace.active`'s blue) ringing the surface and
+   tinting the label's ink. A status bar describes a fact the canvas still
+   answers to; a mode bar fronts a catcher that has taken the pointer away from
+   painting, and that difference is the one thing this column must say at a
+   glance. */
+.mode-bar {
+  box-shadow: var(--panel-shadow), 0 0 0 1px #3a6ea5;
+  animation: mode-bar-rise 160ms ease-out;
+}
+
+.mode-bar .bar-label {
+  color: #9cc3e8;
+}
+
+/* Entering reads as a card laid over the column; the recess below is the other
+   half of the picture. An animation rather than a transition, because the bar
+   mounts fresh — there is no prior state to transition from. */
+@keyframes mode-bar-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/* A standing bar a mode has stood down: recessed behind the mode's bar rather
+   than unmounted, so the place Done and Esc return to stays on screen.
+   `filter: opacity()` rather than the `opacity` property, which the chrome
+   fade owns (`.chrome.dimmed`). Inert twice over: pointer-events here, and
+   every chip a recessed bar carries runs an act gated by `commands::may_edit`,
+   which refuses while a mode is composing — so keyboard focus reaching one
+   presses a button that declines. */
+.bottom-bars > .recessed {
+  transform: translateY(6px) scale(0.955);
+  filter: opacity(0.5) saturate(0.6);
+  pointer-events: none;
 }
 
 /* The frame bar: the composition controls, mounted only while a frame is selected

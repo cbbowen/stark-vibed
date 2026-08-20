@@ -36,6 +36,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use super::frame::{content_rect, view_rect};
+use crate::commands::{self, Command};
 use crate::gesture::{
     MeshRegion, PerspectiveUi, QuadRegion, TransformRegion, TransformState, TransformUi, WARP_GRID,
     WarpUi,
@@ -45,6 +46,7 @@ use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
 use crate::preview;
 use crate::state::AppState;
+use crate::widgets::CommandButton;
 use stark_engine::ViewTransform;
 use stark_model::document::TransformMap;
 use stark_model::geom::Vec2;
@@ -239,9 +241,29 @@ fn switch_family(state: AppState, ui: TransformUi, to: Family) {
     mode.set(Some(next));
 }
 
-/// The transform bar: the family selector, the affine's two flips, and "Done".
-/// Mounted only while the gesture is in flight, in the same bottom column as
-/// the selection and frame bars.
+/// Commit the gesture and leave the mode — the bar's "Done", and Enter's
+/// (`crate::modes::finish`). An identity transform just drops the preview
+/// rather than spending an undo step on a no-op.
+pub fn finish(state: AppState) {
+    let Some(ui) = *state.transform.peek() else {
+        return;
+    };
+    if ui.is_identity() {
+        preview::TRANSFORM.clear(state);
+    } else {
+        // The commit clears the preview itself, so there is no intermediate
+        // frame showing the untransformed document.
+        preview::TRANSFORM.commit(state, (ui.layer(), ui.map()));
+    }
+    let mut mode = state.transform;
+    mode.set(None);
+}
+
+/// The transform bar: the family selector, the affine's two flips, Cancel and
+/// "Done". Mounted only while the gesture is in flight, in the same bottom
+/// column as the selection and frame bars — wearing the composing register
+/// (`mode-bar`) those two do not, because this bar fronts a catcher that has
+/// taken the pointer away from painting (MODAL_DESIGN.md).
 #[component]
 pub fn TransformBar() -> Element {
     let state = use_context::<AppState>();
@@ -252,7 +274,7 @@ pub fn TransformBar() -> Element {
     let chip = |on: bool| if on { "chip active" } else { "chip" };
 
     rsx! {
-        div { class: chrome_class(state, "transform-bar"),
+        div { class: chrome_class(state, "transform-bar mode-bar"),
             // The same mark the selection bar's Transform chip wears — this bar stands
             // in for that one for the gesture's duration, so it carries the glyph of
             // the button that raised it.
@@ -315,22 +337,18 @@ pub fn TransformBar() -> Element {
                 }
             }
             span { class: "bar-sep" }
+            // The way out that keeps nothing — the act `modes::leave` performs
+            // for every other entry point, finally offered as itself. Worn
+            // whole off the registry, Esc advertisement included.
+            CommandButton { command: Command::CancelMode }
             button {
                 class: "chip",
-                title: "Apply the transform (one undo step)",
-                onclick: move |_| {
-                    if ui.is_identity() {
-                        // Nothing changed: just drop the preview rather than
-                        // spending an undo step on a no-op.
-                        preview::TRANSFORM.clear(state);
-                    } else {
-                        // The commit clears the preview itself, so there is no
-                        // intermediate frame showing the untransformed document.
-                        preview::TRANSFORM.commit(state, (ui.layer(), ui.map()));
-                    }
-                    let mut mode = state.transform;
-                    mode.set(None);
-                },
+                title: commands::advertised(
+                    "Apply the transform \u{2014} one undo step",
+                    Command::FinishMode,
+                    &state.bindings.read(),
+                ),
+                onclick: move |_| finish(state),
                 {icon(icons::DONE)}
                 {label("Done")}
             }

@@ -38,7 +38,7 @@ use dioxus::html::Key;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::commands::Command;
+use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
@@ -137,8 +137,10 @@ pub fn begin_guide_edit(state: AppState, index: usize) {
     }));
 }
 
-/// Leave the edit mode.
-fn end_guide_edit(state: AppState) {
+/// Leave the edit mode — the bar's "Done", and Enter's (`crate::modes::finish`).
+/// A guide is view state previewed by being live (§20.5), so there is nothing
+/// here for a commit and a cancel to differ about.
+pub fn end_guide_edit(state: AppState) {
     let mut mode = state.guide_edit;
     mode.set(None);
 }
@@ -546,7 +548,12 @@ pub fn PerspectiveGuideBar() -> Element {
     let (opacity, pairs, lens) = (g.opacity, g.pairs, g.lens);
 
     rsx! {
-        div { class: chrome_class(state, "guide-bar"),
+        // `mode-bar`: the composing register (MODAL_DESIGN.md). No Cancel chip,
+        // alone among the mode bars, because it would be a lie here: a guide is
+        // shaped live (§20.5), so there is nothing uncommitted for a cancel to
+        // keep back — Esc and Done are one act, and the bar says so by offering
+        // it once.
+        div { class: chrome_class(state, "guide-bar mode-bar"),
             // The Guides panel's own mark, on the bar its rows raise — and the reason
             // the words here can be the guide's *name*: the glyph says what kind of
             // thing is being shaped, so the text is free to say which one.
@@ -699,7 +706,11 @@ pub fn PerspectiveGuideBar() -> Element {
             span { class: "bar-sep" }
             button {
                 class: "chip",
-                title: "Leave the guide as it stands",
+                title: commands::advertised(
+                    "Leave the guide as it stands",
+                    Command::FinishMode,
+                    &state.bindings.read(),
+                ),
                 onclick: move |_| end_guide_edit(state),
                 {icon(icons::DONE)}
                 {label("Done")}

@@ -68,17 +68,31 @@ one the chrome does not draw.
 
 ## Decisions
 
-Taken 2026-08-20:
+Taken 2026-08-20; refinements from the build are marked **(as built)**:
 
-1. **Esc leaves the composing mode**, committing nothing — `modes::leave`
-   under a key, plus a visible ✕ Cancel chip on every mode bar. Esc becomes
+1. **Esc leaves the composing mode**, committing nothing — `modes::cancel`
+   under a key, plus a visible ✕ Cancel chip on the mode bars. Esc becomes
    the app-wide "put it down" key.
+   - **(as built)** One exception, the trace: Esc pops back to the gradient
+     bar the trace parked (`gradient_resume`) rather than dropping the whole
+     composition. A stray click already ends the mode exactly that way — Esc
+     is the same "never mind", and it must not take more with it than the
+     click does. `modes::leave` (the entered-another-mode path) still drops
+     everything, unchanged.
 2. **Enter is Done** — commit and leave, exactly what the bar's Done chip
-   does.
+   does (`modes::finish`, dispatching to the same function each chip calls).
 3. **Esc exits Timeline mode too.** It is called a mode, it wears the root
-   class, and it should answer the same key. Order in the ladder: an open
-   dialog wins (handled by the dialog itself; the command declines), then a
-   composing mode, then Timeline.
+   class, and it should answer the same key. Ladder order: dialogs, then the
+   composing mode, then Timeline — one rung per press.
+   - **(as built)** The dialog rung **closes** the open dialog rather than
+     declining in deference to it. The plan's premise was wrong: outside text
+     fields, no dialog handles Esc at all — every element-level Escape in the
+     app lives on an input, where the window binding is already withheld
+     (`on_text_entry`). So the command is the only actor on the keystroke,
+     which also retires the dioxus-vs-window handler-ordering hazard the plan
+     worried about, and every dialog gains Esc-to-close for free. The flag
+     list lives in one place, `AppState::root_dialogs`, beside the `Dialogs`
+     struct it enumerates.
 4. **A second Esc does not deselect.** A selection is committed, undoable
    document state, not a preview; Ctrl+D already names that act, and Esc doing
    double duty is how apps teach people to fear the key. (Revisitable — this
@@ -95,35 +109,39 @@ Taken 2026-08-20:
 Two new `Command` variants in the registry (`crate::commands`), so the acts
 get names, tooltips, palette rows and rebindable chords like everything else:
 
-- **CancelMode** — default chord `Code("Escape")`. Runs the ladder: decline if
-  a root dialog is open; else `modes::leave`; else leave Timeline.
+- **CancelMode** — default chord `Code("Escape")`. Runs the ladder: close the
+  open dialog(s); else `modes::cancel`; else leave Timeline. **(as built)**
+  see decision 3 for why the dialog rung closes rather than declines.
 - **FinishMode** — default chord `Code("Enter")`. Needs a `modes::finish`
   sibling to `leave` that dispatches per `Composing` variant. The commit logic
   already exists as `gradient_bar::finish` and `guides::end_guide_edit`; the
   transform's Done is inline in its bar's onclick and gets extracted to a
-  `panels::transform::finish`. A trace has no commit — finish just leaves.
+  `panels::transform::finish`. A trace has no commit — finish is the disarm,
+  which hands back whatever the trace parked.
 
 Implementation cautions, all learned from the code:
 
 - **Dioxus `stop_propagation` never reaches the real DOM** (`input.rs`, the
-  window-key binding's doc comment): with the brush editor open and focus not
-  in a text field, the modal's element-level Esc *and* the window binding both
-  fire. Without the dialog gate, one press would close the dialog and silently
-  abandon the composition behind it. Text fields are already exempt — the
-  keydown side of the window binding is withheld on `on_text_entry`, so the
+  window-key binding's doc comment), so the command must be the keystroke's
+  only actor. It is: outside text fields no dialog handles Esc itself, and
+  text fields are exempt from the window binding on `on_text_entry` — the
   rename/draft fields and the palette keep their own Esc.
-- **The dialog gate should not be a list somebody keeps.** The root dialogs
-  are each a `Signal<bool>` on `AppState` today (brush editor, preset save,
-  new document, export, settings, share, timing stats, credits). A
-  `dialog_open` helper that enumerates them is the checkable minimum, but the
-  standing preference is to rule the class out structurally — one signal that
-  names the open dialog, which `main` already effectively switches over —
-  rather than an enumeration that a ninth dialog forgets to join.
+- **The dialog gate should not be a list somebody keeps** — or failing that,
+  a list kept in exactly one place. **(as built)** `AppState::root_dialogs`,
+  beside the `Dialogs` struct it enumerates, so a new modal's flag joins the
+  list in the same edit that adds its field. The GPU-failure modal is
+  deliberately absent: no flag, because it may not be dismissed (§5).
 - **The Enter row must match only while a mode is composing.** Chips are
   `<button>`s, and a matched chord calls `prevent_default` unconditionally
   (`input::handle_keydown`), which would otherwise eat Enter-activation of any
-  focused button the rest of the time. Esc has no such conflict worth
-  guarding.
+  focused button the rest of the time. **(as built)** `Command::claims`,
+  asked by `commands::find` before the caller's `prevent_default`: FinishMode
+  claims Enter only while a mode is composing and no dialog is over it. Esc
+  has no such double life and claims unconditionally.
+- **Escape cannot be recaptured** — the palette's chord capture spends it on
+  calling the capture off — so CancelMode's row is one-way for a user who
+  rebinds it: movable off Escape, never back on. Backspace's own bargain,
+  accepted for the same reason.
 
 ### 2. Make mode bars look like modes
 
@@ -131,15 +149,27 @@ Implementation cautions, all learned from the code:
   edge or glow — the armed-trace blue (`#3a6ea5`) is already the app's "mode
   armed" color — and slightly stronger presence. Status bars stay neutral.
   The bar then reads as "you are in a mode," not "some controls appeared."
+  **(as built)** `.mode-bar`: the accent ringing the surface, the label's ink
+  tinted, and a 160ms rise on mount — the entering card the recess below is
+  the other half of.
 - **A ✕ Cancel chip on every mode bar**, wearing the CancelMode command whole
   so its tooltip advertises Esc through the registry. This is the
   discoverability fix for pen users, who never see a hotkey.
+  **(as built)** Every mode bar but the guide's, where a Cancel would be a
+  lie: a guide is shaped live (§20.5), nothing is uncommitted, so Esc and Done
+  are one act and the bar offers it once. The Done chips advertise Enter
+  through the same registry (`commands::advertised`) while keeping their
+  per-mode tooltips.
 - **Mode-specific cursors on the catchers.** They already flip to `grab` for
-  space-pan; a crosshair for the gradient axis and a move cursor for the
-  transform make the first hover say "this pointer composes."
-- **Fold the trace in.** It gets a real bar (or at least the register and the
-  ✕), and its hint pill — a non-interactive "what to do" instruction riding
-  the mode — is the pattern the other modes should borrow, not the exception.
+  space-pan; the gradient catcher already wore `crosshair`, and the transform
+  and guide catchers now wear `move` — the first hover says "this pointer
+  composes."
+- **Fold the trace in.** **(as built)** The trace gets a real bar (`TraceBar`:
+  the mode's name and its Cancel — no Done, because the release *is* the
+  capture), and its hint-pill pattern is borrowed by the one other mode whose
+  gesture is invisible until made: the gradient fill's axis, hinted per kind
+  until the first drag composes one. The transform and guide modes stay
+  pill-less deliberately — their widgets are on screen from the first frame.
 
 ### 3. The recessed stack
 
@@ -152,9 +182,22 @@ scaled ~0.96, slid up behind the mode bar, `pointer-events: none` — with CSS
 transitions. Entering reads as a card laid over; Done/Esc reads as the card
 lifted off, and the return destination was visible the whole time.
 
-Implementation note: SelectionBar/FrameBar/FilterBar currently return empty
-rsx while composing, and a Dioxus unmount cannot be animated — recessing means
-keeping them rendered with a class instead, a small local change to each.
+Implementation note: SelectionBar/FrameBar currently return empty rsx while
+composing, and a Dioxus unmount cannot be animated — recessing means keeping
+them rendered with a class instead, a small local change to each.
+
+**(as built)** SelectionBar and FrameBar recess; the parked gradient bar
+renders recessed off `gradient_resume` (with the mode register taken off — a
+shelved gesture is not the thing the canvas answers to). FilterBar turned out
+never to have stood down at all — it mounts on its layer staying selected,
+which no mode changes — so it keeps that behavior untouched. Recessed bars are
+inert twice over: `pointer-events: none`, and every chip they carry runs an
+act gated by `commands::may_edit`, which refuses while a mode is composing —
+so even keyboard focus reaching one presses a button that declines. The
+recess uses `filter: opacity()` rather than the `opacity` property, which the
+chrome fade owns (`.chrome.dimmed`); the computed-style outcome (the
+transition tie-break included) was verified in headless Blink against the real
+stylesheet.
 
 ## Order and why
 

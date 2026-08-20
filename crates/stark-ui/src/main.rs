@@ -70,8 +70,8 @@ use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
 use panels::select::current_tool;
 use panels::{
     FilterBar, FrameBar, FrameOverlay, GradientBar, GradientBarOverlay, GradientTraceOverlay,
-    GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar, TimelineBar, TransformBar,
-    TransformOverlay,
+    GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar, TimelineBar, TraceBar,
+    TransformBar, TransformOverlay,
 };
 use platform::{canvas_by_id, capture_pointer};
 use render::CANVAS_ID;
@@ -438,6 +438,13 @@ fn app() -> Element {
             // Bottom-centre: the bars that are mounted only while the thing they act
             // on exists. Stacked in one column so a frame and a selection in force at
             // the same time sit above one another instead of on top of each other.
+            //
+            // Two registers share the column (MODAL_DESIGN.md): standing-state
+            // bars describe a fact and dissolve with it, while a composing
+            // mode's bar (`mode-bar`) fronts a catcher that has taken the
+            // pointer, wears the armed accent, and stands the others down —
+            // *recessed* rather than unmounted, so the place its Done and Esc
+            // return to stays on screen.
             div { class: "bottom-bars",
                 // The whole-selection commands, present only while there is a
                 // selection — so it doubles as the "canvas is masked" indicator.
@@ -446,8 +453,13 @@ fn app() -> Element {
                 // selection bar while one is composing (§16.6).
                 TransformBar {}
                 // The gradient fill's axis kinds and "Done", standing in the
-                // same way while a ramp is being composed (§22.4).
+                // same way while a ramp is being composed (§22.4) — and staying,
+                // recessed, while a trace has it parked (`state::gradient_resume`).
                 GradientBar {}
+                // The trace's name and its Cancel while one is armed (§22.2) —
+                // above this line the mode had no bar at all, only a lit chip
+                // inside a pop-out that closes the moment the mode starts.
+                TraceBar {}
                 // The drawing-guide edit mode's controls — locks, axis
                 // visibility, cell count, opacity — while a perspective grid is
                 // being composed (§20.5).
