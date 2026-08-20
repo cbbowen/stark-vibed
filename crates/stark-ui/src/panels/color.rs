@@ -220,7 +220,8 @@ fn wheel_xy(hue: f32, sat: f32) -> (f32, f32) {
 }
 
 /// Reusable Oklab color picker: a wheel of hue and chroma at one lightness, a
-/// vertical `L` slider beside it. Seeds its state from `init` (straight sRGB) when mounted and reports every pick through
+/// vertical `L` slider beside it, and a readout of what has been chosen. Seeds its
+/// state from `init` (straight sRGB) when mounted and reports every pick through
 /// `onchange` as straight sRGB. Signals are `Copy`, so they can be handed to several
 /// event closures and the free helpers below. Used by the Color panel (brush color),
 /// the frame bar's matte well and the Lighting panel's canvas-color pop-out.
@@ -270,6 +271,9 @@ pub fn OklabPicker(
     let mut sat = use_signal(|| is);
     let mut picking_wheel = use_signal(|| false);
     let mut picking_l = use_signal(|| false);
+    // What is in the hex field while it is being typed in. `None` — the resting
+    // state — is the field showing the color, live, including mid-drag.
+    let mut draft = use_signal(|| None::<String>);
 
     // `init` is a plain prop, so `use_reactive!` is what makes a change in it visible
     // to an effect at all. Both are dependencies, but only a moved `seed` reseeds:
@@ -298,6 +302,14 @@ pub fn OklabPicker(
     let (mx, my) = wheel_xy(hue(), sat());
     let (wx, wy) = (mx * 100.0, my * 100.0);
     let ly = (1.0 - l()) * 100.0; // L: 1→top, 0→bottom
+    let rgb = wheel_color(l(), hue(), sat());
+    let well = format!(
+        "background: rgb({:.2}% {:.2}% {:.2}%);",
+        rgb[0] * 100.0,
+        rgb[1] * 100.0,
+        rgb[2] * 100.0
+    );
+    let shown = draft().unwrap_or_else(|| hex_of(rgb));
 
     rsx! {
         div { class: "color-pick",
@@ -338,6 +350,34 @@ pub fn OklabPicker(
                 onpointerup: move |_| end_pick(oncommit, picking_l, l, hue, sat),
                 onpointercancel: move |_| end_pick(oncommit, picking_l, l, hue, sat),
                 div { class: "l-marker", style: "top:{ly}%;" }
+            }
+        }
+        // What was picked, said twice: as a patch big enough to judge, and as the
+        // number to type when judging is not the point. The patch is the honest
+        // answer to *what am I holding* — the marker sits on the color it names, and
+        // a 12px ring around a pixel is not a sample of anything.
+        div { class: "color-readout",
+            div { class: "color-well", style: "{well}" }
+            input {
+                class: "color-hex",
+                r#type: "text",
+                spellcheck: false,
+                autocomplete: "off",
+                title: "Type a color: #rgb or #rrggbb",
+                value: "{shown}",
+                oninput: move |e| draft.set(Some(e.value())),
+                // Blur commits (clicking away is an ordinary way to be finished);
+                // Enter commits directly, and Escape abandons by dropping the draft
+                // so the blur behind it has nothing left to send. Text that does not
+                // parse is abandoned the same way — the field goes back to showing
+                // the color the moment it stops being typed in, which says *no*
+                // without a second control to say it with.
+                onblur: move |_| commit_hex(onchange, oncommit, draft, l, hue, sat),
+                onkeydown: move |e| match e.key() {
+                    Key::Enter => commit_hex(onchange, oncommit, draft, l, hue, sat),
+                    Key::Escape => draft.set(None),
+                    _ => {}
+                },
             }
         }
     }
@@ -415,6 +455,64 @@ fn pick_l(
     };
     l.set((1.0 - fy).clamp(0.0, 1.0));
     apply_color(onchange, l, hue, sat);
+}
+
+/// Take what has been typed in the hex field as the whole color, previewing and
+/// committing it in one go — a typed color is not a drag, so there is no run of
+/// previews for a commit to close.
+///
+/// Clears the draft either way, so a field that cannot be parsed goes back to
+/// showing the color rather than sitting there wrong.
+fn commit_hex(
+    onchange: EventHandler<[f32; 3]>,
+    oncommit: Option<EventHandler<[f32; 3]>>,
+    mut draft: Signal<Option<String>>,
+    mut l: Signal<f32>,
+    mut hue: Signal<f32>,
+    mut sat: Signal<f32>,
+) {
+    // Taken out of the signal in its own statement: a `let … else` over a borrow of
+    // the signal would keep that borrow alive across the `else`, and the writes
+    // below would find it still held.
+    let typed = draft.write().take();
+    let Some(rgb) = typed.as_deref().and_then(parse_hex) else {
+        return;
+    };
+    let (nl, nh, ns) = on_wheel(rgb, hue());
+    l.set(nl);
+    hue.set(nh);
+    sat.set(ns);
+    apply_color(onchange, l, hue, sat);
+    if let Some(oncommit) = oncommit {
+        apply_color(oncommit, l, hue, sat);
+    }
+}
+
+/// A straight-sRGB color as `#rrggbb`, at the display's own precision.
+fn hex_of(rgb: [f32; 3]) -> String {
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", q(rgb[0]), q(rgb[1]), q(rgb[2]))
+}
+
+/// `#rgb`, `#rrggbb` or either without the hash, as straight sRGB. `None` for
+/// anything else — including a half-typed one, which is what the field holds most of
+/// the time it is being used.
+fn parse_hex(s: &str) -> Option<[f32; 3]> {
+    let s = s.trim();
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&s[i..i + 2], 16).ok();
+    // `0x7` is `0x77`: a short code names the byte whose halves match, so the two
+    // spellings of the same color agree rather than differing by a 17th.
+    let nibble = |i: usize| u8::from_str_radix(&s[i..i + 1], 16).ok().map(|v| v * 17);
+    let rgb = match s.len() {
+        3 => [nibble(0)?, nibble(1)?, nibble(2)?],
+        6 => [byte(0)?, byte(2)?, byte(4)?],
+        _ => return None,
+    };
+    Some(rgb.map(|v| v as f32 / 255.0))
 }
 
 // --- the pictures ----------------------------------------------------------------
@@ -559,7 +657,7 @@ mod tests {
     }
 
     /// A color goes onto the wheel and comes back the same color — within a
-    /// quantization step, which is all the display it is headed for can carry.
+    /// quantization step, which is all the readout that reports it can carry.
     #[test]
     fn a_color_survives_the_wheel() {
         for rgb in [
@@ -623,6 +721,24 @@ mod tests {
                 (table - exact).abs() < 1e-3,
                 "hue {hue}: table {table} vs exact {exact}"
             );
+        }
+    }
+
+    #[test]
+    fn hex_round_trips() {
+        for (text, rgb) in [
+            ("#000000", [0.0, 0.0, 0.0]),
+            ("#ffffff", [1.0, 1.0, 1.0]),
+            ("#ff0000", [1.0, 0.0, 0.0]),
+        ] {
+            assert_eq!(parse_hex(text), Some(rgb));
+            assert_eq!(hex_of(rgb), text);
+        }
+        // A short code is the byte whose halves match, and the hash is optional.
+        assert_eq!(parse_hex("#abc"), parse_hex("aabbcc"));
+        assert_eq!(parse_hex(" #ABC "), parse_hex("#abc"));
+        for bad in ["", "#", "#12", "#12345", "#gggggg", "12345678"] {
+            assert_eq!(parse_hex(bad), None, "{bad:?}");
         }
     }
 

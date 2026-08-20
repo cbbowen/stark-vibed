@@ -387,8 +387,8 @@ hr {
    padding: a picture reads best bled to the panel's own edges, and the padding was
    the one thing between them. The header carries the inset the panel gave up (its
    words still need a margin to sit in), restoring its bottom half only on a folded
-   panel, where the header's edge *is* the panel's. The picture's other half is
-   elsewhere:
+   panel, where the header's edge *is* the panel's; the readout under the wheel
+   carries the inset back for its own row. The picture's other half is elsewhere:
    the picker's geometry is fractional, so its panel size is one rule below
    (`.color-wheel`). */
 .panel[data-panel="Color"] {
@@ -758,6 +758,47 @@ hr {
 .l-marker::after {
   right: 0;
   border-right: 5px solid #fff;
+}
+
+/* What was picked, said twice — a patch big enough to judge a color by, and the
+   number to type when judging is not the point. A marker sitting on a color is
+   not a sample of it, which is the gap this row closes. */
+.color-readout {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.color-well {
+  flex: 1;
+  height: 26px;
+  border: 1px solid #ffffff2e;
+  border-radius: 6px;
+}
+
+/* The sunken well that says a line takes typing (`.palette-field`'s claim),
+   monospaced because every character of a hex code is a digit in a place. */
+.color-hex {
+  box-sizing: border-box;
+  flex: none;
+  width: 88px;
+  padding: 6px 0;
+  border: none;
+  border-radius: 6px;
+  background: #ffffff14;
+  color: #e8e8ea;
+  font: inherit;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  text-align: center;
+  outline: none;
+}
+
+/* The picker's own inset in the one panel that shed its padding: the wheel bleeds
+   to the panel's edges, the row underneath cannot. */
+.panel[data-panel="Color"] .color-readout {
+  padding: 0 14px 12px;
 }
 
 /* A color well showing the current value; clicking toggles the pop-out picker. */
