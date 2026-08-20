@@ -17,13 +17,13 @@
 //!
 //! The keyboard is one column of the registry. Each simple chord is a
 //! `(Chord, Command)` row in [`BINDINGS`], the dispatch path asks [`find`] once
-//! (`input`'s keydown handler), and the chrome prints its advertisements — the
-//! menu's shortcut column, a tooltip's parenthesis — from the same rows through
-//! [`label`]. One authority, so what the keyboard answers and what the menu
-//! claims cannot drift apart. It is also the shape rebinding needs: the day
-//! chords become user state, [`Command`] is the stable name a stored binding
-//! keys on, the chord is the half that turns into data, and `find` and `label`
-//! are already the only two readers.
+//! (`input`'s keydown handler), and the chrome prints its advertisements — a
+//! row's shortcut column, a tooltip's parenthesis — from the same rows through
+//! [`shortcut`](Command::shortcut). One authority, so what the keyboard answers
+//! and what a row claims cannot drift apart. It is also the shape rebinding
+//! needs: the day chords become user state, [`Command`] is the stable name a
+//! stored binding keys on, the chord is the half that turns into data, and
+//! `find` and `shortcut` are already the only two readers.
 //!
 //! What is deliberately *not* a chord row:
 //!
@@ -37,8 +37,8 @@
 //! And what is not a *variant*: anything parameterized. A control that acts on
 //! a particular row — this layer's eye, that guide's trash — names its target,
 //! and a registry of every (act, target) pair would be a second copy of the
-//! panels. The registry holds the acts a search bar could list or a chord could
-//! carry whole.
+//! panels. The registry holds the acts the search palette lists
+//! (`main::CommandSearch`, over [`ALL`]) and a chord can carry whole.
 //!
 //! The guard that precedes any binding at all — a keystroke in a text field is
 //! the field's (`platform::KeyEvent::on_text_entry`) — is `input`'s too: by the
@@ -243,6 +243,84 @@ pub const BINDINGS: &[(Chord, Command)] = &[
     ),
 ];
 
+/// Every command, in the order the search palette lists ties: the file family
+/// first (the resting offer, [`BASIC`]), then the acts on the document and the
+/// view, the openers, the toggles, and the keyboard-only steps last.
+///
+/// By hand, kept in step in review — nothing here can make the compiler demand
+/// a new variant be listed, and a variant left out is simply unfindable in the
+/// palette. `tests::names_are_unique` runs over this list, so at least a
+/// duplicate display name cannot hide in it.
+pub const ALL: &[Command] = &[
+    Command::NewDocument,
+    Command::OpenDocument,
+    Command::SaveDocument,
+    Command::ImportImage,
+    Command::ExportImage,
+    Command::Share,
+    Command::Undo,
+    Command::Redo,
+    Command::Deselect,
+    Command::InvertSelection,
+    Command::Transform,
+    Command::FillSelection,
+    Command::GradientFill,
+    Command::AddLayer,
+    Command::AddFrame,
+    Command::AddPerspective,
+    Command::EditBrush,
+    Command::SavePreset,
+    Command::ToggleTimeline,
+    Command::ToggleNavigator,
+    Command::ToggleQuickBrushes,
+    Command::TimingStats,
+    Command::Credits,
+    Command::Settings,
+    Command::MirrorView,
+    Command::BrushSmaller,
+    Command::BrushLarger,
+];
+
+/// The search palette's resting offer, shown before a first keystroke: the
+/// file family — the commands about the document as a thing in the world.
+/// They are the ones reached for rarely enough to have no muscle-memory home
+/// (a brush has a panel, undo has a chord; "Export image…" has only this), so
+/// they are the ones worth showing to a hand that arrived without a word in
+/// mind.
+pub const BASIC: &[Command] = &[
+    Command::NewDocument,
+    Command::OpenDocument,
+    Command::SaveDocument,
+    Command::ImportImage,
+    Command::ExportImage,
+    Command::Share,
+];
+
+/// The commands `query` asks for, in the order the palette shows them: names
+/// the query begins, then names it merely appears in — both caseless — and
+/// [`BASIC`] for no query at all, so an opened palette is never an empty box.
+/// Matching is on the display name alone: it is the one string every command
+/// must have, and the string the palette prints, so what matched is always
+/// visible in the row that answered.
+pub fn search(query: &str) -> Vec<Command> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return BASIC.to_vec();
+    }
+    let mut starts = Vec::new();
+    let mut contains = Vec::new();
+    for &command in ALL {
+        let name = command.name().to_lowercase();
+        if name.starts_with(&q) {
+            starts.push(command);
+        } else if name.contains(&q) {
+            contains.push(command);
+        }
+    }
+    starts.extend(contains);
+    starts
+}
+
 /// The command `e` asks for, if any — the one reader on the dispatch path.
 pub fn find(e: &platform::KeyEvent) -> Option<Command> {
     let m = e.modifiers();
@@ -391,11 +469,48 @@ impl Command {
     }
 
     /// The `title` a control rendering this command carries: the hint, plus the
-    /// advertised chord for the commands the keyboard can reach.
+    /// advertised shortcut for the commands the keyboard can reach.
     pub fn tooltip(self) -> String {
-        match label(self) {
+        match self.shortcut() {
             Some(chord) => format!("{} ({chord})", self.hint()),
             None => self.hint().to_string(),
+        }
+    }
+
+    /// The shortcut the chrome prints beside this command's name — its first
+    /// chord row in [`BINDINGS`], or `None` for the many commands the keyboard
+    /// cannot reach yet. (When rebinding arrives, `None` is simply what an
+    /// unbound command stays.)
+    ///
+    /// One command's advertisement is written by hand instead: Import's Ctrl+V
+    /// is a paste, not a binding of ours — the browser delivers the clipboard
+    /// *with* the event (`crate::images`) — so there is no row for it, and yet
+    /// the shortcut is true and worth saying wherever the command is shown.
+    pub fn shortcut(self) -> Option<String> {
+        match self {
+            Command::ImportImage => Some("Ctrl+V".to_string()),
+            _ => label(self),
+        }
+    }
+
+    /// The tick a row carries for a command that toggles or enters something
+    /// the user can be *in* — Timeline mode, the navigator, the pinned rack, a
+    /// live share — and `None` for every act without a second state. On the
+    /// registry rather than at any one menu, because the search palette lists
+    /// these rows too, and a toggle that admitted its state in only one of its
+    /// homes would read as two different commands.
+    pub fn checked(self, state: AppState) -> Option<bool> {
+        match self {
+            Command::ToggleTimeline => Some(*state.timeline.open.read()),
+            Command::ToggleNavigator => Some(*state.navigator.read()),
+            Command::ToggleQuickBrushes => Some(*state.slots.pinned.read()),
+            // Not a toggle, but the same claim on the row: the tick says the
+            // session is already live, which is what the ● beside "Share" said
+            // when this was a hand-written menu entry.
+            Command::Share => {
+                Some(*state.collab.phase.read() == crate::collab::CollabPhase::Shared)
+            }
+            _ => None,
         }
     }
 
@@ -581,13 +696,13 @@ fn edit_history(state: AppState, command: DocCommand) {
     dispatch(state, command);
 }
 
-/// The chord the chrome should print for `command` — its first row in
-/// [`BINDINGS`], or `None` for the many commands the keyboard cannot reach yet.
-/// (When rebinding arrives, `None` is simply what an unbound command stays.)
+/// `command`'s first chord row in [`BINDINGS`], spelled out. Private: the
+/// chrome asks [`Command::shortcut`], which is this plus the one advertisement
+/// that has no row.
 /// "Ctrl" names the accelerator on every platform for now, as the menu always
 /// has — a ⌘ on the one platform that draws it is a presentation question, not
 /// a binding one.
-pub fn label(command: Command) -> Option<String> {
+fn label(command: Command) -> Option<String> {
     let (chord, _) = BINDINGS.iter().find(|&&(_, c)| c == command)?;
     let mut s = String::new();
     if chord.ctrl {
@@ -676,17 +791,73 @@ mod tests {
     #[test]
     fn advertised_chords() {
         // A command's first row is what the chrome prints; these strings are
-        // the menu's shortcut column.
-        assert_eq!(label(Command::Undo).as_deref(), Some("Ctrl+Z"));
-        assert_eq!(label(Command::Redo).as_deref(), Some("Ctrl+Y"));
-        assert_eq!(label(Command::Deselect).as_deref(), Some("Ctrl+D"));
+        // the rows' shortcut column.
+        assert_eq!(Command::Undo.shortcut().as_deref(), Some("Ctrl+Z"));
+        assert_eq!(Command::Redo.shortcut().as_deref(), Some("Ctrl+Y"));
+        assert_eq!(Command::Deselect.shortcut().as_deref(), Some("Ctrl+D"));
         assert_eq!(
-            label(Command::InvertSelection).as_deref(),
+            Command::InvertSelection.shortcut().as_deref(),
             Some("Ctrl+Shift+I")
         );
-        assert_eq!(label(Command::BrushLarger).as_deref(), Some("]"));
+        assert_eq!(Command::BrushLarger.shortcut().as_deref(), Some("]"));
+        // The one advertisement with no chord row: a paste is the browser's
+        // binding, not ours, and the registry still says so.
+        assert_eq!(Command::ImportImage.shortcut().as_deref(), Some("Ctrl+V"));
         // And an unbound command advertises nothing rather than panicking in
         // the chrome — the shortcut column simply is not rendered.
-        assert_eq!(label(Command::SaveDocument), None);
+        assert_eq!(Command::SaveDocument.shortcut(), None);
+    }
+
+    #[test]
+    fn names_are_unique() {
+        // The palette prints nothing but the name, so two commands sharing one
+        // would be indistinguishable rows. Runs over ALL, which also makes a
+        // copy-pasted duplicate *entry* fail, not only a duplicate name.
+        for (i, a) in ALL.iter().enumerate() {
+            for b in &ALL[i + 1..] {
+                assert_ne!(a, b, "one command listed twice in ALL");
+                assert_ne!(
+                    a.name(),
+                    b.name(),
+                    "{a:?} and {b:?} share a display name, so the palette \
+                     could not tell their rows apart"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_bound_command_is_findable() {
+        // The chord table names acts; every one of them must also be a row the
+        // palette can list, or a chord would reach a command search cannot.
+        for &(_, command) in BINDINGS {
+            assert!(
+                ALL.contains(&command),
+                "{command:?} has a chord but is missing from ALL"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_query_offers_the_file_family() {
+        assert_eq!(search(""), BASIC.to_vec());
+        assert_eq!(search("   "), BASIC.to_vec());
+        for command in BASIC {
+            assert!(ALL.contains(command), "{command:?} in BASIC but not ALL");
+        }
+    }
+
+    #[test]
+    fn search_is_caseless_and_ranks_prefixes_first() {
+        assert_eq!(search("UNDO"), vec![Command::Undo]);
+        // "in" begins "Invert selection" and merely appears in "Timing stats…",
+        // so the prefix match leads whatever ALL's order says.
+        let hits = search("in");
+        assert_eq!(hits.first(), Some(&Command::InvertSelection));
+        assert!(hits.contains(&Command::TimingStats));
+        // A word from the middle of a name still finds it.
+        assert!(search("selection").contains(&Command::FillSelection));
+        // And a miss is an empty list, not an error and not BASIC.
+        assert!(search("qqq").is_empty());
     }
 }

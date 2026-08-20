@@ -79,7 +79,7 @@ fn flush_live(&mut self) {
 A `tracing_subscriber` layer stamps the clock at span creation and records
 `close − creation` into an HDR histogram per name; `timing::snapshot()` reads them
 out as counts, means, quantiles and totals. Two consumers render whatever the
-histograms hold — the **Timing Stats** dialog off the ☰ menu, and
+histograms hold — the **Timing Stats** dialog off the command search, and
 `examples/stroke_bench`'s phase table — so **adding a `span!` anywhere makes a row
 appear in both** with no list to keep in step.
 
@@ -540,17 +540,30 @@ which the engine draws into directly. DOM chrome surrounds it.
   declares every simple act — one the chrome can ask for whole, with no argument
   at the call site — as a variant of `Command` carrying its entire description:
   display name, terse chip word, mark, tooltip, availability
-  (`Command::enabled`, what a menu row greys on), the gate its act must ask
+  (`Command::enabled`, what a row greys on), the mode tick (`Command::checked`),
+  the advertised shortcut (`Command::shortcut`), the gate its act must ask
   (`Command::run`), and the chord that reaches it from the keyboard
   (`BINDINGS`). The chrome *renders* a command rather than restating it — a bar
   chip or panel-header button is `widgets::CommandButton`, a menu row is the
-  rail's `CmdItem`, and both print the shortcut column and tooltip suffixes from
-  `commands::label` — so what the menu claims, what a chip does and what the
+  rail's `CmdItem` — so what a menu claims, what a chip does and what the
   keyboard answers cannot drift. They had: the menu's Undo skipped the
   keyboard's stop-playback resolution, and its Deselect skipped the gate below
   outright. What is deliberately *not* a variant is anything parameterized —
   this layer's eye, that guide's trash name their target, and a registry of
   every (act, target) pair would be a second copy of the panels.
+- **The rail's first entry is the registry, searchable.** `main::CommandSearch`
+  is a field over `commands::search`: at rest it offers the file family
+  (`commands::BASIC` — the acts with no muscle-memory home anywhere else), and a
+  query narrows it to name matches over `commands::ALL`, prefix matches first.
+  Arrows move the highlight, Enter runs it, a row acts on `pointerdown`, and
+  every row is drawn from the registry like the menus' own. It replaced the
+  catch-all ☰ menu — Undo now advertises its Ctrl+Z in the row a query turns
+  up. Deliberately *not* a third `MenubarMenu`: the vendored trigger
+  light-dismisses its menu when DOM focus leaves it for anything but a menu
+  item, and this surface exists to hand focus to a text field — so it is the
+  filter picker's own-dropdown arrangement, plus one question that pattern
+  never had to ask: `platform::focus_stays_within`, so focus hopping from
+  trigger to field on open does not read as dismissal.
 - **A chord names its key the way the binding means it.** A chord names the
   accelerator tier (Ctrl or Command, `input::accel`), the Shift bit, and a key
   that is either the *character* it types — a mnemonic follows the layout,
@@ -567,8 +580,8 @@ which the engine draws into directly. DOM chrome surrounds it.
   digit (§18.1.8), space's pan, Alt's eyedropper stay in `input`, which owns
   keyup — and Ctrl+V, which is not a command but data arriving (§23). Rebinding,
   when it comes, is the chord column becoming user state: the `Command` variants
-  are the stable names a stored binding will key on, and `find`/`label` are
-  already the only readers.
+  are the stable names a stored binding will key on, and `find` and
+  `Command::shortcut` are already the only readers.
 - **A composing mode is a state, not a stacking order.** Four gestures take the
   canvas away from the brush for the length of a composition: the transform
   widget (§16.6), the perspective-guide edit (§20.5), the gradient trace (§22.2)
@@ -831,8 +844,8 @@ which the engine draws into directly. DOM chrome surrounds it.
 - **Timing Stats is a dialog, not a panel** (`timings.rs`, §7.1). The same
   argument as settings run from the other end: a live frame-rate readout beside the
   canvas is a thing to watch *instead of* painting, and the histograms behind it
-  keep accruing whether or not anyone is looking — so it belongs in the ☰ menu with
-  the other things read when a question comes up. It renders whatever rows the
+  keep accruing whether or not anyone is looking — so it belongs behind the command
+  search with the other things read when a question comes up. It renders whatever rows the
   engine's histograms hold rather than a list of phases, which is what keeps it from
   becoming a second copy of the instrumentation; it polls twice a second while open
   and stops when it closes (a `use_future` in its own scope — the opposite of what

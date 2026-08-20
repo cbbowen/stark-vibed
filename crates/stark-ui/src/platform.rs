@@ -762,6 +762,47 @@ pub fn select_all(e: &Event<MountedData>) {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn select_all(_e: &Event<MountedData>) {}
 
+/// Focus the element `e` was mounted on — how the command search's field takes
+/// the keyboard the moment its palette opens (`main::CommandSearch`). The DOM
+/// node directly, for [`select_all`]'s reason.
+#[cfg(target_arch = "wasm32")]
+pub fn focus(e: &Event<MountedData>) {
+    use dioxus::web::WebEventExt;
+    use wasm_bindgen::JsCast;
+    if let Some(el) = e
+        .try_as_web_event()
+        .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+    {
+        let _ = el.focus();
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn focus(_e: &Event<MountedData>) {}
+
+/// Whether the focus a `focusout` moved is still inside the element `root` was
+/// mounted on — the question a dropdown holding a text field must ask before
+/// reading the event as dismissal. `focusout` bubbles from *any* child losing
+/// focus, including the trigger losing it to the field the open just mounted,
+/// and a dropdown that closed on that would dismiss itself in the act of
+/// opening. Focus gone to nothing at all (the window, a click on the canvas)
+/// arrives with no related target and reads as having left, which it has.
+#[cfg(target_arch = "wasm32")]
+pub fn focus_stays_within(root: Option<&Event<MountedData>>, e: &Event<FocusData>) -> bool {
+    use dioxus::web::WebEventExt;
+    use wasm_bindgen::JsCast;
+    let Some(root) = root.and_then(|r| r.try_as_web_event()) else {
+        return false;
+    };
+    e.try_as_web_event()
+        .and_then(|ev| ev.related_target())
+        .and_then(|t| t.dyn_into::<web_sys::Node>().ok())
+        .is_some_and(|n| root.contains(Some(&n)))
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn focus_stays_within(_root: Option<&Event<MountedData>>, _e: &Event<FocusData>) -> bool {
+    false
+}
+
 /// The `<canvas>` element a mount event fired on, for binding a WebGPU surface to it
 /// — the navigator's miniature (`panels::navigator`).
 ///

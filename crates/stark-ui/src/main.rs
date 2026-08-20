@@ -51,7 +51,7 @@ mod tutor;
 mod widgets;
 
 use dioxus::dioxus_core::spawn_forever;
-use dioxus::html::Modifiers;
+use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
 use brush_editor::BrushEditorModal;
@@ -977,10 +977,11 @@ fn TowStringOverlay() -> Element {
     }
 }
 
-/// A vertical menu rail on the far left for uncommon or keyboard-driven commands
-/// (§11). Built on the vendored `menubar` component; the dropdown flies
-/// out to the right. Undo/Redo live here purely to advertise their Ctrl+Z / Ctrl+Y
-/// shortcuts (the everyday way to invoke them); "New document…" opens a modal.
+/// A vertical rail on the far left (§11): the command search, the Panels menu,
+/// and the ⚙. The menu is the `menubar` component and its dropdown flies out to
+/// the right; the search is [`CommandSearch`], our own dropdown in the same
+/// spot, which is the way to every simple command by name — Undo advertises its
+/// Ctrl+Z there now, in the row a query for it turns up.
 ///
 /// The rail ends in a ⚙ that opens [`SettingsModal`] directly rather than dropping
 /// a menu: settings are a *destination*, not a list of commands to pick one from,
@@ -999,81 +1000,16 @@ fn CommandRail() -> Element {
     let mut show_settings = state.dialogs.settings;
     let mut show_timing = state.dialogs.timing;
     let mut show_credits = state.dialogs.credits;
-    let live = (state.collab.phase)() == collab::CollabPhase::Shared;
     let hidden = (layout.hidden)();
-    let timeline_open = (state.timeline.open)();
-    let rack_pinned = (state.slots.pinned)();
-    let nav_open = (state.navigator)();
 
     rsx! {
         div { class: chrome_class(state, "command-rail"),
             Menubar {
+                // The way to every simple command by name, in the slot the
+                // catch-all ☰ menu held — the menu became a palette the day the
+                // registry could list itself (`commands::ALL`).
+                CommandSearch {}
                 MenubarMenu { index: 0usize,
-                    // The catch-all menu for infrequent commands.
-                    MenubarTrigger { {icon_large(icons::MENU)} }
-                    MenubarContent {
-                        CmdItem { index: 2usize, command: Command::NewDocument }
-                        CmdItem { index: 3usize, command: Command::OpenDocument }
-                        CmdItem { index: 4usize, command: Command::SaveDocument }
-                        // Directly above Export, and named as its pair: one picture
-                        // coming *in* and one going out, neither of which is the
-                        // painting itself (`crate::files`, `crate::images`).
-                        MenubarItem {
-                            index: 5usize,
-                            value: "import-image".to_string(),
-                            on_select: move |_| Command::ImportImage.run(state),
-                            span { class: "menu-item",
-                                {icon(Command::ImportImage.icon())}
-                                {Command::ImportImage.name()}
-                            }
-                            // The one shortcut written by hand rather than read
-                            // off the chord table — which is why this row is not a
-                            // `CmdItem`: a paste is not a binding of ours at all,
-                            // the browser delivers the clipboard with its own
-                            // event (`images::bind_paste`), so there is no row
-                            // for this label to print.
-                            span { class: "menu-shortcut", "Ctrl+V" }
-                        }
-                        CmdItem { index: 6usize, command: Command::ExportImage }
-                        // Hand-written for the label alone: a live session marks
-                        // the entry ● where the command's own name says …, and
-                        // being in one is state the registry does not carry.
-                        MenubarItem {
-                            index: 7usize,
-                            value: "share".to_string(),
-                            on_select: move |_| Command::Share.run(state),
-                            span { class: "menu-item",
-                                {icon(Command::Share.icon())}
-                                if live { "Share \u{25CF}" } else { {Command::Share.name()} }
-                            }
-                        }
-                        CmdItem { index: 0usize, command: Command::Undo }
-                        CmdItem { index: 1usize, command: Command::Redo }
-                        // The selection pair also stands on the selection bar; one
-                        // command reached two ways has to look like one command,
-                        // which rendering both homes from the registry guarantees.
-                        CmdItem { index: 8usize, command: Command::Deselect }
-                        CmdItem { index: 9usize, command: Command::InvertSelection }
-                        // A mode rather than a dialog, so it carries a check like
-                        // the Panels menu's entries do — the menu says whether you
-                        // are in it, not only how to get there
-                        // (§18.2.4).
-                        CmdItem {
-                            index: 10usize,
-                            command: Command::ToggleTimeline,
-                            checked: timeline_open,
-                        }
-                        // The last two, and last for a reason: neither is a thing to
-                        // *do* to the drawing. Timing Stats above Credits because it
-                        // is the one somebody might open twice — and it is a dialog
-                        // rather than a panel because a live frame-rate readout beside
-                        // the canvas is a thing to watch instead of painting
-                        // (§7.1, `crate::timings`).
-                        CmdItem { index: 11usize, command: Command::TimingStats }
-                        CmdItem { index: 12usize, command: Command::Credits }
-                    }
-                }
-                MenubarMenu { index: 1usize,
                     // Toggle which floating panels are shown. Each entry wears the
                     // panel's own mark, which is the same one its title bar wears —
                     // so the menu is a picture of the stack rather than a list of
@@ -1106,11 +1042,7 @@ fn CommandRail() -> Element {
                         // The navigator first: it is a standing readout, where the
                         // rack below is a picture of what the keyboard is holding
                         // (§11, §18.1.8).
-                        CmdItem {
-                            index: PanelId::ALL.len(),
-                            command: Command::ToggleNavigator,
-                            checked: nav_open,
-                        }
+                        CmdItem { index: PanelId::ALL.len(), command: Command::ToggleNavigator }
                         // The quick-brush rack, and while a number is held it appears
                         // whatever this entry says. What the entry buys is a rack that
                         // is *clickable*: the mouse-only way to a slot, which a hand
@@ -1118,7 +1050,6 @@ fn CommandRail() -> Element {
                         CmdItem {
                             index: PanelId::ALL.len() + 1,
                             command: Command::ToggleQuickBrushes,
-                            checked: rack_pinned,
                         }
                     }
                 }
@@ -1160,17 +1091,13 @@ fn CommandRail() -> Element {
 }
 
 /// One row of the rail's menus, rendered from the command it runs
-/// (`crate::commands`): the word, the mark, the shortcut column and the greyed
-/// state are all the registry's, so what the menu shows and what a click does
-/// cannot drift — and a chord a command gains is advertised here without the
-/// row changing.
-///
-/// What stays a prop is the menu's own business: `index` is the menubar's
-/// roving-focus order, and `checked` is the tick a mode's entry carries
-/// (§18.2.4) — a fact about being *in* something, which the registry of acts
-/// does not hold.
+/// (`crate::commands`): the word, the mark, the shortcut column, the greyed
+/// state and the mode tick (§18.2.4) are all the registry's, so what the menu
+/// shows and what a click does cannot drift — and a chord a command gains is
+/// advertised here without the row changing. The one prop left is the menu's
+/// own business: `index` is the menubar's roving-focus order.
 #[component]
-fn CmdItem(index: usize, command: Command, #[props(default)] checked: Option<bool>) -> Element {
+fn CmdItem(index: usize, command: Command) -> Element {
     let state = use_context::<AppState>();
     // One memo per row, and rows are components, so each re-renders when its
     // own answer changes rather than on every commit (`state::use_obs`'s
@@ -1183,16 +1110,161 @@ fn CmdItem(index: usize, command: Command, #[props(default)] checked: Option<boo
             disabled: !enabled(),
             on_select: move |_| command.run(state),
             span { class: "menu-item", {icon(command.icon())} {command.name()} }
-            if let Some(chord) = commands::label(command) {
+            if let Some(chord) = command.shortcut() {
                 span { class: "menu-shortcut", {chord} }
             }
-            if let Some(on) = checked {
+            if let Some(on) = command.checked(state) {
                 span { class: "menu-check",
                     if on { {icon(icons::CHECK)} }
                 }
             }
         }
     }
+}
+
+/// The command search (§11): the rail's first entry, and the way to every
+/// simple command by name. It opens like the menu beside it and stands in the
+/// same spot, but the keyboard goes to a **field**, resting on the file family
+/// (`commands::BASIC`) and narrowing to `commands::search` as the query grows.
+/// Arrows move the highlight, Enter runs it, Escape puts the palette away; a
+/// row is the same row the menus draw, printed from the same registry.
+///
+/// Our own dropdown rather than a third `MenubarMenu`, and not for styling: the
+/// primitive's trigger light-dismisses its menu the moment DOM focus leaves it
+/// for anything but a menu item, and the whole point of this surface is that
+/// focus lives in a text field the primitive has never heard of. So it is
+/// `panels::filter::AddFilterButton`'s arrangement instead — rows act on
+/// `pointerdown`, dismissal is `onfocusout` — with one addition that pattern
+/// never needed: focus moving *within* the palette (the trigger handing the
+/// field the keyboard on open) must not read as leaving, so the handler asks
+/// the event where focus went (`platform::focus_stays_within`).
+#[component]
+fn CommandSearch() -> Element {
+    let state = use_context::<AppState>();
+    let mut open = use_signal(|| false);
+    let mut query = use_signal(String::new);
+    // The highlighted row, moved by the arrows and spent by Enter. An index
+    // into `shown`, reset with the query it indexes into.
+    let mut sel = use_signal(|| 0usize);
+    // The palette's own DOM node, held for exactly one question: did that
+    // focusout land inside me.
+    let mut root: Signal<Option<Event<MountedData>>> = use_signal(|| None);
+    let shown = use_memo(move || commands::search(&query.read()));
+
+    rsx! {
+        div {
+            class: "command-search",
+            onmounted: move |e| root.set(Some(e)),
+            onfocusout: move |e| {
+                if !platform::focus_stays_within(root.read().as_ref(), &e) {
+                    open.set(false);
+                }
+            },
+            button {
+                class: "rail-button",
+                // `role` for the ⚙'s reason: the rail is a menubar, and this
+                // keeps it one rather than a menubar with a stray button in it.
+                role: "menuitem",
+                r#type: "button",
+                title: "Search commands",
+                onclick: move |_| {
+                    let show = !open();
+                    // A fresh open is a fresh question: the resting offer, not
+                    // whatever was typed before the last dismissal.
+                    if show {
+                        query.set(String::new());
+                        sel.set(0);
+                    }
+                    open.set(show);
+                },
+                {icon_large(icons::SEARCH)}
+            }
+            if open() {
+                div { class: "command-palette",
+                    input {
+                        class: "palette-field",
+                        r#type: "text",
+                        placeholder: "Search commands",
+                        value: "{query}",
+                        // The field takes the keyboard the moment it exists —
+                        // the palette is *for* typing, and `input`'s window
+                        // shortcuts already stand aside for a text field
+                        // (`platform::KeyEvent::on_text_entry`).
+                        onmounted: move |e| platform::focus(&e),
+                        oninput: move |e| {
+                            query.set(e.value());
+                            sel.set(0);
+                        },
+                        onkeydown: move |e| {
+                            let count = shown.read().len();
+                            match e.key() {
+                                Key::Escape => open.set(false),
+                                Key::Enter => {
+                                    let pick = shown.read().get(sel()).copied();
+                                    if let Some(command) = pick {
+                                        run_from_palette(state, open, command);
+                                    }
+                                }
+                                // The arrows move the highlight, not the caret:
+                                // the field is one line, so the caret has no
+                                // vertical to spend them on.
+                                Key::ArrowDown => {
+                                    if count > 0 {
+                                        sel.set((sel() + 1).min(count - 1));
+                                    }
+                                    e.prevent_default();
+                                }
+                                Key::ArrowUp => {
+                                    sel.set(sel().saturating_sub(1));
+                                    e.prevent_default();
+                                }
+                                _ => {}
+                            }
+                        },
+                    }
+                    for (i, command) in shown.read().iter().copied().enumerate() {
+                        button {
+                            key: "{command:?}",
+                            class: if i == sel() { "palette-row selected" } else { "palette-row" },
+                            // A native `disabled` rather than a data attribute:
+                            // it swallows the pointerdown too, so a greyed row
+                            // cannot run and cannot steal the field's focus.
+                            disabled: !command.enabled(state.obs.read().as_ref()),
+                            // `pointerdown`, not `click`, for the filter
+                            // picker's reason: it beats the blur that would
+                            // fold the palette away under the pointer.
+                            onpointerdown: move |_| run_from_palette(state, open, command),
+                            span { class: "menu-item", {icon(command.icon())} {command.name()} }
+                            if let Some(chord) = command.shortcut() {
+                                span { class: "menu-shortcut", {chord} }
+                            }
+                            if let Some(on) = command.checked(state) {
+                                span { class: "menu-check",
+                                    if on { {icon(icons::CHECK)} }
+                                }
+                            }
+                        }
+                    }
+                    if shown.read().is_empty() {
+                        div { class: "palette-empty", "Nothing matches" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Run a palette row, palette closed first — a command may mount a dialog, and
+/// the palette has no business outliving the choice. Refused whole while the
+/// projection greys the row ([`Command::enabled`]): the pointer path cannot
+/// reach a disabled row (the button swallows it), so this guard is for Enter,
+/// which answers to the highlight rather than to a button.
+fn run_from_palette(state: AppState, mut open: Signal<bool>, command: Command) {
+    if !command.enabled(state.obs.peek().as_ref()) {
+        return;
+    }
+    open.set(false);
+    command.run(state);
 }
 
 /// Modal for starting a fresh document. Today it carries the color-space choice

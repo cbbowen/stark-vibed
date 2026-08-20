@@ -1,7 +1,7 @@
 //! The Credits dialog: other people's work that Stark ships, and the terms it comes
 //! under.
 //!
-//! Off the ☰ menu rather than a panel or the command rail, on the rail's own rule
+//! Off the command search rather than a panel or the command rail, on the rail's own rule
 //! (main.rs): that menu is where infrequent commands live, and this is the least
 //! frequent of them — read once, if ever.
 //!
@@ -27,7 +27,7 @@ const IROH_SOCKET_LICENSE: &str = include_str!("../assets/licenses/LICENSE-iroh-
 
 const IROH_LICENSE: &str = include_str!("../assets/licenses/LICENSE-iroh");
 
-/// The credits dialog, opened from the ☰ menu and dismissed by Done or by clicking
+/// The credits dialog, opened from the command search and dismissed by Done or by clicking
 /// the backdrop (as the other dialogs are).
 #[component]
 pub fn CreditsModal(on_close: EventHandler<()>) -> Element {

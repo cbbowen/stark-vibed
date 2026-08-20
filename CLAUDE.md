@@ -124,7 +124,7 @@ cargo run --release -p stark-engine --example stroke_bench
 ```
 
 Both perf tools print a **phase table** per configuration (§7.1), and the same rows
-are live in the app behind ☰ → Timing stats. Which question each answers:
+are live in the app behind the command search → Timing stats. Which question each answers:
 `--bench stroke` is the regression **gate** — totals, confidence intervals, a saved
 baseline — with the split under each line; `--example stroke_bench` is the quick
 look, seconds not minutes, and the only one that accounts for the GPU drain

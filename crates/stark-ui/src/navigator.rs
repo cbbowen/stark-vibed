@@ -376,12 +376,13 @@ pub fn NavigatorOverlay() -> Element {
             div {
                 class: "nav-frame",
                 // The mirror chord is printed from its own binding
-                // (`commands::label`), so this sentence cannot outlive a rebind.
+                // (`Command::shortcut`), so this sentence cannot outlive a rebind.
                 title: format!(
                     "Click to go there, or drag to move the view around the piece. \
                      Right-drag to turn the canvas: the direction you drag becomes up. \
                      {} mirrors it.",
-                    crate::commands::label(crate::commands::Command::MirrorView)
+                    crate::commands::Command::MirrorView
+                        .shortcut()
                         .expect("MirrorView has a chord row"),
                 ),
                 // Deliberately *not* `canvas_active`: the chrome fade exists to hand

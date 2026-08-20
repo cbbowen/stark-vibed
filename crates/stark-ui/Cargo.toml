@@ -64,6 +64,10 @@ web-sys = { version = "0.3", features = [
     # event's target whether it is a field being typed into (input::bind_shortcuts).
     "KeyboardEvent",
     "HtmlElement",
+    # Where a focusout sent the focus (platform::focus_stays_within): the command
+    # search's palette holds a text field, so "a child blurred" is not yet "the
+    # pointer went elsewhere" — only the event's relatedTarget can tell the two apart.
+    "FocusEvent",
     # The presence clock (collab.rs). Monotonic, unlike `Date.now()`, which is what
     # peer timeouts and heartbeats need.
     "Performance",

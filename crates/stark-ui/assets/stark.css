@@ -2243,6 +2243,94 @@ button.layer-remove:hover {
   font-size: 12px;
 }
 
+/* --- command search (`main::CommandSearch`) ---
+   The rail's own dropdown, so its box restates the menubar css_module's
+   `.dx-menubar-menu` / `.dx-menubar-content` — that stylesheet is scoped to the
+   vendored component and cannot be shared; the two must be changed together
+   (`.rail-button`'s bargain). */
+.command-search {
+  position: relative;
+}
+
+.command-palette {
+  position: absolute;
+  z-index: 1000;
+  top: 0;
+  left: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 250px;
+  padding: 6px;
+  margin-left: 10px;
+  border-radius: 10px;
+  background: var(--panel-background);
+  box-shadow: var(--panel-shadow), inset 0 0 0 1px #ffffff14;
+  backdrop-filter: blur(8px);
+}
+
+/* The field wears the row's own box so the palette reads as one column; the
+   sunken well is what says this line takes typing (`.layer-rename`'s claim). */
+.palette-field {
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  background: #ffffff14;
+  color: #e8e8ea;
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.palette-field::placeholder {
+  color: #ffffff8c;
+}
+
+/* A palette row is a menu item by another parent: same box, same highlight, so
+   a command found by searching looks like the same command picked from a menu
+   (`.dx-menubar-item` restated, the bargain above). `.selected` is the
+   keyboard's highlight and shares the hover's paint — the arrows and the
+   pointer are two hands on one list. */
+.palette-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: #e8e8ea;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.palette-row:disabled {
+  color: #6a6a72;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.palette-row:hover:not(:disabled),
+.palette-row.selected:not(:disabled) {
+  background: #3a6ea5;
+  color: #fff;
+}
+
+/* A query nothing answers keeps the box from ending at the field's lip — the
+   quiet the roster panels use for an empty list (`.guide-empty`). */
+.palette-empty {
+  padding: 8px 12px;
+  color: #ffffff8c;
+  font-size: 13px;
+}
+
 /* --- new-document modal --- */
 .modal-backdrop {
   position: absolute;

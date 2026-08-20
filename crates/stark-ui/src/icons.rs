@@ -165,10 +165,15 @@ icons! {
     // rather than a glyph per site, because closing is one control wherever it is
     // drawn — the same argument [`REMOVE`] is one mark across two rosters.
     CLOSE => "x-bold",
-    // The command rail's two triggers and its one button. A rail is read as a column
-    // of destinations rather than of verbs, so these say *where* rather than what:
-    // a list of commands, a grid of panels, the preferences.
-    MENU => "list-bold",
+    // The command rail's entries. A rail is read as a column of destinations
+    // rather than of verbs, so these say *where* rather than what: the command
+    // registry, a grid of panels, the preferences.
+    //
+    // `SEARCH` is a magnifier over a list — the palette it opens is the list of
+    // commands with a field for finding one, and the list rows are the ☰ this
+    // entry used to be. Deliberately *not* the bare magnifier, which is the
+    // navigator's ([`NAVIGATOR`]): a glyph that means two things means neither.
+    SEARCH => "list-magnifying-glass-bold",
     PANELS => "dots-nine-bold",
     SETTINGS => "gear-bold",
     // The history, in both directions. Deliberately *not* the elbow arrows above —
@@ -241,14 +246,14 @@ icons! {
     // would invite someone to "unify" the two the next time either wants to change.
     // The same argument [`RESET`] and [`UNDO`] are two names for one arrow.
     DONE => "check-bold",
-    // The Timing Stats dialog (§7.1), the commands menu's other entry that does
+    // The Timing Stats dialog (§7.1), the command search's other row that does
     // nothing to the drawing. A speedometer rather than a chart or a stopwatch: what
     // the dialog reports is a *rate the app is achieving* — frames a second, pointer
     // samples a second — and a dial with a needle already means exactly that. A chart
     // would promise a history over time, which the histograms do not keep, and a
     // stopwatch would promise something the reader started.
     TIMING => "speedometer-bold",
-    // Last in the commands menu, and the only entry there that is not a thing to do
+    // Last in the registry, and the one act in it that is not a thing to do
     // to the drawing — so it gets the one glyph in the set that is not about one.
     CREDITS => "heart-bold",
     // "Next" on a guided-tour card that has another behind it (§24.5). The Layers

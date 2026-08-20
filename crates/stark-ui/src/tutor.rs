@@ -336,9 +336,9 @@ pub enum Anchor {
     /// other half of that column, and the other thing the Panels menu shows
     /// and hides that is not a panel.
     Navigator,
-    /// The command rail in the top-left corner (§11) — the ☰ and Panels menus and
-    /// the ⚙. Always on screen, so nothing has to reveal it and nothing can close
-    /// it.
+    /// The command rail in the top-left corner (§11) — the command search, the
+    /// Panels menu and the ⚙. Always on screen, so nothing has to reveal it and
+    /// nothing can close it.
     CommandRail,
     /// A part of the brush editor's dialog ([`BrushPart`]).
     ///

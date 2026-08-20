@@ -869,7 +869,7 @@ were absent". The hard part is built and only "undo the last thing" is exposed.
 
 Exposed as a **scrubber the artist can drag while working**, it is a real
 critique tool — seeing your own process is how you find the moment a piece went
-wrong — rather than a novelty output. Shipped as **Timeline mode** (☰ → Timeline;
+wrong — rather than a novelty output. Shipped as **Timeline mode** (command search → Timeline;
 `stark-ui/src/panels/timeline.rs`): a bar carrying a transport, a per-action
 scrubber and a speed control, over `Timeline::seek`.
 
