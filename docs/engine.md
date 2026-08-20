@@ -556,7 +556,12 @@ which the engine draws into directly. DOM chrome surrounds it.
 - **The rail's first entry is the registry, searchable.** `main::CommandSearch`
   is a field over `commands::search`: at rest it offers the file family
   (`commands::BASIC` — the acts with no muscle-memory home anywhere else), and a
-  query narrows it to name matches over `commands::ALL`, prefix matches first.
+  query narrows it over `commands::ALL`, prefix matches first and display names
+  before aliases. An alias (`Command::aliases`) is what other software calls
+  the same act — "Flip" for Mirror view, "Preferences" for Settings, "Crop" for
+  Add frame — searched but never printed: the alias does the finding and the
+  name does the teaching, so a hand trained elsewhere both reaches the act and
+  learns our word for it.
   Arrows move the highlight, Enter runs it, a row acts on `pointerdown`, and
   every row is drawn from the registry like the menus' own. It replaced the
   catch-all ☰ menu — Undo now advertises its Ctrl+Z in the row a query turns

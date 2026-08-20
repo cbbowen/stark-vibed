@@ -522,29 +522,36 @@ pub const BASIC: &[Command] = &[
     Command::Share,
 ];
 
-/// The commands `query` asks for, in the order the palette shows them: names
-/// the query begins, then names it merely appears in — both caseless — and
+/// The commands `query` asks for, in the order the palette shows them: what
+/// the query begins before what it merely appears in — both caseless — and
 /// [`BASIC`] for no query at all, so an opened palette is never an empty box.
-/// Matching is on the display name alone: it is the one string every command
-/// must have, and the string the palette prints, so what matched is always
-/// visible in the row that answered.
+/// Within each tier the display name answers before an alias
+/// ([`aliases`](Command::aliases)) does: the name is the match the row can
+/// show, the alias the one it deliberately cannot.
 pub fn search(query: &str) -> Vec<Command> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return BASIC.to_vec();
     }
-    let mut starts = Vec::new();
-    let mut contains = Vec::new();
+    // Four tiers: name-prefix, alias-prefix, name-substring, alias-substring.
+    let mut tiers: [Vec<Command>; 4] = Default::default();
     for &command in ALL {
         let name = command.name().to_lowercase();
-        if name.starts_with(&q) {
-            starts.push(command);
+        let aliases: Vec<String> = command.aliases().iter().map(|a| a.to_lowercase()).collect();
+        let tier = if name.starts_with(&q) {
+            0
+        } else if aliases.iter().any(|a| a.starts_with(&q)) {
+            1
         } else if name.contains(&q) {
-            contains.push(command);
-        }
+            2
+        } else if aliases.iter().any(|a| a.contains(&q)) {
+            3
+        } else {
+            continue;
+        };
+        tiers[tier].push(command);
     }
-    starts.extend(contains);
-    starts
+    tiers.concat()
 }
 
 /// The command `e` asks for, if any — the one reader on the dispatch path,
@@ -610,6 +617,44 @@ impl Command {
             Command::AddFrame => "Frame",
             Command::AddPerspective => "Perspective",
             _ => self.name(),
+        }
+    }
+
+    /// The command's other names: what different software calls the same act,
+    /// searched by [`search`] but never printed. A hand that arrives typing
+    /// "flip" finds a row named "Mirror view" — the alias does the finding,
+    /// the name does the teaching — so this list can borrow another tool's
+    /// vocabulary freely without two rows ever reading alike
+    /// (`tests::no_alias_shadows_a_name` holds it to that).
+    pub fn aliases(self) -> &'static [&'static str] {
+        match self {
+            // Ctrl+A lands on Deselect because covering everything *is*
+            // selecting nothing (§6.8) — both of that key's names belong here.
+            Command::Deselect => &["Select all", "Select none"],
+            Command::InvertSelection => &["Select inverse"],
+            Command::MirrorView => &["Flip horizontal"],
+            Command::BrushSmaller => &["Decrease brush size"],
+            Command::BrushLarger => &["Increase brush size"],
+            Command::NewDocument => &["New canvas", "New file"],
+            // A paste is one of the import's own doors (§23).
+            Command::ImportImage => &["Place image", "Paste"],
+            Command::ExportImage => &["Save as"],
+            Command::Share => &["Collaborate"],
+            // The timeline is the undo history made scrubbable (§18.2.4), and
+            // its replay is what other tools sell as a timelapse.
+            Command::ToggleTimeline => &["History", "Timelapse"],
+            Command::ToggleNavigator => &["Minimap"],
+            Command::Settings => &["Preferences", "Options"],
+            Command::Credits => &["About"],
+            Command::EditBrush => &["Brush settings", "Brush studio"],
+            Command::Transform => &["Free transform"],
+            Command::FillSelection => &["Paint bucket"],
+            Command::AddLayer => &["New layer"],
+            // The frame is where cropping went (§15.7): it marks the piece's
+            // edge without deleting what lies past it.
+            Command::AddFrame => &["Crop", "Canvas size"],
+            Command::AddPerspective => &["Drawing guide", "Vanishing point"],
+            _ => &[],
         }
     }
 
@@ -1289,5 +1334,44 @@ mod tests {
         assert!(search("selection").contains(&Command::FillSelection));
         // And a miss is an empty list, not an error and not BASIC.
         assert!(search("qqq").is_empty());
+    }
+
+    #[test]
+    fn search_speaks_other_softwares_words() {
+        // Another tool's vocabulary finds our act by its alias…
+        assert_eq!(search("flip"), vec![Command::MirrorView]);
+        assert_eq!(search("increase brush size"), vec![Command::BrushLarger]);
+        assert_eq!(search("decrease"), vec![Command::BrushSmaller]);
+        assert_eq!(search("select all"), vec![Command::Deselect]);
+        assert_eq!(search("preferences"), vec![Command::Settings]);
+        assert_eq!(search("crop"), vec![Command::AddFrame]);
+        // …and a name match still leads an alias match: "save" begins two
+        // display names and then Export's "Save as", in that order.
+        assert_eq!(
+            search("save"),
+            vec![
+                Command::SaveDocument,
+                Command::SavePreset,
+                Command::ExportImage
+            ]
+        );
+    }
+
+    #[test]
+    fn no_alias_shadows_a_name() {
+        // An alias equal to some command's display name would have a query
+        // answered by two rows, only one of them wearing the matched word.
+        // The borrowed names must stay borrowed — if a later command claims
+        // one as its display name, the alias yields.
+        for a in ALL {
+            for alias in a.aliases() {
+                for b in ALL {
+                    assert!(
+                        !alias.eq_ignore_ascii_case(b.name()),
+                        "{a:?}'s alias {alias:?} is {b:?}'s display name"
+                    );
+                }
+            }
+        }
     }
 }
