@@ -550,9 +550,13 @@ which the engine draws into directly. DOM chrome surrounds it.
   rail's `CmdItem` — so what a menu claims, what a chip does and what the
   keyboard answers cannot drift. They had: the menu's Undo skipped the
   keyboard's stop-playback resolution, and its Deselect skipped the gate below
-  outright. What is deliberately *not* a variant is anything parameterized —
-  this layer's eye, that guide's trash name their target, and a registry of
-  every (act, target) pair would be a second copy of the panels.
+  outright. What is deliberately *not* a variant is anything aimed at the
+  document's own rows — this layer's eye, that guide's trash name a target only
+  the document knows, and a registry of every (act, target) pair would be a
+  second copy of the panels. A payload from the chrome's own closed set is
+  different: `Command::TogglePanel(PanelId)` makes each panel's toggle one
+  nameable act — the Panels menu draws its rows from it, a search for "panel"
+  lists the whole stack, and any of the six can be given a chord.
 - **The rail's first entry is the registry, searchable.** `main::CommandSearch`
   is a field over `commands::search`: at rest it offers the file family
   (`commands::BASIC` — the acts with no muscle-memory home anywhere else), and a

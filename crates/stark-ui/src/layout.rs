@@ -142,8 +142,10 @@ const MIN_PANEL_HEIGHT: f32 = 140.0;
 
 /// Shared `Copy` layout state for the floating panels: their display order, which are
 /// hidden, and the two in-flight gestures. Closed panels stay in `order` (so reopening
-/// restores their slot); the stack renders `order` minus `hidden`. Provided via context
-/// to the panel chrome and the menu.
+/// restores their slot); the stack renders `order` minus `hidden`. A field of
+/// [`AppState`] (`state.panels`) rather than a context of its own, because the panel
+/// toggles are registry commands now (`commands::Command::TogglePanel`) and a command
+/// reaches everything it acts on through that one handle.
 ///
 /// No panel geometry is kept here — a drag reads it off the DOM at the moment it starts
 /// ([`platform::panel_boxes`]), so there is no cached measurement to fall out of date.
@@ -712,8 +714,8 @@ pub fn toggle_panel(state: AppState, layout: PanelLayout, id: PanelId) {
 /// box over the painting may and may not take belongs.
 #[component]
 pub fn PanelStack() -> Element {
-    let layout = use_context::<PanelLayout>();
     let state = use_context::<AppState>();
+    let layout = state.panels;
     // Re-measure whenever the column's *shape* could have changed. Effects run after
     // the DOM is patched, which is the only moment the new height exists to be read —
     // and reading these three signals is what makes it a rule rather than a line every
@@ -860,8 +862,8 @@ pub fn PanelStack() -> Element {
 /// box.
 #[component]
 fn PanelScrollbar() -> Element {
-    let layout = use_context::<PanelLayout>();
     let state = use_context::<AppState>();
+    let layout = state.panels;
     let scroll = (layout.scroll)();
     let dragging = (layout.thumb)().is_some();
     // Nothing to scroll is no rail: a control that cannot do anything, standing over
@@ -933,8 +935,8 @@ const PANEL_INSET: f32 = 4.0;
 /// resting state written out rather than the absence of one — see below.
 #[component]
 pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: Element) -> Element {
-    let layout = use_context::<PanelLayout>();
     let state = use_context::<AppState>();
+    let layout = state.panels;
     // `map` on the default, so a panel that is not resizable never reads either signal
     // and so never re-renders for someone else's resize.
     // Folded to its title bar, which takes its height away with its content: a panel

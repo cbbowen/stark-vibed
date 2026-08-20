@@ -1423,7 +1423,7 @@ fn measure(
 #[component]
 pub fn TutorCard() -> Element {
     let state = use_context::<AppState>();
-    let layout = use_context::<PanelLayout>();
+    let layout = state.panels;
     let mut anchored = use_signal(|| None::<ElementBox>);
 
     // A resize moves everything the card could be pointing at. Bound to the window

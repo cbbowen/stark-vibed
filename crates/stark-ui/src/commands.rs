@@ -37,11 +37,15 @@
 //! - **Ctrl+V.** A paste is data arriving, not a command: the browser delivers
 //!   the clipboard *with* the event, and must be left to (`crate::images`).
 //!
-//! And what is not a *variant*: anything parameterized. A control that acts on
-//! a particular row — this layer's eye, that guide's trash — names its target,
-//! and a registry of every (act, target) pair would be a second copy of the
-//! panels. The registry holds the acts the search palette lists
-//! (`main::CommandSearch`, over [`ALL`]) and a chord can carry whole.
+//! And what is not a *variant*: anything aimed at the document's own rows. A
+//! control that acts on a particular layer or guide — this layer's eye, that
+//! guide's trash — names a target only the document knows, and a registry of
+//! every (act, target) pair would be a second copy of the panels. A payload
+//! drawn from the *chrome's* own closed set is different:
+//! [`TogglePanel`](Command::TogglePanel) carries a `PanelId`, and each of the
+//! six is still one act [`ALL`] lists by name. The registry holds the acts the
+//! search palette can offer (`main::CommandSearch`) and a chord can carry
+//! whole.
 //!
 //! The guard that precedes any binding at all — a keystroke in a text field is
 //! the field's (`platform::KeyEvent::on_text_entry`) — is `input`'s too: by the
@@ -53,6 +57,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::icons;
 use crate::input::accel;
+use crate::layout::PanelId;
 use crate::panels::brush::{MAX_RADIUS, MIN_RADIUS};
 use crate::platform;
 use crate::state::{AppState, dispatch, update_brush};
@@ -162,6 +167,12 @@ pub enum Command {
     /// Pin or unpin the quick-brush rack (§18.1.8) — the mouse-only way to a
     /// slot, which a hand with a pen and no keyboard has no other route to.
     ToggleQuickBrushes,
+    /// Show or hide one of the floating tool panels (§11). The one variant
+    /// with a payload, and it keeps the module's rule because the target is
+    /// the chrome's, not the document's: `PanelId` is a closed set the build
+    /// enumerates, so each of the six is still a single nameable act —
+    /// listed in [`ALL`], searchable, bindable to a chord of its own.
+    TogglePanel(PanelId),
     /// Open the ⚙ preferences dialog (`settings::SettingsModal`).
     Settings,
     /// Open the full brush editor off the Brush panel.
@@ -497,6 +508,12 @@ pub const ALL: &[Command] = &[
     Command::EditBrush,
     Command::SavePreset,
     Command::ToggleTimeline,
+    Command::TogglePanel(PanelId::Color),
+    Command::TogglePanel(PanelId::Brush),
+    Command::TogglePanel(PanelId::Select),
+    Command::TogglePanel(PanelId::Layers),
+    Command::TogglePanel(PanelId::Guides),
+    Command::TogglePanel(PanelId::Lighting),
     Command::ToggleNavigator,
     Command::ToggleQuickBrushes,
     Command::TimingStats,
@@ -601,6 +618,20 @@ impl Command {
             Command::AddLayer => "Add layer",
             Command::AddFrame => "Add frame",
             Command::AddPerspective => "Add perspective grid",
+            // Named after the panel with "panel" said out loud, because a
+            // search result stands alone: a row reading just "Color" would
+            // claim the subject rather than the box that holds its controls.
+            // The menu under the Panels trigger says the terse half instead
+            // ([`word`](Self::word)), and a test pins each name to its
+            // panel's own title (`tests::every_panel_has_a_toggle_row`).
+            Command::TogglePanel(id) => match id {
+                PanelId::Color => "Color panel",
+                PanelId::Brush => "Brush panel",
+                PanelId::Select => "Select panel",
+                PanelId::Layers => "Layers panel",
+                PanelId::Guides => "Drawing guides panel",
+                PanelId::Lighting => "Lighting panel",
+            },
         }
     }
 
@@ -616,6 +647,9 @@ impl Command {
             Command::AddLayer => "Layer",
             Command::AddFrame => "Frame",
             Command::AddPerspective => "Perspective",
+            // The Panels menu is a picture of the stack, so its rows wear the
+            // panels' own title-bar labels.
+            Command::TogglePanel(id) => id.title(),
             _ => self.name(),
         }
     }
@@ -691,6 +725,9 @@ impl Command {
             Command::AddLayer => icons::ADD_LAYER,
             Command::AddFrame => icons::ADD_FRAME,
             Command::AddPerspective => icons::ADD_LAYER,
+            // The mark its own title bar wears, so the menu and the palette
+            // both stay a picture of the stack.
+            Command::TogglePanel(id) => id.glyph(),
         }
     }
 
@@ -752,33 +789,15 @@ impl Command {
         !matches!(self, Command::ImportImage)
     }
 
-    /// The tick a row carries for a command that toggles something the user
-    /// can be *in* — Timeline mode, the navigator, the pinned rack — and
-    /// `None` for every act without a second state. On the registry rather
-    /// than at any one menu, because the search palette lists these rows too,
-    /// and a toggle that admitted its state in only one of its homes would
-    /// read as two different commands. A tick answers "am I in it?" (§18.2.4);
-    /// what it does **not** say is that an act is still *running* — that is
-    /// [`active`](Self::active), worn differently.
-    pub fn checked(self, state: AppState) -> Option<bool> {
+    /// Whether this command's act is live right now.
+    pub fn active(self, state: AppState) -> Option<bool> {
         match self {
             Command::ToggleTimeline => Some(*state.timeline.open.read()),
             Command::ToggleNavigator => Some(*state.navigator.read()),
             Command::ToggleQuickBrushes => Some(*state.slots.pinned.read()),
+            Command::TogglePanel(id) => Some(!state.panels.hidden.read().contains(&id)),
+            Command::Share => Some(*state.collab.phase.read() == crate::collab::CollabPhase::Shared),
             _ => None,
-        }
-    }
-
-    /// Whether this command's act is live right now — Share while a session
-    /// runs, and today nothing else. Worn as the row's mark taking the select
-    /// blue rather than as a trailing tick, because it is not a mode the user
-    /// is in (the tick's claim, above) but a state the act started and left
-    /// standing — the same thing the ● beside "Share" said when it was a
-    /// hand-written menu entry.
-    pub fn active(self, state: AppState) -> bool {
-        match self {
-            Command::Share => *state.collab.phase.read() == crate::collab::CollabPhase::Shared,
-            _ => false,
         }
     }
 
@@ -854,6 +873,14 @@ impl Command {
                 let mut pinned = state.slots.pinned;
                 let now = !*pinned.peek();
                 pinned.set(now);
+            }
+            // Ungated like the other toggles: which panels are up is chrome,
+            // not document. The two halves an entry must not forget — waking a
+            // sleeping stack on open, telling the tour on close — live in
+            // `layout`'s own functions, which is why this goes through
+            // `toggle_panel` rather than writing `hidden`.
+            Command::TogglePanel(id) => {
+                crate::layout::toggle_panel(state, state.panels, id);
             }
             Command::Settings => open_dialog(state.dialogs.settings),
             Command::EditBrush => {
@@ -1169,6 +1196,10 @@ mod tests {
         let mut b = stock();
         b.rebind(Command::MirrorView, chord(false, true, 'm'));
         b.rebind(Command::Undo, chord(false, true, 'm')); // steals; MirrorView None
+        b.rebind(
+            Command::TogglePanel(PanelId::Layers),
+            chord(true, true, 'l'),
+        );
         let stored = StoredBindings {
             overrides: b
                 .overrides
@@ -1176,6 +1207,15 @@ mod tests {
                 .map(|(c, chord)| (format!("{c:?}"), chord.clone()))
                 .collect(),
         };
+        // A payload rides inside the stored id — so renaming a PanelId variant
+        // orphans its stored binding exactly the way renaming a command does:
+        // dropped on load, never an error.
+        assert!(
+            stored
+                .overrides
+                .iter()
+                .any(|(id, _)| id == "TogglePanel(Layers)")
+        );
         let json = serde_json::to_string(&stored).unwrap();
         let back: StoredBindings = serde_json::from_str(&json).unwrap();
         let restored = Bindings {
@@ -1299,6 +1339,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_panel_has_a_toggle_row() {
+        // ALL is kept by hand, but this family need not be taken on faith: a
+        // panel added to the stack must arrive in the palette with it, wearing
+        // a name that still says which panel it is — and saying "panel", which
+        // is how a query for the word lists the whole stack.
+        for id in PanelId::ALL {
+            let command = Command::TogglePanel(id);
+            assert!(ALL.contains(&command), "{id:?} has no row in ALL");
+            assert!(
+                command
+                    .name()
+                    .to_lowercase()
+                    .starts_with(&id.title().to_lowercase()),
+                "{id:?}'s command is not named after its panel"
+            );
+        }
+        assert_eq!(search("panel").len(), PanelId::ALL.len());
     }
 
     #[test]

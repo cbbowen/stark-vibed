@@ -2335,6 +2335,10 @@ button.layer-remove:hover {
   filter: drop-shadow(0 0 4px #8fb0e8);
 }
 
+.cmd-inactive .icon {
+  color: #6a6a72;
+}
+
 .palette-row:hover .cmd-active .icon,
 .palette-row.selected .cmd-active .icon {
   color: var(--panel-color);

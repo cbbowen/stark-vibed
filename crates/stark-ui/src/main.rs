@@ -63,7 +63,7 @@ use input::{
     Nav, Paint, Tune, accel, bind_context_menu, bind_pen, bind_shortcuts, elem_xy, end_interaction,
     hover_at, hover_gone, hover_stroke, pick_color, sample,
 };
-use layout::{PanelId, PanelLayout, PanelStack, chrome_class, resize_end, resize_move};
+use layout::{PanelId, PanelStack, chrome_class, resize_end, resize_move};
 use navigator::NavigatorOverlay;
 use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
@@ -134,26 +134,6 @@ fn app() -> Element {
     // detached tasks living in `ScopeId::ROOT` — see `state::root_signal`.
     let state = AppState::new();
     use_context_provider(|| state);
-
-    // Floating-panel layout: order + which are open. Provided so the panel chrome and
-    // the "Panels" menu can reorder/close/restore them. A closed panel keeps its slot,
-    // so reopening it puts it back where it belongs.
-    //
-    // Every panel starts closed and what this browser last had open comes back
-    // (`layout::stored_hidden`) — read here in the root's own body rather than in a
-    // load step, so the first render is already the stack the artist left rather than
-    // one that assembles itself a frame later.
-    let panels = PanelLayout {
-        order: use_signal(|| PanelId::ALL.to_vec()),
-        hidden: use_signal(layout::stored_hidden),
-        collapsed: use_signal(layout::stored_collapsed),
-        drag: use_signal(|| None),
-        heights: use_signal(PanelLayout::default_heights),
-        resize: use_signal(|| None),
-        scroll: use_signal(Default::default),
-        thumb: use_signal(|| None),
-    };
-    use_context_provider(|| panels);
 
     // The keyboard shortcuts live on the window, not on the root element below, so
     // they answer whatever has focus — including `document.body`, where the browser
@@ -347,9 +327,9 @@ fn app() -> Element {
             // The title-bar *reorder* drag is not here: it captures the pointer and handles
             // its own move and release (`layout::Panel`), which is the only way to be sure
             // of getting the release.
-            onpointermove: move |e| resize_move(panels, &e),
-            onpointerup: move |_| resize_end(panels),
-            onpointerleave: move |_| resize_end(panels),
+            onpointermove: move |e| resize_move(state.panels, &e),
+            onpointerup: move |_| resize_end(state.panels),
+            onpointerleave: move |_| resize_end(state.panels),
 
             // Dropping a file anywhere on the app (§23.4). At the **root** rather
             // than on the canvas, and that is not for convenience: an unclaimed
@@ -992,7 +972,6 @@ fn TowStringOverlay() -> Element {
 #[component]
 fn CommandRail() -> Element {
     let state = use_context::<AppState>();
-    let layout = use_context::<PanelLayout>();
     // The dialogs' flags are app state (`state::Dialogs`), raised by the
     // commands that open them — which is what lets the same act be a menu row
     // today and whatever reaches for it tomorrow. Local names for the mounts
@@ -1003,7 +982,6 @@ fn CommandRail() -> Element {
     let mut show_settings = state.dialogs.settings;
     let mut show_timing = state.dialogs.timing;
     let mut show_credits = state.dialogs.credits;
-    let hidden = (layout.hidden)();
 
     rsx! {
         div { class: chrome_class(state, "command-rail"),
@@ -1019,20 +997,12 @@ fn CommandRail() -> Element {
                     // its names (`PanelId::glyph`).
                     MenubarTrigger { {icon_large(icons::PANELS)} }
                     MenubarContent {
+                        // Each panel's row is its toggle command, so the same
+                        // act is reachable by search and by a chord of the
+                        // user's own — the row here adds nothing the registry
+                        // does not carry (`Command::TogglePanel`).
                         for (i, id) in PanelId::ALL.into_iter().enumerate() {
-                            MenubarItem {
-                                index: i,
-                                value: format!("panel-{id:?}"),
-                                // Through `toggle_panel` rather than writing `hidden`
-                                // here, because opening a panel has a second half: a
-                                // sleeping stack has to be woken, or this entry ticks
-                                // itself and nothing appears (`layout::open_panel`).
-                                on_select: move |_| layout::toggle_panel(state, layout, id),
-                                span { class: "menu-item", {icon(id.glyph())} "{id.title()}" }
-                                span { class: "menu-check",
-                                    if !hidden.contains(&id) { {icon(icons::CHECK)} }
-                                }
-                            }
+                            CmdItem { index: i, command: Command::TogglePanel(id) }
                         }
                         // The two that are **not** panels, last and slightly apart:
                         // both stand down the left of the window rather than in the
@@ -1112,11 +1082,14 @@ fn CmdItem(index: usize, command: Command) -> Element {
             value: format!("{command:?}"),
             disabled: !enabled(),
             on_select: move |_| command.run(state),
-            span { class: "menu-item", {icon(command.icon())} {command.name()} }
+            // The terse word, not the full name: a menu's trigger already
+            // names the subject, which is `word`'s whole remit — the Panels
+            // menu says "Color" where the palette must say "Color panel".
+            span { class: "menu-item", {icon(command.icon())} {command.word()} }
             if let Some(chord) = command.shortcut(&state.bindings.read()) {
                 span { class: "menu-shortcut", {chord} }
             }
-            if let Some(on) = command.checked(state) {
+            if let Some(on) = command.active(state) {
                 span { class: "menu-check",
                     if on { {icon(icons::CHECK)} }
                 }
@@ -1283,16 +1256,13 @@ fn CommandSearch() -> Element {
                             // (`Command::active`) — Share while a session runs —
                             // where a toggle's "you are in it" is the tick below.
                             span {
-                                class: if command.active(state) { "menu-item cmd-active" } else { "menu-item" },
+                                class: "menu-item",
+                                class: if command.active(state) == Some(true) { "cmd-active" },
+                                class: if command.active(state) == Some(false) { "cmd-inactive" },
                                 {icon(command.icon())}
                                 {command.name()}
                             }
                             BindChip { command, capturing, field }
-                            if let Some(on) = command.checked(state) {
-                                span { class: "menu-check",
-                                    if on { {icon(icons::CHECK)} }
-                                }
-                            }
                         }
                     }
                     if shown.read().is_empty() {

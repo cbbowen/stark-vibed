@@ -299,6 +299,12 @@ pub struct AppState {
     pub tutor: crate::tutor::TutorState,
     /// The root-mounted dialogs' visibility, one flag per modal (see [`Dialogs`]).
     pub dialogs: Dialogs,
+    /// The floating panel stack: order, which are open, and the in-flight
+    /// gestures (`crate::layout::PanelLayout`). Here rather than provided as
+    /// its own context because the panels' commands live in the registry now
+    /// (`commands::Command::TogglePanel`), and a command reaches everything it
+    /// acts on through this one handle.
+    pub panels: crate::layout::PanelLayout,
     /// This browser's chord table (`commands::Bindings`): the shipped defaults
     /// with the user's rebindings laid over them. A signal so a shortcut column
     /// re-renders the moment a rebind lands; seeded from storage at app start
@@ -582,6 +588,20 @@ impl AppState {
                 settings: root_signal(|| false),
                 timing: root_signal(|| false),
                 credits: root_signal(|| false),
+            },
+            panels: crate::layout::PanelLayout {
+                order: root_signal(|| crate::layout::PanelId::ALL.to_vec()),
+                // Every panel starts closed and what this browser last had open
+                // comes back — read here, before the first render, so the stack
+                // the artist left is the first one drawn rather than one that
+                // assembles itself a frame later.
+                hidden: root_signal(crate::layout::stored_hidden),
+                collapsed: root_signal(crate::layout::stored_collapsed),
+                drag: root_signal(|| None),
+                heights: root_signal(crate::layout::PanelLayout::default_heights),
+                resize: root_signal(|| None),
+                scroll: root_signal(Default::default),
+                thumb: root_signal(|| None),
             },
             bindings: root_signal(Default::default),
         }
