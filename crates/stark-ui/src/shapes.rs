@@ -47,6 +47,10 @@ pub struct ShapeEntry {
     pub id: AssetId,
 }
 
+impl storage::Entry for ShapeEntry {
+    const STORE: Store = Store::Shapes;
+}
+
 /// A `background-image` data URL for an entry's thumbnail. Callers should
 /// memoize per entry — the PNG is re-encoded to base64 each call.
 pub fn data_url(entry: &ShapeEntry) -> String {
@@ -255,12 +259,12 @@ fn display_name(file_name: &str) -> String {
 // format, the encodings and the skip-a-damaged-entry rule are all `crate::storage`'s.
 
 fn persist(entries: &[ShapeEntry]) {
-    storage::save(Store::Shapes, entries);
+    storage::save_list(entries);
 }
 
 /// What this browser has stored. An empty library and a browser that has stored
 /// nothing are the same thing here — unlike the preset rack, nothing is seeded —
 /// so the two answers are folded into one.
 fn read_storage() -> Vec<ShapeEntry> {
-    storage::load_list(Store::Shapes).unwrap_or_default()
+    storage::load_list().unwrap_or_default()
 }

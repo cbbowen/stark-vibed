@@ -506,10 +506,14 @@ pub fn sleep_panels(state: AppState) {
 /// so there is no row this could appear on alone. `#[serde(default)]` makes the field
 /// optional in both directions across a version.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct StoredPanel {
+pub(crate) struct StoredPanel {
     panel: PanelId,
     #[serde(default)]
     collapsed: bool,
+}
+
+impl crate::storage::Entry for StoredPanel {
+    const STORE: crate::storage::Store = crate::storage::Store::Panels;
 }
 
 /// The panels this browser last had open, as [`PanelLayout::hidden`] — or every
@@ -537,7 +541,7 @@ pub fn stored_collapsed() -> HashSet<PanelId> {
 }
 
 fn stored_panels() -> impl Iterator<Item = StoredPanel> {
-    crate::storage::load_list::<StoredPanel>(crate::storage::Store::Panels)
+    crate::storage::load_list::<StoredPanel>()
         .unwrap_or_default()
         .into_iter()
 }
@@ -587,7 +591,7 @@ fn persist(layout: PanelLayout) {
             collapsed: collapsed.contains(&panel),
         })
         .collect();
-    crate::storage::save(crate::storage::Store::Panels, &open);
+    crate::storage::save_list(&open);
 }
 
 /// Fold `id` to its title bar, or unfold it — what clicking a title does

@@ -73,7 +73,7 @@ use crate::layout::chrome_class;
 use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch};
-use crate::storage::Store;
+use crate::storage::{Record, Store};
 use stark_engine::ExportScale;
 use stark_engine::command::ViewCommand;
 use stark_model::document::LayerId;
@@ -101,6 +101,20 @@ const MAX_HEIGHT: u32 = 200;
 /// overview appears while the artist is still looking at where it landed.
 const SETTLE_MS: i32 = 180;
 
+/// Whether the overview is up, as this browser stores it.
+///
+/// A newtype over the one `bool` rather than the `bool` itself, because the trait that
+/// binds a type to its record would otherwise be implemented on `bool` — making *every*
+/// boolean in the frontend this record, and `storage::save(&some_flag)` a way to
+/// overwrite it. `transparent`, so the stored value is still bare `true`/`false`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Showing(bool);
+
+impl Record for Showing {
+    const STORE: Store = Store::Navigator;
+}
+
 /// Restore this browser's choice, at startup.
 ///
 /// A record that is absent — or damaged, which is the same case (`crate::storage`) —
@@ -108,7 +122,7 @@ const SETTLE_MS: i32 = 180;
 /// screen is the painting and nothing else.
 pub fn load(state: AppState) {
     let mut showing = state.navigator;
-    showing.set(crate::storage::load(Store::Navigator).unwrap_or(false));
+    showing.set(crate::storage::load().is_some_and(|Showing(up)| up));
 }
 
 /// Show the overview or put it away, and remember it — **the only thing that writes
@@ -129,7 +143,7 @@ pub fn set_open(state: AppState, open: bool) {
         return;
     }
     showing.set(open);
-    crate::storage::save(Store::Navigator, &open);
+    crate::storage::save(&Showing(open));
 }
 
 /// Where the miniature sits in canvas space, and how large it is drawn.

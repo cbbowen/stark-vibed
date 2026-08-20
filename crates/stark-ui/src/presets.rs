@@ -110,9 +110,9 @@ pub struct PresetEntry {
     /// Whether this is one of the app's own presets rather than the user's.
     ///
     /// Never stored: it is *provenance*, set where the entry is made — true in
-    /// [`default_presets`], false in [`parse_entry`] — so it cannot disagree with
-    /// where the entry actually came from. What it decides is the row's last
-    /// control (a lock, not a trash) and whether storage ever sees the entry.
+    /// [`default_presets`], false where a [`StoredPreset`] becomes one — so it cannot
+    /// disagree with where the entry actually came from. What it decides is the row's
+    /// last control (a lock, not a trash) and whether storage ever sees the entry.
     pub builtin: bool,
 }
 
@@ -593,9 +593,13 @@ pub fn matches(current: &Wearable, preset: &Wearable) -> bool {
 /// `builtin: false` is settled where the entry is *made* rather than carried in the
 /// record and trusted.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct StoredPreset {
+pub(crate) struct StoredPreset {
     name: String,
     brush: Wearable,
+}
+
+impl storage::Entry for StoredPreset {
+    const STORE: Store = Store::Presets;
 }
 
 fn persist(entries: &[PresetEntry]) {
@@ -607,7 +611,7 @@ fn persist(entries: &[PresetEntry]) {
             brush: e.brush,
         })
         .collect();
-    storage::save(Store::Presets, &stored);
+    storage::save_list(&stored);
 }
 
 /// What this browser has saved, or `None` where it has saved nothing (or
@@ -615,7 +619,7 @@ fn persist(entries: &[PresetEntry]) {
 /// so there is no "never seeded" state left to tell apart from an empty one.
 fn read_storage() -> Option<Vec<PresetEntry>> {
     Some(
-        storage::load_list::<StoredPreset>(Store::Presets)?
+        storage::load_list::<StoredPreset>()?
             .into_iter()
             .map(|e| PresetEntry {
                 name: e.name,

@@ -1273,16 +1273,20 @@ fn release_panels(state: AppState, lesson: &Lesson) {
 /// share no field, so nothing here is ambiguous.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
-enum Row {
+pub(crate) enum Row {
     Deed { deed: Deed, count: u32 },
     Given { given: String },
+}
+
+impl crate::storage::Entry for Row {
+    const STORE: Store = Store::Tutor;
 }
 
 /// What this browser has stored, or an empty ledger — a browser that has stored
 /// nothing and one whose store is damaged want the same thing, which is to be
 /// treated as new.
 fn stored() -> Ledger {
-    let Some(rows) = crate::storage::load_list::<Row>(Store::Tutor) else {
+    let Some(rows) = crate::storage::load_list::<Row>() else {
         return Ledger::default();
     };
     let mut book = Ledger::default();
@@ -1312,7 +1316,7 @@ fn save(state: AppState) {
         given: k.to_string(),
     });
     let rows: Vec<Row> = deeds.chain(given).collect();
-    crate::storage::save(Store::Tutor, &rows);
+    crate::storage::save_list(&rows);
 }
 
 /// How wide a card whose **right** edge is pinned at `x` may be, as a declaration.

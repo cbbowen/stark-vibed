@@ -13,9 +13,16 @@
 //! # One format: JSON, through one typed door
 //!
 //! A record is a serde type its own module declares, and it goes in and out through
-//! [`save`], [`load`] and [`load_list`]. **There is no untyped door** — [`get`] and
-//! [`set`] are private, so nothing can hand this module a string it spelled itself,
-//! and there is nowhere for a seventh format to come from.
+//! [`save`], [`load`], [`save_list`] and [`load_list`]. **There is no untyped door** —
+//! [`get`] and [`set`] are private, so nothing can hand this module a string it spelled
+//! itself, and there is nowhere for a seventh format to come from.
+//!
+//! Nor is there an untyped *key*. A type declares which record it is by implementing
+//! [`Record`] or [`Entry`], and the four functions ask the type rather than taking a
+//! [`Store`] argument — so the type and the key are one choice instead of two
+//! agreeing ones, and `load::<Prefs>()` cannot be pointed at the chord table. Which
+//! trait a type implements decides how it is read, too: see [`Entry`] for why that is
+//! not one trait with a flag.
 //!
 //! JSON for the reason `Prefs` gave first and the rest inherit: `localStorage`
 //! outlives app versions, and a self-describing format reconciles a stored value
@@ -32,9 +39,14 @@
 //! # The registry
 //!
 //! [`Store`] is the whole authority on where a record lives and what a warning calls
-//! it. Both facts sit on one row, so a new record is one row and one serde type —
-//! never a `const KEY` beside a matching string at each call site, which is what the
-//! ten keys used to be (§25.6).
+//! it. Both facts sit on one row, so a new record is one row, one serde type and the
+//! one-line impl that pairs them — never a `const KEY` beside a matching string at each
+//! call site, which is what the ten keys used to be (§25.6).
+//!
+//! The impls name a variant rather than restating its strings, which is what keeps the
+//! map readable in one place: ten impls each spelling their own key would scatter the
+//! answer to "what does this browser keep?" across ten modules, and nothing would
+//! notice two of them colliding. `every_record_claims_one_store` does.
 //!
 //! # A damaged entry costs that entry
 //!
@@ -75,7 +87,7 @@ use serde::de::DeserializeOwned;
 /// A variant per record rather than a `const KEY` per module, because the key and the
 /// name a warning calls the record by are two halves of one fact that used to be two
 /// constants three lines apart — see [`Store::named`] and §25.6.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Store {
     /// The key this client's `ActorId` derives from, and its run counter
     /// (`crate::identity`).
@@ -128,18 +140,45 @@ impl Store {
     }
 }
 
+/// A type that is **the whole of** what one record holds — read and written in one
+/// piece ([`load`], [`save`]).
+///
+/// The impl is what binds a type to its key, and it is the reason neither is a
+/// parameter: `load` and `save` take no [`Store`], they ask the type which one it is.
+/// So there is no call site at which the type and the key are two separate choices,
+/// and reading `Prefs` out of the chord table is not a mistake that can be written
+/// down.
+pub trait Record {
+    /// Which record this type is.
+    const STORE: Store;
+}
+
+/// A type that is **one entry of** a record that is a list — read and written entry by
+/// entry ([`load_list`], [`save_list`]).
+///
+/// A second trait rather than a flag on [`Record`], because the two are read
+/// differently and the difference is not one a caller should be able to get wrong:
+/// seven of the ten records are lists, and `load::<StoredPanel>()` under one trait
+/// would compile and quietly answer `None` — an array is not an object — leaving a
+/// panel stack that silently forgot itself. A type is one or the other, and the
+/// compiler says which functions it is for.
+pub trait Entry {
+    /// Which record this type is an entry of.
+    const STORE: Store;
+}
+
 /// What this browser has stored, or `None` where it has stored nothing — and where
 /// what it stored is not readable as a `T`, which is the same answer for the same
 /// reason: there is nothing here this build can act on.
-pub fn load<T: DeserializeOwned>(store: Store) -> Option<T> {
-    let text = get(store)?;
+pub fn load<T: Record + DeserializeOwned>() -> Option<T> {
+    let text = get(T::STORE)?;
     match serde_json::from_str(&text) {
         Ok(value) => Some(value),
         Err(e) => {
             // Not a failure to handle — the caller's defaults are the answer — but
             // worth saying, because the visible symptom is a setting quietly back
             // where it started.
-            tracing::warn!("could not read {} ({e})", store.named().1);
+            tracing::warn!("could not read {} ({e})", T::STORE.named().1);
             None
         }
     }
@@ -151,10 +190,10 @@ pub fn load<T: DeserializeOwned>(store: Store) -> Option<T> {
 /// `None` and `Some(vec![])` are different answers and callers rely on the difference:
 /// an untouched quick-brush rack is seeded from the preset library, while one the user
 /// has emptied is left empty.
-pub fn load_list<T: DeserializeOwned>(store: Store) -> Option<Vec<T>> {
-    let list = entries(&get(store)?);
+pub fn load_list<T: Entry + DeserializeOwned>() -> Option<Vec<T>> {
+    let list = entries(&get(T::STORE)?);
     if list.is_none() {
-        tracing::warn!("could not read {}", store.named().1);
+        tracing::warn!("could not read {}", T::STORE.named().1);
     }
     list
 }
@@ -174,8 +213,19 @@ fn entries<T: DeserializeOwned>(json: &str) -> Option<Vec<T>> {
     )
 }
 
-/// Store `value`. A store that will not take it warns and carries on ([`set`]).
-pub fn save<T: Serialize + ?Sized>(store: Store, value: &T) {
+/// Store `value` as the whole of its record. A store that will not take it warns and
+/// carries on ([`set`]).
+pub fn save<T: Record + Serialize>(value: &T) {
+    write(T::STORE, value);
+}
+
+/// Store `entries` as the whole of their record — [`load_list`]'s counterpart, and a
+/// slice rather than a `Vec` because every caller is already holding one.
+pub fn save_list<T: Entry + Serialize>(entries: &[T]) {
+    write(T::STORE, entries);
+}
+
+fn write<T: Serialize + ?Sized>(store: Store, value: &T) {
     match serde_json::to_string(value) {
         Ok(json) => set(store, &json),
         Err(e) => tracing::warn!("could not encode {} ({e})", store.named().1),
@@ -304,7 +354,7 @@ mod tests {
     ];
 
     #[derive(Debug, PartialEq, Deserialize, Serialize)]
-    struct Entry {
+    struct Item {
         name: String,
         n: u32,
     }
@@ -323,6 +373,44 @@ mod tests {
         );
         assert_eq!(names.len(), ALL.len());
         assert!(ALL.iter().all(|s| s.named().0.starts_with("stark.")));
+    }
+
+    /// Every [`Store`] is claimed by exactly one type, and every type claims one.
+    ///
+    /// The pairing is compile-time in one direction — a type names its record, so it
+    /// cannot be read out of the wrong key — and this is the other direction, which
+    /// nothing else checks: **two types naming the same variant** would overwrite each
+    /// other's record, and a variant no type claims is a row of the registry that does
+    /// nothing. The old `Store` argument made the first mistake unwritable only by
+    /// convention and the second invisible entirely.
+    ///
+    /// A record added without a line here fails on the count, not on a reviewer
+    /// remembering: `ALL` grows and the claims do not.
+    #[test]
+    fn every_record_claims_one_store() {
+        let claimed = [
+            <crate::identity::Stored as Record>::STORE,
+            <crate::prefs::Prefs as Record>::STORE,
+            <crate::navigator::Showing as Record>::STORE,
+            <crate::commands::StoredBinding as Entry>::STORE,
+            <crate::layout::StoredPanel as Entry>::STORE,
+            <crate::tutor::Row as Entry>::STORE,
+            <crate::shapes::ShapeEntry as Entry>::STORE,
+            <crate::presets::StoredPreset as Entry>::STORE,
+            <crate::slots::StoredSlot as Entry>::STORE,
+            <crate::gradients::GradientEntry as Entry>::STORE,
+        ];
+        let distinct: HashSet<Store> = claimed.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            claimed.len(),
+            "two types naming one record overwrite each other"
+        );
+        assert_eq!(
+            distinct,
+            ALL.iter().copied().collect::<HashSet<_>>(),
+            "every row of the registry is some type's, and every type has a row"
+        );
     }
 
     /// A retired key that is still in use would delete a live record on every start —
@@ -348,17 +436,17 @@ mod tests {
             {"name":"d","n":4}
         ]"#;
         assert_eq!(
-            entries::<Entry>(json),
+            entries::<Item>(json),
             Some(vec![
-                Entry {
+                Item {
                     name: "a".into(),
                     n: 1
                 },
-                Entry {
+                Item {
                     name: "b".into(),
                     n: 2
                 },
-                Entry {
+                Item {
                     name: "d".into(),
                     n: 4
                 },
@@ -371,9 +459,9 @@ mod tests {
     /// distinction the quick-brush rack seeds itself on.
     #[test]
     fn damage_is_not_an_empty_list() {
-        assert_eq!(entries::<Entry>("{}"), None);
-        assert_eq!(entries::<Entry>("garbage"), None);
-        assert_eq!(entries::<Entry>("[]"), Some(vec![]));
+        assert_eq!(entries::<Item>("{}"), None);
+        assert_eq!(entries::<Item>("garbage"), None);
+        assert_eq!(entries::<Item>("[]"), Some(vec![]));
     }
 
     #[derive(Debug, PartialEq, Deserialize, Serialize)]

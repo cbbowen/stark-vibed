@@ -54,7 +54,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::state::{AppState, dispatch};
-use crate::storage::Store;
+use crate::storage::{Record, Store};
 use stark_engine::command::ViewCommand;
 
 /// Every preference the ⚙ dialog sets, in the form they are stored in.
@@ -86,6 +86,10 @@ pub struct Prefs {
     /// up, in bytes (§5) — the one preference that is about the *machine* rather
     /// than about how Stark behaves, which is why it is the one with a slider.
     pub history_budget: u64,
+}
+
+impl Record for Prefs {
+    const STORE: Store = Store::Prefs;
 }
 
 impl Default for Prefs {
@@ -190,12 +194,12 @@ pub fn load_engine(state: AppState) {
 /// Persist the app's current preferences. Called after every change made through
 /// the settings dialog, so no row has to remember to.
 pub fn save(state: AppState) {
-    crate::storage::save(Store::Prefs, &Prefs::capture(state));
+    crate::storage::save(&Prefs::capture(state));
 }
 
 /// What this browser has stored, or the defaults — a browser that has never
 /// stored anything and one whose stored value is damaged are the same case, and
 /// both want the defaults rather than a half-applied read.
 fn stored() -> Prefs {
-    crate::storage::load(Store::Prefs).unwrap_or_default()
+    crate::storage::load().unwrap_or_default()
 }

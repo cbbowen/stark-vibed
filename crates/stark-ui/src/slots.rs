@@ -628,9 +628,13 @@ pub fn seed_defaults(state: AppState) {
 
 /// One assigned slot.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct StoredSlot {
+pub(crate) struct StoredSlot {
     digit: usize,
     brush: Wearable,
+}
+
+impl storage::Entry for StoredSlot {
+    const STORE: Store = Store::Slots;
 }
 
 fn persist(rack: &Rack) {
@@ -644,7 +648,7 @@ fn persist(rack: &Rack) {
             })
         })
         .collect();
-    storage::save(Store::Slots, &stored);
+    storage::save_list(&stored);
 }
 
 /// `None` when this browser has never set a slot (or storage is unavailable) —
@@ -657,7 +661,7 @@ fn persist(rack: &Rack) {
 /// `storage::load_list` keeps them apart for both.
 fn read_storage() -> Option<Rack> {
     let mut rack: Rack = [None; COUNT];
-    for entry in storage::load_list::<StoredSlot>(Store::Slots)? {
+    for entry in storage::load_list::<StoredSlot>()? {
         // A digit past the rack is an entry a shorter build cannot place, and
         // dropping it is the only answer that does not move its neighbours.
         if entry.digit < COUNT {

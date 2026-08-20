@@ -66,7 +66,7 @@ use crate::layout::PanelId;
 use crate::panels::brush::{MAX_RADIUS, MIN_RADIUS};
 use crate::platform;
 use crate::state::{AppState, dispatch, update_brush};
-use crate::storage::Store;
+use crate::storage::{Entry, Store};
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::SelectionOp;
@@ -384,16 +384,20 @@ impl Bindings {
 /// costs its own row and not the table (`storage::load_list`): a binding for a retired
 /// command is a binding for nothing, and the rest of the user's chords still load.
 #[derive(Serialize, Deserialize)]
-struct StoredBinding {
+pub(crate) struct StoredBinding {
     command: Command,
     #[serde(default)]
     chord: Option<Chord>,
 }
 
+impl Entry for StoredBinding {
+    const STORE: Store = Store::Bindings;
+}
+
 /// Seed [`AppState::bindings`](crate::state::AppState::bindings) from this
 /// browser's stored rebindings. Called once at app start, beside `prefs::load`.
 pub fn load(state: AppState) {
-    let Some(stored) = crate::storage::load_list::<StoredBinding>(Store::Bindings) else {
+    let Some(stored) = crate::storage::load_list::<StoredBinding>() else {
         return;
     };
     let overrides = stored
@@ -434,7 +438,7 @@ fn edit(state: AppState, change: impl FnOnce(&mut Bindings)) {
             chord: chord.clone(),
         })
         .collect();
-    crate::storage::save(Store::Bindings, &stored);
+    crate::storage::save_list(&stored);
 }
 
 /// What a keydown means to a rebinding capture (`main::CommandSearch`): the

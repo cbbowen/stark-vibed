@@ -294,42 +294,63 @@ ten of them: the four libraries (shapes, presets, gradients, quick brushes), the
 navigator is up, what the tour has seen, and this client's identity.
 
 One law, the same one: **one authority, and callers hand it typed values rather
-than spelling a format.**
+than spelling a format.** Here that is enforced by the type system — a type
+declares which record it is, and the four functions ask the type:
 
 ```rust
-storage::save(Store::Prefs, &prefs);              // any Serialize
-let prefs: Prefs = storage::load(Store::Prefs)?;  // whole record
-let shapes = storage::load_list(Store::Shapes)?;  // entry by entry
+impl storage::Record for Prefs      { const STORE: Store = Store::Prefs; }
+impl storage::Entry  for ShapeEntry { const STORE: Store = Store::Shapes; }
+
+storage::save(&prefs);                       // -> stark.prefs, and nowhere else
+let prefs: Prefs = storage::load()?;         // whole record
+let shapes: Vec<ShapeEntry> = storage::load_list()?;   // entry by entry
 ```
 
-The registry row carries both facts about a record — its `localStorage` key and
-the name a quota warning calls it by — because they used to be a `const KEY` and
-a bare string three lines apart at each call site, and nine of those is how a
-codebase ends up with five formats. `get`/`set` are **private**: there is no
-untyped door, so there is nowhere for a sixth format to come from.
+The `Store` was a *parameter* once, which meant the type and the key were two
+separate choices at every call site and nothing checked that they agreed:
+`load::<Prefs>(Store::Bindings)` compiled and returned garbage. Now there is one
+choice. `get`/`set` are **private** for the same reason one layer down: there is
+no untyped door, so there is nowhere for another format to come from.
 
-**Adding a record**, in three steps:
+The registry row still carries both facts about a record — its `localStorage`
+key and the name a quota warning calls it by — and the impls name a *variant*
+rather than restating those strings. Ten impls each spelling their own key would
+scatter the answer to "what does this browser keep?" across ten modules, and
+nothing would notice two of them colliding.
+
+**Two traits, not one, because seven of the ten records are lists.** `Record` is
+the whole of what a key holds (`load`/`save`); `Entry` is one item of a library
+(`load_list`/`save_list`). Under a single trait, `load::<StoredPanel>()` would
+compile and quietly answer `None` — an array is not an object — leaving a panel
+stack that silently forgot itself. A type is one or the other, and the compiler
+says which functions it is for.
+
+The difference the traits encode is **what damage costs**. A list is read
+element by element, so one entry today's build cannot make sense of is dropped
+and the rest survive — which is what a library wants, and what every "a name
+this build does not know" case leans on: a binding for a retired command, a
+panel this build no longer has, a tally for a deed nothing counts. A whole
+record is all-or-nothing, which is what `Prefs` wants: a half-read settings blob
+is a worse answer than the defaults. `load_list` also tells `None` from
+`Some(vec![])`, and two callers need it — an untouched quick-brush rack is
+seeded from the preset library, an emptied one is left empty.
+
+**Adding a record**, in four steps:
 
 1. A `Store` variant, with its key and its human name on the one row.
 2. A serde type in the owning module. Give every field `#[serde(default)]` or a
    `Default` on the struct — that, not a version suffix in the key, is how a
    record survives the app version that adds or drops a field. Bytes go through
-   `storage::b64`, a content id or key through `storage::hex`.
-3. One writer, called by everything that changes the state — the move
+   `storage::b64`, a content id or key through `storage::hex`. A record that is
+   a bare primitive needs a newtype: `impl Record for bool` would make *every*
+   boolean in the frontend that record (`navigator::Showing`).
+3. The one-line `Record` or `Entry` impl pairing the two, and a line in
+   `every_record_claims_one_store` — which fails on the count if you forget,
+   and is what catches two types claiming one variant.
+4. One writer, called by everything that changes the state — the move
    `layout::set_open`, `navigator::set_open` and `settings::SettingToggle` all
    make. Durability is then structural: a new way to change the thing is
    remembered without its author thinking about storage.
-
-**Which loader**: `load_list` for a library, `load` for anything else. The
-difference is what damage costs. A list is read element by element, so one entry
-today's build cannot make sense of is dropped and the rest survive — which is
-what a library wants, and what every "a name this build does not know" case
-leans on: a binding for a retired command, a panel this build no longer has, a
-tally for a deed nothing counts. A whole record is all-or-nothing, which is what
-`Prefs` wants: a half-read settings blob is a worse answer than the defaults.
-`load_list` also tells `None` from `Some(vec![])`, and two callers need it — an
-untouched quick-brush rack is seeded from the preset library, an emptied one is
-left empty.
 
 **What is *not* stored here**: anything the document owns. A gradient, a preset
 and a brush shape follow this browser; the ramp a fill commits, the color a

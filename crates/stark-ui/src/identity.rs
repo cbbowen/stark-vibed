@@ -30,7 +30,7 @@
 //! degrades to the previous behaviour of a new identity per run, which costs the two
 //! properties above and breaks nothing.
 
-use crate::storage::{self, Store};
+use crate::storage::{self, Record, Store};
 use stark_net::SecretKey;
 
 /// What is kept between visits: the key itself, and how many runs have used it.
@@ -44,10 +44,14 @@ use stark_net::SecretKey;
 /// nothing can be stale against it (see [`resolve`]). A defaulted secret would be a
 /// key everyone shares.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct Stored {
+pub(crate) struct Stored {
     #[serde(with = "storage::hex")]
     secret: [u8; 32],
     boot: u64,
+}
+
+impl Record for Stored {
+    const STORE: Store = Store::Identity;
 }
 
 /// This client's identity for the life of the process.
@@ -75,19 +79,16 @@ fn resolve() -> ClientIdentity {
     // fresh key per run — safe precisely because the id is new: nothing can be stale
     // against it. The write below then warns and carries on, and the whole arrangement
     // degrades to what it was before any of this was persisted (`crate::storage`).
-    let stored = storage::load::<Stored>(Store::Identity);
+    let stored = storage::load::<Stored>();
     let secret = stored
         .as_ref()
         .map_or_else(SecretKey::generate, |s| SecretKey::from_bytes(&s.secret));
     // Count this run. Wrapping is unreachable in practice and harmless if reached:
     // a peer that saw the old value drops us for `PEER_TIMEOUT` and re-adds us.
     let boot = stored.map_or(0, |s| s.boot).wrapping_add(1);
-    storage::save(
-        Store::Identity,
-        &Stored {
-            secret: secret.to_bytes(),
-            boot,
-        },
-    );
+    storage::save(&Stored {
+        secret: secret.to_bytes(),
+        boot,
+    });
     ClientIdentity { secret, boot }
 }

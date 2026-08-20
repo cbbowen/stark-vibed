@@ -54,6 +54,10 @@ pub struct GradientEntry {
     pub gradient: Gradient,
 }
 
+impl storage::Entry for GradientEntry {
+    const STORE: Store = Store::Gradients;
+}
+
 /// The gradient library's signals (`crate::gradients`). Root-owned like every
 /// library here: the capture is spawned detached, and the trace overlay that
 /// arms it unmounts the moment the mode ends.
@@ -315,11 +319,11 @@ pub fn css_strip(g: &Gradient) -> String {
 // unsampleable ramp.
 
 fn persist(entries: &[GradientEntry]) {
-    storage::save(Store::Gradients, entries);
+    storage::save_list(entries);
 }
 
 fn read_storage() -> Option<Vec<GradientEntry>> {
-    storage::load_list(Store::Gradients)
+    storage::load_list()
 }
 
 /// Arc length of a traced polyline, for the "was that a trace or a click"
