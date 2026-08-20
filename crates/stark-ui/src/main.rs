@@ -62,8 +62,8 @@ use credits::CreditsModal;
 use drags::DragAction;
 use icons::{icon, icon_large};
 use input::{
-    Nav, Paint, Tune, accel, bind_context_menu, bind_pen, bind_shortcuts, elem_xy, end_interaction,
-    hover_at, hover_gone, hover_stroke, pick_color, sample,
+    Nav, Paint, PickMove, Tune, accel, bind_context_menu, bind_pen, bind_shortcuts, elem_xy,
+    end_interaction, hover_at, hover_gone, hover_stroke, pick_color, sample,
 };
 use layout::{PanelId, PanelStack, chrome_class, resize_end, resize_move};
 use navigator::NavigatorOverlay;
@@ -560,6 +560,11 @@ fn Canvas() -> Element {
     // §18.1.9). The canvas's own, unlike `nav`: it moves the brush, and the
     // overlays that navigate have no brush.
     let tune = Tune::use_tune(state);
+    // Shift+drag picks the layer under the press and carries it (`input::PickMove`,
+    // §16.11). The canvas's own like `tune`, and for the mirror of its reason: it
+    // moves the *painting*, which only the surface the painting is on can be
+    // pointing at.
+    let carry = PickMove::use_pick_move(state);
     // Whether an Alt+drag is sampling color off the canvas rather than painting on
     // it (§18.0.2). Shared rather than local, unlike the two above,
     // because the options bar is mounted on *armed but not dragging*.
@@ -602,11 +607,23 @@ fn Canvas() -> Element {
     // (§6.8), so the cursor promises the pick exactly where a press would
     // take one. It beats `no-paint`, because a layer that takes no paint can still
     // be sampled.
-    let sampling = drags::armed((state.held_mods)()) == Some(DragAction::PickColor)
-        && !(state.space_down)()
-        && !tool.is_selection();
+    //
+    // The layer carry announces itself the same way and owes it for the same
+    // reason (§16.11): Shift+drag is a secret without a cursor that says so
+    // before it is used. It stands down over a selection tool for the reason the
+    // pick does — Shift is the union marquee there (§6.8) — which is the gate the
+    // action itself declares, restated here because `armed` answers the table
+    // about a chord and this is a question about the tool in hand.
+    let armed = drags::armed((state.held_mods)());
+    let over_paint = !(state.space_down)() && !tool.is_selection();
+    let sampling = armed == Some(DragAction::PickColor) && over_paint;
+    let carrying = armed == Some(DragAction::PickAndTranslate) && over_paint;
     let canvas_class = if sampling {
         "paint-canvas picking"
+    } else if carrying {
+        // Above `no-paint` for the pick's reason: a layer that takes no paint is
+        // no obstacle to picking a *different* layer up and moving it.
+        "paint-canvas carrying"
     } else if paintable || (state.space_down)() {
         "paint-canvas"
     } else {
@@ -693,6 +710,34 @@ fn Canvas() -> Element {
                         }
                         return;
                     }
+                    // The press picks up whichever layer is showing paint under
+                    // it and the drag carries it (§16.11) — the Move tool's
+                    // auto-select, without the tool.
+                    Some(DragAction::PickAndTranslate) => {
+                        // `begin` declines before the engine exists, where there
+                        // is no view to map the press through and nothing
+                        // painted to pick up.
+                        let picked_up = carry.begin(&e);
+                        if picked_up {
+                            // A stroke another pointer opened can no longer be
+                            // finished by this press, and a gesture the hand has
+                            // walked away from must leave no mark (the tuning
+                            // arm's argument, unchanged).
+                            paint.abandon();
+                            // The press is not paint, so the circle promising it
+                            // goes with it (§18.1.10).
+                            hover_gone(state);
+                            // **Faded**, unlike the two arms above: this
+                            // gesture's answer is the painting itself moving, so
+                            // there is no panel to keep legible and every reason
+                            // to hand the screen back to the picture (§25.3).
+                            canvas_active.set(true);
+                            return;
+                        }
+                        // Declined, so the press falls through to the paint
+                        // path — which does nothing with it for the same
+                        // reason, exactly as the tuning arm's decline does.
+                    }
                     None => {}
                 }
                 // Nothing may be *committed* while the playhead is moving: a
@@ -741,6 +786,7 @@ fn Canvas() -> Element {
                     hover_gone(state);
                     return;
                 }
+                // A layer is being carried under the pointer (§16.11): the paint
                 // A composing mode opened under the hand (`crate::modes`). Its
                 // catcher covers the canvas, so no *new* press can reach here —
                 // but this pointer was captured by the canvas before the catcher
@@ -756,12 +802,28 @@ fn Canvas() -> Element {
                 // leave no mark.
                 if modes::is_composing(state) {
                     paint.abandon();
+                    // And a layer being carried is put back rather than left to
+                    // commit, for the identical reason (`PickMove::abandon`).
+                    carry.abandon();
                     // And the canvas is no longer what is in hand — the mode is.
                     // Unlike the pinch, which goes on using it, so `nav` sets
                     // this the other way. Left dimmed, the mode's own bar would
                     // be faded and taking no clicks (§11) until the pen lifted,
                     // which is the one control the artist now needs.
                     canvas_active.set(false);
+                    hover_gone(state);
+                    return;
+                }
+                // A layer is being carried under the pointer (§16.11): the paint
+                // is moving rather than being laid down, so nothing below applies
+                // and the brush circle stays off the picture being moved.
+                //
+                // **Below** the composing check rather than beside `tune` above,
+                // and the order is load-bearing: this gesture holds a document
+                // preview, so a mode opening under a captured pointer has to
+                // reach `abandon` before another move renews it. Tuning can sit
+                // above because it edits no document and has nothing to renew.
+                if carry.advance(&e) {
                     hover_gone(state);
                     return;
                 }
@@ -817,12 +879,12 @@ fn Canvas() -> Element {
             // finger the hand happened to raise first (§18.1.7).
             onpointerup: move |e| {
                 if !nav.release(&e) {
-                    end_interaction(state, paint, nav, tune);
+                    end_interaction(state, paint, nav, tune, carry);
                 }
             },
             onpointercancel: move |e| {
                 if !nav.release(&e) {
-                    end_interaction(state, paint, nav, tune);
+                    end_interaction(state, paint, nav, tune, carry);
                 }
             },
             onwheel: move |e| nav.wheel(e),
@@ -911,13 +973,15 @@ fn BrushCursor() -> Element {
     // Shown exactly where the crosshair itself promises paint: not over a layer
     // that takes none (the cursor already says not-allowed — §15.7), not under a
     // marquee tool, whose mark is the shape dragged rather than the brush, and
-    // not while space arms a pan or Alt the eyedropper — the modifiers announce
-    // themselves through the cursor, and the circle must not outbid them. It
-    // stays up through a stroke, where it goes on being true.
+    // not while space arms a pan or a chord arms an act that shadows the brush —
+    // the eyedropper, the layer carry. Those announce themselves through the
+    // cursor, and the circle must not outbid them; which acts they are is the
+    // table's answer rather than a list kept here (`DragAction::shadows_paint`).
+    // It stays up through a stroke, where it goes on being true.
     if !paintable
         || tool.is_selection()
         || (state.space_down)()
-        || drags::armed((state.held_mods)()) == Some(DragAction::PickColor)
+        || drags::armed((state.held_mods)()).is_some_and(DragAction::shadows_paint)
         || (state.pick.dragging)()
     {
         return rsx! {};

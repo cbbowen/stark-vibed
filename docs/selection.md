@@ -562,6 +562,117 @@ the engine routes each family to its own action kind, so the in-process
 command enum never touches the wire format. `preview == committed` holds for
 all three, pinned by test.
 
+### 16.11 Pick and translate — the transform without the mode
+
+Everything above is a *composition*: enter the mode, shape the paint, press
+Done. The commonest thing anyone does to a layer is none of that — it is
+"pick that up and put it over there", and making it cost a mode is what makes
+Free Transform feel like a ceremony. So there is one more way into the same
+action, and it is a drag rather than a mode: **Shift + drag on the canvas**
+(`DragAction::PickAndTranslate`, §25.3), the Move tool's auto-select without
+the tool.
+
+The press and the drag are one gesture with two halves:
+
+- **The press picks a layer.** The topmost layer the canvas is *showing* paint
+  at that point becomes the active layer — `Engine::pick_layer`. A press that
+  never travels is the same gesture stopped early, so tapping is how a layer
+  is chosen by pointing at it rather than by finding its row.
+- **The drag carries it.** The translation previews through the same
+  `ViewCommand::PreviewTransform` bargain every family uses (§16.6) and the
+  release commits one `DocCommand::Transform` — an ordinary affine, so this
+  adds no action kind, no wire change and no second renderer. One undo step
+  for the whole drag, like Done.
+
+**Whole canvas pixels.** The translation is rounded before it is shown, which
+is the quality decision in the gesture: an integer translation resamples
+nothing (§16.4's second exactness property), while a fractional one costs the
+layer a generation of bilinear blur for a movement no eye asked for. Every
+other 2D app moves in document pixels for the reason, and it costs nothing in
+the hand — at high zoom one texel is many screen px, at low zoom the pointer
+crosses several per report.
+
+**The carry has to be asked for.** Below a deadzone the press is a tap and
+lays nothing down — 10 page px from a pen or a finger, 4 from a mouse. The
+threshold is in *screen* px because what it separates is a tap of the hand
+from a drag of it, and neither becomes the other by zooming; it is graded by
+pointer type on `input_resolution`'s argument turned to another purpose,
+since a mouse rests on a desk and moves when it is pushed while a pen tip
+flexes and a fingertip rolls. Generous, because the two mistakes do not cost
+the same: a nudge that did not happen is retried in a second, and a nudge
+that did leaves the painting changed and an undo step to go and find. What it
+costs is a floor on the smallest move — 10 screen px at a given zoom — and
+the escape hatch is the one artists already reach for to do fine work, since
+a screen-px threshold shrinks in canvas terms as you zoom in (§6.11's
+smoothing string is measured the same way for the same reason).
+
+The travel spent crossing the deadzone is *spent*, not subtracted: the moment
+the carry engages, the paint sits where the pointer has carried it from the
+press. That is a small pop rather than a drift, and it is the right one —
+subtracting would leave the paint trailing the hand by up to the deadzone for
+the rest of the drag, which breaks the property §16.6 names for every
+transform gesture, that the grabbed point follows the pointer exactly.
+
+#### What "the layer under the pointer" means
+
+`Engine::pick_layer` is a request built out of the eyedropper's parts
+(§18.0.2): one 1×1 render per candidate layer, batched into a single buffer
+map, because the map is the latency. The two differ only in which axis the
+batch runs along — the eyedropper renders one source at many points, this
+renders many sources at one point. A layer with no tile under the pointer is
+culled before it costs a pass, so the usual answer is one or two renders.
+
+The walk is the composite order reversed, so "topmost" is *last drawn* — and
+a hidden layer, or one turned all the way down, takes its whole subtree with
+it. That last part is the one thing the compositor's single-layer draw list
+cannot supply on its own: it answers about the layer named, which is right
+for "what colour is this layer's paint" and wrong for "what can I point at",
+because the members of a hidden group are not on the screen.
+
+Coverage is read from the layer *alone*, `PickSource::Layer`'s stance, and two
+consequences are worth stating because a user could notice them. A layer at
+10% opacity still answers where its paint is solid — it is there, faintly, and
+the alternative is paint you can see and cannot grab. And a **clipped** layer
+answers over its whole extent rather than only where the paint beneath lets it
+through (§14.4): the carrying group is what bounds a clip, and a hit test that
+re-derived that would be a second opinion about compositing rather than a
+question about paint. The threshold is a quarter coverage — where a texel
+starts to read as covered, rather than where it stops being empty, so a soft
+brush's outermost fringe is not what the press grabs; a quarter rather than a
+half because a glaze laid at low flow covers honestly and never reaches one
+(§6.1's slab law).
+
+#### The selection
+
+Two separate facts, and only the second is new. The **carry** respects the
+mask for free: `ActionKind::Transform` cuts under the author's own selection
+already (§16.1), so a lasso means the lasso's contents travel and the rest of
+the layer stays. The **pick** had to be taught — a mask in force pins the
+press to the active layer instead of re-targeting it. A selection is drawn
+against paint the artist is looking at, on a layer they have in mind; a press
+that went looking would cut a *different* layer through their lasso. A
+universal selection is not one for this purpose: select-all and deselect are
+the same state (`DocState::with_selection` stores neither), which is the
+reading that makes sense — "everything is selected" says nothing about a
+layer.
+
+#### Two halves that arrive out of order
+
+The pointer's travel is known immediately and the layer under the press is a
+GPU readback, so a flick can be over before the hit test answers. The gesture
+is written around that rather than against it: the record outlives the
+release, and the commit runs from whichever half arrives second
+(`input::PickMove::settle`). Each press carries a serial the readback compares
+against the record it finds, so an answer to a press that has already been
+replaced — a double-click, where the second press beats the first one's answer
+— is dropped rather than written into its successor.
+
+Known rough edges: no axis constraint (shift-to-lock is spoken for, being the
+chord itself); the pinned-layer rule fires for a selection anywhere on the
+canvas rather than only for a press inside it, because the projection carries
+the selection's hull and not its mask; and a clipped layer is grabbable over
+its whole extent, per above.
+
 ---
 
 

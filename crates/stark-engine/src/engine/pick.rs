@@ -1,11 +1,18 @@
-//! The eyedropper: sampling a color off the canvas (§18.0.2).
+//! Asking the canvas what is at a point: the eyedropper's color (§18.0.2) and
+//! the pick-and-translate drag's layer (§16.11).
 //!
-//! A **request** rather than a command — it has to answer — and one that goes
-//! through the *same* draw list rendering does ([`Engine::composite_groups`]), so
-//! what it reports is the paint the screen is drawing rather than a second opinion
-//! about it. What it deliberately does not sample is the media pass's output: that
-//! lights the paint, tonemaps it and encodes sRGB, so picking it up would load the
-//! brush with a color the palette never mixed.
+//! Both are **requests** rather than commands — they have to answer — and both
+//! go through the *same* draw list rendering does
+//! ([`Engine::composite_groups`]), so what they report is the paint the screen is
+//! drawing rather than a second opinion about it. What the eyedropper
+//! deliberately does not sample is the media pass's output: that lights the
+//! paint, tonemaps it and encodes sRGB, so picking it up would load the brush
+//! with a color the palette never mixed.
+//!
+//! The two share their machinery down to the readback, and differ only in which
+//! axis the batch runs along: [`Engine::pick_colors`] renders one source at many
+//! points, [`Engine::pick_layer`] many sources at one point. Each ends in a
+//! single buffer map, because the map is the latency.
 
 use super::Engine;
 use super::render::visible_tiles;
@@ -438,6 +445,172 @@ impl Engine {
                     })
                 })
                 .collect()
+        }
+    }
+}
+
+/// How much of a layer's own coverage a press has to land on for that layer to
+/// count as the one under the pointer (§16.11).
+///
+/// Not [`PICK_MIN_OPACITY`]'s near-zero floor, which asks a different question:
+/// that one asks whether there is enough paint here to divide by without
+/// amplifying float noise into a hue, and this one asks whether *this is the
+/// layer the artist is pointing at*. The outermost texel of a soft brush's
+/// feather is paint by the first question and is not what the hand meant by the
+/// second, so the threshold sits where a texel starts to read as covered rather
+/// than where it stops being empty.
+///
+/// A quarter rather than a half because the paint it has to answer for is not
+/// only opaque: a glaze laid at low flow covers honestly and never reaches half
+/// (§6.1's slab law), and a hit test that could not grab a glaze would be one the
+/// thinnest passages of a painting fall out of.
+const LAYER_HIT_COVERAGE: f32 = 0.25;
+
+/// Every paint layer the canvas actually shows, **topmost first** — the order a
+/// hit test walks, so the first answer it finds is the last one drawn.
+///
+/// Reverse composite order, which inside a group means its members before the
+/// carrier's own content: members composite *over* the base they are carried on
+/// (§14.2), so coming back down the stack they are met first.
+///
+/// A hidden layer — or one turned all the way down — takes its whole subtree with
+/// it. That is the part the single-layer branch of `composite_groups` cannot do
+/// on its own: it asks only about the layer named, which is right for "sample
+/// this layer" (§18.0.2) and wrong here, because the members of a hidden group
+/// are not on the screen to be pointed at.
+fn shown_paint_layers(stack: &rpds::Vector<crate::document::Layer>, out: &mut Vec<LayerId>) {
+    for layer in stack.iter().rev() {
+        if !layer.visible || layer.composite.opacity <= 0.0 {
+            continue;
+        }
+        shown_paint_layers(&layer.carries, out);
+        // A tile map is exactly what makes a layer answerable here: a matte and a
+        // filter have none (§15.2, §21), and neither is paint a press can pick up
+        // and carry — a frame moves by its own handles, and a filter has no
+        // content of its own to move.
+        if layer.tiles().is_some() {
+            out.push(layer.id);
+        }
+    }
+}
+
+impl Engine {
+    /// Which layer's paint the canvas shows at `at` — the hit test the
+    /// pick-and-translate drag opens with (§16.11).
+    ///
+    /// A **request** for [`Engine::pick_color`]'s reason (it has to answer), and
+    /// built out of the same parts: one small render per candidate and **one**
+    /// buffer map for the lot. What differs is which axis the batch runs along —
+    /// the eyedropper renders one source at many points, this renders many
+    /// sources at one point — so the cost is a tree walk plus a 1×1 pass for each
+    /// layer that has a tile under the pointer at all, and a single readback.
+    ///
+    /// The answer is the **topmost** layer whose own coverage there reaches
+    /// [`LAYER_HIT_COVERAGE`], or `None` where the press landed on nothing the
+    /// canvas is showing.
+    ///
+    /// Coverage of the layer *alone*, exactly as [`PickSource::Layer`] takes a
+    /// color: the composite params say how a layer meets what is beneath it, and
+    /// "which paint is under my finger" is a question about the paint. Two
+    /// consequences are worth stating, because they are the ones a user could
+    /// notice. A layer turned down to 10% still answers where its paint is solid
+    /// — it is *there*, faintly, and the alternative is paint you can see and
+    /// cannot grab. And a **clipped** layer answers over its whole extent rather
+    /// than only where the paint beneath it lets it through (§14.4); the carrying
+    /// group is what bounds a clip, and a hit test that re-derived that would be a
+    /// second opinion about compositing rather than a question about paint.
+    ///
+    /// Renders immediately and returns a future for the readback — the shape
+    /// every request that reads the GPU back wears here, and for
+    /// [`Engine::export`]'s reason: an `async fn` would hold `&mut self` across
+    /// an await during which the frontend re-renders and tries to read the
+    /// engine.
+    ///
+    /// [`Engine::export`]: crate::Engine::export
+    pub fn pick_layer(
+        &mut self,
+        at: stark_model::geom::Vec2,
+    ) -> impl std::future::Future<Output = Option<LayerId>> + use<> {
+        // The hit test reads `presented`, whose fold is rebuilt lazily — flush,
+        // so a press made mid-stroke is answered against what the screen shows.
+        self.flush_live();
+        let size = Extent2::new(1, 1);
+        let view = patch_view(at, size);
+        // For a single texel, a cull that cannot be measured is not an
+        // optimization declining to help ([`patch_cull`]'s stance): it is the
+        // point itself being unaddressable — non-finite, or past the far edge of
+        // the tile grid — and there is no paint out there to point at.
+        let lists: Vec<(LayerId, Vec<crate::gpu::CompositeGroup>)> = match visible_tiles(view) {
+            None => Vec::new(),
+            Some(cull) => {
+                let doc = self.presented();
+                let mut candidates = Vec::new();
+                shown_paint_layers(doc.root(), &mut candidates);
+                candidates
+                    .into_iter()
+                    .filter_map(|id| {
+                        // An empty list means the layer draws nothing in this tile
+                        // — no tile there, hidden, or switched off — so it is out
+                        // before it costs a pass.
+                        let groups = self.composite_groups(doc, Some(id), Some(cull));
+                        (!groups.is_empty()).then_some((id, groups))
+                    })
+                    .collect()
+            }
+        };
+
+        let formats = self.compositor_pipeline.channel_formats();
+        // Only the color target's alpha is read, and the readback decodes four
+        // halves per texel — the same assumption `pick_colors` pins.
+        debug_assert_eq!(formats.color, wgpu::TextureFormat::Rgba16Float);
+        let mut hits: Vec<(LayerId, wgpu::Texture)> = Vec::with_capacity(lists.len());
+        for (id, groups) in &lists {
+            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC;
+            let color = self.offscreen_target("stark hit color", formats.color, size, usage);
+            // Written and never read, both of these. The height says how *much*
+            // paint is there rather than how much of the texel it covers, and in a
+            // pigment space the residual is more color channels — neither is the
+            // coverage this asks for.
+            let aux = self.offscreen_target("stark hit aux", formats.aux, size, usage);
+            let resid = formats
+                .resid
+                .map(|f| self.offscreen_target("stark hit resid", f, size, usage));
+            let default = wgpu::TextureViewDescriptor::default();
+            let (color_view, aux_view) = (color.create_view(&default), aux.create_view(&default));
+            let resid_view = resid.as_ref().map(|t| t.create_view(&default));
+            self.compositor.composite_channels(
+                &self.compositor_pipeline,
+                Targets {
+                    color: &color_view,
+                    aux: &aux_view,
+                    resid: resid_view.as_ref(),
+                },
+                view,
+                groups,
+            );
+            hits.push((*id, color));
+        }
+
+        let gpu = self.shared.gpu.clone();
+        async move {
+            if hits.is_empty() {
+                return None;
+            }
+            let refs: Vec<&wgpu::Texture> = hits.iter().map(|(_, t)| t).collect();
+            // A readback that fails is the GPU failing underneath it (§5), and
+            // "nothing under the pointer" is the honest answer for a device that
+            // can no longer be read — the eyedropper's stance, for its reason:
+            // `ObservableState::gpu_failure` is what *reports* the failure, and a
+            // hit test going quiet is a symptom rather than the cause.
+            let Ok(sets) = crate::gpu::readback::read_many_rgba16f(&gpu, &refs, size).await else {
+                return None;
+            };
+            hits.iter().zip(sets).find_map(|((id, _), texels)| {
+                let coverage = *texels.first_chunk::<4>()?.get(3)?;
+                (coverage.is_finite() && coverage >= LAYER_HIT_COVERAGE).then_some(*id)
+            })
         }
     }
 }

@@ -12,8 +12,9 @@ The **command registry** (`stark-ui/src/commands.rs`) holds the simple acts —
 undo, deselect, open the export dialog — each a variant of `Command` carrying
 its whole description, with the keyboard as one rebindable column. The **drag
 table** (`stark-ui/src/drags.rs`) holds the canvas presses that open something
-other than painting — the brush-tuning drag (§18.1.9), the eyedropper (§18.0.2)
-— each a row binding an exact chord+button to a `DragAction`. §11 tells both
+other than painting — the brush-tuning drag (§18.1.9), the eyedropper (§18.0.2),
+the layer carry (§16.11) — each a row binding an exact chord+button to a
+`DragAction`. §11 tells both
 designs' history; this chapter is the working guide, written for the day a
 feature is added: which table the feature belongs to, if either, and the steps
 that keep the tables true.
@@ -162,9 +163,11 @@ Then the table names the press that opens it:
 2. **Put the gate on the action** — `DragAction::claims`, `Command::run`'s
    lesson restated for presses. PickColor declines over a selection tool
    (Alt is the subtract marquee there, §6.8) and during playback (a sample
-   would read the replay, not the painting); TuneBrush declines nothing (the
-   brush is view state, and the sliders it shadows are not refused
-   mid-playback either). A declined press falls through to the paint path,
+   would read the replay, not the painting); PickAndTranslate declines in
+   both places too, arriving from the other side — Shift is the *union*
+   marquee, and its release commits, which the playhead forbids; TuneBrush
+   declines nothing (the brush is view state, and the sliders it shadows are
+   not refused mid-playback either). A declined press falls through to the paint path,
    which is usually exactly right — the modifiers then mean whatever the
    paint gesture says they mean. Do **not** encode a gate as position in the
    canvas ladder; the ladder orders *families* (§25.4), and `find` asks
@@ -172,11 +175,11 @@ Then the table names the press that opens it:
 3. **Add the arm** in the canvas's `onpointerdown` match: capture the
    pointer, open the gesture, abandon any paint stroke another pointer had in
    flight, and decide `canvas_active` deliberately — fade the chrome only if
-   the gesture's answer is *not* read off a panel. Both existing arms keep
-   the chrome up, because the Brush and Color panels are where their answers
-   land; a translate-layer drag would fade it. Then teach `end_interaction`
-   to put the new gesture down: it is the one place that knows what a
-   release ends.
+   the gesture's answer is *not* read off a panel. TuneBrush and PickColor
+   keep the chrome up, because the Brush and Color panels are where their
+   answers land; PickAndTranslate fades it, because its answer is the
+   painting itself moving. Then teach `end_interaction` to put the new
+   gesture down: it is the one place that knows what a release ends.
 4. **Advertise through the table.** Whatever the resting screen shows for
    the binding — a cursor class, a mounted bar, a stood-down overlay — must
    ask `drags::armed` over `AppState::held_mods`, never test a modifier
@@ -186,9 +189,16 @@ Then the table names the press that opens it:
    binding and is exactly as exact as the press. This is also the
    discoverability bill (§24's opening argument): a modifier binding is
    discoverable *only* through what appears while it is held — the
-   eyedropper's cursor and options bar, the size drag's ring at the press.
-   A new action owes an announcement of the same kind, and it owes it
-   through `armed`.
+   eyedropper's cursor and options bar, the size drag's ring at the press,
+   the layer carry's `move` cursor. A new action owes an announcement of the
+   same kind, and it owes it through `armed`. The other half of the same
+   bill is what the announcement must *displace*: chrome that promises paint
+   — the brush circle, and the hover mark folded into the shown document —
+   stands down for an act that shadows it (`DragAction::shadows_paint`),
+   which is a property of the act rather than a list kept beside each
+   cursor. The mark is the sharper case, because an act that reads the
+   canvas back would read the hypothesis as paint: the wrong colour for the
+   eyedropper, the wrong layer for the carry.
 
 What is deliberately **not** a row, so that nobody re-litigates it per
 feature:
@@ -202,7 +212,11 @@ feature:
   pan is a plausible row); it is the holds themselves that are not rows.
 - **The marquee's combine modifiers.** Shift and Alt over a selection tool
   modulate the paint gesture (`panels::select::modifier_mode`) rather than
-  replacing it — which is precisely why PickColor's claim stands down there.
+  replacing it — which is precisely why PickColor's and PickAndTranslate's
+  claims stand down there. Between them those two rows *are* the marquee's
+  Alt and Shift, and that is not a collision to be resolved by finding
+  quieter chords: each is the conventional binding for both acts, and which
+  one a press means is a question the tool in hand already answers.
 - **The plain press.** Painting is not a bound action; it is what an unbound
   press *is*, and the *tool* owns what it means (§6.8). A row for it would be
   a second authority over the question the tool already answers.
@@ -236,6 +250,13 @@ The move and release handlers do not re-ask the table: **a drag is what it
 was begun as** — each gesture's `advance` answers only if it has one in
 flight, and `end_interaction` puts every family down in one place. When a new
 gesture joins, it joins all three handlers, not just the press.
+
+The move handler has an order of its own, and one rung of it is load-bearing:
+the check for a **composing mode opening under a captured pointer** must sit
+above every gesture that holds a document preview, so the mode's arrival
+reaches that gesture's `abandon` before another move renews what it is
+showing. `Nav` and `Tune` sit above it because neither edits a document;
+`Paint` and `PickMove` sit below.
 
 The keyboard's ladder is the same idea one seam over (`input`'s keydown):
 the text-entry carve-out first (a field's keystrokes are the field's), then

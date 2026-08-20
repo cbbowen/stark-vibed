@@ -4215,6 +4215,16 @@ button.layer-remove:hover {
     crosshair;
 }
 
+/* The canvas while Shift is held: the layer carry is armed, and a press will pick
+   up whatever layer is showing paint there rather than paint on it (§16.11). The
+   same discoverability bill `.picking` pays, settled the same way — the cursor
+   changes on the key, not on the press. The platform's own `move` glyph rather
+   than a drawn one: every app that carries something spells it this way, and a
+   cursor whose whole job is to be recognized should not be novel. */
+.paint-canvas.carrying {
+  cursor: move;
+}
+
 /* The aspect drop-down in the frame bar: sized to its content, unlike the panel
    `.select` which fills its row. */
 .select.frame-aspect {

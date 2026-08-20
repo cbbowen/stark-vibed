@@ -12,17 +12,27 @@
 //! substrate, and what it has to be held to is the opposite pair: that the ground
 //! shows through where the paint does not cover, and that it stays out of the way
 //! where the paint does.
+//!
+//! The **layer** hit test (§16.11) is here for the same reason its implementation
+//! is: it is the other question asked of a point on the canvas, and it answers
+//! off the same draw list. What it rests on is that "topmost" means *last drawn*
+//! and "there" means the screen shows it — so the claims below are about
+//! stacking, about hiding (a layer's own and the group's above it), and about the
+//! difference between a layer turned down and a layer switched off.
 
 mod common;
 
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{Engine, PickOptions, PickSource};
-use stark_model::document::LayerId;
+use stark_model::document::{LayerId, Place};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.12, 0.1, 1.0];
 const BLUE: [f32; 4] = [0.1, 0.2, 0.8, 1.0];
+
+/// The layer every fresh document starts with.
+const ROOT: LayerId = LayerId(0);
 
 /// A short horizontal stroke through the origin, wide enough that the middle is
 /// solidly covered.
@@ -621,4 +631,134 @@ fn an_absurd_radius_is_clamped_not_obeyed() {
         0.2,
         "a huge radius should still answer",
     );
+}
+
+// ---------------------------------------------------------------------------
+// The layer hit test (§16.11)
+// ---------------------------------------------------------------------------
+
+/// A short vertical stroke through the origin, [`BAR`]'s partner: the two cross
+/// at the origin and are alone everywhere else, which is what lets one point ask
+/// "which is on top" and two others ask "did you find the right one at all".
+const UP: &[Vec2] = &[Vec2::new(0.0, -40.0), Vec2::new(0.0, 40.0)];
+
+/// The crossing. Both bars cover it, so the answer here is about **order**.
+const BOTH: Vec2 = Vec2::ZERO;
+/// On the horizontal bar and clear of the vertical one (whose half-width is 24).
+const ONLY_BAR: Vec2 = Vec2::new(-32.0, 0.0);
+/// On the vertical bar and clear of the horizontal one.
+const ONLY_UP: Vec2 = Vec2::new(0.0, -32.0);
+/// Far off both: nothing is painted here on any layer.
+const NEITHER: Vec2 = Vec2::new(-200.0, -200.0);
+
+fn hit(engine: &mut Engine, at: Vec2) -> Option<LayerId> {
+    pollster::block_on(engine.pick_layer(at))
+}
+
+/// Red across the root layer, blue up a layer above it. Returns the upper one.
+fn crossed(engine: &mut Engine) -> LayerId {
+    paint(engine, RED, 24.0, BAR);
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    let top = engine.observe().active_layer;
+    paint(engine, BLUE, 24.0, UP);
+    top
+}
+
+/// The headline: the answer is the **last layer drawn** that has paint there, and
+/// on bare canvas there is no answer at all.
+///
+/// The three points are three different claims, and only the first is about
+/// stacking: the other two are the ones that would still pass if the hit test
+/// answered with the active layer, or with the topmost layer full stop.
+#[test]
+fn the_topmost_painted_layer_is_the_one_under_the_pointer() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let top = crossed(&mut engine);
+
+    assert_eq!(hit(&mut engine, BOTH), Some(top), "the upper bar wins");
+    assert_eq!(hit(&mut engine, ONLY_BAR), Some(ROOT), "only red is here");
+    assert_eq!(hit(&mut engine, ONLY_UP), Some(top), "only blue is here");
+    assert_eq!(hit(&mut engine, NEITHER), None, "bare canvas holds nothing");
+}
+
+/// A hidden layer is not under the pointer, because it is not on the screen —
+/// the press has to find whatever the eye finds.
+#[test]
+fn a_hidden_layer_is_not_under_the_pointer() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let top = crossed(&mut engine);
+    engine.process(DocCommand::SetLayerVisible(top, false));
+
+    assert_eq!(hit(&mut engine, BOTH), Some(ROOT), "red shows through now");
+    assert_eq!(hit(&mut engine, ONLY_UP), None, "and blue is nowhere");
+}
+
+/// Opacity is not visibility, and the hit test has to keep the difference.
+///
+/// Zero is a layer switched off and answers like a hidden one; every setting
+/// above it is a layer that is *there*, turned down, and must stay grabbable —
+/// paint you can see and cannot pick up is the failure this pins.
+#[test]
+fn a_faded_layer_is_still_there_and_a_zeroed_one_is_not() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let top = crossed(&mut engine);
+
+    engine.process(DocCommand::SetLayerOpacity(top, 0.1));
+    assert_eq!(hit(&mut engine, BOTH), Some(top), "faint, but it is there");
+
+    engine.process(DocCommand::SetLayerOpacity(top, 0.0));
+    assert_eq!(hit(&mut engine, BOTH), Some(ROOT), "switched off is gone");
+}
+
+/// Hiding a **group** hides its members, and the hit test has to follow the whole
+/// subtree down rather than ask each layer about itself.
+///
+/// The one claim that cannot be made by asking the compositor for a single
+/// layer's draw list: that list answers for the layer named, which is right when
+/// the question is "what color is this layer's paint" (§18.0.2) and wrong when it
+/// is "what can I point at".
+#[test]
+fn a_hidden_group_takes_its_members_with_it() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let top = crossed(&mut engine);
+    // The blue layer is now carried by the red one — a group whose base is paint.
+    engine.process(DocCommand::MoveLayer {
+        id: top,
+        carrier: Some(ROOT),
+        at: Place::Top,
+    });
+    assert_eq!(hit(&mut engine, BOTH), Some(top), "grouped, still on top");
+
+    engine.process(DocCommand::SetLayerVisible(ROOT, false));
+    assert_eq!(hit(&mut engine, BOTH), None, "the carrier took it down");
+    assert_eq!(hit(&mut engine, ONLY_UP), None, "everywhere, not just here");
+}
+
+/// A stroke's feathered rim is paint, and it is not what the hand was pointing
+/// at — the threshold sits where a texel starts to read as covered.
+///
+/// Asked just outside the tip rather than at some arbitrary distance: a bar of
+/// half-width 24 has its coverage ramp inside that, so a point at 32 is past the
+/// paint entirely while the tile it lands in is the stroke's own — which is
+/// exactly the case a tile-granular hit test would get wrong.
+#[test]
+fn the_pointer_has_to_be_on_the_paint_not_merely_near_it() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(&mut engine, RED, 24.0, BAR);
+
+    assert_eq!(hit(&mut engine, Vec2::new(0.0, 0.0)), Some(ROOT));
+    assert_eq!(hit(&mut engine, Vec2::new(0.0, 32.0)), None, "past the rim");
 }

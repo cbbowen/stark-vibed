@@ -6,8 +6,9 @@
 //! action is a **gesture**, with a press that opens it, moves that feed it and a
 //! release that ends it. The gestures themselves stay where they live — the
 //! brush-tuning drag is `input::Tune` (§18.1.9), the eyedropper is
-//! `input::pick_color` and the `PickState` flags (§18.0.2) — because each owns
-//! its own lifecycle and state. What this module owns is the one question the
+//! `input::pick_color` and the `PickState` flags (§18.0.2), the layer carry is
+//! `input::PickMove` (§16.11) — because each owns its own lifecycle and state.
+//! What this module owns is the one question the
 //! canvas used to answer with a hand-written ladder of modifier tests: **which
 //! of them does this press open?** One table, one reader on the press path
 //! ([`find`]), and one on the advertisement path ([`armed`]) — so what a press
@@ -37,7 +38,12 @@
 //! - **The marquee's combine modifiers.** Shift and Alt over a selection tool
 //!   modulate the paint gesture (`panels::select::modifier_mode`, §6.8) rather
 //!   than replacing it with another, so they are the gesture's business — and
-//!   the reason [`DragAction::PickColor`] declines there ([`claims`]).
+//!   the reason [`DragAction::PickColor`] and
+//!   [`DragAction::PickAndTranslate`] both decline there ([`claims`]). Between
+//!   them those two chords *are* the marquee's Alt and Shift, which is not a
+//!   collision to be resolved by picking other chords: they are the
+//!   conventional bindings for both acts, and which one a press means is
+//!   answered by the tool in hand.
 //! - **The plain press.** Painting is not a bound action, it is what an
 //!   unclaimed press *is* — the resting meaning every unbound chord falls
 //!   through to, as an unclaimed keystroke falls through to the browser.
@@ -117,6 +123,17 @@ pub enum DragAction {
     /// the drag keeps sampling, so a color is picked up without putting the
     /// brush down.
     PickColor,
+    /// Pick the layer under the press and carry it (`input::PickMove`,
+    /// §16.11): the press auto-selects the topmost layer showing paint where it
+    /// landed, and the drag translates that layer's selected paint. A tap is
+    /// the selection alone — which is the same gesture stopped early, not a
+    /// second binding.
+    ///
+    /// The Move tool's auto-select, which is what a hand arriving from
+    /// Photoshop or Clip Studio Paint already knows; what it does *not* borrow
+    /// is their tool-shaped framing, since a mode you have to enter and leave
+    /// is exactly what a chord is for.
+    PickAndTranslate,
 }
 
 /// The drag table Stark ships with. Rows are disjoint by construction — the
@@ -138,6 +155,10 @@ fn defaults() -> Vec<(DragChord, DragAction)> {
         (
             on(false, false, true, DragButton::Left),
             DragAction::PickColor,
+        ),
+        (
+            on(false, true, false, DragButton::Left),
+            DragAction::PickAndTranslate,
         ),
     ]
 }
@@ -198,6 +219,36 @@ impl DragAction {
                 !crate::panels::select::current_tool(state).is_selection()
                     && !crate::panels::timeline::is_playing(state)
             }
+            // The same two stand-downs, arrived at from the other side. Over a
+            // selection tool **Shift** is the union marquee (§6.8) — the chord
+            // this action wears is the marquee's own combine modifier there, and
+            // a gesture that is what the press is *for* outranks one that
+            // reaches past it. And this one *commits*: the ladder's playback
+            // guard sits below the table (§25.4), so an action that would lay an
+            // undo step down has to refuse the playhead itself.
+            DragAction::PickAndTranslate => {
+                !crate::panels::select::current_tool(state).is_selection()
+                    && !crate::panels::timeline::is_playing(state)
+            }
+        }
+    }
+
+    /// Whether a press under this binding takes the canvas away from the brush
+    /// — so the chrome that *promises* paint stands down while the chord is
+    /// held: the brush circle, and the hover mark under it (§18.1.10).
+    ///
+    /// A property of the act rather than a list kept at each of those call
+    /// sites, for [`claims`](Self::claims)' reason. The mark is the sharper half
+    /// of the bill: it is a preview folded into the shown document, so a press
+    /// that *reads* the canvas back would read the hypothesis as paint — which
+    /// is a wrong color for the eyedropper and a wrong layer for the hit test.
+    pub fn shadows_paint(self) -> bool {
+        match self {
+            // Tuning *is* about the brush, and draws its own picture of it (the
+            // size ring at the press, §18.1.9): the circle and the mark are both
+            // still telling the truth about what the brush will do.
+            DragAction::TuneBrush => false,
+            DragAction::PickColor | DragAction::PickAndTranslate => true,
         }
     }
 }
@@ -227,6 +278,10 @@ mod tests {
             lookup(m(false, false, true), DragButton::Left),
             Some(DragAction::PickColor)
         );
+        assert_eq!(
+            lookup(m(false, true, false), DragButton::Left),
+            Some(DragAction::PickAndTranslate)
+        );
         // A bare press is not a row: painting is what an unbound press is,
         // not an act the table names.
         assert_eq!(lookup(m(false, false, false), DragButton::Left), None);
@@ -239,15 +294,30 @@ mod tests {
         // as the keyboard table reads its modifiers.
         assert_eq!(lookup(m(true, false, true), DragButton::Left), None);
         assert_eq!(lookup(m(true, true, false), DragButton::Left), None);
+        // Shift+Alt neither: the layer carry is the *bare* Shift row, and
+        // Alt beside it is no more a bystander here than anywhere else —
+        // which is also what keeps the marquee's intersect chord (§6.8) from
+        // being read as a carry the instant the tool changes.
         assert_eq!(lookup(m(false, true, true), DragButton::Left), None);
     }
 
     #[test]
     fn the_button_is_part_of_the_chord() {
         let m = |ctrl, shift, alt| Mods { ctrl, shift, alt };
-        // Both shipped rows are left-drags; their chords on the right button
+        // Every shipped row is a left-drag; their chords on the right button
         // ask for nothing.
         assert_eq!(lookup(m(true, false, false), DragButton::Right), None);
         assert_eq!(lookup(m(false, false, true), DragButton::Right), None);
+        assert_eq!(lookup(m(false, true, false), DragButton::Right), None);
+    }
+
+    /// The chrome that promises paint stands down for exactly the actions that
+    /// take the press away from it — asked of the table rather than of a list
+    /// kept beside the cursor and the hover mark (§25.5).
+    #[test]
+    fn the_acts_that_shadow_the_brush() {
+        assert!(!DragAction::TuneBrush.shadows_paint());
+        assert!(DragAction::PickColor.shadows_paint());
+        assert!(DragAction::PickAndTranslate.shadows_paint());
     }
 }

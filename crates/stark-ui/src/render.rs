@@ -515,6 +515,17 @@ impl Renderer {
         self.engine.pick_gradient(path, options)
     }
 
+    /// Which layer's paint the canvas shows at `at` — the layer carry's hit test
+    /// (§16.11). The same borrow bargain as [`Renderer::pick_color`], and it
+    /// matters here for that reason exactly: this one opens a drag, so the
+    /// gesture goes on driving the renderer while the readback is in flight.
+    pub fn pick_layer(
+        &mut self,
+        at: stark_model::Vec2,
+    ) -> impl std::future::Future<Output = Option<stark_model::document::LayerId>> + use<> {
+        self.engine.pick_layer(at)
+    }
+
     /// A bundled shape's content id, once its bytes have been imported.
     pub fn builtin(&self, name: &str) -> Option<stark_model::AssetId> {
         self.builtins
