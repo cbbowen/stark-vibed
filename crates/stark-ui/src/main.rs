@@ -445,25 +445,33 @@ fn app() -> Element {
             // pointer, wears the armed accent, and stands the others down —
             // *recessed* rather than unmounted, so the place its Done and Esc
             // return to stays on screen.
+            // The column is anchored at its foot, so an earlier child stands
+            // *higher* — and the order here is the stack's: deepest first, so
+            // each bar lands **above** the one it covers, the way a card lands
+            // on a pile. A trace stands over the gradient bar it parked, a
+            // mode over the standing bars it recessed.
             div { class: "bottom-bars",
-                // The whole-selection commands, present only while there is a
-                // selection — so it doubles as the "canvas is masked" indicator.
-                SelectionBar {}
-                // The transform gesture's flips and "Done", standing in for the
+                // The trace's name and its Cancel while one is armed (§22.2) —
+                // the deepest the stack goes, since a trace is the one mode
+                // entered from inside another mode's bar. Before this bar the
+                // mode had no standing indicator at all, only a lit chip inside
+                // a pop-out that closes the moment the mode starts.
+                TraceBar {}
+                // The transform gesture's flips and "Done", standing over the
                 // selection bar while one is composing (§16.6).
                 TransformBar {}
-                // The gradient fill's axis kinds and "Done", standing in the
-                // same way while a ramp is being composed (§22.4) — and staying,
-                // recessed, while a trace has it parked (`state::gradient_resume`).
+                // The gradient fill's axis kinds and "Done", standing the same
+                // way while a ramp is being composed (§22.4) — and staying,
+                // recessed under the trace's bar, while one has it parked
+                // (`state::gradient_resume`).
                 GradientBar {}
-                // The trace's name and its Cancel while one is armed (§22.2) —
-                // above this line the mode had no bar at all, only a lit chip
-                // inside a pop-out that closes the moment the mode starts.
-                TraceBar {}
                 // The drawing-guide edit mode's controls — locks, axis
                 // visibility, cell count, opacity — while a perspective grid is
                 // being composed (§20.5).
                 PerspectiveGuideBar {}
+                // The whole-selection commands, present only while there is a
+                // selection — so it doubles as the "canvas is masked" indicator.
+                SelectionBar {}
                 // The frame's composition controls, present only while a frame is
                 // selected for composing (§15.7).
                 FrameBar {}
@@ -473,8 +481,10 @@ fn app() -> Element {
                 // selected layer being of their kind.
                 FilterBar {}
                 // The eyedropper's options, present only while Alt arms it
-                // (§18.0.2). Last in the column, so it comes up
-                // nearest the canvas — it is the most transient of the three.
+                // (§18.0.2). Not part of the stack above — it coexists
+                // with painting rather than covering anything — so it keeps the
+                // foot of the column, nearest the canvas: it is the most
+                // transient row here.
                 PickBar {}
             }
 

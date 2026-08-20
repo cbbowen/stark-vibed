@@ -27,6 +27,7 @@
 
 use dioxus::prelude::*;
 
+use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
 use crate::input::page_xy;
 use crate::layout::chrome_class;
@@ -482,7 +483,14 @@ pub fn FrameBar() -> Element {
 
             button {
                 class: "chip",
-                title: "Stop composing and go back to painting (the frame stays)",
+                // Esc performs this same act (`commands`' ladder), so the chip
+                // advertises the key the way the mode bars' Done advertises
+                // Enter — through the registry, so a rebind follows.
+                title: commands::advertised(
+                    "Stop composing and go back to painting \u{2014} the frame stays",
+                    Command::CancelMode,
+                    &state.bindings.read(),
+                ),
                 onclick: move |_| done_composing(state),
                 {icon(icons::DONE)}
                 {label("Done")}

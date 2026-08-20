@@ -56,6 +56,7 @@ use std::sync::LazyLock;
 
 use dioxus::prelude::*;
 
+use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
 use crate::layout::chrome_class;
 use crate::panels::color::ab_field_data_url;
@@ -1161,7 +1162,13 @@ pub fn FilterBar() -> Element {
             }
             button {
                 class: "chip",
-                title: "Stop tuning and go back to painting (the filter stays)",
+                // Esc performs this same act (`commands`' ladder) — advertised
+                // through the registry, the frame bar's reason.
+                title: commands::advertised(
+                    "Stop tuning and go back to painting \u{2014} the filter stays",
+                    Command::CancelMode,
+                    &state.bindings.read(),
+                ),
                 onclick: move |_| done_grading(state),
                 {icon(icons::DONE)}
                 {label("Done")}

@@ -201,7 +201,8 @@ pub enum Command {
     AddPerspective,
     /// Put down what is up — one rung per press (MODAL_DESIGN.md): the open
     /// dialog, else the composing mode (committing nothing, `crate::modes`),
-    /// else Timeline. Esc's home, and the ✕ chip every mode bar wears.
+    /// else the frame or filter selected for composing, else Timeline. Esc's
+    /// home, and the ✕ chip every mode bar wears.
     ///
     /// Deliberately **not** a rung: the selection. A selection is committed,
     /// undoable document state, not a preview — Ctrl+D already names that act,
@@ -799,7 +800,8 @@ impl Command {
             Command::AddPerspective => "Add a perspective grid where you are looking",
             Command::CancelMode => {
                 "Put down what's in progress, keeping nothing \u{2014} close the \
-                 dialog, or cancel the composing mode, or leave Timeline"
+                 dialog, or cancel the composing mode, or stop composing the \
+                 frame or filter, or leave Timeline"
             }
             Command::FinishMode => {
                 "Commit what the composing mode has made \u{2014} its bar's own Done"
@@ -1060,9 +1062,11 @@ fn may_edit(state: AppState) -> bool {
 }
 
 /// Esc's ladder (MODAL_DESIGN.md), one rung per press: the open dialog, else
-/// the composing mode, else Timeline. Ordered outermost-in — a dialog stands
-/// over a mode, a mode over the timeline's bar — so each press peels the layer
-/// the eye reads as topmost, and never two at once.
+/// the composing mode, else the frame or filter layer selected for composing,
+/// else Timeline. Ordered outermost-in — a dialog stands over a mode, a mode
+/// over the bar that raised it, the bars over the timeline's — so each press
+/// peels the layer the eye reads as topmost, and never two at once: Esc from
+/// a gradient matte drops the axis first and leaves the frame second.
 ///
 /// The dialogs are closed *here*, not declined in deference to their own Esc
 /// handlers, because outside a text field they have none: every element-level
@@ -1079,9 +1083,31 @@ fn escape(state: AppState) {
         crate::modes::cancel(state);
         return;
     }
+    // The two layer kinds that are composed rather than painted (§15.7,
+    // §21.6): Esc is their bars' own Done — the topmost paint layer selected
+    // instead, the only way a frame or filter is ever "deselected". The guide
+    // bar's bargain: nothing is uncommitted, so leaving is the whole act.
+    // Enter deliberately does *not* reach here — these are standing states,
+    // and an Enter claimed through one would eat every focused button's
+    // Enter for as long as the layer stayed selected ([`Command::claims`]).
+    if composing_layer_selected(state) {
+        crate::panels::frame::done_composing(state);
+        return;
+    }
     if *state.timeline.open.peek() {
         crate::panels::timeline::set_open(state, false);
     }
+}
+
+/// Whether the selected layer is a frame or a filter — the kinds whose bar is
+/// up for as long as they are selected, asked handler-time (`peek`).
+fn composing_layer_selected(state: AppState) -> bool {
+    state
+        .obs
+        .peek()
+        .as_ref()
+        .is_some_and(|o| crate::panels::frame::selected_frame_of(o).is_some())
+        || crate::panels::filter::selected_filter(state).is_some()
 }
 
 /// Whether any root-mounted dialog is up — Esc's first rung, and the fact that

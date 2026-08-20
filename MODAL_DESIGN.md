@@ -83,7 +83,18 @@ Taken 2026-08-20; refinements from the build are marked **(as built)**:
    does (`modes::finish`, dispatching to the same function each chip calls).
 3. **Esc exits Timeline mode too.** It is called a mode, it wears the root
    class, and it should answer the same key. Ladder order: dialogs, then the
-   composing mode, then Timeline — one rung per press.
+   composing mode, then the frame or filter selected for composing, then
+   Timeline — one rung per press.
+   - **(as built, second round)** The frame/filter rung was added on user
+     report: selecting a frame reads as entering a mode, and Esc doing nothing
+     there read as broken — the only visible effect was the clicked layer
+     row's focus ring, promoted by the keydown, which looked like the name
+     being "selected". Esc runs their bars' own Done (`frame::done_composing`
+     — select the topmost paint layer, the only way these kinds are ever
+     deselected; both Done chips now advertise Esc). Enter deliberately does
+     **not** reach this rung: these are standing states, and an Enter claimed
+     through one would eat every focused button's Enter for as long as the
+     layer stayed selected.
    - **(as built)** The dialog rung **closes** the open dialog rather than
      declining in deference to it. The plan's premise was wrong: outside text
      fields, no dialog handles Esc at all — every element-level Escape in the
@@ -178,9 +189,18 @@ mode bar stands in for the selection/frame bars (they return on Done), and the
 one genuine park-and-resume — a trace suspends the gradient bar into
 `gradient_resume` and hands it back. So no generalized stack. Instead: while a
 mode composes, the standing bars stay **mounted but recessed** — dimmed,
-scaled ~0.96, slid up behind the mode bar, `pointer-events: none` — with CSS
+scaled ~0.96, tucked behind the mode bar, `pointer-events: none` — with CSS
 transitions. Entering reads as a card laid over; Done/Esc reads as the card
 lifted off, and the return destination was visible the whole time.
+
+**(as built, second round)** The column stacks **deepest on top**, on user
+report (the trace's bar had landed below the gradient bar it parked): the
+column is bottom-anchored, so an earlier child stands higher, and the order is
+now the stack's — trace, then the mode bars, then the standing bars — so each
+bar lands *above* the one it covers, the way a card lands on a pile. Recessed
+bars therefore sit below the live bar and tuck upward toward it
+(`translateY(-6px)`). The pick bar keeps the foot of the column: it coexists
+with painting rather than covering anything.
 
 Implementation note: SelectionBar/FrameBar currently return empty rsx while
 composing, and a Dioxus unmount cannot be animated — recessing means keeping

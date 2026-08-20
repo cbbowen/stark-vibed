@@ -3822,14 +3822,16 @@ button.layer-remove:hover {
 }
 
 /* A standing bar a mode has stood down: recessed behind the mode's bar rather
-   than unmounted, so the place Done and Esc return to stays on screen.
+   than unmounted, so the place Done and Esc return to stays on screen. The
+   column stacks deepest-on-top (`main`), so a recessed bar sits *below* the
+   live one and tucks upward toward it, closing most of the column's gap.
    `filter: opacity()` rather than the `opacity` property, which the chrome
    fade owns (`.chrome.dimmed`). Inert twice over: pointer-events here, and
    every chip a recessed bar carries runs an act gated by `commands::may_edit`,
    which refuses while a mode is composing — so keyboard focus reaching one
    presses a button that declines. */
 .bottom-bars > .recessed {
-  transform: translateY(6px) scale(0.955);
+  transform: translateY(-6px) scale(0.955);
   filter: opacity(0.5) saturate(0.6);
   pointer-events: none;
 }
