@@ -2331,12 +2331,14 @@ button.layer-remove:hover {
    the mode toggles' claim ("am I in it?"). Lightened under the row's own blue
    highlight, where the resting accent would disappear into it. */
 .cmd-active .icon {
-  color: #3a6ea5;
+  color: #cdd9ed;
+  filter: drop-shadow(0 0 4px #8fb0e8);
 }
 
 .palette-row:hover .cmd-active .icon,
 .palette-row.selected .cmd-active .icon {
-  color: #8fb0e8;
+  color: var(--panel-color);
+  filter: none;
 }
 
 /* The shortcut as the door to changing it: resting, it is the ordinary
