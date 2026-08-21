@@ -4616,10 +4616,25 @@ button.layer-remove:hover {
   width: 13px;
 }
 
-/* The whole text column is the `<label>`, so clicking any of it toggles. */
+/* The text column takes the whole row, which it has to be *told*: a flex item does
+   not grow unless it is asked to, so this box was shrinking to its own longest line —
+   497px on a row whose sentence wrapped, 172px on one whose sentence did not. Nothing
+   showed it until something wanted the right-hand edge, and then two controls that
+   each did got a different one: the undo slider filled a 172px row, and the
+   chrome-hiding run took 268px of the "equal shares" its own comment promises.
+   `min-width: 0` is the companion, so a long unbroken word wraps instead of pushing
+   the column wider than the row. */
 .setting-text {
-  cursor: pointer;
+  flex: 1;
+  min-width: 0;
   user-select: none;
+}
+
+/* Only a row whose text column really is the `<label>` in front of one control says
+   so with the cursor. A row that is a label over a *group* — the chrome-hiding
+   choice — has nothing for a click on its words to do. */
+label.setting-text {
+  cursor: pointer;
 }
 
 /* Flex so a row that carries a readout (`SettingSlider`) can push it to the far
