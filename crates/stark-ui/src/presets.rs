@@ -681,11 +681,11 @@ fn read_storage() -> Option<Vec<PresetEntry>> {
 mod tests {
     use super::*;
 
-    /// The list as the app ships it, with the pencil's stamp standing in — the
+    /// The list as the app ships it, with the built-in stamps standing in — the
     /// one thing a live canvas would supply, and nothing here depends on which
-    /// shape it is.
+    /// shapes they are.
     fn shipped() -> Vec<PresetEntry> {
-        shipped_presets(BrushShape::default())
+        shipped_presets(BuiltinShapes::default())
     }
 
     #[test]
