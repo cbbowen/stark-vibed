@@ -131,7 +131,22 @@ pub struct PresetEntry {
 /// because a list is read top-down and a rack is reached by the digit under the
 /// finger.
 fn default_presets(state: AppState) -> Vec<PresetEntry> {
-    shipped_presets(builtins::shape(state, builtins::FLAT_TIP).unwrap_or_default())
+    shipped_presets(BuiltinShapes::for_app(state).unwrap_or_default())
+}
+
+#[derive(Default)]
+struct BuiltinShapes {
+    flat_tip: BrushShape,
+    bristles: BrushShape,
+}
+
+impl BuiltinShapes {
+    pub fn for_app(state: AppState) -> Option<Self> {
+        Some(BuiltinShapes {
+            flat_tip: builtins::shape(state, builtins::FLAT_TIP)?,
+            bristles: builtins::shape(state, builtins::BRISTLES)?,
+        })
+    }
 }
 
 /// [`default_presets`] with its one dependency on the running engine passed in:
@@ -143,7 +158,7 @@ fn default_presets(state: AppState) -> Vec<PresetEntry> {
 /// invariants below (every entry shipped, every slot distinct and on the rack)
 /// are the kind that a sixth preset breaks silently: the rack would quietly drop
 /// or overwrite one, and nothing on screen would say which.
-fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
+fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
     // One constructor for the lot, so "everything the app ships is a built-in and
     // sits on a digit" is a property of the list rather than five copies of two
     // fields that could drift apart. `smoothing` is the §6.11 amount, part of
@@ -173,6 +188,37 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
                     lift: 0.25,
                     deposit: 0.75,
                     bleed: 0.25,
+                    ..BrushDynamics::default()
+                },
+                color_dynamics: ColorDynamics {
+                    noise: NoiseKind::Simplex,
+                    frequency: [0.05, 0.1],
+                    amplitude: [0.0, 0.025, 0.05],
+                },
+                modulation: Modulations {
+                    size: Some(Modulation {
+                        source: ModSource::Pressure,
+                        floor: 0.8,
+                        curve: 0.0,
+                    }),
+                    flow: Some(Modulation::linear(ModSource::Pressure)),
+                    ..Modulations::default()
+                },
+                ..BrushParams::default()
+            },
+        ),
+        shipped(
+            "Bristles",
+            None,
+            0.15,
+            BrushParams {
+                radius: 100.0,
+                shape: shapes.bristles,
+                dynamics: BrushDynamics {
+                    add: 3.0,
+                    lift: 0.25,
+                    deposit: 0.75,
+                    bleed: 0.5,
                     ..BrushDynamics::default()
                 },
                 color_dynamics: ColorDynamics {
@@ -238,7 +284,7 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
                 // The sharpened point itself now, where the radius used to stand
                 // for the *widest* mark the tilt mapping would scale back from.
                 radius: 15.0,
-                shape: pencil,
+                shape: shapes.flat_tip,
                 // Which aims the stretch, as well as turning the stamp: the axis a
                 // tip is drawn out along is the axis it faces (§6.6).
                 orientation: OrientationSource::Pen,
