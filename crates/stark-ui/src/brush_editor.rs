@@ -724,6 +724,18 @@ fn curve_plot(m: Modulation) -> Element {
     }
 }
 
+/// A shape card's `background-image` declaration — written out as `none` when there
+/// is no picture yet (a built-in still fetching, bytes that would not decode) rather
+/// than omitted. An inline style merges per property, so a declaration left off a
+/// reused node is stranded at its last value instead of cleared, which would leave
+/// one shape's card wearing another's picture.
+fn thumb_style(url: Option<&str>) -> String {
+    match url {
+        Some(url) => format!("background-image: url({url});"),
+        None => "background-image: none;".to_string(),
+    }
+}
+
 /// The Tip section's shape gallery: the procedural round tip, every shape
 /// bundled with the app (`crate::builtins`), every shape in the user's library
 /// (thumbnail + name, with a hover ✕ to remove), and an import card. Images can
@@ -748,17 +760,23 @@ fn ShapeGallery() -> Element {
         .unwrap_or_default();
     // One card per bundled shape, in table order. A built-in whose fetch is
     // still in flight has no id yet, so it simply never reads as selected —
-    // clicking it is the same no-op, and both settle when the bytes land.
-    let builtins: Vec<(&'static str, String, bool)> = crate::builtins::resolved(state)
+    // clicking it is the same no-op, and both settle when the bytes land. Its
+    // picture waits on the same moment, because the picture is the *coverage the
+    // engine imported* rather than the bundled file (`shapes::thumbnail`): a
+    // built-in is authored the same way a user's shape is, so it is shown the
+    // same way, and neither has to have put its coverage in an alpha channel.
+    let builtins: Vec<(&'static str, Option<String>, bool)> = crate::builtins::resolved(state)
         .into_iter()
         .map(|(builtin, id)| {
             let active = matches!(brush_shape, BrushShape::Stamp(s) if Some(s) == id);
-            (builtin.name, builtin.asset.to_string(), active)
+            let thumb = id.and_then(|id| crate::shapes::thumbnail(state, id));
+            (builtin.name, thumb, active)
         })
         .collect();
     let entries = state.shapes.entries;
-    // Thumbnails are base64 data URLs of the canonical PNGs — memoized so they
-    // re-encode only when the library changes, not on every obs refresh.
+    // Memoized so the list is rebuilt when the library changes rather than on
+    // every obs refresh; the encode behind each url is itself remembered per
+    // content id, so a card that survives a rebuild costs a scan.
     let thumbs = use_memo(move || {
         entries
             .read()
@@ -768,7 +786,7 @@ fn ShapeGallery() -> Element {
                     e.id,
                     crate::shapes::id_hex(e.id),
                     e.name.clone(),
-                    crate::shapes::data_url(e),
+                    crate::shapes::thumbnail(state, e.id),
                 )
             })
             .collect::<Vec<_>>()
@@ -818,7 +836,7 @@ fn ShapeGallery() -> Element {
                     key: "{name}",
                     class: card(active),
                     onclick: move |_| crate::builtins::select(state, name),
-                    div { class: "shape-thumb", style: "background-image: url({url});" }
+                    div { class: "shape-thumb", style: thumb_style(url.as_deref()) }
                     div { class: "shape-name", title: "{name}", "{name}" }
                 }
             }
@@ -827,7 +845,7 @@ fn ShapeGallery() -> Element {
                     key: "{key}",
                     class: card(brush_shape == BrushShape::Stamp(id)),
                     onclick: move |_| crate::shapes::select(state, id),
-                    div { class: "shape-thumb", style: "background-image: url({url});" }
+                    div { class: "shape-thumb", style: thumb_style(url.as_deref()) }
                     div { class: "shape-name", title: "{name}", "{name}" }
                     // `icons::REMOVE`, as on every other row the application lets you
                     // take something out of — the library of stamps is one more roster.

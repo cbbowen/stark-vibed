@@ -3320,6 +3320,10 @@ button.layer-remove:hover {
   background: #3a6ea524;
 }
 
+/* A stamp's card: the coverage field the stroke will lay, drawn as white ink with
+   the coverage in alpha (`shapes::thumbnail`). Nothing paints the ground, so the
+   card shows through wherever the shape does not cover — which a mask authored as
+   white on opaque black used not to do, arriving here as a black tile. */
 .shape-thumb {
   width: 52px;
   height: 52px;

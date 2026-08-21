@@ -42,6 +42,11 @@ tracing-subscriber = { workspace = true }
 # Both already in the tree via dioxus.
 serde = { workspace = true }
 serde_json = "1"
+# Encoding a brush shape's coverage as the gallery's thumbnail (shapes.rs): the
+# card has to show a *field*, not the file it was authored from, and that means
+# an alpha channel the source may not have had. Already in the wasm build under
+# `stark-assetid`, which is where the matching decode lives.
+png = { workspace = true }
 
 # Web platform glue (the crate targets wasm32 via `dx serve --platform web`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]

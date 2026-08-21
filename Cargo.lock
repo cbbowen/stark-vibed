@@ -6682,6 +6682,7 @@ dependencies = [
  "dioxus",
  "dioxus-primitives",
  "js-sys",
+ "png",
  "serde",
  "serde_json",
  "stark-assetid",
