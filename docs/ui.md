@@ -876,18 +876,72 @@ is a worse answer than the defaults. `load_list` also tells `None` from
 `Some(vec![])`, and two callers need it — an untouched quick-brush rack is
 seeded from the preset library, an emptied one is left empty.
 
+**Bytes are not kept in `localStorage` at all.** It is text, and ~5 MB of it per
+origin *shared across all eleven records*. A brush shape's PNG lived there once,
+base64'd inline in the shape library's rows: two of the app's own stamps are
+408 KB and 226 KB on disk, half as much again as base64, and twice that against
+the quota in an engine that counts a JS string's UTF-16. Five or ten imports
+filled the origin — and a full origin does not break the shape library, it breaks
+`set`, for the settings and the chord table and the tour's ledger and this
+client's identity alike. Every standing choice this browser had made stopped
+persisting, silently, because somebody imported a brush.
+
+So a record may have a second half in **IndexedDB, keyed by the content id that
+names the bytes** — a third trait, `Blob`, implemented *alongside* `Entry` on the
+type that holds them:
+
+```rust
+impl storage::Entry for StoredShape { const STORE: Store = Store::Shapes; }  // name + id
+impl storage::Blob  for ShapeEntry  { const STORE: Store = Store::Shapes; }  // the PNG
+
+storage::blob_save::<ShapeEntry>(id, &png).await;      // -> stark.shapes/<hex>
+let png = storage::blob_load_all::<ShapeEntry>(&ids).await;  // one exchange, in order
+```
+
+One `Store` row still answers where the record lives: a blob's key is the record's
+key and then the id, so the two halves sort together, no record can reach into
+another's bytes, and a *second* blob record is a second prefix rather than a
+schema change. That last one is not tidiness — an object store can only be created
+inside an IndexedDB `upgradeneeded`, so a store per record would put a version
+bump behind every feature that ever wants to keep bytes, and a version bump is a
+migration every other open tab has to be talked through.
+
+Content-addressing is what keeps that door small. An id *names* its bytes (§19),
+so a write is idempotent, a re-import is free, there is nothing to invalidate and
+no schema to reconcile — which is exactly why the argument for JSON above does not
+reach it. There is nothing in a blob store to reconcile *by* name.
+
+The two halves are held together by the **write order**, since no transaction
+spans two stores: *blob first, then the row; row first, then the blob.* A crash in
+the middle strands some bytes, which costs space. The other order strands a row
+whose shape has no image — a card that draws nothing and reports "failed to load"
+every time it is clicked.
+
+Two consequences worth stating, because both are new kinds of thing for this
+registry to have. The blob store is **evictable** under storage pressure, so "the
+row is here and the bytes are gone" is a state to expect rather than one that only
+follows a crash; `shapes::load` drops such a row and writes the library back
+without it, which is the list format's damage rule one store further down. And it
+is **asynchronous**, which is the other half of what was wrong with the old
+arrangement: `save_list` re-encodes a whole library per change, and it was doing
+that on the thread the canvas paints on. Reading the shape library is a fetch now,
+awaited once at start — ahead of `presets::apply_first`, the first thing that turns
+a stamp id back into bytes.
+
 **Adding a record**, in four steps:
 
 1. A `Store` variant, with its key and its human name on the one row.
 2. A serde type in the owning module. Give every field `#[serde(default)]` or a
    `Default` on the struct — that, not a version suffix in the key, is how a
-   record survives the app version that adds or drops a field. Bytes go through
-   `storage::b64`, a content id or key through `storage::hex`. A record that is
-   a bare primitive needs a newtype: `impl Record for bool` would make *every*
-   boolean in the frontend that record (`navigator::Showing`).
+   record survives the app version that adds or drops a field. A content id or
+   key goes through `storage::hex`. A record that is a bare primitive needs a
+   newtype: `impl Record for bool` would make *every* boolean in the frontend
+   that record (`navigator::Showing`). **Bytes do not go in this type at all** —
+   they go in the blob store above, named by the content id the row carries.
 3. The one-line `Record` or `Entry` impl pairing the two, and a line in
    `every_record_claims_one_store` — which fails on the count if you forget,
-   and is what catches two types claiming one variant.
+   and is what catches two types claiming one variant. A `Blob` impl goes in the
+   second list there, which checks that bytes never invent a record of their own.
 4. One writer, called by everything that changes the state — the move
    `layout::set_open`, `navigator::set_open` and `settings::SettingToggle` all
    make. Durability is then structural: a new way to change the thing is

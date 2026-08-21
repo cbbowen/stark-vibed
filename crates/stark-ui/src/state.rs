@@ -537,7 +537,10 @@ pub struct TowUi {
 /// its close.
 #[derive(Clone, Copy)]
 pub struct ShapesState {
-    /// Library entries, loaded from `localStorage` at startup.
+    /// Library entries, read at startup from the browser's two stores — the rows
+    /// from `localStorage`, their images from the blob store (§25.6). Empty until
+    /// that read lands, which is why `shapes::load` is awaited ahead of the first
+    /// thing that resolves a stamp id.
     pub entries: Signal<Vec<crate::shapes::ShapeEntry>>,
     /// A transient line under the shape gallery: import errors, or the
     /// "inverted a dark-on-light image" explanation. `None` when quiet.

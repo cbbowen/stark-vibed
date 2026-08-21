@@ -26,7 +26,7 @@ Status lives here and nowhere else.
 | 9 | Pluggable color spaces (§6.7) | done — Oklab + Mixbox |
 | 10 | Wet mixing & brush dynamics (§6.2) | done — GPU swept-exchange loop, no CPU readback |
 | — | Surface bump maps (§6.4) | done — relief, and the deposition tooth that gates what the brush lays, on the ground a moving tip is about to meet |
-| 11 | Brush file upload | done — custom shape library, localStorage, mid-session peer replication |
+| 11 | Brush file upload | done — custom shape library (rows in localStorage, images in the blob store, §25.6), mid-session peer replication |
 | 12 | Collaboration (§12) | done |
 | — | Selections (§6.8) | done |
 | — | Fill (§6.8) | done — the fifth `ShapeAction` |

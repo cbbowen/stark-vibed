@@ -33,9 +33,33 @@
 //! carries a version suffix. That is the save file's bargain (§8) at browser scale,
 //! and the reason there is no schema here to keep.
 //!
-//! Bytes are the one thing JSON cannot hold: a shape's PNG goes through [`b64`], and
-//! a content id or a secret key through [`hex`], because the store is text and 32
-//! bytes read better as `3f9a…` than as a list of numbers.
+//! A content id or a secret key goes through [`hex`], because the store is text and
+//! 32 bytes read better as `3f9a…` than as a list of numbers.
+//!
+//! # Bytes are not kept here at all
+//!
+//! `localStorage` is text, and **~5 MB of it per origin shared across all eleven
+//! records**. A brush shape's PNG went in it once, base64'd inline in the shape
+//! library's rows: two of the app's own stamps are 408 KB and 226 KB on disk, half as
+//! much again as base64, and twice *that* against the quota in an engine that counts
+//! a JS string's UTF-16. Five or ten imports filled the origin — and what a full
+//! origin breaks is not the shape library, it is [`set`], for `Prefs` and the chord
+//! table and the tour's ledger and `Identity` alike. Every standing choice this
+//! browser has made stops persisting, silently, because somebody imported a brush.
+//!
+//! So bytes live in **IndexedDB, keyed by the content id that names them** — the
+//! second door below ([`Blob`], [`blob_load_all`], [`blob_save`], [`blob_remove`]).
+//! It is quota'd against the disk rather than against the settings, and it is
+//! asynchronous, which is the other half of what was wrong: `save_list` re-encodes a
+//! whole library per change, and it was doing that on the thread the canvas paints on.
+//!
+//! Content-addressing is what keeps that second door small. An id *names* its bytes
+//! (§19), so a write is idempotent, a re-import is free, there is no invalidation to
+//! get wrong and no schema to migrate — which is exactly why the argument for JSON
+//! above does not reach it. There is nothing in a blob store to reconcile by name.
+//! A record's rows and its blobs are the two halves of one library, and the writing
+//! order is what holds them together: **blob first, then the row; row first, then the
+//! blob.** A row that exists has its bytes, whatever a crash lands in the middle of.
 //!
 //! # The registry
 //!
@@ -63,13 +87,16 @@
 //!
 //! # What is deliberately not here
 //!
-//! **The store itself, and the base64 codec**, both in [`crate::platform`]. That
-//! module is the only one allowed to name a browser type — the compiler checks it off
-//! wasm (U6) — so the `localStorage` calls behind [`get`] and [`set`] live there, and
-//! this module is the *format* and the failure policy rather than the door. The codec
-//! is there for a second reason on top: `platform` needs base64 itself, to read the
-//! data URL the browser hands back when it re-encodes an imported brush image, so
-//! owning it here would point a dependency up the stack.
+//! **Both stores themselves**, in [`crate::platform`]. That module is the only one
+//! allowed to name a browser type — the compiler checks it off wasm (U6) — so the
+//! `localStorage` calls behind [`get`] and [`set`] live there, and the IndexedDB ones
+//! behind [`blob_save`] with them. This module is the *format*, the key and the
+//! failure policy; that one is the door.
+//!
+//! **The base64 codec**, in `platform` too, and no longer used here for anything: it
+//! is what reads the data URL the browser hands back when it re-encodes an imported
+//! brush image, so owning it here would point a dependency up the stack — and now
+//! that a blob is bytes all the way down, this module has nothing to spell in it.
 //!
 //! # Failure is silence, on purpose
 //!
@@ -82,6 +109,7 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use stark_model::AssetId;
 
 /// Every record this browser keeps, and the only place its key is written down.
 ///
@@ -117,9 +145,12 @@ pub enum Store {
 }
 
 impl Store {
-    /// The `localStorage` key, and the name a warning calls this record by — "the
-    /// gradient library", "the settings" — so a full quota says which of the ten ran
-    /// out of room.
+    /// The key, and the name a warning calls this record by — "the gradient library",
+    /// "the settings" — so a full quota says which of the eleven ran out of room.
+    ///
+    /// One key, both stores: a record that keeps bytes as well as rows spells its blob
+    /// keys `stark.shapes/<hex>` (see [`Blob`]), so there is still exactly one place
+    /// the answer to "where does this record live" is written down.
     ///
     /// One row per record with both facts on it: a key without a name, and a name that
     /// had drifted off its key, are exactly the two mistakes a second table three
@@ -323,20 +354,65 @@ pub mod hex {
     }
 }
 
-/// Bytes as base64, for `#[serde(with = "crate::storage::b64")]` — the store is text,
-/// so a blob has to be spelled in it. The codec is [`crate::platform`]'s; see the
-/// module comment for why it lives there.
-pub mod b64 {
-    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+// --- the blob store --------------------------------------------------------
 
-    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&crate::platform::base64_encode(bytes))
-    }
+/// A type whose **bytes** this browser keeps beside its rows, each blob under the
+/// content id that names it.
+///
+/// A third trait rather than a fourth pair of functions taking a [`Store`], for the
+/// reason [`Record`] and [`Entry`] are traits: the type declares which record its
+/// bytes belong to, so the key is not a second choice a call site could get wrong.
+/// It is implemented *alongside* one of the other two — `ShapeEntry` is an [`Entry`]
+/// for its row and a [`Blob`] for its PNG, which is what says the two halves are one
+/// record and not two.
+pub trait Blob {
+    /// Which record these bytes belong to.
+    const STORE: Store;
+}
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-        let text = String::deserialize(d)?;
-        crate::platform::base64_decode(&text).map_err(D::Error::custom)
+/// Where one blob lives: the record's key, then the id, so everything a record owns
+/// sorts together and a second blob record is a second prefix rather than a schema
+/// change (`platform::BLOB_DB`).
+fn blob_key<T: Blob>(id: AssetId) -> String {
+    format!("{}/{}", T::STORE.named().0, id.to_hex())
+}
+
+/// The bytes for each of `ids`, in that order — `None` where this browser has none.
+///
+/// Plural because it is one exchange with the store: the whole library is read at
+/// start, and a door taking one id would make that N opens and N transactions. The
+/// positional answer is what lets a caller zip it back onto the rows it read them from.
+///
+/// A missing blob is not an error here for the same reason a damaged row is not: it
+/// costs that entry, and the caller is the one that says so. IndexedDB is evictable
+/// under storage pressure, so "the row is here and the bytes are gone" is a state
+/// that really happens rather than one that only follows a crash — `shapes::load`
+/// drops such a row and writes the library back without it.
+pub async fn blob_load_all<T: Blob>(ids: &[AssetId]) -> Vec<Option<Vec<u8>>> {
+    let keys: Vec<String> = ids.iter().map(|&id| blob_key::<T>(id)).collect();
+    crate::platform::blob_get_many(&keys).await
+}
+
+/// Store `bytes` under `id`. A store that will not take them warns and carries on,
+/// exactly as [`set`] does — and for the same reason: what is lost is durability, and
+/// the session still works to the end.
+///
+/// Write this **before** the row that names it. A crash between the two then leaves a
+/// blob nothing points at, which costs some bytes; the other order leaves a row whose
+/// shape has no picture and cannot be painted with.
+pub async fn blob_save<T: Blob>(id: AssetId, bytes: &[u8]) {
+    if !crate::platform::blob_put(&blob_key::<T>(id), bytes).await {
+        tracing::warn!(
+            "could not persist an entry of {} (storage full or unavailable)",
+            T::STORE.named().1
+        );
     }
+}
+
+/// Drop the bytes stored under `id` — **after** the row that named them, per
+/// [`blob_save`].
+pub async fn blob_remove<T: Blob>(id: AssetId) {
+    crate::platform::blob_delete(&blob_key::<T>(id)).await;
 }
 
 #[cfg(test)]
@@ -402,7 +478,7 @@ mod tests {
             <crate::drags::DragRow as Entry>::STORE,
             <crate::layout::StoredPanel as Entry>::STORE,
             <crate::tutor::Row as Entry>::STORE,
-            <crate::shapes::ShapeEntry as Entry>::STORE,
+            <crate::shapes::StoredShape as Entry>::STORE,
             <crate::presets::StoredPreset as Entry>::STORE,
             <crate::slots::StoredSlot as Entry>::STORE,
             <crate::gradients::GradientEntry as Entry>::STORE,
@@ -417,6 +493,15 @@ mod tests {
             distinct,
             ALL.iter().copied().collect::<HashSet<_>>(),
             "every row of the registry is some type's, and every type has a row"
+        );
+
+        // [`Blob`] is deliberately *not* one of the claims above: a record's bytes are
+        // the other half of a record that already has a row, never a record of their
+        // own. What is checked instead is that they cannot invent one.
+        let blobs = [<crate::shapes::ShapeEntry as Blob>::STORE];
+        assert!(
+            blobs.iter().all(|s| distinct.contains(s)),
+            "bytes belong to a record some type already claims"
         );
     }
 
@@ -472,29 +557,41 @@ mod tests {
     }
 
     #[derive(Debug, PartialEq, Deserialize, Serialize)]
-    struct Blobs {
+    struct Named {
         #[serde(with = "hex")]
         id: [u8; 32],
-        #[serde(with = "b64")]
-        bytes: Vec<u8>,
     }
 
     #[test]
-    fn bytes_round_trip_through_their_spellings() {
-        let value = Blobs {
+    fn an_id_round_trips_through_its_spelling() {
+        let value = Named {
             id: std::array::from_fn(|i| i as u8),
-            bytes: vec![0, 1, 2, 250, 255],
         };
         let json = serde_json::to_string(&value).unwrap();
         assert!(json.contains("\"000102"), "the id reads as hex: {json}");
-        assert_eq!(serde_json::from_str::<Blobs>(&json).unwrap(), value);
+        assert_eq!(serde_json::from_str::<Named>(&json).unwrap(), value);
     }
 
     /// A hex field that is not 32 bytes is refused rather than padded — which, inside
     /// a list, costs its own entry and nothing else.
     #[test]
     fn a_short_id_is_refused() {
-        let json = r#"{"id":"00ff","bytes":""}"#;
-        assert!(serde_json::from_str::<Blobs>(json).is_err());
+        let json = r#"{"id":"00ff"}"#;
+        assert!(serde_json::from_str::<Named>(json).is_err());
+    }
+
+    /// A blob's key is its record's key and then the id — so the two halves of one
+    /// library sort together, and no record can reach into another's bytes.
+    #[test]
+    fn a_blob_is_keyed_under_its_own_record() {
+        let id = AssetId::from([0xabu8; 32]);
+        let key = blob_key::<crate::shapes::ShapeEntry>(id);
+        assert_eq!(key, format!("stark.shapes/{}", id.to_hex()));
+        assert!(
+            ALL.iter()
+                .filter(|s| **s != Store::Shapes)
+                .all(|s| !key.starts_with(s.named().0)),
+            "one record's blobs are not in reach of another's key"
+        );
     }
 }

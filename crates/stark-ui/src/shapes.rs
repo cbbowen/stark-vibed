@@ -5,8 +5,19 @@
 //! to session peers, so one representation flows everywhere. The library
 //! itself is frontend state: the engine's store is per-document (populated on
 //! import and load), while the library follows this browser across documents
-//! via `localStorage` (the `identity` bargain — where storage is unavailable
-//! it degrades to a per-session library and breaks nothing).
+//! (the `identity` bargain — where storage is unavailable it degrades to a
+//! per-session library and breaks nothing).
+//!
+//! **The library is kept in two stores, split down the middle of an entry**
+//! ([`StoredShape`] and [`ShapeEntry`], §25.6). The name and the id are text and go
+//! to `localStorage` with the settings and the chord table; the PNG is bytes and goes
+//! to IndexedDB under the id that names it. They were one record once, the PNG
+//! base64'd inline — which put half a megabyte per imported shape into a five-megabyte
+//! text store that ten other records are also spending, and re-encoded the whole
+//! library on the painting thread every time one changed. `crate::storage` has the
+//! rest of that argument. What it means here is that reading the library is a fetch
+//! ([`load`] is `async` and awaited once at start), and that every write puts the
+//! bytes and the row down in the order that leaves the two agreeing.
 //!
 //! Import runs through [`crate::platform::normalize_shape_image`], so anything
 //! the browser can decode becomes a shape, downscaled to the engine cap and
@@ -35,27 +46,44 @@ use crate::platform::{base64_encode, normalize_shape_image};
 use crate::state::{AppState, update_brush};
 use crate::storage::{self, Store};
 
-/// One custom shape in the library — and, unchanged, one stored entry.
+/// One custom shape in the library, **with its bytes in hand**.
 ///
-/// The live type *is* the stored type: every field here is durable, so a second struct
-/// to map it onto would be a copy with nothing to say. The two `with` adapters are
-/// what JSON cannot hold by itself (`crate::storage`) — the bytes as base64, the
-/// content id as the hex Stark spells an id in everywhere else.
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Not the stored type any more, and the split is the point: the row is text and the
+/// PNG is not, so they are kept in two stores and this is what they add up to
+/// ([`StoredShape`], `crate::storage`). Constructing one means the bytes are here —
+/// [`load`] drops a row whose blob is gone rather than admitting a byte-less entry —
+/// so `ensure` and `thumbnail` have nothing to check and there is no half-loaded
+/// shape for the gallery to draw a blank card for.
+#[derive(Clone, PartialEq)]
 pub struct ShapeEntry {
     /// Display name, defaulted from the imported file's stem.
     pub name: String,
     /// Canonical grayscale PNG (what the engine stores under `id`).
-    #[serde(with = "storage::b64")]
     pub png: Vec<u8>,
-    /// Content id of `png`. Persisted alongside the bytes; if an engine
-    /// upgrade ever re-canonicalizes differently, [`select`] heals the entry
-    /// from the id the import actually returns.
-    #[serde(with = "storage::hex")]
+    /// Content id of `png`. If an engine upgrade ever re-canonicalizes differently,
+    /// [`select`] heals the entry from the id the import actually returns.
     pub id: AssetId,
 }
 
-impl storage::Entry for ShapeEntry {
+/// One row of the stored library: **a name and an id, and no bytes at all.**
+///
+/// The id is the whole of the reference — it *names* the PNG (§19), which is what
+/// makes a row this small enough to keep in a text store that the settings, the chord
+/// table and the tour's ledger are also spending. The bytes it names are a
+/// [`storage::Blob`] under the same record's key; see `crate::storage` for what
+/// putting them there bought and what it cost.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct StoredShape {
+    name: String,
+    #[serde(with = "storage::hex")]
+    id: AssetId,
+}
+
+impl storage::Entry for StoredShape {
+    const STORE: Store = Store::Shapes;
+}
+
+impl storage::Blob for ShapeEntry {
     const STORE: Store = Store::Shapes;
 }
 
@@ -198,9 +226,43 @@ fn reduce(cov: stark_assetid::Canonical) -> stark_assetid::Canonical {
 }
 
 /// Populate the library signal from storage. Called once at app start.
-pub fn load(state: AppState) {
+///
+/// Two reads, because the library is kept in two stores: the rows out of the text
+/// one, then their PNGs out of the blob one in a single batch (`crate::storage`).
+/// A row whose bytes are not there is **dropped**, and the library written back
+/// without it — IndexedDB is evictable under storage pressure, so that is a state to
+/// expect rather than one that only follows a crash, and an entry that cannot be
+/// painted with is not a shape. Leaving it in the list would show a card that draws
+/// nothing and reports "failed to load" every time it is clicked.
+///
+/// Awaited before the first thing that resolves a stamp id — `presets::apply_first`,
+/// in `main` — which is what the ordering there is for.
+pub async fn load(state: AppState) {
+    let rows = storage::load_list::<StoredShape>().unwrap_or_default();
+    let ids: Vec<AssetId> = rows.iter().map(|r| r.id).collect();
+    let blobs = storage::blob_load_all::<ShapeEntry>(&ids).await;
+
+    let kept: Vec<ShapeEntry> = rows
+        .into_iter()
+        .zip(blobs)
+        .filter_map(|(row, png)| {
+            png.map(|png| ShapeEntry {
+                name: row.name,
+                png,
+                id: row.id,
+            })
+        })
+        .collect();
+    if kept.len() != ids.len() {
+        tracing::warn!(
+            "{} shape(s) had lost their image and were dropped from the library",
+            ids.len() - kept.len()
+        );
+        persist(&kept);
+    }
+
     let mut entries = state.shapes.entries;
-    entries.set(read_storage());
+    entries.set(kept);
 }
 
 /// Import an image file as a new shape: normalize in the browser, canonicalize
@@ -239,6 +301,9 @@ pub fn import_file(state: AppState, file_name: String, bytes: Vec<u8>) {
         let mut entries = state.shapes.entries;
         let known = entries.read().iter().any(|e| e.id == id);
         if !known {
+            // Bytes before the row that names them (`storage::blob_save`): the other
+            // order can leave a library pointing at a shape that was never stored.
+            storage::blob_save::<ShapeEntry>(id, &canonical).await;
             entries.write().push(ShapeEntry {
                 name: name.clone(),
                 png: canonical.clone(),
@@ -334,12 +399,20 @@ pub fn ensure(state: AppState, id: AssetId) -> Option<AssetId> {
         }
     };
     if actual != entry.id {
-        // The stored id predates a canonicalization change; heal it in place.
+        // The stored id predates a canonicalization change; heal it in place. The
+        // signal moves now — the caller is about to paint with `actual` — but the two
+        // stores are rewritten in a task, in the order `storage::blob_save` states:
+        // the bytes under their new name, then the row, then the old name dropped.
         let mut entries = state.shapes.entries;
         if let Some(e) = entries.write().iter_mut().find(|e| e.id == entry.id) {
             e.id = actual;
         }
-        persist(&entries.read());
+        let (stale, bytes) = (entry.id, entry.png.clone());
+        spawn_forever(async move {
+            storage::blob_save::<ShapeEntry>(actual, &bytes).await;
+            persist(&entries.read());
+            storage::blob_remove::<ShapeEntry>(stale).await;
+        });
     }
     seed_session(state, actual, entry.png);
     Some(actual)
@@ -353,6 +426,10 @@ pub fn remove(state: AppState, id: AssetId) {
     let mut entries = state.shapes.entries;
     entries.write().retain(|e| e.id != id);
     persist(&entries.read());
+    // The row first, then the bytes (`storage::blob_save`): a crash between the two
+    // strands some bytes, which costs space; the other order strands the *row*, which
+    // costs a shape that cannot be painted with.
+    spawn_forever(async move { storage::blob_remove::<ShapeEntry>(id).await });
 
     let selected = state
         .obs
@@ -395,18 +472,29 @@ fn display_name(file_name: &str) -> String {
 
 // --- persistence ----------------------------------------------------------
 //
-// [`ShapeEntry`] is the stored entry, so there is nothing here but the two calls: the
-// format, the encodings and the skip-a-damaged-entry rule are all `crate::storage`'s.
+// The library is kept in two stores and this is the seam between them: the rows here,
+// the bytes at each site that changes one (`storage::blob_save`, and the order it
+// states). Everything else — the format, the key, the skip-a-damaged-row rule and the
+// failure policy — is `crate::storage`'s, as it was when the bytes rode along.
+//
+// Only the rows are written from here, and they are written whole: a library of a few
+// dozen names and ids is a couple of kilobytes, which is what the split was for. What
+// used to happen at this line was a base64 of every PNG in the library, on the thread
+// the canvas paints on, per change.
 
+/// Write the library's rows — [`ShapeEntry`] narrowed to what is durable about it.
+///
+/// The bytes are not this function's to write. An entry reaching here always has
+/// them stored already, because every caller put them there first.
 fn persist(entries: &[ShapeEntry]) {
-    storage::save_list(entries);
-}
-
-/// What this browser has stored. An empty library and a browser that has stored
-/// nothing are the same thing here — unlike the preset rack, nothing is seeded —
-/// so the two answers are folded into one.
-fn read_storage() -> Vec<ShapeEntry> {
-    storage::load_list().unwrap_or_default()
+    let rows: Vec<StoredShape> = entries
+        .iter()
+        .map(|e| StoredShape {
+            name: e.name.clone(),
+            id: e.id,
+        })
+        .collect();
+    storage::save_list(&rows);
 }
 
 #[cfg(test)]

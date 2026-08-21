@@ -1030,6 +1030,196 @@ pub fn local_remove(key: &str) {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn local_remove(_key: &str) {}
 
+// --- the blob store --------------------------------------------------------
+//
+// The raw half of [`crate::storage`]'s second door. `localStorage` above is *text*,
+// and a few megabytes of it per origin shared across every record this browser keeps
+// — so bytes go to IndexedDB instead, which is quota'd against the disk, and which
+// does its reading and writing off the thread the canvas paints on (§25.6).
+//
+// Everything here is `async` for that last reason and not by taste: the store this
+// replaces was synchronous, and re-encoding a shape library on the main thread is
+// the cost that made the replacement worth doing.
+
+/// The database, its version, and its one object store.
+///
+/// **One store, with the record's namespace on the key** (`stark.shapes/<hex>`) —
+/// which is what `localStorage` already does with its `stark.`-prefixed names. An
+/// object store can only be created inside an `upgradeneeded`, so a store *per
+/// record* would put a version bump behind every feature that ever wants to keep
+/// bytes, and a version bump is a migration every other open tab has to be talked
+/// through. A prefix is none of that.
+#[cfg(target_arch = "wasm32")]
+const BLOB_DB: (&str, u32, &str) = ("stark", 1, "blobs");
+
+/// The database, opened for this call, its object store created if this origin has
+/// never had one.
+///
+/// Opened per call rather than held: a live handle blocks another tab's upgrade, and
+/// the calls here are a startup read and the odd import — not something in a loop.
+#[cfg(target_arch = "wasm32")]
+async fn blob_db() -> Option<web_sys::IdbDatabase> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::Closure;
+
+    let (name, version, store) = BLOB_DB;
+    let request = web_sys::window()?
+        .indexed_db()
+        .ok()??
+        .open_with_u32(name, version)
+        .ok()?;
+    // An object store can only be created inside the upgrade, so this closure is the
+    // whole of the schema. `once_into_js` hands ownership to JS, which is what a
+    // handler that fires at most once wants — there is nothing here to keep alive.
+    let upgrade = Closure::once_into_js(move |event: web_sys::Event| {
+        let Some(target) = event.target() else { return };
+        let opened = target.unchecked_into::<web_sys::IdbOpenDbRequest>();
+        if let Ok(value) = opened.result()
+            && let Ok(db) = value.dyn_into::<web_sys::IdbDatabase>()
+        {
+            let _ = db.create_object_store(store);
+        }
+    });
+    request.set_onupgradeneeded(Some(upgrade.unchecked_ref()));
+    blob_pending((*request).clone()).await.ok()?.dyn_into().ok()
+}
+
+/// Hang a future off an IndexedDB request, **now** — the handlers are attached before
+/// this returns, and awaiting the result is a separate step.
+///
+/// That split is the whole reason this is not one `async fn`. An `async fn` body does
+/// not run until it is awaited, so a caller issuing several requests and awaiting
+/// them in turn would attach the second request's handler *after* its success event
+/// had already fired, and wait on it forever. Here the handlers are on before the
+/// caller can yield, so a batch may be started in one pass and collected in another —
+/// which is also what keeps a batch inside one transaction (see [`blob_get_many`]).
+///
+/// The API is event-based rather than promise-based, so the pair of one-shot handlers
+/// is wrapped in a promise built here. A channel crate for two closures would be the
+/// larger dependency.
+#[cfg(target_arch = "wasm32")]
+fn blob_pending(request: web_sys::IdbRequest) -> wasm_bindgen_futures::JsFuture {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen::prelude::Closure;
+
+    let promise = js_sys::Promise::new(&mut move |resolve, reject| {
+        let done = request.clone();
+        let ok = Closure::once_into_js(move |_: web_sys::Event| {
+            let value = done.result().unwrap_or(JsValue::UNDEFINED);
+            let _ = resolve.call1(&JsValue::NULL, &value);
+        });
+        let failed = Closure::once_into_js(move |_: web_sys::Event| {
+            let _ = reject.call0(&JsValue::NULL);
+        });
+        request.set_onsuccess(Some(ok.unchecked_ref()));
+        request.set_onerror(Some(failed.unchecked_ref()));
+    });
+    wasm_bindgen_futures::JsFuture::from(promise)
+}
+
+/// The bytes stored under each of `keys`, in that order — `None` where this browser
+/// has nothing under one, or could not read it.
+///
+/// **One transaction, all the requests issued before any of them is awaited.** A
+/// transaction stays alive across a microtask checkpoint but not across a turn of the
+/// event loop, so issuing request *n+1* only after *n* has resolved is the shape that
+/// works right up until it does not. Starting them all first makes the whole batch
+/// one exchange with the store and takes the question off the table.
+#[cfg(target_arch = "wasm32")]
+pub async fn blob_get_many(keys: &[String]) -> Vec<Option<Vec<u8>>> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::JsValue;
+
+    let (_, _, name) = BLOB_DB;
+    let nothing = || keys.iter().map(|_| None).collect();
+    let Some(db) = blob_db().await else {
+        return nothing();
+    };
+    let Ok(store) = db
+        .transaction_with_str(name)
+        .and_then(|tx| tx.object_store(name))
+    else {
+        return nothing();
+    };
+
+    let pending: Vec<_> = keys
+        .iter()
+        .map(|key| store.get(&JsValue::from_str(key)).ok().map(blob_pending))
+        .collect();
+    let mut out = Vec::with_capacity(keys.len());
+    for request in pending {
+        let bytes = match request {
+            Some(request) => request
+                .await
+                .ok()
+                .and_then(|value| value.dyn_into::<js_sys::Uint8Array>().ok())
+                .map(|array| array.to_vec()),
+            None => None,
+        };
+        out.push(bytes);
+    }
+    out
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn blob_get_many(keys: &[String]) -> Vec<Option<Vec<u8>>> {
+    keys.iter().map(|_| None).collect()
+}
+
+/// Store `bytes` under `key`. `false` if they did not land — no store, or no room in
+/// it.
+///
+/// A full disk surfaces as this request's own error rather than as a short write,
+/// which is what makes awaiting the request the answer to "did it land" — and what
+/// lets `crate::storage` keep saying so in one line.
+#[cfg(target_arch = "wasm32")]
+pub async fn blob_put(key: &str, bytes: &[u8]) -> bool {
+    use wasm_bindgen::JsValue;
+
+    let (_, _, name) = BLOB_DB;
+    let Some(db) = blob_db().await else {
+        return false;
+    };
+    let Ok(store) = db
+        .transaction_with_str_and_mode(name, web_sys::IdbTransactionMode::Readwrite)
+        .and_then(|tx| tx.object_store(name))
+    else {
+        return false;
+    };
+    // `Uint8Array::from` copies into the JS heap, so the borrow does not have to
+    // outlive the call — the same bargain `download_bytes` makes above.
+    let value = js_sys::Uint8Array::from(bytes);
+    let Ok(request) = store.put_with_key(&value, &JsValue::from_str(key)) else {
+        return false;
+    };
+    blob_pending(request).await.is_ok()
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn blob_put(_key: &str, _bytes: &[u8]) -> bool {
+    false
+}
+
+/// Drop whatever is stored under `key`. Silent either way: the caller has already
+/// forgotten it, and there is nothing to do about a delete that did not take.
+#[cfg(target_arch = "wasm32")]
+pub async fn blob_delete(key: &str) {
+    use wasm_bindgen::JsValue;
+
+    let (_, _, name) = BLOB_DB;
+    let Some(db) = blob_db().await else { return };
+    let Ok(store) = db
+        .transaction_with_str_and_mode(name, web_sys::IdbTransactionMode::Readwrite)
+        .and_then(|tx| tx.object_store(name))
+    else {
+        return;
+    };
+    if let Ok(request) = store.delete(&JsValue::from_str(key)) {
+        let _ = blob_pending(request).await;
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn blob_delete(_key: &str) {}
+
 /// Hand `bytes` to the browser as a file download named `filename`.
 ///
 /// A Blob behind an object URL, clicked through a synthetic `<a download>` — the

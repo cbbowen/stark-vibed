@@ -155,11 +155,10 @@ fn app() -> Element {
     // (`storage::drop_retired`, which says when to delete this line).
     use_hook(storage::drop_retired);
 
-    // The shape library follows the browser, not the document — load it before
-    // the renderer exists so the gallery is populated on first open. The brush
-    // presets follow the browser the same way (seeded with the built-ins on a
-    // browser that has never stored any).
-    use_hook(|| shapes::load(state));
+    // The brush presets follow the browser rather than the document (seeded with
+    // the built-ins on a browser that has never stored any). The shape library
+    // follows it too, but its bytes are in the blob store now, so reading it is a
+    // fetch — it is loaded in the startup task below instead of here (§25.6).
     use_hook(|| presets::load(state));
     // The gradient library follows the browser the same way (§22.3) — and has no
     // built-ins to install later: every entry is something this user traced.
@@ -248,6 +247,13 @@ fn app() -> Element {
             // Projection first, then the engine — `publish_renderer` is that order,
             // so no reader ever sees a renderer the chrome cannot yet describe.
             state::publish_renderer(state, r);
+
+            // The custom shape library, from the browser's two stores (§25.6). Here
+            // rather than in a `use_hook` above because its bytes are a fetch now —
+            // and *before* `apply_first` below, which is the first thing that turns a
+            // preset's stamp id back into bytes: a library that had not arrived yet
+            // would put those brushes silently on the round tip.
+            shapes::load(state).await;
 
             // The app's own presets join the library now rather than at
             // `presets::load`: they name bundled brush shapes, and a stamp is
