@@ -47,7 +47,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [roadmap.md](docs/roadmap.md) | §13, §18, §19 | Build order and status, the gap analysis against the prior art, file-format stability |
 | [drawing-guides.md](docs/drawing-guides.md) | §20 | The perspective grid: one projective camera behind 1/2/3-point, the fan parametrization, the guide overlay pass, aligning strokes to an axis and to circles on a plane, the stereographic fisheye lens |
 | [tutorial.md](docs/tutorial.md) | §24 | The guided tour: a lesson is owed rather than scheduled, deeds read off the `dispatch` seam, the anchored card and what it may take, the browser-local ledger |
-| [ui.md](docs/ui.md) | §11, §25 | The Dioxus frontend: the one dispatch seam, the panels and the surface they float over. Then the chrome's registries — the command registry, the drag-binding table and the browser-local store, which one a new feature joins, if any, and what a dialog owes whatever it holds |
+| [ui.md](docs/ui.md) | §11, §25 | The Dioxus frontend: the one dispatch seam, the panels and the surface they float over. Then the chrome's registries — the command registry, the drag-binding table (and how the user rebinds it) and the browser-local store, which one a new feature joins, if any, and what a dialog and a run of buttons each owe whatever they hold |
 
 §6 — "rendering the canvas" — is the one chapter split across files: the stroke
 path is in [brush.md](docs/brush.md), the compositing path in

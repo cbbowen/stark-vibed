@@ -70,7 +70,8 @@ pub fn PickBar() -> Element {
     // mid-stroke must not pop a bar up over the painting — and `dragging` covers
     // the pick itself, which deliberately leaves `canvas_active` alone so the
     // Color panel stays legible while sampling.
-    let armed = drags::armed((state.held_mods)()) == Some(DragAction::PickColor)
+    let armed = drags::armed(&state.drags.read(), (state.held_mods)())
+        == Some(DragAction::PickColor)
         && !(state.pick.dragging)()
         && !(state.canvas_active)()
         && !(state.space_down)()

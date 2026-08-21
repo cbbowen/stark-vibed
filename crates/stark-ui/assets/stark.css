@@ -4619,11 +4619,12 @@ button.layer-remove:hover {
 /* The text column takes the whole row, which it has to be *told*: a flex item does
    not grow unless it is asked to, so this box was shrinking to its own longest line —
    497px on a row whose sentence wrapped, 172px on one whose sentence did not. Nothing
-   showed it until something wanted the right-hand edge, and then two controls that
-   each did got a different one: the undo slider filled a 172px row, and the
-   chrome-hiding run took 268px of the "equal shares" its own comment promises.
-   `min-width: 0` is the companion, so a long unbroken word wraps instead of pushing
-   the column wider than the row. */
+   showed it until something wanted the right-hand edge, and then three things did at
+   once and each got a different edge: the undo slider filled a 172px row, the
+   chrome-hiding run took 268px of the "equal shares" its own comment promises, and
+   the drag rows' chords right-aligned to wherever their sentence happened to stop
+   (§25.9). `min-width: 0` is the companion, so a long unbroken word wraps instead of
+   pushing the column wider than the row. */
 .setting-text {
   flex: 1;
   min-width: 0;
@@ -4631,8 +4632,8 @@ button.layer-remove:hover {
 }
 
 /* Only a row whose text column really is the `<label>` in front of one control says
-   so with the cursor. A row that is a label over a *group* — the chrome-hiding
-   choice — has nothing for a click on its words to do. */
+   so with the cursor. The rows that are a label over a *group* — the chrome-hiding
+   choice, the drag bindings — have nothing for a click on their words to do. */
 label.setting-text {
   cursor: pointer;
 }
@@ -4700,6 +4701,185 @@ label.setting-text {
   font-size: 11px;
   opacity: 0.45;
   font-style: italic;
+}
+
+/* --- drag bindings (drags.rs, §25.8) ---
+   Two surfaces over one table: a section of the settings dialog, and the offer
+   made once off a modified press nothing is bound to. Both are built out of the
+   settings row and the palette's bind chip, so what is here is only where the
+   pieces sit. */
+
+/* The presets are one control — six alternative answers to one question — so they are
+   a `.segmented` run and not six chips standing apart (§25.9). `max-content` puts the
+   group's rounded edge on the last chip rather than at the far side of the column,
+   which is what the run needs given it is sized to its contents below. */
+.drag-presets {
+  width: max-content;
+  max-width: 100%;
+  margin-top: 8px;
+}
+
+/* Sized to their own names, unlike `.setting-choice`'s even split: these labels are
+   proper nouns of very different lengths, and equal shares would have to clip "Clip
+   Studio Paint" down to what "Krita" needs. Nobody reads a wider chip here as the
+   recommended one, which is the only thing the even split was buying.
+
+   `nowrap` and no shrink together are what make §25.9's one-line question *checkable*:
+   an app's name broken over two lines would put the run at two heights, and a chip
+   that quietly narrowed would hide the day a seventh preset stopped fitting. Measured
+   at the dialog's width, the six take 85% of the column (92% in the widest UI fonts);
+   a seventh is the cue to re-measure and, if it does not fit, reach for `.select`. */
+.drag-presets .chip {
+  flex: none;
+  padding-left: 9px;
+  padding-right: 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* The chord at the end of the label line, where `.setting-value` puts a slider's
+   readout — the eye lands there after reading what the row is, and the binding is
+   this row's value. The ✕ sits beside it rather than under it, so a row that has a
+   binding and one that has none are the same height.
+
+   A **column**, not just a right-aligned run: `min-width` plus `space-between` puts
+   every chip's left edge and every ✕ at the same two x's, so the bindings read down
+   as a list. Right alignment alone lines up the ✕ and leaves the chips ragged by
+   their own widths, which is the half a reader is actually looking at. The width is
+   the widest chord any shipped preset spells ("Ctrl + Alt + drag", ~101px) plus the ✕
+   and its gap; a captured chord longer than that grows its own row leftward and
+   leaves the others where they are, which is the right way for this to degrade. */
+.drag-chord {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 124px;
+  margin-left: auto;
+}
+
+/* The bind chip is a hover affordance in the palette, where the resting list is
+   twenty commands and not a bindings editor. Here the list *is* the editor, so the
+   chip stands up at rest and the `+` never hides.
+
+   The negative margin goes with it: in the palette it keeps a chip that stands up on
+   hover from shifting the row it is in, and here there is no resting state for it to
+   hold still against — left in, it eats the gap to the ✕ beside it. */
+.setting-row .bind-chip {
+  margin: 0;
+  background: #ffffff1f;
+  color: #fff;
+}
+
+.setting-row .bind-chip:hover {
+  background: #ffffff3d;
+}
+
+.setting-row .bind-chip.capturing {
+  background: #3a6ea5;
+}
+
+.setting-row .bind-add {
+  visibility: visible;
+}
+
+/* Erasing a binding: a press cannot say "nothing" the way Backspace can, so the
+   drag editor owes this control where the palette's chip does not. Quiet until the
+   pointer is on it — it is the destructive half of a row whose point is the chip
+   beside it. */
+.drag-clear {
+  display: flex;
+  padding: 2px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  opacity: 0.4;
+  cursor: pointer;
+}
+
+.drag-clear:hover {
+  background: #ffffff1f;
+  opacity: 1;
+}
+
+.drag-clear .icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* The offer's cards. Each is a whole table taken in one click, so the click target
+   is the card and not a button inside it. */
+.drag-preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.drag-preset {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #ffffff14;
+  border-radius: 8px;
+  background: #ffffff08;
+  color: var(--panel-color);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.drag-preset:hover {
+  border-color: #3a6ea5;
+  background: #ffffff14;
+}
+
+.drag-preset-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.drag-preset-name {
+  font-size: 13px;
+}
+
+/* What is distinctive about the table, beside the name rather than under it: the
+   three rows below already print the bindings, and a sentence stacked over them
+   would push the sixth card off a short screen. */
+.drag-preset-blurb {
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0.55;
+}
+
+/* The three drags in a row of their own, each act paired with its chord. Wrapping,
+   so a narrow window stacks the pairs rather than clipping the third. */
+.drag-preset-rows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 6px;
+}
+
+.drag-preset-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.drag-preset-act {
+  opacity: 0.6;
+}
+
+/* The way back, said once above the buttons: the offer is made a single time, so
+   the dialog owes the sentence that keeps dismissing it from being a door closing. */
+.drag-offer-note {
+  margin-top: 14px;
+  font-size: 12px;
+  opacity: 0.6;
 }
 
 /* --- Timeline mode (§18.2.4) ---------------------------------

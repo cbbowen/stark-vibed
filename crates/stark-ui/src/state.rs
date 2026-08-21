@@ -326,6 +326,20 @@ pub struct AppState {
     /// re-renders the moment a rebind lands; seeded from storage at app start
     /// (`commands::load`) and written back on every rebind.
     pub bindings: Signal<crate::commands::Bindings>,
+    /// This browser's drag table (`drags::DragBindings`): the shipped rows with
+    /// the user's own laid over them (§25.8). A signal for the chord table's
+    /// reason and one more of its own — the resting cursor asks it what a press
+    /// under the held modifiers would open, so a rebind has to move the promise
+    /// in the same frame it moves the press.
+    pub drags: Signal<crate::drags::DragBindings>,
+    /// Whether this browser has been offered a table of drag presets, and
+    /// whether one is waiting for the hand to come off the canvas
+    /// (`drags::Offer`, §25.8).
+    ///
+    /// Not in [`Dialogs`] though it raises one: the flag there is *whether the
+    /// dialog is up*, and this is the durable fact that decides whether it ever
+    /// will be — seeded from storage at app start alongside the table above.
+    pub drag_offer: Signal<crate::drags::Offer>,
 }
 
 /// The root-mounted dialogs: one flag per modal, raised by the command that
@@ -352,6 +366,11 @@ pub struct Dialogs {
     pub timing: Signal<bool>,
     /// Credits (`credits::CreditsModal`).
     pub credits: Signal<bool>,
+    /// The drag-preset offer (`drags::DragPresetModal`, §25.8). The one dialog
+    /// no command opens: it is raised by a release
+    /// (`drags::settle_offer`) and only ever once per browser, which is why it
+    /// has no row in the rail and no chord.
+    pub drag_presets: Signal<bool>,
 }
 
 impl AppState {
@@ -364,7 +383,7 @@ impl AppState {
     /// same edit that adds its field — the one list in the app that has to
     /// know every dialog, stated once. The GPU-failure modal is deliberately
     /// absent: it has no flag because it may not be dismissed (§5).
-    pub fn root_dialogs(self) -> [Signal<bool>; 8] {
+    pub fn root_dialogs(self) -> [Signal<bool>; 9] {
         let d = self.dialogs;
         [
             d.new_document,
@@ -373,6 +392,7 @@ impl AppState {
             d.settings,
             d.timing,
             d.credits,
+            d.drag_presets,
             self.brush_editor_open,
             self.preset_save_open,
         ]
@@ -629,6 +649,7 @@ impl AppState {
                 settings: root_signal(|| false),
                 timing: root_signal(|| false),
                 credits: root_signal(|| false),
+                drag_presets: root_signal(|| false),
             },
             panels: crate::layout::PanelLayout {
                 order: root_signal(|| crate::layout::PanelId::ALL.to_vec()),
@@ -645,6 +666,8 @@ impl AppState {
                 thumb: root_signal(|| None),
             },
             bindings: root_signal(Default::default),
+            drags: root_signal(Default::default),
+            drag_offer: root_signal(Default::default),
         }
     }
 }

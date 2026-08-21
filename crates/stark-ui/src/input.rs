@@ -1550,7 +1550,7 @@ fn track_mods(state: AppState, m: Modifiers) {
         // back as paint: the wrong color for one and the wrong layer for the
         // other (§18.1.10). Asked of the table rather than named here, so a
         // rebinding moves it (§25.5).
-        if drags::armed(now).is_some_and(drags::DragAction::shadows_paint) {
+        if drags::armed(&state.drags.peek(), now).is_some_and(drags::DragAction::shadows_paint) {
             clear_hover_mark(state);
         }
     }
@@ -1865,7 +1865,8 @@ const HOVER_REACH_CANVAS_PX: f32 = 8.0;
 /// stroke would.
 pub fn hover_stroke(state: AppState, s: InputSample, e: &Event<PointerData>) {
     if *state.space_down.peek()
-        || drags::armed(*state.held_mods.peek()).is_some_and(drags::DragAction::shadows_paint)
+        || drags::armed(&state.drags.peek(), *state.held_mods.peek())
+            .is_some_and(drags::DragAction::shadows_paint)
         || *state.pick.dragging.peek()
         || crate::panels::timeline::is_playing(state)
     {
@@ -2002,4 +2003,10 @@ pub fn end_interaction(mut state: AppState, paint: Paint, nav: Nav, tune: Tune, 
     if was_faded {
         crate::layout::sleep_panels(state);
     }
+    // And a drag-preset offer brought due by a press this release is the end of
+    // (§25.8). Here rather than at the press for `tutor`'s reason: the press
+    // that finds nothing bound goes on to paint, and a modal over a live stroke
+    // would take the canvas away mid-mark. Last, because it is the one thing in
+    // this function that puts something *up*.
+    crate::drags::settle_offer(state);
 }

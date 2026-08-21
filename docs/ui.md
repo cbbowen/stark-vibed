@@ -408,6 +408,11 @@ which the engine draws into directly. DOM chrome surrounds it.
   (Done, no Cancel: nothing is staged) and stay mounted even when inert, saying
   so in their own text — deliberately the opposite of the §6.8 rule for tool
   bars, because a settings dialog is read as the map of what is configurable.
+  One section of it is not preferences at all but a **table** — the canvas drags,
+  with a segmented run of per-app presets over them (§25.8, §25.9) — because
+  "where do I change that?" has to have one answer whether the thing being changed
+  is a switch or a binding. It wears the same row shape as everything above it, so
+  the dialog is still read down one column of labels.
   What every dialog owes its reader — the height it may take, what holds still
   while the rest scrolls — is §25.7 below, with the rest of the chrome's rules.
   - **They are saved on the click too** — per browser, in `localStorage`, never
@@ -491,11 +496,12 @@ other than painting — the brush-tuning drag (§18.1.9), the eyedropper (§18.0
 the layer carry (§16.11) — each a row binding an exact chord+button to a
 `DragAction`. A third registry sits one layer down and answers a different
 question — `Store` (§25.6), which enumerates every record the frontend keeps in
-this *browser*: the libraries, the settings, the chord table above. §11 above tells the
+this *browser*: the libraries, the settings, the two tables above. §11 above tells the
 first two designs' history; this chapter is the working guide, written for the
 day a feature is added: which table the feature belongs to, if any, and the steps
-that keep them true. §25.7 closes it with the one surface that joins no registry
-and still has rules — the dialog.
+that keep them true. §25.7 and §25.9 cover the two things that join no registry
+and still have rules — the dialog, and a run of buttons — and §25.8 the half of
+the drag table that belongs to the user rather than to us.
 
 One law covers all three, and it is the reason they exist: **one authority, and
 surfaces render it rather than restating it.** Each table has one reader on its
@@ -699,11 +705,12 @@ feature:
   press *is*, and the *tool* owns what it means (§6.8). A row for it would be
   a second authority over the question the tool already answers.
 
-There is no user-facing rebinding for drags yet, on the inert-scaffolding
-rule: a stored table nothing can edit is scaffolding. The day a surface
-exists, copy `commands::Bindings` — overrides over defaults, keyed on the
-variant's name — and the two readers (`find`, `armed`) are already the only
-places that need to consult it.
+A new action is **rebindable the day it exists**, and costs nothing to make
+so: it joins `DragAction::ALL`, owes a `name`, a `word` and a `hint` for the
+settings row that appears for it automatically, and gets a row in whichever
+presets have an answer for it (§25.8). The two readers already consult the
+user's table rather than the shipped one, so there is no third place to
+teach.
 
 ### 25.4 The canvas press ladder
 
@@ -746,9 +753,9 @@ table — which is why neither table can ever row a key the holds claim.
 A summary of the identities this chapter leans on, for the reviewer's
 checklist:
 
-- **The variant is the act's name.** Stored rebindings key on it (chords
-  today, drags when rebinding arrives); rename one and stored rows for it
-  become bindings for nothing, dropped on load.
+- **The variant is the act's name.** Stored rebindings key on it, chords and
+  drags alike; rename one and stored rows for it become bindings for nothing,
+  dropped on load.
 - **The tables have two readers each.** Dispatch: `commands::find`,
   `drags::find`. Advertisement: `Command::shortcut`/`tooltip`/`advertised`;
   `drags::armed`. New code that compares a raw key, button or modifier
@@ -764,9 +771,9 @@ checklist:
 
 The third registry, and the one added last because it was learned the hard way.
 `Store` (`stark-ui/src/storage.rs`) enumerates every record this browser keeps —
-ten of them: the four libraries (shapes, presets, gradients, quick brushes), the
-⚙ dialog's settings, the chord table, which panels are open, whether the
-navigator is up, what the tour has seen, and this client's identity.
+eleven of them: the four libraries (shapes, presets, gradients, quick brushes),
+the ⚙ dialog's settings, the chord table, the drag table, which panels are open,
+whether the navigator is up, what the tour has seen, and this client's identity.
 
 One law, the same one: **one authority, and callers hand it typed values rather
 than spelling a format.** Here that is enforced by the type system — a type
@@ -789,16 +796,25 @@ no untyped door, so there is nowhere for another format to come from.
 
 The registry row still carries both facts about a record — its `localStorage`
 key and the name a quota warning calls it by — and the impls name a *variant*
-rather than restating those strings. Ten impls each spelling their own key would
-scatter the answer to "what does this browser keep?" across ten modules, and
-nothing would notice two of them colliding.
+rather than restating those strings. Eleven impls each spelling their own key
+would scatter the answer to "what does this browser keep?" across eleven modules,
+and nothing would notice two of them colliding.
 
-**Two traits, not one, because seven of the ten records are lists.** `Record` is
+**Two traits, not one, because eight of the eleven records are lists.** `Record` is
 the whole of what a key holds (`load`/`save`); `Entry` is one item of a library
 (`load_list`/`save_list`). Under a single trait, `load::<StoredPanel>()` would
 compile and quietly answer `None` — an array is not an object — leaving a panel
 stack that silently forgot itself. A type is one or the other, and the compiler
 says which functions it is for.
+
+A record may hold **more than one kind of row**, and two do: the tour's ledger
+carries deed tallies beside the lessons already given, and the drag table carries
+its rebindings beside the one bit saying this browser has been offered a preset
+(§25.8). Untagged serde enums, and the alternative in both cases was a second key
+in this registry to hold a handful of bytes belonging to one feature. The rule
+for reaching for it is that the rows have to be *one feature's* state; two
+features sharing a key would be the collision the registry exists to prevent,
+arranged by hand.
 
 The difference the traits encode is **what damage costs**. A list is read
 element by element, so one entry today's build cannot make sense of is dropped
@@ -869,3 +885,132 @@ Three consequences worth knowing before adding one:
 The one deliberate exception is `.be-dialog`, which takes more than the 80%: it
 is a working surface rather than something to read and dismiss, and every pixel
 it takes goes to the preview or to a list that scrolls inside it.
+
+### 25.8 Rebinding a drag, and the one time we ask
+
+The drag table's rows are the user's. `DragBindings` (`stark-ui/src/drags.rs`) is
+`defaults()` with this browser's own rows laid over it, and it is what both
+readers ask — `find` on the press, `armed` on the advertisement — so a rebind
+moves the cursor's promise in the same frame it moves the press. The shape is
+`commands::Bindings`', copied deliberately: the two tables share nothing but that
+shape, and a trait generic over "a chord" would be two associated types and a
+blanket impl to save forty lines of the plainest code in either module.
+
+Four rules carry over from the chord table, each for its own reason:
+
+- **An override is the action's whole binding.** Not "one more chord for it" —
+  the row the user set is the row, and any shipped row for that action dies with
+  it. Otherwise a rebind is an *addition*, and there is no gesture that removes
+  the thing you were trying to move.
+- **A rebind steals.** The action that held the chord keeps an override saying it
+  now holds nothing, rather than falling back to a default: the default is a
+  chord the user has just given away, and resurrecting it would undo the rebind
+  they asked for.
+- **Unbinding is an override to nothing**, for the same reason — an erased row
+  must not come back on the next load.
+- **The shipped preset is stored as no overrides at all.** Taking "Stark" clears
+  the table rather than writing its three rows out; three stored rows saying what
+  Stark already does is a browser no later build can ever move. Every other
+  preset is stored in full, which is the mirror of the same argument — it is a
+  claim about *another* app's table, and our defaults moving must not move it.
+
+#### The presets
+
+A modifier drag is discoverable only through what appears while it is held
+(§25.3), which makes three of them three secrets — and every app an artist
+arrives from keeps those secrets somewhere else. `DragPreset` is a named table
+per app: Stark, Photoshop, Clip Studio Paint, Corel Painter, Rebelle, Krita.
+
+Two things about that list are deliberate. It is indexed by **the app somebody is
+arriving from**, not by distinct tables — Clip Studio Paint and Corel Painter
+agree on all three and both have a row, because a preset is picked by
+recognising a name and a merged row would offer neither. And a preset may leave
+an action **unbound**: Krita reaches the layer carry through a tool rather than
+through a modifier, and inventing one for it would be putting words in its
+mouth. `matches` is asked per chip rather than answered once, so two presets that
+agree both light up; lighting only the first would make clicking the second look
+like it had done nothing.
+
+The tables are transcribed from other software's documentation, which is a thing
+that can be wrong and can go out of date. The design answer is not to be careful
+about it, it is to make every row separately rebindable and say so on the
+surface: a preset is a starting point, and the row under it is the fix.
+
+#### The offer, made once
+
+`Offer` is three states — `Unoffered`, `Due`, `Offered` — and the middle one is
+what makes the feature work rather than annoy.
+
+The trigger is `find` itself: a press whose chord this table has **nothing bound
+to**, with at least one modifier held. That is somebody reaching for a binding
+they already have in their hands, and it is the only evidence Stark will ever get
+that the offer is worth making. Three exclusions fall out of stating it that way:
+
+- **Asked of `lookup`, not of `find`'s answer.** A bound chord that *declines* —
+  Shift over a selection tool, where it is the union marquee — is not an unbound
+  one, and offering a preset table there answers a question nobody asked.
+- **Modified presses only.** A bare contact is painting, and a bare right press
+  is a chord nobody arrives holding.
+- **Once ever, per browser.** The mark is written when the dialog is *shown*, not
+  when it is answered: dismissing it is an answer, and a dialog that came back
+  until it got the one it wanted would be a dialog nobody forgives.
+
+Due and shown are two steps for the tour's reason (§24): the press that finds
+nothing bound goes on to paint a stroke, so the dialog waits in `Offer::Due`
+until `end_interaction` — the one place every canvas gesture is put down — takes
+the hand off the canvas. A modal over a live stroke takes the canvas away
+mid-mark.
+
+The dialog is the one root dialog **no command opens**, which is why it has no
+rail row and no chord. It is still in `AppState::root_dialogs`, so Esc lowers it
+like any other, and it still owes what §25.7 says every dialog owes. The one
+thing it owes on top is the way back: it says, above its buttons, that ⚙ Settings
+lists these three drags and can change any of them at any time — because an offer
+made once is a door that has to be visibly left open.
+
+### 25.9 What a run of buttons owes
+
+The other thing a feature adds to the chrome, here for §25.7's reason: what holds
+for one run of buttons has to hold for all of them by construction rather than by
+each author's care.
+
+**Buttons that are alternatives to each other are one control, so they wear
+`.segmented`.** That covers a mutually exclusive toggle group — the three
+chrome-hiding states in ⚙ (`settings::SettingChoice`), the selection panel's tool
+and combine rows, the eyedropper's scope, the timeline's speeds — and equally any
+run of buttons offering alternative answers to one question, whether or not one of
+them stays lit: the drag presets (§25.8) are six tables to *start from*, and they
+are the same control. The run's closed seams, single outer radius and one hairline
+per seam say that picking one un-picks the rest. Six chips standing apart with gaps
+between them say the opposite — six switches that could all be held down at once —
+which is a promise the code then has to spend a comment apologising for.
+
+**If they will not all fit on one line, it is a drop-down instead** (`.select`,
+which several panels already use). Not a wrapped run: a segmented group that breaks
+across two lines splits its seams mid-control and reads as two rows of buttons, so
+the shape stops carrying "one of these" at exactly the point where there are enough
+options for that to matter. Nor a run that shrinks to fit — a chip that quietly
+narrows hides the day the option after next stopped fitting. So the ladder is
+segmented while it fits on one line, `.select` when it does not, and never a
+wrapped or squeezed run in between.
+
+Two consequences worth stating, because they are what make "fits on one line" a
+question with an answer:
+
+- **Measure it, at the width the container actually has** — and measure the
+  container too, against the row rather than against itself. A dialog is a fixed
+  width (`.modal-wide` is 562px) and a panel column is 280px, so this is checkable
+  rather than a matter of taste; it is worth checking in a real engine, since chips
+  carry no `font-family` of their own and so render in the platform's UA button
+  font. The drag presets take 85% of their column in Segoe UI and 92% in the widest
+  UI fonts, which is the margin that keeps six of them chips. The trap is a check
+  that cannot fail: `.setting-text` had no `flex-grow`, so every settings row was
+  as wide as its own longest sentence — and asking whether a `margin-left: auto`
+  child sat flush against *its parent's* right edge answered yes on all of them,
+  while three controls that each wanted the row's edge each got a different one.
+  Measure against the box you believe the width of, not the one you are inside.
+- **Size the chips to whichever the labels are.** `.setting-choice` gives its three
+  options an even split so none reads as the recommended one; the drag presets take
+  their natural widths, because their labels are proper nouns of very different
+  lengths and an even split could only fit "Clip Studio Paint" by clipping it. The
+  even split is the default and the exception needs the sentence, which is this one.

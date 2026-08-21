@@ -179,6 +179,10 @@ fn app() -> Element {
     // And this browser's rebound shortcuts (`commands::Bindings`) — before the
     // first keystroke could ask the table, like everything above it.
     use_hook(|| commands::load(state));
+    // And its rebound canvas drags (§25.8), which the very first press asks and
+    // which also carry whether the preset offer has already been made — so a
+    // browser that has seen it must not be shown it again on this visit.
+    use_hook(|| drags::load(state));
 
     // Every brush with a picture to show wants a rendered stroke (`crate::thumbs`,
     // §11): the preset library's rows and the quick-brush rack's overlay
@@ -619,7 +623,7 @@ fn Canvas() -> Element {
     // pick does — Shift is the union marquee there (§6.8) — which is the gate the
     // action itself declares, restated here because `armed` answers the table
     // about a chord and this is a question about the tool in hand.
-    let armed = drags::armed((state.held_mods)());
+    let armed = drags::armed(&state.drags.read(), (state.held_mods)());
     let over_paint = !(state.space_down)() && !tool.is_selection();
     let sampling = armed == Some(DragAction::PickColor) && over_paint;
     let carrying = armed == Some(DragAction::PickAndTranslate) && over_paint;
@@ -986,7 +990,8 @@ fn BrushCursor() -> Element {
     if !paintable
         || tool.is_selection()
         || (state.space_down)()
-        || drags::armed((state.held_mods)()).is_some_and(DragAction::shadows_paint)
+        || drags::armed(&state.drags.read(), (state.held_mods)())
+            .is_some_and(DragAction::shadows_paint)
         || (state.pick.dragging)()
     {
         return rsx! {};
@@ -1102,6 +1107,11 @@ fn CommandRail() -> Element {
     let mut show_settings = state.dialogs.settings;
     let mut show_timing = state.dialogs.timing;
     let mut show_credits = state.dialogs.credits;
+    // The one flag here nothing in the chrome raises: the drag-preset offer is
+    // put up by a canvas release (`drags::settle_offer`, §25.8). Mounted beside
+    // the rest all the same, because where a root dialog lives is
+    // `AppState::root_dialogs`' question — Esc lowers this one like any other.
+    let mut show_drag_presets = state.dialogs.drag_presets;
 
     rsx! {
         div { class: chrome_class(state, "command-rail"),
@@ -1179,6 +1189,9 @@ fn CommandRail() -> Element {
         }
         if show_credits() {
             CreditsModal { on_close: move |_| show_credits.set(false) }
+        }
+        if show_drag_presets() {
+            drags::DragPresetModal { on_close: move |_| show_drag_presets.set(false) }
         }
     }
 }

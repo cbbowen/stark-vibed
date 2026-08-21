@@ -89,10 +89,14 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                     "These apply to this browser, not to the drawing."
                 }
 
-                // Two sections, both full. The split is what a row is *about*: the
-                // canvas and the work on it, or the chrome around it. Sections that
-                // held one row each — one per feature that happened to have a
-                // preference — sorted the code rather than the reader.
+                // Three sections, all full. The split between the first two is what
+                // a row is *about*: the canvas and the work on it, or the chrome
+                // around it. Sections that held one row each — one per feature that
+                // happened to have a preference — sorted the code rather than the
+                // reader. The third is not a set of rows at all but a *table*
+                // (§25.8), and it comes last for that reason: a reader scanning
+                // labels for a switch should not have to pass four bindings to
+                // reach the two below.
                 div { class: "modal-section-label", "PAINTING" }
                 SettingToggle {
                     id: "drawing-assist",
@@ -170,6 +174,15 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                     // (`tutor::set_enabled`).
                     onchange: move |v| crate::tutor::set_enabled(state, v),
                 }
+
+                div { class: "modal-section-label", "DRAGS ON THE CANVAS" }
+                // The drag table's own surface, mounted rather than written here
+                // (`drags::DragBindingSection`): what a row of it *is* — a chord,
+                // a capture, a preset — is the table's business, and this dialog's
+                // is being the place they are found. The one section whose rows
+                // are not preferences, and it wears the same row shape anyway, so
+                // the dialog still reads down one column of labels.
+                crate::drags::DragBindingSection {}
 
                 div { class: "modal-actions",
                     button {

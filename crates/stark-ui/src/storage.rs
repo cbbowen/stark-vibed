@@ -1,9 +1,10 @@
 //! This browser's local store: the one door to `localStorage`, and the one format
 //! everything behind it is kept in.
 //!
-//! Ten records live here — the shape, preset, gradient and quick-brush libraries, the
-//! ⚙ dialog's settings, the chord table, which panels are open, whether the navigator
-//! is up, what the tour has seen, and this client's identity. There were six formats
+//! Eleven records live here — the shape, preset, gradient and quick-brush libraries,
+//! the ⚙ dialog's settings, the chord table, the drag table, which panels are open,
+//! whether the navigator is up, what the tour has seen, and this client's identity.
+//! There were six formats
 //! between them once: JSON for two, a base64 field table for three, bare
 //! space-separated panel names, a tagged `deed|key|count` row for the tour, `"1"`
 //! versus `""` for the navigator's one bit, and hex for the identity. Each was
@@ -96,6 +97,9 @@ pub enum Store {
     Prefs,
     /// The chords the user has taken over (`crate::commands`).
     Bindings,
+    /// The canvas drags the user has taken over, and whether this browser has been
+    /// offered a preset table (§25.8, `crate::drags`).
+    Drags,
     /// Which floating panels are open, and which are folded (`crate::layout`).
     Panels,
     /// Whether the navigator's miniature is up (§11, `crate::navigator`).
@@ -129,6 +133,7 @@ impl Store {
             Store::Identity => ("stark.identity", "this browser's identity"),
             Store::Prefs => ("stark.prefs", "the settings"),
             Store::Bindings => ("stark.bindings", "the shortcuts"),
+            Store::Drags => ("stark.drags", "the drag bindings"),
             Store::Panels => ("stark.panels", "which panels are open"),
             Store::Navigator => ("stark.navigator", "whether the navigator is showing"),
             Store::Tutor => ("stark.tutor", "the tips you have seen"),
@@ -340,10 +345,11 @@ mod tests {
     use serde::Deserialize;
     use std::collections::HashSet;
 
-    const ALL: [Store; 10] = [
+    const ALL: [Store; 11] = [
         Store::Identity,
         Store::Prefs,
         Store::Bindings,
+        Store::Drags,
         Store::Panels,
         Store::Navigator,
         Store::Tutor,
@@ -393,6 +399,7 @@ mod tests {
             <crate::prefs::Prefs as Record>::STORE,
             <crate::navigator::Showing as Record>::STORE,
             <crate::commands::StoredBinding as Entry>::STORE,
+            <crate::drags::DragRow as Entry>::STORE,
             <crate::layout::StoredPanel as Entry>::STORE,
             <crate::tutor::Row as Entry>::STORE,
             <crate::shapes::ShapeEntry as Entry>::STORE,
