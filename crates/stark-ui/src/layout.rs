@@ -470,6 +470,23 @@ pub fn wake_panels(state: AppState) {
     }
 }
 
+/// The wake slice's own three handlers: the artist reaching into the column, which is
+/// a **deed** as well as a wake (§24.2).
+///
+/// Separate from [`wake_panels`] rather than reported inside it, and the difference is
+/// the whole of what the deed means: [`open_panel`] wakes the stack, and so does the
+/// tour letting go of a card it was holding it up for — neither of which is anybody
+/// reaching for anything, and the second is the very lesson this deed answers taking
+/// itself down. The deed is the *gesture*, so it is reported where the gesture lands.
+///
+/// Reported before the wake, so the tour reads the panels as still asleep — which is
+/// what its card is standing in front of. It is at most one deed per sleep, since the
+/// first event here takes the slice out of the DOM.
+fn reach_for_panels(state: AppState) {
+    crate::tutor::did(state, crate::tutor::Deed::WokePanels);
+    wake_panels(state);
+}
+
 /// Stand the panels down, as the end of a canvas gesture does
 /// ([`AppState::panels_asleep`](crate::state::AppState::panels_asleep)).
 ///
@@ -772,9 +789,9 @@ pub fn PanelStack() -> Element {
         if reachable {
             div {
                 class: "panel-wake",
-                onpointermove: move |_| wake_panels(state),
-                onpointerdown: move |_| wake_panels(state),
-                onwheel: move |_| wake_panels(state),
+                onpointermove: move |_| reach_for_panels(state),
+                onpointerdown: move |_| reach_for_panels(state),
+                onwheel: move |_| reach_for_panels(state),
             }
         }
         div {

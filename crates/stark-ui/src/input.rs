@@ -1614,6 +1614,13 @@ pub fn pick_color(state: AppState, pos: Vec2) {
         // Nothing under the sampler leaves the brush as it was: bare canvas is the
         // ground, not paint to pick up.
         let Some(rgb) = picked else { return };
+        // A sample landed, which the tour counts as the **gesture** it is (§24.2).
+        // Reported here rather than left to the command below for the same reason that
+        // command is bracketed: what the stream will say is that a color changed, and
+        // the two lessons this feeds are about the eyedropper rather than about the
+        // color. Only on a sample that answered — a pick over bare canvas returns above
+        // and is not a color anybody got.
+        crate::tutor::did(state, crate::tutor::Deed::PickedColor);
         // The color about to be written comes off the painting, which is the gesture
         // one of the tour's lessons exists to teach — so the write is marked as the
         // eyedropper's rather than as somebody reaching for the picker (§24.2). The

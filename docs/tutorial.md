@@ -16,12 +16,14 @@ pays it for one binding by bringing its options bar up on Alt (§18.0.2): press 
 modifier and the thing it does announces itself. This chapter is the same answer
 generalized to everything no modifier announces.
 
-The whole feature is `stark-ui/src/tutor.rs`, one line in `dispatch`, and six call
-sites that say something the command stream cannot — three brackets and three
+The whole feature is `stark-ui/src/tutor.rs`, one line in `dispatch`, and eight call
+sites that say something the command stream cannot — three brackets and five
 reports (§24.2). It turns on three
 decisions: what brings a lesson (§24.1), where the counting comes from (§24.2), and
-what a card is allowed to do to the screen (§24.3). §24.4 is the ledger, §24.5 the
-table of lessons as it stands, and §24.6 what is deliberately absent.
+what a card is allowed to do to the screen (§24.3) — including what takes one down,
+which is as often the artist doing the thing as it is the button. §24.4 is the
+ledger, §24.5 the table of lessons as it stands, and §24.6 what is deliberately
+absent.
 
 Since every panel now starts closed (§11), the tour also carries the opening
 screen: the first three lessons are how the stack gets assembled for somebody who
@@ -159,7 +161,7 @@ have, since the other one is a card nobody asked for.
 
 #### The deeds that are not in the stream at all
 
-Three are reported outright (`tutor::did`):
+Five are reported outright (`tutor::did`):
 
 - **A preset put on from the library.** The command it leads to says a brush
   changed and cannot say a row was clicked — and the quick slots, which that lesson
@@ -167,6 +169,17 @@ Three are reported outright (`tutor::did`):
 - **A panel closed.** Which panels are open is the frontend's alone and reaches no
   engine at all, so there is no command to read. `layout::close_panel` reports it,
   and only where a panel actually went away.
+- **The panel column reached into.** The same fact from the other side, and the
+  answer to the lesson about it (§24.3). Reported by the wake slice's own handlers
+  (`layout::reach_for_panels`) rather than by `layout::wake_panels` — `open_panel`
+  goes through that, and so does the tour letting go of a card it was holding the
+  stack up for. Neither is anybody reaching for anything, and the second is the very
+  card this deed answers waking the panels as it comes down.
+- **A color sampled off the painting.** The stream will say a color changed, and
+  the write that says so is inside a `not_reaching` bracket precisely so it is *not*
+  read that way. `input::pick_color` reports the gesture instead, on a sample that
+  actually landed — the same act counted from the other side, and the one deed that
+  is both a bracket and a report.
 - **The brush editor opened.** A dialog is frontend state too, and this one is the
   request its whole series answers.
 
@@ -388,6 +401,86 @@ anchor measured — a measurement comes back empty for a frame while the browser
 out a panel that has only just opened, and dismissing on *that* would dismiss every
 lesson the instant it appeared.
 
+#### Doing the thing is the answer
+
+A card is a claim that somebody does not know something. **Doing the thing is that
+claim being answered** — and a better answer than the button, because it is the
+skill rather than a statement about it. So every lesson names the deeds that answer
+it, on the row, beside the deed that earns it:
+
+```rust
+Lesson {
+    key: "color-panel",
+    deed: Deed::Stroke,               // what earns it: wanting the thing
+    after: 4,
+    answer: Answer::Known(&[Deed::ChangedColor]),   // what answers it: having it
+    ...
+}
+```
+
+The two are rarely the same deed, and that is the point of writing them separately:
+what *earns* a lesson is evidence the artist wants the thing, what *answers* it is
+evidence they already have it. The colour panel is earned by painting and answered
+by picking a colour; the Brush panel is earned by painting and answered by touching
+any control on it — a slider, the editor button, a row of the library. Answering
+marks the lesson **given**, exactly as "Got it" would, and deliberately does not run
+the chain: the next lesson the deed owes arrives on the deed's own terms rather than
+filling the hole the answer just made.
+
+Two variants, and they differ only in **how far back an answer counts**:
+
+| | Answers a card on screen | Forecloses the lesson |
+|---|---|---|
+| `Answer::Doing(&[…])` | yes | no |
+| `Answer::Known(&[…])` | yes | yes — never offered at all |
+
+`Known` is the one the artist feels: a tip for something they demonstrably already
+do is the single most annoying thing this feature can produce, and foreclosing is
+how it stops producing it. But it cannot be the default, and the panel column is
+why. Its wake slice is the whole right-hand edge of the window, so a pointer on its
+way to anything at all brings the stack back without anybody deciding anything —
+counted backwards, that lesson would be foreclosed for practically every user, and
+the failure would look exactly like the feature working. So the test is not *is the
+deed related* but **would having done it prove they found the thing the card points
+at**: picking a colour proves it, drifting across an invisible strip does not.
+
+A foreclosed lesson is **skipped, not spent**. Nothing is written, so it steps
+aside and lets the next lesson its deed owes come forward in the same breath —
+`Lesson::applies`'s rule, for `Lesson::applies`'s reason: a lesson that could
+neither be shown nor passed would stall its whole deed, silently, and the stroke
+owes four.
+
+The catch that matters most is the card that has come due and **not yet been
+shown**. A lesson waits in `TutorState::due` for as long as the canvas is in hand or
+a dialog is up, and what somebody does in that gap is precisely what they were about
+to be told — so `answered` empties that slot as well as the screen. Without it the
+card arrives *after* the deed, which is the tour at its slowest and most patronizing.
+
+A good many lessons have no answer but the button, and that is the same design
+working from the other end. The tuning drag and the quick slots are bracketed by
+`not_reaching` (§24.2), so somebody already fluent with one never accrues the deed
+that earns its card in the first place — there is nothing left for an answer to
+catch. The brush editor's five are the other case: each describes what a *section of
+a dialog is for*, and there is no act that demonstrates having understood one.
+Moving a knob in there is the thing being explained, not a reply to it.
+
+The eyedropper is the one bracketed gesture that is **also** counted, and it is
+worth seeing why the two do not contradict. The bracket is about the command: what
+the stream says is that a color changed, and reading that would have the tour wait
+for ten eyedroppers and then offer to explain the eyedropper. The deed is about the
+gesture, reported by `input::pick_color` on a sample that actually landed. So the
+same act is invisible as an *effect on the brush* and countable as a *thing done* —
+which is what lets a pick answer the card teaching the Alt-drag while it is still on
+screen, rather than merely keeping that card from ever being earned.
+
+Three deeds exist for their answers alone — reaching into the panel column, adding a
+layer, travelling by the navigator's miniature — and none of them earns a lesson,
+because each is a thing you only do once you know. `WokePanels` is reported by the
+slice itself rather than by `layout::wake_panels`, which `open_panel` and the tour's
+own release also go through; the other two are read straight off the command stream,
+`ViewCommand::CenterOn` being absolute where every other way of travelling is a delta
+and so emitted by the miniature alone.
+
 ### 24.4 The ledger
 
 One `localStorage` record, `stark.tutor` (§25.6) — a **list**, read row by row, so
@@ -438,25 +531,33 @@ rule kept in one of them is a rule the other disagrees with.
 The table is the whole feature: a lesson is a row, and adding one costs no code
 anywhere else unless it counts a deed nothing counts yet.
 
-| After | Deed | Points at | What it says |
-|---|---|---|---|
-| 2 | a brush stroke | Color panel | Here is the first panel, and the picker is Oklab — the slider is lightness, and the wheel is every color the display has at it (§6.5, §11) |
-| 3 | a brush stroke | the panel column | The panels stand down while you paint; reach into the right-hand edge and they come back (§11) |
-| 5 | a brush stroke | Brush panel | Size and Flow, the brush editor's live test stroke, and that the list below is a library |
-| 10 | size or flow moved *by a control* | Brush panel | Ctrl (⌘) + drag on the canvas — sideways for size, up and down for flow (§18.1.9) |
-| 5 | a preset put on from the library | the quick-brush rack | A held number is a brush you *borrow*; tuning under the hold keeps the change (§18.1.8) |
-| 2 | a long pan | the navigator's miniature | Drag inside the miniature to travel; right-drag to turn the canvas |
-| 5 | the color moved *by a control* | Color panel | Alt + drag samples off the painting, and the bar that comes up says what the sample sees (§18.0.2) |
-| 2 | a redo | Timeline bar | The history is a place you can stand in, not a stack you pop (§18.2.4) |
-| 1 | a panel closed | the command rail | Nothing is lost: the Panels menu lists all eight, and what you leave open is remembered (§11) |
-| 10 | an undo | the canvas | Draw a rough line or ellipse and *hold* — it snaps to what you meant, and the drag steers it (§6.9) |
-| 3 | a shape-assisted stroke | Drawing Guides panel | Straight is one thing; straight *to somewhere* is another — add a perspective guide (§20) |
-| 1 | an assisted **line** with a guide visible | Drawing Guides panel | The grid aims held lines down its own axes, and turns a held circle into one in perspective (§20.6, §20.7) |
-| 20 | a brush stroke | Select panel | Drag a marquee and every tool acts only inside it; the chips combine one selection with the last (§6.8) |
-| 3 | a selection | Layers panel | A selection says *where*, the stack says *what* — and a group is also a clipping mask (§14) |
-| 1 | the brush editor opened | the editor itself | **A series of five**, walked through with Next: the test stroke, then Tip, Paint, Color dynamics, Pickup |
+In table order, which is the order they are offered when two come due at once:
 
-**Order decides ties**, and the first three all wait on a stroke. Listed in that
+| After | Deed | Points at | Answered by | What it says |
+|---|---|---|---|---|
+| 4 | a brush stroke | Color panel | **ever** picking a color | Here is the first panel, and the picker is Oklab — the slider is lightness, and the wheel is every color the display has at it (§6.5, §11) |
+| 5 | a brush stroke | the panel column | reaching into the column | The panels stand down while you paint; reach into the right-hand edge and they come back (§11) |
+| 10 | a brush stroke | Brush panel | **ever** touching a control on it | Size and Flow, the brush editor's live test stroke, and that the list below is a library |
+| 40 | a brush stroke | Select panel | **ever** committing a selection | Drag a marquee and every tool acts only inside it; the chips combine one selection with the last (§6.8) |
+| 3 | a selection | Layers panel | **ever** adding a layer | A selection says *where*, the stack says *what* — and a group is also a clipping mask (§14) |
+| 1 | a panel closed | the command rail | the button | Nothing is lost: the Panels menu lists all eight, and what you leave open is remembered (§11) |
+| 10 | size or flow moved *by a control* | Brush panel | the button | Ctrl (⌘) + drag on the canvas — sideways for size, up and down for flow (§18.1.9) |
+| 3 | a preset put on from the library | the quick-brush rack | the button | A held number is a brush you *borrow*; tuning under the hold keeps the change (§18.1.8) |
+| 10 | an undo | the canvas | **ever** a shape-assisted stroke | Draw a rough line or ellipse and *hold* — it snaps to what you meant, and the drag steers it (§6.9) |
+| 5 | a shape-assisted stroke | Drawing Guides panel | **ever** a guided line | Straight is one thing; straight *to somewhere* is another — add a perspective guide (§20) |
+| 2 | an assisted **line** with a guide visible | Drawing Guides panel | the button | The grid aims held lines down its own axes, and turns a held circle into one in perspective (§20.6, §20.7) |
+| 4 | a long pan | the navigator's miniature | **ever** using the miniature | Drag inside the miniature to travel; right-drag to turn the canvas |
+| 10 | the color moved *by a control* | Color panel | **ever** a color picked off the canvas | Alt + drag samples off the painting, and the bar that comes up says what the sample sees (§18.0.2) |
+| 5 | a color picked off the canvas | Color panel | the button | How far a sample reaches — this layer, everything under it, the whole canvas — and how wide a patch it averages (§18.0.2) |
+| 1 | the brush editor opened | the editor itself | the button | **A series of five**, walked through with Next: the test stroke, then Tip, Paint, Color dynamics, Pickup |
+| 2 | a redo | Timeline bar | the button | The history is a place you can stand in, not a stack you pop (§18.2.4) |
+
+**bold "ever"** marks `Answer::Known` — the lesson is not merely dismissed by the
+deed, it is never offered to somebody who has already done it. The plain rows are
+`Answer::Doing`, and "the button" is a lesson with no deed that answers it at all;
+the reasons are §24.3.
+
+**Order decides ties**, and the first four all wait on a stroke. Listed in that
 order, so a stroke satisfying more than one gives the earliest still owed — which
 is also what brings a card passed over while another was up back before the ones
 behind it, rather than letting a busy stretch reorder the tour into whatever the
@@ -469,7 +570,14 @@ assembled for somebody who has not found the Panels menu. That is the trade the
 empty start buys — the panels arrive one at a time, each with a reason, instead of
 five at once with none.
 
-The counts are set from what each deed *costs* to keep doing the hard way. Two
+Those three are also the three most likely to be answered rather than acknowledged,
+and that is not a coincidence: a lesson about *where a panel is* is answered by
+using the panel, and the opening screen is nothing but lessons about where the
+panels are. Somebody who finds the color picker on their own is never told where it
+is, which is the assembly sequence getting out of the way of the person who did not
+need it.
+
+The counts are set from what each deed *costs* to keep doing the hard way. Four
 strokes is no commitment at all, but a painter with no color picker has already
 wanted one. Ten trips to the size slider is somebody who has decided that this is
 how they work, which is exactly the moment the drag is worth knowing and well past
@@ -483,14 +591,32 @@ control, and the placement is the message: what it describes is a thing you do w
 the pen, in the middle of the canvas, and there is no control anywhere that it could
 have pointed at instead.
 
-The last four rows are a **chain**, and it is the part of the table worth reading as
-a sequence. Undos bring the shape assist; assisted strokes bring the perspective
-guides, because a held line is exactly the stroke a grid has something to say about;
-and a held line drawn with a guide on screen brings the fact that the two have
-already been wired together (§20.6). Each lesson is the reason the next one's deed
-starts happening, so the tour walks somebody from *my lines are wobbly* to *my lines
-are on the vanishing point* without ever telling them anything they had not just
-asked for.
+The assist, the guides and the perspective rows are a **chain**, and it is the part
+of the table worth reading as a sequence. Undos bring the shape assist; assisted
+strokes bring the perspective guides, because a held line is exactly the stroke a
+grid has something to say about; and a held line drawn with a guide on screen brings
+the fact that the two have already been wired together (§20.6). Each lesson is the
+reason the next one's deed starts happening, so the tour walks somebody from *my
+lines are wobbly* to *my lines are on the vanishing point* without ever telling them
+anything they had not just asked for.
+
+The chain is also where the answers do their neatest work, because **each lesson's
+deed is the one that answers the lesson before it**. Somebody who discovers
+draw-and-hold on their own is never offered the card about it — they are offered the
+guides instead — and somebody who has already drawn a guided line is past both. The
+sequence is a ladder either way: earn a rung and you climb it, or skip it and you
+arrive at the same place having been told nothing you did not ask.
+
+The eyedropper's two rows are the shortest chain in the table and the clearest case
+for the mechanism. One card teaches the Alt-drag; the other teaches what the bar
+that comes up with it does. A pick answers the first — the artist takes the hint and
+the tip about the hint stops being worth reading mid-gesture — and five picks earn
+the second. That the options lesson points at the **Color panel** rather than at the
+bar is deliberate and is the interesting constraint: the bar exists only while the
+modifier is held (§18.0.2), so a card anchored there could only ever be shown during
+a held key and would be taken down as an answer the instant it came up. Spent,
+unread. A lesson has to point at something that is on screen when there is time to
+read it.
 
 #### The series
 
@@ -524,7 +650,10 @@ same direction anyway.
 *reaching for the slider*, not *the size changing*, so the artist who already drags
 never accrues it. The preset row is the same idea from the other side — the deed is
 the row *click*, which the quick slots never produce, so somebody already fluent
-with the number keys is never offered the lesson about them.
+with the number keys is never offered the lesson about them. The colour row goes
+further still and is counted **both** ways: bracketed as an effect on the brush and
+reported as a gesture, which is what gives its lesson an answer as well as a guard
+(§24.3).
 
 A card says what to **do** and then the thing about Stark that makes it worth
 doing. A tip that only names a shortcut is a keyboard reference, and the menus
@@ -542,10 +671,13 @@ already carry one.
   somebody who has been taught is the failure mode this whole design is built to
   avoid, so the app declines to offer it; a browser's own site-data controls remain
   the honest way to become new again.
-- **No timing out.** A card stays until it is acknowledged. It costs nothing to
-  leave up — it fades with the rest of the chrome for every gesture — and a
-  paragraph that vanished while it was being read would be worse than one that
-  waited.
+- **No timing out.** A card stays until it is answered — by its button, by its
+  anchor going away, or by the artist doing the thing it describes (§24.3). It never
+  goes on a clock. Leaving one up costs nothing, since it fades with the rest of the
+  chrome for every gesture, and a paragraph that vanished while it was being read
+  would be worse than one that waited. What a timer would really have been for is
+  the card nobody needed, and answering by doing is the honest version of that: it
+  goes when there is a reason for it to go.
 - **No lesson without an anchor.** Every lesson points at a box that exists — even
   the invisible one, which is a real box with a real gesture attached (§24.3). A
   card floating in the middle of the window with nothing to explain would be an

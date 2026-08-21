@@ -25,6 +25,28 @@
 //! running across visits, because "the third stroke" is not a claim about one
 //! session.
 //!
+//! # And answered by doing the thing
+//!
+//! A card is a claim that somebody does not know something, so **doing the thing is
+//! the answer** — a better one than the button, because it is the skill rather than a
+//! statement about it. Every lesson names the deeds that answer it ([`Answer`]), and
+//! they are rarely the deed that earned it: the color panel is earned by *painting*
+//! and answered by *picking a color*.
+//!
+//! It reaches back as well as forward, for some. Picking a color is deliberate, so
+//! somebody who has already done it is never shown the card at all
+//! ([`Answer::Known`]); waking the panels is not — the slice is the whole right-hand
+//! edge of the window and a pointer on its way anywhere crosses it — so that one
+//! counts only from the moment its card is up ([`Answer::Doing`]). The test is not
+//! whether the deed is related but whether **having done it proves they found the
+//! thing the card points at**.
+//!
+//! And a good many lessons have no answer but the button, which is the same design
+//! working from the other end: the gestures they teach are bracketed by
+//! [`not_reaching`] and produce no deed at all, so somebody already fluent with one
+//! never earns its card in the first place. There is nothing left for an answer to
+//! catch.
+//!
 //! # Deeds are read off the command stream, not off the call sites
 //!
 //! [`observe`] is called from [`dispatch`](crate::state::dispatch), which is the
@@ -132,8 +154,8 @@ const EDGE: f32 = 14.0;
 /// Deliberately not one variant per command: several commands are one deed (`Pan`,
 /// `Pinch`), and one command is two deeds or none depending on what moved
 /// ([`brush_deed`]). The vocabulary here is the *lessons'* — a deed exists because
-/// a lesson counts it, and one that nothing counts would be a tally kept for
-/// nobody (which is what `the_deeds_and_the_lessons_account_for_each_other`
+/// a lesson **counts it or answers to it**, and one that neither would be a tally
+/// kept for nobody (which is what `the_deeds_and_the_lessons_account_for_each_other`
 /// refuses).
 ///
 /// Each variant carries the name it is **stored** under as a `rename`, spelled out
@@ -194,12 +216,54 @@ pub enum Deed {
     /// state and reaches no engine, so the button reports it ([`did`]).
     #[serde(rename = "brush-editor")]
     OpenedBrushEditor,
+    /// The panel column reached into, bringing the sleeping stack back (§11).
+    ///
+    /// Not on the command stream, for [`ClosedPanel`](Self::ClosedPanel)'s reason, and
+    /// reported by the slice the pointer lands in (`layout::PanelStack`) rather than by
+    /// `layout::wake_panels` — which `open_panel` and the tour's own `release_panels`
+    /// also go through. Neither of those is the artist reaching for anything, and the
+    /// second is a card waking the stack as it comes down: a lesson answered by its own
+    /// dismissal would be no lesson at all.
+    #[serde(rename = "woke-panels")]
+    WokePanels,
+    /// A color sampled off the painting with the eyedropper (§18.0.2).
+    ///
+    /// Reported outright (`input::pick_color`) and **not** read as the
+    /// [`ChangedColor`](Self::ChangedColor) it also is: the write is inside a
+    /// [`not_reaching`] bracket, which is the whole of how the tour avoids waiting for
+    /// somebody to eyedropper ten times and then offering to explain the eyedropper.
+    /// This is the same act counted from the other side — as the gesture rather than as
+    /// its effect on the brush.
+    ///
+    /// Only where a sample actually landed. A pick over bare canvas answers nothing and
+    /// leaves the brush as it was, and counting it would be counting a colour nobody
+    /// got. A drag is one deed, as every drag here is ([`COALESCE`]).
+    #[serde(rename = "picked-color")]
+    PickedColor,
+    /// A layer added to the stack (§14).
+    ///
+    /// On the stream, and the one deed there that is a *document* command rather than
+    /// a view or a gesture: [`DocCommand::AddLayer`] is minted by the Layers panel's
+    /// button and by the command that shares it, and by nothing else — an image
+    /// arriving carries its own command (§23) and a matte carries another (§15), so
+    /// neither is read as somebody having discovered the stack.
+    #[serde(rename = "added-layer")]
+    AddedLayer,
+    /// The navigator's miniature clicked or dragged (§11).
+    ///
+    /// On the stream after all, which is worth saying because the deed is a *gesture on
+    /// a piece of chrome*: [`ViewCommand::CenterOn`] is absolute where every other way
+    /// of travelling is a delta, so the miniature is the only thing in the app that
+    /// emits one. That is also why a navigator drag is not counted as travel, which it
+    /// must not be — the lesson this answers is the one about panning too far.
+    #[serde(rename = "navigator")]
+    UsedNavigator,
 }
 
 impl Deed {
     /// Every deed. The order **is** the tally's slot order, so this is
     /// [`Deed::slot`]'s only authority.
-    const ALL: [Deed; 12] = [
+    const ALL: [Deed; 16] = [
         Deed::Stroke,
         Deed::TunedBrush,
         Deed::LongPan,
@@ -212,6 +276,10 @@ impl Deed {
         Deed::GuidedLine,
         Deed::Selection,
         Deed::OpenedBrushEditor,
+        Deed::WokePanels,
+        Deed::PickedColor,
+        Deed::AddedLayer,
+        Deed::UsedNavigator,
     ];
 
     /// How many there are, so the tally can be an array rather than a map.
@@ -219,7 +287,7 @@ impl Deed {
 
     /// This deed's slot in the tally.
     ///
-    /// A linear scan of five, at deed rate. It reads [`Deed::ALL`] rather than
+    /// A linear scan of a dozen, at deed rate. It reads [`Deed::ALL`] rather than
     /// restating the order as a `match` that could come to disagree with it.
     fn slot(self) -> usize {
         Deed::ALL
@@ -581,7 +649,79 @@ impl Side {
 /// downward, which is the gesture the one lesson placed this way is about.
 const INSIDE_DEPTH: f32 = 0.25;
 
-/// One lesson: the deed it waits for, how many it waits for, and what it says.
+/// What answers a lesson besides its own button: the deeds that **are** the thing it
+/// teaches (§24.3).
+///
+/// A card is a claim that the artist does not know something. Doing the thing is that
+/// claim being answered, and answering it any other way — leaving the card up until it
+/// is acknowledged — is the tour asking somebody to press a button about a skill they
+/// have just demonstrated. That is the whole of what this is for.
+///
+/// **Stated on the lesson rather than derived from its deed**, because the two are
+/// different questions and usually different deeds: what *earns* a lesson is evidence
+/// the artist wants the thing, and what *answers* it is evidence they already have it.
+/// The color panel is earned by painting and answered by picking a color.
+///
+/// The two live variants differ only in **how far back an answer counts**, and the
+/// distinction is not a nicety — it is the difference between a tip that helps and one
+/// nobody ever sees:
+///
+/// - Picking a color is deliberate. Somebody who has done it once has found the picker,
+///   so the lesson about it is not owed at all — [`Known`](Self::Known).
+/// - Waking the panels is not: the slice is the whole right-hand edge of the window, so
+///   a pointer on its way anywhere crosses it and the stack comes back without anybody
+///   deciding anything. Counted backwards it would foreclose its own lesson for
+///   practically every user — [`Doing`](Self::Doing).
+///
+/// So the test for [`Known`] is not "is the deed related" but **would having done it
+/// prove they found the thing the card points at**.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Answer {
+    /// The button, and nothing else.
+    ///
+    /// Written out rather than left as an empty list, so a lesson added later has to
+    /// decide — and so this one says *why* there is nothing here. For most of the rows
+    /// that wear it the reason is the same and is a feature: the gesture the lesson
+    /// teaches is bracketed by [`not_reaching`] and produces no deed at all, which is
+    /// what keeps the tour from ever teaching a gesture somebody already uses. There
+    /// is nothing to answer with because there is nothing to count.
+    Button,
+    /// These deeds, from the moment the card is on screen.
+    ///
+    /// Doing one takes it down and marks it given, exactly as "Got it" would. One done
+    /// *before* the lesson came due does not count — see the type's comment.
+    Doing(&'static [Deed]),
+    /// These deeds, ever.
+    ///
+    /// [`Doing`](Self::Doing) plus the backward half: a count already standing when the
+    /// lesson would come due means it is **never offered**. Skipped rather than written
+    /// into the ledger, for [`Lesson::applies`]'s reason — it steps aside and lets the
+    /// next lesson its deed owes come forward, and it is owed again if the tally it was
+    /// foreclosed by ever turns out to have been somebody else's browser.
+    Known(&'static [Deed]),
+}
+
+impl Answer {
+    /// The deeds that take a card **on screen** down. Both live variants; the
+    /// difference between them is entirely in [`forecloses`](Self::forecloses).
+    fn dismisses(self) -> &'static [Deed] {
+        match self {
+            Answer::Button => &[],
+            Answer::Doing(deeds) | Answer::Known(deeds) => deeds,
+        }
+    }
+
+    /// The deeds that, already done, mean the lesson is never offered at all.
+    fn forecloses(self) -> &'static [Deed] {
+        match self {
+            Answer::Button | Answer::Doing(_) => &[],
+            Answer::Known(deeds) => deeds,
+        }
+    }
+}
+
+/// One lesson: the deed it waits for, how many it waits for, what answers it, and what
+/// it says.
 struct Lesson {
     /// What the ledger records this lesson as. **Stable across edits of
     /// [`LESSONS`]** — an index would move when a lesson is inserted above it, and
@@ -591,6 +731,8 @@ struct Lesson {
     deed: Deed,
     /// How many of them. Read as "the Nth time".
     after: u32,
+    /// What the artist can do to say they already know this — see [`Answer`].
+    answer: Answer,
     /// What it points at — and, through [`Anchor::reveal`], what it opens.
     anchor: Anchor,
     /// Which side of the anchor it sits on.
@@ -622,6 +764,24 @@ impl Lesson {
             _ => true,
         }
     }
+
+    /// Whether the artist has **already** shown they know what this says
+    /// ([`Answer::Known`]) — in which case it is not owed at all.
+    ///
+    /// Asked in [`due`] beside [`applies`](Self::applies) and for the same reason: a
+    /// lesson that cannot be shown has to step aside rather than sit at the head of its
+    /// deed's queue, or it stalls every lesson behind it silently. The difference is
+    /// what they are about — one is a lesson whose *subject* is switched off, this is
+    /// one whose subject is already understood.
+    ///
+    /// A tally rather than the `given` set, because the question is what was done and
+    /// not what was shown.
+    fn foreclosed(&self, book: &Ledger) -> bool {
+        self.answer
+            .forecloses()
+            .iter()
+            .any(|deed| book.tally[deed.slot()] > 0)
+    }
 }
 
 /// Every lesson, in the order they are offered when two come due at once.
@@ -648,6 +808,9 @@ static LESSONS: &[Lesson] = &[
         key: "color-panel",
         deed: Deed::Stroke,
         after: 4,
+        // Picking a color is the whole of what this card is for, and nobody picks one
+        // by accident — so somebody who already has is not shown it at all.
+        answer: Answer::Known(&[Deed::ChangedColor]),
         anchor: Anchor::Panel(PanelId::Color),
         side: Side::LeftAtTop,
         title: "Every color, at your brush tip",
@@ -660,6 +823,19 @@ static LESSONS: &[Lesson] = &[
         key: "panel-column",
         deed: Deed::Stroke,
         after: 5,
+        // Reaching in *is* the lesson, so the wake is the acknowledgement — a better
+        // one than the button, since it is the gesture rather than a claim about it.
+        //
+        // The card's anchor already takes it down when the panels come back
+        // (`Anchor::on_screen`), and this is deliberately not that: the anchor says
+        // the card has nothing to point at, and the deed says the artist answered it.
+        // Only the second is a reason to write the lesson off as given.
+        //
+        // `Doing` and not `Known`, and this is the row that argues for the
+        // distinction: the slice is the whole right-hand edge of the window, so a
+        // pointer on its way to anything at all wakes the panels. Counted backwards
+        // this would foreclose itself for very nearly everybody.
+        answer: Answer::Doing(&[Deed::WokePanels]),
         anchor: Anchor::PanelColumn,
         side: Side::LeftAtMiddle,
         title: "Your panels are still here",
@@ -669,6 +845,19 @@ static LESSONS: &[Lesson] = &[
         key: "brush-panel",
         deed: Deed::Stroke,
         after: 10,
+        // The panel's controls, all of them: the two sliders, the Edit brush… button
+        // and a row of the library below. Touch any one and the panel has been found,
+        // which is the only thing the card is there to say — so the rest of what it
+        // lists is a paragraph nobody needs read to them.
+        //
+        // The Save preset button is the one control missing from this list, and it is
+        // missing because there is no deed for it. It is also the one control nobody
+        // reaches before they have used the others.
+        answer: Answer::Known(&[
+            Deed::TunedBrush,
+            Deed::AppliedPreset,
+            Deed::OpenedBrushEditor,
+        ]),
         anchor: Anchor::Panel(PanelId::Brush),
         side: Side::LeftAtTop,
         title: "Pick a brush, then make it yours",
@@ -679,6 +868,10 @@ static LESSONS: &[Lesson] = &[
         key: "select-panel",
         deed: Deed::Stroke,
         after: 40,
+        // A selection committed is the answer, and the deed the *next* lesson waits on
+        // — so somebody who takes this one goes on to the Layers panel rather than
+        // being told twice about the same drag.
+        answer: Answer::Known(&[Deed::Selection]),
         anchor: Anchor::Panel(PanelId::Select),
         side: Side::LeftAtTop,
         title: "Paint inside a shape",
@@ -688,6 +881,10 @@ static LESSONS: &[Lesson] = &[
         key: "layers-panel",
         deed: Deed::Selection,
         after: 3,
+        // A layer added, by whichever route. "Paint in layers" is a thing to be told
+        // once and only before the first one — after that it is the app describing
+        // what is plainly on screen.
+        answer: Answer::Known(&[Deed::AddedLayer]),
         anchor: Anchor::Panel(PanelId::Layers),
         side: Side::LeftAtTop,
         title: "Paint in layers",
@@ -697,6 +894,11 @@ static LESSONS: &[Lesson] = &[
         key: "panels-menu",
         deed: Deed::ClosedPanel,
         after: 1,
+        // Opening one from the menu would be the answer, and there is no honest deed
+        // for it: the tour opens panels itself (`Anchor::reveal`), so a deed counted at
+        // `layout::open_panel` would have half these cards answering each other as they
+        // came up.
+        answer: Answer::Button,
         anchor: Anchor::CommandRail,
         side: Side::RightAtTop,
         title: "Nothing is lost by closing it",
@@ -706,6 +908,11 @@ static LESSONS: &[Lesson] = &[
         key: "tune-drag",
         deed: Deed::TunedBrush,
         after: 10,
+        // The drag this teaches is bracketed by `not_reaching`, so it produces no
+        // deed to answer with — and that is the feature rather than the gap. Somebody
+        // who already drags never accrues `TunedBrush` at all and is never offered
+        // this; there is nothing left for an answer to catch.
+        answer: Answer::Button,
         anchor: Anchor::Panel(PanelId::Brush),
         side: Side::LeftAtTop,
         title: "Size and flow, without leaving the painting",
@@ -716,6 +923,10 @@ static LESSONS: &[Lesson] = &[
         key: "quick-slots",
         deed: Deed::AppliedPreset,
         after: 3,
+        // `tune-drag`'s argument, from the other side: the deed is the library row
+        // being *clicked*, which the number keys never produce, so somebody already
+        // fluent with the rack never earns this card in the first place.
+        answer: Answer::Button,
         anchor: Anchor::QuickSlots,
         side: Side::RightAtMiddle,
         title: "Brushes one key press away",
@@ -725,6 +936,11 @@ static LESSONS: &[Lesson] = &[
         key: "shape-assist",
         deed: Deed::Undo,
         after: 10,
+        // A stroke that snapped. Draw-and-hold is not something a hand does by
+        // accident, so one of them is the artist knowing — and it is the deed the
+        // *next* lesson waits on, which is the tour moving on rather than repeating
+        // itself.
+        answer: Answer::Known(&[Deed::AssistedStroke]),
         // The painting, and pointing down into it. The assist has no chrome at all
         // — it is a thing you do with the pen, on the canvas — so every other
         // anchor would have put the card beside a control that has nothing to do
@@ -738,6 +954,10 @@ static LESSONS: &[Lesson] = &[
         key: "guides-panel",
         deed: Deed::AssistedStroke,
         after: 5,
+        // A guided line means a guide was made and left visible, which cannot have
+        // happened without this panel. So the card would be pointing at a panel the
+        // artist has already used, to tell them it is where guides are edited.
+        answer: Answer::Known(&[Deed::GuidedLine]),
         anchor: Anchor::Panel(PanelId::Guides),
         side: Side::LeftAtTop,
         title: "Getting some perspective",
@@ -747,6 +967,10 @@ static LESSONS: &[Lesson] = &[
         key: "perspective-assist",
         deed: Deed::GuidedLine,
         after: 2,
+        // The one lesson that could only be answered by its own deed, which is the one
+        // deed that cannot answer it: this card is what explains what those two guided
+        // lines were. Nothing else in the app is the thing it describes.
+        answer: Answer::Button,
         anchor: Anchor::Panel(PanelId::Guides),
         side: Side::LeftAtTop,
         title: "Your held lines know about the grid",
@@ -758,6 +982,10 @@ static LESSONS: &[Lesson] = &[
         key: "navigator",
         deed: Deed::LongPan,
         after: 4,
+        // "You don't have to drag that far", told to somebody who was already
+        // travelling by the miniature, is the tour at its worst — so one use of it
+        // ends the matter.
+        answer: Answer::Known(&[Deed::UsedNavigator]),
         anchor: Anchor::Navigator,
         side: Side::RightAtBottom,
         title: "You don't have to drag that far",
@@ -767,18 +995,57 @@ static LESSONS: &[Lesson] = &[
         key: "eyedropper",
         deed: Deed::ChangedColor,
         after: 10,
+        // A pick, which is the gesture this teaches. The bracket around the
+        // eyedropper's write already keeps somebody fluent with it from accruing
+        // `ChangedColor` at all (`tune-drag` says the same of the tuning drag) — but
+        // that is an argument about a deed *not* being counted, and it cannot answer
+        // the card already up. This can: the artist finds the Alt-drag while the tip
+        // about the Alt-drag is on screen, which is exactly the moment the tip has
+        // stopped being worth reading.
+        answer: Answer::Known(&[Deed::PickedColor]),
         anchor: Anchor::Panel(PanelId::Color),
         side: Side::LeftAtTop,
         title: "Your canvas is a palette",
         body: "Hold Alt over the canvas and drag.",
     },
+    Lesson {
+        key: "pick-options",
+        deed: Deed::PickedColor,
+        after: 5,
+        // The bar's own chips would be the answer, and there is no deed for them —
+        // nor could there usefully be one, since the bar is only on screen while the
+        // modifier is held.
+        answer: Answer::Button,
+        // The Color panel, and not the bar the options actually live on. The bar
+        // exists only while Alt is down and not dragging (`panels::pick`), so a card
+        // anchored there could only be shown during a held modifier and would be
+        // taken down as an answer the moment the key came up — spent, unread. The
+        // panel is where color lives, it is where this lesson's own sibling points,
+        // and it is on screen when there is time to read.
+        anchor: Anchor::Panel(PanelId::Color),
+        side: Side::LeftAtTop,
+        title: "Choose what the sampler sees",
+        body: "While Alt is held, the bar by the cursor sets how far a sample reaches \
+               \u{2014} this layer, everything under it, or the whole canvas \u{2014} and how \
+               wide a patch it averages. Point takes one texel; 5\u{00D7}5 reads a blended \
+               edge the way the eye does.",
+    },
     // The brush editor's series (§24.5). Five cards on one deed, walked through in
     // this order by the chain in `dismiss` — so this list is the tour of the dialog
     // and its order is the only thing deciding what is said when.
+    //
+    // All five answer to the button alone, and it is the same reason five times: each
+    // describes what a *section of a dialog is for*, and there is no act that
+    // demonstrates having understood one. Moving a knob inside the editor is not it —
+    // that is the thing the card is explaining, and somebody who moves it to see what
+    // happens is the reader the paragraph was written for. The chain is what keeps
+    // this cheap anyway: Next walks the series, so nobody presses five buttons to be
+    // rid of it.
     Lesson {
         key: "be-preview",
         deed: Deed::OpenedBrushEditor,
         after: 1,
+        answer: Answer::Button,
         anchor: Anchor::BrushEditor(BrushPart::Preview),
         side: Side::LeftAtTop,
         title: "What you see is what you get",
@@ -790,6 +1057,7 @@ static LESSONS: &[Lesson] = &[
         key: "be-tip",
         deed: Deed::OpenedBrushEditor,
         after: 1,
+        answer: Answer::Button,
         anchor: Anchor::BrushEditor(BrushPart::Tip),
         side: Side::RightAtTop,
         title: "Tip \u{2014} the footprint",
@@ -802,6 +1070,7 @@ static LESSONS: &[Lesson] = &[
         key: "be-paint",
         deed: Deed::OpenedBrushEditor,
         after: 1,
+        answer: Answer::Button,
         anchor: Anchor::BrushEditor(BrushPart::Paint),
         side: Side::RightAtTop,
         title: "Paint \u{2014} how much, and how long it lasts",
@@ -814,6 +1083,7 @@ static LESSONS: &[Lesson] = &[
         key: "be-color",
         deed: Deed::OpenedBrushEditor,
         after: 1,
+        answer: Answer::Button,
         anchor: Anchor::BrushEditor(BrushPart::Color),
         side: Side::RightAtTop,
         title: "Color dynamics \u{2014} the wobble that reads as pigment",
@@ -827,6 +1097,7 @@ static LESSONS: &[Lesson] = &[
         key: "be-pickup",
         deed: Deed::OpenedBrushEditor,
         after: 1,
+        answer: Answer::Button,
         anchor: Anchor::BrushEditor(BrushPart::Pickup),
         side: Side::RightAtTop,
         title: "Pickup \u{2014} moving paint that is already there",
@@ -840,6 +1111,11 @@ static LESSONS: &[Lesson] = &[
         key: "timeline",
         deed: Deed::Redo,
         after: 2,
+        // Scrubbing the bar would be the answer, and the bar is what this card's own
+        // anchor opens (`Anchor::reveal`) — so the deed would have to tell a scrub
+        // apart from the tour having put the bar on screen, which is `panels-menu`'s
+        // problem and has `panels-menu`'s answer.
+        answer: Answer::Button,
         anchor: Anchor::TimelineBar,
         side: Side::Above,
         title: "Rewind, look, come back",
@@ -990,6 +1266,14 @@ fn read(state: AppState, command: &InputCommand) -> Vec<Deed> {
         InputCommand::View(ViewCommand::Pinch { anchor, to, .. }) => {
             pan(state, (*to - *anchor).length()).into_iter().collect()
         }
+        // Travelling by the miniature rather than by dragging the painting. Absolute
+        // where every other way of getting somewhere is a delta, and emitted by nothing
+        // else — see [`Deed::UsedNavigator`], which is what makes this arm a read of a
+        // *gesture on a piece of chrome* off a stream of document facts.
+        InputCommand::View(ViewCommand::CenterOn(_)) => vec![Deed::UsedNavigator],
+        // The Layers panel's button and the command that shares it. An image or a
+        // matte arriving carries a command of its own, so neither lands here.
+        InputCommand::Doc(DocCommand::AddLayer { .. }) => vec![Deed::AddedLayer],
         _ => Vec::new(),
     }
 }
@@ -1121,7 +1405,7 @@ fn tally(state: AppState, deed: Deed) {
 
     let mut ledger = state.tutor.ledger;
     // Cloned out before the write, for the borrow reason stated in `pan` — and the
-    // clone is an array of five and a small set of short strings.
+    // clone is an array of a dozen and a small set of short strings.
     let mut book = ledger.peek().clone();
     let slot = deed.slot();
     book.tally[slot] = book.tally[slot].saturating_add(1);
@@ -1143,10 +1427,66 @@ fn tally(state: AppState, deed: Deed) {
         let mut slot = state.tutor.due;
         slot.set(Some(i));
     }
+
+    // **Last**, so a deed that answers the card up cannot also replace it. Answering
+    // one and opening another in the same breath would read as the tour arguing back,
+    // and the lesson this deed owes is not lost by being passed over — `due` hands it
+    // out again on the next deed of its kind, which is the same rule every other
+    // passed-over card lives by.
+    answered(state, deed);
+}
+
+/// Take down whatever card `deed` has just answered ([`Answer`]) — the one on screen,
+/// or the one still waiting to become it.
+///
+/// **Both, because a card that has come due and not yet been shown is the case this
+/// most has to catch.** A lesson waits in [`TutorState::due`] for as long as the canvas
+/// is in hand or a dialog is up, and what an artist does in that gap is exactly what
+/// they were about to be taught — so the card arriving afterwards would be the tour at
+/// its slowest and most patronizing.
+///
+/// Marked **given** either way, which is the difference between this and the card
+/// merely losing its anchor ([`abandon`]): the artist has done the thing, and doing it
+/// is a better acknowledgement than the button. And the button's chain is deliberately
+/// not run — the next lesson this deed owes arrives on the deed's own terms rather than
+/// filling the hole the answer just made.
+fn answered(state: AppState, deed: Deed) {
+    let answers = |i: usize| {
+        LESSONS
+            .get(i)
+            .is_some_and(|l| l.answer.dismisses().contains(&deed))
+    };
+
+    // The waiting one first. The two slots are never both set — `tally` promotes into
+    // `due` only when neither is taken, and `retire` empties `showing` before the
+    // `dismiss` chain refills `due` — so the order is a formality; what it is not is a
+    // reason to let either go unasked.
+    let mut waiting = state.tutor.due;
+    // Out into a local before the write, for the borrow reason `pan` gives.
+    let owed = *waiting.peek();
+    if let Some(i) = owed.filter(|i| answers(*i)) {
+        waiting.set(None);
+        if let Some(lesson) = LESSONS.get(i) {
+            give(state, lesson);
+        }
+        return;
+    }
+
+    let up = *state.tutor.showing.peek();
+    if let Some(i) = up.filter(|i| answers(*i)) {
+        retire(state, i);
+    }
 }
 
 /// The first lesson `deed` has brought due against `book`, if any — skipping any
-/// whose subject this browser has switched off ([`Lesson::applies`]).
+/// whose subject this browser has switched off ([`Lesson::applies`]) and any the
+/// artist has already answered by doing it ([`Lesson::foreclosed`]).
+///
+/// The two skips are the same shape and it is worth saying why: neither writes
+/// anything. A lesson passed over here is *stepped past*, so the next one its deed
+/// owes comes forward in the same breath — where marking it given would spend a row of
+/// the ledger on a judgement that could change (a setting turned back on, a tally that
+/// turns out to have been somebody else's browser).
 ///
 /// `chrome` is passed rather than read off the app, so the whole of "which lesson is
 /// owed" stays a function of the ledger and a value: it is asked from three places
@@ -1155,7 +1495,11 @@ fn tally(state: AppState, deed: Deed) {
 fn due(book: &Ledger, deed: Deed, chrome: ChromeHiding) -> Option<usize> {
     let count = book.tally[deed.slot()];
     LESSONS.iter().position(|l| {
-        l.deed == deed && count >= l.after && !book.given.contains(l.key) && l.applies(chrome)
+        l.deed == deed
+            && count >= l.after
+            && !book.given.contains(l.key)
+            && l.applies(chrome)
+            && !l.foreclosed(book)
     })
 }
 
@@ -1236,12 +1580,23 @@ fn retire(state: AppState, i: usize) -> Option<Deed> {
     showing.set(None);
     let lesson = LESSONS.get(i)?;
     release_panels(state, lesson);
+    give(state, lesson);
+    Some(lesson.deed)
+}
+
+/// Write `lesson` into the ledger as given, and persist.
+///
+/// [`retire`]'s other half, split out because a lesson can now be spent without ever
+/// having been on screen: one answered while it was still waiting in
+/// [`TutorState::due`] has no card to take down and no panel stack to let go of
+/// ([`answered`]).
+fn give(state: AppState, lesson: &Lesson) {
     let mut ledger = state.tutor.ledger;
+    // Cloned out before the write, for the borrow reason `pan` gives.
     let mut book = ledger.peek().clone();
     book.given.insert(lesson.key.to_string());
     ledger.set(book);
     save(state);
-    Some(lesson.deed)
 }
 
 /// Let go of the panel stack that `lesson`'s card was holding up
@@ -1661,17 +2016,64 @@ pub fn TutorCard() -> Element {
 mod tests {
     use super::*;
 
-    /// Every deed feeds a lesson.
+    /// Every deed either brings a lesson due or answers one.
     ///
-    /// The direction worth asserting: a deed nothing counts is a tally kept for
+    /// The direction worth asserting: a deed nothing reads is a tally kept for
     /// nobody, which is exactly what a lesson removed without its deed leaves
     /// behind. The other direction is the compiler's — a lesson names a `Deed`.
+    ///
+    /// **Two ways to be read**, since an answer is as good a reason for a deed to
+    /// exist as a threshold is. Three deeds are counted for their answers alone —
+    /// reaching into the panel column, adding a layer, travelling by the miniature —
+    /// and each is a thing no lesson would ever wait *for*: they are what an artist
+    /// does once they already know.
     #[test]
     fn the_deeds_and_the_lessons_account_for_each_other() {
         for deed in Deed::ALL {
+            let earns = LESSONS.iter().any(|l| l.deed == deed);
+            let answers = LESSONS.iter().any(|l| l.answer.dismisses().contains(&deed));
             assert!(
-                LESSONS.iter().any(|l| l.deed == deed),
-                "{deed:?} is counted and no lesson waits for it",
+                earns || answers,
+                "{deed:?} is counted and no lesson waits for it or answers to it",
+            );
+        }
+    }
+
+    /// A lesson is never answered by the deed that earns it.
+    ///
+    /// Which would be a card that took itself down: the deed brings it due and the
+    /// same deed spends it, so it would flash past on whichever report crossed the
+    /// threshold — or, where it is a [`Answer::Known`], never be offered at all, since
+    /// the tally that earns it is the tally that forecloses it.
+    ///
+    /// Worth a test rather than a type because the two fields are *usually* different
+    /// deeds for a good reason (what earns a lesson is wanting the thing; what answers
+    /// it is having it), and the case where they coincide looks perfectly reasonable
+    /// on the row.
+    #[test]
+    fn no_lesson_answers_to_its_own_deed() {
+        for l in LESSONS {
+            assert!(
+                !l.answer.dismisses().contains(&l.deed),
+                "{}: {:?} both earns it and spends it",
+                l.key,
+                l.deed,
+            );
+        }
+    }
+
+    /// A live [`Answer`] carries deeds. An empty list is [`Answer::Button`] spelled
+    /// the long way, and spelling it that way hides the reason there is nothing here
+    /// — which is the one thing every `Button` row on the table is obliged to say.
+    #[test]
+    fn an_answer_that_answers_to_nothing_says_so() {
+        for l in LESSONS {
+            assert_eq!(
+                l.answer == Answer::Button,
+                l.answer.dismisses().is_empty(),
+                "{}: an empty {:?} is a Button that did not admit it",
+                l.key,
+                l.answer,
             );
         }
     }
@@ -1718,7 +2120,7 @@ mod tests {
     ///
     /// A property of the *deed* rather than of the lesson, which is what makes it
     /// worth writing down: the question is never "is this tip important" — every tip
-    /// thinks it is — but "could somebody have done this without meaning to". Three
+    /// thinks it is — but "could somebody have done this without meaning to". Two
     /// deeds could not, each for its own reason:
     ///
     /// - [`Deed::ClosedPanel`] **raises** the question its lesson answers. Close a
@@ -1726,16 +2128,19 @@ mod tests {
     ///   would be answering late, with the gap spent believing it was gone.
     /// - [`Deed::OpenedBrushEditor`] **is** the request. Opening the dialog is
     ///   somebody asking what is in it, and the series is the answer (§24.5).
-    /// - [`Deed::GuidedLine`] is not reachable by accident: a guide made, left
-    ///   visible, a stroke drawn *and* held still. Having done all four once is
-    ///   stronger evidence of intent than ten of anything else here.
+    ///
+    /// [`Deed::GuidedLine`] was a third and is not any more. It is still the hardest
+    /// deed to reach by accident — a guide made, left visible, a stroke drawn *and*
+    /// held still — but the pace it fires at was slowed to two along with the rest of
+    /// the table, and an exemption nobody spends is what
+    /// [`the_exceptions_are_all_spent`] exists to refuse.
     ///
     /// An *exception* list, so a deed added later is held to the strict rule by
     /// default — the safe direction, since the cost of getting it wrong is a tip in
     /// somebody's first minute. And a list of deeds rather than of lesson keys, so a
     /// renamed or deleted entry is a compile error instead of an exemption that
     /// quietly stops applying.
-    const AT_ONCE: [Deed; 3] = [Deed::ClosedPanel, Deed::OpenedBrushEditor, Deed::GuidedLine];
+    const AT_ONCE: [Deed; 2] = [Deed::ClosedPanel, Deed::OpenedBrushEditor];
 
     /// A lesson at one fires on the user's first try, which the design is against
     /// everywhere it has not said otherwise — see [`AT_ONCE`].
@@ -1956,24 +2361,110 @@ mod tests {
         book.tally[Deed::Stroke.slot()] = 1;
         assert_eq!(key(&book), None, "the first stroke owes nothing");
 
-        book.tally[Deed::Stroke.slot()] = 2;
+        book.tally[Deed::Stroke.slot()] = 4;
         assert_eq!(key(&book), Some("color-panel"));
 
-        // Never dismissed, so the third stroke still owes the *first* of them.
-        book.tally[Deed::Stroke.slot()] = 3;
+        // Never dismissed, so the fifth stroke still owes the *first* of them.
+        book.tally[Deed::Stroke.slot()] = 5;
         assert_eq!(key(&book), Some("color-panel"));
 
         book.given.insert("color-panel".to_string());
         assert_eq!(key(&book), Some("panel-column"));
 
         book.given.insert("panel-column".to_string());
-        assert_eq!(key(&book), None, "the brush waits for the fifth");
+        assert_eq!(key(&book), None, "the brush waits for the tenth");
 
-        book.tally[Deed::Stroke.slot()] = 5;
+        book.tally[Deed::Stroke.slot()] = 10;
         assert_eq!(key(&book), Some("brush-panel"));
 
         book.given.insert("brush-panel".to_string());
-        assert_eq!(key(&book), None, "and then a stroke owes nothing at all");
+        assert_eq!(
+            key(&book),
+            None,
+            "and the selection lesson is a long way off yet"
+        );
+    }
+
+    /// A lesson the artist has already answered is never offered, and the one behind
+    /// it comes forward in its place.
+    ///
+    /// The colour picker is the case the whole of [`Answer::Known`] exists for:
+    /// somebody who picked a colour in their first four strokes has found the panel,
+    /// and a card explaining where it is would be the tour reading out what is already
+    /// on screen. Stepping *aside* rather than stalling is the same property
+    /// `a_lesson_whose_subject_is_switched_off_lets_the_next_one_through` asserts, and
+    /// it is worth asserting twice because the cost of getting it wrong is silent —
+    /// three lessons wait behind this one.
+    #[test]
+    fn a_lesson_already_answered_is_never_offered() {
+        let mut book = Ledger::default();
+        book.tally[Deed::Stroke.slot()] = 5;
+        let key = |book: &Ledger| {
+            due(book, Deed::Stroke, ChromeHiding::AfterPainting).map(|i| LESSONS[i].key)
+        };
+        assert_eq!(key(&book), Some("color-panel"));
+
+        book.tally[Deed::ChangedColor.slot()] = 1;
+        assert_eq!(key(&book), Some("panel-column"), "the next one, at once");
+
+        // And nothing was spent to skip it: a tally is not a card, so the lesson is
+        // still merely *unowed* rather than given.
+        assert!(!book.given.contains("color-panel"));
+    }
+
+    /// The eyedropper's two lessons hand over: a pick answers the one that teaches the
+    /// gesture and is the deed the one that teaches its options waits on.
+    ///
+    /// The pair is worth a test of its own because it is the shape the whole answer
+    /// mechanism is for, and both halves are load-bearing. Without the answer, somebody
+    /// who takes the hint and immediately Alt-drags is left reading a card telling them
+    /// to do what they are doing. Without the second lesson the deed would be counted
+    /// for a dismissal alone, and the options bar — which is only ever on screen under
+    /// a held modifier — would have nothing that could point at it at all.
+    #[test]
+    fn a_pick_answers_the_eyedropper_and_earns_its_options() {
+        let mut book = Ledger::default();
+        book.tally[Deed::ChangedColor.slot()] = 10;
+        let owed =
+            |book: &Ledger, deed| due(book, deed, ChromeHiding::default()).map(|i| LESSONS[i].key);
+        assert_eq!(owed(&book, Deed::ChangedColor), Some("eyedropper"));
+
+        // One pick and the gesture lesson is moot, however many colors were picked
+        // from the panel beforehand.
+        book.tally[Deed::PickedColor.slot()] = 1;
+        assert_eq!(owed(&book, Deed::ChangedColor), None);
+        assert_eq!(owed(&book, Deed::PickedColor), None, "a few, not one");
+
+        // A few more and the options are worth knowing.
+        book.tally[Deed::PickedColor.slot()] = 5;
+        assert_eq!(owed(&book, Deed::PickedColor), Some("pick-options"));
+    }
+
+    /// An answer from **before** the card counts only where the lesson says it does.
+    ///
+    /// The panel column is the row that argues for the distinction and so is the row
+    /// that guards it: its slice is the whole right-hand edge of the window, so a
+    /// pointer on its way to anything at all wakes the stack. Read backwards, that
+    /// would foreclose the lesson for practically every user — which is a tip nobody
+    /// is ever shown, and the failure would look exactly like the feature working.
+    #[test]
+    fn a_doing_answer_does_not_reach_backwards() {
+        let mut book = Ledger::default();
+        book.tally[Deed::Stroke.slot()] = 5;
+        book.given.insert("color-panel".to_string());
+        book.tally[Deed::WokePanels.slot()] = 200;
+        assert_eq!(
+            due(&book, Deed::Stroke, ChromeHiding::AfterPainting).map(|i| LESSONS[i].key),
+            Some("panel-column"),
+            "a wake before the card is not an answer to it",
+        );
+        // What it *is* is the card's dismissal, once the card is up.
+        let column = LESSONS
+            .iter()
+            .find(|l| l.key == "panel-column")
+            .expect("the lesson is on the table");
+        assert!(column.answer.dismisses().contains(&Deed::WokePanels));
+        assert!(!column.foreclosed(&book));
     }
 
     /// A lesson whose subject this browser has switched off **steps aside** rather
@@ -1984,7 +2475,7 @@ mod tests {
     #[test]
     fn a_lesson_whose_subject_is_switched_off_lets_the_next_one_through() {
         let mut book = Ledger::default();
-        book.tally[Deed::Stroke.slot()] = 5;
+        book.tally[Deed::Stroke.slot()] = 10;
         book.given.insert("color-panel".to_string());
         let key = |chrome| due(&book, Deed::Stroke, chrome).map(|i| LESSONS[i].key);
         assert_eq!(key(ChromeHiding::AfterPainting), Some("panel-column"));
