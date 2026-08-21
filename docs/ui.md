@@ -48,10 +48,12 @@ which the engine draws into directly. DOM chrome surrounds it.
 - **A simple command is a row in a registry, not an arm in a match.** `commands`
   declares every simple act — one the chrome can ask for whole, with no argument
   at the call site — as a variant of `Command` carrying its entire description:
-  display name, terse chip word, mark, tooltip, availability
-  (`Command::enabled`, what a row greys on), the mode tick (`Command::checked`),
-  the live mark (`Command::active` — Share while a session runs, worn as the
-  icon taking the select blue rather than as a tick),
+  display name, terse chip word (`Command::word`, the abbreviation a control in
+  a narrow column wears — "Rect" for "Rectangle select"), mark, tooltip,
+  availability (`Command::enabled`, what a row greys on), whether the act is
+  live right now (`Command::active`, drawn three ways from one answer: a menu
+  row's tick, the select blue on a palette row's mark, and a lit
+  `CommandButton` — the armed shape tool, Share while a session runs),
   the advertised shortcut (`Command::shortcut`), the gate its act must ask
   (`Command::run`), and the chord that reaches it from the keyboard
   (`commands::Bindings`). The chrome *renders* a command rather than restating it — a bar
@@ -614,7 +616,12 @@ it:
    whose words are its own but whose key is the registry's (a mode bar's
    Done) appends the advertisement with `commands::advertised`. Never write a
    raw `button` that dispatches the same act — that is how the menu's
-   Deselect skipped the gate.
+   Deselect skipped the gate. The two things a surface is most tempted to
+   keep for itself are both the registry's: an **abbreviation**, which is
+   `word` (a 280px panel column cannot wear "Rectangle select", and the
+   answer to that is a shorter spelling of the same name, never a different
+   word — §25.9); and whether the button is **lit**, which is `active`, so a
+   chip and the chord that lit it cannot disagree.
 8. **If the act moves state only the frontend sees**, tell the tour: the
    tutor's one reader hangs off `dispatch` (§24.2), so an act that reaches no
    engine — opening the brush editor — owes its deed by hand

@@ -189,7 +189,20 @@ This is engine-side, not chrome: the session owns `tool`, so every frontend gets
 the same behaviour and `observe().tool` reports it in the same update that
 committed the op. The frontend then needs no "Paint" tool chip at all — *no chip
 lit* is the brush, and clicking the lit chip disarms it, so the control that
-armed a tool is the one that takes it back. The commands that act on a whole
+armed a tool is the one that takes it back.
+
+Arming is a **command** in the chrome's registry (§25.1): it takes no argument
+and opens no gesture, which is the whole test. So each of the three is one act
+reached from the panel chip, from the search palette by name, and from a chord
+— R, E and L, each command's own initial. The panel's chips are that act
+rendered (`widgets::CommandButton`), which is what makes "clicking the lit chip
+disarms it" true of the key as well without either side restating it: the
+second press is the same act, and the lit state is the registry's answer to
+whether the tool is armed rather than the panel's own comparison. What the
+armed tool then *does* with the region it encloses is the action row below, and
+stays the panel's — five answers to one question is a question, not an act.
+
+The commands that act on a whole
 selection (transform, fill, deselect, invert) live in a small floating bar
 mounted only while a selection is in force: they are meaningless without one, and
 a bar that is present or absent indicates the canvas is masked more directly than

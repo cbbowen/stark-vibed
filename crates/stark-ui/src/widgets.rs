@@ -17,15 +17,28 @@ use crate::state::AppState;
 /// act. What a call site may **not** vary is what the button says or does — a
 /// site needing that (the Fill chip's paint-tinted bucket) writes its own
 /// `button` and still reads the words off the command.
+///
+/// Whether the button is **lit** is on that second list, so it comes off
+/// [`Command::active`] rather than from a prop: a chip showing that its act is
+/// live right now — the armed shape tool (§6.8) — is saying something about
+/// the act, and a call site that computed it would be the second copy of an
+/// answer the menu tick and the palette's blue mark already read from the
+/// registry. A command with no such state (`None`) is never lit, which is
+/// every act on a bar today.
 #[component]
 pub fn CommandButton(
     command: Command,
     #[props(default = String::from("chip"))] class: String,
 ) -> Element {
     let state = use_context::<AppState>();
+    // A memo, for `CmdItem`'s reason: `active` reads the projection, which
+    // moves at pointer rate during a stroke, and this button's answer is one
+    // bool that almost never changes. Re-render on the bool, not on the read.
+    let lit = use_memo(move || command.active(state) == Some(true));
     rsx! {
         button {
-            class,
+            class: "{class}",
+            class: if lit() { "active" },
             title: command.tooltip(&state.bindings.read()),
             onclick: move |_| command.run(state),
             {icon(command.icon())}

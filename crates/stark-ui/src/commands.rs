@@ -69,7 +69,7 @@ use crate::state::{AppState, dispatch, update_brush};
 use crate::storage::{Entry, Store};
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_model::document::SelectionOp;
+use stark_model::document::{SelectionOp, Tool};
 
 /// The key half of a binding: which modifier tier, and which key.
 ///
@@ -146,6 +146,22 @@ pub enum Command {
     /// Ctrl+D) land here, named for what the chrome calls it.
     Deselect,
     InvertSelection,
+    /// Arm the rectangular marquee for the next canvas gesture (§6.8) — and
+    /// **disarm it if it is already in hand**, which is the Select panel chip's
+    /// rule made the act's own: the control that armed a tool is the one you
+    /// reach for to take it back, and there is no "Paint" tool to switch to
+    /// because no tool armed *is* the brush.
+    ///
+    /// Arming is the half of a shape tool that is a **simple act**, which is
+    /// what puts it here (§25.1): no argument, no drag, the same thing however
+    /// it is reached. The drag is a gesture and belongs to the canvas, and what
+    /// the region it encloses *does* — select four ways, or fill — is the
+    /// Select panel's action row: a question with five answers, not an act.
+    SelectRect,
+    /// Arm the elliptical marquee, on [`SelectRect`](Self::SelectRect)'s terms.
+    SelectEllipse,
+    /// Arm the freehand lasso, on [`SelectRect`](Self::SelectRect)'s terms.
+    SelectLasso,
     /// Mirror the view about the screen's vertical midline, whatever angle the
     /// canvas is at (`ViewTransform::mirror_screen_h`).
     MirrorView,
@@ -256,6 +272,20 @@ fn defaults() -> Vec<(Chord, Command)> {
         (ch(true, false, 'd'), Command::Deselect),
         (ch(true, false, 'a'), Command::Deselect),
         (ch(true, true, 'i'), Command::InvertSelection),
+        // The three shape tools, each on the initial of its own name — Rect,
+        // Ellipse, Lasso, which is the word its chip wears as well as the word
+        // its palette row starts with ([`Command::word`]). A trio picked as a
+        // *set* rather than borrowed letter by letter from elsewhere: R/E/L is
+        // one rule a hand learns once and can then re-derive, where
+        // M-for-marquee beside L-for-lasso is two facts and no rule.
+        //
+        // Mnemonic (`Char`), like every letter row: R arms the rectangle
+        // wherever the layout puts the R. Bare, like `h` — and bare letters
+        // are the table's to spend precisely because they are rebindable
+        // ([`Bindings`]), which is the answer to a hand that wants them back.
+        (ch(false, false, 'r'), Command::SelectRect),
+        (ch(false, false, 'e'), Command::SelectEllipse),
+        (ch(false, false, 'l'), Command::SelectLasso),
         (ch(false, false, 'h'), Command::MirrorView),
         (code("BracketLeft"), Command::BrushSmaller),
         (code("BracketRight"), Command::BrushLarger),
@@ -529,6 +559,10 @@ pub const ALL: &[Command] = &[
     Command::Share,
     Command::Undo,
     Command::Redo,
+    // Drawing a region, then the acts on the region you drew.
+    Command::SelectRect,
+    Command::SelectEllipse,
+    Command::SelectLasso,
     Command::Deselect,
     Command::InvertSelection,
     Command::Transform,
@@ -637,6 +671,13 @@ impl Command {
             Command::Redo => "Redo",
             Command::Deselect => "Deselect",
             Command::InvertSelection => "Invert selection",
+            // Named for the shape and then the act, so the three sort together
+            // wherever names are listed and a query for "select" lists the
+            // family. The panel says the shape alone ([`word`](Self::word)) —
+            // its header is the word "Selection" already.
+            Command::SelectRect => "Rectangle select",
+            Command::SelectEllipse => "Ellipse select",
+            Command::SelectLasso => "Lasso select",
             Command::MirrorView => "Mirror view",
             Command::BrushSmaller => "Shrink brush",
             Command::BrushLarger => "Enlarge brush",
@@ -680,12 +721,25 @@ impl Command {
     }
 
     /// The terse word a chip wears where its bar or header already names the
-    /// subject: "Invert" on the selection bar, "Layer" beside the stack's other
-    /// two adds. Everything else keeps its [`name`](Self::name) — the split
-    /// exists so both spellings are the registry's, not a call site's.
+    /// subject: "Invert" on the selection bar, "Rect" in the Select panel's
+    /// tool row, "Layer" beside the stack's other two adds. Everything else
+    /// keeps its [`name`](Self::name) — the split exists so both spellings are
+    /// the registry's, not a call site's, and the abbreviation a control needs
+    /// is never a reason for it to stop rendering the command (§25.2's step 7).
+    ///
+    /// The width argument is the same one every run of chips makes (§25.9): a
+    /// panel column is 280px, and "Rectangle select" over a glyph in a third of
+    /// it is not a chip. What is *not* a reason to abbreviate is a control
+    /// wanting a word of its own — a place that would say something the name
+    /// does not say is a place naming a different act.
     pub fn word(self) -> &'static str {
         match self {
             Command::InvertSelection => "Invert",
+            // The shape alone: the panel these three sit in is headed
+            // "Selection", and the bar their gesture raises is too.
+            Command::SelectRect => "Rect",
+            Command::SelectEllipse => "Ellipse",
+            Command::SelectLasso => "Lasso",
             Command::FillSelection => "Fill",
             Command::GradientFill => "Gradient",
             Command::AddLayer => "Layer",
@@ -714,6 +768,13 @@ impl Command {
             // selecting nothing (§6.8) — both of that key's names belong here.
             Command::Deselect => &["Select all", "Select none"],
             Command::InvertSelection => &["Select inverse"],
+            // Bare "marquee" lands on the rectangle, which is what it means in
+            // the software that spells it that way.
+            Command::SelectRect => &["Marquee", "Rectangular marquee", "Box select"],
+            Command::SelectEllipse => &["Elliptical marquee", "Circle select", "Oval select"],
+            // Not "Polygon select": that is a different tool in the software
+            // that has it, and an alias is for another word for *this* act.
+            Command::SelectLasso => &["Freehand select", "Free select"],
             Command::MirrorView => &["Flip horizontal"],
             Command::BrushSmaller => &["Decrease brush size"],
             Command::BrushLarger => &["Increase brush size"],
@@ -753,6 +814,12 @@ impl Command {
             Command::Redo => icons::REDO,
             Command::Deselect => icons::SELECTION_NONE,
             Command::InvertSelection => icons::SELECTION_INVERT,
+            // The one family where the glyph *is* the meaning rather than the
+            // control's (`icons`): a tool that draws a rectangle is marked
+            // with a rectangle.
+            Command::SelectRect => icons::RECTANGLE,
+            Command::SelectEllipse => icons::CIRCLE,
+            Command::SelectLasso => icons::LASSO,
             Command::MirrorView => icons::MIRROR_VIEW,
             Command::BrushSmaller | Command::BrushLarger => icons::SIZE,
             Command::NewDocument => icons::NEW_DOCUMENT,
@@ -790,6 +857,21 @@ impl Command {
     /// the name where the name already is the sentence.
     pub fn hint(self) -> &'static str {
         match self {
+            // What the gesture encloses is a *region*, not yet a selection:
+            // the panel's action row decides where that coverage lands, and it
+            // may be paint (§6.8). The clause each of these ends on is the
+            // app's least guessable rule, and it is stated where it is true —
+            // a fill leaves the tool armed, so only the selecting case is
+            // claimed here (`Session::end_shape`).
+            Command::SelectRect => {
+                "Drag out a rectangular region \u{2014} selecting it hands the brush straight back"
+            }
+            Command::SelectEllipse => {
+                "Drag out an elliptical region \u{2014} selecting it hands the brush straight back"
+            }
+            Command::SelectLasso => {
+                "Draw a freehand region \u{2014} selecting it hands the brush straight back"
+            }
             Command::MirrorView => "Mirror the view left-to-right",
             Command::BrushSmaller => "Step the brush size down",
             Command::BrushLarger => "Step the brush size up",
@@ -852,8 +934,18 @@ impl Command {
     }
 
     /// Whether this command's act is live right now.
+    ///
+    /// Three surfaces read it, and they are three pictures of one fact: a menu
+    /// row's tick, the select blue on a palette row's mark, and a
+    /// [`CommandButton`](crate::widgets::CommandButton)'s lit chip. That last
+    /// one is why the shape tools answer here rather than the Select panel
+    /// computing `tool == t` for its own chips — a chip lit by the registry
+    /// cannot disagree with the chord that lit it.
     pub fn active(self, state: AppState) -> Option<bool> {
         match self {
+            Command::SelectRect => Some(armed(state, Tool::SelectRect)),
+            Command::SelectEllipse => Some(armed(state, Tool::SelectEllipse)),
+            Command::SelectLasso => Some(armed(state, Tool::SelectLasso)),
             Command::ToggleTimeline => Some(*state.timeline.open.read()),
             Command::ToggleNavigator => Some(*state.navigator.read()),
             Command::ToggleQuickBrushes => Some(*state.slots.pinned.read()),
@@ -911,6 +1003,9 @@ impl Command {
                     dispatch(state, DocCommand::InvertSelection);
                 }
             }
+            Command::SelectRect => arm_tool(state, Tool::SelectRect),
+            Command::SelectEllipse => arm_tool(state, Tool::SelectEllipse),
+            Command::SelectLasso => arm_tool(state, Tool::SelectLasso),
             Command::MirrorView => dispatch(state, ViewCommand::MirrorH),
             Command::BrushSmaller => step_radius(state, 1.0 / SIZE_STEP),
             Command::BrushLarger => step_radius(state, SIZE_STEP),
@@ -1045,6 +1140,29 @@ fn step_radius(state: AppState, factor: f32) {
     update_brush(state, move |b| {
         b.radius = (b.radius * factor).clamp(MIN_RADIUS, MAX_RADIUS);
     });
+}
+
+/// Arm `tool` for the next canvas gesture — or hand the brush back, if it is
+/// the tool already in hand (§6.8). One act rather than two, because the chip
+/// and the chord must mean the same thing on a second press: the control that
+/// armed a tool is the one that takes it back, and R pressed twice is the
+/// keyboard reaching that same control twice.
+///
+/// **Ungated**, with the view and brush acts: arming commits nothing to the
+/// document — `SetTool` is a `ViewCommand` — and the panel's chips have never
+/// been refused mid-playback or under a composing mode either. The *gesture*
+/// an armed tool then makes is a different act with a gate of its own, which
+/// the canvas has always asked (`crate::input`).
+fn arm_tool(state: AppState, tool: Tool) {
+    let already = crate::panels::select::current_tool(state) == tool;
+    let next = if already { Tool::Brush } else { tool };
+    dispatch(state, ViewCommand::SetTool(next));
+}
+
+/// Whether `tool` is the one the next gesture would use — reactively (`read`,
+/// not `peek`), because this is the answer a lit chip is mounted on.
+fn armed(state: AppState, tool: Tool) -> bool {
+    state.obs.read().as_ref().is_some_and(|o| o.tool == tool)
 }
 
 /// Whether a **document edit** may be accepted right now.
@@ -1511,6 +1629,59 @@ mod tests {
     }
 
     #[test]
+    fn shape_tools_are_one_family() {
+        // Three commands that must read as three answers to one question
+        // wherever they are shown — so they are checked as a set, not as three
+        // independent rows: the same terse word in the panel's 280px column,
+        // the same shape-then-act name in the palette, and a chord trio that
+        // is one rule (each command's own initial) rather than three letters.
+        let b = stock();
+        for (command, word, name) in [
+            (Command::SelectRect, "Rect", "Rectangle select"),
+            (Command::SelectEllipse, "Ellipse", "Ellipse select"),
+            (Command::SelectLasso, "Lasso", "Lasso select"),
+        ] {
+            // The abbreviation is a shortening of the name, never another word
+            // for the act: a chip and a palette row must be recognisable as
+            // the same thing by someone who has only seen the other.
+            assert_eq!(command.word(), word);
+            assert_eq!(command.name(), name);
+            assert!(name.to_lowercase().starts_with(&word.to_lowercase()));
+            assert!(name.ends_with(" select"));
+            assert_eq!(
+                command.shortcut(&b).as_deref(),
+                Some(&word[..1]),
+                "{command:?}'s chord is not its own initial"
+            );
+            // A tool is armed, never committed, so nothing greys it: there is
+            // no document state that makes "draw a rectangle" unavailable.
+            assert!(command.enabled(None));
+        }
+    }
+
+    #[test]
+    fn shape_tools_answer_the_letters_they_advertise() {
+        // The other half of the trio: what the chips *say* is what the
+        // keyboard *does*, which is one table read twice.
+        let b = stock();
+        assert_eq!(
+            b.lookup(false, false, false, &ch("r"), "KeyR"),
+            Some(Command::SelectRect)
+        );
+        assert_eq!(
+            b.lookup(false, false, false, &ch("e"), "KeyE"),
+            Some(Command::SelectEllipse)
+        );
+        assert_eq!(
+            b.lookup(false, false, false, &ch("l"), "KeyL"),
+            Some(Command::SelectLasso)
+        );
+        // Bare letters, so an accelerator over one is nobody's — Ctrl+R must
+        // stay the browser's reload rather than arming a marquee.
+        assert_eq!(b.lookup(true, false, false, &ch("r"), "KeyR"), None);
+    }
+
+    #[test]
     fn names_are_unique() {
         // The palette prints nothing but the name, so two commands sharing one
         // would be indistinguishable rows. Runs over ALL, which also makes a
@@ -1592,6 +1763,15 @@ mod tests {
         assert_eq!(search("select all"), vec![Command::Deselect]);
         assert_eq!(search("preferences"), vec![Command::Settings]);
         assert_eq!(search("crop"), vec![Command::AddFrame]);
+        // The shape tools answer to the marquee vocabulary, and bare "marquee"
+        // lands on the rectangle first: it is that word's own default
+        // elsewhere, and the alias tiers put the prefix match above the
+        // ellipse's "Elliptical marquee".
+        assert_eq!(
+            search("marquee"),
+            vec![Command::SelectRect, Command::SelectEllipse]
+        );
+        assert_eq!(search("freehand"), vec![Command::SelectLasso]);
         // …and a name match still leads an alias match: "save" begins two
         // display names and then Export's "Save as", in that order.
         assert_eq!(

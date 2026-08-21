@@ -22,6 +22,13 @@ use stark_model::document::{FillOp, SelectionMode, ShapeAction, Tool};
 /// same control that armed it. Painting is therefore the resting state and needs no
 /// chip of its own — no chip lit *is* the brush.
 ///
+/// All three of those sentences are the **registry's** now, not this panel's
+/// (`crate::commands`): each chip is a `Command` worn whole, so the same act is
+/// reached from the chip, from the search palette and from a chord (R / E / L),
+/// and the lit state a chip shows is the one [`Command::active`] answers. The
+/// panel keeps what is genuinely its own — that these three sit in one
+/// `.segmented` run, above the row saying what their region *does*.
+///
 /// The **action** row is five answers to one question — *what does this shape do?* —
 /// rather than four ways of combining plus an odd one out. Rect, ellipse and lasso
 /// never produced selections; they produce **coverage**, and the four combine modes
@@ -48,21 +55,24 @@ pub fn SelectPanel() -> Element {
     // every pan and every sample of the stroke it is describing.
     let arm = use_obs(state, |o| {
         (
-            o.tool,
             o.shape_action,
             o.selection_feather,
             o.shape_opacity,
             o.brush.color,
         )
     });
-    let (tool, action, feather, opacity, brush_color) =
-        arm().unwrap_or((Tool::Brush, ShapeAction::default(), 0.0, 1.0, [0.0; 4]));
+    let (action, feather, opacity, brush_color) =
+        arm().unwrap_or((ShapeAction::default(), 0.0, 1.0, [0.0; 4]));
 
     let chip = |on: bool| if on { "chip active" } else { "chip" };
-    const TOOLS: [(Tool, &str, &str); 3] = [
-        (Tool::SelectRect, icons::RECTANGLE, "Rect"),
-        (Tool::SelectEllipse, icons::CIRCLE, "Ellipse"),
-        (Tool::SelectLasso, icons::LASSO, "Lasso"),
+    // Which tool is armed is deliberately *not* in the memo above: the three
+    // chips are `CommandButton`s now, and each carries its own answer
+    // ([`Command::active`]) — so arming a tool re-renders three buttons rather
+    // than the panel and its two sliders.
+    const TOOLS: [Command; 3] = [
+        Command::SelectRect,
+        Command::SelectEllipse,
+        Command::SelectLasso,
     ];
     // A glyph *and* its word on all five, never one without the other. `∩` was the
     // weak link in this row when it had four entries and could not have survived
@@ -119,19 +129,14 @@ pub fn SelectPanel() -> Element {
         // is about arming, not about combining; neither row can ever have two lit at
         // once, which is the thing the shape is claiming.
         div { class: "tool-row stacked segmented",
-            for (t, glyph, word) in TOOLS {
-                button {
-                    class: chip(tool == t),
-                    title: "Draw a selection with this tool, once",
-                    // Clicking the armed tool disarms it: the control that armed it is
-                    // the one you reach for to take it back.
-                    onclick: move |_| {
-                        let next = if tool == t { Tool::Brush } else { t };
-                        dispatch(state, ViewCommand::SetTool(next));
-                    },
-                    {icon(glyph)}
-                    {label(word)}
-                }
+            // Each chip is its command worn whole (`crate::commands`), the way
+            // the bar below wears its five: the mark, the terse word, the
+            // tooltip with its chord, the lit state and what a second click
+            // means are all the registry's. Which is what buys these three a
+            // keyboard — R / E / L reach the same act the chip does, and the
+            // chip advertises the key that reaches it.
+            for command in TOOLS {
+                CommandButton { key: "{command:?}", command }
             }
         }
         div { class: "tool-row stacked segmented",
