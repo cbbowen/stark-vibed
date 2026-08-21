@@ -18,6 +18,7 @@ use dioxus::dioxus_core::{Subscribers, Task};
 use dioxus::prelude::*;
 
 use crate::collab;
+use crate::commands::VisibilityToggle;
 use crate::gesture::TransformUi;
 use crate::prefs::Prefs;
 use crate::render::Renderer;
@@ -303,8 +304,8 @@ pub struct AppState {
     /// overview is no longer a panel in the stack: it wears no title bar, its box
     /// is the artwork's aspect rather than a column's width, and it stands in a
     /// corner of the window. What it keeps from the stack is durability — written
-    /// only by [`navigator::set_open`](crate::navigator::set_open), which persists
-    /// after every change.
+    /// only by [`navigator::set_open`](crate::navigator::set_open), and stored in the
+    /// one record the stack's own visibility is in (`crate::visibility`, §25.6).
     pub navigator: Signal<bool>,
     /// The guided tour (§24; `crate::tutor`): what the user has done often enough
     /// to be told about, and the lesson on screen.
@@ -420,13 +421,14 @@ pub struct SlotState {
     /// "Quick brushes" (§18.1.8). What it buys is a rack that can be *clicked*,
     /// which is the only way to a slot for a hand with no keyboard under it.
     ///
-    /// **Not** persisted, unlike the panel stack's visibility and the navigator's
-    /// ([`AppState::navigator`]) — the two entries in that menu that *are*
-    /// remembered.
-    /// The rack is a picture of what the *keyboard* holds, and pinning it is asking
-    /// to see that once; a rack that came back next visit would be a column of
-    /// chrome standing over the painting because of something the artist did last
-    /// week.
+    /// Persisted with the rest of what is on screen (`crate::visibility`, §25.6),
+    /// and written only by [`slots::set_pinned`](crate::slots::set_pinned). It was
+    /// once the one entry of that menu that was *not* remembered, on the argument
+    /// that the rack is a picture of what the keyboard holds and pinning it asks to
+    /// see that once. But pinning is not that question: while a number is held the
+    /// rack shows regardless, and what the pin buys is a rack that *stays* and takes
+    /// clicks — the only route to a slot for a hand with no keyboard under it, which
+    /// is a standing choice about the screen and not a glance at one.
     pub pinned: Signal<bool>,
 }
 
@@ -598,7 +600,11 @@ impl AppState {
                 presence: root_signal(|| None),
             },
             timeline: TimelineState {
-                open: root_signal(|| false),
+                // Seeded from what this browser last had on screen, like the other
+                // three entries of that menu (`crate::visibility`, §25.6) — here
+                // rather than in a load hook, so the first render is already the
+                // screen the artist left.
+                open: root_signal(|| crate::visibility::stored_showing(VisibilityToggle::Timeline)),
                 playing: root_signal(|| false),
                 speed: root_signal(|| 1.0),
                 task: root_signal(|| None),
@@ -628,9 +634,13 @@ impl AppState {
             slots: SlotState {
                 brushes: root_signal(|| [None; crate::slots::COUNT]),
                 held: root_signal(|| None),
-                pinned: root_signal(|| false),
+                pinned: root_signal(|| {
+                    crate::visibility::stored_showing(VisibilityToggle::QuickBrushes)
+                }),
             },
-            navigator: root_signal(|| false),
+            navigator: root_signal(|| {
+                crate::visibility::stored_showing(VisibilityToggle::Navigator)
+            }),
             tutor: crate::tutor::TutorState {
                 ledger: root_signal(Default::default),
                 recent: root_signal(Default::default),
@@ -661,8 +671,8 @@ impl AppState {
                 // comes back — read here, before the first render, so the stack
                 // the artist left is the first one drawn rather than one that
                 // assembles itself a frame later.
-                hidden: root_signal(crate::layout::stored_hidden),
-                collapsed: root_signal(crate::layout::stored_collapsed),
+                hidden: root_signal(crate::visibility::stored_hidden),
+                collapsed: root_signal(crate::visibility::stored_collapsed),
                 drag: root_signal(|| None),
                 heights: root_signal(crate::layout::PanelLayout::default_heights),
                 resize: root_signal(|| None),

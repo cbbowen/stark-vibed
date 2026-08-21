@@ -139,6 +139,7 @@ stark/
 │           ├── render.rs       # WebGPU surface + Engine wrapper
 │           ├── input.rs        # DOM events → InputCommand
 │           ├── layout.rs       # floating panel chrome + drag/reorder
+│           ├── visibility.rs   # what is on screen, as the browser keeps it
 │           ├── panels/         # one module per tool panel
 │           ├── settings.rs     # the unified settings dialog
 │           ├── prefs.rs        # what that dialog sets (localStorage)

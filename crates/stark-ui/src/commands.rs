@@ -754,7 +754,10 @@ pub const BASIC: &[Command] = &[
 /// ([`command`](Self::command)) — so this is a **view** of the registry rather
 /// than a second one, and nothing reachable here is a thing a search for its
 /// name would miss.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Serde, because an entry is named in the record of what this browser last had on
+/// screen (`crate::visibility`) — and the derive spells a variant exactly as `Debug`
+/// does, so the stored word and the enum's are one by construction.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum VisibilityToggle {
     /// One of the floating tool panels (§11).
     Panel(PanelId),
@@ -1299,10 +1302,13 @@ impl Command {
                 let open = *state.navigator.peek();
                 crate::navigator::set_open(state, !open);
             }
+            // Through `slots::set_pinned` rather than writing the signal, for the
+            // reason the two above go through theirs: the rack's visibility is
+            // remembered, and the one writer is what makes that structural
+            // (`crate::visibility`).
             Command::ToggleQuickBrushes => {
-                let mut pinned = state.slots.pinned;
-                let now = !*pinned.peek();
-                pinned.set(now);
+                let pinned = *state.slots.pinned.peek();
+                crate::slots::set_pinned(state, !pinned);
             }
             // Ungated like the other toggles: which panels are up is chrome,
             // not document. The two halves an entry must not forget — waking a

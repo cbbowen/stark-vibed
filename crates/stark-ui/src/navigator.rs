@@ -21,9 +21,10 @@
 //! So it is chrome of its own, like the quick-brush rack it shares a column with
 //! (`crate::slots`): no background, no header, a shadow to lift it off the paint,
 //! and the visibility menu to show and hide it — the only way to it, having no
-//! title bar of its own to close from. Unlike the rack it is **remembered** —
-//! an artist who wants the overview up wants it up next time, which is the bargain
-//! the panel stack makes ([`set_open`], and `layout::set_open` before it).
+//! title bar of its own to close from. And, like the rack and like the panel stack,
+//! it is **remembered**: an artist who wants the overview up wants it up next time.
+//! That is one record for all four now, and this module's share of it is
+//! [`set_open`] (`crate::visibility`, §25.6).
 //!
 //! # What "the whole piece" means
 //!
@@ -74,7 +75,6 @@ use crate::layout::chrome_class;
 use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch};
-use crate::storage::{Record, Store};
 use stark_engine::ExportScale;
 use stark_engine::command::ViewCommand;
 use stark_model::document::LayerId;
@@ -102,30 +102,6 @@ const MAX_HEIGHT: u32 = 200;
 /// overview appears while the artist is still looking at where it landed.
 const SETTLE_MS: i32 = 180;
 
-/// Whether the overview is up, as this browser stores it.
-///
-/// A newtype over the one `bool` rather than the `bool` itself, because the trait that
-/// binds a type to its record would otherwise be implemented on `bool` — making *every*
-/// boolean in the frontend this record, and `storage::save(&some_flag)` a way to
-/// overwrite it. `transparent`, so the stored value is still bare `true`/`false`.
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-pub(crate) struct Showing(bool);
-
-impl Record for Showing {
-    const STORE: Store = Store::Navigator;
-}
-
-/// Restore this browser's choice, at startup.
-///
-/// A record that is absent — or damaged, which is the same case (`crate::storage`) —
-/// reads as put away, the same starting point every panel has (§11): the opening
-/// screen is the painting and nothing else.
-pub fn load(state: AppState) {
-    let mut showing = state.navigator;
-    showing.set(crate::storage::load().is_some_and(|Showing(up)| up));
-}
-
 /// Show the overview or put it away, and remember it — **the only thing that writes
 /// [`AppState::navigator`](crate::state::AppState::navigator)**, which is what makes
 /// durability structural rather than a line every call site has to remember (the move
@@ -144,7 +120,7 @@ pub fn set_open(state: AppState, open: bool) {
         return;
     }
     showing.set(open);
-    crate::storage::save(&Showing(open));
+    crate::visibility::persist(state);
 }
 
 /// Where the miniature sits in canvas space, and how large it is drawn.

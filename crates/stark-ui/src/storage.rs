@@ -1,9 +1,9 @@
 //! This browser's local store: the one door to `localStorage`, and the one format
 //! everything behind it is kept in.
 //!
-//! Eleven records live here — the shape, preset, gradient and quick-brush libraries,
-//! the ⚙ dialog's settings, the chord table, the drag table, which panels are open,
-//! whether the navigator is up, what the tour has seen, and this client's identity.
+//! Ten records live here — the shape, preset, gradient and quick-brush libraries,
+//! the ⚙ dialog's settings, the chord table, the drag table, what is on screen, what
+//! the tour has seen, and this client's identity.
 //! There were six formats
 //! between them once: JSON for two, a base64 field table for three, bare
 //! space-separated panel names, a tagged `deed|key|count` row for the tour, `"1"`
@@ -38,7 +38,7 @@
 //!
 //! # Bytes are not kept here at all
 //!
-//! `localStorage` is text, and **~5 MB of it per origin shared across all eleven
+//! `localStorage` is text, and **~5 MB of it per origin shared across all ten
 //! records**. A brush shape's PNG went in it once, base64'd inline in the shape
 //! library's rows: two of the app's own stamps are 408 KB and 226 KB on disk, half as
 //! much again as base64, and twice *that* against the quota in an engine that counts
@@ -128,10 +128,10 @@ pub enum Store {
     /// The canvas drags the user has taken over, and whether this browser has been
     /// offered a preset table (§25.8, `crate::drags`).
     Drags,
-    /// Which floating panels are open, and which are folded (`crate::layout`).
-    Panels,
-    /// Whether the navigator's miniature is up (§11, `crate::navigator`).
-    Navigator,
+    /// What is on screen: which panels are open and folded, whether the navigator's
+    /// miniature is up, whether the quick-brush rack is pinned, whether Timeline mode
+    /// is on (§11, `crate::visibility`).
+    Visible,
     /// What the guided tour has counted and given (§24, `crate::tutor`).
     Tutor,
     /// The custom brush-shape library (§6.6, `crate::shapes`).
@@ -146,7 +146,7 @@ pub enum Store {
 
 impl Store {
     /// The key, and the name a warning calls this record by — "the gradient library",
-    /// "the settings" — so a full quota says which of the eleven ran out of room.
+    /// "the settings" — so a full quota says which of the ten ran out of room.
     ///
     /// One key, both stores: a record that keeps bytes as well as rows spells its blob
     /// keys `stark.shapes/<hex>` (see [`Blob`]), so there is still exactly one place
@@ -165,8 +165,7 @@ impl Store {
             Store::Prefs => ("stark.prefs", "the settings"),
             Store::Bindings => ("stark.bindings", "the shortcuts"),
             Store::Drags => ("stark.drags", "the drag bindings"),
-            Store::Panels => ("stark.panels", "which panels are open"),
-            Store::Navigator => ("stark.navigator", "whether the navigator is showing"),
+            Store::Visible => ("stark.visible", "what is on screen"),
             Store::Tutor => ("stark.tutor", "the tips you have seen"),
             Store::Shapes => ("stark.shapes", "the shape library"),
             Store::Presets => ("stark.presets", "the brush presets"),
@@ -194,9 +193,9 @@ pub trait Record {
 ///
 /// A second trait rather than a flag on [`Record`], because the two are read
 /// differently and the difference is not one a caller should be able to get wrong:
-/// seven of the ten records are lists, and `load::<StoredPanel>()` under one trait
+/// eight of the ten records are lists, and `load::<StoredVisible>()` under one trait
 /// would compile and quietly answer `None` — an array is not an object — leaving a
-/// panel stack that silently forgot itself. A type is one or the other, and the
+/// screen that silently forgot itself. A type is one or the other, and the
 /// compiler says which functions it is for.
 pub trait Entry {
     /// Which record this type is an entry of.
@@ -308,6 +307,11 @@ pub fn drop_retired() {
         "stark.gradients.v1",
         "stark.identity.secret",
         "stark.identity.boot",
+        // The two records `Store::Visible` replaced. What is on screen used to be
+        // kept in two, which is how the quick-brush rack and Timeline mode came to
+        // be kept in none (`crate::visibility`).
+        "stark.panels",
+        "stark.navigator",
     ] {
         crate::platform::local_remove(key);
     }
@@ -421,13 +425,12 @@ mod tests {
     use serde::Deserialize;
     use std::collections::HashSet;
 
-    const ALL: [Store; 11] = [
+    const ALL: [Store; 10] = [
         Store::Identity,
         Store::Prefs,
         Store::Bindings,
         Store::Drags,
-        Store::Panels,
-        Store::Navigator,
+        Store::Visible,
         Store::Tutor,
         Store::Shapes,
         Store::Presets,
@@ -473,10 +476,9 @@ mod tests {
         let claimed = [
             <crate::identity::Stored as Record>::STORE,
             <crate::prefs::Prefs as Record>::STORE,
-            <crate::navigator::Showing as Record>::STORE,
             <crate::commands::StoredBinding as Entry>::STORE,
             <crate::drags::DragRow as Entry>::STORE,
-            <crate::layout::StoredPanel as Entry>::STORE,
+            <crate::visibility::StoredVisible as Entry>::STORE,
             <crate::tutor::Row as Entry>::STORE,
             <crate::shapes::StoredShape as Entry>::STORE,
             <crate::presets::StoredPreset as Entry>::STORE,
@@ -510,7 +512,13 @@ mod tests {
     #[test]
     fn no_retired_key_is_a_live_one() {
         let live: HashSet<&str> = ALL.iter().map(|s| s.named().0).collect();
-        for key in ["stark.prefs.v1", "stark.shapes.v1", "stark.identity.secret"] {
+        for key in [
+            "stark.prefs.v1",
+            "stark.shapes.v1",
+            "stark.identity.secret",
+            "stark.panels",
+            "stark.navigator",
+        ] {
             assert!(!live.contains(key));
         }
         assert!(ALL.iter().all(|s| !s.named().0.ends_with(".v1")));

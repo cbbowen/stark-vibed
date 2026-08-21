@@ -49,6 +49,7 @@ mod storage;
 mod thumbs;
 mod timings;
 mod tutor;
+mod visibility;
 mod widgets;
 
 use dioxus::dioxus_core::spawn_forever;
@@ -166,11 +167,6 @@ fn app() -> Element {
     // And so does the quick-brush rack (§18.1.8) — a browser that has never set
     // a slot is seeded below, once there is a preset library to seed it from.
     use_hook(|| slots::load(state));
-    // And whether the navigator's overview is up (§11), which follows the browser
-    // for the reason the panel stack's own visibility does: it is not a panel any
-    // more, but it is still a standing choice about what is on screen.
-    use_hook(|| navigator::load(state));
-
     // The ⚙ dialog's settings follow the browser the same way. Applied here, in the
     // root's own body, so the very first render is already in the mode the user left
     // the app in — the engine-owned half of them waits for the renderer below

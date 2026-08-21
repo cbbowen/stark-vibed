@@ -520,6 +520,31 @@ pub fn pick(state: AppState, slot: usize) {
     }
 }
 
+/// Pin the rack up or put it away, and remember it — **the only thing that writes
+/// [`SlotState::pinned`](crate::state::SlotState::pinned)**, which is what makes
+/// durability structural rather than a line the menu row has to remember (the move
+/// `navigator::set_open` and `layout::set_open` both make).
+///
+/// Pinning is not the same question as the rack being *up*: while a number is held
+/// the rack shows whatever this says, and what pinning buys is a rack that stays and
+/// takes clicks — the only route to a slot for a hand with no keyboard under it
+/// (§18.1.8). That standing choice is the one worth keeping, and it is kept with the
+/// rest of what is on screen (`crate::visibility`, §25.6).
+///
+/// Guarded on the value actually moving, like the other two: a `Signal` write dirties
+/// every subscriber whether or not the value changed, and the rack's subscribers
+/// include the overlay that renders it.
+pub fn set_pinned(state: AppState, pinned: bool) {
+    let mut up = state.slots.pinned;
+    // Into a `bool` before the write, as everything that toggles a signal here does.
+    let was = *up.peek();
+    if was == pinned {
+        return;
+    }
+    up.set(pinned);
+    crate::visibility::persist(state);
+}
+
 /// Put `brush` in `slot` and persist the rack.
 pub fn assign(state: AppState, slot: usize, brush: Wearable) {
     if slot >= COUNT {

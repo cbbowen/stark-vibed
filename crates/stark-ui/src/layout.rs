@@ -35,6 +35,12 @@
 //! that writes [`PanelLayout::hidden`], and it persists after every change, so a
 //! new way to close a panel is durable without its author thinking about storage.
 //! The same move `settings::SettingToggle` makes for the preferences.
+//!
+//! **Where** it persists to is not this module's, though the stack was once the only
+//! thing in it: which panels are open is one entry in the browser's picture of what is
+//! on screen, beside the navigator, the quick-brush rack and Timeline mode
+//! (`crate::visibility`, §25.6). So the record, its type and both of its readers live
+//! there, and what is here is the calls.
 
 use std::collections::{HashMap, HashSet};
 
@@ -513,56 +519,6 @@ pub fn sleep_panels(state: AppState) {
     }
 }
 
-/// One **open** panel, as this browser left it (`crate::storage`).
-///
-/// Only the open ones are written, and the difference is what a panel added in a later
-/// release does: it is absent from every stored row, so it arrives closed like
-/// everything else rather than appearing unbidden in the stack of every existing user.
-/// Folding is a field on the row rather than a record of its own, because it is the
-/// same fact about the same panel — and a panel is only ever folded while it is open,
-/// so there is no row this could appear on alone. `#[serde(default)]` makes the field
-/// optional in both directions across a version.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct StoredPanel {
-    panel: PanelId,
-    #[serde(default)]
-    collapsed: bool,
-}
-
-impl crate::storage::Entry for StoredPanel {
-    const STORE: crate::storage::Store = crate::storage::Store::Panels;
-}
-
-/// The panels this browser last had open, as [`PanelLayout::hidden`] — or every
-/// panel hidden, which is both the never-visited case and the damaged-store one.
-///
-/// A row naming a panel this build no longer has costs that row and not the layout
-/// (`storage::load_list`).
-pub fn stored_hidden() -> HashSet<PanelId> {
-    let open: HashSet<PanelId> = stored_panels().map(|p| p.panel).collect();
-    PanelId::ALL
-        .into_iter()
-        .filter(|id| !open.contains(id))
-        .collect()
-}
-
-/// The panels this browser last had **folded** ([`PanelLayout::collapsed`]).
-///
-/// Read from the same rows as [`stored_hidden`], since it is the same fact about
-/// the same panel; a panel that is not open cannot appear here at all.
-pub fn stored_collapsed() -> HashSet<PanelId> {
-    stored_panels()
-        .filter(|p| p.collapsed)
-        .map(|p| p.panel)
-        .collect()
-}
-
-fn stored_panels() -> impl Iterator<Item = StoredPanel> {
-    crate::storage::load_list::<StoredPanel>()
-        .unwrap_or_default()
-        .into_iter()
-}
-
 /// Open or close `id`, and remember it. **The only thing that writes
 /// [`PanelLayout::hidden`]**, which is what makes durability structural rather than
 /// a line every call site has to remember — the move
@@ -575,7 +531,7 @@ fn stored_panels() -> impl Iterator<Item = StoredPanel> {
 ///
 /// Answers whether it **moved**, which is what keeps the tour from reading a panel
 /// opened onto a panel that was already open as anything at all (§24.2).
-fn set_open(layout: PanelLayout, id: PanelId, open: bool) -> bool {
+fn set_open(state: AppState, layout: PanelLayout, id: PanelId, open: bool) -> bool {
     let mut hidden = layout.hidden;
     // Into a local before the write: a read guard held across one is the shape that
     // has borrow-panicked in this crate before.
@@ -588,27 +544,8 @@ fn set_open(layout: PanelLayout, id: PanelId, open: bool) -> bool {
     } else {
         hidden.write().insert(id);
     }
-    persist(layout);
+    crate::visibility::persist(state);
     true
-}
-
-/// Write the stack's durable half: a [`StoredPanel`] per open panel.
-///
-/// One writer for both facts, called by everything that changes either — which is
-/// what keeps durability structural (see [`set_open`]): a new way to open, close or
-/// fold a panel is remembered without its author thinking about storage.
-fn persist(layout: PanelLayout) {
-    let hidden = layout.hidden.peek().clone();
-    let collapsed = layout.collapsed.peek().clone();
-    let open: Vec<StoredPanel> = PanelId::ALL
-        .into_iter()
-        .filter(|id| !hidden.contains(id))
-        .map(|panel| StoredPanel {
-            panel,
-            collapsed: collapsed.contains(&panel),
-        })
-        .collect();
-    crate::storage::save_list(&open);
 }
 
 /// Fold `id` to its title bar, or unfold it — what clicking a title does
@@ -621,7 +558,7 @@ fn persist(layout: PanelLayout) {
 /// with. Which is also why the content is hidden by the stylesheet rather than left
 /// out of the render: an unmounted panel would rebuild itself, and everything it had
 /// scrolled to or measured, on every unfold.
-pub fn toggle_collapse(layout: PanelLayout, id: PanelId) {
+pub fn toggle_collapse(state: AppState, layout: PanelLayout, id: PanelId) {
     let mut collapsed = layout.collapsed;
     // Answered into a `bool` first: a `peek` in the condition stays borrowed through
     // the body, and both arms write the very signal being read.
@@ -631,13 +568,13 @@ pub fn toggle_collapse(layout: PanelLayout, id: PanelId) {
     } else {
         collapsed.write().insert(id);
     }
-    persist(layout);
+    crate::visibility::persist(state);
 }
 
 /// Close `id`, and remember it — a panel's own ✕ ([`Panel`]) and the closing half of
 /// its row in the visibility menu.
 pub fn close_panel(state: AppState, layout: PanelLayout, id: PanelId) {
-    if set_open(layout, id, false) {
+    if set_open(state, layout, id, false) {
         // Only where a panel actually went away. The tour answers the question this
         // raises — *where did it go?* — and answering it about a panel that was
         // already closed would be answering nobody (§24.5).
@@ -650,7 +587,7 @@ pub fn close_panel(state: AppState, layout: PanelLayout, id: PanelId) {
 /// a menu entry that ticks itself and changes nothing on screen, and every call site
 /// that opens one would have to remember the same line.
 pub fn open_panel(state: AppState, layout: PanelLayout, id: PanelId) {
-    set_open(layout, id, true);
+    set_open(state, layout, id, true);
     // And unfolded, for the reason the wake below happens: opening is a request to
     // *see* a panel, and one that came back as a bare title bar would be a menu entry
     // that ticks itself and shows nothing — which is exactly what folding one and
@@ -661,7 +598,7 @@ pub fn open_panel(state: AppState, layout: PanelLayout, id: PanelId) {
     let folded = collapsed.peek().contains(&id);
     if folded {
         collapsed.write().remove(&id);
-        persist(layout);
+        crate::visibility::persist(state);
     }
     wake_panels(state);
 }
@@ -1007,7 +944,7 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
                     },
                     onpointermove: move |e| drag_move(layout, &e),
                     // A press that travelled lands; one that did not folds the panel.
-                    onpointerup: move |_| release_title(layout, id),
+                    onpointerup: move |_| release_title(state, layout, id),
                     // A *cancel* is neither: the browser took the gesture away, and a
                     // gesture nobody finished must not be read as a click.
                     onpointercancel: move |_| drag_end(layout, id),
@@ -1075,7 +1012,7 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
 /// Asked **before** [`drag_end`], which spends the grab and so answers the question
 /// away. A release with no grab in flight folds nothing: it belongs to a press this
 /// element never heard, which is a gesture that started somewhere else.
-pub fn release_title(layout: PanelLayout, id: PanelId) {
+pub fn release_title(state: AppState, layout: PanelLayout, id: PanelId) {
     let (pressed, dragged) = {
         let grab = layout.drag.peek();
         let live = grab.as_ref().filter(|d| !d.over());
@@ -1083,7 +1020,7 @@ pub fn release_title(layout: PanelLayout, id: PanelId) {
     };
     drag_end(layout, id);
     if pressed && !dragged {
-        toggle_collapse(layout, id);
+        toggle_collapse(state, layout, id);
     }
 }
 
@@ -1378,29 +1315,6 @@ mod tests {
         assert!(serde_json::from_str::<PanelId>("\"Atmosphere\"").is_err());
     }
 
-    /// A folded panel is a **field** on its own row, so the two states cross a version
-    /// in both directions: a row written before folding existed reads as an open
-    /// panel, and one written by this build reads as an open panel to a version that
-    /// knows only the name.
-    #[test]
-    fn a_stored_row_carries_whether_the_panel_was_folded() {
-        let read =
-            |json: &str| serde_json::from_str::<StoredPanel>(json).map(|p| (p.panel, p.collapsed));
-        assert_eq!(
-            read(r#"{"panel":"Brush","collapsed":true}"#).unwrap(),
-            (PanelId::Brush, true)
-        );
-        // A row from before folding existed, and one from a build that has since
-        // dropped it: the name alone is an open panel.
-        assert_eq!(
-            read(r#"{"panel":"Layers"}"#).unwrap(),
-            (PanelId::Layers, false)
-        );
-        // And a panel this build lacks is unreadable as a row, which is what puts it
-        // in reach of the drop `storage::load_list` does.
-        assert!(read(r#"{"panel":"Atmosphere","collapsed":true}"#).is_err());
-    }
-
     /// The stored name of a hiding mode is what the dialog offers and what
     /// [`ChromeHiding::from`] reads back, and a name from a version that knows more
     /// modes than this one reads as the default rather than refusing — which would
@@ -1489,28 +1403,5 @@ mod tests {
         // And neither end can be dragged past.
         assert_eq!(scroll.scrolled_by(0.0, -50.0), 0.0);
         assert_eq!(scroll.scrolled_by(800.0, 50.0), 800.0);
-    }
-
-    /// A stored layout names the panels that are **open**, so one this build does
-    /// not have costs its own row, and one it has that the record never mentioned
-    /// stays closed rather than appearing unbidden.
-    #[test]
-    fn an_unknown_panel_costs_its_own_row() {
-        let json = r#"[{"panel":"Color"},{"panel":"Atmosphere"},{"panel":"Brush"}]"#;
-        let open: std::collections::HashSet<PanelId> =
-            serde_json::from_str::<Vec<serde_json::Value>>(json)
-                .unwrap()
-                .into_iter()
-                .filter_map(|v| serde_json::from_value::<StoredPanel>(v).ok())
-                .map(|p| p.panel)
-                .collect();
-        let hidden: HashSet<PanelId> = PanelId::ALL
-            .into_iter()
-            .filter(|id| !open.contains(id))
-            .collect();
-        assert!(!hidden.contains(&PanelId::Color));
-        assert!(!hidden.contains(&PanelId::Brush));
-        assert!(hidden.contains(&PanelId::Layers), "never stored, so closed");
-        assert_eq!(hidden.len(), PanelId::ALL.len() - 2);
     }
 }

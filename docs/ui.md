@@ -102,7 +102,9 @@ which the engine draws into directly. DOM chrome surrounds it.
   enum is deliberately thin — an entry knows only *which* `Command` it is, and
   the word, mark, tick and greyed state are the registry's — so it is a view of
   the registry rather than a second one, and nothing is reachable there that a
-  search for its name would miss.
+  search for its name would miss. And what the menu toggles, the browser keeps:
+  one record over that same list, so every row of the map is remembered and a new
+  row cannot be added without saying so (`crate::visibility`, §25.6).
 - **A chord names its key the way the binding means it.** A chord names the
   accelerator tier (Ctrl or Command, `input::accel`), the Shift bit, and a key
   that is either the *character* it types — a mnemonic follows the layout,
@@ -234,8 +236,9 @@ which the engine draws into directly. DOM chrome surrounds it.
   (`tutor::Lesson::applies`, asked in `due`).
 - **Every panel starts closed, and what is open follows the browser.** The
   opening screen is the painting and nothing else; the panels that come back next
-  visit are the ones the artist actually reached for (`layout::stored_hidden`,
-  keyed `stark.panels.v1`). The two halves are one decision — a set of panels
+  visit are the ones the artist actually reached for
+  (`visibility::stored_hidden` — one record with everything else the visibility
+  menu toggles, §25.6). The two halves are one decision — a set of panels
   chosen for you is only tolerable because it resets every visit, and once the
   choice sticks the honest starting point is none. What keeps "none" from meaning
   "hidden" is the tour: the Color panel arrives on the second stroke and the wake
@@ -821,9 +824,9 @@ checklist:
 
 The third registry, and the one added last because it was learned the hard way.
 `Store` (`stark-ui/src/storage.rs`) enumerates every record this browser keeps —
-eleven of them: the four libraries (shapes, presets, gradients, quick brushes),
-the ⚙ dialog's settings, the chord table, the drag table, which panels are open,
-whether the navigator is up, what the tour has seen, and this client's identity.
+ten of them: the four libraries (shapes, presets, gradients, quick brushes), the
+⚙ dialog's settings, the chord table, the drag table, what is on screen, what the
+tour has seen, and this client's identity.
 
 One law, the same one: **one authority, and callers hand it typed values rather
 than spelling a format.** Here that is enforced by the type system — a type
@@ -846,16 +849,46 @@ no untyped door, so there is nowhere for another format to come from.
 
 The registry row still carries both facts about a record — its `localStorage`
 key and the name a quota warning calls it by — and the impls name a *variant*
-rather than restating those strings. Eleven impls each spelling their own key
-would scatter the answer to "what does this browser keep?" across eleven modules,
+rather than restating those strings. Ten impls each spelling their own key
+would scatter the answer to "what does this browser keep?" across ten modules,
 and nothing would notice two of them colliding.
 
-**Two traits, not one, because eight of the eleven records are lists.** `Record` is
+**Two traits, not one, because eight of the ten records are lists.** `Record` is
 the whole of what a key holds (`load`/`save`); `Entry` is one item of a library
 (`load_list`/`save_list`). Under a single trait, `load::<StoredPanel>()` would
 compile and quietly answer `None` — an array is not an object — leaving a panel
 stack that silently forgot itself. A type is one or the other, and the compiler
 says which functions it is for.
+
+**One record per *question*, not per feature — `Store::Visible` is what that
+costs when it is got wrong.** What is on screen used to be two records: the panel
+stack kept `stark.panels`, the navigator kept `stark.navigator`, each with its
+own type, its own reader and its own writer. Defensible while the navigator was
+the only thing outside the stack. Then the quick-brush rack and Timeline mode
+joined the visibility menu (§25.5) and neither joined a store — a row could be
+added to the map of what is on screen with nothing anywhere asking where its bit
+was kept, and two of the four were simply forgotten.
+
+They are one record now, keyed by `VisibilityToggle`, and the fix that matters is
+not the tidying: `visibility::persist` matches on `VisibilityToggle::ALL`
+**exhaustively**, so a tenth entry in that menu does not compile until it says
+whether it is showing. Durability stops being a line an author has to remember
+and becomes a branch the compiler asks for — the same move `Store::named` makes
+for keys one layer up, and the general shape of "rule out a class rather than
+enumerate its instances".
+
+```rust
+impl storage::Entry for StoredVisible { const STORE: Store = Store::Visible; }
+// [{"what":{"Panel":"Layers"},"collapsed":true},{"what":"Navigator"}]
+```
+
+A row is a thing that is *showing*, and absence answers for everything else —
+which is what makes an entry added in a later release arrive put away rather than
+appearing unbidden over the painting of every existing user. Folding rides the
+panel's row rather than taking a record of its own: same fact, same panel, and a
+panel is only ever folded while it is open. Reading happens where each signal is
+built (`AppState::new`), so the first render is already the screen the artist
+left.
 
 A record may hold **more than one kind of row**, and two do: the tour's ledger
 carries deed tallies beside the lessons already given, and the drag table carries
@@ -936,7 +969,7 @@ a stamp id back into bytes.
    record survives the app version that adds or drops a field. A content id or
    key goes through `storage::hex`. A record that is a bare primitive needs a
    newtype: `impl Record for bool` would make *every* boolean in the frontend
-   that record (`navigator::Showing`). **Bytes do not go in this type at all** —
+   that record. **Bytes do not go in this type at all** —
    they go in the blob store above, named by the content id the row carries.
 3. The one-line `Record` or `Entry` impl pairing the two, and a line in
    `every_record_claims_one_store` — which fails on the count if you forget,

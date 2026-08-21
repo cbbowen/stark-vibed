@@ -116,6 +116,11 @@ pub fn set_open(state: AppState, open: bool) {
     }
     let mut mode = state.timeline.open;
     mode.set(open);
+    // Remembered with the rest of what is on screen (`crate::visibility`, §25.6).
+    // A mode rather than furniture, and kept all the same for the reason its row in
+    // the visibility menu exists: that menu answers *what is on screen*, and the
+    // timeline is the largest thing that can be.
+    crate::visibility::persist(state);
 }
 
 /// Stop playback, if any. Idempotent and cheap when already stopped, because the
