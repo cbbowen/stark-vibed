@@ -647,7 +647,7 @@ static LESSONS: &[Lesson] = &[
     Lesson {
         key: "color-panel",
         deed: Deed::Stroke,
-        after: 2,
+        after: 4,
         anchor: Anchor::Panel(PanelId::Color),
         side: Side::LeftAtTop,
         title: "Every color, at your brush tip",
@@ -659,7 +659,7 @@ static LESSONS: &[Lesson] = &[
     Lesson {
         key: "panel-column",
         deed: Deed::Stroke,
-        after: 3,
+        after: 5,
         anchor: Anchor::PanelColumn,
         side: Side::LeftAtMiddle,
         title: "Your panels are still here",
@@ -668,7 +668,7 @@ static LESSONS: &[Lesson] = &[
     Lesson {
         key: "brush-panel",
         deed: Deed::Stroke,
-        after: 5,
+        after: 10,
         anchor: Anchor::Panel(PanelId::Brush),
         side: Side::LeftAtTop,
         title: "Pick a brush, then make it yours",
@@ -678,7 +678,7 @@ static LESSONS: &[Lesson] = &[
     Lesson {
         key: "select-panel",
         deed: Deed::Stroke,
-        after: 20,
+        after: 40,
         anchor: Anchor::Panel(PanelId::Select),
         side: Side::LeftAtTop,
         title: "Paint inside a shape",
@@ -724,7 +724,7 @@ static LESSONS: &[Lesson] = &[
     Lesson {
         key: "shape-assist",
         deed: Deed::Undo,
-        after: 5,
+        after: 10,
         // The painting, and pointing down into it. The assist has no chrome at all
         // — it is a thing you do with the pen, on the canvas — so every other
         // anchor would have put the card beside a control that has nothing to do
@@ -737,7 +737,7 @@ static LESSONS: &[Lesson] = &[
     Lesson {
         key: "guides-panel",
         deed: Deed::AssistedStroke,
-        after: 3,
+        after: 5,
         anchor: Anchor::Panel(PanelId::Guides),
         side: Side::LeftAtTop,
         title: "Getting some perspective",
@@ -746,7 +746,7 @@ static LESSONS: &[Lesson] = &[
     Lesson {
         key: "perspective-assist",
         deed: Deed::GuidedLine,
-        after: 1,
+        after: 2,
         anchor: Anchor::Panel(PanelId::Guides),
         side: Side::LeftAtTop,
         title: "Your held lines know about the grid",
@@ -757,7 +757,7 @@ static LESSONS: &[Lesson] = &[
     Lesson {
         key: "navigator",
         deed: Deed::LongPan,
-        after: 2,
+        after: 4,
         anchor: Anchor::Navigator,
         side: Side::RightAtBottom,
         title: "You don't have to drag that far",
@@ -766,7 +766,7 @@ static LESSONS: &[Lesson] = &[
     Lesson {
         key: "eyedropper",
         deed: Deed::ChangedColor,
-        after: 5,
+        after: 10,
         anchor: Anchor::Panel(PanelId::Color),
         side: Side::LeftAtTop,
         title: "Your canvas is a palette",
