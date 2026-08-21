@@ -4660,10 +4660,11 @@ button.layer-remove:hover {
    Equal shares of the width, so no option reads as the recommended one — the row's
    note is where a recommendation would go if there were one. Each chip carries its own
    sentence as a tooltip, which is what keeps three behaviors explainable in one line.
-*/
+
+   The run's shape — the flex row, the closed seams, the single outer radius — is
+   `.segmented`'s, which the row wears alongside this class. What is left here is where
+   the run sits, which is the only part of it this dialog knows about. */
 .setting-choice {
-  display: flex;
-  gap: 6px;
   margin-top: 8px;
 }
 

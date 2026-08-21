@@ -342,7 +342,11 @@ fn SettingChoice(
             div { class: "setting-text",
                 div { class: "setting-label", "{label}" }
                 div { class: "setting-desc", "{description}" }
-                div { class: "setting-choice",
+                // `segmented`, because the three chips answer one question and
+                // picking one un-picks the rest: butted into a single control the
+                // shape carries that, where a run of separate chips promises three
+                // switches that could be held down together.
+                div { class: "setting-choice segmented",
                     for (key, name, about) in options.iter().copied() {
                         button {
                             key: "{key}",
