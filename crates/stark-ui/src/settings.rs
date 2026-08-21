@@ -39,6 +39,7 @@ use crate::icons::{self, icon};
 use crate::layout::ChromeHiding;
 use crate::prefs;
 use crate::state::{AppState, dispatch};
+use crate::widgets::Modal;
 use stark_engine::command::ViewCommand;
 
 /// The settings dialog, opened from the command rail's ⚙ button and dismissed by
@@ -72,125 +73,118 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
     let shared = (state.collab.phase)() == CollabPhase::Shared;
 
     rsx! {
-        div {
-            class: "modal-backdrop",
-            onclick: move |_| on_close.call(()),
-            div {
-                // Wide, for the reason Credits and Timing Stats are: this is the
-                // dialog with the most to say, and at the standard width every
-                // sentence under a label ran to three lines. The same words in two
-                // take a hundred pixels off the dialog, which is a hundred fewer to
-                // scroll on the screens that made the cap necessary.
-                class: "modal-dialog modal-wide",
-                onclick: move |e| e.stop_propagation(),
+        // Wide, for the reason Credits and Timing Stats are: this is the
+        // dialog with the most to say, and at the standard width every
+        // sentence under a label ran to three lines. The same words in two
+        // take a hundred pixels off the dialog, which is a hundred fewer to
+        // scroll on the screens that made the cap necessary.
+        Modal { class: "modal-wide", on_close,
+            div { class: "modal-title", "Settings" }
+            div { class: "modal-subtitle",
+                "These apply to this browser, not to the drawing."
+            }
 
-                div { class: "modal-title", "Settings" }
-                div { class: "modal-subtitle",
-                    "These apply to this browser, not to the drawing."
-                }
+            // Three sections, all full. The split between the first two is what
+            // a row is *about*: the canvas and the work on it, or the chrome
+            // around it. Sections that held one row each — one per feature that
+            // happened to have a preference — sorted the code rather than the
+            // reader. The third is not a set of rows at all but a *table*
+            // (§25.8), and it comes last for that reason: a reader scanning
+            // labels for a switch should not have to pass four bindings to
+            // reach the two below.
+            div { class: "modal-section-label", "PAINTING" }
+            SettingToggle {
+                id: "drawing-assist",
+                label: "Snap shapes when you hold",
+                // Says what the gesture *is*, because a hold is not a control
+                // anybody can see — the dialog is the only place it is written
+                // down (§6.9).
+                description: "Hold the pen still mid-stroke and a rough line or ellipse snaps to the perfect shape; the rest of the drag steers it. Anything else is left as you drew it.",
+                checked: assist,
+                onchange: move |v| assist_enabled.set(v),
+            }
+            SettingToggle {
+                id: "show-peer-selections",
+                label: "Show others' selections",
+                description: "Outline the regions your collaborators have selected, each in their own color.",
+                // A row that is inert right now explains itself rather than
+                // vanishing — see the module comment.
+                note: if shared { None } else { Some("Takes effect while you're sharing a session.".to_string()) },
+                checked: show_peers,
+                onchange: move |v| dispatch(state, ViewCommand::SetShowPeerSelections(v)),
+            }
+            SettingSlider {
+                id: "history-budget",
+                label: "Undo memory",
+                // In the terms the artist has — how far back you can go, and what
+                // it costs. Bytes are how it is measured and not what it is for,
+                // so the number is on the readout and the sentence is the trade.
+                description: "Graphics memory kept for undo. Past it the oldest steps are given up — saving and sharing always include the whole drawing.",
+                steps: BUDGET_STEPS,
+                value: budget,
+                onchange: move |bytes| dispatch(state, ViewCommand::SetHistoryBudget(bytes)),
+            }
 
-                // Three sections, all full. The split between the first two is what
-                // a row is *about*: the canvas and the work on it, or the chrome
-                // around it. Sections that held one row each — one per feature that
-                // happened to have a preference — sorted the code rather than the
-                // reader. The third is not a set of rows at all but a *table*
-                // (§25.8), and it comes last for that reason: a reader scanning
-                // labels for a switch should not have to pass four bindings to
-                // reach the two below.
-                div { class: "modal-section-label", "PAINTING" }
-                SettingToggle {
-                    id: "drawing-assist",
-                    label: "Snap shapes when you hold",
-                    // Says what the gesture *is*, because a hold is not a control
-                    // anybody can see — the dialog is the only place it is written
-                    // down (§6.9).
-                    description: "Hold the pen still mid-stroke and a rough line or ellipse snaps to the perfect shape; the rest of the drag steers it. Anything else is left as you drew it.",
-                    checked: assist,
-                    onchange: move |v| assist_enabled.set(v),
-                }
-                SettingToggle {
-                    id: "show-peer-selections",
-                    label: "Show others' selections",
-                    description: "Outline the regions your collaborators have selected, each in their own color.",
-                    // A row that is inert right now explains itself rather than
-                    // vanishing — see the module comment.
-                    note: if shared { None } else { Some("Takes effect while you're sharing a session.".to_string()) },
-                    checked: show_peers,
-                    onchange: move |v| dispatch(state, ViewCommand::SetShowPeerSelections(v)),
-                }
-                SettingSlider {
-                    id: "history-budget",
-                    label: "Undo memory",
-                    // In the terms the artist has — how far back you can go, and what
-                    // it costs. Bytes are how it is measured and not what it is for,
-                    // so the number is on the readout and the sentence is the trade.
-                    description: "Graphics memory kept for undo. Past it the oldest steps are given up — saving and sharing always include the whole drawing.",
-                    steps: BUDGET_STEPS,
-                    value: budget,
-                    onchange: move |bytes| dispatch(state, ViewCommand::SetHistoryBudget(bytes)),
-                }
+            div { class: "modal-section-label", "INTERFACE" }
+            SettingToggle {
+                id: "minimal-chrome",
+                label: "Minimal UI",
+                // Says which text goes and that nothing goes with it, because
+                // "minimal" alone could mean either (§11).
+                description: "Drop the words from the panels and bars, keeping the icons — the same controls, in one column. Hover any of them for its name.",
+                checked: minimal,
+                onchange: move |v| minimal_enabled.set(v),
+            }
+            SettingChoice {
+                label: "Panels and bars while you paint",
+                // Says what the chrome does today, since two of the three options
+                // are only meaningful against it (§11).
+                description: "They float over the canvas, so they can step aside for the length of a stroke.",
+                // The one thing the last option has to say: getting them back is a
+                // gesture, and nothing on screen names it.
+                note: Some("With \u{201C}Hide after painting\u{201D}, reach for the right edge of the window to bring the panels back.".to_string()),
+                options: CHROME_CHOICES,
+                value: hiding.key(),
+                onchange: move |name: String| {
+                    chrome_hiding.set(ChromeHiding::from(name));
+                    // A stack already standing down when the choice moves off
+                    // "Hide after painting" has nothing left to bring it back —
+                    // the slice that hears the pointer is mounted on the very
+                    // state being switched off. Waking is idempotent and free
+                    // (`layout::wake_panels`), so it is done on every change
+                    // rather than on the one that needs it.
+                    crate::layout::wake_panels(state);
+                },
+            }
+            SettingToggle {
+                id: "tips",
+                label: "Show tips as you work",
+                // The thing somebody wants to know before leaving this on is
+                // whether it will interrupt them (§24). "Once each" is the answer.
+                description: "Point out where Stark differs from the apps you came from \u{2014} once each, never during a stroke, never over the canvas.",
+                checked: tips,
+                // Through the tour's own door rather than straight onto the
+                // signal: turning tips off has to take down the card that is
+                // already up, which is a fact about the tour and is kept there
+                // (`tutor::set_enabled`).
+                onchange: move |v| crate::tutor::set_enabled(state, v),
+            }
 
-                div { class: "modal-section-label", "INTERFACE" }
-                SettingToggle {
-                    id: "minimal-chrome",
-                    label: "Minimal UI",
-                    // Says which text goes and that nothing goes with it, because
-                    // "minimal" alone could mean either (§11).
-                    description: "Drop the words from the panels and bars, keeping the icons — the same controls, in one column. Hover any of them for its name.",
-                    checked: minimal,
-                    onchange: move |v| minimal_enabled.set(v),
-                }
-                SettingChoice {
-                    label: "Panels and bars while you paint",
-                    // Says what the chrome does today, since two of the three options
-                    // are only meaningful against it (§11).
-                    description: "They float over the canvas, so they can step aside for the length of a stroke.",
-                    // The one thing the last option has to say: getting them back is a
-                    // gesture, and nothing on screen names it.
-                    note: Some("With \u{201C}Hide after painting\u{201D}, reach for the right edge of the window to bring the panels back.".to_string()),
-                    options: CHROME_CHOICES,
-                    value: hiding.key(),
-                    onchange: move |name: String| {
-                        chrome_hiding.set(ChromeHiding::from(name));
-                        // A stack already standing down when the choice moves off
-                        // "Hide after painting" has nothing left to bring it back —
-                        // the slice that hears the pointer is mounted on the very
-                        // state being switched off. Waking is idempotent and free
-                        // (`layout::wake_panels`), so it is done on every change
-                        // rather than on the one that needs it.
-                        crate::layout::wake_panels(state);
-                    },
-                }
-                SettingToggle {
-                    id: "tips",
-                    label: "Show tips as you work",
-                    // The thing somebody wants to know before leaving this on is
-                    // whether it will interrupt them (§24). "Once each" is the answer.
-                    description: "Point out where Stark differs from the apps you came from \u{2014} once each, never during a stroke, never over the canvas.",
-                    checked: tips,
-                    // Through the tour's own door rather than straight onto the
-                    // signal: turning tips off has to take down the card that is
-                    // already up, which is a fact about the tour and is kept there
-                    // (`tutor::set_enabled`).
-                    onchange: move |v| crate::tutor::set_enabled(state, v),
-                }
+            div { class: "modal-section-label", "DRAGS ON THE CANVAS" }
+            // The drag table's own surface, mounted rather than written here
+            // (`drags::DragBindingSection`): what a row of it *is* — a chord,
+            // a capture, a preset — is the table's business, and this dialog's
+            // is being the place they are found. The one section whose rows
+            // are not preferences, and it wears the same row shape anyway, so
+            // the dialog still reads down one column of labels.
+            crate::drags::DragBindingSection {}
 
-                div { class: "modal-section-label", "DRAGS ON THE CANVAS" }
-                // The drag table's own surface, mounted rather than written here
-                // (`drags::DragBindingSection`): what a row of it *is* — a chord,
-                // a capture, a preset — is the table's business, and this dialog's
-                // is being the place they are found. The one section whose rows
-                // are not preferences, and it wears the same row shape anyway, so
-                // the dialog still reads down one column of labels.
-                crate::drags::DragBindingSection {}
-
-                div { class: "modal-actions",
-                    button {
-                        class: "btn btn-primary",
-                        onclick: move |_| on_close.call(()),
-                        {icon(icons::DONE)}
-                        "Done"
-                    }
+            div { class: "modal-actions",
+                button {
+                    class: "btn btn-primary",
+                    onclick: move |_| on_close.call(()),
+                    {icon(icons::DONE)}
+                    "Done"
                 }
             }
         }

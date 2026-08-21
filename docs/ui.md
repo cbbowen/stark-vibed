@@ -857,6 +857,46 @@ a panel — and because what holds for one holds for all of them by construction
 rather than by each author's care, which is the law the registries above are made
 of, one seam over.
 
+**A dialog is `widgets::Modal`.** The backdrop, the box on it, and the way out of
+it are the component's, not the call site's; a dialog writes what is *inside* the
+box and what its `on_close` does, and that is all. It went that way when the two
+paragraphs below turned out to be one rule with two halves, and the second half
+was a bug nobody could have found by reading the code.
+
+**A dialog dismisses on the press it heard, not on any click.** The obvious
+spelling — an `onclick` on the backdrop — is wrong, and wrong only under a pen,
+which is why it survived in nine dialogs for as long as it did. A menu row acts
+on `pointerdown` (dioxus-primitives' `MenubarItem`, deliberately: §11's dropdowns
+light-dismiss on blur, and acting on the press is how a row wins that race), so
+the dialog is mounted while the pointer that opened it is still down. A pen, like
+a touch, is a *direct-manipulation* device: the browser withholds the whole
+compatibility mouse sequence for the gesture and hit-tests it fresh **at the
+release point**. So `mousedown`, `mouseup` and `click` are all delivered to the
+backdrop the press itself created, and a dialog opened with a pen shut again
+before the hand was off the tablet. Under a mouse the sequence is dispatched as
+it goes and no click is generated at all once the press target has gone — the
+whole class is invisible to the device the chrome was built with.
+
+So the backdrop arms on its own `pointerdown` and a click dismisses only if it
+finds itself armed. That is not a special case for menus: it is the general rule
+that a click belongs to a press, and the press that opened the dialog belongs to
+a menu row that no longer exists. The box stops both events on the way up, which
+is what makes *armed* mean the press landed on the backdrop itself — a slider
+dragged out of a dialog and let go over the dim stops reading as dismissal too.
+Stopping them costs nothing above: the one listener that must hear every press
+whatever it lands on binds in the capture phase for exactly that reason
+(§11, `platform::on_window_pointer`).
+
+What the rule covers is the *dismissal*, and one step of the same class is left
+open: the retargeted click lands wherever the release was, so a control the
+dialog itself puts under that point would be pressed by it. Every dialog we
+raise is centred and every press that raises one comes from the rail or the
+palette above it, so the release lands on the dim — but that is geometry
+holding, not the rule. Closing it properly means the box refusing the click too,
+and the box cannot do it in the bubble phase, where a button inside it has
+already acted; it would take a capture-phase listener bound to the box's own
+element.
+
 **A dialog is capped and scrolls itself, whatever it holds.** Every
 `.modal-dialog` stops at 80% of the window and scrolls inside that, with its
 title and its buttons held to the top and the foot by `position: sticky`, so the

@@ -49,7 +49,7 @@ use crate::panels::brush::{
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::render::Renderer;
 use crate::state::{AppState, update_brush};
-use crate::widgets::Slider;
+use crate::widgets::{Modal, Slider};
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
@@ -342,233 +342,225 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     };
 
     rsx! {
-        div {
-            class: "modal-backdrop",
-            onclick: move |_| on_close.call(()),
-            div {
-                class: "modal-dialog be-dialog",
-                "data-be": "{BrushPart::Dialog.key()}",
-                onclick: move |e| e.stop_propagation(),
-
-                div { class: "be-header",
-                    div { class: "modal-title", "Brush" }
-                    button { class: "btn btn-primary", onclick: move |_| on_close.call(()),
-                        {icon(icons::DONE)}
-                        "Done"
-                    }
+        Modal { class: "be-dialog", "data-be": "{BrushPart::Dialog.key()}", on_close,
+            div { class: "be-header",
+                div { class: "modal-title", "Brush" }
+                button { class: "btn btn-primary", onclick: move |_| on_close.call(()),
+                    {icon(icons::DONE)}
+                    "Done"
                 }
+            }
 
-                // Live test canvas. First in the markup — it is what the dialog is
-                // about — but the grid puts it in the right-hand column, full
-                // height (the header spans both, the sections take the left).
-                // Draw on it to replace the test stroke; ↺ restores the default.
-                // The stroke re-renders as every setting changes.
-                div { class: "be-preview-wrap", "data-be": "{BrushPart::Preview.key()}",
-                    canvas {
-                        id: PREVIEW_CANVAS_ID,
-                        class: "brush-preview",
-                        onmounted: move |_| { spawn(init_preview(state, preview)); },
-                        onresize: move |e| {
-                            if let Ok(size) = e.get_content_box_size() {
-                                resize_preview(state, preview, size.width as u32, size.height as u32);
-                            }
-                        },
-                        onpointerdown: move |e| {
-                            if e.trigger_button() == Some(MouseButton::Primary) {
-                                capture_pointer(&e);
-                                start_preview_stroke(state, preview, &e);
-                            }
-                        },
-                        onpointermove: move |e| {
-                            if (preview.drawing)() { move_preview_stroke(preview, &e); }
-                        },
-                        onpointerup: move |_| end_preview_stroke(preview),
-                        onpointercancel: move |_| cancel_preview_stroke(state, preview),
-                    }
-                    div { class: "be-preview-hint", "Test stroke — draw here to replace it" }
-                    // The turning arrow Undo wears, because putting the preview back
-                    // *is* an undo — narrowed to the one stroke this dialog owns
-                    // (`icons::RESET`).
-                    button {
-                        class: "be-preview-reset",
-                        title: "Restore the default test stroke",
-                        onclick: move |_| reset_stroke(state, preview),
-                        {icon(icons::RESET)}
-                    }
+            // Live test canvas. First in the markup — it is what the dialog is
+            // about — but the grid puts it in the right-hand column, full
+            // height (the header spans both, the sections take the left).
+            // Draw on it to replace the test stroke; ↺ restores the default.
+            // The stroke re-renders as every setting changes.
+            div { class: "be-preview-wrap", "data-be": "{BrushPart::Preview.key()}",
+                canvas {
+                    id: PREVIEW_CANVAS_ID,
+                    class: "brush-preview",
+                    onmounted: move |_| { spawn(init_preview(state, preview)); },
+                    onresize: move |e| {
+                        if let Ok(size) = e.get_content_box_size() {
+                            resize_preview(state, preview, size.width as u32, size.height as u32);
+                        }
+                    },
+                    onpointerdown: move |e| {
+                        if e.trigger_button() == Some(MouseButton::Primary) {
+                            capture_pointer(&e);
+                            start_preview_stroke(state, preview, &e);
+                        }
+                    },
+                    onpointermove: move |e| {
+                        if (preview.drawing)() { move_preview_stroke(preview, &e); }
+                    },
+                    onpointerup: move |_| end_preview_stroke(preview),
+                    onpointercancel: move |_| cancel_preview_stroke(state, preview),
                 }
+                div { class: "be-preview-hint", "Test stroke — draw here to replace it" }
+                // The turning arrow Undo wears, because putting the preview back
+                // *is* an undo — narrowed to the one stroke this dialog owns
+                // (`icons::RESET`).
+                button {
+                    class: "be-preview-reset",
+                    title: "Restore the default test stroke",
+                    onclick: move |_| reset_stroke(state, preview),
+                    {icon(icons::RESET)}
+                }
+            }
 
-                div { class: "be-sections",
-                    Section {
-                        part: BrushPart::Tip,
-                        title: "Tip", desc: "The footprint the stroke sweeps along the path.",
-                        glyph: icons::TIP,
-                        open: tip_open,
-                        ShapeGallery {}
-                        // Orientation is what aims the footprint (§6.6), and there
-                        // are two ways for that to matter: a non-round tip has a
-                        // silhouette to turn, and **any** tip that stretches has an
-                        // axis to draw out along. A round tip that does neither is the
-                        // one case where the chips would decide nothing, so it is the
-                        // one case that does not show them. Hardness stays the
-                        // procedural tip's alone.
-                        if !is_round || brush.stretch > 0.0 {
-                            div { class: "brush-shapes",
-                                button { class: chip(brush.orientation == OrientationSource::FollowStroke),
-                                    onclick: move |_| { set_orientation(state, OrientationSource::FollowStroke); restroke(state, preview); },
-                                    "Follow stroke" }
-                                button { class: chip(brush.orientation == OrientationSource::Pen),
-                                    onclick: move |_| { set_orientation(state, OrientationSource::Pen); restroke(state, preview); },
-                                    "Pen angle" }
-                            }
-                        }
-                        {mod_slider(state, preview, mod_open, ModRow::Size, brush)}
-                        // How far the footprint is drawn out along the axis above
-                        // (§6.6). Pointed at Tilt with "Pen angle" this is the pencil:
-                        // lean the pen and the contact patch elongates along the lean,
-                        // the way a real conical tip's does. Held at a value with no
-                        // mapping it is a chisel nib, off a plain round tip.
-                        {mod_slider(state, preview, mod_open, ModRow::Stretch, brush)}
-                        // Stretching along the *tangent* is a coherent thing to ask
-                        // for — the tip lays more paint per unit travel — but it is not
-                        // the one people reach for this slider wanting, and the
-                        // difference is invisible until the pen is leaned. So say
-                        // which axis is in force rather than second-guess the setting.
-                        if brush.stretch > 0.0 && brush.orientation == OrientationSource::FollowStroke {
-                            div { class: "be-note",
-                                "Stretching along the stroke, so the mark gets heavier rather                                  than wider. Switch to Pen angle for a tip that broadens as                                  the pen leans." }
-                        }
-                        if let BrushShape::Round { hardness } = brush.shape {
-                            Slider { label: "Hardness", min: 0.0, max: 1.0, value: hardness,
-                                oninput: move |v| edit(state, preview, move |b| {
-                                    if let BrushShape::Round { hardness } = &mut b.shape {
-                                        *hardness = v;
-                                    }
-                                }) }
-                        }
-                        // The two tapers — the run over which the tip widens from a
-                        // point (§6.2). In *radii*, so a taper keeps its shape as the
-                        // brush is resized, which is why the labels say so.
-                        Slider { label: "Start taper (radii)", min: 0.0, max: MAX_TAPER, value: brush.start_taper_length,
-                            oninput: move |v| edit(state, preview, move |b| b.start_taper_length = v) }
-                        Slider { label: "End taper (radii)", min: 0.0, max: MAX_TAPER, value: brush.end_taper_length,
-                            oninput: move |v| edit(state, preview, move |b| b.end_taper_length = v) }
-                        // Stroke smoothing (§6.11): the towed tip. The one
-                        // slider here that edits no `BrushParams` field — the
-                        // stored path already embodies it, so the amount lives
-                        // with the frontend (`state.smoothing`) and rides
-                        // presets and the rack through `presets::Wearable`.
-                        // The signal is set at input rate (it is one float);
-                        // the identity `edit` is the restroke, on the same
-                        // throttle every other slider re-strokes through.
-                        Slider { label: "Smoothing", min: 0.0, max: 1.0, value: smoothing,
-                            oninput: move |v| {
-                                let mut s = state.smoothing;
-                                s.set(v);
-                                edit(state, preview, |_| {});
-                            } }
-                    }
-
-                    Section {
-                        part: BrushPart::Paint,
-                        title: "Paint", desc: "The brush's own paint: how much goes down and how far it lasts.",
-                        glyph: icons::PAINT,
-                        open: paint_open,
-                        // `add` is the tool's only source term (§6.2) and its only amount
-                        // knob: the paint height laid per unit swept optical depth.
-                        {mod_slider(state, preview, mod_open, ModRow::Flow, brush)}
-                        // How deeply the tip bites into the canvas's own tooth
-                        // (§6.4): at 0 the ground is irrelevant and the mark is solid,
-                        // and turned up the paint catches on the weave's peaks and
-                        // skips its valleys, which is what a dry brush leaves.
-                        {mod_slider(state, preview, mod_open, ModRow::Tooth, brush)}
-                        // The ground is the *document's*, not the brush's — a pencil
-                        // and a loaded brush on one canvas see one tooth — so on a
-                        // smooth canvas this knob has nothing to bite and says so,
-                        // rather than moving and changing nothing.
-                        if brush.tooth > 0.0 && surface == SurfaceId::Flat {
-                            div { class: "be-note",
-                                "This canvas is smooth, so there is no tooth to catch on. \
-                                 Pick a surface in the Lighting panel."
-                            }
-                        }
-                        // Per-unit opacity, independent of the amount laid (§6.1).
-                        // The ghost the Layers panel's opacity wears: the same question
-                        // — how much of what is under this shows through — asked of the
-                        // paint a stroke lays rather than of a whole layer.
-                        Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: brush.color[3],
-                            oninput: move |v| edit(state, preview, move |b| b.color[3] = v) }
-                        // Depletion per *radius* travelled — the stroke runs dry. 0 is
-                        // what a pen or a digital brush wants; not behind "Show more",
-                        // because it is the only knob that decides whether a tool runs
-                        // out. In radii, so this slider's top means the same thing at
-                        // every brush size (§6.2): dry two radii past the press. Quoted
-                        // per canvas px it did not — the same setting was a gentle fade
-                        // on a small tip and a stub on a large one, which is the whole
-                        // of why `radius` had to be read as something other than scale.
-                        Slider { label: "Drain", min: 0.0, max: 0.5, value: brush.drain,
-                            oninput: move |v| edit(state, preview, move |b| b.drain = v) }
-                    }
-
-                    Section {
-                        part: BrushPart::Color,
-                        title: "Color dynamics", desc: "The color wanders across the brush and along the stroke, following a noise field.",
-                        glyph: icons::COLOR,
-                        open: color_open,
+            div { class: "be-sections",
+                Section {
+                    part: BrushPart::Tip,
+                    title: "Tip", desc: "The footprint the stroke sweeps along the path.",
+                    glyph: icons::TIP,
+                    open: tip_open,
+                    ShapeGallery {}
+                    // Orientation is what aims the footprint (§6.6), and there
+                    // are two ways for that to matter: a non-round tip has a
+                    // silhouette to turn, and **any** tip that stretches has an
+                    // axis to draw out along. A round tip that does neither is the
+                    // one case where the chips would decide nothing, so it is the
+                    // one case that does not show them. Hardness stays the
+                    // procedural tip's alone.
+                    if !is_round || brush.stretch > 0.0 {
                         div { class: "brush-shapes",
-                            button { class: chip(cd.noise == NoiseKind::Simplex),
-                                onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::Simplex),
-                                "Simplex" }
-                            button { class: chip(cd.noise == NoiseKind::White),
-                                onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::White),
-                                "White" }
-                            button { class: chip(cd.noise == NoiseKind::Voronoi),
-                                onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::Voronoi),
-                                "Voronoi" }
-                            button { class: chip(cd.noise == NoiseKind::Mosaic),
-                                onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::Mosaic),
-                                "Mosaic" }
-                        }
-                        // How far each color channel wanders (± in the channel's units).
-                        for i in 0..3 {
-                            Slider { label: ch_labels[i].to_string(), min: 0.0, max: 0.5, value: cd.amplitude[i],
-                                oninput: move |v| edit(state, preview, move |b| b.color_dynamics.amplitude[i] = v) }
-                        }
-                        // How fast it wanders along each lookup axis; the modulation
-                        // sliders live only while some channel is active (no effect at 0).
-                        if cd.amplitude.iter().any(|a| *a > 0.0) {
-                            div { class: "be-sub",
-                                Slider { label: "Scale \u{2192} across stroke", min: 0.0, max: 8.0, value: cd.frequency[0],
-                                    oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[0] = v) }
-                                Slider { label: "Scale \u{2192} along stroke", min: 0.0, max: 8.0, value: cd.frequency[1],
-                                    oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[1] = v) }
-                            }
+                            button { class: chip(brush.orientation == OrientationSource::FollowStroke),
+                                onclick: move |_| { set_orientation(state, OrientationSource::FollowStroke); restroke(state, preview); },
+                                "Follow stroke" }
+                            button { class: chip(brush.orientation == OrientationSource::Pen),
+                                onclick: move |_| { set_orientation(state, OrientationSource::Pen); restroke(state, preview); },
+                                "Pen angle" }
                         }
                     }
-
-                    Section {
-                        part: BrushPart::Pickup,
-                        title: "Pickup", desc: "Canvas paint on the move — smudge, knife, eraser, blur.",
-                        glyph: icons::PICKUP,
-                        open: pickup_open,
-                        // The three axes a palette knife is built out of, and the three
-                        // most worth mapping onto the pen: a knife that lifts with
-                        // pressure and lays back with tilt is those two chips
-                        // (§6.2).
-                        {mod_slider(state, preview, mod_open, ModRow::Lift, brush)}
-                        {mod_slider(state, preview, mod_open, ModRow::Deposit, brush)}
-                        // The lateral axis: the paint under the tip diffuses towards its
-                        // neighbours (§6.2). Alone it is a blur brush; under `add` it
-                        // melts the ridges of the strokes being painted over. Capped at
-                        // 0.95 like the two vertical rates — the λ diverges at 1.
-                        {mod_slider(state, preview, mod_open, ModRow::Bleed, brush)}
-                        More { open: pickup_more,
-                            // The finite glob pre-loaded on the tool (palette knife, §6.2).
-                            Slider { label: "Charge", min: 0.0, max: 2.0, value: d.charge,
-                                oninput: move |v| edit(state, preview, move |b| b.dynamics.charge = v) }
-                        }
+                    {mod_slider(state, preview, mod_open, ModRow::Size, brush)}
+                    // How far the footprint is drawn out along the axis above
+                    // (§6.6). Pointed at Tilt with "Pen angle" this is the pencil:
+                    // lean the pen and the contact patch elongates along the lean,
+                    // the way a real conical tip's does. Held at a value with no
+                    // mapping it is a chisel nib, off a plain round tip.
+                    {mod_slider(state, preview, mod_open, ModRow::Stretch, brush)}
+                    // Stretching along the *tangent* is a coherent thing to ask
+                    // for — the tip lays more paint per unit travel — but it is not
+                    // the one people reach for this slider wanting, and the
+                    // difference is invisible until the pen is leaned. So say
+                    // which axis is in force rather than second-guess the setting.
+                    if brush.stretch > 0.0 && brush.orientation == OrientationSource::FollowStroke {
+                        div { class: "be-note",
+                            "Stretching along the stroke, so the mark gets heavier rather                                  than wider. Switch to Pen angle for a tip that broadens as                                  the pen leans." }
                     }
-
+                    if let BrushShape::Round { hardness } = brush.shape {
+                        Slider { label: "Hardness", min: 0.0, max: 1.0, value: hardness,
+                            oninput: move |v| edit(state, preview, move |b| {
+                                if let BrushShape::Round { hardness } = &mut b.shape {
+                                    *hardness = v;
+                                }
+                            }) }
+                    }
+                    // The two tapers — the run over which the tip widens from a
+                    // point (§6.2). In *radii*, so a taper keeps its shape as the
+                    // brush is resized, which is why the labels say so.
+                    Slider { label: "Start taper (radii)", min: 0.0, max: MAX_TAPER, value: brush.start_taper_length,
+                        oninput: move |v| edit(state, preview, move |b| b.start_taper_length = v) }
+                    Slider { label: "End taper (radii)", min: 0.0, max: MAX_TAPER, value: brush.end_taper_length,
+                        oninput: move |v| edit(state, preview, move |b| b.end_taper_length = v) }
+                    // Stroke smoothing (§6.11): the towed tip. The one
+                    // slider here that edits no `BrushParams` field — the
+                    // stored path already embodies it, so the amount lives
+                    // with the frontend (`state.smoothing`) and rides
+                    // presets and the rack through `presets::Wearable`.
+                    // The signal is set at input rate (it is one float);
+                    // the identity `edit` is the restroke, on the same
+                    // throttle every other slider re-strokes through.
+                    Slider { label: "Smoothing", min: 0.0, max: 1.0, value: smoothing,
+                        oninput: move |v| {
+                            let mut s = state.smoothing;
+                            s.set(v);
+                            edit(state, preview, |_| {});
+                        } }
                 }
+
+                Section {
+                    part: BrushPart::Paint,
+                    title: "Paint", desc: "The brush's own paint: how much goes down and how far it lasts.",
+                    glyph: icons::PAINT,
+                    open: paint_open,
+                    // `add` is the tool's only source term (§6.2) and its only amount
+                    // knob: the paint height laid per unit swept optical depth.
+                    {mod_slider(state, preview, mod_open, ModRow::Flow, brush)}
+                    // How deeply the tip bites into the canvas's own tooth
+                    // (§6.4): at 0 the ground is irrelevant and the mark is solid,
+                    // and turned up the paint catches on the weave's peaks and
+                    // skips its valleys, which is what a dry brush leaves.
+                    {mod_slider(state, preview, mod_open, ModRow::Tooth, brush)}
+                    // The ground is the *document's*, not the brush's — a pencil
+                    // and a loaded brush on one canvas see one tooth — so on a
+                    // smooth canvas this knob has nothing to bite and says so,
+                    // rather than moving and changing nothing.
+                    if brush.tooth > 0.0 && surface == SurfaceId::Flat {
+                        div { class: "be-note",
+                            "This canvas is smooth, so there is no tooth to catch on. \
+                             Pick a surface in the Lighting panel."
+                        }
+                    }
+                    // Per-unit opacity, independent of the amount laid (§6.1).
+                    // The ghost the Layers panel's opacity wears: the same question
+                    // — how much of what is under this shows through — asked of the
+                    // paint a stroke lays rather than of a whole layer.
+                    Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: brush.color[3],
+                        oninput: move |v| edit(state, preview, move |b| b.color[3] = v) }
+                    // Depletion per *radius* travelled — the stroke runs dry. 0 is
+                    // what a pen or a digital brush wants; not behind "Show more",
+                    // because it is the only knob that decides whether a tool runs
+                    // out. In radii, so this slider's top means the same thing at
+                    // every brush size (§6.2): dry two radii past the press. Quoted
+                    // per canvas px it did not — the same setting was a gentle fade
+                    // on a small tip and a stub on a large one, which is the whole
+                    // of why `radius` had to be read as something other than scale.
+                    Slider { label: "Drain", min: 0.0, max: 0.5, value: brush.drain,
+                        oninput: move |v| edit(state, preview, move |b| b.drain = v) }
+                }
+
+                Section {
+                    part: BrushPart::Color,
+                    title: "Color dynamics", desc: "The color wanders across the brush and along the stroke, following a noise field.",
+                    glyph: icons::COLOR,
+                    open: color_open,
+                    div { class: "brush-shapes",
+                        button { class: chip(cd.noise == NoiseKind::Simplex),
+                            onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::Simplex),
+                            "Simplex" }
+                        button { class: chip(cd.noise == NoiseKind::White),
+                            onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::White),
+                            "White" }
+                        button { class: chip(cd.noise == NoiseKind::Voronoi),
+                            onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::Voronoi),
+                            "Voronoi" }
+                        button { class: chip(cd.noise == NoiseKind::Mosaic),
+                            onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::Mosaic),
+                            "Mosaic" }
+                    }
+                    // How far each color channel wanders (± in the channel's units).
+                    for i in 0..3 {
+                        Slider { label: ch_labels[i].to_string(), min: 0.0, max: 0.5, value: cd.amplitude[i],
+                            oninput: move |v| edit(state, preview, move |b| b.color_dynamics.amplitude[i] = v) }
+                    }
+                    // How fast it wanders along each lookup axis; the modulation
+                    // sliders live only while some channel is active (no effect at 0).
+                    if cd.amplitude.iter().any(|a| *a > 0.0) {
+                        div { class: "be-sub",
+                            Slider { label: "Scale \u{2192} across stroke", min: 0.0, max: 8.0, value: cd.frequency[0],
+                                oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[0] = v) }
+                            Slider { label: "Scale \u{2192} along stroke", min: 0.0, max: 8.0, value: cd.frequency[1],
+                                oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[1] = v) }
+                        }
+                    }
+                }
+
+                Section {
+                    part: BrushPart::Pickup,
+                    title: "Pickup", desc: "Canvas paint on the move — smudge, knife, eraser, blur.",
+                    glyph: icons::PICKUP,
+                    open: pickup_open,
+                    // The three axes a palette knife is built out of, and the three
+                    // most worth mapping onto the pen: a knife that lifts with
+                    // pressure and lays back with tilt is those two chips
+                    // (§6.2).
+                    {mod_slider(state, preview, mod_open, ModRow::Lift, brush)}
+                    {mod_slider(state, preview, mod_open, ModRow::Deposit, brush)}
+                    // The lateral axis: the paint under the tip diffuses towards its
+                    // neighbours (§6.2). Alone it is a blur brush; under `add` it
+                    // melts the ridges of the strokes being painted over. Capped at
+                    // 0.95 like the two vertical rates — the λ diverges at 1.
+                    {mod_slider(state, preview, mod_open, ModRow::Bleed, brush)}
+                    More { open: pickup_more,
+                        // The finite glob pre-loaded on the tool (palette knife, §6.2).
+                        Slider { label: "Charge", min: 0.0, max: 2.0, value: d.charge,
+                            oninput: move |v| edit(state, preview, move |b| b.dynamics.charge = v) }
+                    }
+                }
+
             }
         }
     }

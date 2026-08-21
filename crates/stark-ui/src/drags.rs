@@ -85,6 +85,7 @@ use crate::icons::{self, icon};
 use crate::input::{accel, is_contact};
 use crate::state::AppState;
 use crate::storage::{Entry, Store};
+use crate::widgets::Modal;
 
 /// The modifier half of a drag chord — and, held in
 /// [`AppState::held_mods`](crate::state::AppState::held_mods), the modifiers
@@ -956,49 +957,42 @@ pub fn DragPresetModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
 
     rsx! {
-        div {
-            class: "modal-backdrop",
-            onclick: move |_| on_close.call(()),
-            div {
-                // Wide for the settings dialog's reason: rows of three
-                // drags each, and at the standard width every line of them wraps.
-                class: "modal-dialog modal-wide",
-                onclick: move |e| e.stop_propagation(),
+        // Wide for the settings dialog's reason: rows of three
+        // drags each, and at the standard width every line of them wraps.
+        Modal { class: "modal-wide", on_close,
+            div { class: "modal-title", "Drags on the canvas" }
+            div { class: "modal-subtitle",
+                "You held a modifier and pressed, and Stark has nothing bound to that. If \
+                 you have come from another app, start from the drags you already know."
+            }
 
-                div { class: "modal-title", "Drags on the canvas" }
-                div { class: "modal-subtitle",
-                    "You held a modifier and pressed, and Stark has nothing bound to that. If \
-                     you have come from another app, start from the drags you already know."
-                }
-
-                div { class: "drag-preset-list",
-                    for preset in DragPreset::ALL.iter().copied() {
-                        button {
-                            key: "{preset:?}",
-                            class: "drag-preset",
-                            r#type: "button",
-                            onclick: move |_| {
-                                set_preset(state, preset);
-                                on_close.call(());
-                            },
-                            div { class: "drag-preset-head",
-                                span { class: "drag-preset-name", "{preset.name()}" }
-                                span { class: "drag-preset-blurb", "{preset.blurb()}" }
-                            }
-                            div { class: "drag-preset-rows",
-                                for action in DragAction::ALL.iter().copied() {
-                                    div { key: "{action:?}", class: "drag-preset-row",
-                                        span { class: "drag-preset-act", "{action.word()}" }
-                                        span { class: "menu-shortcut",
-                                            match preset.chord(action) {
-                                                Some(chord) => chord_label(chord),
-                                                // An act this app reaches some
-                                                // other way. Said with a dash
-                                                // rather than left blank, so a
-                                                // short card reads as a choice
-                                                // and not as a card cut off.
-                                                None => "\u{2014}".to_string(),
-                                            }
+            div { class: "drag-preset-list",
+                for preset in DragPreset::ALL.iter().copied() {
+                    button {
+                        key: "{preset:?}",
+                        class: "drag-preset",
+                        r#type: "button",
+                        onclick: move |_| {
+                            set_preset(state, preset);
+                            on_close.call(());
+                        },
+                        div { class: "drag-preset-head",
+                            span { class: "drag-preset-name", "{preset.name()}" }
+                            span { class: "drag-preset-blurb", "{preset.blurb()}" }
+                        }
+                        div { class: "drag-preset-rows",
+                            for action in DragAction::ALL.iter().copied() {
+                                div { key: "{action:?}", class: "drag-preset-row",
+                                    span { class: "drag-preset-act", "{action.word()}" }
+                                    span { class: "menu-shortcut",
+                                        match preset.chord(action) {
+                                            Some(chord) => chord_label(chord),
+                                            // An act this app reaches some
+                                            // other way. Said with a dash
+                                            // rather than left blank, so a
+                                            // short card reads as a choice
+                                            // and not as a card cut off.
+                                            None => "\u{2014}".to_string(),
                                         }
                                     }
                                 }
@@ -1006,19 +1000,19 @@ pub fn DragPresetModal(on_close: EventHandler<()>) -> Element {
                         }
                     }
                 }
+            }
 
-                div { class: "drag-offer-note",
-                    "Whatever you pick, \u{2699} Settings lists these three drags and can \
-                     change any of them at any time."
-                }
+            div { class: "drag-offer-note",
+                "Whatever you pick, \u{2699} Settings lists these three drags and can \
+                 change any of them at any time."
+            }
 
-                div { class: "modal-actions",
-                    button {
-                        class: "btn btn-primary",
-                        onclick: move |_| on_close.call(()),
-                        {icon(icons::DONE)}
-                        "Not now"
-                    }
+            div { class: "modal-actions",
+                button {
+                    class: "btn btn-primary",
+                    onclick: move |_| on_close.call(()),
+                    {icon(icons::DONE)}
+                    "Not now"
                 }
             }
         }

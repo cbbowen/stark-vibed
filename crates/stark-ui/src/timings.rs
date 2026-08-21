@@ -28,6 +28,7 @@ use dioxus::prelude::*;
 use stark_engine::timing::{self, Phase};
 
 use crate::icons::{self, icon};
+use crate::widgets::Modal;
 
 /// How often the open dialog re-reads the histograms.
 ///
@@ -154,24 +155,17 @@ pub fn TimingModal(on_close: EventHandler<()>) -> Element {
 #[component]
 fn Shell(on_close: EventHandler<()>, children: Element) -> Element {
     rsx! {
-        div {
-            class: "modal-backdrop",
-            onclick: move |_| on_close.call(()),
-            div {
-                // Wide, for Credits' reason turned around: that dialog is wide to
-                // respect text it must not reflow, this one to fit six numeric
-                // columns without any of them wrapping.
-                class: "modal-dialog modal-wide",
-                onclick: move |e| e.stop_propagation(),
-
-                div { class: "modal-title", "Timing Stats" }
-                div { class: "modal-subtitle",
-                    "Where this session's time has gone, measured in this browser. \
-                     Every figure is CPU time to prepare the work — what the GPU then \
-                     spends executing it is not measurable from here."
-                }
-                {children}
+        // Wide, for Credits' reason turned around: that dialog is wide to
+        // respect text it must not reflow, this one to fit six numeric
+        // columns without any of them wrapping.
+        Modal { class: "modal-wide", on_close,
+            div { class: "modal-title", "Timing Stats" }
+            div { class: "modal-subtitle",
+                "Where this session's time has gone, measured in this browser. \
+                 Every figure is CPU time to prepare the work — what the GPU then \
+                 spends executing it is not measurable from here."
             }
+            {children}
         }
     }
 }

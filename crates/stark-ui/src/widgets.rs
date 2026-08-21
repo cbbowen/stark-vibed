@@ -1,4 +1,4 @@
-//! Small reusable controls shared by the panels and the brush editor.
+//! Small reusable controls shared by the panels, the dialogs and the brush editor.
 
 use dioxus::prelude::*;
 
@@ -78,6 +78,72 @@ pub fn Slider(
                 oninput: move |e| {
                     if let Ok(v) = e.value().parse::<f32>() { oninput.call(v); }
                 },
+            }
+        }
+    }
+}
+
+/// The shell every dialog floats in — the dimmed backdrop, the box on it, and
+/// the one place the press-outside-to-dismiss rule is written (§25.7).
+///
+/// `class` is the box's extra classes (`modal-wide`, `be-dialog`) and the spread
+/// attributes land on the box too, so a dialog the tutor anchors to keeps its own
+/// mark. `on_close` is an `Option` because one dialog has no way out: the
+/// GPU-failure notice ([`crate::failure`]) covers a canvas that cannot be drawn
+/// any more, and there is nothing behind it to go back to.
+///
+/// **Why the rule cannot be a bare `onclick` on the backdrop.** A menu row acts on
+/// `pointerdown` (dioxus-primitives' `MenubarItem` does, deliberately — see
+/// `panels::filter::AddFilterButton` for the race it wins), so a dialog is mounted
+/// while the pointer that opened it is still down. A pen, like a touch, is a
+/// *direct-manipulation* device: the browser withholds the whole compatibility
+/// mouse sequence for the gesture and hit-tests it fresh **at the release point** —
+/// so the `mousedown`, `mouseup` and `click` of the very press that opened the
+/// dialog are all delivered to the backdrop that press created. A backdrop
+/// dismissing on any click dismisses itself in the act of opening, which is what
+/// every dialog in the app did under a pen. A mouse is dispatched as it goes and
+/// generates no click at all when its press target has been removed, so this was
+/// invisible to every mouse the app was built with.
+///
+/// The rule that rules the class out: **a click dismisses only if this backdrop
+/// also heard the press it belongs to.** `pointerdown` is the one event in that
+/// deferred burst the browser does not re-target — it had already been delivered,
+/// to a menu row, before the backdrop existed. The box stops both events on the
+/// way up, which is what makes "armed" mean the press landed on the *backdrop*: a
+/// slider dragged out of the dialog and let go over the dim stops reading as
+/// dismissal too. Stopping them costs nothing above: the one listener that must
+/// hear every press whatever it lands on binds in the capture phase for exactly
+/// that reason ([`crate::platform::on_window_pointer`]).
+#[component]
+pub fn Modal(
+    #[props(default = String::new())] class: String,
+    on_close: Option<EventHandler<()>>,
+    children: Element,
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
+) -> Element {
+    let mut armed = use_signal(|| false);
+    rsx! {
+        div {
+            class: "modal-backdrop",
+            onpointerdown: move |_| armed.set(true),
+            // Terminal, like every other disarm: a grip that hears a cancel is
+            // over, and a stale arm would be spent on whatever click came next.
+            onpointercancel: move |_| armed.set(false),
+            onclick: move |_| {
+                // Bound, not read in the `if` condition: the read would still be
+                // held through the body, which writes the same signal.
+                let heard_the_press = armed();
+                armed.set(false);
+                if let (true, Some(on_close)) = (heard_the_press, on_close) {
+                    on_close.call(());
+                }
+            },
+            div {
+                class: "modal-dialog {class}",
+                onpointerdown: move |e| e.stop_propagation(),
+                onclick: move |e| e.stop_propagation(),
+                ..attributes,
+                {children}
             }
         }
     }

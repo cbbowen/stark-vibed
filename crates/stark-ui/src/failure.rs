@@ -24,6 +24,7 @@ use dioxus::prelude::*;
 
 use crate::icons::{self, icon};
 use crate::state::AppState;
+use crate::widgets::Modal;
 
 /// The report, mounted for as long as the projection carries a failure — which is
 /// forever, since a failure is never cleared and the device is never rebuilt.
@@ -56,33 +57,30 @@ pub fn GpuFailureModal() -> Element {
     let mut saved = use_signal(|| false);
 
     rsx! {
-        div {
-            // No `onclick` to dismiss, unlike every other backdrop in the app.
-            class: "modal-backdrop",
-            div {
-                class: "modal-dialog",
-                div { class: "modal-title", "The GPU stopped responding" }
-                div { class: "modal-subtitle",
-                    "The canvas can't be drawn any more. Your painting is safe \u{2014} \
-                     Stark stores it as the list of actions that made it, not as pixels, \
-                     so saving now loses nothing. Reload the page to start again."
-                }
+        // No `on_close`, unlike every other dialog in the app: there is nothing
+        // behind this one to go back to.
+        Modal {
+            div { class: "modal-title", "The GPU stopped responding" }
+            div { class: "modal-subtitle",
+                "The canvas can't be drawn any more. Your painting is safe \u{2014} \
+                 Stark stores it as the list of actions that made it, not as pixels, \
+                 so saving now loses nothing. Reload the page to start again."
+            }
 
-                // What the driver said. Small and dim: nothing branches on it and
-                // most artists will not read it, but it is the only thing that makes
-                // a bug report about this actionable.
-                div { class: "failure-detail", "{failure}" }
+            // What the driver said. Small and dim: nothing branches on it and
+            // most artists will not read it, but it is the only thing that makes
+            // a bug report about this actionable.
+            div { class: "failure-detail", "{failure}" }
 
-                div { class: "modal-actions",
-                    button {
-                        class: "btn btn-primary",
-                        onclick: move |_| {
-                            crate::files::save_document(state);
-                            saved.set(true);
-                        },
-                        {icon(icons::SAVE)}
-                        if saved() { "Save again" } else { "Save the painting" }
-                    }
+            div { class: "modal-actions",
+                button {
+                    class: "btn btn-primary",
+                    onclick: move |_| {
+                        crate::files::save_document(state);
+                        saved.set(true);
+                    },
+                    {icon(icons::SAVE)}
+                    if saved() { "Save again" } else { "Save the painting" }
                 }
             }
         }

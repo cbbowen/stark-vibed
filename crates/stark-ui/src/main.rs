@@ -82,6 +82,7 @@ use slots::SlotOverlay;
 use stark_engine::command::{PeerCommand, ViewCommand};
 use stark_model::ColorSpaceId;
 use state::{AppState, dispatch_quiet, resize, update_brush, use_obs};
+use widgets::Modal;
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
 /// every component class referenced below. Linked once by [`app`] so the rsx!
@@ -1543,42 +1544,34 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
     };
 
     rsx! {
-        // Dimmed backdrop; click outside the dialog to dismiss.
-        div {
-            class: "modal-backdrop",
-            onclick: move |_| on_close.call(()),
-            div {
-                class: "modal-dialog",
-                onclick: move |e| e.stop_propagation(),
+        Modal { on_close,
+            div { class: "modal-title", "New Document" }
+            div { class: "modal-subtitle", "Starting a new document replaces the current canvas." }
 
-                div { class: "modal-title", "New Document" }
-                div { class: "modal-subtitle", "Starting a new document replaces the current canvas." }
+            div { class: "modal-section-label", "COLOR SPACE" }
+            {card(ColorSpaceId::Oklab, "Oklab", "Perceptual color with smooth, predictable blending. The standard choice for digital painting.")}
+            // Offered only where the engine carries it. `ColorSpaceId::Mixbox` is
+            // a variant in every build — the save format's enum indices cannot
+            // depend on a feature (§8) — so the id below still compiles; what a
+            // build without the `mixbox` feature lacks is the space behind it, and
+            // `ColorSpaceId::available` is the same question this asks.
+            {cfg!(feature = "mixbox").then(|| card(ColorSpaceId::Mixbox, "Mixbox", "Realistic pigment mixing (Mixbox): blue + yellow makes green, like real paint. For natural media."))}
 
-                div { class: "modal-section-label", "COLOR SPACE" }
-                {card(ColorSpaceId::Oklab, "Oklab", "Perceptual color with smooth, predictable blending. The standard choice for digital painting.")}
-                // Offered only where the engine carries it. `ColorSpaceId::Mixbox` is
-                // a variant in every build — the save format's enum indices cannot
-                // depend on a feature (§8) — so the id below still compiles; what a
-                // build without the `mixbox` feature lacks is the space behind it, and
-                // `ColorSpaceId::available` is the same question this asks.
-                {cfg!(feature = "mixbox").then(|| card(ColorSpaceId::Mixbox, "Mixbox", "Realistic pigment mixing (Mixbox): blue + yellow makes green, like real paint. For natural media."))}
+            div { class: "modal-section-label", "SURFACE" }
+            for g in grounds::GROUNDS.iter() {
+                {scard(g)}
+            }
 
-                div { class: "modal-section-label", "SURFACE" }
-                for g in grounds::GROUNDS.iter() {
-                    {scard(g)}
+            div { class: "modal-actions",
+                button {
+                    class: "btn btn-secondary",
+                    onclick: move |_| on_close.call(()),
+                    "Cancel"
                 }
-
-                div { class: "modal-actions",
-                    button {
-                        class: "btn btn-secondary",
-                        onclick: move |_| on_close.call(()),
-                        "Cancel"
-                    }
-                    button {
-                        class: "btn btn-primary",
-                        onclick: move |_| new_document(state, choice(), surf_choice(), on_close),
-                        "Create"
-                    }
+                button {
+                    class: "btn btn-primary",
+                    onclick: move |_| new_document(state, choice(), surf_choice(), on_close),
+                    "Create"
                 }
             }
         }

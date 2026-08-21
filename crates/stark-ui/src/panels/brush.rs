@@ -8,7 +8,7 @@ use crate::icons::{self, icon};
 use crate::platform::select_all;
 use crate::presets;
 use crate::state::{AppState, update_brush};
-use crate::widgets::{CommandButton, Slider};
+use crate::widgets::{CommandButton, Modal, Slider};
 use stark_model::document::{BrushShape, OrientationSource};
 
 /// The smallest brush radius (`BrushParams::radius`). A tip finer than a canvas
@@ -237,62 +237,55 @@ pub fn PresetSaveModal(on_close: EventHandler<()>) -> Element {
     };
 
     rsx! {
-        div {
-            class: "modal-backdrop",
-            onclick: move |_| on_close.call(()),
-            div {
-                class: "modal-dialog",
-                onclick: move |e| e.stop_propagation(),
+        Modal { on_close,
+            div { class: "modal-title", "Save Preset" }
+            div { class: "modal-subtitle",
+                "Keeps the whole brush — size, shape, dynamics, taper — under a name. Everything but the color."
+            }
 
-                div { class: "modal-title", "Save Preset" }
-                div { class: "modal-subtitle",
-                    "Keeps the whole brush — size, shape, dynamics, taper — under a name. Everything but the color."
+            input {
+                class: "modal-input",
+                r#type: "text",
+                placeholder: "Preset name",
+                value: "{name}",
+                // Focused and selected as it appears: the dialog exists to take one
+                // word, and the proposed name is there to be typed over. `onmounted`
+                // rather than `autofocus`, which the browser does not honour for an
+                // element inserted after load (see `layer::LayerRow`).
+                onmounted: move |e: Event<MountedData>| {
+                    spawn(async move {
+                        let _ = e.set_focus(true).await;
+                        select_all(&e);
+                    });
+                },
+                oninput: move |e| name.set(e.value()),
+                onkeydown: move |e| match e.key() {
+                    Key::Enter => save(),
+                    Key::Escape => on_close.call(()),
+                    _ => {}
+                },
+            }
+            // Always mounted, so the dialog does not change height under the hand
+            // the moment the typed name lands on one the library already has.
+            div { class: if builtin { "modal-hint refused" } else { "modal-hint" },
+                if builtin {
+                    "\u{201C}{trimmed}\u{201D} is one of the app's own presets, which it keeps up to date. Pick another name."
+                } else if replaces {
+                    "Replaces the preset already called \u{201C}{trimmed}\u{201D}."
                 }
+            }
 
-                input {
-                    class: "modal-input",
-                    r#type: "text",
-                    placeholder: "Preset name",
-                    value: "{name}",
-                    // Focused and selected as it appears: the dialog exists to take one
-                    // word, and the proposed name is there to be typed over. `onmounted`
-                    // rather than `autofocus`, which the browser does not honour for an
-                    // element inserted after load (see `layer::LayerRow`).
-                    onmounted: move |e: Event<MountedData>| {
-                        spawn(async move {
-                            let _ = e.set_focus(true).await;
-                            select_all(&e);
-                        });
-                    },
-                    oninput: move |e| name.set(e.value()),
-                    onkeydown: move |e| match e.key() {
-                        Key::Enter => save(),
-                        Key::Escape => on_close.call(()),
-                        _ => {}
-                    },
+            div { class: "modal-actions",
+                button {
+                    class: "btn btn-secondary",
+                    onclick: move |_| on_close.call(()),
+                    "Cancel"
                 }
-                // Always mounted, so the dialog does not change height under the hand
-                // the moment the typed name lands on one the library already has.
-                div { class: if builtin { "modal-hint refused" } else { "modal-hint" },
-                    if builtin {
-                        "\u{201C}{trimmed}\u{201D} is one of the app's own presets, which it keeps up to date. Pick another name."
-                    } else if replaces {
-                        "Replaces the preset already called \u{201C}{trimmed}\u{201D}."
-                    }
-                }
-
-                div { class: "modal-actions",
-                    button {
-                        class: "btn btn-secondary",
-                        onclick: move |_| on_close.call(()),
-                        "Cancel"
-                    }
-                    button {
-                        class: "btn btn-primary",
-                        disabled: trimmed.is_empty() || builtin,
-                        onclick: move |_| save(),
-                        if replaces { "Replace" } else { "Save" }
-                    }
+                button {
+                    class: "btn btn-primary",
+                    disabled: trimmed.is_empty() || builtin,
+                    onclick: move |_| save(),
+                    if replaces { "Replace" } else { "Save" }
                 }
             }
         }

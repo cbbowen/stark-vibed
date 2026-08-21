@@ -14,6 +14,7 @@
 use dioxus::prelude::*;
 
 use crate::icons::{self, icon};
+use crate::widgets::Modal;
 
 /// Phosphor's licence, read from the copy vendored beside the icons it covers.
 ///
@@ -32,101 +33,94 @@ const IROH_LICENSE: &str = include_str!("../assets/licenses/LICENSE-iroh");
 #[component]
 pub fn CreditsModal(on_close: EventHandler<()>) -> Element {
     rsx! {
-        div {
-            class: "modal-backdrop",
-            onclick: move |_| on_close.call(()),
-            div {
-                // Wider than the other dialogs: a licence has its own line breaks and
-                // this is the width that respects them. Narrower and every paragraph
-                // reflows into a ragged column — the text would still be exact, but it
-                // would read as something we retyped rather than as the notice it is.
-                class: "modal-dialog modal-wide",
-                onclick: move |e| e.stop_propagation(),
+        // Wider than the other dialogs: a licence has its own line breaks and
+        // this is the width that respects them. Narrower and every paragraph
+        // reflows into a ragged column — the text would still be exact, but it
+        // would read as something we retyped rather than as the notice it is.
+        Modal { class: "modal-wide", on_close,
+            div { class: "modal-title", "Credits" }
+            div { class: "modal-subtitle",
+                "Other people's work that Stark is built on, and the terms it comes under."
+            }
 
-                div { class: "modal-title", "Credits" }
-                div { class: "modal-subtitle",
-                    "Other people's work that Stark is built on, and the terms it comes under."
+            div { class: "modal-section-label", "SOFTWARE" }
+            Credit {
+                name: "Björn Ottosson",
+                url: "https://bottosson.github.io/posts/oklab",
+                description: "Oklab color space.",
+                license: "Public domain",
+            }
+            // Only where the code it attributes is actually in the build.
+            // This is the credit that has to track the `mixbox` feature most
+            // exactly of the three places that mention it: a build compiled
+            // without it contains no Mixbox code, and claiming a
+            // non-commercial licence it is not bound by would be its own kind
+            // of wrong.
+            {cfg!(feature = "mixbox").then(|| rsx! {
+                Credit {
+                    name: "Secret Weapons",
+                    url: "https://scrtwpns.com/mixbox",
+                    description: "Mixbox color mixing.",
+                    license: "Creative Commons Attribution-NonCommercial 4.0 International Public License",
                 }
+            })}
+            Credit {
+                name: "N0",
+                url: "https://www.iroh.computer",
+                description: "Iroh peer-to-peer networking stack.",
+                license: IROH_LICENSE,
+            }
+            Credit {
+                name: "Tailscale",
+                url: "https://tailscale.com",
+                description: "Parts of Iroh's socket implementation.",
+                license: IROH_SOCKET_LICENSE,
+            }
 
-                div { class: "modal-section-label", "SOFTWARE" }
-                Credit {
-                    name: "Björn Ottosson",
-                    url: "https://bottosson.github.io/posts/oklab",
-                    description: "Oklab color space.",
-                    license: "Public domain",
-                }
-                // Only where the code it attributes is actually in the build.
-                // This is the credit that has to track the `mixbox` feature most
-                // exactly of the three places that mention it: a build compiled
-                // without it contains no Mixbox code, and claiming a
-                // non-commercial licence it is not bound by would be its own kind
-                // of wrong.
-                {cfg!(feature = "mixbox").then(|| rsx! {
-                    Credit {
-                        name: "Secret Weapons",
-                        url: "https://scrtwpns.com/mixbox",
-                        description: "Mixbox color mixing.",
-                        license: "Creative Commons Attribution-NonCommercial 4.0 International Public License",
-                    }
-                })}
-                Credit {
-                    name: "N0",
-                    url: "https://www.iroh.computer",
-                    description: "Iroh peer-to-peer networking stack.",
-                    license: IROH_LICENSE,
-                }
-                Credit {
-                    name: "Tailscale",
-                    url: "https://tailscale.com",
-                    description: "Parts of Iroh's socket implementation.",
-                    license: IROH_SOCKET_LICENSE,
-                }
+            hr {}
 
-                hr {}
+            div { class: "modal-section-label", "ICONS" }
+            Credit {
+                name: "Phosphor Icons",
+                url: "https://phosphoricons.com",
+                description: "Every glyph in Stark's panels, bars and menus.",
+                license: PHOSPHOR_LICENSE,
+            }
 
-                div { class: "modal-section-label", "ICONS" }
-                Credit {
-                    name: "Phosphor Icons",
-                    url: "https://phosphoricons.com",
-                    description: "Every glyph in Stark's panels, bars and menus.",
-                    license: PHOSPHOR_LICENSE,
-                }
+            hr {}
 
-                hr {}
+            div { class: "modal-section-label", "ENVIRONMENTS" }
+            Credit {
+                name: "Dimitrios Savva and Greg Zaal",
+                url: "https://polyhaven.com/a/ferndale_studio_11",
+                description: "Ferndale lighting environments.",
+                license: "CC0 1.0 Universal",
+            }
+            Credit {
+                name: "Greg Zaal and Jarod Guest",
+                url: "https://polyhaven.com/a/qwantani_dusk_2_puresky",
+                description: "Qwantani lighting environments.",
+                license: "CC0 1.0 Universal",
+            }
+            Credit {
+                name: "Greg Zaal and Jenelle van Heerden",
+                url: "https://polyhaven.com/a/bloem_hill_01",
+                description: "Bloem Hill lighting environments.",
+                license: "CC0 1.0 Universal",
+            }
+            Credit {
+                name: "Greg Zaal",
+                url: "https://polyhaven.com/a/kloofendal_overcast_puresky",
+                description: "Kloofendal lighting environments.",
+                license: "CC0 1.0 Universal",
+            }
 
-                div { class: "modal-section-label", "ENVIRONMENTS" }
-                Credit {
-                    name: "Dimitrios Savva and Greg Zaal",
-                    url: "https://polyhaven.com/a/ferndale_studio_11",
-                    description: "Ferndale lighting environments.",
-                    license: "CC0 1.0 Universal",
-                }
-                Credit {
-                    name: "Greg Zaal and Jarod Guest",
-                    url: "https://polyhaven.com/a/qwantani_dusk_2_puresky",
-                    description: "Qwantani lighting environments.",
-                    license: "CC0 1.0 Universal",
-                }
-                Credit {
-                    name: "Greg Zaal and Jenelle van Heerden",
-                    url: "https://polyhaven.com/a/bloem_hill_01",
-                    description: "Bloem Hill lighting environments.",
-                    license: "CC0 1.0 Universal",
-                }
-                Credit {
-                    name: "Greg Zaal",
-                    url: "https://polyhaven.com/a/kloofendal_overcast_puresky",
-                    description: "Kloofendal lighting environments.",
-                    license: "CC0 1.0 Universal",
-                }
-
-                div { class: "modal-actions",
-                    button {
-                        class: "btn btn-primary",
-                        onclick: move |_| on_close.call(()),
-                        {icon(icons::DONE)}
-                        "Done"
-                    }
+            div { class: "modal-actions",
+                button {
+                    class: "btn btn-primary",
+                    onclick: move |_| on_close.call(()),
+                    {icon(icons::DONE)}
+                    "Done"
                 }
             }
         }

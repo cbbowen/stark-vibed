@@ -20,6 +20,7 @@ use crate::icons::{self, icon};
 use crate::panels::frame::{piece_frame, use_selected_frame};
 use crate::platform::{download_bytes, pick_file};
 use crate::state::AppState;
+use crate::widgets::Modal;
 use stark_engine::command::ViewCommand;
 use stark_engine::{Background, ExportScale, Rendered};
 use stark_model::document::LayerId;
@@ -216,89 +217,82 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
     let blocked = plan_error.is_some();
 
     rsx! {
-        div {
-            class: "modal-backdrop",
-            onclick: move |_| on_close.call(()),
-            div {
-                class: "modal-dialog",
-                onclick: move |e| e.stop_propagation(),
+        Modal { on_close,
+            div { class: "modal-title", "Export image" }
+            div { class: "modal-subtitle",
+                if frame.is_some() {
+                    "Writes the frame as a PNG. This is a picture, not the painting \u{2014} use Save to keep an editable document."
+                } else {
+                    "No frame, so everything painted is exported. Add a frame to choose the crop."
+                }
+            }
 
-                div { class: "modal-title", "Export image" }
-                div { class: "modal-subtitle",
-                    if frame.is_some() {
-                        "Writes the frame as a PNG. This is a picture, not the painting \u{2014} use Save to keep an editable document."
-                    } else {
-                        "No frame, so everything painted is exported. Add a frame to choose the crop."
+            div { class: "modal-section-label", "RESOLUTION" }
+            select {
+                class: "select",
+                onchange: move |e| {
+                    if let Some((_, factor)) = SCALES.iter().find(|(l, _)| *l == e.value()) {
+                        scale.set(*factor);
+                    }
+                },
+                for (label, factor) in SCALES {
+                    option {
+                        value: "{label}",
+                        selected: (scale() - factor).abs() < 1e-3,
+                        "{label}"
                     }
                 }
+            }
+            div { class: "export-size", "{size_label}" }
 
-                div { class: "modal-section-label", "RESOLUTION" }
-                select {
-                    class: "select",
-                    onchange: move |e| {
-                        if let Some((_, factor)) = SCALES.iter().find(|(l, _)| *l == e.value()) {
-                            scale.set(*factor);
-                        }
+            div { class: "modal-section-label", "BACKGROUND" }
+            div { class: "tool-row",
+                button {
+                    class: if transparent() { "chip" } else { "chip active" },
+                    onclick: move |_| transparent.set(false),
+                    "Canvas"
+                }
+                button {
+                    class: if transparent() { "chip active" } else { "chip" },
+                    onclick: move |_| transparent.set(true),
+                    "Transparent"
+                }
+            }
+
+            if let Some(message) = plan_error.clone().or_else(|| error.cloned()) {
+                div { class: "export-error", "{message}" }
+            }
+
+            div { class: "modal-actions",
+                button {
+                    class: "btn btn-secondary",
+                    onclick: move |_| on_close.call(()),
+                    "Cancel"
+                }
+                button {
+                    class: "btn btn-primary",
+                    disabled: blocked || busy(),
+                    onclick: move |_| {
+                        busy.set(true);
+                        // Scope-tied `spawn`, deliberately: this task writes
+                        // `busy` and `error`, which belong to *this* modal's
+                        // scope. A detached `spawn_forever` would outlive them
+                        // and write through dangling handles. Dismissing the
+                        // dialog therefore cancels the export, which is also
+                        // what dismissing it should mean.
+                        spawn(async move {
+                            let result = export_png(state, frame, scale(), transparent()).await;
+                            busy.set(false);
+                            match result {
+                                Ok(()) => on_close.call(()),
+                                Err(e) => error.set(Some(e)),
+                            }
+                        });
                     },
-                    for (label, factor) in SCALES {
-                        option {
-                            value: "{label}",
-                            selected: (scale() - factor).abs() < 1e-3,
-                            "{label}"
-                        }
-                    }
-                }
-                div { class: "export-size", "{size_label}" }
-
-                div { class: "modal-section-label", "BACKGROUND" }
-                div { class: "tool-row",
-                    button {
-                        class: if transparent() { "chip" } else { "chip active" },
-                        onclick: move |_| transparent.set(false),
-                        "Canvas"
-                    }
-                    button {
-                        class: if transparent() { "chip active" } else { "chip" },
-                        onclick: move |_| transparent.set(true),
-                        "Transparent"
-                    }
-                }
-
-                if let Some(message) = plan_error.clone().or_else(|| error.cloned()) {
-                    div { class: "export-error", "{message}" }
-                }
-
-                div { class: "modal-actions",
-                    button {
-                        class: "btn btn-secondary",
-                        onclick: move |_| on_close.call(()),
-                        "Cancel"
-                    }
-                    button {
-                        class: "btn btn-primary",
-                        disabled: blocked || busy(),
-                        onclick: move |_| {
-                            busy.set(true);
-                            // Scope-tied `spawn`, deliberately: this task writes
-                            // `busy` and `error`, which belong to *this* modal's
-                            // scope. A detached `spawn_forever` would outlive them
-                            // and write through dangling handles. Dismissing the
-                            // dialog therefore cancels the export, which is also
-                            // what dismissing it should mean.
-                            spawn(async move {
-                                let result = export_png(state, frame, scale(), transparent()).await;
-                                busy.set(false);
-                                match result {
-                                    Ok(()) => on_close.call(()),
-                                    Err(e) => error.set(Some(e)),
-                                }
-                            });
-                        },
-                        // The same mark the menu entry that opened this dialog wears,
-                        // and it stays put while the word swaps to "Exporting…".
-                        {icon(icons::EXPORT)}
-                        if busy() { "Exporting\u{2026}" } else { "Export" }
-                    }
+                    // The same mark the menu entry that opened this dialog wears,
+                    // and it stays put while the word swaps to "Exporting…".
+                    {icon(icons::EXPORT)}
+                    if busy() { "Exporting\u{2026}" } else { "Export" }
                 }
             }
         }

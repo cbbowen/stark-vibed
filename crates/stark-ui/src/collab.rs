@@ -34,6 +34,7 @@ use stark_net::{
 
 use crate::icons::{self, icon};
 use crate::state::AppState;
+use crate::widgets::Modal;
 
 /// How often this client publishes its presence, in ms. Fast enough that another
 /// painter's stroke grows smoothly, slow enough that a 240 Hz pen does not put 240
@@ -610,123 +611,116 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
     let mut copied = use_signal(|| false);
 
     rsx! {
-        div {
-            class: "modal-backdrop",
-            onclick: move |_| on_close.call(()),
-            div {
-                class: "modal-dialog",
-                onclick: move |e| e.stop_propagation(),
+        Modal { on_close,
+            div { class: "modal-title", "Share" }
 
-                div { class: "modal-title", "Share" }
+            if let Some(message) = error {
+                div { class: "collab-error", {message} }
+            }
 
-                if let Some(message) = error {
-                    div { class: "collab-error", {message} }
-                }
-
-                match phase {
-                    // Only reached when sharing failed — the menu starts it before
-                    // this dialog mounts, so there is nothing to wait for otherwise.
-                    CollabPhase::Solo => rsx! {
-                        div { class: "modal-subtitle",
-                            "This canvas isn't shared."
-                        }
-                        button {
-                            class: "btn btn-primary",
-                            onclick: move |_| share(state),
-                            "Try again"
-                        }
-                    },
-                    CollabPhase::Connecting => rsx! {
-                        div { class: "modal-subtitle", "Creating a link…" }
-                    },
-                    CollabPhase::Shared => rsx! {
-                        div { class: "modal-subtitle",
-                            "Anyone who opens this link paints here with you, in real time. Every member can pass it on."
-                        }
-                        {
-                            let url = invite_url(ticket.as_deref().unwrap_or_default());
-                            let to_copy = url.clone();
-                            rsx! {
-                                div { class: "invite-row",
-                                    input {
-                                        class: "invite-url",
-                                        readonly: true,
-                                        value: "{url}",
-                                    }
-                                    // The glyph is the half of this button that holds
-                                    // still: the word swaps to "Copied" and back on a
-                                    // timer, so what says *what the button is* has to
-                                    // be the part that does not change.
-                                    button {
-                                        class: "btn btn-primary",
-                                        onclick: move |_| {
-                                            crate::platform::copy_to_clipboard(&to_copy);
-                                            copied.set(true);
-                                            // Back to "Copy" after a beat, so the
-                                            // button reads as a button again.
-                                            spawn(async move {
-                                                crate::platform::sleep_ms(1600).await;
-                                                copied.set(false);
-                                            });
-                                        },
-                                        {icon(icons::COPY_TO_CLIPBOARD)}
-                                        if copied() { "Copied" } else { "Copy" }
-                                    }
+            match phase {
+                // Only reached when sharing failed — the menu starts it before
+                // this dialog mounts, so there is nothing to wait for otherwise.
+                CollabPhase::Solo => rsx! {
+                    div { class: "modal-subtitle",
+                        "This canvas isn't shared."
+                    }
+                    button {
+                        class: "btn btn-primary",
+                        onclick: move |_| share(state),
+                        "Try again"
+                    }
+                },
+                CollabPhase::Connecting => rsx! {
+                    div { class: "modal-subtitle", "Creating a link…" }
+                },
+                CollabPhase::Shared => rsx! {
+                    div { class: "modal-subtitle",
+                        "Anyone who opens this link paints here with you, in real time. Every member can pass it on."
+                    }
+                    {
+                        let url = invite_url(ticket.as_deref().unwrap_or_default());
+                        let to_copy = url.clone();
+                        rsx! {
+                            div { class: "invite-row",
+                                input {
+                                    class: "invite-url",
+                                    readonly: true,
+                                    value: "{url}",
+                                }
+                                // The glyph is the half of this button that holds
+                                // still: the word swaps to "Copied" and back on a
+                                // timer, so what says *what the button is* has to
+                                // be the part that does not change.
+                                button {
+                                    class: "btn btn-primary",
+                                    onclick: move |_| {
+                                        crate::platform::copy_to_clipboard(&to_copy);
+                                        copied.set(true);
+                                        // Back to "Copy" after a beat, so the
+                                        // button reads as a button again.
+                                        spawn(async move {
+                                            crate::platform::sleep_ms(1600).await;
+                                            copied.set(false);
+                                        });
+                                    },
+                                    {icon(icons::COPY_TO_CLIPBOARD)}
+                                    if copied() { "Copied" } else { "Copy" }
                                 }
                             }
                         }
-                        // Who is here, and how each one is reached — the only
-                        // place the relay-or-direct question is answered. Names
-                        // come from the presence roster; link kinds from the
-                        // mesh, polled by the presence pump.
-                        {
-                            let peers = (state.collab.peers)();
-                            let links = (state.collab.links)();
-                            rsx! {
-                                div { class: "peer-list",
-                                    if peers.is_empty() {
-                                        div { class: "peer-list-empty",
-                                            "No one else has joined yet."
-                                        }
+                    }
+                    // Who is here, and how each one is reached — the only
+                    // place the relay-or-direct question is answered. Names
+                    // come from the presence roster; link kinds from the
+                    // mesh, polled by the presence pump.
+                    {
+                        let peers = (state.collab.peers)();
+                        let links = (state.collab.links)();
+                        rsx! {
+                            div { class: "peer-list",
+                                if peers.is_empty() {
+                                    div { class: "peer-list-empty",
+                                        "No one else has joined yet."
                                     }
-                                    for peer in peers {
-                                        {
-                                            let kind = links
-                                                .iter()
-                                                .find(|l| l.actor == peer.actor)
-                                                .map(|l| l.kind);
-                                            let (label, class) = link_badge(kind);
-                                            let color = peer.css_color();
-                                            rsx! {
-                                                div { class: "peer-row",
-                                                    span {
-                                                        class: "peer-dot",
-                                                        style: "background: {color}",
-                                                    }
-                                                    span { class: "peer-name", {peer.name.clone()} }
-                                                    span { class: "{class}", {label} }
+                                }
+                                for peer in peers {
+                                    {
+                                        let kind = links
+                                            .iter()
+                                            .find(|l| l.actor == peer.actor)
+                                            .map(|l| l.kind);
+                                        let (label, class) = link_badge(kind);
+                                        let color = peer.css_color();
+                                        rsx! {
+                                            div { class: "peer-row",
+                                                span {
+                                                    class: "peer-dot",
+                                                    style: "background: {color}",
                                                 }
+                                                span { class: "peer-name", {peer.name.clone()} }
+                                                span { class: "{class}", {label} }
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-                        button {
-                            class: "btn btn-secondary",
-                            onclick: move |_| { leave(state); },
-                            "Stop sharing"
-                        }
-                    },
-                }
-
-                div { class: "modal-actions",
-                    button {
-                        class: "btn btn-primary",
-                        onclick: move |_| on_close.call(()),
-                        {icon(icons::DONE)}
-                        "Done"
                     }
+                    button {
+                        class: "btn btn-secondary",
+                        onclick: move |_| { leave(state); },
+                        "Stop sharing"
+                    }
+                },
+            }
+
+            div { class: "modal-actions",
+                button {
+                    class: "btn btn-primary",
+                    onclick: move |_| on_close.call(()),
+                    {icon(icons::DONE)}
+                    "Done"
                 }
             }
         }
