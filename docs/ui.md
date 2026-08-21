@@ -93,9 +93,19 @@ which the engine draws into directly. DOM chrome surrounds it.
   at — a spatial pair is about adjacency, and `[`/`]` step the brush precisely
   because they are side by side (`slots::of_code`'s argument, §18.1.8). Chords
   are exact: Ctrl+Shift+Z is its own row rather than Ctrl+Z plus a bystander,
-  and Alt in any combination matches nothing, since AltGr arrives as Ctrl+Alt
-  and a table that shrugged at Alt would fire its Ctrl rows under a layout's
-  ordinary typing. The keydown handler asks the table once and claims a matched
+  and Alt+H is not the bare `h` row with a passenger. **Ctrl+Alt is bindable
+  and never shipped.** On Windows AltGr *is* Ctrl+Alt — the OS synthesizes the
+  pair for the right-hand Alt and for a deliberate Ctrl+Alt alike — so a
+  shipped row there would answer a German layout's `@` by claiming the
+  keystroke and `prevent_default`ing the character dead, a bug invisible to
+  everyone whose layout has no AltGr (the plain US one has none;
+  US-International has a full set). A row the *user* captured is a keystroke
+  they chose on their own keyboard, so the rule binds `defaults()` and not the
+  type — which also leaves Command+Option reachable on a Mac, where it is
+  idiomatic and no AltGr is involved. A captured Alt chord is always
+  **spatial**: Option+G types `©` on a Mac and AltGr+A types `ą` on a Polish
+  layout, so a key held through Alt has no character of its own left to be
+  named by. The keydown handler asks the table once and claims a matched
   chord wholly (`prevent_default`) whether or not its act was accepted — a
   declined Ctrl+A must not answer with the browser highlighting the page.
   What is *not* a chord row is anything owning both edges of its key — a held
@@ -605,12 +615,14 @@ it:
    chord is one way to reach an act, not part of being one. If it earns one,
    add a row to `defaults()`: `Char` for a mnemonic (Z undoes wherever the
    layout puts the Z), `Code` for a spatial pair (`[`/`]` step the brush
-   because they are adjacent). Chords are exact about modifiers, and Alt can
-   never appear (AltGr arrives as Ctrl+Alt). `default_chords_are_disjoint`
-   will fail a collision. Two traps with the bare keys: Escape can be
-   rebound *off* but never back on (`capture` spends it on cancelling the
-   capture), and anything claimed before the table — space, the digit rack —
-   is not yours to row.
+   because they are adjacent). Chords are exact about all three modifiers.
+   **Never ship a Ctrl+Alt row** — that pair is AltGr on any layout that has
+   one, and `no_default_chord_is_ctrl_alt` fails the build if you do; a user
+   may still bind it, because they chose it. `default_chords_are_disjoint`
+   will fail a collision. Two traps with the bare keys: Escape can be rebound
+   *off* but never back on (`capture` spends it on cancelling the capture),
+   and anything claimed before the table — space, the digit rack — is not
+   yours to row.
 7. **Surfaces render the command.** A bar chip or panel-header button is
    `widgets::CommandButton`; a menu row is the rail's `CmdItem`; a control
    whose words are its own but whose key is the registry's (a mode bar's
@@ -646,8 +658,10 @@ Then the table names the press that opens it:
    are: Ctrl+Alt+drag is not the Ctrl row with a bystander, it is unbound,
    and an unbound press falls through to painting — the ground state, the
    drag table's equivalent of an unclaimed chord falling to the browser.
-   Unlike the keyboard table, Alt is nameable here — a drag types nothing, so
-   the AltGr trap has nothing to spring on. `Left` means a **contact**: the
+   `Mods` is the same modifier triple the keyboard's chords carry, and Alt is
+   as nameable here as it is there — more so, in fact: a drag types nothing,
+   so Ctrl+Alt+drag springs no AltGr trap and may even be a shipped row.
+   `Left` means a **contact**: the
    primary button *or the pen's eraser end* (§18.1.8), so every bound drag
    works whichever way up the stylus is. `Right` is free on the canvas — the
    context menu is refused everywhere but text fields.

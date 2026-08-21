@@ -38,7 +38,9 @@
 //! - **A chord that opens a drag.** Ctrl+drag tunes the brush and Alt+drag
 //!   samples — gestures rather than acts, with a press, moves and a release —
 //!   so they are rows of the pointer's own table (`crate::drags`), not this
-//!   one.
+//!   one. Both tables name their modifiers by the same triple — this one's
+//!   is [`Chord`]'s three flags, the pointer's is `drags::Mods` — so one
+//!   keystroke cannot be read two ways by the two of them.
 //! - **Ctrl+V.** A paste is data arriving, not a command: the browser delivers
 //!   the clipboard *with* the event, and must be left to (`crate::images`).
 //!
@@ -71,22 +73,51 @@ use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{SelectionOp, Tool};
 
-/// The key half of a binding: which modifier tier, and which key.
+/// The key half of a binding: which modifiers, and which key.
 ///
 /// Chords are **exact** about their modifiers. Ctrl+Shift+Z is not Ctrl+Z with
-/// a bystanding Shift, it is another row; and a modifier no chord can even name
-/// (Alt) matches nothing at all, because on Windows AltGr arrives as Ctrl+Alt,
-/// and a table that shrugged at Alt would fire its Ctrl rows under a layout's
-/// ordinary typing. (The digit rack tolerates Shift, and may: it is a hold in
-/// `input`, not a row here, and its reasons are its own — §18.1.8.)
+/// a bystanding Shift, it is another row; Alt+H is not the bare `h` row either.
+/// (The digit rack tolerates Shift, and may: it is a hold in `input`, not a row
+/// here, and its reasons are its own — §18.1.8.)
+///
+/// **Ctrl+Alt is bindable and never shipped**, which is a deliberate pair of
+/// facts rather than an oversight. On Windows AltGr *is* Ctrl+Alt: the OS
+/// synthesizes the pair for the right-hand Alt, and it synthesizes the same
+/// pair for a deliberate Ctrl+Alt, so on a layout that has an AltGr the two
+/// keystrokes cannot be told apart. A shipped Ctrl+Alt row would therefore fire
+/// under a German layout's `@` or a Polish one's `ą` — ordinary typing, on the
+/// one path where a matched chord `prevent_default`s the character dead, and a
+/// bug invisible to everyone whose layout has no AltGr (the plain US one has
+/// none; US-International has a full set). A row the **user** put there is a
+/// different thing entirely: they chose the keystroke, on their own keyboard,
+/// through a capture that showed them what it was. So the rule lives on
+/// [`defaults`] — `tests::no_default_chord_is_ctrl_alt` — and not on the type,
+/// where it would also have cost Command+Option on a Mac, which is idiomatic
+/// there and has no AltGr in it at all.
+///
+/// If that ever has to be tightened, the honest test is
+/// `KeyboardEvent.getModifierState("AltGraph")`: plumb it through
+/// [`platform::KeyEvent`] and decline the keystroke when it is set. That leaves
+/// Ctrl+Alt working on the plain US layout, on Linux (where AltGr is
+/// `ISO_Level3_Shift` and sets neither flag) and on a Mac, and yields to AltGr
+/// where a layout has one — at the cost of a modifier state not every browser
+/// need report the same way, which is why it is a note and not the code.
 ///
 /// Serde, because a chord the user set is stored with this browser's
-/// preferences and libraries — see [`Bindings`].
+/// preferences and libraries — see [`Bindings`]. `alt` defaults, so a row
+/// written before there was an Alt column reads as the chord it meant instead
+/// of being dropped (§8's rule, for the browser's store rather than the file's:
+/// a field an older record lacks has to say what its absence meant).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Chord {
-    /// Ctrl, or Command on a Mac.
+    /// Ctrl, or Command on a Mac (`input::accel`).
     pub ctrl: bool,
     pub shift: bool,
+    /// Alt, or Option on a Mac. Last of the three and defaulted for the store's
+    /// sake; the same triple the drag table names its presses by
+    /// (`drags::Mods`), so the two tables read one keystroke the same way.
+    #[serde(default)]
+    pub alt: bool,
     pub key: ChordKey,
 }
 
@@ -102,7 +133,10 @@ pub struct Chord {
 ///
 /// A capture makes the same choice ([`capture`]): a key that types a character
 /// is taken as the character, and a key that types nothing — an F-key, an
-/// arrow — has only its position to be named by.
+/// arrow — has only its position to be named by. **A key held through Alt is
+/// in that second family**, whatever it would type unmodified: Option+G types
+/// `©` on a Mac, so the character on offer is not the key's own and the
+/// position is all that is left to mean.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum ChordKey {
     /// The character the key types, caseless (stored lowercase).
@@ -251,10 +285,17 @@ pub enum Command {
 /// that chords are user state; what holds still is the *data*, which the user's
 /// own table is laid over rather than written into ([`Bindings`]).
 fn defaults() -> Vec<(Chord, Command)> {
+    // Neither helper can say Alt, which is the shipped table's whole
+    // relationship with that modifier: no row here wants it, and the one
+    // combination a row must never be — Ctrl+Alt, which is AltGr on half the
+    // world's layouts ([`Chord`]) — is then unreachable from the two ways a
+    // row is written. `tests::no_default_chord_is_ctrl_alt` is what holds that
+    // once a third way exists.
     fn ch(ctrl: bool, shift: bool, key: char) -> Chord {
         Chord {
             ctrl,
             shift,
+            alt: false,
             key: ChordKey::Char(key),
         }
     }
@@ -262,6 +303,7 @@ fn defaults() -> Vec<(Chord, Command)> {
         Chord {
             ctrl: false,
             shift: false,
+            alt: false,
             key: ChordKey::Code(key.to_string()),
         }
     }
@@ -356,11 +398,14 @@ impl Bindings {
         key: &Key,
         code: &str,
     ) -> Option<Command> {
-        if alt {
-            return None;
-        }
-        let hit =
-            |chord: &Chord| chord.ctrl == accel && chord.shift == shift && chord.key.hit(key, code);
+        // All three modifiers, exactly — including Alt, which no shipped row
+        // holds and any rebinding may ([`Chord`]).
+        let hit = |chord: &Chord| {
+            chord.ctrl == accel
+                && chord.shift == shift
+                && chord.alt == alt
+                && chord.key.hit(key, code)
+        };
         if let Some((command, _)) = self
             .overrides
             .iter()
@@ -488,7 +533,6 @@ pub enum Capture {
     /// formed, and the rest are keys a binding could never answer on, refused
     /// here so the user cannot store a shortcut that silently never fires:
     ///
-    /// - anything with **Alt**, which the table matches nothing on (AltGr);
     /// - **space** and the **bare digits**, which are holds owning both edges
     ///   of their key (`input`, §18.1.8) and are claimed before the table;
     /// - **Ctrl+V**, which is not a binding of ours to give away — the paste
@@ -506,17 +550,43 @@ pub fn capture(accel: bool, shift: bool, alt: bool, key: &Key, code: &str) -> Ca
     if *key == Key::Backspace {
         return Capture::Clear;
     }
-    if alt
-        || matches!(
-            key,
-            Key::Control | Key::Shift | Key::Alt | Key::AltGraph | Key::Meta
-        )
-    {
+    if matches!(
+        key,
+        Key::Control | Key::Shift | Key::Alt | Key::AltGraph | Key::Meta
+    ) {
         return Capture::Pending;
     }
-    // The rack's own reading of the digit row, asked rather than restated.
-    if !accel && crate::slots::of_code(code).is_some() {
+    // Space is claimed before the table whatever is held with it — `input`'s
+    // keydown arms the pan off the key itself — so it is nobody's chord, and
+    // it is asked for by both names because Alt is about to take the character
+    // away.
+    if code == "Space" || matches!(key, Key::Character(c) if c == " ") {
         return Capture::Pending;
+    }
+    // The rack's own reading of the digit row, asked rather than restated —
+    // and asked under the same modifiers the rack claims under, which is
+    // neither: it tolerates Shift and refuses Alt (`input`'s keydown), so
+    // Alt+1 is a chord going spare rather than a hold being stolen.
+    if !accel && !alt && crate::slots::of_code(code).is_some() {
+        return Capture::Pending;
+    }
+    // **Under Alt a key does not type its own character**, so there is no
+    // mnemonic to name it by and only the position is left — the same sentence
+    // [`ChordKey`] already writes for the F-keys and the arrows, reaching one
+    // key further. Option+G types `©` on a Mac, and AltGr+A types `ą` on a
+    // Polish one: naming the character would store a chord that means another
+    // key on the next machine and print a label no keycap says, where the
+    // position is the same key and the same engraving on both.
+    if alt {
+        if code.is_empty() {
+            return Capture::Pending;
+        }
+        return Capture::Chord(Chord {
+            ctrl: accel,
+            shift,
+            alt,
+            key: ChordKey::Code(code.to_string()),
+        });
     }
     match key {
         Key::Character(c) => {
@@ -524,18 +594,20 @@ pub fn capture(accel: bool, shift: bool, alt: bool, key: &Key, code: &str) -> Ca
             let (Some(k), None) = (chars.next(), chars.next()) else {
                 return Capture::Pending;
             };
-            if k == ' ' || (accel && !shift && k.eq_ignore_ascii_case(&'v')) {
+            if accel && !shift && k.eq_ignore_ascii_case(&'v') {
                 return Capture::Pending;
             }
             Capture::Chord(Chord {
                 ctrl: accel,
                 shift,
+                alt,
                 key: ChordKey::Char(k.to_ascii_lowercase()),
             })
         }
         _ if !code.is_empty() => Capture::Chord(Chord {
             ctrl: accel,
             shift,
+            alt,
             key: ChordKey::Code(code.to_string()),
         }),
         _ => Capture::Pending,
@@ -1291,12 +1363,18 @@ pub fn advertised(hint: &str, command: Command, bindings: &Bindings) -> String {
 /// has — a ⌘ on the one platform that draws it is a presentation question, not
 /// a binding one.
 fn chord_label(chord: &Chord) -> String {
+    // Ctrl, Shift, Alt — the order `drags::chord_label` spells its own presses
+    // in, so one keystroke does not read two ways in one app depending on
+    // which table is describing it.
     let mut s = String::new();
-    if chord.ctrl {
-        s.push_str("Ctrl+");
-    }
-    if chord.shift {
-        s.push_str("Shift+");
+    for (held, name) in [
+        (chord.ctrl, "Ctrl+"),
+        (chord.shift, "Shift+"),
+        (chord.alt, "Alt+"),
+    ] {
+        if held {
+            s.push_str(name);
+        }
     }
     match &chord.key {
         ChordKey::Char(c) => s.push(c.to_ascii_uppercase()),
@@ -1305,8 +1383,22 @@ fn chord_label(chord: &Chord) -> String {
         // the web cannot portably do. Rebinding lets the label be wrong less
         // often than a fixed binding already was.
         ChordKey::Code(code) => match code.as_str() {
+            // The punctuation ring, which every Alt chord on those keys now
+            // lands in: a captured Alt binding is spatial whatever key it is
+            // on ([`capture`]), so a row reading "Alt+Comma" stopped being a
+            // corner case the day the tier opened. Named where the W3C code is
+            // a word for a mark rather than the mark.
             "BracketLeft" => s.push('['),
             "BracketRight" => s.push(']'),
+            "Comma" => s.push(','),
+            "Period" => s.push('.'),
+            "Slash" => s.push('/'),
+            "Backslash" => s.push('\\'),
+            "Semicolon" => s.push(';'),
+            "Quote" => s.push('\''),
+            "Backquote" => s.push('`'),
+            "Minus" => s.push('-'),
+            "Equal" => s.push('='),
             // "KeyQ" is engraved "Q", and the digit row's caps are their digits
             // — the two families a captured spatial chord usually lands in.
             code => match code
@@ -1390,11 +1482,66 @@ mod tests {
     }
 
     #[test]
-    fn alt_matches_nothing() {
-        // AltGr arrives as Ctrl+Alt on Windows: a layout typing *through* Alt
-        // must not find Ctrl rows under its ordinary characters.
-        assert_eq!(stock().lookup(true, false, true, &ch("z"), "KeyZ"), None);
+    fn alt_is_a_column_a_user_can_take() {
+        // What the Alt column buys: a chord no shipped row holds, answering
+        // exactly its own keystroke.
+        let mut b = stock();
+        b.rebind(Command::GradientFill, alt_chord(false, false, "KeyG"));
+        assert_eq!(
+            b.lookup(false, false, true, &ch("g"), "KeyG"),
+            Some(Command::GradientFill)
+        );
+        // Exact in all three modifiers, as every row is: the same key bare,
+        // under the accelerator, or under both is not this row.
+        assert_eq!(b.lookup(false, false, false, &ch("g"), "KeyG"), None);
+        assert_eq!(b.lookup(true, false, false, &ch("g"), "KeyG"), None);
+        assert_eq!(b.lookup(true, false, true, &ch("g"), "KeyG"), None);
+        // Advertised by the engraving the key wears, not by what a Mac's
+        // Option would have typed on it.
+        assert_eq!(Command::GradientFill.shortcut(&b).as_deref(), Some("Alt+G"));
+    }
+
+    #[test]
+    fn a_shipped_row_is_never_alt() {
+        // Alt held is not a bystander to a bare row, which is the same
+        // exactness Shift gets: `h` mirrors the view and Alt+H does nothing at
+        // all until somebody binds it.
         assert_eq!(stock().lookup(false, false, true, &ch("h"), "KeyH"), None);
+        assert_eq!(stock().lookup(true, false, true, &ch("z"), "KeyZ"), None);
+    }
+
+    /// **The one rule about Ctrl+Alt** ([`Chord`]): a user may bind it, and we
+    /// may not ship it. On a layout with an AltGr the pair is that key, and a
+    /// shipped row would eat a character somebody was typing — where a row the
+    /// user captured is a keystroke they chose on their own keyboard.
+    #[test]
+    fn no_default_chord_is_ctrl_alt() {
+        for (chord, command) in defaults() {
+            assert!(
+                !(chord.ctrl && chord.alt),
+                "{command:?} ships on Ctrl+Alt, which is AltGr on a German,                  Polish or US-International layout: {}",
+                chord_label(&chord)
+            );
+        }
+        // Not vacuous by accident — the table can hold the pair, and a lookup
+        // answers it. It is `defaults` that must not carry one.
+        let mut b = stock();
+        b.rebind(Command::Settings, alt_chord(true, false, "KeyQ"));
+        assert_eq!(
+            b.lookup(true, false, true, &ch("q"), "KeyQ"),
+            Some(Command::Settings)
+        );
+    }
+
+    #[test]
+    fn a_label_spells_every_modifier_it_holds() {
+        // Ctrl, Shift, Alt — `drags::chord_label`'s order, and a code that is
+        // a word for a mark prints the mark, which is how an Alt binding on
+        // the punctuation ring reads.
+        assert_eq!(chord_label(&alt_chord(false, true, "Comma")), "Shift+Alt+,");
+        assert_eq!(chord_label(&alt_chord(true, false, "KeyQ")), "Ctrl+Alt+Q");
+        assert_eq!(chord_label(&chord(true, true, 'z')), "Ctrl+Shift+Z");
+        assert_eq!(chord_label(&chord(false, false, 'h')), "H");
     }
 
     #[test]
@@ -1442,7 +1589,19 @@ mod tests {
         Chord {
             ctrl,
             shift,
+            alt: false,
             key: ChordKey::Char(key),
+        }
+    }
+
+    /// A spatial chord under Alt, which is the only shape a captured Alt
+    /// binding has ([`capture`]).
+    fn alt_chord(ctrl: bool, shift: bool, code: &str) -> Chord {
+        Chord {
+            ctrl,
+            shift,
+            alt: true,
+            key: ChordKey::Code(code.to_string()),
         }
     }
 
@@ -1519,6 +1678,7 @@ mod tests {
             Command::TogglePanel(PanelId::Layers),
             chord(true, true, 'l'),
         );
+        b.rebind(Command::Transform, alt_chord(false, false, "KeyT"));
         let stored: Vec<StoredBinding> = b
             .overrides
             .iter()
@@ -1547,6 +1707,41 @@ mod tests {
         assert!(serde_json::from_str::<StoredBinding>(r#"{"command":"NoSuchCommand"}"#).is_err());
     }
 
+    /// The tier is stored as the flags it was before there was a tier, so a
+    /// browser that saved its table under an earlier build still loads it.
+    #[test]
+    fn a_chord_stored_before_alt_existed_still_reads() {
+        // Exactly what the store holds today: no `alt` key at all.
+        let old = r#"{"ctrl":true,"shift":false,"key":{"Char":"s"}}"#;
+        assert_eq!(
+            serde_json::from_str::<Chord>(old).unwrap(),
+            chord(true, false, 's'),
+            "a row missing `alt` means the accelerator it meant, not a refusal"
+        );
+        let bare = r#"{"ctrl":false,"shift":true,"key":{"Char":"m"}}"#;
+        assert_eq!(
+            serde_json::from_str::<Chord>(bare).unwrap(),
+            chord(false, true, 'm')
+        );
+        // And the flags are what it writes back, so a downgrade reads its own
+        // rows and an Alt one simply looks like a chord it does not know.
+        let alt = alt_chord(false, false, "KeyG");
+        let json = serde_json::to_string(&alt).unwrap();
+        assert!(
+            json.contains(r#""ctrl":false"#) && json.contains(r#""alt":true"#),
+            "a tier is stored as the flags an event reports: {json}"
+        );
+        assert_eq!(serde_json::from_str::<Chord>(&json).unwrap(), alt);
+        // And Ctrl+Alt loads, because a stored row is by definition one the
+        // user asked for — the rule it must not break is about what *we* ship
+        // (`no_default_chord_is_ctrl_alt`), not about what they may keep.
+        let both = r#"{"ctrl":true,"alt":true,"shift":false,"key":{"Code":"KeyQ"}}"#;
+        assert_eq!(
+            serde_json::from_str::<Chord>(both).unwrap(),
+            alt_chord(true, false, "KeyQ")
+        );
+    }
+
     #[test]
     fn capture_reads_a_chord() {
         assert_eq!(
@@ -1564,8 +1759,20 @@ mod tests {
             Capture::Chord(Chord {
                 ctrl: false,
                 shift: false,
+                alt: false,
                 key: ChordKey::Code("F5".to_string()),
             })
+        );
+        // And so is every key held through Alt, which types something that is
+        // not itself on at least one platform: the capture names the position
+        // rather than storing a `©` nobody's keycap says.
+        assert_eq!(
+            capture(false, false, true, &ch("g"), "KeyG"),
+            Capture::Chord(alt_chord(false, false, "KeyG"))
+        );
+        assert_eq!(
+            capture(false, false, true, &ch("\u{a9}"), "KeyG"),
+            Capture::Chord(alt_chord(false, false, "KeyG"))
         );
         assert_eq!(
             capture(false, false, false, &Key::Escape, "Escape"),
@@ -1602,24 +1809,41 @@ mod tests {
             capture(true, false, false, &Key::Control, "ControlLeft"),
             Capture::Pending
         );
-        // Alt in any combination matches nothing in the table (AltGr).
+        // Ctrl+Alt *is* capturable — the user asking for it is the whole
+        // difference from shipping it (`no_default_chord_is_ctrl_alt`) — and
+        // it comes back spatial like every Alt chord, which is what keeps a
+        // Polish layout's AltGr+X from being stored as `Char('x')`… or worse,
+        // as the `ń` it actually typed.
         assert_eq!(
-            capture(false, false, true, &ch("x"), "KeyX"),
-            Capture::Pending
+            capture(true, false, true, &ch("x"), "KeyX"),
+            Capture::Chord(alt_chord(true, false, "KeyX"))
         );
-        // Space and the bare digit row are holds, claimed before the table.
+        // Space is a hold that owns both edges of its key, and `input` claims
+        // it off the key itself — so it is refused under every modifier, not
+        // only where the character survives to be read.
         assert_eq!(
             capture(false, false, false, &ch(" "), "Space"),
             Capture::Pending
         );
         assert_eq!(
+            capture(false, false, true, &ch(" "), "Space"),
+            Capture::Pending
+        );
+        // The bare digit row is the rack's hold (§18.1.8).
+        assert_eq!(
             capture(false, false, false, &ch("1"), "Digit1"),
             Capture::Pending
         );
-        // …but a digit under the accelerator is nobody's hold.
+        // …but a digit under the accelerator is nobody's hold — nor under Alt,
+        // which the rack refuses too, so capture may not be stricter than the
+        // hold it is deferring to.
         assert_eq!(
             capture(true, false, false, &ch("1"), "Digit1"),
             Capture::Chord(chord(true, false, '1'))
+        );
+        assert_eq!(
+            capture(false, false, true, &ch("1"), "Digit1"),
+            Capture::Chord(alt_chord(false, false, "Digit1"))
         );
         // Ctrl+V is the paste's, and a row would prevent_default it dead.
         assert_eq!(
