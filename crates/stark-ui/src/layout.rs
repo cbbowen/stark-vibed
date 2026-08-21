@@ -90,7 +90,7 @@ impl PanelId {
     }
 
     /// The panel's mark, worn by its title bar and by the entry that reopens it in
-    /// the Panels menu.
+    /// the visibility menu (`commands::VisibilityToggle`).
     ///
     /// A stack of panels is read down its left edge, and a column of seven words is
     /// read one word at a time; a column of seven marks is read at once. That is the
@@ -635,7 +635,7 @@ pub fn toggle_collapse(layout: PanelLayout, id: PanelId) {
 }
 
 /// Close `id`, and remember it — a panel's own ✕ ([`Panel`]) and the closing half of
-/// the Panels menu.
+/// its row in the visibility menu.
 pub fn close_panel(state: AppState, layout: PanelLayout, id: PanelId) {
     if set_open(layout, id, false) {
         // Only where a panel actually went away. The tour answers the question this
@@ -666,7 +666,8 @@ pub fn open_panel(state: AppState, layout: PanelLayout, id: PanelId) {
     wake_panels(state);
 }
 
-/// Show `id` if it is hidden, hide it if it is not — the Panels menu's entry.
+/// Show `id` if it is hidden, hide it if it is not — what the panel's row in the
+/// visibility menu runs (`commands::VisibilityToggle::Panel`).
 ///
 /// The wake goes through [`open_panel`], so it happens on the half of the toggle that
 /// opens and not on the half that closes.
@@ -1351,7 +1352,7 @@ mod tests {
 
     /// A panel whose box was never measured abandons the gesture rather than
     /// guessing — what a stack that changed under the pointer looks like (a panel
-    /// closed by the Panels menu mid-drag).
+    /// closed by the visibility menu mid-drag).
     #[test]
     fn an_unmeasured_panel_abandons_the_gesture() {
         let (mut open, boxes) = stack();

@@ -14,11 +14,13 @@
 
 use dioxus::prelude::*;
 
+use crate::commands::Command;
 use crate::drags::{self, DragAction};
 use crate::icons::{self, icon, label};
 use crate::layout::chrome_class;
 use crate::panels::select::current_tool;
 use crate::state::{AppState, PickScope};
+use crate::widgets::CommandButton;
 
 /// The eyedropper's sampled patch, as the prior art names it: a point sample, or the
 /// mean of an N×N square around it. A radius is what the engine takes
@@ -28,37 +30,6 @@ const PATCHES: [(&str, u32); 4] = [
     ("3\u{00D7}3", 1),
     ("5\u{00D7}5", 2),
     ("11\u{00D7}11", 5),
-];
-
-/// How far a sample sees, as `(scope, icon, label, what it means)`.
-///
-/// Ordered by how much each one lets in — one layer, the layers beneath it too,
-/// then every layer — so the row reads as one question, *how far does this sample
-/// see*, rather than as three unrelated buttons. The default sits where that
-/// ordering puts it rather than at the head of the row, which is what an ordering
-/// worth having costs. What the reach runs *through* — the selected layer's group,
-/// or the whole document over the canvas color — is the Group chip beside the row
-/// (§18.0.2).
-const SOURCES: [(PickScope, &str, &str, &str); 3] = [
-    (
-        PickScope::ThisLayer,
-        icons::ONE_LAYER,
-        "This layer",
-        "Sample the selected layer alone, ignoring anything over or under it",
-    ),
-    (
-        PickScope::AndBelow,
-        icons::AND_BELOW,
-        "+ Below",
-        "Sample the selected layer and everything beneath it \u{2014} what the \
-         canvas would show with the layers above switched off",
-    ),
-    (
-        PickScope::AllLayers,
-        icons::ALL_LAYERS,
-        "All layers",
-        "Sample every visible layer \u{2014} the color the canvas shows",
-    ),
 ];
 
 #[component]
@@ -80,9 +51,9 @@ pub fn PickBar() -> Element {
         return rsx! {};
     }
 
-    let (mut scope, mut radius) = (state.pick.scope, state.pick.radius);
+    let mut radius = state.pick.radius;
     let mut group_only = state.pick.group_only;
-    let (source, r, grouped) = (scope(), radius(), group_only());
+    let (r, grouped) = (radius(), group_only());
     let chip = |on: bool| if on { "chip active" } else { "chip" };
 
     rsx! {
@@ -98,16 +69,20 @@ pub fn PickBar() -> Element {
 
             span { class: "bar-sep" }
 
+            // Each chip is its command worn whole (`crate::commands`): the
+            // mark, the terse word, the sentence in the tooltip, and which one
+            // is lit are the registry's, so the row cannot describe a reach
+            // differently from the palette. Which is also what buys these three
+            // a keyboard — Alt+Q / Alt+A / Alt+Z reach the same act the chip
+            // does, held under the very modifier that raised this bar, and each
+            // chip advertises the key that reaches it. `PickScope::ALL` is the
+            // ordering: how much each one lets in, one layer to all of them, so
+            // the row reads as one question — *how far does this sample see* —
+            // rather than as three unrelated buttons.
             div {
                 class: "segmented",
-                for (want, glyph, name, why) in SOURCES {
-                    button {
-                        class: chip(source == want),
-                        title: why,
-                        onclick: move |_| scope.set(want),
-                        {icon(glyph)}
-                        {label(name)}
-                    }
+                for want in PickScope::ALL {
+                    CommandButton { key: "{want:?}", command: Command::SetPickScope(want) }
                 }
             }
 

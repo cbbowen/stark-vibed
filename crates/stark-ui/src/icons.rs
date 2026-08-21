@@ -167,7 +167,7 @@ icons! {
     CLOSE => "x-bold",
     // The command rail's entries. A rail is read as a column of destinations
     // rather than of verbs, so these say *where* rather than what: the command
-    // registry, a grid of panels, the preferences.
+    // registry, a grid of what is on screen, the preferences.
     //
     // `SEARCH` is a magnifier over a list — the palette it opens is the list of
     // commands with a field for finding one, and the list rows are the ☰ this
@@ -396,8 +396,8 @@ icons! {
     // to the guide. Hand-drawn in the Phosphor bold grammar; not from the set.
     FISHEYE => "fisheye-bold",
     // The nouns the floating panels are about (§11), worn by the title bar and by the
-    // entry that opens that panel in the Panels menu — so a panel and the way back to
-    // it are one picture rather than two names that happen to match.
+    // entry that opens that panel in the visibility menu — so a panel and the way back
+    // to it are one picture rather than two names that happen to match.
     //
     // Three of them are shared rather than duplicated, and the sharing is the claim:
     // `SELECTION` and `PERSPECTIVE_GRID` also head the bars that serve those panels, and

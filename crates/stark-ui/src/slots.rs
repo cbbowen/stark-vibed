@@ -47,7 +47,7 @@
 //!
 //! The rack draws itself while a number is held ([`SlotOverlay`]) — a column of
 //! the brushes the digits carry, each as the rendered stroke the preset library
-//! shows. The Panels menu can keep it up ("Quick brushes"), which is what makes
+//! shows. The visibility menu can keep it up ("Quick brushes"), which is what makes
 //! it clickable: the rule above needs a keyboard, and a rack that can be clicked
 //! is the whole of what a hand without one gets ([`pick`]) — that, and the one
 //! operation the rule cannot express, since a hold *assigns* and no length of
@@ -268,7 +268,7 @@ pub fn release_all(state: AppState) {
 /// is on the key that summons it, this can afford the width of a real preview
 /// and costs the panel nothing.
 ///
-/// Up while a number is held, and **kept** up by the Panels menu's "Quick
+/// Up while a number is held, and **kept** up by the visibility menu's "Quick
 /// brushes" ([`AppState::slots`]`.pinned`) — which is the same picture with one
 /// thing added: pinned, the rows take clicks, and clicking one is [`pick`].
 /// That is the mouse-only way to a slot, and it is why the pin exists at all —

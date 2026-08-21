@@ -66,8 +66,8 @@ which the engine draws into directly. DOM chrome surrounds it.
   the document knows, and a registry of every (act, target) pair would be a
   second copy of the panels. A payload from the chrome's own closed set is
   different: `Command::TogglePanel(PanelId)` makes each panel's toggle one
-  nameable act — the Panels menu draws its rows from it, a search for "panel"
-  lists the whole stack, and any of the six can be given a chord.
+  nameable act — the visibility menu draws its panel rows from it, a search for
+  "panel" lists the whole stack, and any of the six can be given a chord.
 - **The rail's first entry is the registry, searchable.** `main::CommandSearch`
   is a field over `commands::search`: at rest it offers the file family
   (`commands::BASIC` — the acts with no muscle-memory home anywhere else), and a
@@ -86,6 +86,23 @@ which the engine draws into directly. DOM chrome surrounds it.
   filter picker's own-dropdown arrangement, plus one question that pattern
   never had to ask: `platform::focus_stays_within`, so focus hopping from
   trigger to field on open does not read as dismissal.
+- **The rail's menu is a map of what is on screen, not a list of the panels.**
+  It began as the panel stack's own — one row per `PanelId`, each wearing the
+  mark its title bar wears, so the column is read at a glance rather than a word
+  at a time — and then took in the chrome standing *outside* the stack: the
+  navigator's miniature, the quick-brush rack, and Timeline mode. None of those
+  has a title bar to close itself from, so for each of them the menu is the only
+  way there and back; the timeline had no way at all before its row, being
+  reachable by name in the palette and nowhere else. What the menu holds is one
+  list — `commands::VisibilityToggle::ALL`, whose entries are `Panel(PanelId)`,
+  `Navigator`, `QuickBrushes` and `Timeline` — and the menu is one loop over it.
+  The three arrived one at a time before that, each as a row whose roving-focus
+  index was counted off `PanelId::ALL.len()` by hand: bookkeeping the loop beside
+  it was already doing, restated where nothing would catch it going wrong. The
+  enum is deliberately thin — an entry knows only *which* `Command` it is, and
+  the word, mark, tick and greyed state are the registry's — so it is a view of
+  the registry rather than a second one, and nothing is reachable there that a
+  search for its name would miss.
 - **A chord names its key the way the binding means it.** A chord names the
   accelerator tier (Ctrl or Command, `input::accel`), the Shift bit, and a key
   that is either the *character* it types — a mnemonic follows the layout,
@@ -102,12 +119,16 @@ which the engine draws into directly. DOM chrome surrounds it.
   US-International has a full set). A row the *user* captured is a keystroke
   they chose on their own keyboard, so the rule binds `defaults()` and not the
   type — which also leaves Command+Option reachable on a Mac, where it is
-  idiomatic and no AltGr is involved. A captured Alt chord is always
-  **spatial**: Option+G types `©` on a Mac and AltGr+A types `ą` on a Polish
-  layout, so a key held through Alt has no character of its own left to be
-  named by. The keydown handler asks the table once and claims a matched
-  chord wholly (`prevent_default`) whether or not its act was accepted — a
-  declined Ctrl+A must not answer with the browser highlighting the page.
+  idiomatic and no AltGr is involved. An Alt chord is always **spatial**,
+  captured or shipped: Option+G types `©` on a Mac and AltGr+A types `ą` on a
+  Polish layout, so a key held through Alt has no character of its own left to
+  be named by. **Alt on its own is shippable**, and the table spends it in one
+  place — the eyedropper's three reaches on Alt+Q / Alt+A / Alt+Z (§18.0.2),
+  under the very modifier that raises the bar they change, so the chord is
+  pressed by a hand already holding the tool. The keydown handler asks the
+  table once and claims a matched chord wholly (`prevent_default`) whether or
+  not its act was accepted — a declined Ctrl+A must not answer with the
+  browser highlighting the page.
   What is *not* a chord row is anything owning both edges of its key — a held
   digit (§18.1.8), space's pan, Alt's eyedropper stay in `input`, which owns
   keyup — and Ctrl+V, which is not a command but data arriving (§23).
@@ -122,9 +143,9 @@ which the engine draws into directly. DOM chrome surrounds it.
   existed. Rebinding lives in the palette rather than a settings page: a row's
   shortcut is a chip (a `+` where there is none), click it and press the new
   chord — the field keeps the keyboard and `commands::capture` reads the one
-  keydown, refusing what could never fire (Alt combinations, space and the bare
-  digit holds, the paste's Ctrl+V), taking Escape as the way out and Backspace
-  as the eraser: an unbind is the same gesture as clearing a field, at the cost
+  keydown, refusing what could never fire (space and the bare digit holds, the
+  paste's Ctrl+V), taking Escape as the way out and Backspace as the eraser:
+  an unbind is the same gesture as clearing a field, at the cost
   that no shortcut can be Backspace itself. A capture
   names a character key by what it types and anything else by where it sits,
   which is `Chord`'s own mnemonic/spatial split applied at the moment of
@@ -606,7 +627,10 @@ it:
    focus. If you find yourself writing a second exception, re-read that one
    first; the bar is that high.
 5. **List it in `ALL`** — by hand, and nothing will remind you: a variant
-   left out compiles clean and is simply unfindable in the palette. Add it to
+   left out compiles clean and is simply unfindable in the palette. If the act
+   shows or hides a piece of the window, give it a row in `VisibilityToggle`
+   too: that enum is the whole content of the rail's visibility menu, and a
+   toggle missing from it is an act with no home in the chrome at all. Add it to
    `BASIC` only if it is file-family — the resting offer exists for acts with
    no muscle-memory home, not for whatever is newest. Give it `aliases` for
    what other software calls the act (searched, never printed: the alias does
@@ -618,9 +642,14 @@ it:
    because they are adjacent). Chords are exact about all three modifiers.
    **Never ship a Ctrl+Alt row** — that pair is AltGr on any layout that has
    one, and `no_default_chord_is_ctrl_alt` fails the build if you do; a user
-   may still bind it, because they chose it. `default_chords_are_disjoint`
-   will fail a collision. Two traps with the bare keys: Escape can be rebound
-   *off* but never back on (`capture` spends it on cancelling the capture),
+   may still bind it, because they chose it. **An Alt row is `Code` whatever
+   it means**: under Alt a key does not type its own character, so `capture`
+   names every Alt chord by position and a shipped one that named a character
+   would disagree with a rebinding of the same key. Alt is worth spending
+   where it already means something — the eyedropper's three reaches are Alt
+   rows precisely because Alt is what raises the bar they change (§18.0.2).
+   `default_chords_are_disjoint` will fail a collision. Two traps with the
+   bare keys: Escape can be rebound *off* but never back on (`capture` spends it on cancelling the capture),
    and anything claimed before the table — space, the digit rack — is not
    yours to row.
 7. **Surfaces render the command.** A bar chip or panel-header button is

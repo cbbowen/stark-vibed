@@ -388,11 +388,11 @@ pub enum Anchor {
     /// The quick-brush rack down the left (§18.1.8).
     QuickSlots,
     /// The navigator's miniature, in the bottom-left corner (§11) — the
-    /// other half of that column, and the other thing the Panels menu shows
-    /// and hides that is not a panel.
+    /// other half of that column, and one of the three things the visibility
+    /// menu shows and hides that are not panels.
     Navigator,
     /// The command rail in the top-left corner (§11) — the command search, the
-    /// Panels menu and the ⚙. Always on screen, so nothing has to reveal it and
+    /// visibility menu and the ⚙. Always on screen, so nothing has to reveal it and
     /// nothing can close it.
     CommandRail,
     /// A part of the brush editor's dialog ([`BrushPart`]).

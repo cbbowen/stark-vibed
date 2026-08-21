@@ -128,6 +128,14 @@ mounted only while Alt arms the tool — the same present-or-absent argument the
 selection and frame bars make, and what makes a modifier binding discoverable
 rather than secret.
 
+The three reaches are also the chord table's one Alt column (§25.2):
+`Alt+Q`, `Alt+A` and `Alt+Z` set all-layers, and-below and this-layer, read
+down the left hand's own column so that a step *up* lets one more layer in.
+They are the bar's own chips reached without letting go of the modifier that
+raised them — the same acts, not a second copy of them
+(`Command::SetPickScope`), so the chip, the chord and the palette row cannot
+describe a reach differently, and the chip advertises the key that reaches it.
+
 The bar asks two questions, not one list of modes. The **reach** — this layer /
 this layer and below / all layers — says how far up the stack a sample sees:
 "and below" is the document as the screen would show it with everything above
@@ -508,8 +516,9 @@ the overlay can afford the width of a real preview and costs the panel nothing �
 and the previews were already there to be shown, one cache keyed by the brush
 itself, so a slot that came from a preset is rendered once for both viewers.
 
-**The Panels menu can keep it up** ("Quick brushes" — the one entry in that menu
-that is not a panel in the stack), and that is what makes the rack *clickable*:
+**The rail's visibility menu can keep it up** ("Quick brushes" — one of the three
+entries in that menu that are not panels in the stack), and that is what makes the
+rack *clickable*:
 pinned, a row takes the pointer and clicking one applies that slot for good
 (`slots::pick`). It is the mouse-only way to a slot, and the reason the pin
 exists — the rule this whole feature is built on needs a keyboard, and a hand

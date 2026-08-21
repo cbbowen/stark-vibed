@@ -297,7 +297,7 @@ pub struct AppState {
     /// The ten brushes under the hand (§18.1.8; `crate::slots`).
     pub slots: SlotState,
     /// Whether the Navigator's miniature is showing in the bottom-left corner
-    /// (§11; `crate::navigator`) — the Panels menu's "Navigator".
+    /// (§11; `crate::navigator`) — the visibility menu's "Navigator".
     ///
     /// A signal here rather than an entry in `PanelLayout::hidden`, because the
     /// overview is no longer a panel in the stack: it wears no title bar, its box
@@ -416,12 +416,13 @@ pub struct SlotState {
     /// this (`slots::SlotOverlay`), and the release reads the brushes it has to
     /// restore from it.
     pub held: Signal<Option<crate::slots::Held>>,
-    /// Whether the rack is kept open with no key held — the Panels menu's
+    /// Whether the rack is kept open with no key held — the visibility menu's
     /// "Quick brushes" (§18.1.8). What it buys is a rack that can be *clicked*,
     /// which is the only way to a slot for a hand with no keyboard under it.
     ///
     /// **Not** persisted, unlike the panel stack's visibility and the navigator's
-    /// ([`AppState::navigator`]) — the two other things that menu shows and hides.
+    /// ([`AppState::navigator`]) — the two entries in that menu that *are*
+    /// remembered.
     /// The rack is a picture of what the *keyboard* holds, and pinning it is asking
     /// to see that once; a rack that came back next visit would be a column of
     /// chrome standing over the painting because of something the artist did last
@@ -837,7 +838,13 @@ pub struct PickState {
 /// ([`crate::input::pick_color`]), so the bar cannot be left holding a layer id whose
 /// layer has since been deleted — the same reason the radius is a number here and a
 /// clamped one in the engine.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+///
+/// Serde, because a scope is named in a stored record: the rebinding of the
+/// `Command::SetPickScope` row that carries it (§25.2). The derive spells a
+/// variant exactly as `Debug` does, so the stored name and this enum are one
+/// word by construction, and a variant renamed costs that browser's binding
+/// rather than quietly mis-matching it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum PickScope {
     /// The selected layer alone, ignoring anything over or under it.
     ThisLayer,
@@ -847,6 +854,24 @@ pub enum PickScope {
     /// Every visible layer.
     #[default]
     AllLayers,
+}
+
+impl PickScope {
+    /// Every reach, ordered by how much each one lets in — one layer, the layers
+    /// beneath it too, then all of them. The ordering is the claim that the three
+    /// are one question — *how far does this sample see* — rather than three
+    /// unrelated buttons (§18.0.2), and the default sits where that puts it rather
+    /// than at the head of the row, which is what an ordering worth having costs.
+    ///
+    /// Written once here because the bar's row is drawn from it and the registry
+    /// must agree with the bar: `commands::ALL` is kept by hand, so
+    /// `commands::tests::every_pick_scope_has_a_row` walks this array to say that a
+    /// reach added to the bar arrives in the palette with a chord of its own.
+    pub const ALL: [PickScope; 3] = [
+        PickScope::ThisLayer,
+        PickScope::AndBelow,
+        PickScope::AllLayers,
+    ];
 }
 
 /// The shared-session signals, grouped because they share one lifecycle: they are

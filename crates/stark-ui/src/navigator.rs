@@ -20,7 +20,8 @@
 //!
 //! So it is chrome of its own, like the quick-brush rack it shares a column with
 //! (`crate::slots`): no background, no header, a shadow to lift it off the paint,
-//! and the Panels menu to show and hide it. Unlike the rack it is **remembered** —
+//! and the visibility menu to show and hide it — the only way to it, having no
+//! title bar of its own to close from. Unlike the rack it is **remembered** —
 //! an artist who wants the overview up wants it up next time, which is the bargain
 //! the panel stack makes ([`set_open`], and `layout::set_open` before it).
 //!

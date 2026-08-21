@@ -27,7 +27,7 @@ absent.
 
 Since every panel now starts closed (§11), the tour also carries the opening
 screen: the first three lessons are how the stack gets assembled for somebody who
-has not found the Panels menu.
+has not found the rail's visibility menu.
 
 ### 24.1 A lesson is owed, not scheduled
 
@@ -540,7 +540,7 @@ In table order, which is the order they are offered when two come due at once:
 | 10 | a brush stroke | Brush panel | **ever** touching a control on it | Size and Flow, the brush editor's live test stroke, and that the list below is a library |
 | 40 | a brush stroke | Select panel | **ever** committing a selection | Drag a marquee and every tool acts only inside it; the chips combine one selection with the last (§6.8) |
 | 3 | a selection | Layers panel | **ever** adding a layer | A selection says *where*, the stack says *what* — and a group is also a clipping mask (§14) |
-| 1 | a panel closed | the command rail | the button | Nothing is lost: the Panels menu lists all eight, and what you leave open is remembered (§11) |
+| 1 | a panel closed | the command rail | the button | Nothing is lost: the rail's visibility menu lists every panel, and what you leave open is remembered (§11) |
 | 10 | size or flow moved *by a control* | Brush panel | the button | Ctrl (⌘) + drag on the canvas — sideways for size, up and down for flow (§18.1.9) |
 | 3 | a preset put on from the library | the quick-brush rack | the button | A held number is a brush you *borrow*; tuning under the hold keeps the change (§18.1.8) |
 | 10 | an undo | the canvas | **ever** a shape-assisted stroke | Draw a rough line or ellipse and *hold* — it snaps to what you meant, and the drag steers it (§6.9) |
@@ -566,7 +566,7 @@ artist happened to do next.
 The first three are also where the tour carries weight it did not used to: every
 panel now starts closed (§11), so the opening screen is the painting alone, and the
 sequence *color → where the panels went → the brush* is how the stack gets
-assembled for somebody who has not found the Panels menu. That is the trade the
+assembled for somebody who has not found the visibility menu. That is the trade the
 empty start buys — the panels arrive one at a time, each with a reason, instead of
 five at once with none.
 

@@ -67,7 +67,7 @@ use crate::input::accel;
 use crate::layout::PanelId;
 use crate::panels::brush::{MAX_RADIUS, MIN_RADIUS};
 use crate::platform;
-use crate::state::{AppState, dispatch, update_brush};
+use crate::state::{AppState, PickScope, dispatch, update_brush};
 use crate::storage::{Entry, Store};
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, ViewCommand};
@@ -216,21 +216,27 @@ pub enum Command {
     /// hand over the link. A no-op once the session is live.
     Share,
     /// Enter or leave Timeline mode (§18.2.4) — a mode rather than a dialog, so
-    /// its menu row carries a check.
+    /// its row in the visibility menu carries a check
+    /// ([`VisibilityToggle::Timeline`]) rather than a trailing `…`.
     ToggleTimeline,
     /// Open the Timing Stats dialog (§7.1, `timings::TimingModal`).
     TimingStats,
     Credits,
-    /// Show or hide the navigator's miniature (§11).
+    /// Show or hide the navigator's miniature (§11). Reachable from the
+    /// visibility menu and nowhere else — the miniature has no title bar to
+    /// close itself from ([`VisibilityToggle::Navigator`]).
     ToggleNavigator,
     /// Pin or unpin the quick-brush rack (§18.1.8) — the mouse-only way to a
-    /// slot, which a hand with a pen and no keyboard has no other route to.
+    /// slot, which a hand with a pen and no keyboard has no other route to
+    /// ([`VisibilityToggle::QuickBrushes`]).
     ToggleQuickBrushes,
     /// Show or hide one of the floating tool panels (§11). The one variant
     /// with a payload, and it keeps the module's rule because the target is
     /// the chrome's, not the document's: `PanelId` is a closed set the build
     /// enumerates, so each of the six is still a single nameable act —
-    /// listed in [`ALL`], searchable, bindable to a chord of its own.
+    /// listed in [`ALL`], searchable, bindable to a chord of its own. The
+    /// visibility menu draws its first six rows from these
+    /// ([`VisibilityToggle::Panel`]).
     TogglePanel(PanelId),
     /// Open the ⚙ preferences dialog (`settings::SettingsModal`).
     Settings,
@@ -238,6 +244,24 @@ pub enum Command {
     EditBrush,
     /// Open the "Save preset" dialog for the brush in hand.
     SavePreset,
+    /// How far the eyedropper's next sample sees (§18.0.2): the selected layer,
+    /// it and everything beneath it, or every layer.
+    ///
+    /// The registry's second payload, and it keeps the module's rule for
+    /// [`TogglePanel`](Self::TogglePanel)'s reason — `PickScope` is a closed set
+    /// the *chrome* enumerates (`state::PickScope::ALL`), not a row of the
+    /// document — so each of the three is one nameable act: listed in [`ALL`],
+    /// searchable, and bound to a chord of its own. One variant rather than
+    /// three because the three are one question with three answers, which is
+    /// the same sentence the bar's segmented row is drawn to say.
+    ///
+    /// **Setting, never cycling.** A reach reached by name is a reach a chip can
+    /// be lit for ([`active`](Self::active)) and a chord can land on directly,
+    /// where one "next scope" key would answer differently depending on a state
+    /// the hand cannot see — and the bar this lights is up for as long as Alt is
+    /// held, so the hand is looking straight at the answer it would have to
+    /// count.
+    SetPickScope(PickScope),
     /// Pick the selected paint up into the transform widget (§16.6).
     Transform,
     /// Fill the selection with the brush's paint (§18.0.4). The color comes off
@@ -285,12 +309,11 @@ pub enum Command {
 /// that chords are user state; what holds still is the *data*, which the user's
 /// own table is laid over rather than written into ([`Bindings`]).
 fn defaults() -> Vec<(Chord, Command)> {
-    // Neither helper can say Alt, which is the shipped table's whole
-    // relationship with that modifier: no row here wants it, and the one
-    // combination a row must never be — Ctrl+Alt, which is AltGr on half the
-    // world's layouts ([`Chord`]) — is then unreachable from the two ways a
-    // row is written. `tests::no_default_chord_is_ctrl_alt` is what holds that
-    // once a third way exists.
+    // No helper can say Ctrl *and* Alt, which is the one combination a shipped
+    // row must never be — that pair is AltGr on half the world's layouts
+    // ([`Chord`]) — so it stays unreachable from the three ways a row is
+    // written. `tests::no_default_chord_is_ctrl_alt` is what holds that once a
+    // fourth way exists.
     fn ch(ctrl: bool, shift: bool, key: char) -> Chord {
         Chord {
             ctrl,
@@ -304,6 +327,19 @@ fn defaults() -> Vec<(Chord, Command)> {
             ctrl: false,
             shift: false,
             alt: false,
+            key: ChordKey::Code(key.to_string()),
+        }
+    }
+    // Alt *alone* is a column the table ships in, and spends in one place: the
+    // eyedropper, whose own binding is the Alt press (`drags::defaults`), so the
+    // keys that answer the bar Alt raises are held under the same modifier that
+    // raised it. Spatial like every Alt chord ([`capture`]) — under Alt a key
+    // does not type its own character, so the position is the only honest name.
+    fn alt(key: &str) -> Chord {
+        Chord {
+            ctrl: false,
+            shift: false,
+            alt: true,
             key: ChordKey::Code(key.to_string()),
         }
     }
@@ -331,6 +367,15 @@ fn defaults() -> Vec<(Chord, Command)> {
         (ch(false, false, 'h'), Command::MirrorView),
         (code("BracketLeft"), Command::BrushSmaller),
         (code("BracketRight"), Command::BrushLarger),
+        // The eyedropper's three reaches (§18.0.2), on the left hand's own
+        // column: Q over A over Z, which read *upward* is the bar's row read
+        // rightward — one more layer let in at every step. One rule a hand
+        // learns once rather than three letters, which is R/E/L's bargain
+        // above, and it is a column the same hand can walk without leaving the
+        // Alt it is already holding down.
+        (alt("KeyQ"), Command::SetPickScope(PickScope::AllLayers)),
+        (alt("KeyA"), Command::SetPickScope(PickScope::AndBelow)),
+        (alt("KeyZ"), Command::SetPickScope(PickScope::ThisLayer)),
         // Escape cannot be *re*captured (`capture` spends it on calling a
         // capture off), so unlike every other row this one is one-way for a
         // user who rebinds it: the chord can be moved off Escape, never back
@@ -398,8 +443,9 @@ impl Bindings {
         key: &Key,
         code: &str,
     ) -> Option<Command> {
-        // All three modifiers, exactly — including Alt, which no shipped row
-        // holds and any rebinding may ([`Chord`]).
+        // All three modifiers, exactly — Alt included, which the shipped table
+        // holds a column of (§18.0.2) and any rebinding may reach for
+        // ([`Chord`]).
         let hit = |chord: &Chord| {
             chord.ctrl == accel
                 && chord.shift == shift
@@ -645,6 +691,12 @@ pub const ALL: &[Command] = &[
     Command::AddPerspective,
     Command::EditBrush,
     Command::SavePreset,
+    // The eyedropper's three reaches, beside the brush's own two: what a sample
+    // does is load the brush, so this is the same family reached from the canvas
+    // instead of from the panel (§18.0.2).
+    Command::SetPickScope(PickScope::ThisLayer),
+    Command::SetPickScope(PickScope::AndBelow),
+    Command::SetPickScope(PickScope::AllLayers),
     Command::ToggleTimeline,
     Command::TogglePanel(PanelId::Color),
     Command::TogglePanel(PanelId::Brush),
@@ -678,6 +730,89 @@ pub const BASIC: &[Command] = &[
     Command::ExportImage,
     Command::Share,
 ];
+
+/// One entry of the rail's **visibility menu** (§11): a thing the window shows
+/// or hides, whether or not it is a panel.
+///
+/// The menu began as the panel stack's own — one row per [`PanelId`], each
+/// wearing the mark its title bar wears, so the list reads as a picture of the
+/// stack rather than a column of its names. Then it took in the chrome that
+/// stands *outside* the stack: the navigator's miniature, the quick-brush rack,
+/// and Timeline mode. None of those has a title bar to close itself from, so
+/// for each of them this menu is the only way there and back — and the menu was
+/// never really a list of the panels anyway. It is the map of what is on screen.
+///
+/// Which is what this enum is for. They arrive one at a time, and the first two
+/// came in as rows appended by hand, each with its roving-focus index counted
+/// off `PanelId::ALL.len()`: bookkeeping the loop beside them was already doing,
+/// restated where nothing would catch it going wrong, and a third addition would
+/// have been a third copy of the arithmetic. [`ALL`](Self::ALL) is the map
+/// written down instead, and the menu is one loop over it (`main::CommandRail`).
+///
+/// Deliberately thin. An entry's word, mark, tick, greyed state and act are all
+/// the registry's — it knows only *which* command it is
+/// ([`command`](Self::command)) — so this is a **view** of the registry rather
+/// than a second one, and nothing reachable here is a thing a search for its
+/// name would miss.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VisibilityToggle {
+    /// One of the floating tool panels (§11).
+    Panel(PanelId),
+    /// The navigator's miniature (§11). First of the three that are not panels,
+    /// and the one most like them: a standing readout, kept between visits.
+    Navigator,
+    /// The quick-brush rack (§18.1.8). While a number is held the rack appears
+    /// whatever this entry says; what the entry buys is a rack that is
+    /// *clickable* — the mouse-only way to a slot, which a hand with a pen and
+    /// no keyboard has no other route to.
+    QuickBrushes,
+    /// Timeline mode (§18.2.4): the scrubber and transport across the foot of
+    /// the window.
+    ///
+    /// The one entry that is a **mode** rather than a piece of furniture, and it
+    /// belongs here all the same, for the reason the other two do: this menu
+    /// answers *what is on screen*, and the timeline is the largest thing that
+    /// can be. Until it had a row the mode was reachable by name in the palette
+    /// and nowhere else — no chord, no chip, nothing in the chrome that says the
+    /// history can be walked at all.
+    ///
+    /// Being a mode costs it nothing here and gains it one thing no other entry
+    /// has: Esc leaves it, as the last rung of the ladder.
+    Timeline,
+}
+
+impl VisibilityToggle {
+    /// Every entry, in menu order: the panel stack first, in the order it stacks
+    /// ([`PanelId::ALL`]), then the three that are not panels — last, and in
+    /// increasing order of how much of the window they take.
+    ///
+    /// The panel half is written out rather than folded in from `PanelId::ALL`,
+    /// so this list is the one a reader has to trust and it says what it holds;
+    /// `tests::the_visibility_menu_is_the_stack_plus_three` is what keeps the two
+    /// in step when a panel is added.
+    pub const ALL: [VisibilityToggle; 9] = [
+        VisibilityToggle::Panel(PanelId::Color),
+        VisibilityToggle::Panel(PanelId::Brush),
+        VisibilityToggle::Panel(PanelId::Select),
+        VisibilityToggle::Panel(PanelId::Layers),
+        VisibilityToggle::Panel(PanelId::Guides),
+        VisibilityToggle::Panel(PanelId::Lighting),
+        VisibilityToggle::Navigator,
+        VisibilityToggle::QuickBrushes,
+        VisibilityToggle::Timeline,
+    ];
+
+    /// The act the entry's row runs — the whole of what the row *is*, since the
+    /// menu draws every other part of it from here too (`main::CmdItem`).
+    pub fn command(self) -> Command {
+        match self {
+            VisibilityToggle::Panel(id) => Command::TogglePanel(id),
+            VisibilityToggle::Navigator => Command::ToggleNavigator,
+            VisibilityToggle::QuickBrushes => Command::ToggleQuickBrushes,
+            VisibilityToggle::Timeline => Command::ToggleTimeline,
+        }
+    }
+}
 
 /// The commands `query` asks for, in the order the palette shows them: what
 /// the query begins before what it merely appears in — both caseless — and
@@ -775,6 +910,16 @@ impl Command {
             Command::AddPerspective => "Add perspective grid",
             Command::CancelMode => "Cancel mode",
             Command::FinishMode => "Finish mode",
+            // Named for the act and then the reach, so the three sort
+            // together wherever names are listed and a query for "pick" lists
+            // the family — the shape tools' rule, applied to the other trio
+            // that answers one question. The bar says the reach alone
+            // ([`word`](Self::word)); it is headed "Eyedropper" already.
+            Command::SetPickScope(scope) => match scope {
+                PickScope::ThisLayer => "Pick from this layer",
+                PickScope::AndBelow => "Pick from layers below",
+                PickScope::AllLayers => "Pick from all layers",
+            },
             // Named after the panel with "panel" said out loud, because a
             // search result stands alone: a row reading just "Color" would
             // claim the subject rather than the box that holds its controls.
@@ -821,8 +966,19 @@ impl Command {
             // says the act alone, as its Done neighbour always has.
             Command::CancelMode => "Cancel",
             Command::FinishMode => "Done",
-            // The Panels menu is a picture of the stack, so its rows wear the
-            // panels' own title-bar labels.
+            // The reach alone: the bar these three sit on is headed with the
+            // eyedropper's mark and name, so the verb is already said — and a
+            // 3-chip row beside a Group toggle and four patch sizes has no
+            // width for it twice. The plus is where "and below" survives the
+            // shortening: it is the one thing the long name leaves out, that
+            // the selected layer is in the sample too.
+            Command::SetPickScope(scope) => match scope {
+                PickScope::ThisLayer => "This layer",
+                PickScope::AndBelow => "+ Below",
+                PickScope::AllLayers => "All layers",
+            },
+            // The visibility menu's panel half is a picture of the stack, so
+            // its rows wear the panels' own title-bar labels.
             Command::TogglePanel(id) => id.title(),
             _ => self.name(),
         }
@@ -869,6 +1025,21 @@ impl Command {
             // edge without deleting what lies past it.
             Command::AddFrame => &["Crop", "Canvas size"],
             Command::AddPerspective => &["Drawing guide", "Vanishing point"],
+            // The words the same three reaches wear elsewhere — Photoshop's
+            // Sample menu, and the "merged" that means all-layers in most of
+            // the software that has it. "Eyedropper" is on all three because
+            // the tool itself has no row to find: it is a held modifier rather
+            // than a command (§18.0.2), so a hand typing its name should still
+            // be shown what there is of it here.
+            Command::SetPickScope(PickScope::ThisLayer) => {
+                &["Eyedropper", "Sample current layer", "Sample this layer"]
+            }
+            Command::SetPickScope(PickScope::AndBelow) => {
+                &["Eyedropper", "Sample current and below", "Sample below"]
+            }
+            Command::SetPickScope(PickScope::AllLayers) => {
+                &["Eyedropper", "Sample merged", "Sample all layers"]
+            }
             Command::CancelMode => &["Escape", "Abandon", "Leave mode", "Close dialog"],
             Command::FinishMode => &["Done", "Apply", "Commit"],
             _ => &[],
@@ -918,6 +1089,13 @@ impl Command {
             // Done chip does — the two acts these commands are the names of.
             Command::CancelMode => icons::CLOSE,
             Command::FinishMode => icons::DONE,
+            // The bar's own three marks, which are a picture of the question:
+            // one sheet, a sheet over what is under it, a stack.
+            Command::SetPickScope(scope) => match scope {
+                PickScope::ThisLayer => icons::ONE_LAYER,
+                PickScope::AndBelow => icons::AND_BELOW,
+                PickScope::AllLayers => icons::ALL_LAYERS,
+            },
             // The mark its own title bar wears, so the menu and the palette
             // both stay a picture of the stack.
             Command::TogglePanel(id) => id.glyph(),
@@ -944,6 +1122,22 @@ impl Command {
             Command::SelectLasso => {
                 "Draw a freehand region \u{2014} selecting it hands the brush straight back"
             }
+            // What each reach *sees*, said as the sample sees it — and the
+            // sentence a hand holding Alt reads off the bar, with the chord
+            // that reaches it in the parenthesis ([`tooltip`](Self::tooltip)),
+            // which is the whole of how a modifier binding is learned (§24).
+            Command::SetPickScope(scope) => match scope {
+                PickScope::ThisLayer => {
+                    "Sample the selected layer alone, ignoring anything over or under it"
+                }
+                PickScope::AndBelow => {
+                    "Sample the selected layer and everything beneath it \u{2014} what the \
+                     canvas would show with the layers above switched off"
+                }
+                PickScope::AllLayers => {
+                    "Sample every visible layer \u{2014} the color the canvas shows"
+                }
+            },
             Command::MirrorView => "Mirror the view left-to-right",
             Command::BrushSmaller => "Step the brush size down",
             Command::BrushLarger => "Step the brush size up",
@@ -1021,6 +1215,11 @@ impl Command {
             Command::ToggleTimeline => Some(*state.timeline.open.read()),
             Command::ToggleNavigator => Some(*state.navigator.read()),
             Command::ToggleQuickBrushes => Some(*state.slots.pinned.read()),
+            // Exactly one of the three is lit, always, which is the claim that
+            // the row is one question rather than three switches — and it is
+            // read here so a chord pressed under the bar moves the light the
+            // chip would have moved.
+            Command::SetPickScope(scope) => Some(*state.pick.scope.read() == scope),
             Command::TogglePanel(id) => Some(!state.panels.hidden.read().contains(&id)),
             Command::Share => {
                 Some(*state.collab.phase.read() == crate::collab::CollabPhase::Shared)
@@ -1122,6 +1321,16 @@ impl Command {
                 crate::tutor::did(state, crate::tutor::Deed::OpenedBrushEditor);
             }
             Command::SavePreset => open_dialog(state.preset_save_open),
+            // Ungated, with the view and brush acts: how far a sample reaches is
+            // an argument to a *request* (`Engine::pick_color`), read at the
+            // moment of the sample and committing nothing — and the bar's own
+            // chips have never been refused mid-playback either. The gate that
+            // matters is the sample's, and it is the drag table's
+            // (`DragAction::claims`).
+            Command::SetPickScope(scope) => {
+                let mut want = state.pick.scope;
+                want.set(scope);
+            }
             Command::Transform => {
                 if may_edit(state) {
                     crate::panels::transform::begin_transform(state);
@@ -1483,8 +1692,8 @@ mod tests {
 
     #[test]
     fn alt_is_a_column_a_user_can_take() {
-        // What the Alt column buys: a chord no shipped row holds, answering
-        // exactly its own keystroke.
+        // What the Alt column buys a user: a key the shipped table has no row
+        // for, answering exactly its own keystroke.
         let mut b = stock();
         b.rebind(Command::GradientFill, alt_chord(false, false, "KeyG"));
         assert_eq!(
@@ -1502,12 +1711,73 @@ mod tests {
     }
 
     #[test]
-    fn a_shipped_row_is_never_alt() {
+    fn alt_is_never_a_bystander() {
         // Alt held is not a bystander to a bare row, which is the same
         // exactness Shift gets: `h` mirrors the view and Alt+H does nothing at
-        // all until somebody binds it.
+        // all until somebody binds it — and that holds now that the shipped
+        // table has an Alt column of its own (§18.0.2), which is exactly when
+        // a bystanding read would start answering the wrong act.
         assert_eq!(stock().lookup(false, false, true, &ch("h"), "KeyH"), None);
         assert_eq!(stock().lookup(true, false, true, &ch("z"), "KeyZ"), None);
+    }
+
+    #[test]
+    fn every_pick_scope_has_a_row() {
+        // The eyedropper's three reaches are one question with three answers
+        // (§18.0.2), so they are checked as a set rather than as three rows: a
+        // reach added to the bar must arrive in the palette with it, named for
+        // the act and then the reach, and bound under the modifier its own bar
+        // comes up on.
+        let b = stock();
+        for scope in PickScope::ALL {
+            let command = Command::SetPickScope(scope);
+            assert!(ALL.contains(&command), "{scope:?} has no row in ALL");
+            assert!(
+                command.name().starts_with("Pick from "),
+                "{scope:?} is not named for the act and then the reach"
+            );
+            let chord = command.shortcut(&b).expect("a reach with no chord");
+            assert!(
+                chord.starts_with("Alt+"),
+                "{scope:?} is on {chord}, not on the modifier that raises its bar"
+            );
+            // Armed, never committed: no state of the document makes "sample
+            // this far" unavailable, so nothing greys these.
+            assert!(command.enabled(None));
+        }
+        assert_eq!(search("pick from").len(), PickScope::ALL.len());
+    }
+
+    #[test]
+    fn pick_scopes_answer_the_keys_they_advertise() {
+        // The left hand's own column, read upward as the bar reads rightward:
+        // one more layer let in at every step.
+        let b = stock();
+        for (code, letter, scope) in [
+            ("KeyZ", "z", PickScope::ThisLayer),
+            ("KeyA", "a", PickScope::AndBelow),
+            ("KeyQ", "q", PickScope::AllLayers),
+        ] {
+            assert_eq!(
+                b.lookup(false, false, true, &ch(letter), code),
+                Some(Command::SetPickScope(scope))
+            );
+            // Exact in all three modifiers, as every row is — and the bare
+            // letter matters here: `a` under the accelerator is Deselect, and
+            // Alt is what tells the two apart.
+            assert_eq!(b.lookup(false, false, false, &ch(letter), code), None);
+            assert_eq!(b.lookup(true, false, true, &ch(letter), code), None);
+        }
+        assert_eq!(
+            b.lookup(true, false, false, &ch("a"), "KeyA"),
+            Some(Command::Deselect)
+        );
+        // Spatial, so the reach is the same key on every layout: a Mac's
+        // Option+Q types `œ` and still means all layers.
+        assert_eq!(
+            b.lookup(false, false, true, &ch("\u{153}"), "KeyQ"),
+            Some(Command::SetPickScope(PickScope::AllLayers))
+        );
     }
 
     /// **The one rule about Ctrl+Alt** ([`Chord`]): a user may bind it, and we
@@ -1941,6 +2211,41 @@ mod tests {
             );
         }
         assert_eq!(search("panel").len(), PanelId::ALL.len());
+    }
+
+    #[test]
+    fn the_visibility_menu_is_the_stack_plus_three() {
+        // The menu's panel half is `PanelId::ALL` in the order it stacks —
+        // the claim that the list reads as a picture of the stack. It is
+        // written out in `VisibilityToggle::ALL` rather than folded in from
+        // there, so this is what holds the two together when a panel arrives.
+        let panels: Vec<PanelId> = VisibilityToggle::ALL
+            .into_iter()
+            .filter_map(|entry| match entry {
+                VisibilityToggle::Panel(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            panels,
+            PanelId::ALL.to_vec(),
+            "the visibility menu's panel rows are not the stack, in order"
+        );
+        for (i, entry) in VisibilityToggle::ALL.into_iter().enumerate() {
+            // Every row is a registry command, which is the whole of what an
+            // entry is: reachable by search and bindable to a chord, with the
+            // menu adding nothing of its own.
+            assert!(
+                ALL.contains(&entry.command()),
+                "{entry:?} has no row in ALL, so the menu reaches an act search cannot"
+            );
+            // A doubled entry would draw its row twice and hand both the same
+            // act; nothing else would notice.
+            assert!(
+                !VisibilityToggle::ALL[i + 1..].contains(&entry),
+                "{entry:?} is listed twice in the visibility menu"
+            );
+        }
     }
 
     #[test]

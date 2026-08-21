@@ -56,7 +56,7 @@ use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
 use brush_editor::BrushEditorModal;
-use commands::Command;
+use commands::{Command, VisibilityToggle};
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use credits::CreditsModal;
 use drags::DragAction;
@@ -65,7 +65,7 @@ use input::{
     Nav, Paint, PickMove, Tune, accel, bind_context_menu, bind_pen, bind_shortcuts, elem_xy,
     end_interaction, hover_at, hover_gone, hover_stroke, pick_color, sample,
 };
-use layout::{PanelId, PanelStack, chrome_class, resize_end, resize_move};
+use layout::{PanelStack, chrome_class, resize_end, resize_move};
 use navigator::NavigatorOverlay;
 use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
@@ -1086,8 +1086,9 @@ fn TowStringOverlay() -> Element {
     }
 }
 
-/// A vertical rail on the far left (§11): the command search, the Panels menu,
-/// and the ⚙. The menu is the `menubar` component and its dropdown flies out to
+/// A vertical rail on the far left (§11): the command search, the visibility
+/// menu — what is on screen, panel or not (`commands::VisibilityToggle`) — and
+/// the ⚙. The menu is the `menubar` component and its dropdown flies out to
 /// the right; the search is [`CommandSearch`], our own dropdown in the same
 /// spot, which is the way to every simple command by name — Undo advertises its
 /// Ctrl+Z there now, in the row a query for it turns up.
@@ -1122,38 +1123,21 @@ fn CommandRail() -> Element {
                 // registry could list itself (`commands::ALL`).
                 CommandSearch {}
                 MenubarMenu { index: 0usize,
-                    // Toggle which floating panels are shown. Each entry wears the
-                    // panel's own mark, which is the same one its title bar wears —
-                    // so the menu is a picture of the stack rather than a list of
-                    // its names (`PanelId::glyph`).
+                    // What is on screen: the floating panels, and the chrome
+                    // that stands outside their stack. Each entry wears its own
+                    // mark — a panel's is the one its title bar wears — so the
+                    // menu is a picture of the window rather than a list of its
+                    // nouns (`PanelId::glyph`, `Command::icon`).
                     MenubarTrigger { {icon_large(icons::PANELS)} }
                     MenubarContent {
-                        // Each panel's row is its toggle command, so the same
-                        // act is reachable by search and by a chord of the
-                        // user's own — the row here adds nothing the registry
-                        // does not carry (`Command::TogglePanel`).
-                        for (i, id) in PanelId::ALL.into_iter().enumerate() {
-                            CmdItem { index: i, command: Command::TogglePanel(id) }
-                        }
-                        // The two that are **not** panels, last and slightly apart:
-                        // both stand down the left of the window rather than in the
-                        // stack, and neither has a title bar to close itself from.
-                        //
-                        // They belong here all the same, because this menu is the map
-                        // of what is on screen rather than a list of the panels — and
-                        // being in it is the only way to either of them.
-                        //
-                        // The navigator first: it is a standing readout, where the
-                        // rack below is a picture of what the keyboard is holding
-                        // (§11, §18.1.8).
-                        CmdItem { index: PanelId::ALL.len(), command: Command::ToggleNavigator }
-                        // The quick-brush rack, and while a number is held it appears
-                        // whatever this entry says. What the entry buys is a rack that
-                        // is *clickable*: the mouse-only way to a slot, which a hand
-                        // with a pen and no keyboard has no other route to.
-                        CmdItem {
-                            index: PanelId::ALL.len() + 1,
-                            command: Command::ToggleQuickBrushes,
+                        // One loop over one list (`commands::VisibilityToggle`),
+                        // which is where what the menu holds — and in what order
+                        // — is written down. Every row is a registry command, so
+                        // the same act is reachable by search and by a chord of
+                        // the user's own, and the row adds nothing the registry
+                        // does not already carry.
+                        for (i, entry) in VisibilityToggle::ALL.into_iter().enumerate() {
+                            CmdItem { index: i, command: entry.command() }
                         }
                     }
                 }
