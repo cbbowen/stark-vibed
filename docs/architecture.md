@@ -222,8 +222,8 @@ Two caveats, stated rather than hidden:
 - **`vendor/` is in `[workspace] exclude`.** Cargo otherwise promotes an
   unexcluded path dependency to a workspace member, which drags vendored code
   into `cargo fmt --all` and `clippy --workspace`. Their own test suites
-  therefore do not run under `cargo test --workspace` — run them by hand when the
-  vendored code changes (§20).
+  therefore do not run under `cargo nextest run --workspace` — run them by hand
+  when the vendored code changes (§20).
 
 ## 3. Layered architecture
 

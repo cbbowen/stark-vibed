@@ -119,9 +119,19 @@ jobs:
           sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
           vulkaninfo --summary || true
 
+      # The official installer rather than a third-party action: one curl, no
+      # marketplace dependency, and it is what nexte.st documents for CI.
+      - name: Install nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
       # Covers the five crates/ members only — the vendored trees are excluded
       # from the workspace (see the root Cargo.toml), so their own test suites do
       # not run here.
+      #
+      # `--profile ci` adds the retries (`.config/nextest.toml`), and with them
+      # `final-status-level = "flaky"`: a test that needed a retry is *reported* as
+      # flaky rather than folded into the pass count, so this stays a way of seeing
+      # the flake rather than a way of hiding it.
       - name: Test
         env:
           WGPU_BACKEND: vulkan
@@ -135,4 +145,15 @@ jobs:
           # errors and panics are all still caught; only the pixel diff is
           # dropped.
           STARK_SKIP_GOLDEN: '1'
-        run: cargo test --workspace
+        run: cargo nextest run --workspace --profile ci
+
+      # nextest cannot run doctests — there is no libtest protocol for them — so
+      # they are a second command. It executes nothing today: `stark-engine`'s
+      # three doc examples are all ```ignore blocks. Kept so that the first real
+      # doctest anybody writes is *run* rather than collected by nobody, which is
+      # the failure mode `STARK_ALLOW_NO_GPU` is left unset above to avoid.
+      - name: Doctests
+        env:
+          WGPU_BACKEND: vulkan
+          STARK_SKIP_GOLDEN: '1'
+        run: cargo test --workspace --doc

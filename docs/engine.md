@@ -470,6 +470,23 @@ assert_golden!("oil_blend_01", png, tolerance);
   those details.
 - **When a model is wrong, fix the model and re-bless.** No compensating fudge
   constants to keep an old golden green.
+- **The runner is `cargo nextest run`, and the GPU is a test group.** nextest
+  gives every test its own process, so `tests/common`'s shared device — a
+  `OnceLock`, one per binary under `cargo test` — becomes one per *test*: ~340 ms
+  of adapter, device and shader compiles, against ~22 ms on a device that already
+  exists. Unbounded that is not just slower but contended, and the contention is
+  where this suite's `BufferAsyncError` flake came from: 24 tests of `merge`
+  opening 24 devices at once took ~8 s each, where one alone takes ~0.34 s. So
+  `.config/nextest.toml` caps the number that may hold a device at 16 and leaves
+  the ~300 arithmetic-and-geometry unit tests unthrottled. Bounding the
+  concurrency is a fix for the *class*; a list of the tests that have flaked would
+  be an enumeration of its instances, and the next one is never on it. Measured on
+  a 32-core box: 118 s under `cargo test`, 116 s under nextest with no group, 98 s
+  with it. **nextest cannot run doctests** — `cargo test --workspace --doc` is a
+  second command. It executes nothing today (the three doc examples are all
+  ` ```ignore ` blocks), and is kept for the same reason a missing GPU is a
+  failure: so the first real one somebody writes is run rather than collected by
+  nobody.
 
 The suite files, roughly by subject: `golden`, `seam`, `stroke`, `dynamics`,
 `path`, `selection`, `fill`, `matte`, `groups`, `blend`, `composite`,

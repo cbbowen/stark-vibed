@@ -111,7 +111,8 @@ the frontend reorganizes.
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo nextest run --workspace   # the suite (`.config/nextest.toml`; see below)
+cargo test --workspace --doc    # doctests, which nextest cannot run (see below)
 cargo check -p stark-ui --target wasm32-unknown-unknown
 # the second configuration (§6.7): no Mixbox, and so no CC BY-NC 4.0 code at all.
 # Also the ONLY gate that catches a `#[cfg]` that drifted off the `use` it
@@ -212,8 +213,20 @@ The workspace is on **nightly** for exactly one reason: `history`'s
 ## Conventions
 
 - **The test suite is slow — run it once.** Redirect a single
-  `cargo test --workspace` to a file and grep that file; do not re-run to get
-  names after counts.
+  `cargo nextest run --workspace` to a file and grep that file; do not re-run to
+  get names after counts.
+- **`cargo test` does not run the suite the way it is meant to be run.** It still
+  works, and it is still what runs the *doctests* — but nextest gives every test
+  its own process, which is what lets `.config/nextest.toml` cap how many of them
+  ask the driver for a device at once. That cap is the fix for the
+  `BufferAsyncError` flake, and it is also ~13% faster on a large box. Two commands
+  because nextest cannot run doctests at all. `--doc` is the second, and today it
+  executes **nothing**: the three doc examples in `stark-engine` are all
+  ` ```ignore ` blocks (`engine::render`, `timing` ×2), so they are counted and
+  skipped. Keep the command anyway — it is what makes the first *real* doctest
+  somebody writes actually run, instead of being collected by nobody. That is the
+  same reason `STARK_ALLOW_NO_GPU` is left unset: a test nothing runs still
+  reports `ok`.
 - **Cite sections, not line numbers**, when referring to the docs from code
   (`§6.4`).
 - **When a model is wrong, fix the model and re-bless the goldens.** No

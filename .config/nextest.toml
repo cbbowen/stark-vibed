@@ -1,0 +1,77 @@
+# How the test suite is run (`cargo nextest run`). See CLAUDE.md → Commands.
+#
+# nextest runs every test in its **own process**, which is the fact everything here is
+# arranged around. `tests/common`'s device is a `OnceLock`, so under `cargo test` one
+# device served a whole binary; under nextest each test builds its own — ~340 ms of
+# adapter, device and ~19 shader compiles, against ~22 ms for an engine on a device
+# that already exists.
+#
+# Unbounded, that is not merely slower, it is **contended**: the 24 tests of `merge`
+# starting 24 devices at once took ~8 s *each*, where one alone takes ~0.34 s. The
+# driver is one resource, and asking every core for a piece of it at the same moment
+# is how this suite earned its `BufferAsyncError` flake — a readback that failed
+# because the device was being hammered, not because anything was wrong with it.
+#
+# So the GPU is a **test group**: a semaphore sized to the thing rather than to the
+# CPU. Measured on the 32-core box this was written on, whole workspace, 1077 tests:
+#
+#     cargo test --workspace                118 s
+#     nextest, no group                     116 s   (32 devices at once)
+#     nextest, gpu = 4                      137 s   too serial
+#     nextest, gpu = 8                      105 s
+#     nextest, gpu = 12                      99 s
+#     nextest, gpu = 16                      98 s / 100 s
+#     nextest, gpu = 24                     101 s
+#
+# Both ends cost: too few slots serialises work that parallelises fine once the
+# devices exist, too many walks back into the contention. The floor is broad and flat
+# from 12 to 24, which is the useful part — the number is not delicate.
+
+[test-groups]
+# Everything that opens a wgpu device. Deliberately **not** a list of the tests that
+# have flaked: bounding the concurrency rules out the class, where a list of names
+# enumerates its instances and the next flake is never on it.
+#
+# 16 is the middle of the flat region above, and half this box's cores. CI runs on
+# four, where the group is slack — the whole run is under its ceiling anyway — so
+# this is a local ceiling that costs a small machine nothing.
+gpu = { max-threads = 16 }
+
+# The engine's integration tests, which is all of them: every one goes through
+# `tests/common`, and 434 of the ~445 build an engine there. Structural rather than
+# named — `kind(test)` is the whole set by construction, so a new integration test is
+# in the group the moment the file exists.
+[[profile.default.overrides]]
+filter = 'package(stark-engine) and kind(test)'
+test-group = 'gpu'
+
+# And the unit tests under `gpu::`, of which only `gpu::context` and `gpu::submit`
+# actually build a context today. The module tree rather than those two, because the
+# two costs are not symmetric: a pure-arithmetic test swept in holds a slot for the
+# microsecond it takes to run, while one left out asks the driver for a device from
+# outside the ceiling this file exists to impose. Over-inclusion is the safe side.
+#
+# The other 300-odd unit tests — geometry, fitting, planning — stay unthrottled, and
+# that split is the point: the heavy half waits on the driver, the light half waits
+# on nothing.
+[[profile.default.overrides]]
+filter = 'package(stark-engine) and test(/^gpu::/)'
+test-group = 'gpu'
+
+[profile.default]
+# A GPU that stops answering should fail the test that was waiting on it, by name,
+# rather than the job's own timeout — which reports that something hung and nothing
+# about what. Four periods of 60 s: long enough that a slow software adapter is not
+# mistaken for a hang.
+slow-timeout = { period = "60s", terminate-after = 4 }
+
+# `cargo nextest run --profile ci`.
+[profile.ci]
+# Retries are **only** here. Locally a flake should be seen: one that is quietly
+# retried away is a bug nobody is looking for, and this suite has exactly one such
+# bug on record. On CI the run's job is to answer whether the code is good, and
+# `final-status-level = "flaky"` is what keeps a retry from hiding — a test that
+# needed one is reported as flaky rather than as passing.
+retries = 2
+fail-fast = false
+final-status-level = "flaky"
