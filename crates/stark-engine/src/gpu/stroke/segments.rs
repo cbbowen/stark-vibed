@@ -61,6 +61,15 @@ pub(super) struct Sweep {
     /// the radius at the knot they share, because both compute it from the same pen
     /// and the same taper at the same arc length.
     ///
+    /// **The same agreement is what the deposit rests on**, one level down. The two
+    /// ends of a segment's swept span are denominated against `r_start` and `r_end`
+    /// rather than against the reference radius (`stamp_common::Sweep::span`), so one
+    /// segment's trailing coordinate and the next one's leading coordinate are the same
+    /// expression — and a point's exposure over a whole pass comes out the mask's row
+    /// total whatever the cut. Denominated both ends in the reference instead, the
+    /// exposure rippled at the flattener's own cadence, which is what printed a tapered
+    /// stamp brush as a fan of stepped streaks (2026-08-20).
+    ///
     /// **`|ramp| < 2` structurally**, so the tip in force is positive everywhere
     /// without a clamp: the ends are floored at `0.5` by [`generate_segments_in`], and
     /// `|r₁ − r₀| < r₁ + r₀` for any two positive radii.
@@ -334,14 +343,17 @@ const TAPER_SHOULDER_SLACK: f32 = 0.25;
 // **Why there is no cap on `|ramp|` itself**, which is the first thing a reader will
 // look for beside the bound above.
 //
-// A large ramp costs accuracy in the *deposit*, not in the outline: the sweep's travel
-// axis is denominated in the segment's reference radius (`stamp_common::Sweep`), so a
-// tip that is `1 ± ramp/2` of that over the segment's two halves books its exposure
+// Because a large ramp is no longer the deposit's problem either. It used to be: the
+// sweep's travel axis was denominated in the segment's *reference* radius, so a tip
+// that is `1 ± ramp/2` of that over the segment's two halves booked its exposure
 // through a measure off by the same fraction — over-counting one half, under-counting
-// the other, and cancelling to first order because the reference is the midpoint.
+// the other, cancelling only to first order. The shader now denominates the two ends of
+// the span against the tips actually in force at them (`stamp_common::Sweep::span`), so
+// adjacent segments agree at the knot they share exactly as their outlines do, and a
+// point's total exposure over a pass is the mask's row total whatever the cut.
 //
-// Where that residual is largest, no cut can reduce it. Cut an edge whose tip starts
-// at the taper's point into `n` uniform pieces and piece `k` spans radius
+// That matters most exactly where no cut could have helped. Cut an edge whose tip
+// starts at the taper's point into `n` uniform pieces and piece `k` spans radius
 // `[kΔ/n, (k+1)Δ/n]`, so its ramp is `1/(k + ½)` — **independent of `n`**. The first
 // piece sits at the structural limit of 2 whatever it is subdivided to, the second at
 // 0.67, the fourth at 0.22. Subdividing an edge that reaches a point buys nothing but
@@ -349,12 +361,20 @@ const TAPER_SHOULDER_SLACK: f32 = 0.25;
 // ~700 pieces per zone for a first-order term the ramp now carries exactly, and spent
 // most of them where the mark is a hairline.
 //
+// What is left is the *lateral* axis, which cannot be made cut-free at all: a point's
+// offset across the tip is measured against a tip that grows while the tip passes over
+// it, and a prefix row is one row. The shader freezes it at the moment the tip is
+// closest to the point, which is right where it matters — the outline is then exactly
+// the taper's own profile — and first-order in the segment length elsewhere. That term
+// *is* bought by subdivision, and it is what the sagitta bound above ends up paying
+// for as well.
+//
 // Away from the point the ramp is small without being asked: in the body of a taper
 // the outline bound above already puts the radius change per piece at a few percent of
 // the tip. So the ramp is bounded where it matters and unbounded where it cannot
 // matter, and the one guarantee that has to hold everywhere — `|ramp| < 2`, which is
-// what keeps the tip positive at both ends — is structural rather than enforced
-// ([`Segment::ramp`]).
+// what keeps the tip positive at both ends, and now also what keeps both span scales
+// `1 ∓ ramp/2` positive — is structural rather than enforced ([`Segment::ramp`]).
 
 /// Cap on the pieces one flattened edge is cut into for the taper — a backstop on a
 /// pathological brush rather than a quality knob.

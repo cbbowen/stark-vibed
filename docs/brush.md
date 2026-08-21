@@ -220,6 +220,32 @@ Two places the obvious implementation is wrong:
   positive at both ends without a clamp: the ends are floored at half a px and
   `|r₁ − r₀| < r₁ + r₀`.
 
+  **The deposit has to agree at that knot too, and for a while it did not.** A
+  point's exposure to a segment is the footprint integrated over the offsets it
+  occupied relative to the tip — and an offset is measured in whatever tip was in
+  force at the moment, `r_start` when the sweep opens and `r_end` when it closes.
+  Denominating both ends in the reference radius instead is right only to first
+  order, and the residual is *not* a smooth error: it is a step at every knot, so
+  a taper's exposure rippled at the flattener's own cadence. On a round tip that
+  hides under the falloff; on an image stamp, whose mask has real structure
+  across the tip, each bristle printed as a stepped streak, worst near the point
+  where the ramp is largest and no subdivision can shrink it. Carrying the two
+  travel coordinates as a **span** with a denominator each
+  (`stamp_common::Sweep::span`) makes one segment's trailing coordinate and the
+  next one's leading coordinate the same expression, so the exposure telescopes:
+  a point's total over a pass is the mask's row total whatever the cut.
+
+  The **lateral** axis cannot be made cut-free the same way and is not. A prefix
+  difference reads one row, and the row a point belongs to drifts while the tip
+  crosses it, because the tip is growing. The shader freezes it at the moment the
+  tip is closest to the point — which is exactly right at the outline, and where
+  the outline's own continuity comes from — leaving a first-order term in the
+  segment length everywhere else. Freezing it anywhere the sweep telescopes
+  instead (either end, or the point's own extrapolated tip) buys cut-independence
+  by dropping the drift altogether, and draws a tapered stamp with a hard edge
+  and unsmeared bristles: measurably further from the converged answer than what
+  is there now, both on a round tip and on a stamp.
+
   What the cut still buys is second order — the ramp is a *chord* across a cubic
   profile, so the outline bows off it by the sagitta `|r''|·h²/8`, held under the
   flattener's own sub-pixel budget or under a quarter of the tip's shoulder where
@@ -228,12 +254,13 @@ Two places the obvious implementation is wrong:
   earlier rules — a step in the radius *factor*, then a step in px — cost 211 and
   121 on the reference stroke, and ~700 per zone on a hard 500 px tip.
 
-  There is deliberately no cap on the ramp itself. A large one costs accuracy in
-  the *deposit* (the sweep's travel axis is denominated in the reference radius),
-  not in the outline; and where it is largest no cut can reduce it — cut an edge
-  reaching a taper's point into `n` uniform pieces and piece `k` has ramp
-  `1/(k + ½)`, independent of `n`. Away from the point the sagitta bound has
-  already made it small.
+  There is deliberately no cap on the ramp itself. Where it is largest no cut can
+  reduce it — cut an edge reaching a taper's point into `n` uniform pieces and
+  piece `k` has ramp `1/(k + ½)`, independent of `n` — so a cap would be a bound
+  on nothing. What a large ramp used to cost was accuracy in the deposit; the
+  span above is what removed that, and the one guarantee left, `|ramp| < 2`, is
+  what keeps both span denominators `1 ∓ ramp/2` positive as well as the tip.
+  Away from the point the sagitta bound has already made it small.
 
   One consequence worth knowing: a segment's sweep is rasterized over a strip
   built on its *widest* tip, which puts real fragments outside the footprint's

@@ -95,8 +95,10 @@ struct VsOut {
     // falls it was bridging, so the grain fills in: the charcoal behaviour.
     @location(5) @interpolate(flat) tooth: f32,
     // **The stretch of the tip's travel this point is swept by**, in radius units:
-    // where the point sits in the tip frame when the segment starts .x, and where when
-    // it ends .y. The deposit is one prefix-τ difference across it (`swept_depth`).
+    // where the point sits in the tip frame when the segment ends .x, and where when it
+    // starts .y — the tip advancing carries the point backwards through its own
+    // footprint, so `.y` is the larger. The deposit is one prefix-τ difference across
+    // it (`swept_depth`), and `sweep_of` reads the pair off as `Sweep::span`.
     //
     // Carried from the vertices rather than recovered per fragment, and that is the
     // whole point rather than a saving. A range recovered from the fragment's own
@@ -132,14 +134,35 @@ struct Sweep {
     // reference one only on a segment whose tip does not ramp (`ramp_apply`).
     //
     // The two axes are denominated differently on purpose. `.x` is conjugate to `lr`
-    // and to the prefix table's travel axis, so the pair must share one frame; `.y`
-    // indexes the coverage profile across the stroke, which is what the outline *is*,
-    // so it has to follow the tip that is actually there.
+    // and to the segment's own arc, so the pair must share one frame and that frame is
+    // the reference (`stroke_arc`); `.y` indexes the coverage profile across the
+    // stroke, which is what the outline *is*, so it has to follow the tip that is
+    // actually there. What the prefix table is read at is neither — it is `span`,
+    // where each end carries the tip in force at its own moment.
     local: vec2<f32>,
     // The segment's travel **in this point's own measure**, radius units. On a curved
     // sweep a point on the outside of the turn sees the tip cross more of its own
     // frame than a point on the inside does; this is that amount.
     lr: f32,
+    // **The two travel coordinates the prefix difference is taken across**: where the
+    // point sits in the tip's frame when the segment starts .x, and when it ends .y
+    // (so `.x ≥ .y` — the tip advancing carries the point backwards through its own
+    // footprint). `swept_depth` is `prefix(.x) − prefix(.y)`, and everything below the
+    // frame reads the pair from here rather than rebuilding it from `local.x` and
+    // `lr`.
+    //
+    // A pair and not a base-plus-width, because **the two ends are denominated
+    // against different tips** on a ramping segment (`ramp_apply`): the point's offset
+    // when the segment starts is worth `r_start` px and when it ends `r_end`, and
+    // dividing both by the reference radius is what made a taper's deposit depend on
+    // where the flattener cut it (§6.2). Denominated this way the pair *telescopes*:
+    // one segment's `.y` and the next one's `.x` are the same expression at the knot
+    // they share, so a point's total exposure over a pass is the mask's row total
+    // whatever the cut — which is the property the outline already had and the deposit
+    // did not.
+    //
+    // Exactly `(local.x, local.x − lr)` wherever the tip does not ramp.
+    span: vec2<f32>,
     // Tip travel per unit of the point's own measure — `|R|/ρ`, and exactly 1 on a
     // straight sweep. Every depth read out of a prefix difference is in the point's
     // measure and has to be converted back by this before it means anything.
@@ -202,12 +225,16 @@ struct Sweep {
 // heard of stretch renders bit for bit what it always did.
 
 // Where a point of the tip's reference travel frame lands in the frame the prefix-τ
-// volume is read in: the travel coordinate where the segment **ends** .x, where it
-// **starts** .y, and the lateral offset .z. A prefix difference across `.xy` at `.z`
+// volume is read in: the travel coordinate where the segment **starts** .x, where it
+// **ends** .y, and the lateral offset .z. A prefix difference across `.xy` at `.z`
 // is this point's swept depth, in that frame's measure.
 fn stretch_look(sw: Sweep, st: vec3<f32>) -> vec3<f32> {
-    let x1 = st.x * sw.local.x + st.y * sw.local.y;
-    return vec3<f32>(x1, x1 - st.x * sw.lr, st.z * sw.local.y);
+    // The shear is the *same* at both ends — it is a property of where the point sits
+    // across the tip, not of how far the tip has gone — so it is formed once and added
+    // to each. Written this way round rather than as `x1 − st.x·lr` because the two
+    // ends no longer share a denominator (`Sweep::span`).
+    let sh = st.y * sw.local.y;
+    return vec3<f32>(st.x * sw.span.x + sh, st.x * sw.span.y + sh, st.z * sw.local.y);
 }
 
 // The same map run backwards: from a point of the lookup frame to where it rides in
@@ -279,10 +306,35 @@ fn ramp_scale(ramp: f32, x: f32, lr: f32) -> f32 {
 // where interpolating `sweep_at`'s is exact. There it is applied after the interpolation
 // instead (`sweep_of`), on quantities that survive it.
 fn ramp_apply(sw: Sweep, ramp: f32) -> Sweep {
+    // The identity, taken as a branch rather than as a `/1` and a `*1`. Every segment
+    // of an untapered brush at constant pressure comes through here, and the dynamics
+    // loop's bleed ladder builds thirty-six of these frames per thread, so the two
+    // reciprocals below are worth not paying. Guarded on `lr` as well as on the ramp,
+    // for the reason `ramp_scale` is: a slot with no travel has no ends to tell apart,
+    // and denominating its two span coordinates differently would open a prefix
+    // difference where the tip never moved.
+    if ramp == 0.0 || sw.lr <= 0.0 {
+        return sw;
+    }
     let s = ramp_scale(ramp, sw.local.x, sw.lr);
     var out = sw;
     out.local.y = sw.local.y / s;
     out.radius = sw.radius * s;
+    // **And the two ends of the span against the tips that are actually there** — the
+    // one at the segment's start against `r_start`, the one at its end against `r_end`
+    // (`Sweep::span`). The exposure is the integral of the footprint over the offsets
+    // the point occupied relative to the tip, and that offset is measured in whatever
+    // tip was in force at the moment: `r(0)` when the sweep opens and `r(len)` when it
+    // closes. Dividing both by the reference radius instead over-counts the segment's
+    // narrow half and under-counts its fat one, cancelling only to first order — so a
+    // taper's deposit rippled at the flattener's own cadence, worst exactly where the
+    // ramp is largest and no subdivision can shrink it (the taper's point).
+    //
+    // The two scales are `1 ∓ ramp/2` — `ramp_scale`'s value at either end, written
+    // out because these are the segment's ends and not this point's position. Both are
+    // positive without a clamp for the reason the tip is: `|ramp| < 2` structurally
+    // ([`Segment::ramp`]).
+    out.span = vec2<f32>(sw.span.x / (1.0 - 0.5 * ramp), sw.span.y / (1.0 + 0.5 * ramp));
     return out;
 }
 
@@ -342,6 +394,7 @@ fn sweep_at(
         out.lr = len / radius;
         out.warp = 1.0;
         out.turn = 0.0;
+        out.span = vec2<f32>(out.local.x, out.local.x - out.lr);
         return out;
     }
     let ak = abs(kappa);
@@ -362,6 +415,7 @@ fn sweep_at(
     // `delta` is already the angle swept from the start, positive the way the tip
     // travels, so the turn direction is the only thing left to restore.
     out.turn = sign(kappa) * delta;
+    out.span = vec2<f32>(out.local.x, out.local.x - out.lr);
     return out;
 }
 
@@ -485,10 +539,11 @@ fn sweep_vertex(
 
 // This fragment's place in its segment's travel frame, as the vertices agreed it.
 //
-// The travel coordinate is the range's *end* — where the point sits when the segment
-// finishes — and the travel it was swept by is the range's own width. Stated that way
-// round because it is the range that is fundamental now: `swept_depth` wants two
-// prefix arguments, and everything else here is a reading of the same pair.
+// The travel coordinate is the range's second lane — where the point sits when the
+// segment *starts*, which is the far end of the stretch it is swept through — and the
+// travel it was swept by is the range's own width. Stated that way round because it is
+// the range that is fundamental: `swept_depth` wants two prefix arguments, and
+// everything else here is a reading of the same pair.
 // The ramp is applied *here*, after the interpolation, for the reason `ramp_apply`
 // gives: the varyings above are affine in canvas position on a straight sweep and the
 // correction is not, so the strip carries the reference frame and the fragment
@@ -498,6 +553,10 @@ fn sweep_of(in: VsOut) -> Sweep {
     var out: Sweep;
     out.local = vec2<f32>(in.range.y, in.frame.x);
     out.lr = in.range.y - in.range.x;
+    // The range **is** the reference span, and taken straight rather than rebuilt from
+    // `local.x` and `lr` — the vertices agreed on both ends, so differencing one out of
+    // the other and back is a rounding the interpolation did not ask for.
+    out.span = in.range.yx;
     out.warp = in.frame.y;
     out.turn = in.frame.z;
     out.radius = in.geom.x;

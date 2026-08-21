@@ -302,6 +302,74 @@ fn the_taper_widens_without_a_step() {
     }
 }
 
+/// **The deposit is as smooth along a taper as the outline is** (§6.2,
+/// `stamp_common::Sweep::span`).
+///
+/// The outline's continuity has its own test above; this one reads the *inside* of
+/// the mark. A point's exposure to one segment is the footprint integrated over the
+/// offsets the point held relative to the tip, and an offset is measured against
+/// whatever tip was in force at the moment — `r_start` when the sweep opens,
+/// `r_end` when it closes. Divide both ends by the segment's reference radius
+/// instead and the two are right only on average: the error is a *step* at every
+/// knot rather than a smooth bias, so a taper's exposure ripples at whatever cadence
+/// the flattener happened to cut, worst at the point where the ramp is largest and
+/// no subdivision can shrink it.
+///
+/// Read as ink per column rather than as width, because the artifact is in the
+/// deposit and not in the edge: the brush is soft and thin enough that the mark
+/// stays linear in exposure everywhere, so a ripple in `τ` is a ripple in the
+/// picture rather than something saturation flattens out. The taper's own profile is
+/// a cubic, so the true column ink is smooth to well under the bound below; the
+/// ripple this pins ran to 5.8% of the column mean where the taper's own curvature
+/// leaves 1.1%, and the bound sits between them.
+#[test]
+fn a_tapers_deposit_has_no_ripple_at_the_cut() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    // One taper over the whole run, so every column is inside it, and a soft thin
+    // tip so the deposit never saturates. `drain` is off in `inking_brush`, so the
+    // taper is the only thing varying along the stroke.
+    let mut b = inking_brush(12.5, 0.0);
+    b.shape = stark_model::document::BrushShape::Round { hardness: 0.2 };
+    b.dynamics.add = 0.08;
+    stroke_with(&mut engine, b, &straight_run());
+    let img = engine.render_to_image();
+
+    // How far this column has been moved off bare canvas, summed down the rows. A
+    // linear reading, so it tracks `τ` rather than an edge's crossing of a threshold;
+    // the ground is uniform, so one corner texel is what "bare" means everywhere.
+    let bare = img.pixel(0, 0);
+    let lean = |c: [u8; 4]| c[0] as f32 - c[2] as f32;
+    let ink = |x: u32| -> f32 {
+        (0..img.height)
+            .map(|y| lean(img.pixel(x, y)) - lean(bare))
+            .sum::<f32>()
+    };
+    // Column 28 is the taper's point and 228 the stroke's end; stay a radius clear of
+    // both, where the profile is a plain cubic in the arc.
+    let profile: Vec<f32> = (46..210).map(ink).collect();
+    let mean = profile.iter().sum::<f32>() / profile.len() as f32;
+    assert!(mean > 0.0, "the stroke left no ink to measure");
+
+    // The second difference: a step at a knot shows here where the taper's own
+    // curvature barely registers.
+    let (mut worst, mut at) = (0.0f32, 0usize);
+    for (i, w) in profile.windows(3).enumerate() {
+        let d2 = (w[0] - 2.0 * w[1] + w[2]).abs() / mean;
+        if d2 > worst {
+            worst = d2;
+            at = 46 + i + 1;
+        }
+    }
+    assert!(
+        worst < 0.02,
+        "the taper's ink jumps by {:.1}% of its mean at column {at} — the deposit \
+         has a step in it where the flattener cut",
+        worst * 100.0,
+    );
+}
+
 /// **A click paints nothing, and commits nothing.** A swept deposit is a
 /// definite integral over travel, and a press that has not moved integrates
 /// over nothing — the tool now says so honestly instead of fabricating a
