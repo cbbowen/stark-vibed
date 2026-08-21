@@ -59,8 +59,8 @@ pub fn ColorPanel() -> Element {
 /// to regenerate while dragging `L`).
 const FIELD_N: usize = 96;
 
-/// Rendered height of the `L` ramp BMP — one pixel wide, since the track carries no
-/// horizontal variation and CSS stretches it across.
+/// Rendered width of the `L` ramp BMP — one pixel tall, since the track carries no
+/// vertical variation and CSS stretches it down.
 const RAMP_N: usize = 128;
 
 // --- the sRGB gamut, which is what the wheel is a picture of ---------------------
@@ -266,7 +266,7 @@ impl Grab {
 }
 
 /// Reusable Oklab color picker: a wheel of hue and chroma at one lightness, a
-/// vertical `L` slider beside it, and a readout of what has been chosen. Seeds its
+/// horizontal `L` slider under it, and a readout of what has been chosen. Seeds its
 /// state from `init` (straight sRGB) when mounted and reports every pick through
 /// `onchange` as straight sRGB. Signals are `Copy`, so they can be handed to several
 /// event closures and the free helpers below. Used by the Color panel (brush color),
@@ -347,7 +347,7 @@ pub fn OklabPicker(
     // Percentages of each control's own box, whatever size the stylesheet gave it.
     let (mx, my) = wheel_xy(hue(), sat());
     let (wx, wy) = (mx * 100.0, my * 100.0);
-    let ly = (1.0 - l()) * 100.0; // L: 1→top, 0→bottom
+    let lx = l() * 100.0; // L: 0→left, 1→right
     let rgb = wheel_color(l(), hue(), sat());
     let well = format!(
         "background: rgb({:.2}% {:.2}% {:.2}%);",
@@ -388,7 +388,7 @@ pub fn OklabPicker(
                 "data-picking": "{l_grab().is_some()}",
                 onpointerdown: move |e| {
                     capture_pointer(&e);
-                    let g = Grab::press(&e, (0.5, 1.0 - l()));
+                    let g = Grab::press(&e, (l(), 0.5));
                     l_grab.set(Some(g));
                     pick_l(onchange, l, hue, sat, g, &e);
                 },
@@ -397,17 +397,15 @@ pub fn OklabPicker(
                 },
                 onpointerup: move |_| end_pick(oncommit, l_grab, l, hue, sat),
                 onpointercancel: move |_| end_pick(oncommit, l_grab, l, hue, sat),
-                div { class: "l-marker", style: "top:{ly}%;" }
+                div { class: "l-marker", style: "left:{lx}%;" }
             }
-        }
-        // What was picked, said twice: as a patch big enough to judge, and as the
-        // number to type when judging is not the point. The patch is the honest
-        // answer to *what am I holding* — the marker sits on the color it names, and
-        // a 12px ring around a pixel is not a sample of anything.
-        div { class: "color-readout",
-            div { class: "color-well", style: "{well}" }
+            // What was picked, said twice: as a patch big enough to judge, and as the
+            // number to type when judging is not the point. The patch is the honest
+            // answer to *what am I holding* — the marker sits on the color it names, and
+            // a 12px ring around a pixel is not a sample of anything.
             input {
                 class: "color-hex",
+                style: "{well}",
                 r#type: "text",
                 spellcheck: false,
                 autocomplete: "off",
@@ -503,7 +501,7 @@ fn pick_l(
     let Some(p) = pointer_fraction(e) else {
         return;
     };
-    l.set((1.0 - grab.place(p).1).clamp(0.0, 1.0));
+    l.set(grab.place(p).0.clamp(0.0, 1.0));
     apply_color(onchange, l, hue, sat);
 }
 
@@ -639,19 +637,18 @@ fn wheel_data_url(l: f32) -> String {
 }
 
 /// The `L` slider's track: this hue at this fraction of the chroma each lightness
-/// can hold, black at the bottom to white at the top.
+/// can hold, black at the left to white at the right.
 ///
 /// Drawn rather than handed to CSS as a `linear-gradient(in oklab …)`, which is what
 /// it used to be. A CSS ramp interpolates `(a, b)` linearly, so with a saturated
 /// color it leaves the gamut immediately and both ends of the track go flat under
 /// the clamp — the slider stops answering exactly where the artist is looking for a
-/// highlight or a shadow. Fitting each row to its own lightness is the same fix the
-/// wheel makes, on the other axis, and what it draws is not a gradient of anything.
+/// highlight or a shadow. Fitting each column to its own lightness is the same fix
+/// the wheel makes, on the other axis, and what it draws is not a gradient of
+/// anything.
 fn l_ramp_data_url(hue: f32, sat: f32) -> String {
     let last = (RAMP_N - 1) as f32;
-    bmp_data_url(1, RAMP_N, |_, y| {
-        wheel_color(1.0 - y as f32 / last, hue, sat)
-    })
+    bmp_data_url(RAMP_N, 1, |x, _| wheel_color(x as f32 / last, hue, sat))
 }
 
 /// Render the Oklab `a`/`b` plane at lightness `l` as a small BMP `data:` URL, flat:

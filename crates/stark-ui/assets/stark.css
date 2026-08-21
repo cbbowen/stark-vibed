@@ -16,6 +16,7 @@
      is meant to be would leave a stripe down the screen's edge that looks like the
      panels but does not answer. */
   --panel-column: 300px;
+  --panel-padding: 12px;
   --panel-inset: 4px;
   --panel-shadow: 0px 0px 8px 0px black;
   --panel-color: #e8e8ea;
@@ -23,7 +24,12 @@
      chrome rather than a second opinion about what the panels are made of. */
   --panel-noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.12'/%3E%3C/svg%3E");
   --panel-ink: 21 20 19;
-  --panel-background: var(--panel-noise), rgb(var(--panel-ink) / 0.9);
+  --panel-background:
+    var(--panel-noise),
+    linear-gradient(
+      to bottom,
+      rgb(var(--panel-ink) / 0.9) 36px,
+      rgb(var(--panel-ink) / 0.75));
   /* The same chrome with the tenth of the canvas that shows through it closed up.
      A panel floats over the painting and is worth seeing past; a dialog is modal —
      nothing behind it is being read — and a title band with rows sliding under it
@@ -377,30 +383,19 @@ hr {
   flex: none;
   background: var(--panel-background);
   color: var(--panel-color);
-  border-radius: 12px;
-  padding: 12px 14px;
+  border-radius: var(--panel-padding);
+  padding: var(--panel-padding);
   box-shadow: var(--panel-shadow);
   backdrop-filter: blur(8px);
 }
 
-/* The one panel whose content is a picture — the color panel's wheel — sheds its
-   padding: a picture reads best bled to the panel's own edges, and the padding was
-   the one thing between them. The header carries the inset the panel gave up (its
-   words still need a margin to sit in), restoring its bottom half only on a folded
-   panel, where the header's edge *is* the panel's; the readout under the wheel
-   carries the inset back for its own row. The picture's other half is elsewhere:
-   the picker's geometry is fractional, so its panel size is one rule below
-   (`.color-wheel`). */
 .panel[data-panel="Color"] {
-  padding: 0;
-}
-
-.panel[data-panel="Color"] .panel-header {
-  padding: 12px 14px 0;
-}
-
-.panel.collapsed[data-panel="Color"] .panel-header {
-  padding-bottom: 12px;
+  background:
+    var(--panel-noise),
+    linear-gradient(
+      to bottom,
+      rgb(var(--panel-ink) / 0.9) 41px,
+      rgb(var(--panel-ink) / 0.2));
 }
 
 /* Where a flush picture meets a panel corner, the panel clips it to its own
@@ -655,10 +650,23 @@ hr {
   width: 100%;
 }
 
-/* --- color panel (Oklab: a gamut-fitted wheel + L slider) --- */
 .color-pick {
   display: flex;
-  gap: 10px;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* The picker bleeds to its panel's edges — but only in the panel that is *only*
+   the picker. Scoped rather than said of `.color-pick` once, because the same
+   control has two other homes where the bleed is wrong: in the Lighting panel it
+   is a row among rows, and a negative bottom margin there collapses out through
+   `.color-inline` and drags the next row up over the hex field; in the frame
+   bar's `.color-popout` nothing clips the corners, so a bled field's square ones
+   stand out past the radius. Both keep their inset and stay inside it. */
+.panel[data-panel="Color"] .color-pick {
+  margin-left: calc(-1 * var(--panel-padding));
+  margin-right: calc(-1 * var(--panel-padding));
+  margin-bottom: calc(-1 * var(--panel-padding));
 }
 
 /* The picker's sizes are stated here alone: the markers ride percentages and a
@@ -706,25 +714,24 @@ hr {
 
 .l-slider {
   position: relative;
-  width: 22px;
-  height: 220px; /* the wheel's, so the pair read as one instrument */
-  border-radius: 11px; /* a pill, which is the wheel's roundness at this width */
-  background-size: 100% 100%; /* the one-pixel-wide BMP ramp, stretched across */
-  cursor: ns-resize;
+  margin-top: var(--panel-padding);
+  height: 28px;
+  width: 100%; /* whatever holds it: the wheel above sets its own size, this fills */
+  background-size: 100% 100%; /* the one-pixel-tall BMP ramp, stretched down */
+  cursor: ew-resize;
   touch-action: none;
 }
 
-/* In the Color panel the picker fills the padding the panel shed (248 + 10 gap +
-   22 = 280, the panel's full inner width). Scoped by name: the same picker sits
-   inline in the Lighting panel and flies out of the bars' wells at the base size
-   above. */
+/* In the Color panel the wheel is bigger than the panel's content box, because the
+   picker bleeds past it (`.panel[data-panel="Color"] .color-pick`) and the panel
+   clips the overhang to its own corners. The negative top margin lifts the wheel's
+   crown into the title band above it. Scoped by name: the same picker sits inline in
+   the Lighting panel and flies out of the bars' wells at the base size above, in
+   both cases inside the padding rather than over it. */
 .panel[data-panel="Color"] .color-wheel {
-  width: 248px;
-  height: 248px;
-}
-
-.panel[data-panel="Color"] .l-slider {
-  height: 248px;
+  margin-top: -18px;
+  width: 260px;
+  height: 260px;
 }
 
 /* The lightness marker used to be a line across the track, which covered the one
@@ -734,9 +741,9 @@ hr {
    triangles: a box shadow would outline the (empty) box, not the shape. */
 .l-marker {
   position: absolute;
-  left: 0;
-  right: 0;
-  height: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
   pointer-events: none;
 }
 
@@ -744,61 +751,40 @@ hr {
 .l-marker::after {
   content: "";
   position: absolute;
-  top: -5px;
-  border-top: 5px solid transparent;
-  border-bottom: 5px solid transparent;
+  left: -5px;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
   filter: drop-shadow(0 0 1px #000c);
 }
 
 .l-marker::before {
-  left: 0;
-  border-left: 5px solid #fff;
+  top: 0;
+  border-top: 5px solid #fff;
 }
 
 .l-marker::after {
-  right: 0;
-  border-right: 5px solid #fff;
+  bottom: 0;
+  border-bottom: 5px solid #fff;
 }
 
-/* What was picked, said twice — a patch big enough to judge a color by, and the
-   number to type when judging is not the point. A marker sitting on a color is
-   not a sample of it, which is the gap this row closes. */
-.color-readout {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.color-well {
-  flex: 1;
-  height: 26px;
-  border: 1px solid #ffffff2e;
-  border-radius: 6px;
-}
-
-/* The sunken well that says a line takes typing (`.palette-field`'s claim),
-   monospaced because every character of a hex code is a digit in a place. */
 .color-hex {
   box-sizing: border-box;
   flex: none;
-  width: 88px;
-  padding: 6px 0;
+  width: 100%;
+  height: 28px;
+  padding: 0;
   border: none;
-  border-radius: 6px;
-  background: #ffffff14;
-  color: #e8e8ea;
+  border-radius: 0;
+  color: #fff;
+  font-weight: 500;
+  text-shadow:
+    0 0 2px #000,
+    0 0 3px #000;
   font: inherit;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 12px;
   text-align: center;
   outline: none;
-}
-
-/* The picker's own inset in the one panel that shed its padding: the wheel bleeds
-   to the panel's edges, the row underneath cannot. */
-.panel[data-panel="Color"] .color-readout {
-  padding: 0 14px 12px;
 }
 
 /* A color well showing the current value; clicking toggles the pop-out picker. */
@@ -821,8 +807,9 @@ hr {
    A **panel** grows to hold it: the stack is a scroll container (`overflow-y: auto`,
    `overflow-x: clip`), so anything that flew out beside a panel would be clipped at
    the stack's padding box — and a column that scrolls has somewhere to put the extra
-   height anyway. The picker is 252px across, which is exactly a panel's content
-   width, so it needs no surface of its own and takes none: it is already inside one. */
+   height anyway. The picker takes the panel's content width — the wheel sits at its
+   base size and the track and field below fill the rest — so it needs no surface of
+   its own and takes none: it is already inside one. */
 .color-inline {
   margin-top: 8px;
 }
@@ -1070,15 +1057,19 @@ hr {
    The section escapes the panel's padding — its rows are pictures (the rendered
    strokes), butted into a filmstrip that reads best bled to the panel's own
    edges — while the sliders and chips above keep their inset. The margins
-   restate the panel's padding, negated: 14px each side, and 14px below because
-   this panel is resizable and `.panel.resizable` deepens the bottom padding for
-   the grip, whose press strip now overlays the last row's bottom sliver — the
-   same 12px it was always given. The header and the empty line, still inside
-   the bled section, carry the inset themselves. */
+   restate that padding, negated, and the two ends are two different numbers:
+   the sides take `--panel-padding`, the foot takes the deeper bottom padding
+   `.panel.resizable` opens for the grip, whose press strip now overlays the last
+   row's bottom sliver — the same 12px it was always given. Written as the
+   variable rather than as the pixels it currently resolves to, because the pair
+   drifted apart once already: the panel's padding moved and this rule went on
+   negating the old number, hanging the filmstrip 2px past the panel on each
+   side. The header and the empty line, still inside the bled section, carry the
+   inset themselves. */
 .preset-section {
   display: flex;
   flex-direction: column;
-  margin: 0 -14px -14px;
+  margin: 0 calc(-1 * var(--panel-padding)) -14px;
 }
 
 /* The list's heading, and only that: Save moved up beside "Edit brush…"
@@ -1727,7 +1718,7 @@ hr {
    over the panel's edge mid-reorder). */
 .layer-tree {
   position: relative;
-  margin: 0 -14px;
+  margin: 0 calc(-1 * var(--panel-padding));
   padding: 2px 0;
   background: #00000038;
 }
