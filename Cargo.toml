@@ -36,13 +36,22 @@ rust-version = "1.85"
 
 # The lints every member inherits, via `[lints] workspace = true` in its manifest.
 #
-# The bar for a row here is that it costs **nothing today**: each was measured at
-# zero warnings across `--workspace --all-targets` before being added, so none of
-# them arrives with a backlog attached. They are ratchets — they cannot fail this
-# build, only a later one. MORE_LINTS.md records the survey they came out of,
-# including the far longer list of lints deliberately *not* taken, and why: the
-# cast family is what pixel-and-index code is made of, and `suboptimal_flops`
-# would trade a golden re-bless for nothing.
+# The bar for a row here is that it costs **nothing today**: each was measured
+# across `--workspace --all-targets` before being added, and either raised nothing
+# or had its sites fixed in the same commit. They are ratchets — they cannot fail
+# this build, only a later one.
+#
+# The lints deliberately *left out* carry as much of the argument as the ones kept,
+# and the reason is always the same: a lint's count says how much work it is, never
+# whether the work is worth doing. The cast family (949 warnings between
+# `cast_precision_loss`, `cast_possible_truncation` and `cast_sign_loss`) is what
+# pixel-and-index code is made of. `suboptimal_flops` pushes `mul_add`, which
+# *changes the rounding* — a golden re-bless in exchange for nothing, and a slow
+# software path where there is no hardware FMA. `float_cmp`'s fourteen sites are
+# every one a deliberate exactness guard. `imprecise_flops` wants `hypot` on the
+# stroke hot path to survive an intermediate overflow that bounded canvas
+# coordinates cannot reach. Where a rejection belongs beside a lint that *is* here,
+# it is written there instead.
 #
 # `warn` rather than `deny` because the gate is `-D warnings` at the CI edge
 # (CLAUDE.md), which is where the default lints are already held.
@@ -81,7 +90,7 @@ rc_buffer = "warn"
 # here — a `GpuTile` handle going out of scope is what returns it to the pool.
 mem_forget = "warn"
 # `x == 1.0` against a *literal*. The general `float_cmp` is deliberately absent:
-# all 14 of its sites are exactness guards that mean it (MORE_LINTS.md).
+# all 14 of its sites are exactness guards that mean it.
 float_cmp_const = "warn"
 # `#[expect]` over `#[allow]`, and a `reason` on both. An `allow` is permanent by
 # construction: it goes silent the moment the thing it suppressed disappears, and
@@ -97,18 +106,18 @@ allow_attributes_without_reason = "warn"
 # representable amount and were fine — but they were fine by arithmetic nobody had
 # checked, and both read better driven off an integer index anyway.
 #
-# `clippy::iter_with_drain` is deliberately *not* here, though the same survey
-# proposed it: its two hits are `drain(..)` on a `Vec` that is refilled on the next
-# pass, and its suggested `into_iter()` does not compile (E0382). MORE_LINTS.md.
+# `clippy::iter_with_drain` is deliberately *not* here, though it looks like a
+# neighbour: its two hits are `drain(..)` on a `Vec` that is refilled on the next
+# pass, which is what `drain` is for, and its suggested `into_iter()` does not
+# compile — E0382, borrow of moved value.
 while_float = "warn"
 useless_let_if_seq = "warn"
 # A `collect()` into a binding that is then read once. Two of its three sites
 # built a whole `Vec` to ask it for `.len()`.
 #
-# `clippy::maybe_infinite_iter` is the other one the survey proposed and this
-# does not take: both its hits are the `(1..).find(|n| name is free)` that names
-# the next capture, which terminates after N+1 entries. It would buy two
-# `#[expect]`s and no finding. MORE_LINTS.md.
+# `clippy::maybe_infinite_iter` is the other near neighbour not taken: both its
+# hits are the `(1..).find(|n| the name is free)` behind "Gradient N" and
+# "Preset N", which terminates after N+1 entries. Two `#[expect]`s, no finding.
 needless_collect = "warn"
 # An assert that fires should say which invariant broke. Every one of the nine
 # this found already had a comment above it explaining exactly that — the message

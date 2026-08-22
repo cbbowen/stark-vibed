@@ -3,8 +3,7 @@
 # This file exists for one failure mode: a call that the type checker, the test
 # suite and both CI clippy jobs all wave through, and that fails only when a
 # person loads the app. Nothing before a hand-run catches it, so it has to be
-# caught at the name. The rows below are that list, and MORE_LINTS.md §"Tier 2"
-# is where the reasoning lives.
+# caught at the name. The rows below are that list.
 #
 # `stark-model`, `stark-engine` and `stark-ui` all compile to wasm; `stark-net`
 # does too. The benches, examples and native-only tests are the legitimate
