@@ -664,10 +664,20 @@ pub fn capture(accel: bool, shift: bool, alt: bool, key: &Key, code: &str) -> Ca
 /// first (the resting offer, [`BASIC`]), then the acts on the document and the
 /// view, the openers, the toggles, and the keyboard-only steps last.
 ///
-/// By hand, kept in step in review — nothing here can make the compiler demand
-/// a new variant be listed, and a variant left out is simply unfindable in the
-/// palette. `tests::names_are_unique` runs over this list, so at least a
-/// duplicate display name cannot hide in it.
+/// **By hand, and checked**. The order is presentational and belongs to a human;
+/// the *completeness* does not, and used to be left to review — a variant left
+/// out compiled clean and was simply unfindable in the palette.
+/// `tests::all_lists_every_command` is what ended that: it counts the enum's
+/// variants at compile time, so a command added without a row here fails the
+/// build with the row it is missing. `tests::names_are_unique` runs over the
+/// list too, so a duplicate display name cannot hide in it either.
+///
+/// What is deliberately still by hand is everything *about* a command — its
+/// word, mark, hint and aliases are `match` arms rather than columns of a table
+/// here, because half those arms carry a sentence saying why that one is spelled
+/// the way it is ("a search result stands alone", "the menu's panel half is a
+/// picture of the stack"), and a table would have nowhere to put them. The list
+/// is data; the descriptions are an argument.
 pub const ALL: &[Command] = &[
     Command::NewDocument,
     Command::OpenDocument,
@@ -2196,6 +2206,38 @@ mod tests {
         // Bare letters, so an accelerator over one is nobody's — Ctrl+R must
         // stay the browser's reload rather than arming a marquee.
         assert_eq!(b.lookup(true, false, false, &ch("r"), "KeyR"), None);
+    }
+
+    /// **Every variant of [`Command`] has a row in [`ALL`]**, which §25.2 step 5
+    /// says nothing will remind you of:
+    ///
+    /// > List it in `ALL` — by hand, and nothing will remind you: a variant left
+    /// > out compiles clean and is simply unfindable in the palette.
+    ///
+    /// This is the reminder. `variant_count` is a compile-time property of the
+    /// enum, so adding a variant moves the expected total and fails here — and
+    /// the only edit that fixes it is the row that was forgotten.
+    ///
+    /// The arithmetic is the one thing worth reading twice. Two variants carry a
+    /// payload drawn from the chrome's own closed set, and each stands for as
+    /// many acts as that set has members — so they count once as variants and
+    /// once per member as rows. That the members really are all present is
+    /// `every_panel_has_a_toggle_row` and `every_pick_scope_has_a_row`, which
+    /// check the two families by name; this checks the total, and between them
+    /// there is nowhere for a missing row to hide.
+    #[test]
+    fn all_lists_every_command() {
+        let payload_families = 2; // TogglePanel, SetPickScope
+        let expected = std::mem::variant_count::<Command>() - payload_families
+            + PanelId::ALL.len()
+            + PickScope::ALL.len();
+        assert_eq!(
+            ALL.len(),
+            expected,
+            "ALL has {} rows for {} acts — a command was added without one, and              it is unfindable in the palette until it has one (§25.2 step 5)",
+            ALL.len(),
+            expected
+        );
     }
 
     #[test]

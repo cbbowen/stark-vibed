@@ -150,7 +150,11 @@ rendered nothing. `STARK_SKIP_GOLDEN=1` renders without comparing pixels (what C
 uses, since goldens are adapter-specific). Deleting a golden re-blesses it.
 
 The workspace is on **nightly** for exactly one reason: `history`'s
-`associated_type_defaults`.
+`associated_type_defaults`. One nightly feature is used *besides* that, and only
+in the test profile: `stark-ui` turns on `variant_count` under
+`cfg_attr(test, …)`, which is what lets `commands::tests::all_lists_every_command`
+fail the build when a command is added without a row in the registry's list
+(§25.2). Nothing in a shipped build depends on it.
 
 ## Rules that are easy to break silently
 

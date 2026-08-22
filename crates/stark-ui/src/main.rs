@@ -27,6 +27,12 @@
 // not to anything writable in the source: plain interpolation *is* the idiom
 // here. Suppressed crate-wide because it fires wherever rsx! does.
 #![allow(clippy::useless_format)]
+// `std::mem::variant_count`, for `commands::tests::all_lists_every_command` and
+// nothing else — which is why it is `cfg_attr(test, …)` rather than a feature
+// this crate carries. §25.2 step 5 says of the registry's list that it is kept
+// "by hand, and nothing will remind you"; this is the reminder, and it costs a
+// nightly feature in the test profile to have one.
+#![cfg_attr(test, feature(variant_count))]
 
 mod brush_editor;
 mod builtin_ids;

@@ -646,8 +646,10 @@ it:
    it, because Enter is otherwise the keyboard's activation of whatever has
    focus. If you find yourself writing a second exception, re-read that one
    first; the bar is that high.
-5. **List it in `ALL`** — by hand, and nothing will remind you: a variant
-   left out compiles clean and is simply unfindable in the palette. If the act
+5. **List it in `ALL`** — by hand, and the build will remind you:
+   `tests::all_lists_every_command` counts the enum's variants, so a variant
+   left out fails the suite rather than being quietly unfindable in the
+   palette. (It used to be neither; that test is what changed it.) If the act
    shows or hides a piece of the window, give it a row in `VisibilityToggle`
    too: that enum is the whole content of the rail's visibility menu, and a
    toggle missing from it is an act with no home in the chrome at all. Add it to
