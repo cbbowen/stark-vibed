@@ -120,14 +120,17 @@ fn hatched(engine: &mut stark_engine::Engine) {
     // Spaced by a period that is not a multiple of the 4-px output block, so which
     // stroke a decimating sample lands on walks across the picture — the phase
     // dependence that reads as banding.
-    let mut x = -HALF + 5.0;
-    while x < HALF {
+    let start = -HALF + 5.0;
+    // Indexed rather than accumulated — the same fan, minus the question of whether
+    // the last stroke falls inside the frame by arithmetic or by luck.
+    let count = ((HALF - start) / 9.0).ceil() as u32;
+    for i in 0..count {
+        let x = start + i as f32 * 9.0;
         stroke_with(
             engine,
             fine([0.85, 0.10, 0.10, 1.0]),
             &[Vec2::new(x, -HALF), Vec2::new(x + 34.0, HALF)],
         );
-        x += 9.0;
     }
     engine.process(DocCommand::AddMatte {
         carrier: None,

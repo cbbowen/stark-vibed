@@ -247,10 +247,11 @@ impl GestureRx {
         // *selection* leaves no assembly. Keyed on the assembly, a stroke delta whose
         // head had been lost found nothing to clear, took the early return below, and
         // left the peer's last marquee sitting on the canvas.
-        let mut changed = false;
-        if self.id != Some(frame.id()) {
-            changed = self.clear();
-        }
+        let changed = if self.id == Some(frame.id()) {
+            false
+        } else {
+            self.clear()
+        };
         self.id = Some(frame.id());
         match frame {
             GestureFrame::Selection { op, .. } => {

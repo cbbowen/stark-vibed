@@ -615,18 +615,19 @@ impl Compositor {
             .collect();
 
         self.instances.write(device, queue, &plan.instances);
-        let mut matte_ramp_bg = None;
-        if !plan.mattes.is_empty() {
+        let matte_ramp_bg = if plan.mattes.is_empty() {
+            None
+        } else {
             self.matte_instances.write(device, queue, &plan.mattes);
             self.matte_ramps.write(device, queue, &plan.ramps);
             // Built after the write, so it names the buffer the write may have just
             // grown — the same reason the guide pass builds its own per render.
-            matte_ramp_bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark matte ramp bg"),
                 layout: &p.tiles.ramp_bgl,
                 entries: &[self.matte_ramps.binding(0)],
-            }));
-        }
+            }))
+        };
 
         // One uniform slot per merge and one per filter layer, all written before the
         // single submit — see [`UniformSlots`] for why they cannot share one. The

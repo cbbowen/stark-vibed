@@ -131,11 +131,13 @@ mod tests {
         use stark_model::document::fill_rect;
         use stark_model::geom::TILE_SIZE;
 
-        let side = TILE_SIZE as f32;
         let mut steps = 0;
         for feather in [0.0, 3.0, 40.0] {
-            let mut at = 0.0;
-            while at < side {
+            // Off an integer index rather than an accumulator: the same positions
+            // exactly (a quarter is representable), but the sweep's *end* no longer
+            // depends on rounding not having drifted across 1024 additions.
+            for step in 0..TILE_SIZE * 4 {
+                let at = step as f32 * 0.25;
                 let op = FillOp::new(
                     SelectionShape::rect_from_corners(Vec2::splat(at), Vec2::splat(at + 40.0)),
                     feather,
@@ -150,7 +152,6 @@ mod tests {
                          footprint {declared:?} does not declare",
                     );
                 }
-                at += 0.25;
                 steps += 1;
             }
         }

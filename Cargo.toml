@@ -86,6 +86,15 @@ float_cmp_const = "warn"
 # gone stale, and this is what said so.
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
+# A loop whose counter is a float. Both sites this found stepped by an exactly
+# representable amount and were fine — but they were fine by arithmetic nobody had
+# checked, and both read better driven off an integer index anyway.
+#
+# `clippy::iter_with_drain` is deliberately *not* here, though the same survey
+# proposed it: its two hits are `drain(..)` on a `Vec` that is refilled on the next
+# pass, and its suggested `into_iter()` does not compile (E0382). MORE_LINTS.md.
+while_float = "warn"
+useless_let_if_seq = "warn"
 
 # Single source of truth for shared dependency versions (CLAUDE.md).
 [workspace.dependencies]
