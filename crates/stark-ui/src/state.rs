@@ -100,12 +100,42 @@ impl<T: 'static> Readable for ReadOnly<T> {
 /// Shared `Copy` handle to the app's signals. Provided once by `app` and read back
 /// through `use_context` wherever a component needs to reach the engine.
 ///
+/// **One word wide**, and that is the whole of why it is a newtype rather than the
+/// struct itself. [`Signals`] holds eighty-odd `Signal`s, each three words on
+/// wasm32 — call it two kilobytes — and this handle is a by-value parameter on
+/// some two hundred and seventy functions and is copied out of `use_context` by
+/// every component on every render. Passing the struct meant passing all of it.
+///
+/// Leaking one [`Signals`] costs nothing that was not already true: it is built
+/// once, in the root component, which is never unmounted — the same fact
+/// [`root_signal`] is built on, and the reason every signal in it is owned by
+/// `ScopeId::ROOT` rather than by the scope that declared it.
+///
+/// [`Deref`](std::ops::Deref) and deliberately **not** `DerefMut`, so `state.foo`
+/// reads exactly as it did and `state.foo.set(…)` does not compile. Every signal
+/// here is `Copy`, so the way to write one is to take it into a local first —
+/// `let mut foo = state.foo; foo.set(…)` — which is the form the crate already
+/// prefers everywhere, for a reason of its own: a `set` through a place expression
+/// is one keystroke from a read guard held across its own write, which is the
+/// borrow panic this module warns about twice.
+#[derive(Clone, Copy)]
+pub struct AppState(&'static Signals);
+
+impl std::ops::Deref for AppState {
+    type Target = Signals;
+
+    fn deref(&self) -> &Signals {
+        self.0
+    }
+}
+
+/// Every signal the app holds — what [`AppState`] is a handle to.
+///
 /// Built by [`AppState::new`] rather than field-by-field at the call site, so every
 /// signal here goes through [`root_signal`] — the one property that has to hold for
 /// all of them, and the kind of thing a hand-written literal drifts out of the moment
 /// a field is added.
-#[derive(Clone, Copy)]
-pub struct AppState {
+pub struct Signals {
     /// Surface + engine, built asynchronously once the canvas mounts. `None`
     /// until WebGPU init completes. Not `Send` — lives in unsync storage.
     ///
@@ -567,7 +597,7 @@ pub struct ShapesState {
 impl AppState {
     /// Build the app's state. Call once, from the root component.
     pub fn new() -> Self {
-        Self {
+        AppState(Box::leak(Box::new(Signals {
             renderer: ReadOnly(root_signal(|| None)),
             obs: ReadOnly(root_signal(|| None)),
             renderer_ready: root_signal(|| false),
@@ -698,7 +728,7 @@ impl AppState {
             bindings: root_signal(Default::default),
             drags: root_signal(Default::default),
             drag_offer: root_signal(Default::default),
-        }
+        })))
     }
 }
 
@@ -1342,5 +1372,35 @@ pub fn update_brush(state: AppState, f: impl FnOnce(&mut BrushParams)) {
     if let Some(mut brush) = brush {
         f(&mut brush);
         dispatch(state, ViewCommand::SetBrush(brush));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The claim [`AppState`] is a newtype for: the handle is **one pointer**,
+    /// whatever [`Signals`] grows to hold.
+    ///
+    /// Worth pinning rather than trusting, because the cost it replaced was
+    /// invisible: `Signals` is eighty-odd `Signal`s at three words apiece, and
+    /// the struct was a by-value parameter on some two hundred and seventy
+    /// functions. A field added to `Signals` cannot make this fail; a field added
+    /// to `AppState` — which is what somebody reaching for "just one more flag"
+    /// would do — is exactly what it catches.
+    #[test]
+    fn the_handle_is_one_pointer() {
+        assert_eq!(
+            size_of::<AppState>(),
+            size_of::<&'static Signals>(),
+            "AppState carries something beside the pointer to its signals"
+        );
+        // And the thing it points at is the large one, so the test above is not
+        // passing because there is nothing to hold.
+        assert!(
+            size_of::<Signals>() > 64 * size_of::<usize>(),
+            "Signals is unexpectedly small: {} bytes; is it still the whole state?",
+            size_of::<Signals>()
+        );
     }
 }

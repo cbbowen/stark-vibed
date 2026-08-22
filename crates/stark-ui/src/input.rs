@@ -1818,18 +1818,20 @@ impl Landing {
         let Some(last) = h.samples.last().copied() else {
             return;
         };
-        let mut state = self.state;
+        let state = self.state;
         // From here the press is the eyedropper's, and the canvas's own move
         // handler routes it there on the flag alone — the same flag the chord
         // binding sets, so a hold and an Alt+drag are one gesture from this point
         // and `end_interaction` puts both down the same way (§18.0.2).
-        state.pick.dragging.set(true);
+        let mut dragging = state.pick.dragging;
+        dragging.set(true);
         // The chrome comes **back** rather than staying faded, which is the one
         // thing this differs from a stroke about. A sample's answer is read off the
         // Color panel, and a sample taken behind a hidden panel tells nobody
         // anything — `end_interaction` makes the same argument for the eyedropper's
         // chord, and `main.rs` for the tuning drag.
-        state.canvas_active.set(false);
+        let mut canvas_active = state.canvas_active;
+        canvas_active.set(false);
         // Where the answer is shown, since a finger has neither a cursor nor a
         // clear view of the panel (`PickState::loupe`).
         let mut loupe = state.pick.loupe;
@@ -1979,10 +1981,11 @@ pub fn bind_context_menu() {
 /// off a handled event but never calls `stopPropagation` on the underlying DOM
 /// event, so propagation is halted inside the virtual tree only and the real event
 /// reaches the window regardless.
-fn handle_keydown(mut state: AppState, e: &platform::KeyEvent) {
+fn handle_keydown(state: AppState, e: &platform::KeyEvent) {
     match e.key() {
         Key::Character(c) if c.eq_ignore_ascii_case(" ") => {
-            state.space_down.set(true);
+            let mut space_down = state.space_down;
+            space_down.set(true);
             // Space arms the pan: a hover mark left standing would promise
             // paint the press will not make (§18.1.10). Self-guarding, so the
             // key's auto-repeat costs a peek and nothing else.
@@ -2027,10 +2030,11 @@ fn handle_keydown(mut state: AppState, e: &platform::KeyEvent) {
     }
 }
 
-fn handle_keyup(mut state: AppState, e: &platform::KeyEvent) {
+fn handle_keyup(state: AppState, e: &platform::KeyEvent) {
     match e.key() {
         Key::Character(c) if c.eq_ignore_ascii_case(" ") => {
-            state.space_down.set(false);
+            let mut space_down = state.space_down;
+            space_down.set(false);
             e.prevent_default();
         }
         _ => {}
@@ -2515,13 +2519,7 @@ pub fn samples(state: AppState, e: &Event<PointerData>) -> Option<Vec<InputSampl
 /// gesture apart into two signals it borrowed from the component, which is what
 /// made "what counts as in flight" a thing two functions had to agree about
 /// (`Paint`).
-pub fn end_interaction(
-    mut state: AppState,
-    landing: Landing,
-    nav: Nav,
-    tune: Tune,
-    carry: PickMove,
-) {
+pub fn end_interaction(state: AppState, landing: Landing, nav: Nav, tune: Tune, carry: PickMove) {
     landing.end();
     nav.stop();
     tune.stop();
@@ -2533,7 +2531,8 @@ pub fn end_interaction(
     // shared state, not a gesture object — the options bar reads it (see
     // `PickState`). Nothing to undo, either: a sample already in flight is left to
     // land, since it is the answer to a press the user made.
-    state.pick.dragging.set(false);
+    let mut dragging = state.pick.dragging;
+    dragging.set(false);
     // And the swatch a held pick was showing goes with the finger that asked for it
     // (§18.1.11). Guarded like every other idle write here: this runs on every
     // release the canvas sees, and almost none of them had a loupe up.
@@ -2558,7 +2557,8 @@ pub fn end_interaction(
     // asked inside `sleep_panels` rather than here — one door, so the setting reaches
     // every caller (`layout::ChromeHiding`, §11).
     let was_faded = *state.canvas_active.peek();
-    state.canvas_active.set(false);
+    let mut canvas_active = state.canvas_active;
+    canvas_active.set(false);
     if was_faded {
         crate::layout::sleep_panels(state);
     }
