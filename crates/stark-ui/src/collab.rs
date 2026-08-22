@@ -698,7 +698,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                                                     class: "peer-dot",
                                                     style: "background: {color}",
                                                 }
-                                                span { class: "peer-name", {peer.name.clone()} }
+                                                span { class: "peer-name", {peer.name} }
                                                 span { class: "{class}", {label} }
                                             }
                                         }

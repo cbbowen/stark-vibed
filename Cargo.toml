@@ -114,6 +114,15 @@ needless_collect = "warn"
 # this found already had a comment above it explaining exactly that — the message
 # just moves it to where a failure will print it.
 missing_assert_message = "warn"
+# All seven of its sites were real — each removal compiles, which is the whole
+# proof, since the borrow checker is what decides whether a clone was load-bearing.
+# Three were on a render path.
+#
+# The one caveat worth leaving: this is a *nursery* lint, and the toolchain here
+# floats on nightly, so a clippy update could bring a false positive to a gate
+# that is `-D warnings`. If that happens the answer is an `#[expect]` at the site,
+# not silence here — the seven fixes stand on their own either way.
+redundant_clone = "warn"
 
 # Single source of truth for shared dependency versions (CLAUDE.md).
 [workspace.dependencies]

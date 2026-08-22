@@ -319,7 +319,7 @@ pub fn FrameBar() -> Element {
     // row in the Layers panel like any other layer, and a second could not mean
     // anything — "the whole plane" admits no second.
     let offer_background = !has_background();
-    let paint_for_begin = matte.paint.clone();
+    let paint_for_begin = matte.paint;
     let gradient_title = if is_gradient {
         "Recompose the gradient's axis"
     } else {

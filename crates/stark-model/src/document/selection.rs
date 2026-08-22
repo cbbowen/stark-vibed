@@ -354,7 +354,7 @@ mod tests {
         // bound `clamp01` (`max`-then-`min`) and not `clamp`.
         let nan_strength = SelectionOp {
             opacity: f32::NAN,
-            ..hot.clone()
+            ..hot
         };
         assert_eq!(back(&wire(&nan_strength)).opacity, 0.0);
 

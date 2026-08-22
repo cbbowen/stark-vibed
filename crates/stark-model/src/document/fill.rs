@@ -391,7 +391,7 @@ mod tests {
         // half-selected plane (`crate::at_least_zero`).
         let wide = FillOp {
             feather: f32::INFINITY,
-            ..hostile.clone()
+            ..hostile
         };
         assert_eq!(round(&wide).feather, 0.0);
 

@@ -325,7 +325,7 @@ mod tests {
                 [
                     TransportAddr::Relay("https://relay.example/".parse().expect("a relay url")),
                     TransportAddr::Ip("192.0.2.7:4433".parse().expect("a socket")),
-                    TransportAddr::Custom(custom.clone()),
+                    TransportAddr::Custom(custom),
                 ],
             )],
             topic: TopicId::from_bytes([5u8; 32]),

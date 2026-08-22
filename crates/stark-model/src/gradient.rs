@@ -519,7 +519,7 @@ mod tests {
         // the stop list and that is the path the bound exists for.
         let bytes = carbonite::to_vec_static(&long).expect("encodes");
         for g in [
-            Gradient::new(long.clone()).expect("a long ramp is still a ramp"),
+            Gradient::new(long).expect("a long ramp is still a ramp"),
             carbonite::from_slice_static::<Gradient>(&bytes).expect("and decodes as one"),
         ] {
             assert!(
