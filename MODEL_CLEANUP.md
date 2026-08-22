@@ -4,10 +4,12 @@ A review of `crates/stark-model` as of 2026-08-21 (`f443530`): six defects, five
 structural changes and four sweeps, each with the file and line that shows it —
 and, below each, what actually happened when it was fixed.
 
-A seventh defect (**D7**) was found in the fixing rather than in the reading, by
-the test **A3** asked for. That is the one result here worth carrying into the next
-review: the item that paid best was not any of the six, it was the one that said the
-crate could not check itself.
+**Two more defects were found in the fixing than in the reading.** **D7** by the
+test **A3** asked for, on its first run; **D8** by asking the presence wire the
+question **A1** had just been asked of the action log. That is the result worth
+carrying into the next review: the items that paid best were not the six found by
+reading, they were the one that said the crate could not check itself and the one
+that moved a rule into a type. Both then found things reading had missed.
 
 ## Status
 
@@ -20,6 +22,7 @@ crate could not check itself.
 | **D5** | idempotence test claims 31, drives 24 | **done** — `f7639e5` |
 | **D6** | doc block on the wrong item | **done** — `e653851` |
 | **D7** | an infinite feather | **done** — `f7639e5`; found in the doing, see below |
+| **D8** | a peer's live brush skips the funnel | **done**; found in the doing, see below |
 | **A1** | the funnel belongs in the payloads | **done** — `f7639e5` |
 | **A2** | perspective footprint's honesty | **done** — `e653851` |
 | **A3** | no `tests/` in the crate that owns §12.6 | **done** — `f7639e5` |
@@ -31,7 +34,7 @@ crate could not check itself.
 | **S4** | `Action` clone carries stroke paths | **open** |
 
 Everything here is on `model-cleanup`, checked against every gate the project
-names — both clippy configurations, `cargo nextest run --workspace` (1112 tests,
+names — both clippy configurations, `cargo nextest run --workspace` (1115 tests,
 all passing), the doctests, and the wasm build.
 
 The line numbers below are from the review and are **not** updated as the fixes
@@ -306,6 +309,33 @@ holds. So the fix was to stop having two spellings: `at_least_zero` and `finite_
 moved to the crate root beside `clamp01`, and every non-negative length in the crate
 goes through one of them.
 
+### D8. A peer's live brush never passes the funnel its committed twin does
+
+**Also found in the doing**, by asking of the presence wire the question **A1**
+had just been asked of the action log: *which payloads here carry numbers, and what
+gates them?*
+
+Three shapes travel in a `GestureFrame`. A `Selection` and a `Fill` carry ops whose
+**deserialization** funnels through `SelectionOp::at` and `FillOp::with_paint`, so
+they arrive normalized however they were built. A `Stroke` carries a `StrokeHead`
+holding a plain `BrushParams`, whose `Deserialize` is derived — and the thing that
+sanitizes a brush is `ActionKind::sanitized`, which a presence frame never passes
+through, because a live gesture is not an action until it commits.
+
+So a peer's radius sized a dispatch and its pickup rates reached the dynamics loop
+at whatever the wire said. Not a convergence bug — presence is per-client and never
+replayed (§17.4) — but the same class as everything above, and the live preview is
+the half of a shared session an artist actually looks at.
+
+Held at `GestureRx::apply`, which is the one door a frame comes through, rather than
+at the decode: `StrokeHead` is `stark-model`'s wire form and has no opinion about
+what a renderer can use (§2).
+
+**What this suggests for the next pass.** The three items that found real defects —
+**D7**, **D8** and **A3** — were all the same move: take a rule the codebase already
+states, and ask it somewhere nobody had. The rule here was §21.5's *one funnel*, and
+it turns out to have had two doors all along.
+
 ## Architecture
 
 ### A1. The funnel belongs in the payload types, not in the match
@@ -573,7 +603,7 @@ Recorded so the next reader does not re-derive it:
 Every gate the project names, after the last commit on this branch: `cargo fmt
 --all --check`; `cargo clippy --workspace --all-targets -D warnings` in **both**
 configurations, the default and `--no-default-features --features
-stark-net/webrtc`; `cargo nextest run --workspace` — 1112 tests, all passing;
+stark-net/webrtc`; `cargo nextest run --workspace` — 1115 tests, all passing;
 `cargo test --workspace --doc`; and `cargo check -p stark-ui --target
 wasm32-unknown-unknown`.
 
