@@ -63,6 +63,13 @@ meta_variable_misuse = "warn"
 # `x as i32` where `x` is already `i32` — noise that hides the casts that mean
 # something, of which this tree has 972.
 trivial_numeric_casts = "warn"
+# The same argument one step out: a cast doing work a coercion would have done.
+# Both sites it found were an `as` on every element of an array literal, where
+# annotating the binding once says it better.
+trivial_casts = "warn"
+# `&Foo` where `Foo` is `Foo<'a>`. Worth having in a tree whose central types are
+# borrowed views over a `DocState` — a hidden lifetime is a hidden borrow.
+elided_lifetimes_in_paths = "warn"
 
 [workspace.lints.clippy]
 # Debug leftovers, in a tree whose output is a browser tab somebody else loads.
@@ -95,6 +102,14 @@ allow_attributes_without_reason = "warn"
 # pass, and its suggested `into_iter()` does not compile (E0382). MORE_LINTS.md.
 while_float = "warn"
 useless_let_if_seq = "warn"
+# A `collect()` into a binding that is then read once. Two of its three sites
+# built a whole `Vec` to ask it for `.len()`.
+#
+# `clippy::maybe_infinite_iter` is the other one the survey proposed and this
+# does not take: both its hits are the `(1..).find(|n| name is free)` that names
+# the next capture, which terminates after N+1 entries. It would buy two
+# `#[expect]`s and no finding. MORE_LINTS.md.
+needless_collect = "warn"
 
 # Single source of truth for shared dependency versions (CLAUDE.md).
 [workspace.dependencies]

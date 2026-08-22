@@ -268,7 +268,7 @@ impl Engine {
         background: Background,
         chrome: Chrome,
         content: Rendered,
-        attachments: Attachments,
+        attachments: Attachments<'_>,
     ) {
         // Everything a painted frame costs on the CPU, from the fold through to the
         // last command encoded. The frontend's own `frame` span sits outside it and

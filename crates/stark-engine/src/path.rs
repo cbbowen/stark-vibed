@@ -1189,7 +1189,7 @@ const ARC_SAMPLES_PER_SPAN: usize = 4;
 /// earlier update: those spans' control points are held, so their geometry — and so
 /// their length — cannot change, and re-walking them every update is the last piece
 /// of per-update work that scaled with the whole stroke rather than the window.
-pub(crate) fn arc_profile(curve: &CubicBSpline<2>, settled: &[f32]) -> Vec<f32> {
+pub(crate) fn arc_profile(curve: &CubicBSpline<'_, 2>, settled: &[f32]) -> Vec<f32> {
     let spans = curve.num_spans();
     let n = spans * ARC_SAMPLES_PER_SPAN;
     let keep = settled.len().saturating_sub(1).min(n);

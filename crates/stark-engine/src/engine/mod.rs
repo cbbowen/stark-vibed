@@ -1665,7 +1665,7 @@ impl Engine {
             // the seed for the stack its carries open, since a base composites at the
             // bottom of its group (§14.1).
             let mut carriers: Vec<(&Layer, bool)> = Vec::new();
-            let mut stack: Vec<Cursor> = Vec::new();
+            let mut stack: Vec<Cursor<'_>> = Vec::new();
             shown.visit(&mut |l, depth| {
                 carriers.truncate(depth);
                 if stack.len() > depth {

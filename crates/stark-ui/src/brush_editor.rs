@@ -754,14 +754,13 @@ fn ShapeGallery() -> Element {
     // engine imported* rather than the bundled file (`shapes::thumbnail`): a
     // built-in is authored the same way a user's shape is, so it is shown the
     // same way, and neither has to have put its coverage in an alpha channel.
-    let builtins: Vec<(&'static str, Option<String>, bool)> = crate::builtins::resolved(state)
+    let builtins = crate::builtins::resolved(state)
         .into_iter()
         .map(|(builtin, id)| {
             let active = matches!(brush_shape, BrushShape::Stamp(s) if Some(s) == id);
             let thumb = id.and_then(|id| crate::shapes::thumbnail(state, id));
             (builtin.name, thumb, active)
-        })
-        .collect();
+        });
     let entries = state.shapes.entries;
     // Memoized so the list is rebuilt when the library changes rather than on
     // every obs refresh; the encode behind each url is itself remembered per

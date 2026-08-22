@@ -1324,15 +1324,11 @@ mod tests {
             {"offered":true}
         ]"#;
         let values: Vec<serde_json::Value> = serde_json::from_str(json).unwrap();
-        let rows: Vec<DragRow> = values
+        let rows = values
             .into_iter()
-            .filter_map(|v| serde_json::from_value(v).ok())
-            .collect();
-        assert_eq!(
-            rows.len(),
-            2,
-            "the two readable rows survive the one that is not"
-        );
+            .filter_map(|v| serde_json::from_value::<DragRow>(v).ok())
+            .count();
+        assert_eq!(rows, 2, "the two readable rows survive the one that is not");
     }
 
     /// A chord written before a fourth modifier existed reads as not holding it

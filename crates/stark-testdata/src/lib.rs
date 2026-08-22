@@ -2478,10 +2478,11 @@ pub mod assets {
                 // hold it hashes: whatever the frontend ships is resolvable here
                 // without a list to keep in step with it.
                 type Derive = fn(&[u8]) -> stark_assetid::Result<stark_assetid::Canonical>;
-                for (sub, derive) in [
-                    ("shape", stark_assetid::coverage as Derive),
-                    ("surface", stark_assetid::height as Derive),
-                ] {
+                let kinds: [(&str, Derive); 2] = [
+                    ("shape", stark_assetid::coverage),
+                    ("surface", stark_assetid::height),
+                ];
+                for (sub, derive) in kinds {
                     for (path, bytes) in pngs(sub) {
                         match derive(&bytes) {
                             Ok(canonical) => {

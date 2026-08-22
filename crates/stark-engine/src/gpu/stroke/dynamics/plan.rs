@@ -630,7 +630,7 @@ pub(super) fn dynamics_plan(
 
     // ---- Pass one: what the plan dispatches, in order. This walk is the *only*
     // statement of that order; the rects and the slots below both hang off it.
-    let mut sources: Vec<SlotSource> = Vec::new();
+    let mut sources: Vec<SlotSource<'_>> = Vec::new();
     let mut pending = fires.iter().peekable();
     for (si, s) in segments.iter().enumerate() {
         sources.push(SlotSource::Segment(s));

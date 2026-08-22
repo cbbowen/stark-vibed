@@ -909,8 +909,8 @@ fn a_filters_id_is_not_reused_after_a_reload() {
 
     let mut loaded = engine_or_skip().expect("adapter available (original built)");
     loaded.load_bytes(&bytes).expect("deserialize + replay");
-    let existing: Vec<LayerId> = loaded.observe().layers.iter().map(|l| l.id).collect();
-    assert_eq!(existing.len(), 2, "the filter came back with the log");
+    let existing = loaded.observe().layers.len();
+    assert_eq!(existing, 2, "the filter came back with the log");
 
     loaded.process(DocCommand::AddLayer {
         carrier: None,

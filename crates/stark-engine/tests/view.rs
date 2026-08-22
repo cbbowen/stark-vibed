@@ -339,7 +339,7 @@ fn a_cached_draw_list_shows_every_change() {
             "a second stroke",
             Box::new(move |e: &mut Engine| {
                 stroke_with(e, blue, &[Vec2::new(40.0, 90.0), Vec2::new(90.0, 40.0)]);
-            }) as Box<dyn Fn(&mut Engine)>,
+            }),
         ),
         // The pan pair goes here, while there is paint on screen to move away from
         // and back to. Ordered deliberately: run after the layer is hidden and both

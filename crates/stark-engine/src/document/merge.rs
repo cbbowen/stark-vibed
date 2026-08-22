@@ -243,7 +243,7 @@ pub(crate) struct MergeSite<'a> {
 /// Everything below this point is a question about the two layers themselves, which
 /// is why the split falls here: the tree is consulted only to find `dest` and to
 /// answer the two flags, and nothing after that reads it again.
-pub(crate) fn plan_at(site: &MergeSite) -> Option<MergePlan> {
+pub(crate) fn plan_at(site: &MergeSite<'_>) -> Option<MergePlan> {
     let (s, d) = (site.source, site.dest);
     let backdrop_is_dest = site.backdrop_is_dest;
     // A source is one of two things, and which one decides the whole shape of the
