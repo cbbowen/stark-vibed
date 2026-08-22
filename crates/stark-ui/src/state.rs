@@ -570,6 +570,7 @@ impl AppState {
                 radius: root_signal(|| 0),
                 busy: root_signal(|| false),
                 dragging: root_signal(|| false),
+                loupe: root_signal(|| None),
             },
             brush_ring: root_signal(|| None),
             brush_cursor: root_signal(|| None),
@@ -841,6 +842,16 @@ pub struct PickState {
     /// on *armed but not yet dragging* and so has to be able to tell the two
     /// apart.
     pub dragging: Signal<bool>,
+    /// Where a **held touch** pick is showing its answer, element (CSS) px: the
+    /// finger's own position, with the swatch drawn clear of it (§18.1.11).
+    ///
+    /// `None` for every other way of sampling, and that is the field's content
+    /// rather than an oversight. A mouse or a pen puts a cursor on the point it is
+    /// asking about and leaves the Color panel in plain view; a finger covers the
+    /// point and, on the tablet this gesture exists for, most of the panel with the
+    /// hand behind it. The loupe is the answer for the one gesture that cannot
+    /// otherwise see one.
+    pub loupe: Signal<Option<Vec2>>,
 }
 
 /// How far the eyedropper sees, before [`PickState::group_only`] narrows it

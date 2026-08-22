@@ -44,7 +44,17 @@ which the engine draws into directly. DOM chrome surrounds it.
   bindings" and "the zoom rate" mean cannot drift between surfaces. Policy stays
   at the call site — the canvas fades the chrome while it navigates and cancels
   the stroke a second finger interrupted, the transform overlay deliberately does
-  neither.
+  neither. It reports a fourth thing nobody has to take: fingers that came and
+  went without moving the view made a **tap**, and only the canvas spends it
+  (§18.1.11).
+- **A finger's press is held before it is believed.** `input::Landing` sits in
+  front of `Paint` on the canvas and takes every press the paint gesture would
+  have taken. A pen's or a mouse's is handed straight on; a finger's is *held*,
+  because the same contact is the opening half of a pinch, the start of a stroke
+  and the beginning of a hold, and which one it is only becomes known when a
+  second finger lands, when this one travels, or when it does neither for long
+  enough (§18.1.11). Reports arriving during the wait are kept and replayed into
+  the stroke when it opens, so the wait costs latency and never shape.
 - **A simple command is a row in a registry, not an arm in a match.** `commands`
   declares every simple act — one the chrome can ask for whole, with no argument
   at the call site — as a variant of `Command` carrying its entire description:
@@ -574,6 +584,13 @@ kind of thing. Ask what the feature *is*:
   pan, the digit rack (§18.1.8), the pen's eraser end. → `input`'s window
   bindings, which own keyup. Holds are deliberately not rows in either table
   (§25.3 says why for drags; the chord table's reason is in `commands.rs`).
+- **A touch gesture** — a two-finger tap, a finger held still on the glass. →
+  Neither table, for a reason neither table can fix: it has no chord and no
+  button. What names it is a count of fingers and a length of time, and a row
+  keyed on `(mods, button)` cannot hold either (§18.1.11). It lives in `input`
+  with the rest of the pointer routing — but it *spends* itself through the
+  registry (`Command::Undo`), so the gate, the tour's reading and the menu's
+  state come free rather than being restated for the hand that has no keyboard.
 - **Data arriving with the event** — a paste. → The browser's. Ctrl+V is not
   a binding of ours; a chord row would `prevent_default` the clipboard dead
   (§23). Advertise it by hand if the act deserves a shortcut column

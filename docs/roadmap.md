@@ -43,6 +43,7 @@ Status lives here and nowhere else.
 | — | Stroke smoothing — the towed tip (§6.11) | done — the tow, the per-brush amount, the string overlay; the pursuit-mode soft rope stays in reserve |
 | — | Brush parameter mapping (§6.2, §18.1.4) | done — pressure/tilt → size/flow/stretch/lift/deposit/bleed; more sources and targets are variants away |
 | — | Modifier drags — scrubby zoom, Size/Flow (§18.1.9) | done — with the size ring; a flow readout is not |
+| — | Touch (§18.1.7, §18.1.11) | done — two fingers pan/zoom/turn, the held press, tap-to-undo/redo and hold-to-pick; thumb-sized hit targets remain |
 | — | Placed images (§23) | done — import, paste and drop, as one action that lands a layer of paint; placement onto an *existing* layer (§23.5) remains |
 | — | The guided tour (§24) | done — five lessons off the `dispatch` seam; a lesson is a row in one table |
 | 14 | Mutable medium — horizontal flux (§14 open / §6.2) | **not started** |
@@ -394,9 +395,12 @@ down.
   would make the next lone finger a pinch and stop touch painting for the rest of
   the session.
 
-**Still missing** is everything else a tablet wants: a two-finger tap for undo, a
-long-press eyedropper, and hit targets sized for a thumb — the chrome is still
-laid out for a mouse.
+- One finger paints **as soon as it has said it means to**, which is not the same
+  as "as soon as it lands" — see §18.1.11, which is the other half of this
+  section and the reason the pinch above is no longer raced by the stroke below.
+
+**Still missing** is the last thing a tablet wants: hit targets sized for a
+thumb — the chrome is still laid out for a mouse.
 
 #### 18.1.8 Quick brushes — the number keys, and the pen's other end — built
 
@@ -847,6 +851,94 @@ press — and inherited rather than maintained, which is the whole design:
   with no hover behind it carries marker 0 unchanged — and a click at the end
   of a watched approach has its marker at its curve's very end, deposits
   nothing, and commits nothing.
+
+#### 18.1.11 Touch: the held press — built
+
+§18.1.7 gave the tablet a canvas it could move. It also left touch with a bug
+that could not be fixed where it was being looked for: reaching for the canvas
+with two fingers sometimes painted. The pinch cancelled the stroke the first
+finger opened, correctly and every time — but fingers never land together, so
+between them there was a real stroke on a real canvas, and cancelling it is not
+the same as never having made it. Worse at the two moments it mattered most: the
+slower and more careful the reach, the wider the gap.
+
+**A finger's press is a question, not an answer.** A mouse or a pen says what it
+is the moment it lands — there is one of it, it is aimed, and the only thing left
+to decide is which chord opened it. A finger says nothing. The same contact is
+the opening half of a pinch, the start of a stroke and the beginning of a hold,
+and which one it turns out to be is *not knowable at the press*. So it is held
+(`input::Landing`), and the three ways it resolves are the three touch gestures:
+
+- **A second finger lands** → navigation (§18.1.7). The held press is dropped,
+  and dropping a question dispatches nothing: there is no stroke to cancel, no
+  frame to repaint, and nothing for the eye to catch. That is the bug, fixed at
+  the level it was actually at.
+- **It travels** past `TOUCH_SLOP` → paint. The stroke opens *at the press* and
+  every report since is poured into it, coalesced lists and all, so the mark
+  starts where the finger touched down and carries the full input rate. **The
+  wait costs latency, never shape** — a few milliseconds at the head of a
+  finger-painted stroke, and nothing at all to a pen, which is handed straight
+  through and is not second-guessed by any line of this.
+- **It does neither, for `DWELL`** → the eyedropper. Procreate's gesture, and
+  the one every artist coming from an iPad already has in their hands.
+
+**One threshold, three questions.** How far a lone finger must go to be a stroke,
+how far it may stray and still count as held, and how far a *pair* may stray and
+still be a tap are the same question asked from three sides — *has this touch
+meant anything yet?* — so they are one constant. That is what makes the next
+gesture safe to build rather than merely careful: a tap cannot have painted,
+because crossing the threshold is what painting *is*.
+
+**Two fingers tap for undo; three tap for redo** — the pairing every touch-first
+painting app ships, so it needs no discovery. An episode (first finger down to
+last finger up) that never travelled far enough to move the view or open a stroke
+and did not linger past `TAP_TIME` is a tap, counted at its widest rather than at
+its end. `Nav` reports it; only the canvas spends it, because whether a pair of
+fingers coming and going is worth an undo is a fact about the surface, not about
+the fingers — the transform box and the gradient trace simply never ask. It runs
+through `Command::Undo` like every other way of asking, so the tour, the menu
+state and the playback stand-down are inherited rather than restated (§25.1).
+
+- **The pair has the same deadzone the lone finger does**, and it had to: two
+  fingers land milliseconds apart and roll as they settle, so a pinch believed
+  immediately nudges the canvas every time it is put down — and a canvas that
+  shifts under a tap is a canvas that cannot be tapped. Spent once and never
+  re-earned, like the twist band above; what it costs is a couple of mm at the
+  start of the first pan, not a jump.
+- **A held pick can never also fire a tap**, because `DWELL > TAP_TIME` — a
+  relation between two constants set for unrelated reasons, so it is asserted at
+  compile time next to them rather than left to be noticed.
+
+**The loupe is the gesture's only readout, and the eyedropper's chord binding
+does not get one.** A mouse or a pen leaves a cursor on the point and the Color
+panel in plain view; a finger is *on* the place it is asking about, with a hand
+behind it covering most of a tablet's screen. So a swatch of the brush color is
+drawn clear of the contact, following the finger as it drags to re-aim — and the
+chrome comes back out of its fade rather than staying hidden, on the argument the
+eyedropper's chord already makes: a sample read behind a hidden panel tells
+nobody anything.
+
+**A hold before a stroke and a hold during one are different acts, and never
+compete.** Before: the press has not opened anything, and holding still asks for
+a color. During: the stroke exists, and holding still snaps it to the shape it
+resembles (§6.9). The split is structural — the eyedropper hold lives only in the
+held state, which a stroke's opening ends — and it is Procreate's split too,
+arrived at from the mechanism rather than copied.
+
+**Two presses are now refused, and both are the same hand.** A finger arriving
+while something is already being drawn is a palm: the hand that rests on the
+glass beside a working pen puts one down every time, and believing it used to end
+the pen's stroke and start a second under the heel of the hand. A pen arriving
+while a finger is held is that hand in the other order — rest, then draw — and
+the held press is dropped rather than left to fire an eyedropper under the palm
+half a second in. Neither is a general palm rejection; this layer cannot see a
+contact's size. They are the two cases that actually happen.
+
+**Still open**: a palm *lifting* still ends the pen's stroke, because
+`end_interaction` runs on any release the canvas sees and does not ask which
+pointer opened the gesture. And a two-finger reach with one finger landing on
+floating chrome is still a stroke, since the pair is only assembled by the
+surface both fingers hit.
 
 ### 18.2 Tier 2 — where we can beat the prior art
 

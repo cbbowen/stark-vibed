@@ -4574,6 +4574,36 @@ button.layer-remove:hover {
   stroke-width: 1px;
 }
 
+/* --- the held touch pick's loupe (§18.1.11) ---
+   The swatch a finger holding still on the canvas is shown, since it is standing on
+   the answer and cannot see it. Same layer bargain as the ring and the string above:
+   over the canvas, under the panels, and taking no pointer events — the finger it
+   belongs to is directly beneath it, and it is drawn where that finger is going to
+   drag. */
+.pick-loupe {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* The well itself: pulled onto its own centre with a transform rather than laid out
+   from a corner, because the position it is given is the *finger*, and the swatch has
+   to stay centred over it however wide it is. The double ring is the brush cursor's
+   legibility trick (`.brush-ring-circle`) in reverse — a light hairline inside a dark
+   halo — so a swatch that matches the paint under it still reads. */
+.pick-loupe-well {
+  position: absolute;
+  width: 46px;
+  height: 46px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 2px solid #ffffffd9;
+  box-shadow:
+    0 0 0 1px #000000a6,
+    0 2px 10px #0000005c;
+}
+
 /* --- settings dialog (settings.rs) --- */
 
 /* One setting: the box, then a stacked label / description / note beside it.

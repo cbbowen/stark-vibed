@@ -2,7 +2,7 @@
 //! [`InputCommand`](stark_engine::InputCommand)s
 //! (§4).
 
-use dioxus::dioxus_core::spawn_forever;
+use dioxus::dioxus_core::{Task, spawn_forever};
 use dioxus::html::geometry::ElementPoint;
 use dioxus::html::input_data::MouseButton;
 use dioxus::html::{Key, Modifiers};
@@ -55,6 +55,45 @@ const TWIST_DEADZONE: f32 = 0.10;
 /// what two fingers on the same spot deserve.
 const MIN_SPAN: f32 = 8.0;
 
+/// How far a touch may travel and still mean **nothing yet**, in page px
+/// (§18.1.11).
+///
+/// One number for three questions, which is the point of there being one: how far
+/// a lone finger must go before its press is a stroke rather than a held question
+/// ([`Landing`]), how far it may stray and still count as *held* for the
+/// eyedropper, and how far a pair may stray and still count as a tap rather than a
+/// pinch. Those are one question asked from three sides — *has this touch meant
+/// anything yet?* — so a single constant is what keeps the three answers from
+/// overlapping. It also makes the two-finger tap safe to spend on undo by
+/// construction rather than by care: a pair that stayed inside this never opened a
+/// stroke, because the same threshold is what would have opened one.
+///
+/// [`carry_deadzone`]'s figure for a finger, for its reason: a fingertip rolls
+/// several px on its way onto and off the glass, and of the two mistakes it is the
+/// one that leaves a mark that has to be protected against.
+const TOUCH_SLOP: f32 = 10.0;
+
+/// How long a touch episode — the first finger landing to the last one lifting —
+/// may last and still read as a **tap** (§18.1.11), seconds.
+///
+/// The other half of [`TOUCH_SLOP`]: a tap is short *and* still, and neither test
+/// alone is one. Long enough that a deliberate two-finger tap is never missed,
+/// short enough that a pair of fingers resting on the glass while the hand thinks
+/// is not an undo.
+const TAP_TIME: f64 = 0.3;
+
+/// A held pick can never also fire a tap, and this is why: the wait it earns its
+/// sample with ([`DWELL`]) is longer than the longest thing a tap may be. Without
+/// it, a hold-to-sample that the hand lifted off promptly would undo the stroke
+/// before it, having just picked a color — the worst kind of surprise, since the
+/// two acts have nothing to do with each other.
+///
+/// Stated here because it is a relation *between* two constants that were each set
+/// for their own unrelated reasons, and neither definition would notice them
+/// crossing (§18.1.11). At compile time because it can be: this costs the built
+/// binary nothing and cannot be left un-run.
+const _: () = assert!(DWELL > TAP_TIME);
+
 /// How far the accelerator+space drag has to travel to **double** the zoom, in page
 /// px (§18.1.9).
 ///
@@ -82,6 +121,10 @@ const ZOOM_DRAG_DOUBLE: f32 = 180.0;
 /// [`release`](Self::release) on release or cancel. Each answers the same question —
 /// *was this event mine?* — so a surface routes its pointers by asking three times
 /// and never by inspecting buttons or pointer types itself.
+///
+/// A fourth answer is on offer and nobody has to take it: fingers that came and went
+/// without moving the view made a **tap**, which [`take_tap`](Self::take_tap) reports
+/// and the canvas alone spends (§18.1.11).
 #[derive(Clone, Copy)]
 pub struct Nav {
     state: AppState,
@@ -90,7 +133,11 @@ pub struct Nav {
     /// The fingers on this surface (§18.1.7). Separate from `drag` because a
     /// finger is identified by its id rather than by being *the* pointer — that is
     /// the whole difference touch makes.
-    touch: Signal<Touch>,
+    fingers: Signal<Fingers>,
+    /// The tap the last release turned out to be, waiting to be spent
+    /// ([`Nav::take_tap`], §18.1.11). Written on every episode that ends, so it
+    /// can never be older than the last hand off the glass.
+    tap: Signal<Option<usize>>,
 }
 
 /// A one-pointer view drag — a middle-drag or a space-drag — and what it does with
@@ -127,18 +174,50 @@ enum Mode {
 
 /// The fingers on one surface, and the two-finger gesture they are making
 /// (§18.1.7).
+///
+/// The last three fields are about the **episode** — everything between the first
+/// finger landing on an empty surface and the last one leaving it — rather than
+/// about any one finger, because that is the span a tap is a fact about
+/// (§18.1.11). They are reset with the set itself and never mid-gesture: a hand
+/// that put a third finger down and took it away again has still made one episode.
 #[derive(Clone, Default)]
-struct Touch {
-    /// Every finger down, in the order it landed: pointer id and last position in
-    /// page px. The order is load-bearing — the gesture is made by the **first two**,
-    /// so a third finger joining changes nothing and a lift re-forms the pair from
-    /// whoever is left, both without a jump.
-    down: Vec<(i32, Vec2)>,
+struct Fingers {
+    /// Every finger down, in the order it landed. The order is load-bearing — the
+    /// gesture is made by the **first two**, so a third finger joining changes
+    /// nothing and a lift re-forms the pair from whoever is left, both without a
+    /// jump.
+    down: Vec<Contact>,
     /// The gesture in flight. Born when a second finger lands and buried when the
     /// last one lifts — deliberately outliving the *second* finger, so a pinch that
     /// ends with one finger still on the glass keeps panning rather than going dead
     /// under a hand that never left.
     pinch: Option<Pinch>,
+    /// When the first finger of this episode landed, on the monotonic clock.
+    since: f64,
+    /// The furthest any finger of this episode has been from where it landed, page
+    /// px. Monotone, and it outlives the finger that earned it — a pair that has
+    /// moved has moved, whichever half of it did the moving and whether or not that
+    /// half is still down.
+    strayed: f32,
+    /// The most fingers this episode has had down at once. What makes a two-finger
+    /// tap and a three-finger tap different acts rather than the same one counted
+    /// at different moments: the count is taken at the episode's widest, not at its
+    /// end, where every episode has zero.
+    most: usize,
+}
+
+/// One finger on the glass: which it is, where it landed, and where it has got to.
+///
+/// The landing point is kept because a stray is measured from it, and a stray is
+/// what tells a tap from a drag ([`TOUCH_SLOP`]).
+#[derive(Copy, Clone)]
+struct Contact {
+    /// The pointer id — how a finger is named, since none of them is *the* pointer.
+    id: i32,
+    /// Where it landed, page px.
+    from: Vec2,
+    /// Where it is now, page px.
+    at: Vec2,
 }
 
 /// What a two-finger gesture accumulates: the part of it that a pair of finger
@@ -163,7 +242,8 @@ impl Nav {
         Self {
             state,
             drag: use_signal(|| None),
-            touch: use_signal(Touch::default),
+            fingers: use_signal(Fingers::default),
+            tap: use_signal(|| None),
         }
     }
 
@@ -271,18 +351,51 @@ impl Nav {
     /// end the gesture on whichever finger the hand happened to raise first.
     ///
     /// Always `false` for a mouse or a pen, which have nothing to be the rest of.
+    ///
+    /// The release that empties the surface is also where the episode is *judged*:
+    /// a hand that came and went without ever meaning anything by it made a tap,
+    /// which [`take_tap`](Self::take_tap) hands to whoever asked (§18.1.11).
     pub fn release(self, e: &Event<PointerData>) -> bool {
         if !is_finger(e) {
             return false;
         }
-        let mut touch = self.touch;
-        let mut t = touch.write();
-        t.down.retain(|(id, _)| *id != e.pointer_id());
-        if t.down.is_empty() {
-            t.pinch = None;
-            return false;
+        let mut fingers = self.fingers;
+        let mut t = fingers.write();
+        t.down.retain(|c| c.id != e.pointer_id());
+        if !t.down.is_empty() {
+            return true;
         }
-        true
+        let tapped = tap_of(t.strayed, now_seconds() - t.since, t.most);
+        // The whole record and not just the pinch, because the last three fields are
+        // the *episode's* and the episode is what just ended. Clearing them here
+        // rather than leaving it to the next primary touch is what keeps a stray
+        // earned by a stroke from arriving as the next gesture's deadzone already
+        // spent — `finger_down`'s clearing stays as the backstop it was written to
+        // be, for the release that never comes at all.
+        *t = Fingers::default();
+        // Released before the write below: nothing that reads this surface's
+        // fingers should be able to find them half-judged.
+        drop(t);
+        let mut tap = self.tap;
+        tap.set(tapped);
+        false
+    }
+
+    /// The tap the last episode turned out to be — the number of fingers at its
+    /// widest — and spend it, so one tap is acted on once (§18.1.11).
+    ///
+    /// Asked by the canvas alone, which is the *policy* half of this file's split:
+    /// [`Nav`] can say that a pair of fingers came and went without meaning
+    /// anything, and only the surface they came and went on can say what that is
+    /// worth. Over the transform box or the gradient trace it is worth nothing, and
+    /// those surfaces simply never ask.
+    pub fn take_tap(self) -> Option<usize> {
+        let taken = *self.tap.peek();
+        let mut tap = self.tap;
+        if taken.is_some() {
+            tap.set(None);
+        }
+        taken
     }
 
     /// End the navigation in flight, whatever it was. Harmless when there is none.
@@ -291,9 +404,16 @@ impl Nav {
         if drag.peek().is_some() {
             drag.set(None);
         }
-        let mut touch = self.touch;
-        if !touch.peek().down.is_empty() {
-            touch.set(Touch::default());
+        let mut fingers = self.fingers;
+        if !fingers.peek().down.is_empty() {
+            fingers.set(Fingers::default());
+        }
+        // A tap nobody spent is dropped here rather than kept: this is the canvas
+        // being put down, and an undo that fired on the *next* hand off the glass
+        // would be an act with no gesture behind it.
+        let mut tap = self.tap;
+        if tap.peek().is_some() {
+            tap.set(None);
         }
     }
 
@@ -323,8 +443,9 @@ impl Nav {
     fn finger_down(self, e: &Event<PointerData>) -> bool {
         // Read before the fingers are locked, so nothing holds two signals at once.
         let angle = view_of(self.state).map_or(0.0, |v| v.rotation);
-        let mut touch = self.touch;
-        let mut t = touch.write();
+        let now = now_seconds();
+        let mut fingers = self.fingers;
+        let mut t = fingers.write();
         // A *primary* touch is the first contact of its type, so anything still
         // listed when one arrives is a finger whose release never came — a cancel the
         // browser swallowed, a tab switched away from mid-gesture. Cleared on the
@@ -332,14 +453,23 @@ impl Nav {
         // missing, since a single stale entry would make the next lone finger a pinch
         // and painting by touch would stop working for the rest of the session.
         if e.is_primary() {
-            *t = Touch::default();
+            *t = Fingers::default();
+        }
+        // The episode's clock starts on the finger that finds the surface empty, not
+        // on the pair: what a tap has to be short is the *whole* touch, or a finger
+        // that had been painting for a minute could be turned into an undo by a
+        // second one arriving and both lifting quickly.
+        if t.down.is_empty() {
+            t.since = now;
         }
         let id = e.pointer_id();
-        if !t.down.iter().any(|(down, _)| *down == id) {
-            t.down.push((id, page_xy(e)));
+        if !t.down.iter().any(|c| c.id == id) {
+            let at = page_xy(e);
+            t.down.push(Contact { id, from: at, at });
+            t.most = t.most.max(t.down.len());
         }
         if t.down.len() < 2 {
-            return false; // one finger is the caller's — it paints
+            return false; // one finger is the caller's — it paints, or it waits
         }
         e.prevent_default();
         e.stop_propagation();
@@ -358,17 +488,31 @@ impl Nav {
     /// only records where the finger is, which is what lets a second finger landing
     /// mid-stroke pair with where the first one *is* rather than where it pressed.
     fn finger_move(self, e: &Event<PointerData>) -> bool {
-        let mut touch = self.touch;
-        let mut t = touch.write();
+        let mut fingers = self.fingers;
+        let mut t = fingers.write();
         let id = e.pointer_id();
-        let Some(i) = t.down.iter().position(|(down, _)| *down == id) else {
+        let Some(i) = t.down.iter().position(|c| c.id == id) else {
             return false;
         };
         let now = page_xy(e);
-        let was = std::mem::replace(&mut t.down[i].1, now);
+        let was = std::mem::replace(&mut t.down[i].at, now);
+        // Recorded whether or not there is a gesture behind it, for the reason the
+        // positions themselves are: a lone finger's travel is what a second finger
+        // landing has to be judged against.
+        let strayed = now.distance(t.down[i].from);
+        t.strayed = t.strayed.max(strayed);
         let Some(mut pinch) = t.pinch else {
             return false; // a lone finger with no gesture behind it: painting
         };
+        // The pair's own deadzone, and the same one the lone finger has (§18.1.11).
+        // Two fingers land milliseconds apart and roll as they settle, so a pair
+        // believed immediately nudges the canvas every time it is put down — and a
+        // canvas that shifts a pixel under a tap is a canvas that cannot be tapped.
+        // Spent once and never re-earned, like [`TWIST_DEADZONE`]: what the band
+        // costs is a couple of mm at the start of the first pan, not a jump.
+        if t.strayed <= TOUCH_SLOP {
+            return true;
+        }
 
         let command = if t.down.len() < 2 {
             // Down to the gesture's last finger: a plain pan, so the canvas stays in
@@ -383,7 +527,7 @@ impl Nav {
             }
             // The pair as it was and as it now is. One finger moved, so the other side
             // of the pair is the same in both.
-            let (a, b) = (t.down[0].1, t.down[1].1);
+            let (a, b) = (t.down[0].at, t.down[1].at);
             let (before, after) = if i == 0 {
                 ((was, b), (a, b))
             } else {
@@ -417,6 +561,23 @@ impl Nav {
         dispatch(self.state, command);
         true
     }
+}
+
+/// The tap a finished touch episode made, as the number of fingers at its widest —
+/// or `None` if it was not one (§18.1.11).
+///
+/// A tap is defined by what it *failed* to do. It never travelled far enough to move
+/// the view or to open a stroke — [`TOUCH_SLOP`] is the same threshold in all three
+/// places, so "this episode painted nothing" and "this episode was a tap" are one
+/// fact rather than two that have to agree — and it did not linger, which is what
+/// separates a tap from a hand parked on the glass while its owner thinks.
+///
+/// The count is the episode's widest and not its last, since every episode ends with
+/// no fingers down. Free rather than a method for the reason the file's other
+/// arithmetic is: it is a decision about three numbers, and a decision about three
+/// numbers can be *read*.
+fn tap_of(strayed: f32, held: f64, most: usize) -> Option<usize> {
+    (strayed <= TOUCH_SLOP && held <= TAP_TIME).then_some(most)
 }
 
 /// Whether `e` came from a finger — the one pointer type that arrives in pairs.
@@ -1194,6 +1355,10 @@ impl Paint {
     /// against — a press that arrives before WebGPU init has finished has no canvas
     /// space to land in, and leaving `drawing` clear is what keeps the moves after
     /// it inert too.
+    ///
+    /// A finger's press does **not** arrive here directly: [`Landing`] holds it
+    /// until it has said whether it is paint at all (§18.1.11), and calls
+    /// [`open`](Self::open) with everything it held when it turns out to be.
     pub fn begin(self, e: &Event<PointerData>, tool: Tool) -> bool {
         let state = self.state;
         let (Some(sample), Some(tolerance)) = (sample(state, e), input_tolerance(state, e)) else {
@@ -1217,35 +1382,78 @@ impl Paint {
             restore.set(Some(action));
             dispatch(state, ViewCommand::SetShapeAction(ShapeAction::Select(m)));
         }
+        // The brush's smoothing as a canvas-px string (§6.11); zero for the
+        // selection tools, which fit no curve.
+        let rope = if tool.is_selection() {
+            0.0
+        } else {
+            input_rope(state)
+        };
+        self.open(tool, &[sample], tolerance, rope, elem_xy(e))
+    }
+
+    /// Open the gesture on samples **already taken**: the press first, then every
+    /// report since it, in the order the hand made them.
+    ///
+    /// Split out of [`begin`](Self::begin) rather than folded into it because a
+    /// finger's press is not believed when it lands — [`Landing`] holds it, and
+    /// pours what it held in here once the press turns out to be paint (§18.1.11).
+    /// A pen's press comes through with a list of one, which is what it always was.
+    ///
+    /// `at` is where the pointer is *now*, in element (CSS) px — the frame the hold
+    /// watcher measures in ([`Dwell::at`]).
+    fn open(
+        self,
+        tool: Tool,
+        samples: &[InputSample],
+        tolerance: f32,
+        rope: f32,
+        at: Vec2,
+    ) -> bool {
+        let state = self.state;
+        let Some((press, since)) = samples.split_first() else {
+            return false;
+        };
         dispatch(
             state,
             GestureCommand::Start {
                 tool,
-                sample,
+                sample: *press,
                 // What this device and this zoom level actually resolve to, which
                 // is what the fit prices against.
                 tolerance,
-                // The brush's smoothing as a canvas-px string (§6.11); zero for the
-                // selection tools, which fit no curve.
-                rope: if tool.is_selection() {
-                    0.0
-                } else {
-                    input_rope(state)
-                },
+                rope,
             },
         );
         let mut drawing = self.drawing;
         drawing.set(true);
+        // Everything the hand did while the press was being held, oldest first —
+        // so the wait cost the stroke a few milliseconds at its head and none of
+        // its shape. Empty for every press that was believed as it landed.
+        for s in since {
+            crate::state::dispatch_sample(state, GestureCommand::To { sample: *s });
+        }
         // Seed the string overlay; a ropeless gesture leaves it `None` and the
         // per-move refresh stays gated off.
         refresh_tow(state);
         // Watch for the pen being held still, which snaps the stroke to the shape
         // it resembles (§6.9). Painting only: a marquee is already an exact shape,
         // so there is nothing for a hold to improve.
+        //
+        // From where the pointer is rather than from where it pressed, which are
+        // the same point for everything but a held press — and for that one the
+        // hand has demonstrably just been moving, so the dwell starts here.
         if !tool.is_selection() {
-            watch_for_hold(state, elem_xy(e));
+            watch_for_hold(state, at);
         }
         true
+    }
+
+    /// Whether a gesture is in flight. What tells a finger landing on a canvas
+    /// that is already being drawn on that it is a **palm** and not a gesture
+    /// ([`Landing::begin`]).
+    pub fn in_flight(self) -> bool {
+        *self.drawing.peek()
     }
 
     /// Feed a move to the gesture in flight. `false` when there is none, which is
@@ -1323,6 +1531,314 @@ impl Paint {
         stop_watching(state);
         // The stroke the string belonged to is over, however it ended (§6.11).
         refresh_tow(state);
+    }
+}
+
+/// A finger's press, **held until it says what it means** (§18.1.11).
+///
+/// A mouse or a pen says what it is the moment it lands: there is one of it, it is
+/// aimed, and the only question left is which chord opened it. A finger says
+/// nothing. The same contact is the opening half of a pinch, the start of a stroke
+/// and the beginning of a hold, and which one it turns out to be is not knowable at
+/// the press — it becomes known when a second finger lands (navigation, §18.1.7),
+/// when this one travels ([`TOUCH_SLOP`]), or when it does neither for long enough
+/// ([`DWELL`], the eyedropper).
+///
+/// So a finger's press is *held* rather than obeyed, and the three ways it resolves
+/// are the three touch gestures. That is what fixes the oldest complaint about
+/// painting by touch: reaching for the canvas with two fingers used to lay a stroke
+/// and then take it back, because the first finger had already been believed and
+/// fingers never land together. A held press has nothing to take back.
+///
+/// **Nothing is lost by waiting.** Every report the browser delivers while a press
+/// is held is kept — coalesced list and all, so the full input rate survives — and
+/// replayed into the stroke the instant it opens ([`Paint::open`]). The mark starts
+/// where the finger touched down and carries every sample since; what the wait costs
+/// is the first few milliseconds of *latency*, never a millimetre of the path.
+///
+/// A hook shaped like [`Nav`] and [`Tune`] and driven the same way, and the one
+/// difference is where it sits: this stands **in front of** [`Paint`] rather than
+/// beside it. Every press the canvas would have handed the paint gesture comes here
+/// first, and a press that is not a finger is handed straight on — a pen is
+/// unaffected by every line of this, which is the point. The pen is what serious
+/// work is done with, and it has never needed to be second-guessed.
+#[derive(Clone, Copy)]
+pub struct Landing {
+    state: AppState,
+    /// The gesture a held press opens if it turns out to be paint, and the one this
+    /// forwards every non-finger press to unchanged.
+    paint: Paint,
+    /// The press being held, or `None`.
+    ///
+    /// Root-owned (`state::root_signal`) rather than the component's, for
+    /// [`PickMove::drag`]'s reason and not as a lifetime nicety: the hold that
+    /// resolves this into the eyedropper fires from a detached task.
+    held: Signal<Option<Held>>,
+    /// That task, cancelled and replaced per press exactly as the assist watcher's
+    /// is ([`watch_for_hold`]).
+    watcher: Signal<Option<Task>>,
+    /// How many presses have been held. A timer that outlives the press it was
+    /// started for — the press resolved, the finger lifted, another landed — must
+    /// not fire on its successor, and a counter is what rules that out rather than
+    /// a pointer id, which the browser reuses.
+    epoch: Signal<u64>,
+}
+
+/// A press being held, and everything the stroke it may become will need.
+///
+/// It carries the *fit's* parameters (`tolerance`, `rope`) as they were at the
+/// press, not as they are when it opens, for the reason [`TuneDrag::zoom`] is
+/// latched: a gesture measures against the view it started in.
+#[derive(Clone)]
+struct Held {
+    /// Which press this is ([`Landing::epoch`]).
+    epoch: u64,
+    /// The finger holding it. A pen or a second finger arriving is a different
+    /// pointer, and its reports must not be fed into this one's stroke.
+    id: i32,
+    /// What the press would paint with. Read at the press like everything else
+    /// here, so a tool changed by the other hand mid-hold does not retroactively
+    /// change what this press was.
+    tool: Tool,
+    /// Where it landed and where it is now, element (CSS) px — the frame a stray is
+    /// measured in, for [`Dwell::at`]'s reason: holding still is a fact about the
+    /// hand, not about the canvas under it.
+    from: Vec2,
+    at: Vec2,
+    /// The furthest it has been from `from`. Monotone, so a finger that wandered
+    /// out and came back has still moved: it asked to paint, and the answer to that
+    /// cannot be withdrawn by holding still afterwards.
+    strayed: f32,
+    /// Every canvas-space sample since the press, oldest first — the press itself,
+    /// then the full coalesced list of every move ([`samples`]).
+    samples: Vec<InputSample>,
+    tolerance: f32,
+    rope: f32,
+}
+
+impl Landing {
+    /// A hook: call unconditionally, like any `use_*`.
+    pub fn use_landing(state: AppState, paint: Paint) -> Self {
+        Self {
+            state,
+            paint,
+            held: crate::state::root_signal(|| None),
+            watcher: crate::state::root_signal(|| None),
+            epoch: crate::state::root_signal(|| 0),
+        }
+    }
+
+    /// Take the press. `true` means it opened something — a stroke for a pen or a
+    /// mouse, a held question for a finger.
+    ///
+    /// Two presses are refused outright, and both are the same hand:
+    ///
+    /// - **A finger arriving while something is already being drawn** is a palm.
+    ///   The hand that rests on the glass beside a working pen puts one down every
+    ///   time, and believing it used to end the pen's stroke and start a second one
+    ///   under the heel of the hand. Refusing it is not a general palm rejection —
+    ///   this file cannot see the contact's size — but it is the case that actually
+    ///   happens, and the mark it used to make was the pen's.
+    /// - **A pen arriving while a finger is held** is the other order of the same
+    ///   hand: rest first, then draw. The pen is what the artist meant, so the held
+    ///   press is dropped rather than left to fire an eyedropper under their palm
+    ///   half a second into the stroke.
+    pub fn begin(self, e: &Event<PointerData>, tool: Tool) -> bool {
+        if !is_finger(e) {
+            self.take();
+            return self.paint.begin(e, tool);
+        }
+        // A *primary* touch is the first contact of its type, so a press still held
+        // when one arrives is a finger whose release never came — `Nav::finger_down`
+        // clears its own set on exactly this fact and for exactly this reason
+        // (§18.1.7). One stale record here would refuse every press after it, and
+        // painting by touch would stop working for the rest of the session.
+        if e.is_primary() {
+            self.take();
+        }
+        if self.paint.in_flight() || self.held.peek().is_some() {
+            return false;
+        }
+        let state = self.state;
+        let (Some(sample), Some(tolerance)) = (sample(state, e), input_tolerance(state, e)) else {
+            return false;
+        };
+        let at = elem_xy(e);
+        let mut epoch = self.epoch;
+        let n = *epoch.peek() + 1;
+        epoch.set(n);
+        let mut held = self.held;
+        held.set(Some(Held {
+            epoch: n,
+            id: e.pointer_id(),
+            tool,
+            from: at,
+            at,
+            strayed: 0.0,
+            samples: vec![sample],
+            tolerance,
+            rope: if tool.is_selection() {
+                0.0
+            } else {
+                input_rope(state)
+            },
+        }));
+        self.watch(n);
+        true
+    }
+
+    /// Feed a move to whatever this press has become. `true` means the move was
+    /// taken — including the moves that are still only being *collected*, which are
+    /// this gesture's even though they have changed nothing yet.
+    ///
+    /// A move from any other pointer falls through to the paint gesture, exactly as
+    /// it would have without this in the way.
+    pub fn advance(self, e: &Event<PointerData>) -> bool {
+        let mine = self
+            .held
+            .peek()
+            .as_ref()
+            .is_some_and(|h| h.id == e.pointer_id());
+        if !mine {
+            return self.paint.advance(e);
+        }
+        let at = elem_xy(e);
+        // Read before the record is locked, so nothing holds two signals at once.
+        let more = samples(self.state, e).unwrap_or_default();
+        let mut held = self.held;
+        let travelled = {
+            let mut w = held.write();
+            let Some(h) = w.as_mut() else {
+                return true;
+            };
+            h.at = at;
+            h.strayed = h.strayed.max(at.distance(h.from));
+            h.samples.extend(more);
+            h.strayed > TOUCH_SLOP
+        };
+        // The press has asked to paint. Outside the borrow, because opening the
+        // stroke re-enters the engine and rewrites the frontend's observable.
+        if travelled {
+            self.open();
+        }
+        true
+    }
+
+    /// The press turned out to be paint: open the stroke and pour everything held
+    /// into it. Harmless when nothing is held.
+    fn open(self) {
+        let Some(h) = self.take() else { return };
+        self.paint
+            .open(h.tool, &h.samples, h.tolerance, h.rope, h.at);
+    }
+
+    /// Drop everything this press was going to be — what a second finger, a
+    /// composing mode, or a chord that outranks paint does to it.
+    ///
+    /// **Nothing is dispatched for the held half.** A held press never opened a
+    /// gesture, so there is no stroke to cancel and no frame to repaint, and that
+    /// is the whole of why reaching for the canvas with two fingers no longer
+    /// flashes a mark (§18.1.11). The paint gesture underneath is abandoned as it
+    /// always was, for the press that *was* believed — a pen's, or a finger's that
+    /// had already travelled.
+    pub fn abandon(self) {
+        self.take();
+        self.paint.abandon();
+    }
+
+    /// The release, **committing** what the press drew.
+    ///
+    /// A press still held when the finger leaves was a **tap**, and a tap paints
+    /// its dot: it opens the stroke it was going to open and ends it in the same
+    /// breath, so touching the canvas leaves the mark the brush would have made.
+    /// The two-finger tap never reaches here — [`Nav`] took the second finger, and
+    /// the canvas abandoned this the moment it did.
+    pub fn end(self) {
+        self.open();
+        self.paint.end();
+    }
+
+    /// Take the held press and stop the hold counting it down. `None` when there is
+    /// none, which is every press that is not a finger's and every finger's press
+    /// that has already resolved.
+    fn take(self) -> Option<Held> {
+        let mut watcher = self.watcher;
+        if let Some(task) = watcher.write().take() {
+            task.cancel();
+        }
+        let mut held = self.held;
+        held.write().take()
+    }
+
+    /// Count this press down to the eyedropper (§18.1.11).
+    ///
+    /// One sleep rather than the assist watcher's poll ([`watch_for_hold`]), and
+    /// the difference is what each is watching *for*. That one waits for the
+    /// pointer to stop and has to keep looking, because it may stop at any moment
+    /// and start again after. This one has exactly one moment worth checking: a
+    /// press that travelled far enough to be a stroke has already opened one and
+    /// left nothing here to find, so the only question is whether anything is still
+    /// held when the wait is up.
+    fn watch(self, epoch: u64) {
+        // `spawn_forever` for `watch_for_hold`'s reason: this is started from a
+        // component's event handler and must not be tied to that scope's lifetime.
+        // Every signal it touches is root-owned (see `state::root_signal`).
+        let task = spawn_forever(async move {
+            sleep_ms((DWELL * 1000.0) as i32).await;
+            self.hold(epoch);
+        });
+        let mut watcher = self.watcher;
+        if let Some(old) = watcher.write().replace(task) {
+            old.cancel();
+        }
+    }
+
+    /// The wait is up. If the press is still held and still still, it was never
+    /// paint at all — it was the eyedropper, asking for the color under the finger
+    /// (§18.1.11).
+    fn hold(self, epoch: u64) {
+        // This timer is spent whatever it decides, and it must not be cancelled by
+        // the take below: it is the task doing the cancelling.
+        let mut watcher = self.watcher;
+        watcher.set(None);
+        // Still this press, and still a press the sampler is willing to take. Over
+        // a selection tool it stands down for `DragAction::PickColor`'s reason —
+        // there the press is *for* the marquee (§6.8) — and the press stays held
+        // rather than being resolved, so it can still become one.
+        let ready = self
+            .held
+            .peek()
+            .as_ref()
+            .is_some_and(|h| h.epoch == epoch && !h.tool.is_selection());
+        if !ready {
+            return;
+        }
+        let mut held = self.held;
+        let Some(h) = held.write().take() else { return };
+        let Some(last) = h.samples.last().copied() else {
+            return;
+        };
+        let mut state = self.state;
+        // From here the press is the eyedropper's, and the canvas's own move
+        // handler routes it there on the flag alone — the same flag the chord
+        // binding sets, so a hold and an Alt+drag are one gesture from this point
+        // and `end_interaction` puts both down the same way (§18.0.2).
+        state.pick.dragging.set(true);
+        // The chrome comes **back** rather than staying faded, which is the one
+        // thing this differs from a stroke about. A sample's answer is read off the
+        // Color panel, and a sample taken behind a hidden panel tells nobody
+        // anything — `end_interaction` makes the same argument for the eyedropper's
+        // chord, and `main.rs` for the tuning drag.
+        state.canvas_active.set(false);
+        // Where the answer is shown, since a finger has neither a cursor nor a
+        // clear view of the panel (`PickState::loupe`).
+        let mut loupe = state.pick.loupe;
+        loupe.set(Some(h.at));
+        // The mark under the cursor is a promise of paint, and this press has just
+        // stopped making one (§18.1.10). It cannot come back while the sampler is
+        // down: `hover_stroke` is gated on exactly this flag.
+        clear_hover_mark(state);
+        pick_color(state, last.pos);
     }
 }
 
@@ -1637,11 +2153,34 @@ pub fn pick_color(state: AppState, pos: Vec2) {
     });
 }
 
+/// Move the held pick's loupe to `at`, element (CSS) px — the finger it belongs to
+/// has dragged on to sample somewhere else (§18.1.11).
+///
+/// **Silent when no loupe is up**, which is what keeps it to the one gesture that
+/// needs it: a sampler dragged with a mouse or a pen has a cursor on the point and a
+/// clear view of the Color panel, and a swatch following it would be a third thing
+/// saying what two already say. A finger has neither — it is *on* the place it is
+/// asking about — so the answer is drawn where it can be seen past the hand.
+pub fn move_loupe(state: AppState, at: Vec2) {
+    let mut loupe = state.pick.loupe;
+    if loupe.peek().is_some() {
+        loupe.set(Some(at));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The hold, for the drawing assist (§6.9)
 // ---------------------------------------------------------------------------
 
-/// How long the pointer has to hold still before the stroke in flight snaps.
+/// How long a pointer has to hold still to have **held** — before the stroke in
+/// flight snaps to the shape it resembles (§6.9), and before a finger's press that
+/// never became a stroke becomes the eyedropper instead ([`Landing`], §18.1.11).
+///
+/// One figure for both, deliberately, and not because the two acts are related: a
+/// hold is a hold, and a wait that meant one length of time before a stroke and
+/// another during one would be a hand having to learn the app twice. What the two
+/// share is a threshold, not a mechanism — the assist watches for a pointer that
+/// *stopped*, this one for a press that never *started*.
 ///
 /// The cost of the two mistakes is asymmetric, and that is what sets it. Too short and
 /// the natural pause before lifting the pen turns considered strokes into shapes; too
@@ -1976,8 +2515,14 @@ pub fn samples(state: AppState, e: &Event<PointerData>) -> Option<Vec<InputSampl
 /// gesture apart into two signals it borrowed from the component, which is what
 /// made "what counts as in flight" a thing two functions had to agree about
 /// (`Paint`).
-pub fn end_interaction(mut state: AppState, paint: Paint, nav: Nav, tune: Tune, carry: PickMove) {
-    paint.end();
+pub fn end_interaction(
+    mut state: AppState,
+    landing: Landing,
+    nav: Nav,
+    tune: Tune,
+    carry: PickMove,
+) {
+    landing.end();
     nav.stop();
     tune.stop();
     // The one gesture here whose ending is not finished by the release: the
@@ -1989,6 +2534,13 @@ pub fn end_interaction(mut state: AppState, paint: Paint, nav: Nav, tune: Tune, 
     // `PickState`). Nothing to undo, either: a sample already in flight is left to
     // land, since it is the answer to a press the user made.
     state.pick.dragging.set(false);
+    // And the swatch a held pick was showing goes with the finger that asked for it
+    // (§18.1.11). Guarded like every other idle write here: this runs on every
+    // release the canvas sees, and almost none of them had a loupe up.
+    let mut loupe = state.pick.loupe;
+    if loupe.peek().is_some() {
+        loupe.set(None);
+    }
     // The panel stack does not come straight back: it stays out of the way until the
     // pointer reaches into its column (`AppState::panels_asleep`, §11). The chrome
     // going *out* mid-stroke was never the distracting half — coming back the instant
@@ -2016,4 +2568,39 @@ pub fn end_interaction(mut state: AppState, paint: Paint, nav: Nav, tune: Tune, 
     // would take the canvas away mid-mark. Last, because it is the one thing in
     // this function that puts something *up*.
     crate::drags::settle_offer(state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The four ways an episode can end, and only one of them is a tap.
+    #[test]
+    fn a_tap_is_short_and_still() {
+        assert_eq!(tap_of(0.0, 0.05, 2), Some(2));
+        assert_eq!(tap_of(TOUCH_SLOP, TAP_TIME, 2), Some(2)); // both ends inclusive
+        assert_eq!(tap_of(TOUCH_SLOP + 0.1, 0.05, 2), None); // travelled: a pinch
+        assert_eq!(tap_of(0.0, TAP_TIME + 0.01, 2), None); // lingered: a rest
+    }
+
+    /// The count is the episode's widest, so a hand that put a third finger down
+    /// and took it off again asked for redo rather than for undo — the fingers a
+    /// gesture *had* are what it meant, not the ones it ended holding.
+    #[test]
+    fn a_tap_is_counted_at_its_widest() {
+        assert_eq!(tap_of(0.0, 0.05, 3), Some(3));
+        assert_eq!(tap_of(0.0, 0.05, 1), Some(1));
+    }
+
+    /// And the other half of the same guarantee, which is what makes spending a
+    /// two-finger tap on undo safe: an episode that stayed inside the slop never
+    /// opened a stroke, because opening one is what crossing the slop *is*
+    /// ([`Landing::advance`]). One constant, so the two cannot drift apart.
+    #[test]
+    fn a_tap_can_never_have_painted() {
+        let painted = |strayed: f32| strayed > TOUCH_SLOP;
+        for strayed in [0.0, 1.0, TOUCH_SLOP, TOUCH_SLOP + 0.1, 100.0] {
+            assert_ne!(tap_of(strayed, 0.05, 2).is_some(), painted(strayed));
+        }
+    }
 }

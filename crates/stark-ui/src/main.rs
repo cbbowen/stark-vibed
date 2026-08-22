@@ -63,8 +63,8 @@ use credits::CreditsModal;
 use drags::DragAction;
 use icons::{icon, icon_large};
 use input::{
-    Nav, Paint, PickMove, Tune, accel, bind_context_menu, bind_pen, bind_shortcuts, elem_xy,
-    end_interaction, hover_at, hover_gone, hover_stroke, pick_color, sample,
+    Landing, Nav, Paint, PickMove, Tune, accel, bind_context_menu, bind_pen, bind_shortcuts,
+    elem_xy, end_interaction, hover_at, hover_gone, hover_stroke, move_loupe, pick_color, sample,
 };
 use layout::{PanelStack, chrome_class, resize_end, resize_move};
 use navigator::NavigatorOverlay;
@@ -413,6 +413,10 @@ fn app() -> Element {
             // again. Empty and free unless a rope is in flight.
             TowStringOverlay {}
 
+            // The held touch pick's swatch (§18.1.11), same layer once more.
+            // Empty and free unless a finger is holding one.
+            PickLoupe {}
+
             // Left command rail: rarely-used document commands, tucked away.
             CommandRail {}
 
@@ -565,6 +569,12 @@ fn Canvas() -> Element {
     // left with the part that is genuinely its own: deciding, on a press, which of
     // the four bindings it is.
     let paint = Paint::use_paint(state);
+    // And, in front of it, the wait a *finger's* press is held in until it says
+    // which of the three touch gestures it is (`input::Landing`, §18.1.11). Every
+    // press below goes through this instead of straight to `paint`; a pen's or a
+    // mouse's is handed on unchanged, which is why nothing about drawing with a
+    // stylus changes.
+    let landing = Landing::use_landing(state, paint);
     // The shared pan/zoom bindings (`input::Nav`) — the same instance the
     // transform overlay makes for itself, so navigation means one thing.
     let nav = Nav::use_nav(state);
@@ -665,7 +675,14 @@ fn Canvas() -> Element {
                     // Whatever was being drawn was never meant to be paint — it was
                     // the opening half of a pinch (§18.1.7). Cancelled rather
                     // than committed, so reaching for the canvas leaves no mark.
-                    paint.abandon();
+                    //
+                    // Usually there is nothing even to cancel: the first finger's
+                    // press is *held* rather than believed, so a second one landing
+                    // inside the wait drops a question instead of taking back an
+                    // answer (§18.1.11). That is the fix for the pinch that used to
+                    // paint — what remains here is the pen mid-stroke, and the
+                    // finger that had already travelled far enough to mean it.
+                    landing.abandon();
                     // And the press is navigation, so the hover's promise of paint
                     // is withdrawn with it (§18.1.10).
                     hover_gone(state);
@@ -694,7 +711,7 @@ fn Canvas() -> Element {
                             // opened one; it can no longer be finished by this
                             // press, and a gesture the hand has walked away from
                             // must leave no mark.
-                            paint.abandon();
+                            landing.abandon();
                             // The ring at the press is the size's readout now
                             // (§18.1.9); a second circle under it would be two
                             // sizes for one brush.
@@ -735,7 +752,7 @@ fn Canvas() -> Element {
                             // finished by this press, and a gesture the hand has
                             // walked away from must leave no mark (the tuning
                             // arm's argument, unchanged).
-                            paint.abandon();
+                            landing.abandon();
                             // The press is not paint, so the circle promising it
                             // goes with it (§18.1.10).
                             hover_gone(state);
@@ -769,11 +786,13 @@ fn Canvas() -> Element {
                     // tool decides what the engine builds (§6.8).
                     let tool = current_tool(state);
                     canvas_active.set(true);
-                    // From here the press is paint, and what it does with itself is
-                    // the gesture's business rather than this handler's — including
-                    // the case where there is no view to land in yet, which opens
-                    // nothing and leaves the moves after it inert (`input::Paint`).
-                    paint.begin(&e, tool);
+                    // From here the press is paint — or, for a finger, a question
+                    // whose answer is *probably* paint. What it does with itself
+                    // is the gesture's business rather than this handler's,
+                    // including the case where there is no view to land in yet,
+                    // which opens nothing and leaves the moves after it inert
+                    // (`input::Landing`, `input::Paint`).
+                    landing.begin(&e, tool);
                 }
             },
             onpointermove: move |e| {
@@ -813,7 +832,7 @@ fn Canvas() -> Element {
                 // taking paint the moment the mode took it, so the gesture must
                 // leave no mark.
                 if modes::is_composing(state) {
-                    paint.abandon();
+                    landing.abandon();
                     // And a layer being carried is put back rather than left to
                     // commit, for the identical reason (`PickMove::abandon`).
                     carry.abandon();
@@ -854,7 +873,12 @@ fn Canvas() -> Element {
                         // Alt+drag keeps sampling; `pick_color` drops a move that
                         // arrives while the last sample is still settling.
                         pick_color(state, s.pos);
-                    } else if !paint.advance(&e) {
+                        // And a held touch pick carries its swatch along with the
+                        // finger (§18.1.11). Silent for the chord binding, which
+                        // has a cursor and a panel and needs neither
+                        // (`input::move_loupe`).
+                        move_loupe(state, elem_xy(&e));
+                    } else if !landing.advance(&e) {
                         // The paint gesture takes the move if it has one in
                         // flight, and says so. A move with no gesture behind it
                         // is a *hover*, and the mark preview rides it
@@ -891,12 +915,42 @@ fn Canvas() -> Element {
             // finger the hand happened to raise first (§18.1.7).
             onpointerup: move |e| {
                 if !nav.release(&e) {
-                    end_interaction(state, paint, nav, tune, carry);
+                    // The hand has left the glass. If it came and went without ever
+                    // moving the view or laying a mark, it made a **tap** — two
+                    // fingers for undo and three for redo, the pairing every
+                    // touch-first painting app ships and therefore the one nobody
+                    // has to be taught (§18.1.11).
+                    //
+                    // Read *before* the teardown, which is what clears it, and
+                    // spent *after*, because undo puts down whatever is in hand
+                    // (`commands::edit_history`) and this handler is what is
+                    // holding it.
+                    let tap = nav.take_tap();
+                    // A tap never had the canvas in hand, so the chrome it faded on
+                    // the way in comes back rather than being put to sleep behind
+                    // it: `end_interaction` reads this flag to decide, and a
+                    // gesture that lasted a tenth of a second was not somebody
+                    // asking for the panels to get out of the way.
+                    if matches!(tap, Some(2 | 3)) {
+                        canvas_active.set(false);
+                    }
+                    end_interaction(state, landing, nav, tune, carry);
+                    match tap {
+                        Some(2) => Command::Undo.run(state),
+                        Some(3) => Command::Redo.run(state),
+                        // One finger is a dot the brush already painted, and four
+                        // is a hand put down on the glass. Neither is an act.
+                        _ => {}
+                    }
                 }
             },
             onpointercancel: move |e| {
                 if !nav.release(&e) {
-                    end_interaction(state, paint, nav, tune, carry);
+                    // No tap is taken here, and `Nav::stop` drops the one the
+                    // release recorded: a cancel is the browser saying the gesture
+                    // never finished, and an undo is not something to do on a
+                    // gesture that was interrupted.
+                    end_interaction(state, landing, nav, tune, carry);
                 }
             },
             onwheel: move |e| nav.wheel(e),
@@ -1051,6 +1105,65 @@ fn BrushSizeRing() -> Element {
         }
     }
 }
+
+/// The held touch pick's loupe (§18.1.11): the color the finger is standing on,
+/// drawn clear of the finger.
+///
+/// The gesture's whole readout, and the only feedback it has. The eyedropper's
+/// chord binding needs none — a mouse or a pen leaves a cursor on the point and the
+/// Color panel in plain view — but a finger is *on* the place it is asking about,
+/// with a hand behind it covering most of a tablet's screen. So the answer is put
+/// where it can be seen: above the contact by more than a fingertip, which is what
+/// [`LOUPE_LIFT`] is.
+///
+/// DOM rather than a compositor pass, for [`PeerCursors`]'s reason — it is chrome,
+/// and the one thing it must never do is reach an export. It reads the **brush**
+/// color rather than the sample, deliberately: what the gesture is *for* is loading
+/// the brush, so the swatch shows what would be painted with, and a color the
+/// readback has not landed yet is honestly still the old one.
+#[component]
+fn PickLoupe() -> Element {
+    let state = use_context::<AppState>();
+    // Unconditionally, ahead of the early return: a hook that ran only while the
+    // loupe is up would be a different hook list on the frames it is not.
+    let color = use_obs(state, |o| o.brush.color);
+    let Some(at) = (state.pick.loupe)() else {
+        return rsx! {};
+    };
+    let [r, g, b, _] = color().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    // Straight sRGB, which is what a brush color is (`panels::color`).
+    let fill = format!(
+        "background: rgb({:.1}% {:.1}% {:.1}%);",
+        r * 100.0,
+        g * 100.0,
+        b * 100.0
+    );
+    // Above the finger, or below it near the top of the window. Flipped rather than
+    // clamped: clamping would slide the swatch onto the contact point it exists to
+    // stay clear of, which at the top of the canvas is exactly where a hand reaching
+    // over the picture puts it.
+    let y = if at.y < LOUPE_LIFT * 1.5 {
+        at.y + LOUPE_LIFT
+    } else {
+        at.y - LOUPE_LIFT
+    };
+    rsx! {
+        div { class: "pick-loupe",
+            div {
+                class: "pick-loupe-well",
+                style: "left:{at.x}px; top:{y}px; {fill}",
+            }
+        }
+    }
+}
+
+/// How far above the finger the held pick's swatch sits, CSS px.
+///
+/// A fingertip's contact patch is about 10 mm across and the hand behind it covers
+/// everything below and to one side, so the swatch clears the *finger* rather than
+/// the contact point — far enough to be read without moving the hand, close enough
+/// that it still reads as belonging to it.
+const LOUPE_LIFT: f32 = 44.0;
 
 /// The tow string while a smoothing brush draws (§6.11): a hairline from the
 /// towed tip — where paint is landing — to the pointer, with a dot under the
