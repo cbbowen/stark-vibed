@@ -34,6 +34,49 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 
+# The lints every member inherits, via `[lints] workspace = true` in its manifest.
+#
+# The bar for a row here is that it costs **nothing today**: each was measured at
+# zero warnings across `--workspace --all-targets` before being added, so none of
+# them arrives with a backlog attached. They are ratchets — they cannot fail this
+# build, only a later one. MORE_LINTS.md records the survey they came out of,
+# including the far longer list of lints deliberately *not* taken, and why: the
+# cast family is what pixel-and-index code is made of, and `suboptimal_flops`
+# would trade a golden re-bless for nothing.
+#
+# `warn` rather than `deny` because the gate is `-D warnings` at the CI edge
+# (CLAUDE.md), which is where the default lints are already held.
+[workspace.lints.rust]
+# Stark has never needed `unsafe` — not one block, fn, impl or extern in ~130k
+# lines — and that is worth stating where the compiler keeps it true rather than
+# leaving it a property nobody wrote down. `forbid` rather than `deny` so it
+# cannot be switched back off at a call site; the missing escape hatch is the
+# whole point.
+#
+# It does not reach through an external proc macro's expansion: the generated
+# shader mirrors carry `#[derive(bytemuck::Pod, Zeroable)]`, whose expansion *is*
+# an `unsafe impl`, and this is green anyway. So the claim is "no unsafe we
+# wrote", not "no unsafe in the build" — which is the claim worth making.
+unsafe_code = "forbid"
+# A `macro_rules!` metavariable used where its fragment specifier cannot reach.
+meta_variable_misuse = "warn"
+# `x as i32` where `x` is already `i32` — noise that hides the casts that mean
+# something, of which this tree has 972.
+trivial_numeric_casts = "warn"
+
+[workspace.lints.clippy]
+# Debug leftovers, in a tree whose output is a browser tab somebody else loads.
+dbg_macro = "warn"
+todo = "warn"
+# `Rc<String>`/`Rc<Vec<T>>`, which pays for two indirections to reach the bytes.
+rc_buffer = "warn"
+# Leaking a value whose `Drop` is load-bearing. Tile reclamation is Drop-shaped
+# here — a `GpuTile` handle going out of scope is what returns it to the pool.
+mem_forget = "warn"
+# `x == 1.0` against a *literal*. The general `float_cmp` is deliberately absent:
+# all 14 of its sites are exactness guards that mean it (MORE_LINTS.md).
+float_cmp_const = "warn"
+
 # Single source of truth for shared dependency versions (CLAUDE.md).
 [workspace.dependencies]
 wgpu = "30"

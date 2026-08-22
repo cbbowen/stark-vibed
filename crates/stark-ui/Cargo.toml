@@ -131,3 +131,7 @@ web-sys = { version = "0.3", features = [
 console_error_panic_hook = "0.1"
 # Routes `tracing` events to the browser console (set as the global subscriber).
 tracing-wasm = "0.2"
+
+# The shared lint set (root Cargo.toml).
+[lints]
+workspace = true

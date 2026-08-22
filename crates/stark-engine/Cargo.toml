@@ -104,3 +104,7 @@ png = { workspace = true }
 # Recorded pen input for the fitter tests. A dev-dependency on purpose: as a module
 # it was public API and rode along in the wasm binary.
 stark-testdata = { path = "../stark-testdata" }
+
+# The shared lint set (root Cargo.toml).
+[lints]
+workspace = true

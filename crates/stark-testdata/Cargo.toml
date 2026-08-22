@@ -14,3 +14,7 @@ description = "Recorded pen input, captured from the app, for Stark's stroke-fit
 # harness can resolve a lean document's ids out of the app's own assets. No GPU, which
 # is the whole reason the derivation lives in its own crate (§19).
 stark-assetid = { path = "../stark-assetid" }
+
+# The shared lint set (root Cargo.toml).
+[lints]
+workspace = true

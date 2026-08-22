@@ -95,3 +95,7 @@ stark-assetid = { workspace = true }
 # (§6.4), and a smooth synthetic blob has almost none of one, so a peer left on
 # the flat stand-in could still land within tolerance.
 stark-testdata = { path = "../stark-testdata" }
+
+# The shared lint set (root Cargo.toml).
+[lints]
+workspace = true

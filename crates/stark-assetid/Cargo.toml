@@ -21,3 +21,7 @@ serde = { workspace = true }
 # crate can give it one. No GPU, no build-script cost: carbonite is serde + thiserror.
 carbonite = { workspace = true }
 thiserror = { workspace = true }
+
+# The shared lint set (root Cargo.toml).
+[lints]
+workspace = true

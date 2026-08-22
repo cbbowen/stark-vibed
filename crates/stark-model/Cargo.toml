@@ -27,3 +27,7 @@ history = { workspace = true }
 # What a content id *is*. Already its own crate for the same reason this one
 # exists one level up: an id must be derivable without a GPU (§19).
 stark-assetid = { workspace = true }
+
+# The shared lint set (root Cargo.toml).
+[lints]
+workspace = true
