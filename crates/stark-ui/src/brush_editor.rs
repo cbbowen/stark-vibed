@@ -48,7 +48,7 @@ use crate::panels::brush::{
 };
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::render::Renderer;
-use crate::state::{AppState, update_brush};
+use crate::state::{AppState, update_brush, use_obs};
 use crate::widgets::{Modal, Slider};
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 
@@ -289,7 +289,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     // quick panel, a preset. The memo keeps this from firing on unrelated
     // `obs` churn (sliders restroke through `edit`'s throttle instead), and
     // the initial run is a no-op because the preview renderer isn't up yet.
-    let shape = use_memo(move || state.obs.read().as_ref().map(|o| o.brush.shape));
+    let shape = use_obs(state, |o| o.brush.shape);
     use_effect(move || {
         let _ = shape();
         restroke(state, preview);
@@ -309,12 +309,10 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     // calls, not components, and because "one at a time" is the behaviour wanted.
     let mod_open = use_signal(|| None::<ModRow>);
 
-    let brush = state
-        .obs
-        .read()
-        .as_ref()
-        .map(|o| o.brush)
-        .unwrap_or_default();
+    // Through a memo, like `shape` above and for its reason: the dialog's rows
+    // are the brush, and reading the whole projection re-rendered every one of
+    // them on engine writes that moved no brush at all (`state::use_obs`).
+    let brush = use_obs(state, |o| o.brush)().unwrap_or_default();
     // The feel half of the tool (§6.11) — a subscribing read, so the slider
     // tracks a preset click like every brush-driven row does.
     let smoothing = (state.smoothing)();
@@ -744,12 +742,10 @@ fn ShapeGallery() -> Element {
     let state = use_context::<AppState>();
     let mut dropping = use_signal(|| false);
 
-    let brush_shape = state
-        .obs
-        .read()
-        .as_ref()
-        .map(|o| o.brush.shape)
-        .unwrap_or_default();
+    // The one field the gallery reads, through a memo (`state::use_obs`): which
+    // card wears the selected ring moves when a shape is chosen and at no other
+    // time, while the projection behind it moves on every command.
+    let brush_shape = use_obs(state, |o| o.brush.shape)().unwrap_or_default();
     // One card per bundled shape, in table order. A built-in whose fetch is
     // still in flight has no id yet, so it simply never reads as selected —
     // clicking it is the same no-op, and both settle when the bytes land. Its

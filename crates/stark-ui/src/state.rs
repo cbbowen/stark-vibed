@@ -735,6 +735,34 @@ where
     use_memo(move || state.obs.read().as_ref().map(&slice))
 }
 
+/// [`use_obs`] for a reader that has its **own** answer to "there is no engine
+/// yet": `slice` is handed the `Option` rather than being run inside it.
+///
+/// The same memo and the same bargain; what differs is only the shape at the
+/// call site, and the difference earns a second hook because the alternative is
+/// a `Memo<Option<Option<T>>>` that every caller then has to flatten. Three
+/// kinds of reader want this one:
+///
+/// - the answer is a **fallback**, not an absence — a menu row's greyed state is
+///   `Command::enabled(None)` before the engine is up, which is a real answer
+///   about the act rather than a missing one;
+/// - the slice is itself an `Option` — "the selected frame, if the selected
+///   layer is one" — where the outer `Option` says nothing the inner one does
+///   not;
+/// - the slice wants `?` over the projection, which a `&ObservableState`
+///   closure has nowhere to spend.
+///
+/// A hook: call unconditionally, like [`use_obs`].
+pub fn use_obs_opt<T>(
+    state: AppState,
+    slice: impl Fn(Option<&ObservableState>) -> T + 'static,
+) -> Memo<T>
+where
+    T: PartialEq + 'static,
+{
+    use_memo(move || slice(state.obs.read().as_ref()))
+}
+
 /// The gradient gesture being composed on the shared gradient bar (§22.4):
 /// what the ramp lands on, how the composing drag is read, and the drag itself.
 ///

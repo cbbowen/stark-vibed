@@ -63,7 +63,7 @@ use crate::panels::color::ab_field_data_url;
 use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
-use crate::state::{AppState, dispatch, use_obs};
+use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
 use stark_engine::LayerInfo;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::filters::{CONTRAST_PIVOT, dispersion_weight};
@@ -187,7 +187,7 @@ pub fn selected_filter(state: AppState) -> Option<(LayerInfo, Filter)> {
 ///
 /// A hook: call unconditionally, and above any early return.
 fn use_selected_filter(state: AppState) -> Memo<Option<(LayerInfo, Filter)>> {
-    use_memo(move || state.obs.read().as_ref().and_then(selected_filter_of))
+    use_obs_opt(state, |o| o.and_then(selected_filter_of))
 }
 
 /// Hand the library's current ramp to the selected **gradient map** filter — the
@@ -240,7 +240,7 @@ fn add_filter(state: AppState, at: Option<(Option<LayerId>, Option<LayerId>)>, f
     // sits above the insertion point.
     let before: Vec<LayerId> = state
         .obs
-        .read()
+        .peek()
         .as_ref()
         .map(|o| o.layers.iter().map(|l| l.id).collect())
         .unwrap_or_default();
@@ -252,7 +252,7 @@ fn add_filter(state: AppState, at: Option<(Option<LayerId>, Option<LayerId>)>, f
             filter,
         },
     );
-    let new_id = state.obs.read().as_ref().and_then(|o| {
+    let new_id = state.obs.peek().as_ref().and_then(|o| {
         o.layers
             .iter()
             .find(|l| l.filter.is_some() && !before.contains(&l.id))

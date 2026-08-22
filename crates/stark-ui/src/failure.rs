@@ -23,7 +23,7 @@
 use dioxus::prelude::*;
 
 use crate::icons::{self, icon};
-use crate::state::AppState;
+use crate::state::{AppState, use_obs};
 use crate::widgets::Modal;
 
 /// The report, mounted for as long as the projection carries a failure — which is
@@ -43,12 +43,14 @@ pub fn GpuFailureModal() -> Element {
     // Cloned out of the projection rather than held across the render: `Arc`, so
     // this is a refcount bump, and the guard must not be live when Save reads the
     // renderer.
-    let Some(failure) = state
-        .obs
-        .read()
-        .as_ref()
-        .and_then(|o| o.gpu_failure.clone())
-    else {
+    //
+    // Through a memo, and this is the component in the app that most wants one:
+    // it is mounted for the whole life of the page and draws nothing on a healthy
+    // device, so a straight read of the projection — which is what this was — woke
+    // it on every command of every session to decide, again, that there was
+    // nothing to report. The `Option<Arc<_>>` compares by pointer, so the memo
+    // propagates exactly once, when the device dies (`state::use_obs`).
+    let Some(failure) = use_obs(state, |o| o.gpu_failure.clone())().flatten() else {
         return rsx! {};
     };
     // Saved once. The button stays — a download the browser silently declined is

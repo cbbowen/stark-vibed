@@ -82,7 +82,7 @@ use settings::SettingsModal;
 use slots::SlotOverlay;
 use stark_engine::command::{PeerCommand, ViewCommand};
 use stark_model::ColorSpaceId;
-use state::{AppState, dispatch_quiet, resize, update_brush, use_obs};
+use state::{AppState, dispatch_quiet, resize, update_brush, use_obs, use_obs_opt};
 use widgets::Modal;
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
@@ -1316,12 +1316,19 @@ fn CmdItem(index: usize, command: Command) -> Element {
     // One memo per row, and rows are components, so each re-renders when its
     // own answer changes rather than on every commit (`state::use_obs`'s
     // argument, one field per component instead of a shared tuple).
-    let enabled = use_memo(move || command.enabled(state.obs.read().as_ref()));
+    //
+    // Both facts in the **one** memo, which is what that argument asks for: the
+    // tick was read straight out of the registry in the body below, and
+    // `Command::active` asks the projection for the three shape tools
+    // (`commands::armed`) — so a row for one of those was subscribed to every
+    // engine write however narrow its `enabled` memo was.
+    let look = use_obs_opt(state, move |o| (command.enabled(o), command.active(state)));
+    let (enabled, active) = look();
     rsx! {
         MenubarItem {
             index,
             value: format!("{command:?}"),
-            disabled: !enabled(),
+            disabled: !enabled,
             on_select: move |_| command.run(state),
             // The terse word, not the full name: a menu's trigger already
             // names the subject, which is `word`'s whole remit — the Panels
@@ -1330,7 +1337,7 @@ fn CmdItem(index: usize, command: Command) -> Element {
             if let Some(chord) = command.shortcut(&state.bindings.read()) {
                 span { class: "menu-shortcut", {chord} }
             }
-            if let Some(on) = command.active(state) {
+            if let Some(on) = active {
                 span { class: "menu-check",
                     if on { {icon(icons::CHECK)} }
                 }
@@ -1478,32 +1485,13 @@ fn CommandSearch() -> Element {
                         },
                     }
                     for (i, command) in shown.read().iter().copied().enumerate() {
-                        button {
+                        PaletteRow {
                             key: "{command:?}",
-                            class: if i == sel() { "palette-row selected" } else { "palette-row" },
-                            // Greyed by attribute, not by a native `disabled`,
-                            // though the row refuses to run either way
-                            // (`run_from_palette`): the trailing chip must stay
-                            // clickable — a shortcut is rebindable whether or
-                            // not the document offers the act right now, and
-                            // whether Undo has anything to undo is no fact
-                            // about its chord.
-                            "data-disabled": !command.enabled(state.obs.read().as_ref()),
-                            // `pointerdown`, not `click`, for the filter
-                            // picker's reason: it beats the blur that would
-                            // fold the palette away under the pointer.
-                            onpointerdown: move |_| run_from_palette(state, open, command),
-                            // A live act wears the select blue on its mark
-                            // (`Command::active`) — Share while a session runs —
-                            // where a toggle's "you are in it" is the tick below.
-                            span {
-                                class: "menu-item",
-                                class: if command.active(state) == Some(true) { "cmd-active" },
-                                class: if command.active(state) == Some(false) { "cmd-inactive" },
-                                {icon(command.icon())}
-                                {command.name()}
-                            }
-                            BindChip { command, capturing, field }
+                            command,
+                            selected: i == sel(),
+                            open,
+                            capturing,
+                            field,
                         }
                     }
                     if shown.read().is_empty() {
@@ -1511,6 +1499,59 @@ fn CommandSearch() -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// One row of the palette, rendered from the command it runs — the mark, the
+/// name, the greyed state, the live-act tint, and the chip that rebinds its
+/// chord ([`BindChip`]).
+///
+/// **A component and not an inline `button`**, for [`CmdItem`]'s reason and one
+/// more of its own. `Command::enabled` reads the projection and `Command::active`
+/// reads it too for the shape tools (`commands::armed`), so written inline both
+/// ran in the palette's own body — which subscribed the whole surface, field and
+/// all, to every engine write, and re-ran `active` twice per row on each of them.
+/// A row that owns its own memo re-renders when *its* answer moves and sleeps
+/// through the rest, which is the arrangement the rail's menu has always had.
+///
+/// `selected` stays a prop rather than a memo: the highlight is the palette's
+/// state, moved by the arrow keys, and the parent is the only thing that knows
+/// where it is.
+#[component]
+fn PaletteRow(
+    command: Command,
+    selected: bool,
+    open: Signal<bool>,
+    capturing: Signal<Option<Command>>,
+    field: Signal<Option<Event<MountedData>>>,
+) -> Element {
+    let state = use_context::<AppState>();
+    let look = use_obs_opt(state, move |o| (command.enabled(o), command.active(state)));
+    let (enabled, active) = look();
+    rsx! {
+        button {
+            class: if selected { "palette-row selected" } else { "palette-row" },
+            // Greyed by attribute, not by a native `disabled`, though the row
+            // refuses to run either way (`run_from_palette`): the trailing chip
+            // must stay clickable — a shortcut is rebindable whether or not the
+            // document offers the act right now, and whether Undo has anything
+            // to undo is no fact about its chord.
+            "data-disabled": !enabled,
+            // `pointerdown`, not `click`, for the filter picker's reason: it
+            // beats the blur that would fold the palette away under the pointer.
+            onpointerdown: move |_| run_from_palette(state, open, command),
+            // A live act wears the select blue on its mark (`Command::active`) —
+            // Share while a session runs — where a toggle's "you are in it" is
+            // the tick the menu draws.
+            span {
+                class: "menu-item",
+                class: if active == Some(true) { "cmd-active" },
+                class: if active == Some(false) { "cmd-inactive" },
+                {icon(command.icon())}
+                {command.name()}
+            }
+            BindChip { command, capturing, field }
         }
     }
 }

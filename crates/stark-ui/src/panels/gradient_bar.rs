@@ -35,7 +35,7 @@ use crate::layout::chrome_class;
 use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
-use crate::state::{AppState, GradientAxisKind, GradientTarget, GradientUi};
+use crate::state::{AppState, GradientAxisKind, GradientTarget, GradientUi, use_obs};
 use crate::widgets::CommandButton;
 use stark_model::Gradient;
 use stark_model::document::{FillOp, GradientAxis, GradientParcel, MattePaint};
@@ -52,7 +52,7 @@ use stark_model::geom::Vec2;
 pub fn begin_fill(state: AppState) {
     // One composing mode at a time (`crate::modes`), the transform's rule.
     crate::modes::leave(state);
-    let obs = state.obs.read();
+    let obs = state.obs.peek();
     let Some(o) = obs.as_ref() else { return };
     let layer = o
         .layers
@@ -113,7 +113,7 @@ pub fn begin_matte(state: AppState, layer: stark_model::document::LayerId, paint
 /// The rect a fresh matte axis spans: the matte's own, or the view for a
 /// ground that has none.
 fn default_axis_rect(state: AppState, layer: stark_model::document::LayerId) -> (Vec2, Vec2) {
-    let obs = state.obs.read();
+    let obs = state.obs.peek();
     let matte_rect = obs
         .as_ref()
         .and_then(|o| o.layers.iter().find(|l| l.id == layer))
@@ -396,13 +396,17 @@ pub fn GradientBarOverlay() -> Element {
     let state = use_context::<AppState>();
     let mut dragging = use_signal(|| false);
     let nav = Nav::use_nav(state);
+    // The view through a memo, unconditionally and ahead of the early returns
+    // below like any `use_*`. Not a straight read of the projection, which is
+    // what this was: that woke the overlay on every engine write rather than on
+    // the one field it draws with (`state::use_obs`).
+    let live_view = use_obs(state, |o| o.view);
 
     let Some(ui) = state.gradient_bar.read().clone() else {
         return rsx! {};
     };
-    let view = match state.obs.read().as_ref() {
-        Some(o) => o.view,
-        None => return rsx! {},
+    let Some(view) = live_view() else {
+        return rsx! {};
     };
     let to_canvas = move |e: &Event<PointerData>| view.screen_to_canvas(page_xy(e));
 

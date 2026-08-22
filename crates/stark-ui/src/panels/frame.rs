@@ -33,7 +33,7 @@ use crate::input::page_xy;
 use crate::layout::chrome_class;
 use crate::panels::color::OklabPicker;
 use crate::preview;
-use crate::state::{AppState, dispatch};
+use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{LayerInfo, MatteInfo};
 use stark_model::document::LayerId;
@@ -103,13 +103,13 @@ pub fn selected_frame_of(o: &stark_engine::ObservableState) -> Option<(LayerInfo
 /// one (compare [`selected_filter`](super::filter::selected_filter), which has both
 /// because it has callers of both kinds).
 pub fn use_selected_frame(state: AppState) -> Memo<Option<(LayerInfo, MatteInfo)>> {
-    use_memo(move || state.obs.read().as_ref().and_then(selected_frame_of))
+    use_obs_opt(state, |o| o.and_then(selected_frame_of))
 }
 
 /// Stop composing: select the topmost paint layer instead. Used by the frame bar's
 /// "Done", since a frame is only "deselected" by selecting something else.
 pub fn done_composing(state: AppState) {
-    let next = state.obs.read().as_ref().and_then(|o| {
+    let next = state.obs.peek().as_ref().and_then(|o| {
         o.layers
             .iter()
             .rev()
@@ -125,7 +125,7 @@ pub fn done_composing(state: AppState) {
 /// any, otherwise what the viewport currently shows. Both are "frame what I am
 /// looking at", which is the only sensible default for an unbounded canvas.
 fn default_rect(state: AppState) -> (Vec2, Vec2) {
-    let obs = state.obs.read();
+    let obs = state.obs.peek();
     let Some(o) = obs.as_ref() else {
         return (Vec2::new(-256.0, -256.0), Vec2::new(256.0, 256.0));
     };
@@ -201,7 +201,7 @@ pub fn add_frame(state: AppState) {
     );
     // Select it. `AddMatte` mints the id engine-side, so the new frame is the
     // topmost matte in the layer stack that came back.
-    let new_id = state.obs.read().as_ref().and_then(|o| {
+    let new_id = state.obs.peek().as_ref().and_then(|o| {
         o.layers
             .iter()
             .rev()
@@ -221,8 +221,8 @@ pub fn add_frame(state: AppState) {
 /// directly it would subscribe the bar to the whole projection and undo the memo
 /// standing right above it. Call it unconditionally, and above the early returns.
 fn use_has_background(state: AppState) -> Memo<bool> {
-    use_memo(move || {
-        state.obs.read().as_ref().is_some_and(|o| {
+    use_obs_opt(state, |o| {
+        o.is_some_and(|o| {
             o.layers
                 .iter()
                 .any(|l| l.matte.as_ref().is_some_and(|m| m.rect.is_none()))
@@ -248,7 +248,7 @@ fn add_background(state: AppState) {
     // and there was none before or the control that got here would not have been
     // mounted. That identifies it without depending on where in the order it
     // landed, which "the bottom-most matte" did.
-    let new_id = state.obs.read().as_ref().and_then(|o| {
+    let new_id = state.obs.peek().as_ref().and_then(|o| {
         o.layers
             .iter()
             .find(|l| l.matte.as_ref().is_some_and(|m| m.rect.is_none()))
@@ -374,7 +374,7 @@ pub fn FrameBar() -> Element {
                     class: "chip",
                     title: "Fit the frame to everything painted so far",
                     onclick: move |_| {
-                        let rect = state.obs.read().as_ref().and_then(content_rect);
+                        let rect = state.obs.peek().as_ref().and_then(content_rect);
                         if let Some((min, max)) = rect { set_rect(min, max); }
                     },
                     "Fit to art"
@@ -383,7 +383,7 @@ pub fn FrameBar() -> Element {
                     class: "chip",
                     title: "Fit the frame to the current view",
                     onclick: move |_| {
-                        let rect = state.obs.read().as_ref().map(view_rect);
+                        let rect = state.obs.peek().as_ref().map(view_rect);
                         if let Some((min, max)) = rect { set_rect(min, max); }
                     },
                     "Fit to view"
@@ -612,6 +612,12 @@ pub struct FrameDrag {
 pub fn FrameOverlay() -> Element {
     let state = use_context::<AppState>();
     let mut drag = use_signal(|| None::<FrameDrag>);
+    // The view through a memo, ahead of the early returns like any `use_*`. This
+    // overlay stands for as long as a frame is selected — which is to say while
+    // the artist is doing other things — so reading the projection straight, as
+    // it did, woke it on every engine write to redraw handles that only a pan or
+    // a zoom can move (`state::use_obs`).
+    let live_view = use_obs(state, |o| o.view);
 
     let Some((info, matte)) = use_selected_frame(state)() else {
         return rsx! {};
@@ -630,9 +636,8 @@ pub fn FrameOverlay() -> Element {
     if crate::modes::composing(state).is_some() {
         return rsx! {};
     }
-    let view = match state.obs.read().as_ref() {
-        Some(o) => o.view,
-        None => return rsx! {},
+    let Some(view) = live_view() else {
+        return rsx! {};
     };
 
     // The box is laid out around the frame's *centre* and then turned, rather than

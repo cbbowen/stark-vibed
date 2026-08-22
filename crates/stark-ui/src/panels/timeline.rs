@@ -27,7 +27,7 @@ use dioxus::prelude::*;
 use crate::icons::{self, icon, label};
 use crate::layout::chrome_class;
 use crate::platform::sleep_ms;
-use crate::state::{AppState, dispatch};
+use crate::state::{AppState, dispatch, use_obs_opt};
 use stark_engine::command::DocCommand;
 
 /// Actions per second at 1×. Eight is about the rate at which a painting reads as
@@ -202,7 +202,7 @@ pub fn TimelineBar() -> Element {
     let state = use_context::<AppState>();
     // The revision alone, memoized: `obs` is written per command, but this only
     // notifies when the *committed* document actually moved.
-    let revision = use_memo(move || state.obs.read().as_ref().map_or(0, |o| o.doc_revision));
+    let revision = use_obs_opt(state, |o| o.map_or(0, |o| o.doc_revision));
     let range = use_memo(move || {
         let _ = revision();
         scrub_range(state)

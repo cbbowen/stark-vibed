@@ -19,7 +19,7 @@ use dioxus::prelude::*;
 use crate::icons::{self, icon};
 use crate::panels::frame::{piece_frame, use_selected_frame};
 use crate::platform::{download_bytes, pick_file};
-use crate::state::AppState;
+use crate::state::{AppState, use_obs_opt};
 use crate::widgets::Modal;
 use stark_engine::command::ViewCommand;
 use stark_engine::{Background, ExportScale, Rendered};
@@ -193,10 +193,14 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
     // falls back to the painted bounds, §15.6). Only mattes **with a rect**
     // count: a background (§15.5) frames nothing, so it must not make
     // the dialog claim a frame it is not using.
+    // Through a memo, like the selected frame beside it: read straight, the
+    // fallback subscribed the dialog to the whole projection and undid the memo
+    // it sits on the same line as (`state::use_obs`).
+    let piece = use_obs_opt(state, |o| o.and_then(piece_frame))();
     let frame: Option<LayerId> = use_selected_frame(state)()
         .filter(|(_, m)| m.rect.is_some())
         .map(|(l, _)| l.id)
-        .or_else(|| state.obs.read().as_ref().and_then(piece_frame));
+        .or(piece);
 
     // What we are about to produce, reported by the engine rather than recomputed
     // here — so the number on screen cannot drift from the render.

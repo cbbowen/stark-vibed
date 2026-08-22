@@ -7,7 +7,7 @@ use crate::commands::Command;
 use crate::icons::{self, icon};
 use crate::platform::select_all;
 use crate::presets;
-use crate::state::{AppState, update_brush};
+use crate::state::{AppState, update_brush, use_obs};
 use crate::widgets::{CommandButton, Modal, Slider};
 use stark_model::document::{BrushShape, OrientationSource};
 
@@ -39,12 +39,11 @@ pub const MAX_TAPER: f32 = 20.0;
 #[component]
 pub fn BrushPanel() -> Element {
     let state = use_context::<AppState>();
-    let brush = state
-        .obs
-        .read()
-        .as_ref()
-        .map(|o| o.brush)
-        .unwrap_or_default();
+    // The one field the panel is about, through a memo: reading the projection
+    // straight woke these two sliders on every engine write — a layer opacity
+    // drag, a selection command — to redraw the numbers they were already
+    // showing (`state::use_obs`).
+    let brush = use_obs(state, |o| o.brush)().unwrap_or_default();
 
     rsx! {
         // The panel's two sliders are the two knobs a hand reaches for without looking
@@ -101,13 +100,10 @@ fn PresetSection() -> Element {
     let entries = (state.presets)();
     // The whole tool, feel included (§6.11), so a row goes out when the
     // smoothing moves off its snapshot like it does for any other knob.
+    // Through a memo, like the panel above: the roster's lit row moves with the
+    // brush and with nothing else the projection carries (`state::use_obs`).
     let brush = presets::Wearable {
-        params: state
-            .obs
-            .read()
-            .as_ref()
-            .map(|o| o.brush)
-            .unwrap_or_default(),
+        params: use_obs(state, |o| o.brush)().unwrap_or_default(),
         smoothing: (state.smoothing)(),
     };
 

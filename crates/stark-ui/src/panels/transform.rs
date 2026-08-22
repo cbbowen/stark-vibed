@@ -45,7 +45,7 @@ use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
 use crate::preview;
-use crate::state::AppState;
+use crate::state::{AppState, use_obs};
 use crate::widgets::CommandButton;
 use stark_engine::ViewTransform;
 use stark_model::document::TransformMap;
@@ -84,7 +84,7 @@ pub fn begin_transform(state: AppState) {
     // down before this takes the canvas, so the case of two catchers over one
     // pointer never arises.
     crate::modes::leave(state);
-    let obs = state.obs.read();
+    let obs = state.obs.peek();
     let Some(o) = obs.as_ref() else { return };
     let layer = o
         .layers
@@ -169,7 +169,7 @@ fn switch_family(state: AppState, ui: TransformUi, to: Family) {
     };
     let zoom = state
         .obs
-        .read()
+        .peek()
         .as_ref()
         .map(|o| o.view.zoom)
         .unwrap_or(1.0);
@@ -401,13 +401,17 @@ pub fn TransformOverlay() -> Element {
     // The canvas's own navigation bindings, live on the catcher: composing a
     // transform must not cost the view (see `input::Nav`).
     let nav = Nav::use_nav(state);
+    // The view through a memo, unconditionally and ahead of the early returns
+    // below like any `use_*`. Not a straight read of the projection, which is
+    // what this was: that woke the overlay on every engine write rather than on
+    // the one field it draws with (`state::use_obs`).
+    let live_view = use_obs(state, |o| o.view);
 
     let Some(ui) = *state.transform.read() else {
         return rsx! {};
     };
-    let view = match state.obs.read().as_ref() {
-        Some(o) => o.view,
-        None => return rsx! {},
+    let Some(view) = live_view() else {
+        return rsx! {};
     };
 
     let to_canvas = move |e: &Event<PointerData>| view.screen_to_canvas(page_xy(e));

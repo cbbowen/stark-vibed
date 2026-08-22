@@ -59,7 +59,7 @@ use dioxus::prelude::*;
 use crate::icons::{self, icon};
 use crate::layout::chrome_class;
 use crate::presets::{self, Wearable};
-use crate::state::AppState;
+use crate::state::{AppState, use_obs};
 use crate::storage::{self, Store};
 
 /// How many quick brushes there are — one per digit.
@@ -329,19 +329,39 @@ pub fn SlotOverlay() -> Element {
     let held = holding.map(|h| h.slot);
     // Neither held nor pinned: read nothing else at all, so a rack, a library or a
     // brush that changes during a stroke cannot re-render anything.
+    //
+    // **Which is why the rack itself is a component and not the rest of this
+    // function.** What it draws is read through a memo now (`SlotRack`), and a
+    // memo declared here would have to be declared above this line — hooks are
+    // positional — leaving it recomputing against every engine write for the
+    // whole time the rack is away, which is nearly all of the time. Mounted
+    // behind the gate instead, it does not exist until there is something to
+    // show, exactly as the timeline bar is mounted (`main`).
     if !pinned && held.is_none() {
         return rsx! {};
     }
+    rsx! {
+        SlotRack { pinned, holding }
+    }
+}
+
+/// The rack proper, mounted only while there is one to draw ([`SlotOverlay`]).
+///
+/// `holding` rather than a bare slot number: the held row is drawn from the rule
+/// the release is under, which needs the whole hold ([`Held::would_keep`]).
+#[component]
+fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
+    let state = use_context::<AppState>();
+    let held = holding.map(|h| h.slot);
+    // The live brush, through a memo: reading the projection straight woke the
+    // rack on every engine write rather than on the tool it draws
+    // (`state::use_obs`).
+    let live_params = use_obs(state, |o| o.brush);
     let rack = (state.slots.brushes)();
-    // The whole tool, feel included (§6.11) — subscribing reads, so the lit row
-    // tracks a smoothing drag exactly as it tracks a radius one.
+    // The whole tool, feel included (§6.11) — both halves subscribing, so the lit
+    // row tracks a smoothing drag exactly as it tracks a radius one.
     let live = presets::Wearable {
-        params: state
-            .obs
-            .read()
-            .as_ref()
-            .map(|o| o.brush)
-            .unwrap_or_default(),
+        params: live_params().unwrap_or_default(),
         smoothing: (state.smoothing)(),
     };
     // The rows are resolved against the library up front, so no read guard is

@@ -74,7 +74,7 @@ use crate::input::{elem_xy, shortest_turn, snap_quarter};
 use crate::layout::chrome_class;
 use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, sleep_ms};
-use crate::state::{AppState, dispatch};
+use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
 use stark_engine::ExportScale;
 use stark_engine::command::ViewCommand;
 use stark_model::document::LayerId;
@@ -273,9 +273,8 @@ pub fn NavigatorOverlay() -> Element {
     // A memo, so this notifies only when the answer changes — `obs` is rewritten on
     // every engine command, including every pointer sample of a stroke, and none of
     // that moves the committed document.
-    let subject = use_memo(move || {
-        let obs = state.obs.read();
-        let o = obs.as_ref()?;
+    let subject = use_obs_opt(state, |o| {
+        let o = o?;
         // The **topmost** frame rather than the *selected* one, unlike the export
         // dialog: that dialog is framing one picture and the selected frame is the
         // one being composed, while this is a permanent readout of where you are in
@@ -292,6 +291,14 @@ pub fn NavigatorOverlay() -> Element {
         let has_content = frame.is_some() || o.bounds.tile_range().is_some();
         has_content.then_some((o.doc_revision, frame))
     });
+
+    // Where the marker goes — the other half of what this overlay draws, and the
+    // half that moves at a different cadence from `subject` above: a pan changes
+    // the view and not the document, a stroke changes both. Two memos rather than
+    // one tuple for exactly that reason (`state::use_obs` asks for one where the
+    // fields move together, and these do not). Declared here, above the early
+    // returns, because hooks are positional.
+    let live_view = use_obs(state, |o| o.view);
 
     use_effect(move || {
         // Subscribed to rather than peeked, which is what makes *showing* the
@@ -329,7 +336,11 @@ pub fn NavigatorOverlay() -> Element {
     }
 
     // The live view: where the marker goes, and what a turn-drag measures from.
-    let Some(view) = state.obs.read().as_ref().map(|o| o.view) else {
+    // Through a memo like `subject` above, and for the identical reason it gives:
+    // reading the projection straight here woke this overlay on every engine
+    // write — every brush-tuning drag, every eyedropper sample — to redraw a
+    // marker that only a pan or a zoom can move.
+    let Some(view) = live_view() else {
         return rsx! {};
     };
     // The canvas is mounted whatever state the picture is in, because it *is* the

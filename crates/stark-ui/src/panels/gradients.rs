@@ -27,7 +27,7 @@ use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
 use crate::platform::{capture_pointer, select_all};
-use crate::state::AppState;
+use crate::state::{AppState, use_obs};
 use crate::widgets::CommandButton;
 use stark_model::geom::Vec2;
 
@@ -286,13 +286,17 @@ pub fn GradientTraceOverlay() -> Element {
     // unmounts it, and a fresh arm should start clean anyway.
     let mut trace = use_signal(|| None::<Vec<Vec2>>);
     let nav = Nav::use_nav(state);
+    // The view through a memo, unconditionally and ahead of the early returns
+    // below like any `use_*`. Not a straight read of the projection, which is
+    // what this was: that woke the overlay on every engine write rather than on
+    // the one field it draws with (`state::use_obs`).
+    let live_view = use_obs(state, |o| o.view);
 
     if !(state.gradients.armed)() {
         return rsx! {};
     }
-    let view = match state.obs.read().as_ref() {
-        Some(o) => o.view,
-        None => return rsx! {},
+    let Some(view) = live_view() else {
+        return rsx! {};
     };
     let to_canvas = move |e: &Event<PointerData>| view.screen_to_canvas(page_xy(e));
     // Decimation of the hand, converted to the space the points are kept in.

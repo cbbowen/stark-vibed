@@ -184,7 +184,7 @@ fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>, at: At) {
         // guard held across the command would be borrowed while `dispatch` publishes
         // the new one, which is the borrow panic `crate::state` warns about.
         let (above, carrier) = {
-            let obs = state.obs.read();
+            let obs = state.obs.peek();
             let Some(o) = obs.as_ref() else {
                 return tracing::error!("the canvas is not ready yet");
             };

@@ -433,7 +433,7 @@ pub fn remove(state: AppState, id: AssetId) {
 
     let selected = state
         .obs
-        .read()
+        .peek()
         .as_ref()
         .map(|o| o.brush.shape == BrushShape::Stamp(id))
         .unwrap_or(false);

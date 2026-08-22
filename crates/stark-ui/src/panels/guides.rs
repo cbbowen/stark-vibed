@@ -45,7 +45,7 @@ use crate::layout::chrome_class;
 use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, guide_boxes, select_all};
 use crate::preview;
-use crate::state::{AppState, GuideEdit, dispatch};
+use crate::state::{AppState, GuideEdit, dispatch, use_obs_opt};
 use crate::widgets::CommandButton;
 use stark_engine::GuideInfo;
 use stark_engine::command::{DocCommand, ViewCommand};
@@ -213,7 +213,7 @@ pub fn end_guide_edit(state: AppState) {
 pub fn add_perspective(state: AppState) {
     let center = state
         .obs
-        .read()
+        .peek()
         .as_ref()
         .map(|o| o.view.center)
         .unwrap_or(Vec2::ZERO);
@@ -977,18 +977,27 @@ pub fn GuideEditOverlay() -> Element {
     let pending = use_signal(|| None::<(GuideId, PerspectiveGuide)>);
     let nav = Nav::use_nav(state);
 
-    let Some(edit) = *state.guide_edit.read() else {
-        return rsx! {};
-    };
-    let (view, guide) = match state.obs.read().as_ref() {
+    // The two things this overlay draws with, through **one** memo — the pair
+    // moves together (a drag writes the guide, and the pose it is judged against
+    // is the view it is drawn in), which is the case `state::use_obs` asks for a
+    // tuple in. Unconditionally, ahead of the early returns, like any `use_*`;
+    // the guide in hand is read *inside* the memo rather than passed in, so
+    // selecting a different guide recomputes it.
+    let look = use_obs_opt(state, move |o| {
+        let edit = (*state.guide_edit.read())?;
         // Found by id, not by index. The roster is read off the *previewed*
         // document, so mid-drag this is the pose under the hand — which is what the
         // hit test wants: a handle has to be where it is drawn.
-        Some(o) => match o.guides.iter().find(|g| g.id == edit.id) {
-            Some(g) => (o.view, g.guide),
-            None => return rsx! {},
-        },
-        None => return rsx! {},
+        let o = o?;
+        let g = o.guides.iter().find(|g| g.id == edit.id)?;
+        Some((o.view, g.guide))
+    });
+
+    let Some(edit) = *state.guide_edit.read() else {
+        return rsx! {};
+    };
+    let Some((view, guide)) = look() else {
+        return rsx! {};
     };
     let id = edit.id;
     let locked = edit.locked;

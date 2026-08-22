@@ -38,7 +38,7 @@ use crate::collab::CollabPhase;
 use crate::icons::{self, icon};
 use crate::layout::ChromeHiding;
 use crate::prefs;
-use crate::state::{AppState, dispatch};
+use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::Modal;
 use stark_engine::command::ViewCommand;
 
@@ -47,11 +47,14 @@ use stark_engine::command::ViewCommand;
 #[component]
 pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
-    let show_peers = state
-        .obs
-        .read()
-        .as_ref()
-        .is_some_and(|o| o.show_peer_selections);
+    // Both of the dialog's engine-owned rows in **one** memo, which is what
+    // `state::use_obs` asks for where the fields are read together: read straight,
+    // as these were, the dialog re-rendered on every engine write for as long as
+    // it stood open. The two are the peer-outline switch and the history budget
+    // below; each is the engine's own value rather than a copy here, so neither
+    // can disagree with what the engine believes (§4).
+    let engine_owned = use_obs(state, |o| (o.show_peer_selections, o.history_budget));
+    let show_peers = engine_owned().is_some_and(|(show, _)| show);
     let mut assist_enabled = state.assist.enabled;
     let assist = assist_enabled();
     let mut minimal_enabled = state.minimal;
@@ -63,11 +66,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
     // owns this and a copy here would be one that can disagree. Before the renderer
     // is up the dialog cannot be open, so the fallback is unreachable in practice
     // and is the engine's own default rather than a second opinion about it.
-    let budget = state
-        .obs
-        .read()
-        .as_ref()
-        .map_or(stark_engine::DEFAULT_HISTORY_BUDGET, |o| o.history_budget);
+    let budget = engine_owned().map_or(stark_engine::DEFAULT_HISTORY_BUDGET, |(_, b)| b);
     // Keyed on the *session*, not on whether anyone is currently here, so the note
     // under the peer-outline row does not flicker as collaborators come and go.
     let shared = (state.collab.phase)() == CollabPhase::Shared;
