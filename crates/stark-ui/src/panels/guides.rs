@@ -42,6 +42,7 @@ use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
+use crate::modes::Composing;
 use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, guide_boxes, select_all};
 use crate::preview;
@@ -181,16 +182,17 @@ fn settle_guide(state: AppState, pending: Signal<Option<(GuideId, PerspectiveGui
 /// It stays open afterwards. Leaving the mode does not shut it again, because by
 /// then it is an opinion the artist expressed rather than one the tool assumed.
 pub fn begin_guide_edit(state: AppState, id: GuideId) {
+    dispatch(state, ViewCommand::SetGuideVisible(id, true));
     // One composing mode at a time (`crate::modes`): picking a guide up puts
     // down a transform or a gradient axis rather than stacking a second catcher
-    // over the first.
-    crate::modes::leave(state);
-    dispatch(state, ViewCommand::SetGuideVisible(id, true));
-    let mut mode = state.guide_edit;
-    mode.set(Some(GuideEdit {
-        id,
-        locked: [false; 3],
-    }));
+    // over the first, and `enter` is what does that — it is the only way in.
+    crate::modes::enter(
+        state,
+        Composing::GuideEdit(GuideEdit {
+            id,
+            locked: [false; 3],
+        }),
+    );
 }
 
 /// Leave the edit mode — the bar's "Done", and Enter's (`crate::modes::finish`).
@@ -202,9 +204,10 @@ pub fn begin_guide_edit(state: AppState, id: GuideId) {
 /// otherwise strand the pose under the hand on the canvas with no commit coming
 /// to supersede it.
 pub fn end_guide_edit(state: AppState) {
-    preview::GUIDE.clear(state);
-    let mut mode = state.guide_edit;
-    mode.set(None);
+    // `leave` drops this mode's preview itself (`crate::modes`), which is the
+    // whole of what leaving costs here — every control on the bar has already
+    // laid its own value down.
+    crate::modes::leave(state);
 }
 
 /// Add a perspective guide where the artist is looking, and pick it up: adding
@@ -329,10 +332,9 @@ fn anchor_at(ids: &[GuideId], from: usize, to: usize) -> Option<GuideId> {
 /// mode names a guide, so every other row's mode survives a removal untouched.
 fn remove_guide(state: AppState, id: GuideId) {
     dispatch(state, DocCommand::RemoveGuide(id));
-    let mut mode = state.guide_edit;
-    let current = *mode.peek();
-    if current.is_some_and(|e| e.id == id) {
-        mode.set(None);
+    let editing = crate::modes::composing_now(state).and_then(Composing::guide_edit);
+    if editing.is_some_and(|e| e.id == id) {
+        crate::modes::leave(state);
     }
 }
 
@@ -365,7 +367,9 @@ fn guide_label(index: usize, guide: &GuideInfo) -> String {
 pub fn GuidesPanel() -> Element {
     let state = use_context::<AppState>();
     let guides = guides_of(state);
-    let editing = (*state.guide_edit.read()).map(|e| e.id);
+    let editing = crate::modes::composing(state)
+        .and_then(Composing::guide_edit)
+        .map(|e| e.id);
     // The in-flight row drag, if any — panel-local, and delimited by the browser's
     // own gesture rather than by a timer (§11).
     let mut drag = use_signal(|| None::<Grab>);
@@ -652,7 +656,7 @@ pub fn PerspectiveGuideBar() -> Element {
     // unmounts mid-drag takes the pending value with it, and the mode's own exit
     // drops the preview it was showing (`end_guide_edit`).
     let pending = use_signal(|| None::<(GuideId, PerspectiveGuide)>);
-    let Some(edit) = *state.guide_edit.read() else {
+    let Some(edit) = crate::modes::composing(state).and_then(Composing::guide_edit) else {
         return rsx! {};
     };
     let guides = guides_of(state);
@@ -730,10 +734,18 @@ pub fn PerspectiveGuideBar() -> Element {
                         style: "--axis: {AXIS_CSS[i]}",
                         title: "Hold the {AXIS_NAMES[i]} axis fixed under the drag",
                         onclick: move |_| {
-                            let mut mode = state.guide_edit;
-                            if let Some(e) = mode.write().as_mut() {
-                                e.locked[i] = !e.locked[i];
-                            }
+                            // Read live rather than from the render's `edit`, so
+                            // this is the read-modify-write it was; and written
+                            // through `advance`, the one writer that may not
+                            // change *which* mode is live — a lock is a change to
+                            // what this one is composing, nothing more
+                            // (`crate::modes`).
+                            let live = crate::modes::composing_now(state);
+                            let Some(mut edit) = live.and_then(Composing::guide_edit) else {
+                                return;
+                            };
+                            edit.locked[i] = !edit.locked[i];
+                            crate::modes::advance(state, Composing::GuideEdit(edit));
                         },
                         "{AXIS_NAMES[i]}"
                     }
@@ -984,7 +996,7 @@ pub fn GuideEditOverlay() -> Element {
     // the guide in hand is read *inside* the memo rather than passed in, so
     // selecting a different guide recomputes it.
     let look = use_obs_opt(state, move |o| {
-        let edit = (*state.guide_edit.read())?;
+        let edit = crate::modes::composing(state).and_then(Composing::guide_edit)?;
         // Found by id, not by index. The roster is read off the *previewed*
         // document, so mid-drag this is the pose under the hand — which is what the
         // hit test wants: a handle has to be where it is drawn.
@@ -993,7 +1005,7 @@ pub fn GuideEditOverlay() -> Element {
         Some((o.view, g.guide))
     });
 
-    let Some(edit) = *state.guide_edit.read() else {
+    let Some(edit) = crate::modes::composing(state).and_then(Composing::guide_edit) else {
         return rsx! {};
     };
     let Some((view, guide)) = look() else {

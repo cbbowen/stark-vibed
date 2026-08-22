@@ -19,7 +19,6 @@ use dioxus::prelude::*;
 
 use crate::collab;
 use crate::commands::VisibilityToggle;
-use crate::gesture::TransformUi;
 use crate::prefs::Prefs;
 use crate::render::Renderer;
 use stark_engine::command::ViewCommand;
@@ -285,16 +284,23 @@ pub struct Signals {
     /// control would then have to be handed a boolean it does nothing with but pass on,
     /// and a control that forgot to would be the one that kept its word.
     pub minimal: Signal<bool>,
-    /// The transform gesture in flight (§16.6, §16.8, §16.9): `Some` while the
-    /// user is composing a move/scale/flip, a perspective or a warp of the
-    /// selected paint. View state — the engine sees only the previews it
-    /// produces and the one commit on "Done".
-    pub transform: Signal<Option<TransformUi>>,
-    /// The gradient bar's gesture in flight (§22.4): `Some` while a ramp's
-    /// axis is being composed — over the selection for a fill, over a matte
-    /// for its paint. View state on [`transform`]'s model — the engine sees
-    /// only previews and the one commit on "Done".
-    pub gradient_bar: Signal<Option<GradientUi>>,
+    /// The whole-canvas composing mode in flight, and what it is composing
+    /// (`crate::modes`): the transform widget (§16.6, §16.8, §16.9), a
+    /// perspective guide being shaped (§20.5), the gradient library's trace
+    /// (§22.2), or the gradient fill's axis (§22.4).
+    ///
+    /// **One signal, and that is the guarantee.** These were four, with "at most
+    /// one is live" held true by every entry point remembering to put down
+    /// whatever it found; two modes at once is now a state the app cannot
+    /// express rather than one it declines to reach. `modes::enter` is the only
+    /// way in and `modes::leave` the only way out — do not write this from
+    /// anywhere else, which is the one rule that replaces the seven.
+    ///
+    /// View state throughout: what each mode produces is previews per pointer
+    /// sample and one commit on "Done" (`crate::preview`). A guide's *camera* is
+    /// document state and lives in the log; what is here is only which guide is
+    /// in hand, and the locks held on it for this sitting.
+    pub mode: Signal<Option<crate::modes::Composing>>,
     /// The gradient-bar gesture a **trace** set aside (§22.2), to be handed back
     /// when the trace ends. `None` whenever no trace is armed.
     ///
@@ -303,19 +309,11 @@ pub struct Signals {
     /// catcher cannot share the canvas with the axis catcher, so the gesture is
     /// parked here for the mode's life rather than dropped
     /// (`panels::gradient_bar::suspend`). Deliberately *not* a second live
-    /// gradient mode: nothing previews off this, and `modes` never sees it, so
-    /// "one mode composing at a time" stays true while it is held.
+    /// gradient mode, which is why it stays a field of its own now that the
+    /// modes share one: nothing previews off this, and [`mode`](Self::mode)
+    /// never holds it, so "one mode composing at a time" stays true while it is
+    /// held.
     pub gradient_resume: Signal<Option<GradientUi>>,
-    /// The drawing-guide edit mode (§20.5): `Some` while a guide is selected
-    /// for composing — the canvas drags the camera, and the Perspective Guide
-    /// bar stands in at the bottom.
-    ///
-    /// **The mode** is view state; the guide it names is not. A guide is document
-    /// state now, so what the gestures produce is a `PreviewGuide` per pointer
-    /// sample and one `SetGuide` when each settles — the bargain every continuous
-    /// control in the app makes (`crate::preview`). What is per-client here is only
-    /// *which* guide is in hand, and the locks held on it for this sitting.
-    pub guide_edit: Signal<Option<GuideEdit>>,
     /// Whether a [`request_paint`] is already waiting on the next animation frame.
     /// The latch that turns any number of paint requests into one paint per frame.
     /// Read and written only from non-component code (`peek`/`set`), so no
@@ -642,10 +640,8 @@ impl AppState {
             // `prefs::load` overwrites this at app start, so a default stated in
             // this file would be the one that never applies (`crate::prefs`).
             minimal: root_signal(|| Prefs::default().minimal),
-            transform: root_signal(|| None),
-            gradient_bar: root_signal(|| None),
+            mode: root_signal(|| None),
             gradient_resume: root_signal(|| None),
-            guide_edit: root_signal(|| None),
             paint_queued: root_signal(|| false),
             collab: CollabState::new(),
             timeline: TimelineState::new(),

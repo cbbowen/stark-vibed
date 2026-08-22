@@ -44,6 +44,7 @@ use crate::gesture::{
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
+use crate::modes::Composing;
 use crate::preview;
 use crate::state::{AppState, use_obs};
 use crate::widgets::CommandButton;
@@ -100,11 +101,15 @@ pub fn begin_transform(state: AppState) {
     let min_radius = MIN_RADIUS_PX / o.view.zoom;
     let rect = inflate(hull, MIN_RECT_PX / o.view.zoom);
     drop(obs);
-    let mut mode = state.transform;
-    mode.set(Some(TransformUi::Affine {
-        rect,
-        ts: TransformState::begin(layer, hull, min_radius),
-    }));
+    // `enter`, not a write: it is what puts down whatever else was composing,
+    // and the only way in (`crate::modes`).
+    crate::modes::enter(
+        state,
+        Composing::Transform(TransformUi::Affine {
+            rect,
+            ts: TransformState::begin(layer, hull, min_radius),
+        }),
+    );
 }
 
 /// `rect`, grown symmetrically wherever an axis is thinner than `min` — the
@@ -125,8 +130,9 @@ fn inflate(rect: (Vec2, Vec2), min: f32) -> (Vec2, Vec2) {
 /// Update the gesture and show its consequence — every mutation funnels through
 /// here, so the preview can never lag the state.
 fn update(state: AppState, ui: TransformUi) {
-    let mut mode = state.transform;
-    mode.set(Some(ui));
+    // `advance`, which replaces what the mode in hand is composing and refuses
+    // to change *which* mode that is (`crate::modes`).
+    crate::modes::advance(state, Composing::Transform(ui));
     preview::TRANSFORM.show(state, (ui.layer(), ui.map()));
 }
 
@@ -211,9 +217,7 @@ fn switch_family(state: AppState, ui: TransformUi, to: Family) {
             TransformUi::Perspective(p) => p.rect,
             TransformUi::Warp(w) => w.rect,
         };
-        let next = fresh(rect, zoom);
-        let mut mode = state.transform;
-        mode.set(Some(next));
+        crate::modes::advance(state, Composing::Transform(fresh(rect, zoom)));
         return;
     }
 
@@ -236,16 +240,14 @@ fn switch_family(state: AppState, ui: TransformUi, to: Family) {
         TransformMap::Warp(w) => w.image_aabb().unwrap_or((w.min, w.max)),
     };
     preview::TRANSFORM.commit(state, (layer, map));
-    let next = fresh(moved, zoom);
-    let mut mode = state.transform;
-    mode.set(Some(next));
+    crate::modes::advance(state, Composing::Transform(fresh(moved, zoom)));
 }
 
 /// Commit the gesture and leave the mode — the bar's "Done", and Enter's
 /// (`crate::modes::finish`). An identity transform just drops the preview
 /// rather than spending an undo step on a no-op.
 pub fn finish(state: AppState) {
-    let Some(ui) = *state.transform.peek() else {
+    let Some(ui) = crate::modes::composing_now(state).and_then(Composing::transform) else {
         return;
     };
     if ui.is_identity() {
@@ -255,8 +257,11 @@ pub fn finish(state: AppState) {
         // frame showing the untransformed document.
         preview::TRANSFORM.commit(state, (ui.layer(), ui.map()));
     }
-    let mut mode = state.transform;
-    mode.set(None);
+    // `leave_settled`, not `leave`: both arms above have already dealt with the
+    // preview — one dropped it, the other superseded it with a commit — and
+    // dropping it again after the commit would show the untransformed document
+    // for a frame (`crate::modes`).
+    crate::modes::leave_settled(state);
 }
 
 /// The transform bar: the family selector, the affine's two flips, Cancel and
@@ -267,7 +272,7 @@ pub fn finish(state: AppState) {
 #[component]
 pub fn TransformBar() -> Element {
     let state = use_context::<AppState>();
-    let Some(ui) = *state.transform.read() else {
+    let Some(ui) = crate::modes::composing(state).and_then(Composing::transform) else {
         return rsx! {};
     };
     let family = family_of(&ui);
@@ -407,7 +412,7 @@ pub fn TransformOverlay() -> Element {
     // the one field it draws with (`state::use_obs`).
     let live_view = use_obs(state, |o| o.view);
 
-    let Some(ui) = *state.transform.read() else {
+    let Some(ui) = crate::modes::composing(state).and_then(Composing::transform) else {
         return rsx! {};
     };
     let Some(view) = live_view() else {
@@ -493,7 +498,9 @@ pub fn TransformOverlay() -> Element {
             return;
         };
         // The current state, for the validity clamps to hold at.
-        let current = (*state.transform.peek()).unwrap_or(ui);
+        let current = crate::modes::composing_now(state)
+            .and_then(Composing::transform)
+            .unwrap_or(ui);
         match d {
             Drag::Affine {
                 region,

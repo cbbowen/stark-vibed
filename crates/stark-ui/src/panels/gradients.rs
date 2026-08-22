@@ -85,7 +85,7 @@ fn GradientPopout(open: Signal<bool>) -> Element {
     let mut open = open;
     let state = use_context::<AppState>();
     let entries = (state.gradients.entries)();
-    let armed = (state.gradients.armed)();
+    let armed = gradients::armed(state);
     let busy = (state.gradients.busy)();
     let notice = (state.gradients.notice)();
 
@@ -260,7 +260,7 @@ fn GradientRow(entry: gradients::GradientEntry, active: bool) -> Element {
 pub fn TraceBar() -> Element {
     let state = use_context::<AppState>();
     rsx! {
-        if (state.gradients.armed)() {
+        if gradients::armed(state) {
             div { class: chrome_class(state, "selection-bar trace-bar mode-bar"),
                 span { class: "bar-label",
                     {icon(icons::GRADIENT)}
@@ -292,7 +292,7 @@ pub fn GradientTraceOverlay() -> Element {
     // the one field it draws with (`state::use_obs`).
     let live_view = use_obs(state, |o| o.view);
 
-    if !(state.gradients.armed)() {
+    if !gradients::armed(state) {
         return rsx! {};
     }
     let Some(view) = live_view() else {

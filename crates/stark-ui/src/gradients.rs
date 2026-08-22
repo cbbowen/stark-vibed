@@ -70,9 +70,6 @@ pub struct GradientsState {
     /// ([`current`]). Per-session, deliberately: which ramp is in hand is
     /// working state like the brush color, not a fact about the library.
     pub selected: Signal<Option<String>>,
-    /// Whether the trace mode is armed: the canvas catcher is mounted and the
-    /// next drag across the painting is sampled into a gradient.
-    pub armed: Signal<bool>,
     /// Whether a capture's sampling is in flight (between release and answer).
     pub busy: Signal<bool>,
     /// A transient line under the library: "the trace found no paint", storage
@@ -88,7 +85,6 @@ impl GradientsState {
         Self {
             entries: root_signal(Vec::new),
             selected: root_signal(|| None),
-            armed: root_signal(|| false),
             busy: root_signal(|| false),
             notice: root_signal(|| None),
         }
@@ -144,6 +140,21 @@ pub fn load(state: AppState) {
     list.set(entries);
 }
 
+/// Whether the trace mode is armed: the canvas catcher is mounted and the next
+/// drag across the painting is sampled into a gradient (§22.2).
+///
+/// **Asked of `modes`, not of a flag here**, which is what it was. A trace is one
+/// of the four composing modes, and a second place recording that it is live is a
+/// second place for "one mode at a time" to be false in
+/// (`crate::modes::Composing`). This is the render-time half — subscribing, so a
+/// chip lit by it goes out when the mode does.
+pub fn armed(state: AppState) -> bool {
+    matches!(
+        crate::modes::composing(state),
+        Some(crate::modes::Composing::GradientTrace)
+    )
+}
+
 /// Arm or disarm the trace mode. Arming clears the notice — the answer to "no
 /// paint found" is another trace, and the line has done its job the moment one
 /// starts.
@@ -157,28 +168,32 @@ pub fn load(state: AppState) {
 /// they wanted to work with would take the tool away at the moment they had
 /// finally chosen it.
 pub fn set_armed(state: AppState, on: bool) {
-    let mut armed = state.gradients.armed;
     if on {
-        // Suspended *before* `leave`, which drops what it finds for good, and
-        // parked *after* it, since putting the trace down is what clears the
-        // stash — so the order here is the one that neither loses the gesture
-        // nor leaves it behind after the mode it belongs to has ended.
+        // Suspended *before* the trace is entered, which is what saves the
+        // gesture from the `leave` that entering performs — and parked *after*
+        // it, since putting a mode down is what clears the stash. So the order
+        // here is the one that neither loses the gesture nor leaves it behind
+        // after the mode it belongs to has ended.
         let held = crate::panels::gradient_bar::suspend(state);
-        // One composing mode at a time (`crate::modes`): the trace's catcher is
-        // the last of the four to be stacked, so arming while a transform is
-        // composing would leave two of them over one pointer. `leave` writes
-        // this signal itself rather than calling back through here.
-        crate::modes::leave(state);
-        armed.set(true);
+        // One composing mode at a time, which `enter` is now the whole of: the
+        // trace's catcher is the last of the four to be stacked, so arming while
+        // a transform is composing would otherwise leave two of them over one
+        // pointer (`crate::modes`).
+        crate::modes::enter(state, crate::modes::Composing::GradientTrace);
         let mut resume = state.gradient_resume;
         resume.set(held);
         let mut notice = state.gradients.notice;
         notice.set(None);
     } else {
-        // Disarmed before the bar comes back up, so there is no instant in
-        // which `modes::composing` could answer with two of them live.
-        armed.set(false);
-        crate::panels::gradient_bar::resume(state);
+        // The stash is taken out of `leave`'s reach first: the trace is the one
+        // mode whose ending hands something back rather than dropping it, and
+        // leaving is what clears the stash for every other way out.
+        let mut resume = state.gradient_resume;
+        let held = resume.write().take();
+        crate::modes::leave(state);
+        if let Some(ui) = held {
+            crate::panels::gradient_bar::resume_from(state, ui);
+        }
     }
 }
 

@@ -32,6 +32,7 @@ use crate::gradients;
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
+use crate::modes::Composing;
 use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
@@ -62,12 +63,16 @@ pub fn begin_fill(state: AppState) {
         .map(|l| l.id);
     let Some(layer) = layer else { return };
     drop(obs);
-    let mut mode = state.gradient_bar;
-    mode.set(Some(GradientUi {
-        target: GradientTarget::Fill { layer },
-        kind: GradientAxisKind::Linear,
-        drag: None,
-    }));
+    // `enter`, which puts down whatever else was composing — the only way in
+    // (`crate::modes`). No preview yet: there is no drag, so there is no axis.
+    crate::modes::enter(
+        state,
+        Composing::GradientFill(GradientUi {
+            target: GradientTarget::Fill { layer },
+            kind: GradientAxisKind::Linear,
+            drag: None,
+        }),
+    );
 }
 
 /// Enter the mode for a **matte's paint** (§15.4), from the frame bar's
@@ -79,7 +84,11 @@ pub fn begin_fill(state: AppState) {
 /// still opens, carrying no ramp: the bar's well is where the first one is
 /// picked or traced, and the default axis stands ready for it.
 pub fn begin_matte(state: AppState, layer: stark_model::document::LayerId, paint: &MattePaint) {
-    // One composing mode at a time (`crate::modes`), as for the fill above.
+    // One composing mode at a time (`crate::modes`), as for the fill above —
+    // and **before** the reads below rather than left to the `enter` inside
+    // `open`, which is the ordering the defaults depend on: putting a mode down
+    // drops its preview, and `default_axis_rect` asks the projection for a rect
+    // that a preview still standing could be moving.
     crate::modes::leave(state);
     let (gradient, kind, drag) = match paint {
         MattePaint::Gradient { gradient, axis } => {
@@ -107,7 +116,7 @@ pub fn begin_matte(state: AppState, layer: stark_model::document::LayerId, paint
         kind,
         drag: Some(drag),
     };
-    update(state, ui);
+    open(state, ui);
 }
 
 /// The rect a fresh matte axis spans: the matte's own, or the view for a
@@ -129,17 +138,32 @@ fn default_axis_rect(state: AppState, layer: stark_model::document::LayerId) -> 
 /// Update the gesture and show its consequence — every mutation funnels through
 /// here, so the preview can never lag the state (the transform's rule).
 fn update(state: AppState, ui: GradientUi) {
-    // Resolved against `ui` before it moves into the signal.
-    let laid = compose(state, &ui);
-    if laid.is_none() {
-        // Nothing composed yet — drop whatever this target was showing. Order is
-        // free here, unlike the show below: there is no preview to lag the state.
-        clear_preview(state, &ui.target);
-    }
-    let mut mode = state.gradient_bar;
-    mode.set(Some(ui));
-    if let Some(laid) = laid {
-        laid.show(state);
+    // `advance` replaces what the mode in hand is composing and refuses to change
+    // *which* mode that is; entering is [`open`]'s (`crate::modes`).
+    crate::modes::advance(state, Composing::GradientFill(ui.clone()));
+    show_axis(state, &ui);
+}
+
+/// Enter the mode on `ui` and preview it — [`update`]'s other half, split from
+/// it when the modes became one signal: the write that opens a mode puts down
+/// whatever was already composing and the write that advances one must not, so
+/// they cannot be the same call.
+fn open(state: AppState, ui: GradientUi) {
+    // The mode first, and this order is load-bearing: `enter` drops the
+    // *previous* mode's preview, so a `show_axis` ahead of it would have its own
+    // preview taken down again on the way in.
+    crate::modes::enter(state, Composing::GradientFill(ui.clone()));
+    show_axis(state, &ui);
+}
+
+/// Show what `ui` would lay, or drop the preview when it would lay nothing.
+///
+/// **After the signal, always**, which is why both callers above write the mode
+/// first: the preview can then never lag the state it is a picture of.
+fn show_axis(state: AppState, ui: &GradientUi) {
+    match compose(state, ui) {
+        Some(laid) => laid.show(state),
+        None => clear_preview(state, &ui.target),
     }
 }
 
@@ -148,7 +172,7 @@ fn update(state: AppState, ui: GradientUi) {
 /// click *replaces* the carried ramp (a click is a choice); for a fill the
 /// ramp is read live anyway.
 pub fn refresh(state: AppState) {
-    let ui = state.gradient_bar.peek().clone();
+    let ui = crate::modes::composing_now(state).and_then(Composing::gradient_fill);
     let Some(mut ui) = ui else { return };
     if let GradientTarget::Matte { gradient, .. } = &mut ui.target
         && let Some(current) = gradients::current(state)
@@ -202,12 +226,13 @@ impl Laid {
 /// **composite** (§22.2), so a fill preview left standing would be traced as if it
 /// were paint and the new ramp would be fitted through the old one.
 pub fn suspend(state: AppState) -> Option<GradientUi> {
-    // `take` into a local, so the write guard is not still held when
-    // `clear_preview` dispatches (`crate::modes::leave`'s reason).
-    let mut mode = state.gradient_bar;
-    let held = mode.write().take();
-    if let Some(ui) = &held {
-        clear_preview(state, &ui.target);
+    let held = crate::modes::composing_now(state).and_then(Composing::gradient_fill);
+    if held.is_some() {
+        // `leave` puts the mode down and drops its preview, which is the whole of
+        // what suspending costs — the gesture itself is the thing being handed
+        // back, and it is in `held`. Nothing else may write the mode
+        // (`crate::modes`).
+        crate::modes::leave(state);
     }
     held
 }
@@ -221,12 +246,8 @@ pub fn suspend(state: AppState) -> Option<GradientUi> {
 /// is a readback), so the ramp it lands is delivered a moment later by the
 /// [`refresh`] inside [`gradients::select`] — and a trace that captured nothing
 /// leaves the bar exactly as it was picked up.
-pub fn resume(state: AppState) {
-    let mut held = state.gradient_resume;
-    let Some(ui) = held.write().take() else {
-        return;
-    };
-    update(state, ui);
+pub fn resume_from(state: AppState, ui: GradientUi) {
+    open(state, ui);
 }
 
 /// Drop whichever preview a gesture aimed at `target` is showing.
@@ -269,15 +290,17 @@ fn compose(state: AppState, ui: &GradientUi) -> Option<Laid> {
 /// Done). For a matte, re-selecting the layer is untouched — the frame bar
 /// comes straight back. The bar's "Done", and Enter's (`crate::modes::finish`).
 pub fn finish(state: AppState) {
-    let ui = state.gradient_bar.peek().clone();
+    let ui = crate::modes::composing_now(state).and_then(Composing::gradient_fill);
     if let Some(ui) = ui {
         match compose(state, &ui) {
             Some(laid) => laid.commit(state),
             None => clear_preview(state, &ui.target),
         }
     }
-    let mut mode = state.gradient_bar;
-    mode.set(None);
+    // `leave_settled`, not `leave`: the commit above supersedes the preview, and
+    // dropping it again would show the document without what was just laid for a
+    // frame (`crate::modes`).
+    crate::modes::leave_settled(state);
 }
 
 /// The ramp the bar (and the axis chrome) is currently laying, or `None` while
@@ -299,13 +322,14 @@ fn ramp_in_hand(state: AppState, ui: &GradientUi) -> Option<Gradient> {
 #[component]
 pub fn GradientBar() -> Element {
     let state = use_context::<AppState>();
-    let (ui, parked) = if let Some(ui) = state.gradient_bar.read().clone() {
-        (ui, false)
-    } else if let Some(ui) = state.gradient_resume.read().clone() {
-        (ui, true)
-    } else {
-        return rsx! {};
-    };
+    let (ui, parked) =
+        if let Some(ui) = crate::modes::composing(state).and_then(Composing::gradient_fill) {
+            (ui, false)
+        } else if let Some(ui) = state.gradient_resume.read().clone() {
+            (ui, true)
+        } else {
+            return rsx! {};
+        };
     // Read reactively so a pick in the library pop-out repaints the strip.
     let strip = ramp_in_hand(state, &ui).map(|g| gradients::css_strip(&g));
     let kind_chip = |kind: GradientAxisKind, glyph: &'static str, name: &'static str| {
@@ -402,7 +426,7 @@ pub fn GradientBarOverlay() -> Element {
     // the one field it draws with (`state::use_obs`).
     let live_view = use_obs(state, |o| o.view);
 
-    let Some(ui) = state.gradient_bar.read().clone() else {
+    let Some(ui) = crate::modes::composing(state).and_then(Composing::gradient_fill) else {
         return rsx! {};
     };
     let Some(view) = live_view() else {
