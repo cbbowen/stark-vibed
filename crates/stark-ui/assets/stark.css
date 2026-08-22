@@ -767,6 +767,13 @@ hr {
   border-bottom: 5px solid #fff;
 }
 
+/* The patch is the answer to *what am I holding*; the number is only the answer to
+   *what do I type*. So the number waits to be asked for: at rest the field is the
+   color and nothing else, and the digits fade in when the pointer arrives — or when
+   the field takes focus, since a keyboard can reach it without a pointer, and text
+   that vanished the moment the hand left the field would be worse than never shown.
+   Both the text and its shadow are faded by color alone (a shadow is painted whether
+   or not the glyph above it is), which is what lets the two interpolate. */
 .color-hex {
   box-sizing: border-box;
   flex: none;
@@ -775,16 +782,27 @@ hr {
   padding: 0;
   border: none;
   border-radius: 0;
-  color: #fff;
+  color: #fff0;
   font-weight: 500;
   text-shadow:
-    0 0 2px #000,
-    0 0 3px #000;
+    0 0 2px #0000,
+    0 0 3px #0000;
   font: inherit;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 12px;
   text-align: center;
   outline: none;
+  transition:
+    color 120ms ease,
+    text-shadow 120ms ease;
+}
+
+.color-hex:hover,
+.color-hex:focus {
+  color: #fff;
+  text-shadow:
+    0 0 2px #000,
+    0 0 3px #000;
 }
 
 /* A color well showing the current value; clicking toggles the pop-out picker. */
