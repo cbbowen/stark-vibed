@@ -723,3 +723,77 @@ pub fn FrameOverlay() -> Element {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reshaping to a preset **preserves area** (§15.7), which is what makes the
+    /// drop-down a way to change the shape of a piece rather than its size —
+    /// flick through 1:1, 4:5, 16:9 and back and the frame is the one you
+    /// started with, not a sliver.
+    #[test]
+    fn reshaping_keeps_the_area() {
+        let (min, max) = (Vec2::new(-160.0, -90.0), Vec2::new(160.0, 90.0));
+        let area = |lo: Vec2, hi: Vec2| (hi.x - lo.x) * (hi.y - lo.y);
+        let was = area(min, max);
+        for (_, aspect) in ASPECTS {
+            let (lo, hi) = to_aspect(min, max, aspect);
+            assert!(
+                (area(lo, hi) - was).abs() < was * 1e-4,
+                "{aspect} changed the area from {was} to {}",
+                area(lo, hi)
+            );
+        }
+    }
+
+    /// …and reshapes **about the centre**, so the piece does not walk across the
+    /// canvas as the artist tries ratios.
+    #[test]
+    fn reshaping_holds_the_centre() {
+        let (min, max) = (Vec2::new(40.0, -10.0), Vec2::new(200.0, 70.0));
+        let center = (min + max) * 0.5;
+        for (_, aspect) in ASPECTS {
+            let (lo, hi) = to_aspect(min, max, aspect);
+            let moved = (lo + hi) * 0.5;
+            assert!(
+                (moved - center).length() < 1e-3,
+                "{aspect} moved the centre from {center:?} to {moved:?}"
+            );
+        }
+    }
+
+    /// And the shape it lands on is the one asked for — the round trip through
+    /// [`matched_aspect`], which is what the drop-down reads back.
+    #[test]
+    fn a_reshaped_frame_reads_as_the_preset_it_was_given() {
+        let (min, max) = (Vec2::new(-100.0, -100.0), Vec2::new(100.0, 100.0));
+        for (label, aspect) in ASPECTS {
+            let (lo, hi) = to_aspect(min, max, aspect);
+            assert_eq!(matched_aspect((hi.x - lo.x, hi.y - lo.y)), label);
+        }
+    }
+
+    /// A ratio that is nobody's preset says so rather than snapping to the
+    /// nearest — the whole point of `Custom` being a real state (§15.7), since a
+    /// dragged handle lands wherever the hand left it.
+    #[test]
+    fn an_arbitrary_ratio_is_custom() {
+        assert_eq!(matched_aspect((100.0, 73.0)), CUSTOM);
+        // Just outside the relative tolerance on either side of 1:1.
+        assert_eq!(matched_aspect((1.0, 1.0)), "1:1");
+        assert_eq!(matched_aspect((1.02, 1.0)), CUSTOM);
+        // The tolerance is relative, so a preset holds at any size.
+        assert_eq!(matched_aspect((16_000.0, 9_000.0)), "16:9");
+        assert_eq!(matched_aspect((0.016, 0.009)), "16:9");
+    }
+
+    /// A degenerate frame divides by nothing: a zero-height rect is `Custom`,
+    /// not a NaN ratio that matches whichever preset the comparison happens to
+    /// answer for.
+    #[test]
+    fn a_flat_frame_has_no_preset() {
+        assert_eq!(matched_aspect((100.0, 0.0)), CUSTOM);
+        assert_eq!(matched_aspect((0.0, 0.0)), CUSTOM);
+    }
+}

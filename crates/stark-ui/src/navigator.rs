@@ -457,3 +457,87 @@ pub fn NavigatorOverlay() -> Element {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stark_model::geom::Extent2;
+
+    /// A 400×200 piece under a miniature, and a viewport looking at it.
+    fn piece() -> Overview {
+        Overview {
+            min: Vec2::new(-200.0, -100.0),
+            max: Vec2::new(200.0, 100.0),
+            width: 200,
+            height: 100,
+        }
+    }
+
+    /// One declaration out of the style string, as a number.
+    fn css(style: &str, name: &str) -> f32 {
+        style
+            .split(';')
+            .filter_map(|d| d.split_once(':'))
+            .find(|(k, _)| k.trim() == name)
+            .and_then(|(_, v)| v.trim().trim_end_matches('%').parse().ok())
+            .unwrap_or_else(|| panic!("no {name} in {style}"))
+    }
+
+    /// The marker is placed by the view's **centre**, in percentages of the
+    /// piece — so a view looking at the middle of the piece puts it in the
+    /// middle of the miniature.
+    ///
+    /// Percentages rather than px because the miniature is laid out by the
+    /// artwork's aspect, and pinning that here is what keeps the marker from
+    /// needing to know how large the browser drew it.
+    #[test]
+    fn the_marker_sits_where_the_view_is_centred() {
+        let view = stark_engine::ViewTransform::identity(Extent2::new(200, 100));
+        let style = viewport_style(piece(), view);
+        assert!((css(&style, "left") - 50.0).abs() < 1e-2, "{style}");
+        assert!((css(&style, "top") - 50.0).abs() < 1e-2, "{style}");
+        // 200 screen px at zoom 1 over a 400 px piece is half of it.
+        assert!((css(&style, "width") - 50.0).abs() < 1e-2, "{style}");
+        assert!((css(&style, "height") - 50.0).abs() < 1e-2, "{style}");
+    }
+
+    /// Zooming in shrinks the marker, because the marker is how much of the
+    /// piece the window covers — the one thing an overview is for.
+    #[test]
+    fn zooming_in_shrinks_the_marker() {
+        let mut view = stark_engine::ViewTransform::identity(Extent2::new(200, 100));
+        let wide = css(&viewport_style(piece(), view), "width");
+        view.zoom_about(Vec2::ZERO, 2.0);
+        let close = css(&viewport_style(piece(), view), "width");
+        assert!(close < wide, "{close} should be less than {wide}");
+        assert!((close - wide * 0.5).abs() < 1e-2, "2x should halve it");
+    }
+
+    /// Panning off the piece slides the marker **out of the frame** rather than
+    /// pinning it to an edge (§11). Pinned because clamping is the obvious-looking
+    /// edit and it would have the overview claim you are still on the painting.
+    #[test]
+    fn panning_off_the_piece_takes_the_marker_with_it() {
+        let mut view = stark_engine::ViewTransform::identity(Extent2::new(200, 100));
+        view.center_on(Vec2::new(4_000.0, 0.0));
+        let style = viewport_style(piece(), view);
+        assert!(css(&style, "left") > 100.0, "{style}");
+    }
+
+    /// A degenerate overview — a frame dragged to nothing — divides by a floor
+    /// rather than by zero, so the style is still a style and not a run of NaNs
+    /// the browser silently drops.
+    #[test]
+    fn a_collapsed_piece_still_yields_numbers() {
+        let flat = Overview {
+            min: Vec2::ZERO,
+            max: Vec2::ZERO,
+            width: 200,
+            height: 100,
+        };
+        let view = stark_engine::ViewTransform::identity(Extent2::new(200, 100));
+        let style = viewport_style(flat, view);
+        assert!(!style.contains("NaN"), "{style}");
+        assert!(css(&style, "width").is_finite(), "{style}");
+    }
+}

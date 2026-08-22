@@ -1192,3 +1192,128 @@ pub fn FilterBar() -> Element {
 fn readout<F>(knob: &Knob<F>, settings: &F) -> String {
     (knob.fmt)((knob.get)(settings) / knob.scale)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// How close two px positions or two Oklab coordinates have to be to count
+    /// as the same point. Generous, because what is being pinned is that the two
+    /// halves of a mapping are *inverses*, not the last bit of an `f32`.
+    const EPS: f32 = 1e-4;
+
+    /// The dial's two halves are inverses.
+    ///
+    /// Worth pinning because getting it wrong is silent and looks like feel: the
+    /// handle drifts away from the pointer that is dragging it, which reads as a
+    /// slippery control rather than as a sign error. Both halves are written out
+    /// by hand — one flips `b`, the other flips `y` — so there is a sign in each
+    /// that only their composition checks.
+    #[test]
+    fn the_dial_maps_both_ways() {
+        for ab in [
+            [0.0, 0.0],
+            [DIAL_AB, 0.0],
+            [-DIAL_AB, 0.0],
+            [0.0, DIAL_AB],
+            [0.0, -DIAL_AB],
+            [DIAL_AB * 0.37, -DIAL_AB * 0.81],
+        ] {
+            let (x, y) = dial_xy(ab);
+            let back = dial_ab(x, y);
+            assert!(
+                (back[0] - ab[0]).abs() < EPS && (back[1] - ab[1]).abs() < EPS,
+                "{ab:?} went to ({x}, {y}) and came back {back:?}"
+            );
+        }
+    }
+
+    /// And the orientation those signs encode: `a` runs left→right, `b` runs
+    /// **bottom→top** — warm at the top, the picker's own plane (§21.5). A test
+    /// of the round trip alone would pass with both signs flipped.
+    #[test]
+    fn the_dial_is_warm_at_the_top() {
+        let (x0, y0) = dial_xy([0.0, 0.0]);
+        let (right, _) = dial_xy([DIAL_AB * 0.5, 0.0]);
+        let (_, up) = dial_xy([0.0, DIAL_AB * 0.5]);
+        assert!(right > x0, "+a should run rightward");
+        assert!(up < y0, "+b should run upward, which is a smaller y");
+    }
+
+    /// The centre of the box is the neutral, on both halves. The one point where
+    /// a scale error and an offset error cannot hide behind each other.
+    #[test]
+    fn the_dial_centre_is_the_grey() {
+        let (x, y) = dial_xy([0.0, 0.0]);
+        assert!((x - DIAL_PX * 0.5).abs() < EPS);
+        assert!((y - DIAL_PX * 0.5).abs() < EPS);
+        let back = dial_ab(DIAL_PX * 0.5, DIAL_PX * 0.5);
+        assert!(back[0].abs() < EPS && back[1].abs() < EPS);
+    }
+
+    /// The fringe pad's two halves are inverses too — and this pair is the one
+    /// that is *not* linear (§21.10): equal area per unit of spread, so the fine
+    /// end of the range gets the room it needs.
+    #[test]
+    fn the_fringe_pad_maps_both_ways() {
+        let (_, top) = ChromaticAberration::SPREAD;
+        for spread in [0.0, 1.0, 2.0, 3.0, 30.0, top * 0.5, top] {
+            let r = pad_radius(spread);
+            let back = pad_spread(r);
+            assert!(
+                (back - spread).abs() < 1e-3,
+                "{spread} went to radius {r} and came back {back}"
+            );
+        }
+    }
+
+    /// The law that pairing states: **equal area per unit of spread**, which is
+    /// the whole reason it is a square root rather than a line. Checked as the
+    /// property rather than as a constant, so the numbers may move and the claim
+    /// the doc makes cannot.
+    #[test]
+    fn the_fringe_pad_spends_equal_area_per_unit() {
+        let (_, top) = ChromaticAberration::SPREAD;
+        // Area inside the handle's radius, per unit of spread, at three points
+        // across the range. π cancels, so this is r² / spread.
+        let per_unit = |spread: f32| {
+            let r = pad_radius(spread);
+            r * r / spread
+        };
+        let (a, b, c) = (per_unit(top * 0.1), per_unit(top * 0.5), per_unit(top));
+        assert!(
+            (a - b).abs() < 1e-3 && (b - c).abs() < 1e-3,
+            "area per unit drifts across the range: {a}, {b}, {c}"
+        );
+        // And the rim is the top of the range, which is what makes the pad's
+        // edge mean something.
+        assert!((pad_radius(top) - PAD_R).abs() < EPS);
+        assert!((pad_radius(0.0)).abs() < EPS);
+    }
+
+    /// Neither half clamps, and that is deliberate: `Filter::sanitized` is the
+    /// one place a number is held to its range, and a second opinion here is how
+    /// a control comes to disagree with the value it displays. Pinned because
+    /// "add a clamp" is the obvious-looking edit.
+    #[test]
+    fn the_two_inverses_leave_the_clamping_to_the_sanitizer() {
+        let (_, top) = ChromaticAberration::SPREAD;
+        assert!(pad_spread(PAD_R * 2.0) > top, "the pad clamped a drag");
+        let past = dial_ab(DIAL_PX * 2.0, -DIAL_PX);
+        assert!(
+            past[0] > DIAL_AB && past[1] > DIAL_AB,
+            "the dial clamped one"
+        );
+    }
+
+    /// `snapped` is round-half-away-from-zero to a multiple, and symmetric about
+    /// zero — the Shift-held steps read the same on either side of neutral.
+    #[test]
+    fn snapping_is_symmetric_about_zero() {
+        assert_eq!(snapped(0.0, 0.25), 0.0);
+        assert_eq!(snapped(0.3, 0.25), 0.25);
+        assert_eq!(snapped(-0.3, 0.25), -0.25);
+        assert_eq!(snapped(0.13, 0.25), 0.25);
+        assert_eq!(snapped(-0.13, 0.25), -0.25);
+    }
+}
