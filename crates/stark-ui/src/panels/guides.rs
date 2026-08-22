@@ -390,57 +390,69 @@ pub fn GuidesPanel() -> Element {
         div { class: "layer-header",
             CommandButton { command: Command::AddPerspective, class: "layer-add" }
         }
-        if guides.is_empty() {
-            div { class: "guide-empty",
-                "No guides yet. Add a perspective grid to draw through."
+        // The roster, in a well of its own — the Layers panel's tree in the same
+        // ink (`.guide-list`, `.layer-tree`), because it is the same statement: the
+        // rows are the panel's one *picture* (the guides, listed), and the ground
+        // under a picture is not the ground the controls stand on. The header keeps
+        // its inset above it, so the well never reaches a corner — which is what lets
+        // this panel go on not clipping, as its dragged row needs (`.panel`).
+        //
+        // The empty line is *inside* it, so the region a guide would appear in is
+        // drawn whether or not one has been added yet, and the panel does not change
+        // shape under the first add.
+        div { class: "guide-list",
+            if guides.is_empty() {
+                div { class: "guide-empty",
+                    "No guides yet. Add a perspective grid to draw through."
+                }
             }
-        }
-        for (i, g) in guides.into_iter().enumerate() {
-            GuideRow {
-                key: "{i}",
-                index: i,
-                active: editing == Some(g.id),
-                guide: g,
-                motion: land.map_or_else(Motion::default, |s| s.motion(i, lift)),
-                drag,
-                onland: move |from: usize| {
-                    // A press that never travelled is a click, and the browser is
-                    // about to send one; nothing here has anything to say about it.
-                    if drag.peek().as_ref().is_none_or(|d| !d.live()) {
-                        drag.set(None);
-                        return;
-                    }
-                    // The disarm first, so no frame carries both the new order and
-                    // the transforms that were describing the old one — spent rather
-                    // than dropped, so the click behind the release can be swallowed
-                    // (`reorder::claimed`). It has to be: this panel's rows are
-                    // addressed by position, so that click names whichever guide has
-                    // just taken the dragged one's place, and acting on it would put
-                    // the artist in the wrong guide's edit mode.
-                    if let Some(d) = drag.write().as_mut() {
-                        d.spend();
-                    }
-                    let Some(slide) = land else {
-                        return;
-                    };
-                    // The row the drag was drawn against, by *position*, which is all
-                    // a drag over drawn rows can name. Turned into the guide's own id
-                    // here and never carried further: everything downstream of this
-                    // handler addresses a guide by id (§20.5).
-                    let Some(id) = guides_of(state).get(from).map(|g| g.id) else {
-                        return;
-                    };
-                    if slide.inert() {
-                        // A drag that went nowhere is the click it nearly was, and on
-                        // this row a click is picking the guide up to shape it.
-                        begin_guide_edit(state, id);
-                    } else {
-                        // Deliberately *not* an edit-mode entry: reordering the roster
-                        // is tidying, and tidying must not take over the canvas. What
-                        // you were shaping stays what you are shaping.
-                        move_guide(state, id, slide.gap);
-                    }
-                },
+            for (i, g) in guides.into_iter().enumerate() {
+                GuideRow {
+                    key: "{i}",
+                    index: i,
+                    active: editing == Some(g.id),
+                    guide: g,
+                    motion: land.map_or_else(Motion::default, |s| s.motion(i, lift)),
+                    drag,
+                    onland: move |from: usize| {
+                        // A press that never travelled is a click, and the browser is
+                        // about to send one; nothing here has anything to say about it.
+                        if drag.peek().as_ref().is_none_or(|d| !d.live()) {
+                            drag.set(None);
+                            return;
+                        }
+                        // The disarm first, so no frame carries both the new order and
+                        // the transforms that were describing the old one — spent rather
+                        // than dropped, so the click behind the release can be swallowed
+                        // (`reorder::claimed`). It has to be: this panel's rows are
+                        // addressed by position, so that click names whichever guide has
+                        // just taken the dragged one's place, and acting on it would put
+                        // the artist in the wrong guide's edit mode.
+                        if let Some(d) = drag.write().as_mut() {
+                            d.spend();
+                        }
+                        let Some(slide) = land else {
+                            return;
+                        };
+                        // The row the drag was drawn against, by *position*, which is all
+                        // a drag over drawn rows can name. Turned into the guide's own id
+                        // here and never carried further: everything downstream of this
+                        // handler addresses a guide by id (§20.5).
+                        let Some(id) = guides_of(state).get(from).map(|g| g.id) else {
+                            return;
+                        };
+                        if slide.inert() {
+                            // A drag that went nowhere is the click it nearly was, and on
+                            // this row a click is picking the guide up to shape it.
+                            begin_guide_edit(state, id);
+                        } else {
+                            // Deliberately *not* an edit-mode entry: reordering the roster
+                            // is tidying, and tidying must not take over the canvas. What
+                            // you were shaping stays what you are shaping.
+                            move_guide(state, id, slide.gap);
+                        }
+                    },
+                }
             }
         }
     }

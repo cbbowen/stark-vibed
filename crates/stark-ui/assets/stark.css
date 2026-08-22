@@ -1006,10 +1006,10 @@ hr {
 }
 
 /* The full-bleed surfaces — the miniature, the color wheel, the preset strip
-   and the layer tree's well — are not restated here: they bleed in both modes
+   and the two rosters' wells — are not restated here: they bleed in both modes
    now, each at its subject (`.panel[data-panel=…]`, `.color-wheel`,
-   `.preset-section`, `.layer-tree`); minimal mode only flushes the column they
-   sit in. One remainder is this mode's own: with the preset heading dropped
+   `.preset-section`, `.layer-tree`, `.guide-list`); minimal mode only flushes the
+   column they sit in. One remainder is this mode's own: with the preset heading dropped
    (`.preset-header` below), the strip needs the 8px the heading's padding was
    giving — the panel's block rhythm (`.slider-row`) — or it butts straight
    into the buttons above. */
@@ -3688,10 +3688,31 @@ button.layer-remove:hover {
    a layer row — the name selects, Remove takes the guide away, the eye shows and
    hides. Same two controls in the same order wearing the same glyphs, because the two
    panels answer the same question about different stacks. */
+/* The roster's own ground: the layer tree's well, said again here (`.layer-tree`
+   holds the argument) — a step darker than the panel and translucent, so the
+   panel's paper still shows through the region the rows are drawn on. The margins
+   negate the panel's padding, which is what bleeds it to the panel's edges; the
+   inset the rows lose there they take back as their own padding, so the bands run
+   edge to edge while their text stays in the panel's column.
+
+   Only the sides bleed. The foot keeps the panel's padding, so the well cannot
+   reach a corner — this panel must not clip (a dragged row rides out over its edge,
+   and `lift` follows the pointer as far as it goes), so a square end at a rounded
+   corner would have nothing to cut it. */
+.guide-list {
+  position: relative;
+  margin: 0 calc(-1 * var(--panel-padding));
+  padding: 2px 0;
+  background: #00000038;
+}
+
+/* Inside the well now, so the sentence carries the inset the rows carry — it is the
+   one line the roster has when it has no rows, and it has to start in the same
+   column they do. */
 .guide-empty {
   font-size: 12px;
   color: #ffffff70;
-  padding: 6px 2px 2px;
+  padding: 6px var(--panel-padding) 4px;
 }
 
 .guide-row {
@@ -3701,8 +3722,13 @@ button.layer-remove:hover {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 6px;
-  border-radius: 5px;
+  /* The row's own inset, which is the panel's: the band is full-width in the well
+     and the text inside it stands in the column the header above it does. */
+  padding: 4px var(--panel-padding);
+  /* Flat bands in the well, as the layer rows are (`.layer-row`): the well provides
+     the list's shape, and a rounded corner on a full-width band inside it would read
+     as a chip that failed to fit. */
+  border-radius: 0;
   cursor: pointer;
 }
 
