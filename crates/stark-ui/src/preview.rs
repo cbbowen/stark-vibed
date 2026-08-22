@@ -197,88 +197,106 @@ pub const TRANSFORM: Preview<(LayerId, TransformMap)> =
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_model::document::ActorId;
+    use stark_model::document::{ActorId, SelectionShape};
 
-    /// The claim the type makes, asked of each pair: **the command that shows a
-    /// value and the command that lays it down carry the same value**.
+    /// One row of [`a_pair_shows_and_lays_the_same_value`]: send `value` through
+    /// both halves of `pair` and assert the two commands came out carrying it.
     ///
-    /// This is the failure the pairing exists to rule out, and it is worth pinning
-    /// because it is silent: both halves work on their own, so a mismatched pair
-    /// shows the right thing under the hand and lays something else on release.
-    /// Written per pair rather than generically because what has to be compared is
-    /// the *payload inside two different enums*, which only a `match` can reach.
+    /// A macro because what has to be compared is the *payload inside two
+    /// different enums*, which only a `match` can reach — and a macro because
+    /// the alternative is a twenty-line block per row, which is how three of the
+    /// nine rows went missing without anyone noticing. Written out, the check is
+    /// one call per row and the call list sits beside [the table](self), where a
+    /// gap is visible rather than buried.
+    macro_rules! check_pair {
+        ($pair:ident, $value:expr, $show:pat, $lay:pat => ($shown:expr, $laid:expr)) => {{
+            let value = $value;
+            match (($pair.show)(Some(value.clone())), ($pair.lay)(value)) {
+                ($show, $lay) => assert_eq!($shown, $laid),
+                _ => panic!(concat!(stringify!($pair), " is not a pair")),
+            }
+        }};
+    }
+
+    /// The claim the type makes, asked of **every** pair in the table: the
+    /// command that shows a value and the command that lays it down carry the
+    /// same value.
+    ///
+    /// This is the failure the pairing exists to rule out, and it is worth
+    /// pinning because it is silent: both halves work on their own, so a
+    /// mismatched pair shows the right thing under the hand and lays something
+    /// else on release.
+    ///
+    /// One call per row, in the table's own order. Adding a row to the table
+    /// without adding one here still compiles — nothing can make it not — but
+    /// the omission is now a hole in a column of nine, not a missing paragraph.
     #[test]
     fn a_pair_shows_and_lays_the_same_value() {
         let id = LayerId(7);
 
-        match (
-            (LAYER_OPACITY.show)(Some((id, 0.25))),
-            (LAYER_OPACITY.lay)((id, 0.25)),
-        ) {
-            (
-                ViewCommand::PreviewLayerOpacity(Some(shown)),
-                DocCommand::SetLayerOpacity(layer, opacity),
-            ) => assert_eq!(shown, (layer, opacity)),
-            _ => panic!("LAYER_OPACITY is not a pair"),
-        }
-
-        let mode = BlendMode::Drago { k: 1.5 };
-        match (
-            (LAYER_BLEND.show)(Some((id, mode))),
-            (LAYER_BLEND.lay)((id, mode)),
-        ) {
-            (
-                ViewCommand::PreviewLayerBlend(Some(shown)),
-                DocCommand::SetLayerBlend(layer, laid),
-            ) => assert_eq!(shown, (layer, laid)),
-            _ => panic!("LAYER_BLEND is not a pair"),
-        }
-
-        let (min, max) = (Vec2::new(-3.0, -4.0), Vec2::new(5.0, 6.0));
-        match (
-            (MATTE_RECT.show)(Some((id, min, max))),
-            (MATTE_RECT.lay)((id, min, max)),
-        ) {
-            (
-                ViewCommand::PreviewMatteRect(Some(shown)),
-                DocCommand::SetMatteRect(layer, lo, hi),
-            ) => assert_eq!(shown, (layer, lo, hi)),
-            _ => panic!("MATTE_RECT is not a pair"),
-        }
-
-        let paint = MattePaint::Solid([0.1, 0.2, 0.3]);
-        match (
-            (MATTE_PAINT.show)(Some((id, paint.clone()))),
-            (MATTE_PAINT.lay)((id, paint)),
-        ) {
-            (
-                ViewCommand::PreviewMattePaint(Some(shown)),
-                DocCommand::SetMattePaint(layer, laid),
-            ) => assert_eq!(shown, (layer, laid)),
-            _ => panic!("MATTE_PAINT is not a pair"),
-        }
-
-        let guide = (
-            GuideId(stark_model::document::ActionId {
-                lamport: 3,
-                actor: ActorId(1),
-            }),
-            PerspectiveGuide::default(),
+        check_pair!(
+            LAYER_OPACITY,
+            (id, 0.25),
+            ViewCommand::PreviewLayerOpacity(Some(shown)),
+            DocCommand::SetLayerOpacity(layer, opacity) => (shown, (layer, opacity))
         );
-        match ((GUIDE.show)(Some(guide)), (GUIDE.lay)(guide)) {
-            (ViewCommand::PreviewGuide(Some(shown)), DocCommand::SetGuide(id, laid)) => {
-                assert_eq!(shown, (id, laid))
-            }
-            _ => panic!("GUIDE is not a pair"),
-        }
-
-        let rgb = [0.93, 0.91, 0.86];
-        match ((BACKGROUND.show)(Some(rgb)), (BACKGROUND.lay)(rgb)) {
-            (ViewCommand::PreviewBackground(Some(shown)), DocCommand::SetBackground(laid)) => {
-                assert_eq!(shown, laid)
-            }
-            _ => panic!("BACKGROUND is not a pair"),
-        }
+        check_pair!(
+            LAYER_BLEND,
+            (id, BlendMode::Drago { k: 1.5 }),
+            ViewCommand::PreviewLayerBlend(Some(shown)),
+            DocCommand::SetLayerBlend(layer, laid) => (shown, (layer, laid))
+        );
+        check_pair!(
+            FILTER,
+            (id, Filter::ALL[1].clone()),
+            ViewCommand::PreviewFilter(Some(shown)),
+            DocCommand::SetFilter(layer, laid) => (shown, (layer, laid))
+        );
+        check_pair!(
+            MATTE_RECT,
+            (id, Vec2::new(-3.0, -4.0), Vec2::new(5.0, 6.0)),
+            ViewCommand::PreviewMatteRect(Some(shown)),
+            DocCommand::SetMatteRect(layer, lo, hi) => (shown, (layer, lo, hi))
+        );
+        check_pair!(
+            MATTE_PAINT,
+            (id, MattePaint::Solid([0.1, 0.2, 0.3])),
+            ViewCommand::PreviewMattePaint(Some(shown)),
+            DocCommand::SetMattePaint(layer, laid) => (shown, (layer, laid))
+        );
+        check_pair!(
+            BACKGROUND,
+            [0.93, 0.91, 0.86],
+            ViewCommand::PreviewBackground(Some(shown)),
+            DocCommand::SetBackground(laid) => (shown, laid)
+        );
+        check_pair!(
+            FILL,
+            (id, FillOp::new(SelectionShape::All, 2.0, [0.2, 0.4, 0.6], 0.75)),
+            ViewCommand::PreviewFill(Some(shown)),
+            DocCommand::Fill { layer, op } => (shown, (layer, op))
+        );
+        check_pair!(
+            GUIDE,
+            (
+                GuideId(stark_model::document::ActionId {
+                    lamport: 3,
+                    actor: ActorId(1),
+                }),
+                PerspectiveGuide::default(),
+            ),
+            ViewCommand::PreviewGuide(Some(shown)),
+            DocCommand::SetGuide(guide, laid) => (shown, (guide, laid))
+        );
+        check_pair!(
+            TRANSFORM,
+            (
+                id,
+                TransformMap::Affine(stark_model::geom::Affine2::from_scale(Vec2::new(2.0, 3.0))),
+            ),
+            ViewCommand::PreviewTransform(Some(shown)),
+            DocCommand::Transform { layer, map } => (shown, (layer, map))
+        );
     }
 
     /// Dropping a preview is the **same command** that shows it, with nothing in

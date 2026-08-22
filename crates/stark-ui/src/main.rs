@@ -817,7 +817,6 @@ fn Canvas() -> Element {
                     hover_gone(state);
                     return;
                 }
-                // A layer is being carried under the pointer (§16.11): the paint
                 // A composing mode opened under the hand (`crate::modes`). Its
                 // catcher covers the canvas, so no *new* press can reach here —
                 // but this pointer was captured by the canvas before the catcher
@@ -967,15 +966,24 @@ fn Canvas() -> Element {
 #[component]
 fn PeerCursors() -> Element {
     let state = use_context::<AppState>();
+    // The view, through one memo — unconditionally, ahead of the early return,
+    // like any `use_*`.
+    //
+    // **Not a `peek` of the renderer**, which is what this was and which left the
+    // cursors behind under a pan: the only other thing this component subscribes
+    // to is the roster, and the presence pump writes that solely when the
+    // roster's revision moves (`collab`). So a collaborator holding still while
+    // this client pans left their cursor pinned to a *screen* position — the one
+    // thing the doc above says it is not. The peek's reason was sound (the
+    // renderer signal is written by every engine door, so subscribing to it would
+    // redraw these on every stroke sample) and this is what `use_obs` is for: the
+    // memo propagates when the view moves and sleeps through everything else.
+    let look = use_obs(state, |o| o.view);
     let peers = (state.collab.peers)();
     if peers.is_empty() {
         return rsx! {};
     }
-    // Read the view once per render rather than per peer, and `peek` rather than
-    // `read`: this component is driven by `peers`, and subscribing to the renderer
-    // as well would re-render it on every engine write — every stroke sample, every
-    // pan — to redraw cursors that had not moved.
-    let Some(view) = state.renderer.peek().as_ref().map(|r| r.view()) else {
+    let Some(view) = look() else {
         return rsx! {};
     };
     rsx! {
@@ -1711,5 +1719,3 @@ fn new_document(
         on_close.call(());
     });
 }
-
-// --- reusable chrome ---
