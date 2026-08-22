@@ -1,13 +1,13 @@
 //! What a **browser-held asset library** is made of — the parts both of them share.
 //!
 //! There are two: `crate::shapes` keeps the brush stamps a user brought in (§6.6) and
-//! `crate::grounds` the canvas weaves (§6.4). They are the same object twice over. An
+//! `crate::substrates` the canvas substrates (§6.4). They are the same object twice over. An
 //! entry is a canonical image keyed by its content id, the id is the whole of the
 //! reference, the rows go to `localStorage` and the bytes to the blob store beside
 //! them (§25.6), and each is shown as a card the size of a fingernail.
 //!
 //! What differs is what the card is a **picture of**, and that is the one thing left
-//! in each module: a stamp's card is the coverage it will lay, a ground's is the
+//! in each module: a stamp's card is the coverage it will lay, a substrate's is the
 //! height field it will bite. Neither is derivable from the other — the same grayscale
 //! PNG canonicalizes to the same id under both readings, so a shared cache would hand
 //! one library the other's picture. Hence [`Thumbs`], which is a cache each declares
@@ -23,7 +23,7 @@ use stark_model::AssetId;
 /// The longest edge of a gallery thumbnail, in texels: 2× the 52-px card that shows
 /// it, so it stays crisp on a dense display, and two orders of magnitude off the
 /// [`MAX_SHAPE_DIM`](stark_assetid::MAX_SHAPE_DIM) or
-/// [`MAX_GROUND_DIM`](stark_assetid::MAX_GROUND_DIM) the field itself may run to. That
+/// [`MAX_SUBSTRATE_DIM`](stark_assetid::MAX_SUBSTRATE_DIM) the field itself may run to. That
 /// difference is the whole reason [`reduce`] exists — a full-size map rides into the
 /// DOM as half a megabyte of base64, per card, for a picture the size of a fingernail.
 pub const THUMB_DIM: u32 = 128;
@@ -172,6 +172,9 @@ mod tests {
     fn a_name_comes_off_the_file_and_falls_back_to_the_callers_word() {
         assert_eq!(display_name("Coarse Linen.png", "x"), "Coarse Linen");
         assert_eq!(display_name("no-extension", "x"), "no-extension");
-        assert_eq!(display_name(".png", "Imported weave"), "Imported weave");
+        assert_eq!(
+            display_name(".png", "Imported substrate"),
+            "Imported substrate"
+        );
     }
 }

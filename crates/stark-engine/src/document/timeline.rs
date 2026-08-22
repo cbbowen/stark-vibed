@@ -808,7 +808,7 @@ mod tests {
     fn edit(lamport: u64, actor: u64) -> Action {
         Action {
             id: id(lamport, actor),
-            kind: ActionKind::SetBackground(Srgb::new([0.0; 3])),
+            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
         }
     }
 

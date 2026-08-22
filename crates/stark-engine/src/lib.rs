@@ -46,7 +46,7 @@
 //! tell which one the crate meant to offer.
 //!
 //! So the modules a caller genuinely navigates (`document`, `command`, `geom`,
-//! `path`, …) are `pub` and curate their own surface, while the ones that exist to
+//! `path`, …) are `pub` and curate their own substrate, while the ones that exist to
 //! *serve* them are `pub(crate)` with their public types re-exported at the root:
 //! `error`, `image` and `content` were reached only that way already, and `assist`,
 //! `noise`, `spline` and `tow` were reached from outside the crate for a grand
@@ -85,7 +85,7 @@ pub mod view;
 /// Every `Mutex` this crate holds guards derived state — a baked tip texture
 /// (`gpu::stroke::tips`), a pooled scratch list (`gpu::stroke::scratch`), the tile
 /// pool's free list and census (`gpu::tile`), the decoded brush masks ([`assets`])
-/// and ground/environment builds (`gpu::registry`), the seed of the last stroke
+/// and substrate/environment builds (`gpu::registry`), the seed of the last stroke
 /// complained about, the timing histograms ([`timing`]) — whose values are moved in
 /// whole after the work producing them has finished, so a panic while the lock is
 /// held cannot leave a torn value behind. All poisoning tells us is that some

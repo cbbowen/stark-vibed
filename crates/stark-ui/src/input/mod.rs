@@ -237,7 +237,7 @@ pub fn pick_color(state: AppState, pos: Vec2) {
         let picked = readback.await;
         busy.set(false);
         // Nothing under the sampler leaves the brush as it was: bare canvas is the
-        // ground, not paint to pick up.
+        // substrate, not paint to pick up.
         let Some(rgb) = picked else { return };
         // A sample landed, which the tour counts as the **gesture** it is (§24.2).
         // Reported here rather than left to the command below for the same reason that
@@ -398,7 +398,7 @@ pub fn elem_xy(e: &Event<PointerData>) -> Vec2 {
 
 /// How finely a pointer report resolves position, in **CSS px**.
 ///
-/// Not a preference — an estimate of the device's grain, which is what the fitter
+/// Not a preference — an estimate of the device's tolerance, which is what the fitter
 /// needs in order to tell jitter from detail (see
 /// [`PathFitter::with_tolerance`](stark_engine::path::PathFitter::with_tolerance)). A
 /// mouse walks the screen in whole *physical* pixels, so `1 / devicePixelRatio` CSS
@@ -416,7 +416,7 @@ fn input_resolution(e: &Event<PointerData>) -> f32 {
 }
 
 /// The fitting tolerance to declare for a gesture starting with `e`, in canvas px:
-/// the device's own grain (above) carried through `view`, since canvas space is
+/// the device's own tolerance (above) carried through `view`, since canvas space is
 /// where the fit measures error.
 pub fn input_tolerance_in(view: ViewTransform, e: &Event<PointerData>) -> f32 {
     input_resolution(e) / view.zoom
@@ -495,7 +495,7 @@ pub fn hover_at(state: AppState, at: Vec2) {
 /// out, promising more painting the less closely you looked. The size circle
 /// over it already scales with the zoom, so the two halves of the cursor now
 /// shrink and grow together. The *smoothing* does not ride this number: the
-/// heading's estimator window is grain-relative inside the engine, so its
+/// heading's estimator window is tolerance-relative inside the engine, so its
 /// steadiness survives every zoom.
 const HOVER_REACH_CANVAS_PX: f32 = 8.0;
 

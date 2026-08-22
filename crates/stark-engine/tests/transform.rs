@@ -312,7 +312,7 @@ fn moved_paint_stacks_over_what_it_lands_on() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    // A green ground at the destination; a thick red blob moved on top of it.
+    // A green substrate at the destination; a thick red blob moved on top of it.
     paint(
         &mut engine,
         GREEN,
@@ -642,8 +642,8 @@ fn perspective_carries_paint_where_the_corners_point() {
     assert!(!is_painted(&img, c), "paint should leave the source");
 }
 
-/// A warp with a dragged control point: the paint under the surface lands where
-/// the surface says — probed at the engine's own `eval` of the blob's grid
+/// A warp with a dragged control point: the paint under the substrate lands where
+/// the substrate says — probed at the engine's own `eval` of the blob's grid
 /// fraction, which is exactly what the exact-follow gesture promises (§16.9).
 #[test]
 fn warp_carries_paint_with_its_surface() {
@@ -667,7 +667,7 @@ fn warp_carries_paint_with_its_surface() {
     let img = engine.render_to_image();
     assert!(
         is_painted(&img, expected),
-        "paint should arrive at the surface's image {expected:?}"
+        "paint should arrive at the substrate's image {expected:?}"
     );
     // A smooth warp *refills* a gently-grabbed spot from upstream paint, so
     // "the source is vacated" is not a property here (the rigid families pin

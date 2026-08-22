@@ -32,7 +32,7 @@
 //! The gallery's picture of a shape is [`thumbnail`], and it serves the app's
 //! own stamps as well as the library's: a card is drawn from the **coverage** an
 //! id names rather than from the file it was authored from, so where the author
-//! put that coverage — in alpha, or in the value over a black ground — stops
+//! put that coverage — in alpha, or in the value over a black substrate — stops
 //! being something the app has to be careful about.
 
 use dioxus::dioxus_core::spawn_forever;
@@ -87,7 +87,7 @@ impl storage::Blob for ShapeEntry {
 }
 
 /// This library's gallery thumbnails ([`Thumbs`]) — the *coverage* each id names,
-/// which is not the picture `crate::grounds` draws for the same id.
+/// which is not the picture `crate::substrates` draws for the same id.
 static THUMBS: Thumbs = Thumbs::new();
 
 /// A `background-image` data URL showing what the shape `id` names **covers**,
@@ -96,7 +96,7 @@ static THUMBS: Thumbs = Thumbs::new();
 /// A shape says its coverage in luminance × alpha (`stark_assetid::coverage`), so
 /// white on opaque black and an alpha cut-out are two spellings of one field, and
 /// the engine reads them as one. The gallery read neither. A built-in was drawn
-/// from the file it was authored from, so its card carried whatever ground the
+/// from the file it was authored from, so its card carried whatever substrate the
 /// author had left behind it — the app's own stamps only looked right because they
 /// had been drawn with alpha on purpose, which made that a requirement nothing
 /// states and nothing checks. An imported shape was drawn from its canonical
@@ -143,7 +143,7 @@ pub fn thumbnail(state: AppState, id: AssetId) -> Option<String> {
 /// **Grayscale + alpha**, because the ink is a constant: the only channel carrying
 /// anything is the alpha one, which is what makes a compressed mask a couple of
 /// kilobytes rather than a couple of hundred. White rather than the panel's ink so
-/// the picture is the shape's and not the stylesheet's — a card sets the ground it
+/// the picture is the shape's and not the stylesheet's — a card sets the substrate it
 /// sits on, and this is the paint.
 fn encode_thumb(png: &[u8]) -> Option<String> {
     let stark_assetid::Canonical {
@@ -428,7 +428,7 @@ mod tests {
 
     /// A 64×64 disc, written the two ways a brush shape may be authored: `alpha`
     /// puts the coverage in the alpha channel over transparent black, `value` puts
-    /// it in the color over an opaque black ground.
+    /// it in the color over an opaque black substrate.
     fn disc(alpha: bool) -> Vec<u8> {
         const N: u32 = 64;
         let mut pixels = Vec::with_capacity((N * N * 4) as usize);
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(a, v);
     }
 
-    /// And the card the two agree on has a *transparent* ground, not a black one:
+    /// And the card the two agree on has a *transparent* substrate, not a black one:
     /// where the disc does not cover, nothing is drawn, so the panel behind the card
     /// shows through however the source spelled that.
     #[test]

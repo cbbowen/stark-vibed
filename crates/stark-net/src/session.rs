@@ -105,8 +105,8 @@ pub use stark_model::AssetNeed;
 pub enum RemoteEvent {
     /// Content a remote action references, resolved off a peer — feed to the store
     /// `need` names before the action that wanted it: a brush image to
-    /// `Engine::import_brush`, a canvas ground to
-    /// `Engine::accept_surface`.
+    /// `Engine::import_brush`, a canvas substrate to
+    /// `Engine::accept_substrate`.
     Asset { need: AssetNeed, bytes: Bytes },
     /// A committed remote action — feed to
     /// `Engine::merge_remote`.
@@ -235,7 +235,7 @@ pub struct NetOptions {
     /// joiner's list is left out of the snapshot it is sent ([`Joined::owed`] is
     /// the bill). And for the rest of the session, a remote action naming one of
     /// these raises [`RemoteEvent::ResolveLocally`] instead of dialling a peer —
-    /// so a collaborator switching to a ground this app ships with costs a read
+    /// so a collaborator switching to a substrate this app ships with costs a read
     /// from disk rather than megabytes over the wire.
     ///
     /// Empty promises nothing, and is the safe default: every id then travels the
@@ -269,8 +269,8 @@ pub struct Joined {
     /// said it could resolve it locally (`resolvable`).
     ///
     /// **Install every one of these into the engine before replaying the
-    /// document.** Replay reads the ground in force when each stroke was made
-    /// (§6.4), so a `SetSurface` whose height map is not registered yet replays
+    /// document.** Replay reads the substrate in force when each stroke was made
+    /// (§6.4), so a `SetSubstrate` whose height map is not registered yet replays
     /// against the flat stand-in and bakes a smooth deposit that no later arrival
     /// un-bakes — the divergence content-addressing exists to prevent, arrived at
     /// by way of an optimization.
@@ -282,7 +282,7 @@ pub struct Joined {
 }
 
 /// A live shared session: broadcasts local actions, serves joiners and asset
-/// requests, and surfaces remote edits as [`RemoteEvent`]s.
+/// requests, and substrates remote edits as [`RemoteEvent`]s.
 pub struct CollabSession {
     /// Everything publishing needs, which is everything the session needs but
     /// two — so the session holds one rather than assembling one per call.
@@ -443,7 +443,7 @@ impl CollabSession {
         // Every piece of content already known (the hosted document's, or the
         // joiner's snapshot's) enters the blob store so this peer can serve it, and
         // its transfer hash is recorded so this peer's own actions referencing it can
-        // broadcast one. Brush images and canvas grounds alike — both are content an
+        // broadcast one. Brush images and canvas substrates alike — both are content an
         // action can be waiting on.
         mirror
             .lock()
@@ -533,8 +533,8 @@ impl CollabSession {
 
     /// Register content so joiners can be served and peers can fetch it — a brush
     /// image alongside
-    /// `Engine::import_brush`, a canvas ground
-    /// alongside `Engine::import_surface`.
+    /// `Engine::import_brush`, a canvas substrate
+    /// alongside `Engine::import_substrate`.
     ///
     /// Call it *before* committing an action that references the content: the
     /// broadcast attaches a transfer hash looked up here, and an action that goes out
@@ -615,7 +615,7 @@ impl Broadcaster {
     fn encode(&self, wire: WireRef<'_>, need: Option<AssetNeed>) -> Result<Bytes> {
         // Attach the blob hash for the referenced content, so receivers that lack
         // it know what to fetch. `add_content` accompanies the import, for a
-        // ground as for a brush, so a registered lookup is the normal case and a
+        // substrate as for a brush, so a registered lookup is the normal case and a
         // miss means that ordering was broken.
         let asset = need.and_then(|need| {
             let hash = self.waitlist.transfer_hash(need.content());
@@ -623,7 +623,7 @@ impl Broadcaster {
                 // What a call site that committed before registering looks like
                 // from here. Reported at the fault rather than left to surface
                 // as a warning on someone else's canvas: with no transfer hash
-                // the receiver cannot fetch the bytes at all, and for a ground
+                // the receiver cannot fetch the bytes at all, and for a substrate
                 // that is a permanent divergence (§6.4).
                 //
                 // Sent anyway. The action is already committed locally, so
@@ -1008,8 +1008,8 @@ fn hash_or_warn(need: AssetNeed, hash: Option<Hash>) -> Option<Hash> {
 ///
 /// One place decides, because two ways in must not decide differently. An action
 /// off the gossip flood and one recovered by
-/// [`reconcile`](crate::reconcile) need the same thing: a `SetSurface` applied
-/// before its ground has landed bakes a smooth deposit into stored tiles that no
+/// [`reconcile`](crate::reconcile) need the same thing: a `SetSubstrate` applied
+/// before its substrate has landed bakes a smooth deposit into stored tiles that no
 /// later arrival un-bakes (§6.4), and it does not matter which door it came
 /// through.
 pub(crate) enum Admission {

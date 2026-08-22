@@ -683,7 +683,7 @@ impl Session {
         // samples the fitted curve extends back through, with the record's
         // marker saying where on that curve the stroke itself begins — so the
         // entry's direction and curvature are measured from watched motion
-        // rather than guessed from the first grain-quantized steps (§6.2,
+        // rather than guessed from the first tolerance-quantized steps (§6.2,
         // `PathFitter::seed_runup`). Taking the window here also keeps
         // `start_selection`'s promise: a stale one outliving the gesture would
         // resurrect a pre-press mark at pen-up (§18.1.10).
@@ -930,7 +930,7 @@ impl Session {
     /// the frontend sends one sample per move exactly as it does for a stroke.
     ///
     /// **The window is the estimator, not the mark** (§6.2). Reports are
-    /// quantized to the device grain, so the heading of two adjacent reports
+    /// quantized to the device tolerance, so the heading of two adjacent reports
     /// snaps between the eight compass points — jitter in the *input*, which
     /// the fitter is precisely the machinery to price against detail, given
     /// the redundancy a window carries and a bare pair never did. But what is
@@ -940,17 +940,17 @@ impl Session {
     /// press starts where the pointer is.
     ///
     /// The probe is **straight**, deliberately: continuing the trace's
-    /// curvature would double down on the very quantity the grain makes
+    /// curvature would double down on the very quantity the tolerance makes
     /// noisiest, and "from here, this way" is the whole of what a press this
     /// instant can honestly be said to do. It is built through the fitter from
     /// two synthesized samples wearing the newest report's own channels, so it
     /// is bit-for-bit the record a real gesture of those two samples would
     /// commit — the prediction is synthesized; the rendering of it is not.
     ///
-    /// `tolerance` is the frontend's statement of its input grain, as
+    /// `tolerance` is the frontend's statement of its input tolerance, as
     /// [`start_stroke`](Self::start_stroke) takes it — the window's own extent
-    /// derives from it ([`WINDOW_ARC_GRAINS`]), since how much history the
-    /// estimator needs is a fact about the grain. `reach` is how far the probe
+    /// derives from it ([`WINDOW_ARC_TOLERANCES`]), since how much history the
+    /// estimator needs is a fact about the tolerance. `reach` is how far the probe
     /// extends, in **canvas px by nature rather than by conversion**: the mark
     /// is a hypothesis about paint, paint is denominated on the canvas, and a
     /// screen-fixed length grew in canvas terms as the view zoomed out —
@@ -958,8 +958,8 @@ impl Session {
     ///
     /// A non-finite report is refused at the door for
     /// [`stroke_to`](Self::stroke_to)'s reason — the window *remembers* — and
-    /// a report within a grain of the last is dropped: it carries nothing the
-    /// fit could use, and a resting pen's sub-grain drift would otherwise buy
+    /// a report within a tolerance of the last is dropped: it carries nothing the
+    /// fit could use, and a resting pen's sub-tolerance drift would otherwise buy
     /// a whole-window refit per report. Hence the answer: whether anything
     /// changed, so a caller can skip the refold for a report that changed
     /// nothing.
@@ -975,7 +975,7 @@ impl Session {
         }
         let mut window = self.hover.take().map(|h| h.window).unwrap_or_default();
         window.push(sample);
-        prune_window(&mut window, WINDOW_ARC_GRAINS * tolerance);
+        prune_window(&mut window, WINDOW_ARC_TOLERANCES * tolerance);
         // The estimator: the window's smoothed trace, wanted only for where it
         // is going. Finished, so the heading is the one a pen-up would have
         // settled on rather than the mid-solve one.
@@ -1014,7 +1014,7 @@ impl Session {
     /// The hover window, surrendered as a stroke's run-up (§6.2) — empty when
     /// there is none, or when it does not lead up to `press`: a window whose
     /// newest report sits farther from the press than the window's own scale
-    /// (the same grain-derived arc that bounds it, [`WINDOW_ARC_GRAINS`]) is
+    /// (the same tolerance-derived arc that bounds it, [`WINDOW_ARC_TOLERANCES`]) is
     /// history from somewhere else — a teleported pointer, a trail gone stale —
     /// and evidence about nothing this stroke does.
     fn take_hover_context(&mut self, press: Vec2, tolerance: f32) -> Vec<InputSample> {
@@ -1024,7 +1024,7 @@ impl Session {
         let near = h
             .window
             .last()
-            .is_some_and(|last| last.pos.distance(press) <= WINDOW_ARC_GRAINS * tolerance);
+            .is_some_and(|last| last.pos.distance(press) <= WINDOW_ARC_TOLERANCES * tolerance);
         if near { h.window } else { Vec::new() }
     }
 
@@ -1087,23 +1087,23 @@ struct HoverStroke {
     ordinal: u64,
 }
 
-/// How much motion the estimator's window may span, in **grains** — units of
-/// the report's own tolerance ([`Session::hover_to`]).
+/// How much motion the estimator's window may span, in multiples of the input
+/// **tolerance** — the report's own positional resolution ([`Session::hover_to`]).
 ///
-/// Denominated on the grain because the grain is what the window exists to
-/// average away: this many grains of recent motion hold the heading to roughly
+/// Denominated on the tolerance because the tolerance is what the window exists to
+/// average away: this many tolerances of recent motion hold the heading to roughly
 /// `atan(1/this)` of noise, whatever the device and whatever the zoom — which
 /// is also why it is the engine's to derive rather than the frontend's to
 /// state, unlike the reach: nothing about it is a fact about the screen.
-const WINDOW_ARC_GRAINS: f32 = 40.0;
+const WINDOW_ARC_TOLERANCES: f32 = 40.0;
 
 /// Most reports the hover window keeps ([`Session::hover_to`]).
 ///
-/// The grain-derived arc ([`WINDOW_ARC_GRAINS`]) is the extent; this is the
+/// The tolerance-derived arc ([`WINDOW_ARC_TOLERANCES`]) is the extent; this is the
 /// cost ceiling behind it. Every accepted report refits the whole window, so
 /// this bounds what a report can cost — and it binds only where motion is
-/// dense at the grain (a pen crawling pitch by pitch), where the window is
-/// this many *grains* long and the heading has long since settled.
+/// dense at the tolerance (a pen crawling pitch by pitch), where the window is
+/// this many *tolerances* long and the heading has long since settled.
 const HOVER_WINDOW: usize = 32;
 
 /// Prune `window` from its old end until its arc fits `arc` and its count

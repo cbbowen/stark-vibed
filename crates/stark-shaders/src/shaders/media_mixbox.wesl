@@ -53,7 +53,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let dim = vec2<i32>(textureDimensions(comp_aux));
 
     let cc = textureLoad(comp_color, p, 0);    // (concentrations · coverage, coverage)
-    let vis = paint_vis_at(p, dim);            // accumulated coverage, weave-corrected
+    let vis = paint_vis_at(p, dim);            // accumulated coverage, substrate-corrected
     let rr = textureLoad(comp_resid, p, 0);     // (residual · coverage, coverage)
     let conc = cc.rgb / max(cc.a, COVERAGE_EPS); // un-premultiply coverage → concentrations
     // Un-premultiplied by the *color's* coverage, which is the same number the

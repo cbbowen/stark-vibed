@@ -86,12 +86,12 @@ pub struct Case {
     pub what: &'static str,
     /// Viewport. The default [`SIZE`] unless the mark is too big to fit it.
     pub view: Extent2,
-    /// Everything the canvas needs before the stroke — ground, undercoat, surface,
+    /// Everything the canvas needs before the stroke — substrate, undercoat, substrate,
     /// media params, imported assets — returning the brush to paint with.
     ///
     /// One closure rather than a pile of `Option` fields: what a case needs laid down
     /// first is usually inseparable from the brush that will work on it (a smear needs
-    /// something to smear; a toothed tip needs a ground with a weave), and splitting
+    /// something to smear; a toothed tip needs a substrate with a substrate), and splitting
     /// them invites a case that asks for one without the other.
     ///
     /// The `Vec2` is where the case is being drawn — added to **every canvas
@@ -214,16 +214,16 @@ fn undercoat(engine: &mut Engine, at: Vec2) {
     }
 }
 
-/// Put the linen weave on the canvas and light it, for the cases about tooth (§6.4).
-/// `surface_strength` defaults to 0, which leaves the relief there for paint to sit in
+/// Put the linen substrate on the canvas and light it, for the cases about tooth (§6.4).
+/// `substrate_strength` defaults to 0, which leaves the relief there for paint to sit in
 /// but keeps the light from embossing it — so a case about the grain has to ask.
-fn linen_ground(engine: &mut Engine) {
+fn linen_substrate(engine: &mut Engine) {
     let linen = engine
-        .import_surface(&stark_testdata::assets::linen())
+        .import_substrate(&stark_testdata::assets::linen())
         .expect("the linen height map imports");
-    engine.process(DocCommand::SetSurface(linen));
+    engine.process(DocCommand::SetSubstrate(linen));
     engine.process(ViewCommand::SetMediaParams(stark_engine::MediaParams {
-        surface_strength: 0.6,
+        substrate_strength: 0.6,
         ..Default::default()
     }));
 }
@@ -273,10 +273,10 @@ fn centred(pts: &[[f32; 2]]) -> Vec<InputSample> {
 }
 
 /// How many pointer reports a pen leaving the tablet is modelled as, and how far the
-/// nib slides across the glass while it happens.
+/// pen tip slides across the glass while it happens.
 ///
 /// Both are what a tablet actually delivers rather than a worst case picked to fail:
-/// a pen at 133 Hz spends 40-60 ms coming out of range, and the hand rolls the nib a
+/// a pen at 133 Hz spends 40-60 ms coming out of range, and the hand rolls the tip a
 /// fraction of a pixel over that. **Under one canvas px of travel carrying the whole
 /// pressure range** is the shape of the thing, and it is the shape rather than either
 /// number that matters — a release is an attribute change with no path under it.
@@ -287,11 +287,11 @@ const LIFT_DRIFT: f32 = 0.6;
 ///
 /// A tablet does not stop reporting when the hand starts to leave: it keeps sampling
 /// through the release, and those last reports carry the pressure down to zero across
-/// [`LIFT_DRIFT`] px of nib travel. So they are, in the engine's own terms, a run of
+/// [`LIFT_DRIFT`] px of tip travel. So they are, in the engine's own terms, a run of
 /// segments the swept integral must integrate over nothing — §6.2's deposit is a
 /// definite integral over travel, and there is none here.
 ///
-/// The tail continues in the direction the nib was last moving, because that is what a
+/// The tail continues in the direction the tip was last moving, because that is what a
 /// hand coming off does; a click has no such direction and gets `+x`, which cannot
 /// matter for the same reason `gpu::stroke::segments::sample_at` gives — there is
 /// nothing to lead in.
@@ -299,7 +299,7 @@ pub fn lifted(samples: &[InputSample]) -> Vec<InputSample> {
     lift_tail(samples, true)
 }
 
-/// **The control for [`lifted`]**: the identical tail, with the nib still down.
+/// **The control for [`lifted`]**: the identical tail, with the tip still down.
 ///
 /// Six-tenths of a pixel is not nothing, and the fit is entitled to notice it — the arc
 /// length it divides by grows, the endpoint it pins moves, and on a path described by
@@ -337,7 +337,7 @@ fn lift_tail(samples: &[InputSample], release: bool) -> Vec<InputSample> {
                 last.pressure
             },
             // Held, not faded: a pen's tilt is where the hand is holding it and does
-            // not go anywhere as the nib comes off. Only the pressure is leaving.
+            // not go anywhere as the tip comes off. Only the pressure is leaving.
             tilt: last.tilt,
             time: last.time + f as f64 * 0.05,
         });
@@ -612,16 +612,16 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "tooth_arc",
-        what: "A round tip on a woven ground around the same half turn — the \
+        what: "A round tip on a woven substrate around the same half turn — the \
                counter-intuitive case, and the one the suite had no cover for at all. A \
                disc has no orientation, so the intuition is that it cannot care which \
-               way it travels; it can, because `rise_ahead` reads the weave's gradient \
+               way it travels; it can, because `rise_ahead` reads the substrate's gradient \
                *along* the segment (§6.4), so the grain a stroke prints turns with the \
                cut. Loosening the tangent bound to what `position` allows moves this by \
                a worst 50 levels, which is what the coverage claim is worth.",
         view: SIZE,
         prepare: |e, _| {
-            linen_ground(e);
+            linen_substrate(e);
             let mut b = smear_brush(45.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
             b.tooth = 0.9;

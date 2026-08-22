@@ -7,11 +7,11 @@
 //!
 //! The asymmetry is §6.4's. An unresolved **brush** degrades to the round tip and
 //! the stroke is still visibly a stroke, so after [`BRUSH_ATTEMPTS`] rounds the
-//! fetch gives up and lets the action through. An unresolved **ground** has no
-//! acceptable fallback: applying the `SetSurface` against `Flat` bakes a smooth
-//! deposit into stored tiles that no later arrival un-bakes. So a ground is never
+//! fetch gives up and lets the action through. An unresolved **substrate** has no
+//! acceptable fallback: applying the `SetSubstrate` against `Flat` bakes a smooth
+//! deposit into stored tiles that no later arrival un-bakes. So a substrate is never
 //! given up on — the action simply waits, and nothing else waits with it. Strokes
-//! that merged ahead of it are replayed against the real ground when it lands,
+//! that merged ahead of it are replayed against the real substrate when it lands,
 //! because an action arriving out of order is exactly what makes the timeline
 //! resync (§12.6).
 
@@ -29,7 +29,7 @@ use crate::session::AssetNeed;
 use crate::waitlist::Waitlist;
 
 /// Rounds spent fetching a *brush* image before giving up and letting the stroke
-/// draw with the round tip. A ground is never given up on.
+/// draw with the round tip. A substrate is never given up on.
 const BRUSH_ATTEMPTS: u32 = 5;
 
 /// The first delay between fetch rounds — a source may still be fetching the blob
@@ -51,7 +51,7 @@ const LOCAL_GRACE: Duration = Duration::from_secs(3);
 /// Where content comes from — and the seam the policy above is tested through.
 ///
 /// Everything in this file is timing and giving up: how many rounds a brush gets,
-/// that a ground gets unlimited ones, how long the frontend has to keep a promise,
+/// that a substrate gets unlimited ones, how long the frontend has to keep a promise,
 /// how the backoff widens, which peers are asked and in what order. None of it is
 /// reachable through two real endpoints, because a test cannot ask a live peer to
 /// fail four times and then succeed, or to be gone for the first two rounds and
@@ -81,7 +81,7 @@ pub(crate) struct Resolver<S> {
 
 /// How a fetch ended, which is three things and not two: giving up releases the
 /// parked actions to their fallback, and being shut down must not, because there
-/// is no longer anyone to release them to and a ground's fallback is a wrong
+/// is no longer anyone to release them to and a substrate's fallback is a wrong
 /// picture (§6.4).
 enum Outcome {
     Got(Bytes),
@@ -105,14 +105,14 @@ impl<S: ContentSource> Resolver<S> {
     }
 
     /// Fetch missing content, mirror it and record its transfer hash (so this peer
-    /// can serve and announce it onward), surface it to the engine, and release
+    /// can serve and announce it onward), substrate it to the engine, and release
     /// every action parked behind it.
     ///
     /// `origin` authored the message and so definitely holds the content; `from`
     /// is the neighbour that delivered it, which may not.
     pub async fn resolve(self, need: AssetNeed, hash: Hash, origin: EndpointId, from: EndpointId) {
         // First refusal to the frontend, when it said it ships with this content: a
-        // ground the app bundles is a read from its own files, not megabytes off a
+        // substrate the app bundles is a read from its own files, not megabytes off a
         // peer (§12.4). Asking costs one event and a wait on an action that is parked
         // either way; being ignored costs `LOCAL_GRACE` and then behaves exactly as it
         // would have.
@@ -132,12 +132,12 @@ impl<S: ContentSource> Resolver<S> {
 
         let attempts = match need {
             AssetNeed::Brush(_) => Some(BRUSH_ATTEMPTS),
-            // A ground and a picture are both never given up on, for one reason
-            // stated two ways: neither has an acceptable fallback. A ground's would
+            // A substrate and a picture are both never given up on, for one reason
+            // stated two ways: neither has an acceptable fallback. A substrate's would
             // bake a smooth deposit into tiles no later arrival un-bakes (§6.4); a
             // picture has no degraded form at all, so giving up would release a
             // `PlaceImage` that adds an empty layer and calls it done (§23).
-            AssetNeed::Ground(_) | AssetNeed::Picture(_) => None,
+            AssetNeed::Substrate(_) | AssetNeed::Picture(_) => None,
         };
         match self.fetch(hash, attempts, origin, from).await {
             // Recording the transfer hash with the bytes is what lets this peer
@@ -148,7 +148,7 @@ impl<S: ContentSource> Resolver<S> {
                 tracing::warn!("{need:?} unavailable; the stroke will draw with the round tip");
                 self.waitlist.abandoned(need);
             }
-            // Deliberately nothing: the session is over, and for a ground the
+            // Deliberately nothing: the session is over, and for a substrate the
             // "fallback" would be the flat stand-in this all exists to avoid.
             Outcome::Cancelled => tracing::debug!(?need, "resolver stopped with the session"),
         }
@@ -197,8 +197,8 @@ impl<S: ContentSource> Resolver<S> {
     /// (`Mirror::seed_blobs`), so content whose author has since left is still held
     /// by everyone who was there when it arrived.
     ///
-    /// That matters most for a ground, because a ground is never given up on.
-    /// Asking only the two peers that named it meant a `SetSurface` whose author
+    /// That matters most for a substrate, because a substrate is never given up on.
+    /// Asking only the two peers that named it meant a `SetSubstrate` whose author
     /// and forwarder had both left waited for the life of the session, dialling two
     /// dead endpoints on a widening backoff, while the bytes sat on every other
     /// member.
@@ -313,7 +313,7 @@ mod tests {
                 lamport,
                 actor: ActorId(1),
             },
-            kind: ActionKind::SetBackground(Srgb::new([0.0; 3])),
+            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
         }
     }
 
@@ -362,8 +362,8 @@ mod tests {
         AssetNeed::Brush(AssetId([1; 32]))
     }
 
-    fn ground() -> AssetNeed {
-        AssetNeed::Ground(AssetId([2; 32]))
+    fn substrate() -> AssetNeed {
+        AssetNeed::Substrate(AssetId([2; 32]))
     }
 
     fn payload() -> (Bytes, Hash) {
@@ -402,15 +402,15 @@ mod tests {
         assert_eq!(events.len(), 1, "and no asset, because none arrived");
     }
 
-    /// The other half of the asymmetry (§6.4): a ground has no acceptable
+    /// The other half of the asymmetry (§6.4): a substrate has no acceptable
     /// fallback, so it waits — for as long as it takes, past any number of rounds
     /// a brush would have given up after.
     #[tokio::test(start_paused = true)]
-    async fn a_ground_waits_however_long_it_takes() {
+    async fn a_substrate_waits_however_long_it_takes() {
         let mut h = harness(&[]);
         let (bytes, hash) = payload();
         assert!(matches!(
-            h.waitlist.claim(ground(), &action(1)),
+            h.waitlist.claim(substrate(), &action(1)),
             Admit::Fetch
         ));
         // Silent for four times as many rounds as a brush is allowed.
@@ -419,33 +419,33 @@ mod tests {
 
         h.resolver
             .clone()
-            .resolve(ground(), hash, endpoint(1), endpoint(1))
+            .resolve(substrate(), hash, endpoint(1), endpoint(1))
             .await;
 
         let events = drain(&mut h.events);
         assert!(
-            matches!(&events[0], RemoteEvent::Asset { need, .. } if *need == ground()),
-            "the ground arrives before what waited on it"
+            matches!(&events[0], RemoteEvent::Asset { need, .. } if *need == substrate()),
+            "the substrate arrives before what waited on it"
         );
         assert!(matches!(&events[1], RemoteEvent::Action(a) if a.id == action(1).id));
     }
 
     /// The swarm holds what the author had: every member seeded its blob store
-    /// from the snapshot it joined on. Without this a ground whose author and
+    /// from the snapshot it joined on. Without this a substrate whose author and
     /// forwarder have both left waits out the session while the bytes sit on
     /// everyone else.
     #[tokio::test(start_paused = true)]
     async fn the_swarm_is_asked_after_the_two_peers_that_named_the_content() {
         let mut h = harness(&[]);
         let (bytes, hash) = payload();
-        h.waitlist.claim(ground(), &action(1));
+        h.waitlist.claim(substrate(), &action(1));
         // The author and the forwarder are gone. A third member was there.
         h.fake.holding(endpoint(3), &bytes, 0);
         h.neighbors.lock().unwrap().insert(endpoint(3));
 
         h.resolver
             .clone()
-            .resolve(ground(), hash, endpoint(1), endpoint(2))
+            .resolve(substrate(), hash, endpoint(1), endpoint(2))
             .await;
 
         assert_eq!(
@@ -467,24 +467,27 @@ mod tests {
         );
     }
 
-    /// A ground retries without limit, so the stop signal is the only thing that
+    /// A substrate retries without limit, so the stop signal is the only thing that
     /// ends it — and it must end it without releasing the parked action, whose
     /// fallback is the flat stand-in.
     #[tokio::test(start_paused = true)]
-    async fn shutting_down_stops_a_ground_that_would_retry_forever() {
+    async fn shutting_down_stops_a_substrate_that_would_retry_forever() {
         let mut h = harness(&[]);
         let (_, hash) = payload();
-        h.waitlist.claim(ground(), &action(1));
+        h.waitlist.claim(substrate(), &action(1));
 
         let resolving = tokio::spawn(h.resolver.clone().resolve(
-            ground(),
+            substrate(),
             hash,
             endpoint(1),
             endpoint(1),
         ));
         // Let it get well into the backoff, then end the session.
         tokio::time::sleep(Duration::from_secs(120)).await;
-        assert!(!resolving.is_finished(), "still trying, as a ground does");
+        assert!(
+            !resolving.is_finished(),
+            "still trying, as a substrate does"
+        );
         h.cancel.stop();
 
         tokio::time::timeout(Duration::from_secs(1), resolving)
@@ -501,26 +504,26 @@ mod tests {
     /// the entire point of it (§12.4).
     #[tokio::test(start_paused = true)]
     async fn a_kept_promise_costs_no_fetch() {
-        let mut h = harness(&[ground().content()]);
+        let mut h = harness(&[substrate().content()]);
         let (bytes, hash) = payload();
-        h.waitlist.claim(ground(), &action(1));
+        h.waitlist.claim(substrate(), &action(1));
 
         let waitlist = h.waitlist.clone();
         let supplied = bytes.clone();
         let resolving = tokio::spawn(h.resolver.clone().resolve(
-            ground(),
+            substrate(),
             hash,
             endpoint(1),
             endpoint(1),
         ));
         // What the frontend does on `ResolveLocally`, inside the grace period.
         tokio::time::sleep(LOCAL_GRACE / 2).await;
-        waitlist.imported(ground(), supplied, hash);
+        waitlist.imported(substrate(), supplied, hash);
         resolving.await.expect("resolver");
 
         assert_eq!(h.fake.asked(), Vec::new(), "nobody was dialled");
         let events = drain(&mut h.events);
-        assert!(matches!(&events[0], RemoteEvent::ResolveLocally { need } if *need == ground()));
+        assert!(matches!(&events[0], RemoteEvent::ResolveLocally { need } if *need == substrate()));
         assert!(
             matches!(&events[1], RemoteEvent::Action(a) if a.id == action(1).id),
             "and the import released what was parked"

@@ -18,7 +18,7 @@ use stark_model::document::{
     BlendMode, GuideId, LayerId, MattePaint, MatteRegion, PerspectiveGuide, Place,
 };
 use stark_model::geom::{TileCoord, Vec2};
-use stark_model::{SurfaceId, SurfaceScale};
+use stark_model::{SubstrateId, SubstrateScale};
 
 /// Inclusive tile-coordinate bounding box of all populated tiles (§6),
 /// i.e. the explored extent of the infinite canvas.
@@ -123,35 +123,35 @@ pub struct DocState {
     /// An absent entry is the unrestricted selection, so an actor who never selects
     /// costs nothing and a solo document has at most one entry.
     selections: HashTrieMap<ActorId, Selection>,
-    /// The physical canvas surface (§6.4). Document state: which canvas
+    /// The physical canvas substrate (§6.4). Document state: which canvas
     /// a piece was painted on is part of what the document *is*, it is saved, and
-    /// reopening on a different weave would be a different painting.
+    /// reopening on a different substrate would be a different painting.
     ///
     /// Read by the media pass (§6.3) *and* by the deposition tooth (§6.4) — which is
     /// what having logged it bought. A switch is an ordinary action, so a stroke
-    /// deposits against the ground the log stood on when it was made, on replay and
+    /// deposits against the substrate the log stood on when it was made, on replay and
     /// on a peer alike, and no history rule had to be invented to say so.
-    pub surface: SurfaceId,
-    /// **How large that weave is laid** (§6.4) — the other half of the same fact.
+    pub substrate: SubstrateId,
+    /// **How large that substrate is laid** (§6.4) — the other half of the same fact.
     ///
-    /// Document state on `surface`'s own argument, and it is not a view setting for
-    /// the reason `surface` is not: the tooth reads the ground's rise over a reach in
+    /// Document state on `substrate`'s own argument, and it is not a view setting for
+    /// the reason `substrate` is not: the tooth reads the substrate's rise over a reach in
     /// canvas px, so the scale decides what a stroke *deposits*, and a deposit is
-    /// stored. A stroke replayed from before a change bites the weave at the size it
+    /// stored. A stroke replayed from before a change bites the substrate at the size it
     /// was laid at when it was made.
-    pub surface_scale: SurfaceScale,
-    /// The canvas substrate color — the ground the paint sits on — as straight
+    pub substrate_scale: SubstrateScale,
+    /// The canvas substrate color — the substrate the paint sits on — as straight
     /// sRGB (§15.5).
     ///
-    /// Document state on the same argument §6.4 makes for the weave: which ground a
+    /// Document state on the same argument §6.4 makes for the substrate: which substrate a
     /// piece was painted on is part of what it *is*, and it must be saved. A view
     /// setting the frontend owned would leave the paper color of a painting stored
     /// nowhere at all.
     ///
     /// Distinct from a matte layer, which is a slab of opaque *paint*: the
-    /// substrate sits under everything, is lit, and the canvas weave shows through
+    /// substrate sits under everything, is lit, and the canvas substrate shows through
     /// it (the media pass composites paint over it, §6.3).
-    pub background: Srgb,
+    pub substrate_color: Srgb,
     /// The **drawing guides** the artist has set up, in roster order (§20.5).
     ///
     /// Document state on the argument the substrate above makes, and it took a
@@ -165,7 +165,7 @@ pub struct DocState {
     /// is not here: it lives beside the pan and the zoom in `Session`, and the two
     /// are combined into one reading of the roster by `Engine::observe` (§20.5).
     ///
-    /// Private where `surface` and `background` are `pub`, for
+    /// Private where `substrate` and `background` are `pub`, for
     /// [`bounds`](Self::bounds)' reason rather than theirs: those two are a value,
     /// this is a **list with an invariant** — no two entries share an id — and the
     /// insert that holds it is the only way in.
@@ -199,26 +199,26 @@ pub struct Guide {
     pub camera: PerspectiveGuide,
 }
 
-/// The default substrate: a light neutral grey ground. Neutral on purpose — an HDR
-/// lights the scene warm, and a warm ground on top of that reads noticeably red.
+/// The default substrate: a light neutral grey substrate. Neutral on purpose — an HDR
+/// lights the scene warm, and a warm substrate on top of that reads noticeably red.
 /// Grey rather than near-white so paint has somewhere to go in *both* directions:
 /// a highlight can read lighter than the bare canvas.
-pub const DEFAULT_BACKGROUND: Srgb = Srgb::new([0.85, 0.85, 0.85]);
+pub const DEFAULT_SUBSTRATE_COLOR: Srgb = Srgb::new([0.85, 0.85, 0.85]);
 
 /// The canvas a document starts on when nobody says otherwise (§6.4): `Flat`, the
-/// one ground that is procedural.
+/// one substrate that is procedural.
 ///
-/// **Core cannot name a woven ground here.** Grounds are content-addressed (§6.4) — a
-/// `SurfaceId` *is* a height map — and the engine embeds no image bytes, so a default
+/// **Core cannot name a woven substrate here.** Substrates are content-addressed (§6.4) — a
+/// `SubstrateId` *is* a height map — and the engine embeds no image bytes, so a default
 /// of linen would be core naming an image it cannot produce. A fresh document would
 /// claim to be on linen while the registry rendered the flat stand-in until the
-/// frontend's fetch landed: the "named ground, absent bytes" gap that diverges peers.
+/// frontend's fetch landed: the "named substrate, absent bytes" gap that diverges peers.
 ///
-/// So the choice of opening ground belongs to whoever holds the bytes: the frontend
+/// So the choice of opening substrate belongs to whoever holds the bytes: the frontend
 /// imports linen at startup and opens the document on it
 /// (`Engine::new_document`), and a document that never gets told starts smooth
 /// — which is at least *true*.
-pub const DEFAULT_SURFACE: SurfaceId = SurfaceId::Flat;
+pub const DEFAULT_SUBSTRATE: SubstrateId = SubstrateId::Flat;
 
 impl DocState {
     /// An empty document with a single starting layer and nothing masked.
@@ -232,9 +232,9 @@ impl DocState {
             layers: Vector::new(),
             bounds: CanvasBounds::default(),
             selections: HashTrieMap::new(),
-            surface: DEFAULT_SURFACE,
-            surface_scale: SurfaceScale::NATURAL,
-            background: DEFAULT_BACKGROUND,
+            substrate: DEFAULT_SUBSTRATE,
+            substrate_scale: SubstrateScale::NATURAL,
+            substrate_color: DEFAULT_SUBSTRATE_COLOR,
             guides: Vector::new(),
         }
         .insert_layer(id, None, None)
@@ -257,40 +257,40 @@ impl DocState {
         self.bounds
     }
 
-    /// The same document on a different canvas surface (§6.4).
-    pub fn with_surface(&self, surface: SurfaceId) -> Self {
+    /// The same document on a different canvas substrate (§6.4).
+    pub fn with_substrate(&self, substrate: SubstrateId) -> Self {
         Self {
-            surface,
+            substrate,
             ..self.clone()
         }
     }
 
-    /// **The canvas surface as the renderer asks for it** (§6.4): the weave and the
+    /// **The canvas substrate as the renderer asks for it** (§6.4): the substrate and the
     /// size it is laid at, together.
     ///
     /// The two are one fact and are read as one everywhere downstream — the deposit,
     /// the media pass, the registry's key — so putting them together happens here and
-    /// not at each of them. A `surface` read without its scale beside it is the shape
+    /// not at each of them. A `substrate` read without its scale beside it is the shape
     /// of the bug this method exists to make hard to write.
-    pub fn ground(&self) -> crate::gpu::surface::Ground {
-        crate::gpu::surface::Ground {
-            id: self.surface,
-            scale: self.surface_scale,
+    pub fn substrate(&self) -> crate::gpu::substrate::Substrate {
+        crate::gpu::substrate::Substrate {
+            id: self.substrate,
+            scale: self.substrate_scale,
         }
     }
 
-    /// The same document with its weave laid at a different size (§6.4).
-    pub fn with_surface_scale(&self, surface_scale: SurfaceScale) -> Self {
+    /// The same document with its substrate laid at a different size (§6.4).
+    pub fn with_substrate_scale(&self, substrate_scale: SubstrateScale) -> Self {
         Self {
-            surface_scale,
+            substrate_scale,
             ..self.clone()
         }
     }
 
     /// The same document on a different substrate color (§15.5).
-    pub fn with_background(&self, background: Srgb) -> Self {
+    pub fn with_substrate_color(&self, substrate_color: Srgb) -> Self {
         Self {
-            background,
+            substrate_color,
             ..self.clone()
         }
     }
@@ -559,7 +559,7 @@ impl DocState {
     }
 
     /// Insert a matte layer the same way — §15.2. A frame is one of
-    /// these on top of the stack; a ground ([`MatteRegion::Everything`]) is one
+    /// these on top of the stack; a substrate ([`MatteRegion::Everything`]) is one
     /// at the bottom, which is why this takes the full [`Place`] where the
     /// other inserts keep the two-state anchor (§15.5).
     ///
@@ -977,9 +977,9 @@ impl DocState {
             layers,
             bounds,
             selections: self.selections.clone(),
-            surface: self.surface,
-            surface_scale: self.surface_scale,
-            background: self.background,
+            substrate: self.substrate,
+            substrate_scale: self.substrate_scale,
+            substrate_color: self.substrate_color,
             guides: self.guides.clone(),
         }
     }

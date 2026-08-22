@@ -117,20 +117,20 @@ fn an_invisible_layer_does_not_repaint_the_one_below() {
     );
 }
 
-/// A render at a size other than the **surface's** builds its own pass-A
+/// A render at a size other than the **substrate's** builds its own pass-A
 /// attachments instead of resizing the cached pair (`Compositor::render`) — which is
 /// what keeps an export, or the navigator's per-edit miniature, from evicting the
 /// screen's set and forcing it to be rebuilt on the very next frame.
 ///
 /// The two paths therefore have to be equivalent, or what a file gets would depend
 /// on how large the window happened to be when it was written. Both engines here
-/// export the same 320×224 view of the same painting; only the surface they were
+/// export the same 320×224 view of the same painting; only the substrate they were
 /// built on differs, so one goes through its own attachments and the other through
 /// the cached ones. The **Multiply** layer is deliberate: a non-normal blend mode is
 /// what brings the scratch pair the blend passes bounce through into it, and that
 /// pair is transient for the same reason the targets are.
 #[test]
-fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
+fn an_off_size_render_matches_one_at_the_substrates_own_size() {
     use stark_engine::command::ViewCommand;
     use stark_engine::{Background, ExportScale, Offscreen, Rendered};
     use stark_model::document::{BlendMode, MattePaint, MatteRegion, Place};
@@ -176,7 +176,7 @@ fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
             paint: MattePaint::Solid(Srgb::new([0.0, 0.0, 0.0])),
         });
         let frame = engine.observe().layers.last().expect("matte").id;
-        // The view is the export's, so nothing about the surface's size can reach
+        // The view is the export's, so nothing about the substrate's size can reach
         // the picture other than through the attachments this is testing.
         engine.process(ViewCommand::CenterOn(Vec2::ZERO));
         let image = pollster::block_on(
@@ -194,11 +194,11 @@ fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
         Some(image)
     };
 
-    // Its own attachments (the surface is smaller than the export)…
+    // Its own attachments (the substrate is smaller than the export)…
     let Some(transient) = built(Extent2::new(140, 100)) else {
         return;
     };
-    // …and the cached ones (the surface *is* the export's size).
+    // …and the cached ones (the substrate *is* the export's size).
     let Some(cached) = built(exported) else {
         return;
     };
@@ -207,7 +207,7 @@ fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
     let (frac, worst) = diff_fraction(&transient, &cached);
     assert!(
         worst <= 2,
-        "an off-size render came out differently from one at the surface's own size \
+        "an off-size render came out differently from one at the substrate's own size \
          ({frac:.4} of pixels differ, worst {worst})"
     );
 }
@@ -316,16 +316,16 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
     );
 
     // And a new document in the other color space, which rebuilds the pipeline the
-    // slot's attachments belong to. Same surface, so nothing else moves with it.
+    // slot's attachments belong to. Same substrate, so nothing else moves with it.
     //
     // Only where there *is* another one: without the `mixbox` feature Oklab is the
     // whole set, and "switching" to the space already open would rebuild nothing, so
     // the claim has nothing left to make rather than a weaker version of itself.
     #[cfg(feature = "mixbox")]
     {
-        let surface = engine.surface();
+        let substrate = engine.substrate();
         engine
-            .new_document(ColorSpaceId::Mixbox, surface)
+            .new_document(ColorSpaceId::Mixbox, substrate)
             .expect("the `mixbox` feature is on in this build");
         framed(&mut engine);
         same(
@@ -349,7 +349,7 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
 ///
 /// So the shape here is the one that matters: **two renders through one slot**, the
 /// second with more blend groups than the first. `render_to_image` takes a fresh
-/// `Offscreen` every call and therefore cannot see this; the surface and the
+/// `Offscreen` every call and therefore cannot see this; the substrate and the
 /// navigator, which keep theirs for the life of the app, are exactly where it bites.
 #[test]
 fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {

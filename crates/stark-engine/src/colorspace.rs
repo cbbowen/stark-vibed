@@ -157,7 +157,7 @@ fn additive() -> wgpu::BlendState {
 /// The default perceptual color space: Oklab `(L, a, b)` premultiplied by the
 /// paint's *opacity* (in the color alpha), with paint height in a one-channel aux
 /// (§6.5/§6.1). The media pass derives visible alpha from opacity × thickness,
-/// where thickness is the difference between paint height and surface height.
+/// where thickness is the difference between paint height and substrate height.
 pub struct OkLabColorSpace;
 
 impl ColorSpace for OkLabColorSpace {

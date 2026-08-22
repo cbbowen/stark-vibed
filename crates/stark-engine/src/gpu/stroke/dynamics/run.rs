@@ -48,7 +48,7 @@ use stark_shaders::mirror::dynamics::binding as b;
 use stark_shaders::mirror::composite::Instance as TileInstance;
 
 /// Workgroup counts for the reservoir half of `exchange`, which is dispatched over
-/// these *plus* the slot's footprint groups on x, since the snapshot shares its
+/// these *plus* the slot's extent groups on x, since the snapshot shares its
 /// grid.
 ///
 /// A constant, not per-dispatch data: the reservoir is [`BRUSH_RES`]² whatever the
@@ -60,7 +60,7 @@ impl StrokeRenderer {
     /// swept-exchange loop** (§6.2): composite the base under it into a 1:1
     /// region, then walk it *in order* on the GPU — the canvas-side exchange swept per
     /// flattened segment through the prefix-τ integral (the same definite-integral
-    /// footprint as the plain deposit), the 2-D tool reservoir taking the complement
+    /// extent as the plain deposit), the 2-D tool reservoir taking the complement
     /// of it over the same segment — and slice the evolved region back into fresh CoW
     /// tiles.
     ///
@@ -122,7 +122,7 @@ impl StrokeRenderer {
         // sliced per piece rather than re-derived inside each: the chunker must
         // measure every piece **with its windows** — a window can reach back a
         // quantum before the segment it fires after, which for a piece's first
-        // segment is ground no segment box covers ([`chunk_segments`]).
+        // segment is substrate no segment box covers ([`chunk_segments`]).
         let fires = bleed_fires(rec.brush.dynamics.bleed, &segments);
         // The pen-up settle (§6.2) belongs to the range that reaches the *stroke's* end,
         // and within it to the last piece — which is the same condition that says there
@@ -207,7 +207,7 @@ struct DynamicsRun<'a> {
     /// Everything both render paths read off the record and the scene, resolved once
     /// (see [`StrokeConstants`](super::super::StrokeConstants)).
     consts: super::super::StrokeConstants,
-    /// Functions of the brush alone, so shared by every piece: the swept-footprint
+    /// Functions of the brush alone, so shared by every piece: the swept-extent
     /// prefix-τ bind group (group 1 of `bake`/`deposit` — the same texture the swept
     /// fast path samples), the plain coverage mask the reservoir texels weight by,
     /// and the color-dynamics field the `add` paint is jittered against.
@@ -248,10 +248,10 @@ impl<'a> DynamicsRun<'a> {
     ) -> Self {
         let device = &r.ctx.device;
         let mut scope = r.scratch.scope(&r.ctx, "stark dynamics stroke");
-        let consts = r.stroke_constants(rec, scene.surface);
+        let consts = r.stroke_constants(rec, scene.substrate);
 
-        // The brush's swept-footprint prefix-τ (shared with the fast path) and its
-        // plain coverage mask (the reservoir texels' own footprint weights).
+        // The brush's swept-extent prefix-τ (shared with the fast path) and its
+        // plain coverage mask (the reservoir texels' own extent weights).
         let prefix_view = r.tips.prefix_view(scene.assets, &rec.brush);
         let prefix_bg = desc::bind_group_for(
             device,
@@ -526,7 +526,7 @@ impl<'a> DynamicsRun<'a> {
                 tol: self.tol,
                 region_origin,
                 consts: &self.consts,
-                surface: self.scene.surface,
+                substrate: self.scene.substrate,
             };
             let plan = dynamics_plan(&ctx, segments, fires, settle);
             let under = self.snapshot_scratch(plan.dsize);
@@ -740,7 +740,7 @@ impl<'a> DynamicsRun<'a> {
         }
     }
 
-    /// The footprint snapshot scratch: the copy that gives `deposit` and `settle`
+    /// The extent snapshot scratch: the copy that gives `deposit` and `settle`
     /// something to read while they storage-write the region.
     ///
     /// `size` is the plan's own [`dsize`](super::plan::DynamicsPlan::dsize) — the
@@ -788,7 +788,7 @@ impl<'a> DynamicsRun<'a> {
             .1
     }
 
-    /// The footprint-cell scratch (§6.2): where `cell_hoist` leaves the per-cell
+    /// The extent-cell scratch (§6.2): where `cell_hoist` leaves the per-cell
     /// means for `deposit_coarse` to read back. Sized by the same structural-fit
     /// relation the snapshot scratch uses — [`cell_scratch_size`] of the piece's own
     /// `dsize`, which `cell_geometry` asserted every slot's hoist grid against — and
@@ -906,7 +906,7 @@ impl<'a> DynamicsRun<'a> {
                 b::REGION_AUX_W => view(&region.aux),
                 b::REGION_RESID_W => opt(region.resid.as_ref(), "region"),
                 b::SEL_MASK => view(&region.sel_mask),
-                b::SURFACE_TEX => view(&self.scene.surface.view),
+                b::SUBSTRATE_TEX => view(&self.scene.substrate.view),
                 // The real scratch on a piece that fires, the kit's 1×1 otherwise — a
                 // painting segment carries `lambda_bleed = 0` and never reads it.
                 b::BLEED_W => view(bleed.unwrap_or(&kit.bleed_placeholder)),
@@ -1141,10 +1141,10 @@ impl<'a> DynamicsRun<'a> {
                     // half, so the next segment's bake sees a tool that has actually
                     // travelled and reloaded.
                     //
-                    // The footprint `snapshot` rides in the tail of this same grid: it
+                    // The extent `snapshot` rides in the tail of this same grid: it
                     // depends on nothing the exchange writes and the deposit needs
                     // both, so a barrier between them would buy no ordering at all.
-                    // Hence the widened x — reservoir groups first, footprint
+                    // Hence the widened x — reservoir groups first, extent
                     // groups after — and a y tall enough for the taller of the two
                     // (`dynamics.wesl::exchange`).
                     cpass.set_pipeline(&kit.exchange_pipeline);
@@ -1155,7 +1155,7 @@ impl<'a> DynamicsRun<'a> {
                         1,
                     );
                     // The canvas's half: exact per texel, or — where the tip's
-                    // shoulder allows (`footprint_cell`) — hoisted once per cell and
+                    // shoulder allows (`extent_cell`) — hoisted once per cell and
                     // applied over the same texel grid. The hoist reads the bake this
                     // segment just wrote and nothing the exchange writes, so its
                     // place in the chain costs one more serialized dispatch only on
@@ -1182,7 +1182,7 @@ impl<'a> DynamicsRun<'a> {
                     }
                     cur = 1 - cur;
                 }
-                // The pen-up: snapshot the final footprint, bake the standing tip's
+                // The pen-up: snapshot the final extent, bake the standing tip's
                 // remaining-pass delivery off the reservoir the last segment left
                 // (`cur` still names it — the slot's zero travel switches the bake onto
                 // the settle's weighted integral), then settle the transfer the stroke
@@ -1367,7 +1367,7 @@ struct Region {
     sel_mask: wgpu::TextureView,
 }
 
-/// The footprint snapshot scratch.
+/// The extent snapshot scratch.
 ///
 /// It does not carry the square it was sized to: that number is the plan's
 /// ([`DynamicsPlan::dsize`](super::plan::DynamicsPlan)), derived from the rects the
@@ -1380,7 +1380,7 @@ struct Snapshot {
     resid: Option<wgpu::TextureView>,
 }
 
-/// The footprint-cell scratch (§6.2): the coarse deposit's per-cell means, sized by
+/// The extent-cell scratch (§6.2): the coarse deposit's per-cell means, sized by
 /// [`cell_scratch_size`] of the piece's snapshot square so every hoist grid a slot
 /// can ask for fits by construction.
 struct Cells {
@@ -1402,7 +1402,7 @@ struct PieceBindings {
     /// scratch, i.e. when some slot is a firing.
     bleed_weight: Option<wgpu::BindGroup>,
     /// The coarse pair's groups — `Some` exactly when the piece allocated a cell
-    /// scratch, i.e. when some slot's [`footprint_cell`](super::plan) beat 1.
+    /// scratch, i.e. when some slot's [`extent_cell`](super::plan) beat 1.
     coarse: Option<CoarseBindings>,
     settle: wgpu::BindGroup,
 }

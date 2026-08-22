@@ -25,7 +25,7 @@ use bytes::Bytes;
 use iroh_blobs::Hash;
 use rpds::RedBlackTreeMapSync;
 use stark_model::AssetId;
-use stark_model::SurfaceId;
+use stark_model::SubstrateId;
 use stark_model::document::{Action, ActionId};
 use stark_model::{BuildId, CanvasMeta, DocumentFile};
 
@@ -80,13 +80,13 @@ pub(crate) struct Mirror {
     /// server and every resolver.
     actions: RedBlackTreeMapSync<ActionId, Action>,
     assets: HashMap<AssetId, Bytes>,
-    /// The canvas grounds the log names, as canonical height maps (§6.4).
+    /// The canvas substrates the log names, as canonical height maps (§6.4).
     ///
     /// Kept apart from `assets` for the reason the save file keeps them apart: the
     /// two are both grayscale PNGs and both content-addressed, but a brush mask
-    /// decodes as luminance × alpha and a ground as channel 0, so one bag would hand
+    /// decodes as luminance × alpha and a substrate as channel 0, so one bag would hand
     /// each store the other's bytes to reinterpret.
-    surfaces: HashMap<AssetId, Bytes>,
+    substrates: HashMap<AssetId, Bytes>,
     /// The pictures the log places (§23). A third map for the second one's reason:
     /// the three decode differently, so a single bag would hand each store the
     /// others' bytes to reinterpret.
@@ -109,7 +109,7 @@ pub(crate) struct Mirror {
 /// Encoding one is the most expensive thing the mirror does: [`DocumentFile`] owns
 /// its payloads, so every asset is copied out of the [`Bytes`] holding it, and the
 /// whole container is then encoded into a third buffer — megabytes twice over
-/// for a session with imported grounds, on a peer that is also painting.
+/// for a session with imported substrates, on a peer that is also painting.
 ///
 /// Most joins in a session ask the identical question. Peers running the same build
 /// send the same `resolvable` list, and the log has usually not moved in the seconds
@@ -132,7 +132,7 @@ pub(crate) struct Snapshot {
     canvas: CanvasMeta,
     actions: RedBlackTreeMapSync<ActionId, Action>,
     assets: Vec<(AssetId, Bytes)>,
-    surfaces: Vec<(AssetId, Bytes)>,
+    substrates: Vec<(AssetId, Bytes)>,
     pictures: Vec<(AssetId, Bytes)>,
     /// What the mirror stood at when this was taken — the key its encoding is
     /// remembered under.
@@ -153,12 +153,12 @@ impl Snapshot {
         }
         let have: std::collections::HashSet<&AssetId> = have.iter().collect();
         let omit = |id: &AssetId| have.contains(id);
-        let before = self.assets.len() + self.surfaces.len() + self.pictures.len();
+        let before = self.assets.len() + self.substrates.len() + self.pictures.len();
         self.assets.retain(|(id, _)| !omit(id));
-        self.surfaces.retain(|(id, _)| !omit(id));
+        self.substrates.retain(|(id, _)| !omit(id));
         self.pictures.retain(|(id, _)| !omit(id));
         let spared: usize =
-            before - (self.assets.len() + self.surfaces.len() + self.pictures.len());
+            before - (self.assets.len() + self.substrates.len() + self.pictures.len());
         if spared > 0 {
             tracing::debug!(spared, "omitted content the joiner can resolve locally");
         }
@@ -174,10 +174,10 @@ impl Snapshot {
             .into_iter()
             .map(|(id, b)| (id, b.to_vec()))
             .collect();
-        file.surfaces = self
-            .surfaces
+        file.substrates = self
+            .substrates
             .into_iter()
-            .map(|(id, b)| (SurfaceId::Image(id), b.to_vec()))
+            .map(|(id, b)| (SubstrateId::Image(id), b.to_vec()))
             .collect();
         file.pictures = self
             .pictures
@@ -201,11 +201,11 @@ impl Mirror {
                 .collect(),
             // A `Flat` entry would carry no bytes and name no content; the save
             // format cannot produce one, and skipping it is what keeps every
-            // ground in here fetchable.
-            surfaces: file
-                .surfaces
+            // substrate in here fetchable.
+            substrates: file
+                .substrates
                 .iter()
-                .filter_map(|(id, b)| Some((ground_content_id(*id)?, Bytes::from(b.clone()))))
+                .filter_map(|(id, b)| Some((substrate_content_id(*id)?, Bytes::from(b.clone()))))
                 .collect(),
             pictures: file
                 .pictures
@@ -219,15 +219,15 @@ impl Mirror {
     }
 
     /// The full session snapshot (§8 == §12.4's join payload): total-ordered
-    /// actions + every known brush asset and canvas ground.
+    /// actions + every known brush asset and canvas substrate.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             build: self.build.clone(),
             canvas: self.canvas.clone(),
             actions: self.actions.clone(),
             assets: self.assets.iter().map(|(id, b)| (*id, b.clone())).collect(),
-            surfaces: self
-                .surfaces
+            substrates: self
+                .substrates
                 .iter()
                 .map(|(id, b)| (*id, b.clone()))
                 .collect(),
@@ -325,8 +325,8 @@ impl Mirror {
             AssetNeed::Brush(id) => {
                 self.assets.insert(id, bytes);
             }
-            AssetNeed::Ground(id) => {
-                self.surfaces.insert(id, bytes);
+            AssetNeed::Substrate(id) => {
+                self.substrates.insert(id, bytes);
             }
             AssetNeed::Picture(id) => {
                 self.pictures.insert(id, bytes);
@@ -342,7 +342,7 @@ impl Mirror {
     pub fn has(&self, need: AssetNeed) -> bool {
         match need {
             AssetNeed::Brush(id) => self.assets.contains_key(&id),
-            AssetNeed::Ground(id) => self.surfaces.contains_key(&id),
+            AssetNeed::Substrate(id) => self.substrates.contains_key(&id),
             AssetNeed::Picture(id) => self.pictures.contains_key(&id),
         }
     }
@@ -357,17 +357,17 @@ impl Mirror {
     /// record what it transfers under — the session-start seed, from the hosted
     /// document or a joiner's snapshot alike.
     ///
-    /// Both kinds go in, keyed by their common content hash: a ground's transfer id
-    /// is the [`AssetId`] inside its [`SurfaceId`], because both are the same BLAKE3
+    /// Both kinds go in, keyed by their common content hash: a substrate's transfer id
+    /// is the [`AssetId`] inside its [`SubstrateId`], because both are the same BLAKE3
     /// of the same canonical bytes. The blob store only ever moves bytes, so it has
     /// no need to know which kind it is holding — that is the receiver's question,
     /// answered by the action that referenced them.
     pub fn seed_blobs(&mut self, add: impl Fn(Bytes) -> Hash) {
         let assets = self.assets.iter().map(|(id, b)| (*id, b.clone()));
-        let grounds = self.surfaces.iter().map(|(id, b)| (*id, b.clone()));
+        let substrates = self.substrates.iter().map(|(id, b)| (*id, b.clone()));
         let pictures = self.pictures.iter().map(|(id, b)| (*id, b.clone()));
         let hashes: Vec<(AssetId, Hash)> = assets
-            .chain(grounds)
+            .chain(substrates)
             .chain(pictures)
             .map(|(id, bytes)| (id, add(bytes)))
             .collect();
@@ -375,11 +375,11 @@ impl Mirror {
     }
 }
 
-/// The content hash a ground transfers under — `None` for `Flat`, which is
+/// The content hash a substrate transfers under — `None` for `Flat`, which is
 /// procedural and has no bytes to move.
-pub(crate) fn ground_content_id(id: SurfaceId) -> Option<AssetId> {
+pub(crate) fn substrate_content_id(id: SubstrateId) -> Option<AssetId> {
     match id {
-        SurfaceId::Flat => None,
-        SurfaceId::Image(asset) => Some(asset),
+        SubstrateId::Flat => None,
+        SubstrateId::Image(asset) => Some(asset),
     }
 }

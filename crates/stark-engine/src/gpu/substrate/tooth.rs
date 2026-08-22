@@ -1,10 +1,10 @@
-//! The **deposition tooth**: a CPU mirror of `paint_common.wesl`, and the ground
+//! The **deposition tooth**: a CPU mirror of `paint_common.wesl`, and the substrate
 //! statistics it implies (§6.4).
 //!
-//! No GPU in this file. It is the half of the surface that decides *where paint
-//! lands* — the contact gate, the rise the ground makes ahead of a moving tip, and
+//! No GPU in this file. It is the half of the substrate that decides *where paint
+//! lands* — the contact gate, the rise the substrate makes ahead of a moving tip, and
 //! the bearing table that lets the tool book its side of a smear without having a
-//! ground of its own.
+//! substrate of its own.
 //!
 //! **The mirror is load-bearing, not convenient.** The canvas evaluates the gate per
 //! texel on the GPU while the tool books against [`Bearing::at`] here, so if the two
@@ -20,7 +20,7 @@ use std::sync::Arc;
 // saying what it is and why it is that number, which now lives once.
 //
 // They were the worst kind of pair to leave to two declarations, because the failure
-// had no symptom of its own. This module averages `tooth_gate` over the ground's rise
+// had no symptom of its own. This module averages `tooth_gate` over the substrate's rise
 // distribution to get the bearing fraction the *tool* books its half of a transfer
 // against, while the shader evaluates the same gate per texel for the *canvas* half
 // (§6.4). Move either copy and the two halves go on rendering perfectly plausible
@@ -30,34 +30,34 @@ use std::sync::Arc;
 use stark_shaders::mirror::paint_common::{RISE_LIMIT, TOOTH_RISE, TOOTH_SOFTNESS};
 
 /// The span the rise is measured across — how far ahead of itself a moving tip reads
-/// the ground, in **canvas px** (§6.4).
+/// the substrate, in **canvas px** (§6.4).
 ///
 /// It is a *distance* rather than a gain because that is what makes the rise mean
-/// something. A tip dragged across a rough ground does not settle onto the height
+/// something. A tip dragged across a rough substrate does not settle onto the height
 /// under it; it rides up onto whatever it is about to meet, so it bears on the near
 /// face of every bump and bridges the lee side behind it. The slope that decides
-/// contact at a texel is therefore the ground's rise a short way *along the direction
+/// contact at a texel is therefore the substrate's rise a short way *along the direction
 /// of travel* — [`rise_ahead`].
 ///
 /// A canvas px rather than a texel or a fraction of the tip: the reach is a property
-/// of the contact, and it must not change when the same weave is stored at a different
+/// of the contact, and it must not change when the same substrate is stored at a different
 /// resolution (which the downsample in [`canonical_height`] does routinely) or when a
-/// larger brush paints the same ground. The rise baked into the map is measured across
+/// larger brush paints the same substrate. The rise baked into the map is measured across
 /// this distance in the map's own texels for exactly that reason — and it is also why
-/// laying the same weave at a different [`SurfaceScale`](stark_model::SurfaceScale)
-/// needs a fresh bake rather than a scaled lookup ([`Ground`](super::Ground)): the
+/// laying the same substrate at a different [`SubstrateScale`](stark_model::SubstrateScale)
+/// needs a fresh bake rather than a scaled lookup ([`Substrate`](super::Substrate)): the
 /// reach stays three canvas px, so the span in texels moves under it.
 ///
-/// **3 px is measured against the grounds rather than picked.** It is the distance at
-/// which the rise a tip meets stops growing: across the bundled weaves the mean rise
+/// **3 px is measured against the substrates rather than picked.** It is the distance at
+/// which the rise a tip meets stops growing: across the bundled substrates the mean rise
 /// over the reach climbs steeply to about 2 px and then flattens (0.038 → 0.056 →
-/// 0.069 → 0.078 on the rough ground for 1.5, 2, 3, 4 px), because past a feature's own width
+/// 0.069 → 0.078 on the rough substrate for 1.5, 2, 3, 4 px), because past a feature's own width
 /// there is no more face to climb. The reach lands on the shoulder of that curve —
 /// short enough that the rise is still the face under the tip rather than a plain
 /// translation of the mark, long enough that no face it could catch is missed.
 const TOOTH_REACH: f32 = 3.0;
 
-/// The scale the ground is resolved at before its rise is measured, in **canvas px**.
+/// The scale the substrate is resolved at before its rise is measured, in **canvas px**.
 ///
 /// Half a deposited texel: the smallest blur that answers the map's minification (about
 /// two map texels per canvas px for a full-size map at natural scale, read nearest)
@@ -70,13 +70,13 @@ const TOOTH_REACH: f32 = 3.0;
 /// already done by measuring the rise across the reach — a difference over a span `L`
 /// is blind to what repeats faster than `L` — so this one has only the sampling grid to
 /// answer for.
-const GROUND_ANTIALIAS: f32 = 0.5;
+const SUBSTRATE_ANTIALIAS: f32 = 0.5;
 
-/// How many travel directions [`Surface::bearing_hist`] is tabulated at.
+/// How many travel directions [`SubstrateMap::bearing_hist`] is tabulated at.
 ///
 /// The bearing is a smooth, low-harmonic function of direction — a constant on an
-/// isotropic ground, four-fold on a woven one — so sixteen samples resolve it well
-/// past anything a real weave carries, and the lookup interpolates between neighbours
+/// isotropic substrate, four-fold on a woven one — so sixteen samples resolve it well
+/// past anything a real substrate carries, and the lookup interpolates between neighbours
 /// so a curving stroke does not step. It is also why the table is affordable: the
 /// build is one pass over the map per direction, and the result is 16 KB.
 const BEARING_DIRS: usize = 16;
@@ -89,7 +89,7 @@ fn tooth_level(tooth: f32) -> f32 {
     TOOTH_RISE * (2.0 - 1.0 / tooth.max(0.01))
 }
 
-/// The share of its paint a texel receives, given the rise `d` of the ground along
+/// The share of its paint a texel receives, given the rise `d` of the substrate along
 /// the tip's travel there (`paint_common.wesl::tooth_gate`).
 fn tooth_gate(d: f32, tooth: f32) -> f32 {
     let t = ((d - tooth_level(tooth)) / TOOTH_SOFTNESS + 0.5).clamp(0.0, 1.0);
@@ -113,20 +113,20 @@ fn decode_rise(e: u8) -> f32 {
 }
 
 /// The **rise ahead** at a texel under a tip travelling along `d̂`: how much higher
-/// the ground it is about to meet stands than the ground here, `ahead·d̂` — the
+/// the substrate it is about to meet stands than the substrate here, `ahead·d̂` — the
 /// height's derivative along the travel, taken across the reach
 /// (`paint_common.wesl::rise_ahead`).
 fn rise_ahead(ahead: [f32; 2], dir: [f32; 2]) -> f32 {
     ahead[0] * dir[0] + ahead[1] * dir[1]
 }
 
-/// Bake the ground texture: height in `R`, and in `GB` the **rise ahead** —
-/// how much higher the ground stands one [`TOOTH_REACH`] ahead along each canvas
+/// Bake the substrate texture: height in `R`, and in `GB` the **rise ahead** —
+/// how much higher the substrate stands one [`TOOTH_REACH`] ahead along each canvas
 /// axis, in the map's own [0, 1] height units, encoded about 128 over
 /// ±[`RISE_LIMIT`].
 ///
 /// **The reach is baked in here rather than applied in the shader**, and that is the
-/// choice that keeps the whole axis at one texture tap. The deposit reads its ground
+/// choice that keeps the whole axis at one texture tap. The deposit reads its substrate
 /// once per fragment and gets both terms of `s + ahead·d̂` out of it, so the leading
 /// edge costs a dot product on top of what the plain tooth already spent — nothing on
 /// the fast path's fill rate, nothing in the loop's inner block. It also puts the
@@ -142,38 +142,38 @@ fn rise_ahead(ahead: [f32; 2], dir: [f32; 2]) -> f32 {
 /// Writing it as `reach·∇s` instead — the obvious form — is the trap. A gradient at a
 /// point is a *local* quantity multiplied out to a distance it knows nothing about, so
 /// it grows without bound in the reach and reports whatever the finest scale in the map
-/// happens to be doing: on the bundled grounds it climbs linearly past the height
+/// happens to be doing: on the bundled substrates it climbs linearly past the height
 /// spread it is supposed to displace, and gating on it prints the map's own Nyquist
 /// noise as a dither that flips with the stroke. The difference across the span is
 /// self-limiting instead — it saturates once the reach clears a feature's width,
 /// because past that there is no more face to climb — and it is *inherently*
 /// band-limited: a difference over a span is blind to what repeats faster than the
-/// span. Only the sampling grid is left to answer for, which [`GROUND_ANTIALIAS`] does.
+/// span. Only the sampling grid is left to answer for, which [`SUBSTRATE_ANTIALIAS`] does.
 ///
 /// Wrapped at the edges because the map tiles; a clamped kernel would print a false
 /// ridge down the seam every `tile_px`.
 ///
 /// The span is the reach converted into **each axis's own texels** (`dims / tile_px`
-/// texels per canvas px), so the same weave reads identically however it was stored:
+/// texels per canvas px), so the same substrate reads identically however it was stored:
 /// halve a map's resolution and the span in texels halves with it. That is what makes
 /// the integer downsample in [`canonical_height`] invisible to the mark, and it is why
 /// [`TOOTH_REACH`] can be a physical distance at all. The span rounds to whole texels
 /// — never below one — and the half-texel that costs is well inside the blur it is
 /// measured on.
 ///
-/// `tile_px` is the canvas px one full tile of the map spans — [`SURFACE_TILE_PX`]
-/// times the document's scale ([`Ground::tile_px`](super::Ground)). It is the *only*
+/// `tile_px` is the canvas px one full tile of the map spans — [`SUBSTRATE_TILE_PX`]
+/// times the document's scale ([`Substrate::tile_px`](super::Substrate)). It is the *only*
 /// thing the scale changes here, and it changes everything downstream of it: the
 /// antialias σ, the span, and so the bearing table tabulated off the result.
-pub(super) fn pack_ground(height: &[u8], w: u32, h: u32, tile_px: f32) -> Vec<u8> {
+pub(super) fn pack_substrate(height: &[u8], w: u32, h: u32, tile_px: f32) -> Vec<u8> {
     let (wi, hi) = (w as i32, h as i32);
     let per_px = |texels: u32| texels as f32 / tile_px;
     let smooth = blur(
         height,
         w,
         h,
-        GROUND_ANTIALIAS * per_px(w),
-        GROUND_ANTIALIAS * per_px(h),
+        SUBSTRATE_ANTIALIAS * per_px(w),
+        SUBSTRATE_ANTIALIAS * per_px(h),
     );
     let at =
         |x: i32, y: i32| -> f32 { smooth[(y.rem_euclid(hi) * wi + x.rem_euclid(wi)) as usize] };
@@ -195,8 +195,8 @@ pub(super) fn pack_ground(height: &[u8], w: u32, h: u32, tile_px: f32) -> Vec<u8
 /// A separable, wrapping Gaussian blur of a height map into [0, 1] floats.
 ///
 /// Kernels are built and normalized in the same order on every machine, so two peers
-/// blurring one ground land on the same floats and the tooth they deposit through is
-/// the same tooth — the ground is a replay input like any other (§6.4).
+/// blurring one substrate land on the same floats and the tooth they deposit through is
+/// the same tooth — the substrate is a replay input like any other (§6.4).
 fn blur(height: &[u8], w: u32, h: u32, sigma_x: f32, sigma_y: f32) -> Vec<f32> {
     /// Gaussian weights out to 3σ, normalized to sum to 1. A non-positive σ has
     /// nothing to blur and returns the identity kernel; a σ far under a texel reaches
@@ -254,9 +254,9 @@ fn encode_rise(rise: f32) -> u8 {
 }
 
 /// Tabulate the rise's distribution, one row per travel direction
-/// ([`Surface::bearing_hist`]).
+/// ([`SubstrateMap::bearing_hist`]).
 ///
-/// One pass per direction over the ground, binning the **decoded** rise rather than
+/// One pass per direction over the substrate, binning the **decoded** rise rather than
 /// the float it came from, so the tool books against the numbers the shader will
 /// project. Opposite directions are one negation apart — `ahead·(−d̂) = −(ahead·d̂)`,
 /// exactly, in floats too — so the sixteen rows cost eight dot products a texel.
@@ -264,17 +264,17 @@ fn encode_rise(rise: f32) -> u8 {
 /// The bins are the encode lattice itself ([`encode_rise`] in, [`decode_rise`] out),
 /// which is not laziness but the boundary condition that matters: zero rise is a
 /// *lattice point* (byte 128), so the projections that hover a rounding error either
-/// side of flat — every texel of an axis-aligned weave crossed at right angles —
+/// side of flat — every texel of an axis-aligned substrate crossed at right angles —
 /// land in one bin from both directions instead of straddling an edge. It also means
 /// an on-axis crossing bins the map's own stored byte, re-quantization error zero.
-fn tabulate_bearing(ground: &[u8]) -> [[f32; 256]; BEARING_DIRS] {
+fn tabulate_bearing(substrate: &[u8]) -> [[f32; 256]; BEARING_DIRS] {
     const HALF: usize = BEARING_DIRS / 2;
     let dirs: [[f32; 2]; HALF] = std::array::from_fn(|k| {
         let a = std::f32::consts::TAU * k as f32 / BEARING_DIRS as f32;
         [a.cos(), a.sin()]
     });
     let mut counts = [[0u32; 256]; BEARING_DIRS];
-    let texels = ground.as_chunks::<4>().0;
+    let texels = substrate.as_chunks::<4>().0;
     for texel in texels {
         let ahead = [decode_rise(texel[1]), decode_rise(texel[2])];
         for (k, d) in dirs.iter().enumerate() {
@@ -287,19 +287,19 @@ fn tabulate_bearing(ground: &[u8]) -> [[f32; 256]; BEARING_DIRS] {
     std::array::from_fn(|k| std::array::from_fn(|i| counts[k][i] as f32 / n))
 }
 
-/// The ground's **rise-along-the-travel** histogram, one row per travel direction:
+/// The substrate's **rise-along-the-travel** histogram, one row per travel direction:
 /// the fraction of texels whose rise ahead ([`rise_ahead`]) falls in each of the 256
 /// bins spanning ±[`RISE_LIMIT`], for a tip travelling along `2πk/BEARING_DIRS`.
 ///
 /// It exists to answer one question — [`Self::at`] — and that
 /// question is what makes a **toothed smear conserve paint** (§6.4). The canvas
-/// side of the exchange gates each texel by the ground under *it*; the tool has
-/// no per-texel ground, so it books its side against the mean, and the mean of a
+/// side of the exchange gates each texel by the substrate under *it*; the tool has
+/// no per-texel substrate, so it books its side against the mean, and the mean of a
 /// gate over the rise field is a sum over this table.
 ///
 /// It is a table of rows rather than one row **because the rise is directional**
 /// (§6.4). Contact is decided by `ahead·d̂`, so reversing a stroke negates the
-/// field and lands on the mirrored distribution — on a ground whose faces are
+/// field and lands on the mirrored distribution — on a substrate whose faces are
 /// asymmetric, a materially different one. Booking every direction against a
 /// single mean would leak paint at exactly the rate the direction matters.
 ///
@@ -310,14 +310,14 @@ fn tabulate_bearing(ground: &[u8]) -> [[f32; 256]; BEARING_DIRS] {
 /// the bins quantize the projection. Both residuals are far under the mean-field
 /// freeze either side of the kernel already carries.
 ///
-/// `Arc` so a `Surface` stays two atomic bumps to clone — it is cloned per
+/// `Arc` so a `SubstrateMap` stays two atomic bumps to clone — it is cloned per
 /// stroke, and 16 KB per clone is not the shape of this type.
 #[derive(Clone)]
 pub(super) struct Bearing(Arc<[[f32; 256]; BEARING_DIRS]>);
 
 impl Bearing {
-    pub(super) fn tabulate(ground: &[u8]) -> Self {
-        Self(Arc::new(tabulate_bearing(ground)))
+    pub(super) fn tabulate(substrate: &[u8]) -> Self {
+        Self(Arc::new(tabulate_bearing(substrate)))
     }
 
     pub(super) fn at(&self, tooth: f32, dir: [f32; 2]) -> f32 {
@@ -349,7 +349,7 @@ impl Bearing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu::surface::SURFACE_TILE_PX;
+    use crate::gpu::substrate::SUBSTRATE_TILE_PX;
 
     // `the_host_and_the_shader_agree_on_the_tooths_constants` stood here, reading all
     // three out of the linked `stamp()` and comparing them against this module's own
@@ -364,10 +364,10 @@ mod tests {
     // out of the folded literals `255.0 / 512.0` and `0.25` — a constant that survives
     // only in prose was invisible to a check that read the *linked* shader.
 
-    /// A ground of **ramps**: height climbing steadily to a peak, then dropping back
+    /// A substrate of **ramps**: height climbing steadily to a peak, then dropping back
     /// over a few texels. Every feature has a long near face and a short far one, and —
     /// the point of the shape — the height histogram is the same one whichever way a
-    /// tip crosses it, so a gate reading only the ground *under* the tip cannot tell
+    /// tip crosses it, so a gate reading only the substrate *under* the tip cannot tell
     /// the two runs apart at all.
     fn ramps(w: u32, h: u32, period: u32) -> Vec<u8> {
         let climb = period - period / 8;
@@ -383,7 +383,7 @@ mod tests {
             .collect()
     }
 
-    /// The mean gate over one tabulated direction, off a table rather than a `Surface`
+    /// The mean gate over one tabulated direction, off a table rather than a `SubstrateMap`
     /// — everything under test here is the model's arithmetic, and none of it needs a
     /// GPU to be wrong.
     fn row_mean(hist: &[[f32; 256]; BEARING_DIRS], dir: usize, tooth: f32) -> f32 {
@@ -394,9 +394,9 @@ mod tests {
             .sum()
     }
 
-    /// **The sign of the whole model.** Dragged up the near faces of a ramped ground a
-    /// tip meets rising ground the entire way, so it contacts more of it than its own
-    /// height would say; dragged down them it is bridging a falling ground the entire
+    /// **The sign of the whole model.** Dragged up the near faces of a ramped substrate a
+    /// tip meets rising substrate the entire way, so it contacts more of it than its own
+    /// height would say; dragged down them it is bridging a falling substrate the entire
     /// way and contacts less. Anything that reversed the derivative — a swapped
     /// subtraction in the bake, a negated projection in the shader's mirror — turns
     /// this inequality round, and no amount of "the mark changed when I reversed the
@@ -406,27 +406,27 @@ mod tests {
     #[test]
     fn a_tip_dragged_up_the_faces_contacts_more_than_one_dragged_down_them() {
         let (w, h) = (256, 256);
-        let hist = tabulate_bearing(&pack_ground(&ramps(w, h, 32), w, h, SURFACE_TILE_PX));
+        let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, SUBSTRATE_TILE_PX));
         for tooth in [0.3, 0.5, 0.7] {
             let up = row_mean(&hist, 0, tooth);
             let down = row_mean(&hist, BEARING_DIRS / 2, tooth);
             assert!(
                 up > down * 1.05,
-                "at tooth {tooth} a tip going up the ramps bore on {up} of the ground \
+                "at tooth {tooth} a tip going up the ramps bore on {up} of the substrate \
                  and one going down them on {down} — the anticipation has no sign, or \
                  the wrong one"
             );
         }
     }
 
-    /// Across the ramps — `+y`, where the ground is flat — there is nothing rising or
+    /// Across the ramps — `+y`, where the substrate is flat — there is nothing rising or
     /// falling ahead, so the two opposite crossings must land on the *same* bearing.
     /// It is the null case the test above needs to mean anything: without it, a bake
     /// that simply added a constant would satisfy the inequality just as well.
     #[test]
     fn a_tip_crossing_the_ramps_sideways_reads_them_the_same_both_ways() {
         let (w, h) = (256, 256);
-        let hist = tabulate_bearing(&pack_ground(&ramps(w, h, 32), w, h, SURFACE_TILE_PX));
+        let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, SUBSTRATE_TILE_PX));
         let (quarter, three) = (BEARING_DIRS / 4, 3 * BEARING_DIRS / 4);
         for tooth in [0.3, 0.5, 0.7] {
             let (a, b) = (
@@ -435,13 +435,13 @@ mod tests {
             );
             assert!(
                 (a - b).abs() < 1e-6,
-                "at tooth {tooth} the two crossings of a ground with no slope along \
+                "at tooth {tooth} the two crossings of a substrate with no slope along \
                  them disagreed: {a} vs {b}"
             );
         }
     }
 
-    /// **A brush with no tooth is full contact, exactly, on any ground** — flat or as
+    /// **A brush with no tooth is full contact, exactly, on any substrate** — flat or as
     /// steep as the encoding can carry — and this is where that is pinned without a
     /// GPU. It is not the callers' `tooth <= 0` guard being retested: the point is
     /// the *approach* to zero, [`tooth_level`] diving far past any encodable fall as
@@ -449,10 +449,10 @@ mod tests {
     /// knob reaches zero and a pen mapping that sweeps through it lands on the
     /// guard's value continuously rather than with a pop.
     #[test]
-    fn a_brush_with_no_tooth_is_full_contact_on_any_ground() {
+    fn a_brush_with_no_tooth_is_full_contact_on_any_substrate() {
         let (w, h) = (64, 64);
-        for ground in [vec![90u8; (w * h) as usize], ramps(w, h, 8)] {
-            let hist = tabulate_bearing(&pack_ground(&ground, w, h, SURFACE_TILE_PX));
+        for substrate in [vec![90u8; (w * h) as usize], ramps(w, h, 8)] {
+            let hist = tabulate_bearing(&pack_substrate(&substrate, w, h, SUBSTRATE_TILE_PX));
             for dir in 0..BEARING_DIRS {
                 assert_eq!(
                     row_mean(&hist, dir, 0.0),
@@ -465,14 +465,14 @@ mod tests {
         }
     }
 
-    /// **How large the weave is laid changes what a tip bites**, which is the whole
-    /// reason a ground is baked per scale rather than sampled at a scaled uv
-    /// (`super::Ground`).
+    /// **How large the substrate is laid changes what a tip bites**, which is the whole
+    /// reason a substrate is baked per scale rather than sampled at a scaled uv
+    /// (`super::Substrate`).
     ///
-    /// The reach is three *canvas* px whatever the scale, so laying the weave finer
+    /// The reach is three *canvas* px whatever the scale, so laying the substrate finer
     /// puts more of the grain inside it — and a tip that anticipates several threads
-    /// ahead spends more of its travel bridging falling ground than riding one face.
-    /// So the finer the weave is laid, the *less* of it a climbing tip bears on. That
+    /// ahead spends more of its travel bridging falling substrate than riding one face.
+    /// So the finer the substrate is laid, the *less* of it a climbing tip bears on. That
     /// is the direction, and it is worth pinning as well as the difference: it is the
     /// mark going drier as the canvas gets tighter, which is what a tooth reading a
     /// slope rather than a height is for.
@@ -481,42 +481,42 @@ mod tests {
     /// rise over the *old* span under a new name, which is the compensating fudge §1
     /// rules out.
     ///
-    /// `tile_px` is passed directly rather than through a `SurfaceScale`, because what
+    /// `tile_px` is passed directly rather than through a `SubstrateScale`, because what
     /// is under test is the bake's one input — the map's texels per canvas px — and
     /// the two ways to move it (a map's resolution, a document's scale) are the same
     /// number arriving.
     #[test]
-    fn a_weave_laid_finer_is_bridged_more_and_borne_on_less() {
+    fn a_substrate_laid_finer_is_bridged_more_and_borne_on_less() {
         let (w, h) = (256, 256);
         let ramps = ramps(w, h, 32);
         // One canvas px per texel, then four: the reach spans 2 texels and then 6.
-        let coarse = tabulate_bearing(&pack_ground(&ramps, w, h, 256.0));
-        let fine = tabulate_bearing(&pack_ground(&ramps, w, h, 64.0));
+        let coarse = tabulate_bearing(&pack_substrate(&ramps, w, h, 256.0));
+        let fine = tabulate_bearing(&pack_substrate(&ramps, w, h, 64.0));
         for tooth in [0.6, 0.8, 1.0] {
             let (c, f) = (row_mean(&coarse, 0, tooth), row_mean(&fine, 0, tooth));
             assert!(
                 c > f * 1.05,
-                "at tooth {tooth} the weave laid coarser bore on {c} of the ground and                  the finer one on {f} — the scale is not reaching the bake"
+                "at tooth {tooth} the substrate laid coarser bore on {c} of the substrate and                  the finer one on {f} — the scale is not reaching the bake"
             );
         }
     }
 
     /// **The top of the knob still lays paint** — the reason the gate reads the
-    /// ground's slope and not its height. A full-tooth tip demands rising ground, and
-    /// a real ground *has* rising ground: dragged up the ramps it bears on the long
+    /// substrate's slope and not its height. A full-tooth tip demands rising substrate, and
+    /// a real substrate *has* rising substrate: dragged up the ramps it bears on the long
     /// climb faces (most of the area), dragged down them on the short steep ones
     /// (little, but strictly some). A height threshold at the top of its range gated
     /// everything to nothing, which made `tooth = 1` a knob position with no use.
     #[test]
     fn full_tooth_still_bears_on_the_faces_that_rise_to_meet_it() {
         let (w, h) = (256, 256);
-        let hist = tabulate_bearing(&pack_ground(&ramps(w, h, 32), w, h, SURFACE_TILE_PX));
+        let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, SUBSTRATE_TILE_PX));
         let up = row_mean(&hist, 0, 1.0);
         let down = row_mean(&hist, BEARING_DIRS / 2, 1.0);
         assert!(
             up > 0.5,
             "dragged up the ramps at full tooth the tip bears on only {up} of the \
-             ground — the climb faces should carry it"
+             substrate — the climb faces should carry it"
         );
         assert!(
             down > 0.05,

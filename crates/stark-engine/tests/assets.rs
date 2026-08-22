@@ -121,7 +121,7 @@ fn a_capped_shape_paints_and_survives_save_load() {
 /// the one comparison that pins every number the padding moves at once. Get the frame
 /// wrong and the pen mark is `√2` too wide or too narrow; get `build_prefix_tau`'s `dx`
 /// wrong and it is the right size at the wrong darkness. Either shows here as a mark
-/// that is not the other mark, and nowhere else as anything but "the nib looks off".
+/// that is not the other mark, and nowhere else as anything but "the tip looks off".
 ///
 /// A mouse stroke along `+x` is the zero-angle case without contrivance: the travel
 /// direction and the (absent) tilt azimuth are both 0, so `orientation_turns` returns 0

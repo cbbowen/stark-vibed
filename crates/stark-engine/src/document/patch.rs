@@ -20,7 +20,7 @@ use super::selection::Selection;
 use super::state::{DocState, Guide, LayerSite};
 use crate::gpu::tile::TilePairHandle;
 use stark_model::Srgb;
-use stark_model::SurfaceId;
+use stark_model::SubstrateId;
 use stark_model::document::Filter;
 use stark_model::document::{Action, ActorId};
 use stark_model::document::{BlendMode, LayerId, MatteRegion};
@@ -67,8 +67,8 @@ enum PatchOp {
     /// that writes them carries the filter entire.
     Filter(LayerId, Filter),
     Selection(ActorId, Selection),
-    Surface(SurfaceId),
-    Background(Srgb),
+    Substrate(SubstrateId),
+    SubstrateColor(Srgb),
     /// The **whole drawing-guide roster** (§20.5): every guide and the order they
     /// were arranged in.
     ///
@@ -117,8 +117,8 @@ impl PatchOp {
                 .set_matte_paint(*id, paint.clone()),
             PatchOp::Filter(id, filter) => state.set_filter(*id, filter.clone()),
             PatchOp::Selection(actor, selection) => state.with_selection(*actor, selection.clone()),
-            PatchOp::Surface(id) => state.with_surface(*id),
-            PatchOp::Background(rgb) => state.with_background(*rgb),
+            PatchOp::Substrate(id) => state.with_substrate(*id),
+            PatchOp::SubstrateColor(rgb) => state.with_substrate_color(*rgb),
             PatchOp::Guides(guides) => state.with_guides(guides.clone()),
         }
     }
@@ -242,8 +242,8 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
         }
         Resource::StackOrder => ops.push(PatchOp::Structure(structure(to))),
         Resource::Selection(actor) => ops.push(PatchOp::Selection(*actor, to.selection_of(*actor))),
-        Resource::Surface => ops.push(PatchOp::Surface(to.surface)),
-        Resource::Background => ops.push(PatchOp::Background(to.background)),
+        Resource::Substrate => ops.push(PatchOp::Substrate(to.substrate)),
+        Resource::SubstrateColor => ops.push(PatchOp::SubstrateColor(to.substrate_color)),
         Resource::Guides => ops.push(PatchOp::Guides(to.guides().clone())),
     }
 }
@@ -356,7 +356,7 @@ fn tile_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_model::SurfaceId;
+    use stark_model::SubstrateId;
     use stark_model::document::Place;
     use stark_model::document::{ActionId, ActionKind};
 
@@ -572,22 +572,22 @@ mod tests {
     /// any layer.
     #[test]
     fn the_canvas_round_trips() {
-        let before = flat().with_background(Srgb::new([0.5, 0.5, 0.5]));
-        let after = before.with_background(Srgb::new([0.1, 0.2, 0.3]));
+        let before = flat().with_substrate_color(Srgb::new([0.5, 0.5, 0.5]));
+        let after = before.with_substrate_color(Srgb::new([0.1, 0.2, 0.3]));
         let back = unapply(
-            &act(ActionKind::SetBackground(Srgb::new([0.1, 0.2, 0.3]))),
+            &act(ActionKind::SetSubstrateColor(Srgb::new([0.1, 0.2, 0.3]))),
             &before,
             &after,
         );
-        assert_eq!(back.background, before.background);
+        assert_eq!(back.substrate_color, before.substrate_color);
 
-        let after = before.with_surface(SurfaceId::Flat);
+        let after = before.with_substrate(SubstrateId::Flat);
         let back = unapply(
-            &act(ActionKind::SetSurface(SurfaceId::Flat)),
+            &act(ActionKind::SetSubstrate(SubstrateId::Flat)),
             &before,
             &after,
         );
-        assert_eq!(back.surface, before.surface);
+        assert_eq!(back.substrate, before.substrate);
     }
 
     /// `Undo` is resolved by the timeline and never materialized, which is *why* its

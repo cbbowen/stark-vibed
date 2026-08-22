@@ -10,8 +10,8 @@
 //     rather than at one point),
 //     `exchange` — one thread per **tool reservoir** texel, which settles the tool's
 //     half of the transfer, and which also carries the `snapshot` (copy the segment's
-//     footprint texels to an `under` scratch, so the deposit can read-modify-write the
-//     region) in the tail of its own grid — and `deposit`, one thread per footprint
+//     extent texels to an `under` scratch, so the deposit can read-modify-write the
+//     region) in the tail of its own grid — and `deposit`, one thread per extent
 //     texel. `exchange` ping-pongs the reservoir, so a segment cycles it once.
 //
 // **The snapshot is not a step of the loop, it is the read side of the deposit**, and
@@ -48,7 +48,7 @@
 // The canvas side of the transfer is swept per segment (above), so the tool side has
 // to be too, or the tool gains what the canvas gave up only some segments later. On a
 // coarser cadence of its own — a reload every `spacing·radius` of travel, say — a
-// stroke stopping mid-interval leaves its last footprint stripped by a `deposit` whose
+// stroke stopping mid-interval leaves its last extent stripped by a `deposit` whose
 // paint the tool has not yet been credited with: a tip-shaped patch of missing paint,
 // worst exactly where `lift` is high.
 //
@@ -68,7 +68,7 @@
 // Conservation (§6.1): paint moves by transferring **height** — the one
 // conserved quantity. Color and per-unit opacity ride as optical-mass
 // (opacity·height) weighted blends; `add` is the only source term. Both sides of
-// each transfer integrate the same rate over the same footprint, so with
+// each transfer integrate the same rate over the same extent, so with
 // `add = 0` total height (canvas + tool) is conserved up to resampling error.
 //
 // Determinism: the slot sequence — segment, bleed and settle alike (`SlotKind`) —
@@ -84,7 +84,7 @@ import package::lib::latent::{
     Latent, latent_add, latent_any, latent_blend, latent_div, latent_lerp, latent_of,
     latent_scale, latent_sub, latent_unpremult, latent_wsum, latent_zero,
 };
-import package::lib::paint_common::{ground_at, rise_ahead, tooth_gate, PAINT_EPS};
+import package::lib::paint_common::{substrate_texel_at, rise_ahead, tooth_gate, PAINT_EPS};
 import package::lib::sample::{load1, bilerp_taps, bilerp_mix};
 import package::lib::store::{f16_nearest4};
 
@@ -112,7 +112,7 @@ struct Stamp {
     // The sweep's start (region px) and its travel tangent (unit vector) — the prefix-τ
     // frame, and the same two fields for all three slot kinds. A **bleed** slot's sweep
     // is the firing's travel window rather than a stretch of painting; a **settle**
-    // slot's is the tip's own footprint, so its tangent is the direction the pen was
+    // slot's is the tip's own extent, so its tangent is the direction the pen was
     // going when it left the page. (The tool's *shape* frame — this turned by
     // `orientation`, §6.6 — is derived where it is needed, in `bake` and `exchange`,
     // not carried here.)
@@ -143,7 +143,7 @@ struct Stamp {
     // How many tips wide the frame `frame_radius` measures is (§6.6), and so the one
     // conversion between the frame's units and the **mask's**. Exactly 1 for every
     // unpadded volume, which is every brush but a pen-oriented stamp, so a slot that
-    // never heard of padding reads its footprint exactly as it always did.
+    // never heard of padding reads its extent exactly as it always did.
     //
     // The canvas side never needs it: a prefix-τ difference is an absolute optical
     // depth, integrated at the mask's own column width whatever box was baked around it
@@ -213,12 +213,12 @@ struct Stamp {
     orientation: f32,
     // The per-stroke noise lookup translation.
     noise_off: vec2<f32>,
-    // The map from this dispatch's *region* texel to the weave:
-    // `uv = rt·weave_uv_scale + weave_uv_bias`, with the piece's own canvas origin
-    // already folded into the bias. The scale is zero on a ground with no relief, which
+    // The map from this dispatch's *region* texel to the substrate:
+    // `uv = rt·substrate_uv_scale + substrate_uv_bias`, with the piece's own canvas origin
+    // already folded into the bias. The scale is zero on a substrate with no relief, which
     // is what makes a `Flat` canvas render exactly what it always did.
-    weave_uv_bias: vec2<f32>,
-    // Where this dispatch's footprint rect sits in the region, in texels.
+    substrate_uv_bias: vec2<f32>,
+    // Where this dispatch's extent rect sits in the region, in texels.
     rect_origin: vec2<i32>,
     // The cell grid's canvas anchor: the region's canvas origin modulo the cell, so
     // `region texel + cell_anchor` is congruent to the texel's canvas position modulo
@@ -228,17 +228,17 @@ struct Stamp {
     // too large for an f32 to hold exactly.
     cell_anchor: vec2<i32>,
     // The deposition tooth (§6.4): how little give this segment's tip has. 0 means the
-    // ground does not gate anything.
+    // substrate does not gate anything.
     tooth: f32,
-    // The tooth's **bearing fraction** — the share of the ground a tip with this
-    // `tooth` stands on, averaged over the whole ground, along **this segment's own
+    // The tooth's **bearing fraction** — the share of the substrate a tip with this
+    // `tooth` stands on, averaged over the whole substrate, along **this segment's own
     // direction of travel** (`Surface::bearing`, §6.4). It is what the *tool* books its
-    // half of the transfer against: a canvas texel scales its exposure by the ground
-    // under itself, and a reservoir cell, which has no ground of its own, scales by
+    // half of the transfer against: a canvas texel scales its exposure by the substrate
+    // under itself, and a reservoir cell, which has no substrate of its own, scales by
     // this. 1 where there is nothing to bite.
     tooth_bearing: f32,
-    weave_uv_scale: f32,
-    // The **footprint cell** (§6.2): its edge in texels, ≥ 1 — the square the coarse
+    substrate_uv_scale: f32,
+    // The **extent cell** (§6.2): its edge in texels, ≥ 1 — the square the coarse
     // pair (`cell_hoist`/`deposit_coarse`) evaluates the exchange laws once per. 1 (and
     // `cell_anchor` zero) on every slot the host keeps on the exact path: small tips,
     // hard tips, bleed and settle slots, none of which read this.
@@ -272,13 +272,13 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 // (height, _, _, _). Read by `snapshot` (textureLoad) and `exchange` (bilinear).
 @group(0) @binding(1) var region_color: texture_2d<f32>;
 @group(0) @binding(2) var region_aux: texture_2d<f32>;
-// Footprint snapshot targets (written by `snapshot`).
+// Extent snapshot targets (written by `snapshot`).
 @group(0) @binding(3) var under_color_w: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(4) var under_aux_w: texture_storage_2d<rgba16float, write>;
 // Bilinear clamp sampler for the region / reservoir / coverage lookups.
 @group(0) @binding(5) var samp: sampler;
 // The brush tip's coverage mask over brush-local [-1,1]² (R8; §6.6) — the
-// reservoir texel's own footprint weight. Read by the **tool** side only
+// reservoir texel's own extent weight. Read by the **tool** side only
 // (`exchange`); the canvas side uses the prefix-τ exposure instead.
 @group(0) @binding(6) var cov_tex: texture_2d<f32>;
 // The tool reservoir ping-pong: color = (latent .xyz, per-unit opacity .w),
@@ -290,7 +290,7 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 @group(0) @binding(8) var brush_src_aux: texture_2d<f32>;
 @group(0) @binding(9) var brush_dst_color_w: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(10) var brush_dst_aux_w: texture_storage_2d<rgba16float, write>;
-// The footprint snapshot (read by `deposit`).
+// The extent snapshot (read by `deposit`).
 @group(0) @binding(11) var under_color: texture_2d<f32>;
 @group(0) @binding(12) var under_aux: texture_2d<f32>;
 // The region, written in place by `deposit`.
@@ -301,7 +301,7 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 @group(0) @binding(15) var dyn_noise_tex: texture_2d<f32>;
 @group(0) @binding(16) var dyn_noise_samp: sampler;
 // The reservoir's **swept prefix** in the travel frame (written by `bake`, read by
-// `deposit`): running integrals of the carried paint weighted by the footprint's
+// `deposit`): running integrals of the carried paint weighted by the extent's
 // optical-depth density.
 //   load = (∫h·dτ, ∫m·dτ, unused, unused)
 //   latm = (∫lat·m·dτ,        unused)
@@ -319,11 +319,11 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 // is neither taken nor laid and the two sides of the transfer still balance.
 @group(0) @binding(21) var sel_mask: texture_2d<f32>;
 
-// The canvas surface's tileable ground (§6.4) — height in `r` (the media pass's),
+// The canvas substrate's tileable height map (§6.4) — height in `r` (the media pass's),
 // the rise one reach ahead in `gb` — whose rise along the travel scales the exposure
-// a canvas texel sees. Read nearest (`ground_at`), so no sampler. Named
+// a canvas texel sees. Read nearest (`substrate_texel_at`), so no sampler. Named
 // by `deposit` and `settle`, the two entry points that put paint on the canvas.
-@group(0) @binding(22) var surface_tex: texture_2d<f32>;
+@group(0) @binding(22) var substrate_tex: texture_2d<f32>;
 
 // ---- The residual channel (§6.7) -------------------------------------------------
 //
@@ -343,7 +343,7 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 // this texture without sampling that one.
 @if(resid) @group(0) @binding(23) var region_resid: texture_2d<f32>;
 @if(resid) @group(0) @binding(24) var region_resid_w: texture_storage_2d<rgba16float, write>;
-// The footprint snapshot's residual (written by `snapshot`, read by `deposit` and
+// The extent snapshot's residual (written by `snapshot`, read by `deposit` and
 // `settle`), premultiplied like the region it is copied from.
 @if(resid) @group(0) @binding(25) var under_resid: texture_2d<f32>;
 @if(resid) @group(0) @binding(26) var under_resid_w: texture_storage_2d<rgba16float, write>;
@@ -357,10 +357,10 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 @if(resid) @group(0) @binding(29) var bake_rlm_w: texture_storage_2d<rgba32float, write>;
 @if(resid) @group(0) @binding(30) var bake_rlm: texture_2d<f32>;
 
-// ---- The footprint-cell scratch (§6.2, coarse deposit) ---------------------------
+// ---- The extent-cell scratch (§6.2, coarse deposit) ---------------------------
 //
 // Written by `cell_hoist` — one thread per canvas-anchored cell of the segment's
-// footprint, plus a one-cell border the bilinear read needs — and read back by
+// extent, plus a one-cell border the bilinear read needs — and read back by
 // `deposit_coarse`, which is the whole trade: the two prefix-τ differences and the six
 // `bake_at` taps run once per cell instead of once per texel. fp32 like the bake it
 // distils, and for one more reason besides precision: **exact zeros are semantic
@@ -434,7 +434,7 @@ const TAU: f32 = 6.283185307179586;
 //     `canvas + tool` height vanished at *every* segment boundary. What survives is
 //     front-loaded into the first quad that touches a spot, which draws arcs at
 //     exactly the segment spacing through anything thick enough to see them.
-//   * a stroke that stops leaves its last footprint stripped by a lift the tool was
+//   * a stroke that stops leaves its last extent stripped by a lift the tool was
 //     never credited with — a tip-shaped disc of missing paint, worst where `lift` is
 //     high, and unmistakable because the tip's own hardness edge is frozen into it.
 //
@@ -591,38 +591,38 @@ fn stroke_drain(arc: f32) -> f32 {
     return clamp(1.0 - st.drain * arc, 0.0, 1.0);
 }
 
-// The share of the tip's contact a canvas texel gets from the ground under it (§6.4)
+// The share of the tip's contact a canvas texel gets from the substrate under it (§6.4)
 // — the same `rise_ahead`/`tooth_gate` pair the swept fast path applies, from the same
 // map, so a brush's tooth reads the same whether or not some other axis put it on this
 // path.
 //
-// `rt` is in region px; `st.weave_uv_bias` folds the piece's own canvas origin into
+// `rt` is in region px; `st.substrate_uv_bias` folds the piece's own canvas origin into
 // the map, so the value is a pure function of canvas position exactly as the fast
 // path's is.
 // `turn` is how far the tip's heading has swung by this point (`segment_frame(rt)`),
 // which `sweep_tangent` turns into the direction the rise is read along —
 // after the guards, so an ordinary brush never pays for the rotation. A settle slot
 // carries zero travel, so its heading is the direction the pen was going when it left
-// the page, which is the ground the pass it is finishing was laying through.
+// the page, which is the substrate the pass it is finishing was laying through.
 //
-// Both guards return exactly 1.0: a brush with no tooth, or a ground with no relief,
+// Both guards return exactly 1.0: a brush with no tooth, or a substrate with no relief,
 // leaves every rate below the float it always was. The first is also what keeps the
 // **bleed slots** clear of all of this — they carry `tooth = 0` (`bleed_fires`), so a
-// lateral flux is never gated by the weave and never reads a direction. That is not
+// lateral flux is never gated by the substrate and never reads a direction. That is not
 // bookkeeping: bleed is wet paint spreading sideways on the canvas, not a tip dragged
-// over it, so there is no travel to read the ground's rise along, and gating it would
-// break the flux's antisymmetry (the two threads of a pair sit over different ground).
-fn surface_tooth(rt: vec2<i32>, turn: f32) -> f32 {
-    if st.weave_uv_scale <= 0.0 || st.tooth <= 0.0 {
+// over it, so there is no travel to read the substrate's rise along, and gating it would
+// break the flux's antisymmetry (the two threads of a pair sit over different substrate).
+fn substrate_tooth(rt: vec2<i32>, turn: f32) -> f32 {
+    if st.substrate_uv_scale <= 0.0 || st.tooth <= 0.0 {
         return 1.0;
     }
-    let uv = vec2<f32>(rt) * st.weave_uv_scale + st.weave_uv_bias;
-    let dims = textureDimensions(surface_tex);
-    let g = textureLoad(surface_tex, ground_at(uv, dims), 0);
+    let uv = vec2<f32>(rt) * st.substrate_uv_scale + st.substrate_uv_bias;
+    let dims = textureDimensions(substrate_tex);
+    let g = textureLoad(substrate_tex, substrate_texel_at(uv, dims), 0);
     return tooth_gate(rise_ahead(g, sweep_tangent(st.dir, turn)), st.tooth);
 }
 
-// The footprint's **optical depth** for a given coverage — the currency every
+// The extent's **optical depth** for a given coverage — the currency every
 // transfer in this loop is measured in, on both sides. The canvas side gets it from
 // the prefix-τ volume's differences; the tool side, which has no prefix to
 // difference, converts its own coverage the same way the volume was built
@@ -631,7 +631,7 @@ fn tau_of(cov: f32) -> f32 {
     return -log(1.0 - min(cov, 0.999));
 }
 
-// Footprint coverage at brush-local `local` ∈ [-1,1]² (0 outside — image masks may
+// Extent coverage at brush-local `local` ∈ [-1,1]² (0 outside — image masks may
 // have non-zero borders, so the clamp sampler alone can't be trusted at the edge).
 fn coverage_at(local: vec2<f32>) -> f32 {
     if any(abs(local) >= vec2<f32>(1.0, 1.0)) {
@@ -679,7 +679,7 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
 //
 //     ∫₀^lr R(xl − s, yl) · τ(xl − s, yl) ds
 //
-// a convolution along travel between the reservoir `R` and the footprint's
+// a convolution along travel between the reservoir `R` and the extent's
 // optical-depth density. Sampling `R` once mid-pass would be a one-tap midpoint rule
 // for that integral: first order, with error growing in segment length, and so
 // tradeable only against step size.
@@ -690,7 +690,7 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
 // any segment length. Baked per segment, so the tip's orientation (the reservoir
 // lives in the shape frame, §6.6) and the reservoir's own evolution are both folded
 // in with no approximation. `dτ` comes from the prefix-τ volume's own differences,
-// so bake and exposure integrate numerically identical footprints.
+// so bake and exposure integrate numerically identical extents.
 //
 // One **workgroup per row**, one thread per column, with the running integral
 // built by a shared-memory inclusive scan (Hillis–Steele, log₂(BAKE_RES) steps).
@@ -780,7 +780,7 @@ fn bake(
     @if(resid) textureStore(bake_rlm_w, t, vec4<f32>(ws_lm[i].res, 0.0));
 }
 
-// ---- 2. Snapshot the region under the segment's footprint rect. -----------------
+// ---- 2. Snapshot the region under the segment's extent rect. -----------------
 
 // This texel's place in the segment's travel frame — the one the whole exchange is
 // measured in. Straight or curved, `sweep_at` hands back the same three quantities
@@ -822,12 +822,12 @@ fn segment_look(sw: Sweep) -> vec3<f32> {
 
 // This texel's swept exposure over the slot, **in the lookup frame's measure** — the
 // prefix-τ difference across its own stretch of travel, clamped at zero because a
-// difference of two nearly equal prefixes is rounding out past the footprint.
+// difference of two nearly equal prefixes is rounding out past the extent.
 //
 // One function because four callers want exactly this number and would each have had
 // to apply the stretch: `deposit`, its coarse hoist, the bleed flux's neighbour tap,
 // and `snapshot` by way of `outside_look`. A stretch applied in three places out of
-// four is a footprint whose flux is antisymmetric with itself and not with its
+// four is an extent whose flux is antisymmetric with itself and not with its
 // neighbour — the one property the bleed pair's conservation rests on.
 //
 // `stretch_gain` is deliberately *not* folded in: this measure is the one the bake was
@@ -855,7 +855,7 @@ fn swept_pre(l: vec3<f32>) -> f32 {
 // out past the rim its own radius names, and a rejection keyed on the reference frame
 // would cut the mark off along a straight line exactly there.
 //
-// Beyond the lateral edges the prefix rows are the footprint's own zero border; past
+// Beyond the lateral edges the prefix rows are the extent's own zero border; past
 // the trailing edge both taps clamp to the row total. Either way the difference is
 // exactly 0. The lateral test comes first because it is also what rejects a texel near
 // a tight arc's centre of curvature, where the travel coordinate has no meaning to test.
@@ -869,7 +869,7 @@ fn outside_sweep(sw: Sweep) -> bool {
     return outside_look(segment_look(sw));
 }
 
-// One footprint texel's copy. Factored out because the segment loop runs this from the
+// One extent texel's copy. Factored out because the segment loop runs this from the
 // tail of `exchange`'s grid rather than from a dispatch of its own — see there — while
 // the pen-up still needs it as a standalone pass.
 fn snapshot_at(gx: u32, gy: u32) {
@@ -1017,7 +1017,7 @@ fn tip_at(f: f32) -> vec4<f32> {
 // ordering neither needs. Both must finish before `deposit`, and sharing one dispatch
 // is the cheapest way to say exactly that.
 //
-// Workgroups `[0, ex_groups)` on x are the reservoir; the rest are the footprint,
+// Workgroups `[0, ex_groups)` on x are the reservoir; the rest are the extent,
 // re-based onto its own grid. The grid's y extent is whatever the taller of the two
 // needs, so a few groups fall outside both and return on the bounds checks — a handful
 // of early-out threads against one fewer serialized dispatch per segment, out of five.
@@ -1055,12 +1055,12 @@ fn exchange(
     // receive a fraction of what the canvas lost and quietly destroy paint.
     //
     // Scaled by the **bearing fraction** (§6.4): the tip only trades where it touches,
-    // and a reservoir cell has no ground of its own to ask — it is dragged over a
-    // fresh stretch of canvas at every sub-step. So it books against the ground's
-    // mean *for the way this segment is going*, which the host read off the ground's
+    // and a reservoir cell has no substrate of its own to ask — it is dragged over a
+    // fresh stretch of canvas at every sub-step. So it books against the substrate's
+    // mean *for the way this segment is going*, which the host read off the substrate's
     // per-direction table (`Surface::bearing`, `st.tooth_bearing`), while each canvas
     // texel scales
-    // by the ground ahead of itself. The two agree in expectation over any footprint spanning many
+    // by the substrate ahead of itself. The two agree in expectation over any extent spanning many
     // grain features — which is every usable tip — and that is what keeps a toothed
     // smear conserving. Exactly 1 when there is no tooth, so an ordinary brush is
     // untouched.
@@ -1074,7 +1074,7 @@ fn exchange(
     // nib.
     //
     // Left in the frame's units the tool weights itself by a mask stretched over its own
-    // padding — picking up from a footprint `st.frame_scale` wider than the one it lays —
+    // padding — picking up from an extent `st.frame_scale` wider than the one it lays —
     // and books the exposure for it in the wrong units on top. What that does *today* is
     // very little, and the reason is worth stating so nobody reads the correction as
     // load-bearing where it is not: the paint it misplaces lands in the padding, and
@@ -1217,7 +1217,7 @@ fn exchange(
 // either snap it away or ratchet a whole ULP into a directional drift (20 levels of
 // ghost at 176 spans against 2 at 44); and the per-texel exposure `dpre` is a
 // prefix difference over 3e-4 radii — cancellation noise, whose arbitrary sign
-// draws crescents of misclassified texels through the footprint. So the host emits
+// draws crescents of misclassified texels through the extent. So the host emits
 // one **bleed slot** per crossing of `BLEED_TRAVEL_QUANTUM` of absolute arc
 // (`stroke::dynamics::dynamics_plan`): a quad whose sweep IS the firing's travel
 // window — the last quantum of path, carrying the crossing segment's own curvature
@@ -1275,7 +1275,7 @@ fn exchange(
 //
 // The reach is quoted as a fraction of the tip's radius rather than in px, which is
 // what makes `bleed` mean the same *look* at every brush size — the same property the
-// tapers get from being quoted in radii. Its own ceiling is the footprint: a tap that
+// tapers get from being quoted in radii. Its own ceiling is the extent: a tap that
 // leaves the sweep has `w_n = 0` and carries nothing, so past about half the radius
 // the long tap is truncated for most of the tip and the delivered `D` falls short of
 // the asked-for one. Past that the honest move is a finer cadence, not a longer tap.
@@ -1345,7 +1345,7 @@ const BLEED_OFFS = array<vec2<i32>, 4>(
 // The gate is deliberately not here. `w` is the *un-toothed* weight — a firing carries
 // `tooth = 0` by construction (`bleed_fires`), because bleed is wet paint spreading
 // sideways rather than a tip dragged over grain, and gating it would break the
-// antisymmetry outright: the two threads of a pair sit over different ground. Computing
+// antisymmetry outright: the two threads of a pair sit over different substrate. Computing
 // it once, here, is what enforces that, where the deposit's own `w_t` used to be free to
 // pick up a tooth its neighbour's `w_n` never had.
 @compute @workgroup_size(8, 8)
@@ -1495,8 +1495,8 @@ fn lay_parcel(
     let tool_op = tool.m / max(tool.h, PAINT_EPS);
     let dep_h = tool.h * ex.dep;
     // No tooth factor here, and none on the deposit above: both already carry it,
-    // because `ex` was solved at the exposure the ground let through. Multiplying
-    // again would charge the weave twice — and would take the deposit out of the
+    // because `ex` was solved at the exposure the substrate let through. Multiplying
+    // again would charge the substrate twice — and would take the deposit out of the
     // complement the tool's own dispatch computed, which is what would destroy paint.
     let add_h = st.add * drain * ex.add_w;
     let par_h = dep_h + add_h;
@@ -1593,14 +1593,14 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // cancel rather than squaring.
     let dpre = swept_pre(lk);
     if dpre <= 0.0 {
-        return; // outside the swept footprint: the region keeps its value
+        return; // outside the swept extent: the region keeps its value
     }
-    // The ground's share of this texel (§6.4). It scales the **exposure**, so the whole
+    // The substrate's share of this texel (§6.4). It scales the **exposure**, so the whole
     // exchange below runs on the contact this texel actually had: the four shares stay
     // exact complements of one exposure, so the canvas takes precisely what the tool
     // gives up, and each stays in the form that composes across segment cuts. Scaling
     // the finished shares instead would do neither.
-    let e = dpre * sw.warp * stretch_gain(st.stretch) * surface_tooth(rt, sw.turn);
+    let e = dpre * sw.warp * stretch_gain(st.stretch) * substrate_tooth(rt, sw.turn);
     // The selection's coverage here (§6.8). Fully deselected texels are exactly the
     // "keeps its value" case, so they cost nothing.
     let sel = load1(sel_mask, rt).r;
@@ -1744,11 +1744,11 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
 // order under streaming), so hoisting them is the win — not resampling the result.
 //
 // So the host may split the dispatch in two wherever the shoulder allows
-// (`budget::footprint_cell`): `cell_hoist` runs one thread per **cell** — a c×c
+// (`budget::extent_cell`): `cell_hoist` runs one thread per **cell** — a c×c
 // square of canvas texels — and evaluates the taps once at the cell's centre;
 // `deposit_coarse` then runs the same per-texel grid the exact kernel would,
 // **interpolating** its neighbouring cell centres back into a per-texel value. What
-// stays per-texel is what is per-texel *by model*: the ground's tooth (the canvas's
+// stays per-texel is what is per-texel *by model*: the substrate's tooth (the canvas's
 // resolution, never the cell's), the selection coverage, the snapshot reads, the
 // color-dynamics jitter, the arc the drain fades along, and the store with its
 // re-store guard.
@@ -1759,7 +1759,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
 // plainly visible at c = 5 even though the levels barely move, because the eye reads
 // the *edges* an axis-aligned step introduces and not the amplitude. Interpolating
 // costs three more loads per scratch texture and drops the error from O(c·|∇|) to
-// O(c²·|∇²|), which is what makes the shoulder bound in `footprint_cell` (four cells
+// O(c²·|∇²|), which is what makes the shoulder bound in `extent_cell` (four cells
 // across the falloff) mean what it claims.
 //
 // What is interpolated is **premultiplied by the exposure that weights it**, for the
@@ -1784,8 +1784,8 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
 // its cell centres' bilinear blend, so the coverage falloff is rendered as a piecewise
 // bilinear chord of the true one — no step anywhere, and an error second order in the
 // cell, bounded because the falloff is at least 4c wide wherever the host engages this
-// path at all (`footprint_cell`) and a tip with no shoulder never leaves the exact
-// kernel. At the footprint's rim the blend reaches up to a cell past where the
+// path at all (`extent_cell`) and a tip with no shoulder never leaves the exact
+// kernel. At the extent's rim the blend reaches up to a cell past where the
 // per-texel integral would stop, fading linearly to nothing over that last cell rather
 // than ending on a tread; the two sides of the transfer then disagree by the rim
 // ring's worth of exposure — the same order as the mean-field freeze the loop already
@@ -1929,15 +1929,15 @@ fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     let tap = cell_tap(rt);
     let cell = cell_lerp(cell_tool, tap);
     // The exposure in the tip's measure (`dpre · warp`), blended from the centres.
-    // Zero is the hoist's "outside the swept footprint" verdict at all four of them,
+    // Zero is the hoist's "outside the swept extent" verdict at all four of them,
     // and takes the same exit.
     if cell.x <= 0.0 {
         return; // no cell around this texel saw exposure: the region keeps its value
     }
-    // The ground's share of this texel (§6.4) — per texel, never per cell: tooth is
-    // the canvas's resolution, and averaging it over a cell would smear the weave
+    // The substrate's share of this texel (§6.4) — per texel, never per cell: tooth is
+    // the canvas's resolution, and averaging it over a cell would smear the substrate
     // the gate exists to print.
-    let e = cell.x * surface_tooth(rt, sw.turn);
+    let e = cell.x * substrate_tooth(rt, sw.turn);
     let sel = load1(sel_mask, rt).r;
     if sel <= 0.0 {
         return;
@@ -1969,14 +1969,14 @@ fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
 // A stroke stops with the tip still **in contact and out of equilibrium**: the tool
 // is holding more than the canvas under it (or less, for an eraser), and that excess
 // is exactly the transfer the tip would have gone on making. Everywhere else on the
-// trail the tip left smoothly — a point sees the whole footprint pass over it, ending
-// with the trailing rim where `τ` has fallen back to 0 — but the last footprint never
+// trail the tip left smoothly — a point sees the whole extent pass over it, ending
+// with the trailing rim where `τ` has fallen back to 0 — but the last extent never
 // gets that, so what was in flight is stranded. The reservoir is per-stroke, so
 // stranded means gone: a tip-shaped disc short of the trail behind it, and (for an
 // eraser) a tip-shaped smudge of paint that should have been taken.
 //
 // So the pen-up settles the pair — one dispatch, one thread per canvas texel of the
-// final footprint, the same `exchange_at` kernel as every segment. What it needs is an
+// final extent, the same `exchange_at` kernel as every segment. What it needs is an
 // exposure, and it is bounded by the pass on **both** sides:
 //
 //     owed = prefix(l),   received = rowtotal − prefix(l)
@@ -2003,9 +2003,9 @@ fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
 // `min` of two ramps is continuous and its *slope* is not. The two cross at the tip
 // centre, where `owed = received = rowtotal/2`, and the exposure turns a corner there.
 // Everything below is exponential in that exposure, so a corner in it is a corner in
-// the height the settle leaves — and a corner in height is a **step in the surface
+// the height the settle leaves — and a corner in height is a **step in the substrate
 // normal**, which the media pass (§6.3) prints as a hard line straight across the
-// middle of the last footprint, perpendicular to the travel. It is not subtle at any
+// middle of the last extent, perpendicular to the travel. It is not subtle at any
 // impasto worth the name: on a 64 px smear into thick paint the specular jumped 107
 // levels across one texel at exactly `xl = 0`, against 2 anywhere along the trail. That
 // the kernel is deep in saturation there is no defence — it is true of the *value* and
@@ -2018,7 +2018,7 @@ fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
 // within `(min/max)ᵖ` — so it is indistinguishable from it wherever one bound is
 // clearly the binding one, and only softens where they are comparable.
 //
-// Both bounds vanish on the footprint's rim (`owed` at the trailing edge, `received` at
+// Both bounds vanish on the extent's rim (`owed` at the trailing edge, `received` at
 // the leading one, and the row total itself laterally), so the settle fades to nothing
 // all the way round and adds no edge of its own.
 //
@@ -2067,10 +2067,10 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     // The slot carries zero travel and zero curvature, so the "sweep" is the tip's own
-    // footprint and `outside_sweep` reduces to the brush-local unit square — the same
+    // extent and `outside_sweep` reduces to the brush-local unit square — the same
     // rejection `snapshot` uses to decide which texels it bothers to copy.
     let sw = segment_frame(rt);
-    // The settle's whole geometry is the footprint's, so unlike the deposit it works
+    // The settle's whole geometry is the extent's, so unlike the deposit it works
     // in the lookup frame throughout: the row it walks is a bake row, and the point it
     // walks to is where the stretch put it (§6.6). The slot carries no travel, so the
     // range's two ends coincide and `.x` is the point — and the rim test is a reading
@@ -2088,11 +2088,11 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     let lo = min(owed, received);
     let hi = max(owed, received);
     if lo <= 0.0 {
-        return; // the footprint's rim: nothing in flight, nothing to settle
+        return; // the extent's rim: nothing in flight, nothing to settle
     }
     // The soft `min` of the two bounds (see above), taken as `lo·(1 + (lo/hi)ᵖ)^(−1/p)`
     // rather than as `(owed⁻ᵖ + received⁻ᵖ)^(−1/p)`: the same value, with the reciprocal
-    // of the *small* bound — which vanishes at both rims of the footprint — never formed.
+    // of the *small* bound — which vanishes at both rims of the extent — never formed.
     //
     // Into the tip's own measure by the same gain the deposit applies, because
     // `exchange_at` below meets it with the raw rates: `owed` and `received` are both
@@ -2104,12 +2104,12 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     if sel <= 0.0 {
         return;
     }
-    // Gated like every other deposit (§6.4): a tip lifted off a rough ground was
+    // Gated like every other deposit (§6.4): a tip lifted off a rough substrate was
     // bridging the faces that fell away from its travel, so what it would have
     // delivered there stays on it. Nothing
     // is destroyed — the tool is discarded at pen-up carrying whatever it still holds,
     // which is what a knife lifted off a canvas does.
-    let ex = exchange_at(e * surface_tooth(rt, sw.turn));
+    let ex = exchange_at(e * substrate_tooth(rt, sw.turn));
 
     // The parcel is **what the rest of the pass would have delivered**, not the cell
     // overhead. At the end of a long smear the reservoir is radially skewed: the
@@ -2119,7 +2119,7 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     // pays it out slowly. That slow payout is precisely what the visible trail is made
     // of, so pairing each canvas texel with the (empty) cell directly above it deposits
     // almost nothing where the continued pass would have slid the loaded trailing
-    // cells over every interior point: the whole footprint printed as a tip-shaped
+    // cells over every interior point: the whole extent printed as a tip-shaped
     // disc of *missing* paint, stepped exactly where this kernel saturates.
     //
     // So the parcel is the sliding kernel's own gain integral over the remaining
@@ -2131,7 +2131,7 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     // lays on the points between its pen-up position and this one comes out of the
     // same load — which is what confines a saturated interior cell to the few px
     // under it while letting a shoulder cell, whose τ is a hundredth of that, carry
-    // its payout the whole way across the footprint. The second is the parcel's
+    // its payout the whole way across the extent. The second is the parcel's
     // **survival**: cells nearer the rim serve later, so what cell `u` lays here is
     // then re-lifted by everything after it, `P` the same prefix `owed` reads.
     // Dropping the en-route factor is not an option even though the artifact's ring
@@ -2150,7 +2150,7 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     // where the truncation falls. Cutting is the more literal reading and was tried
     // first: the ring serves *last*, so a truncated pass drops its entire payout the
     // moment `received` dips below `owed`, and the settle prints a fresh cliff down
-    // the middle of the footprint. A ratio of two smooth readings of one prefix
+    // the middle of the extent. A ratio of two smooth readings of one prefix
     // moves nothing discontinuously, and it can only shrink the parcel, so the
     // no-minting bound survives it.
     //
@@ -2221,7 +2221,7 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
         prev = cur;
         prev_lm = cur_lm;
         if d_e <= 0.0 {
-            continue; // outside the footprint: nothing carried, nothing served
+            continue; // outside the extent: nothing carried, nothing served
         }
         let tau = d_e / dx;
         let xc = xr - 0.5 * dx;

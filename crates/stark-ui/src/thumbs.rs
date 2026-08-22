@@ -13,20 +13,20 @@
 //! first use and kept, and each thumbnail is two fills, one replayed stroke, one
 //! small offscreen render, and a readback.
 //!
-//! Paint under the whole stroke, not bare substrate, because the ground half of
+//! Paint under the whole stroke, not bare substrate, because the substrate half of
 //! what a brush *is* here is what it does to the paint already down (§6.2):
 //! a smudge drags gray into its wake, an eraser bites a gap, a wet brush's lift
 //! muddies its own red — none of which bare canvas can show. Two grays rather
-//! than one so the stroke's opacity and its pickup each read against a ground
+//! than one so the stroke's opacity and its pickup each read against a substrate
 //! that contrasts with them somewhere along the run.
 //!
 //! # The look is pinned, deliberately
 //!
-//! Thumbnails render on the flat ground under the neutral light at default media
+//! Thumbnails render on the flat substrate under the neutral light at default media
 //! parameters — never the current canvas's look. A thumbnail is the *brush's*
 //! identity card, not a preview of today's lighting; pinning the look is what
 //! lets the cache be keyed on the brush snapshot alone ([`lookup`]), so a
-//! library's thumbnails survive every lighting, ground and background change
+//! library's thumbnails survive every lighting, substrate and substrate-color change
 //! without regenerating. (The brush editor's live preview is the opposite
 //! choice, made for the opposite reason.)
 //!
@@ -48,7 +48,7 @@ use stark_engine::command::{DocCommand, ViewCommand};
 use stark_engine::{
     Background, Engine, EnvironmentId, InputSample, MediaParams, Offscreen, Rendered,
 };
-use stark_model::SurfaceId;
+use stark_model::SubstrateId;
 use stark_model::document::{BrushParams, FillOp, SelectionShape};
 use stark_model::geom::{Extent2, Vec2};
 
@@ -265,12 +265,12 @@ async fn generate(state: AppState, w: Wearable) -> bool {
                 return false;
             };
             let mut engine = Engine::on_shared(shared, Extent2::new(THUMB_W, THUMB_H));
-            // Pin the look the module doc promises: flat ground, neutral light,
+            // Pin the look the module doc promises: flat substrate, neutral light,
             // default media, white substrate (what an eraser's bite reveals).
-            // The document opened on the donor's ground (`Engine::new_sharing`),
-            // so the surface is set back explicitly.
-            engine.process(DocCommand::SetSurface(SurfaceId::default()));
-            engine.process(DocCommand::SetBackground(Srgb::new([1.0, 1.0, 1.0])));
+            // The document opened on the donor's substrate (`Engine::new_sharing`),
+            // so the substrate is set back explicitly.
+            engine.process(DocCommand::SetSubstrate(SubstrateId::default()));
+            engine.process(DocCommand::SetSubstrateColor(Srgb::new([1.0, 1.0, 1.0])));
             engine.process(ViewCommand::SetEnvironment(EnvironmentId::default()));
             engine.process(ViewCommand::SetMediaParams(MediaParams::default()));
             *guard = Some(Rig {
@@ -281,7 +281,7 @@ async fn generate(state: AppState, w: Wearable) -> bool {
         let rig = guard.as_mut().expect("just built");
         let view = thumb_view(&w.params);
         // The scene, in stack order: the two paint slabs the stroke acts on —
-        // the whole ground is paint, so smearing, lifting and bleeding read
+        // the whole substrate is paint, so smearing, lifting and bleeding read
         // everywhere along the run — then the stroke itself, towed through the
         // preset's own smoothing. A fill carries its own region (§18.0.4), so
         // no selection is involved and the stroke is gated by nothing.

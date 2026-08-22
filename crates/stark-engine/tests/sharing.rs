@@ -88,19 +88,21 @@ fn brush_assets_are_shared_live() {
     assert_eq!(shared.asset_bytes(id), donor.asset_bytes(id));
 }
 
-/// The ground byte/build cache is live-shared the same way: a height map imported
+/// The substrate byte/build cache is live-shared the same way: a height map imported
 /// on the donor can be served (and stood on) by the sibling with no bytes handed
 /// across.
 #[test]
-fn grounds_are_shared_live() {
+fn substrates_are_shared_live() {
     let Some(mut donor) = engine_or_skip() else {
         return;
     };
     let shared = Engine::new_sharing(&donor, SIZE);
     let png = gray_png(64, 64, 128);
-    let id = donor.import_surface(&png).expect("import a valid ground");
-    assert!(shared.surface_bytes(id).is_some());
-    assert_eq!(shared.surface_bytes(id), donor.surface_bytes(id));
+    let id = donor
+        .import_substrate(&png)
+        .expect("import a valid substrate");
+    assert!(shared.substrate_bytes(id).is_some());
+    assert_eq!(shared.substrate_bytes(id), donor.substrate_bytes(id));
 }
 
 /// The compositor's view settings stayed per-engine when the passes moved behind

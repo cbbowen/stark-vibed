@@ -21,7 +21,7 @@ use stark_engine::command::Tool;
 use stark_engine::RgbaImage;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_model::SurfaceId;
+use stark_model::SubstrateId;
 use stark_model::document::BrushParams;
 use stark_model::geom::{TILE_SIZE, Vec2};
 
@@ -238,7 +238,7 @@ fn check_undo_redo(engine: &mut stark_engine::Engine, committed: &RgbaImage, rep
 /// replayable action log — stated as a test, and it is a stronger claim than it looks:
 /// the loaded engine reaches these pixels by re-running the actions through the same
 /// renderer, so anything the live path carries in memory and the file does not carry
-/// (a brush asset, a chosen ground, the reservoir's initial state) breaks it.
+/// (a brush asset, a chosen substrate, the reservoir's initial state) breaks it.
 fn check_save_load(
     case: &Case,
     engine: &stark_engine::Engine,
@@ -295,11 +295,11 @@ fn check_save_load(
 /// other checks' preference for the maximum is exactly why. A seam is a step: loud in
 /// the worst pixel, invisible in the average, so a bound on the maximum is the only one
 /// that sees it. A convergence failure is the opposite — a staircase of radii, or a
-/// stroke whose weight drifts with its segment count, covers *ground*.
+/// stroke whose weight drifts with its segment count, covers *substrate*.
 ///
 /// The maximum is also unusable here, for two separate reasons. A threshold in the
 /// pipeline flips a handful of texels either side under any change at all: the tooth
-/// gate (§6.4) is a comparison against the weave, so a texel sitting on the line lands
+/// gate (§6.4) is a comparison against the substrate, so a texel sitting on the line lands
 /// differently for reasons that say nothing about convergence — six such pixels put
 /// `tooth_arc`'s worst at 131 levels. And on a hard-edged stroke over a path with real
 /// curvature, refining the tolerance genuinely *moves the curve*: the outline shifts a
@@ -325,7 +325,7 @@ fn check_refinement(case: &Case, brush: BrushParams, committed: &RgbaImage, repo
 /// **The pen coming off the tablet must not redraw the stroke it is leaving.**
 ///
 /// A tablet keeps reporting through the release: the last handful of samples carry the
-/// pressure down to nothing across a fraction of a pixel of nib travel
+/// pressure down to nothing across a fraction of a pixel of tip travel
 /// ([`lifted`]). Every one of them is a piece of path with no length, and §6.2 says
 /// what a piece of path with no length deposits — a segment's contribution is a
 /// definite integral over travel, so it is exactly zero, whatever the pen was doing
@@ -345,10 +345,10 @@ fn check_refinement(case: &Case, brush: BrushParams, committed: &RgbaImage, repo
 /// changes the width of the last stretch of the mark.
 ///
 /// **Against [`held_down`] rather than against the committed stroke**, which is what
-/// makes it a check about the release and not about the six-tenths of a pixel the nib
+/// makes it a check about the release and not about the six-tenths of a pixel the tip
 /// slides while it happens. That travel is real, the fit is entitled to answer it, and
 /// on the cases described by three or four reports its answer is most of the viewport —
-/// so the control carries the same tail with the nib still down, and the difference is
+/// so the control carries the same tail with the tip still down, and the difference is
 /// the release alone. The committed render is not the reference here for the same
 /// reason it *is* the reference everywhere else: this is the one check whose input is
 /// not the case's own.
@@ -374,7 +374,7 @@ fn check_lift_off(case: &Case, brush: BrushParams, report: &mut Report) {
 
 /// **Where the tile grid falls under a mark must not change the mark.**
 ///
-/// The whole case — undercoat, ground, stroke — is laid down half a tile further along
+/// The whole case — undercoat, substrate, stroke — is laid down half a tile further along
 /// *both* axes, and the view is moved by exactly the same amount, so the same mark falls
 /// on the same screen pixels. The two renders must agree.
 ///
@@ -411,15 +411,15 @@ fn check_translation(case: &Case, brush: BrushParams, committed: &RgbaImage, rep
     let translated = moved.render_to_image();
 
     // Whether this case's picture is nailed to the **canvas** rather than to the
-    // gesture. A ground with relief is a height field in canvas coordinates (§6.4): the
+    // gesture. A substrate with relief is a height field in canvas coordinates (§6.4): the
     // tooth gate reads it where the paint lands and the media pass lights it where it
     // lies, so the grain under a mark is not the grain 127 px along. Such a case is not
     // translation invariant and must not be.
     //
     // Asked of the **document** rather than declared per case, so the exemption cannot
-    // go stale — `Flat` is the one ground with no relief, and a case that stops using
+    // go stale — `Flat` is the one substrate with no relief, and a case that stops using
     // linen stops being exempt in the same edit.
-    if moved.document().surface != SurfaceId::Flat {
+    if moved.document().substrate != SubstrateId::Flat {
         // Checked in the opposite direction, because an exemption nothing tests is an
         // exemption that quietly widens. A woven case that came through translation
         // *unchanged* would mean the grain is no longer being read at canvas position,
@@ -428,7 +428,7 @@ fn check_translation(case: &Case, brush: BrushParams, committed: &RgbaImage, rep
         let (_, worst) = diff_fraction(committed, &translated);
         if worst <= VISIBLE_LEVELS {
             report.note(
-                "a woven ground survived being moved half a tile: either the grain \
+                "a woven substrate survived being moved half a tile: either the grain \
                  has stopped being read at canvas position (§6.4), or this case has \
                  stopped painting on one and no longer earns its exemption",
             );

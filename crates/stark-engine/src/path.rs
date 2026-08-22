@@ -116,11 +116,11 @@ pub const MAX_TOLERANCE: f32 = 64.0;
 /// [`DEFAULT_TOLERANCE`] for a non-finite one — **the** statement of what a
 /// tolerance may be.
 ///
-/// One function rather than a clamp at each door, because the grain is read by two
+/// One function rather than a clamp at each door, because the tolerance is read by two
 /// stages of the input path and they have to agree about it: the fit prices its two
 /// thresholds in it ([`PathFitter::with_tolerance`]), and the towed tip measures
 /// against it how far its own bend is still worth sampling (§6.11). Two copies of
-/// the bounds would let a rope be measured against a grain the fitter had already
+/// the bounds would let a rope be measured against a tolerance the fitter had already
 /// clamped away.
 pub fn clamp_tolerance(tolerance: f32) -> f32 {
     if tolerance.is_finite() {
@@ -410,7 +410,7 @@ impl PathFitter {
     /// hover trail the engine was already watching (§18.1.10) — adopted as real
     /// leading samples, so the fitted curve *extends back through them* and the
     /// entry's direction and curvature are measured from motion the fit could
-    /// otherwise only guess at from its first, grain-quantized steps (§6.2).
+    /// otherwise only guess at from its first, tolerance-quantized steps (§6.2).
     ///
     /// **The curve extends; the stroke does not.** Where on the extended curve
     /// the stroke itself begins is recorded — the arc of the first pushed
@@ -421,7 +421,7 @@ impl PathFitter {
     /// *interior* sample: the curve is pinned to the run-up's first report and
     /// to the live tip, and the entry is smoothed **through** the press exactly
     /// as every later report is — which is the point, since a start pinned to
-    /// one grain-quantized report was the last unsmoothed place on the stroke.
+    /// one tolerance-quantized report was the last unsmoothed place on the stroke.
     /// A fitter seeded with nothing is bit-identical to one that never had this
     /// called, and its marker is 0.
     ///
@@ -613,7 +613,7 @@ impl PathFitter {
     /// elsewhere under a mid-stroke solve — they are still braced for data that a
     /// finished stroke never receives — and that gap is a real change of geometry at
     /// pen-up, sub-pixel but fatal to `preview == committed` wherever a discontinuous
-    /// lookup (the tooth's nearest-sampled ground, §6.4) turns position into a step.
+    /// lookup (the tooth's nearest-sampled substrate, §6.4) turns position into a step.
     /// Rendering the as-finished path instead makes `End` a no-op on the record by
     /// construction: nothing is pushed between the last preview and the commit, so
     /// [`finish`](Self::finish) adopts this very solve, bit for bit. The marker
@@ -949,7 +949,7 @@ impl PathFitter {
 ///
 /// That has a name: **the pen leaving the tablet**. A tablet keeps sampling through the
 /// release, so a stroke ends with a run of reports carrying the pressure to zero across
-/// a fraction of a pixel of nib drift. They land at the very end of the parameter
+/// a fraction of a pixel of tip drift. They land at the very end of the parameter
 /// domain, and unweighted they outvote the whole last span of real curve — measured
 /// before this weight existed, the fitted pressure came down over 88 px of a 563 px
 /// `LOOP_STROKE` and 134 px of an 838 px `FAST_STROKE`, reaching the tip at 0.80 and
@@ -2285,7 +2285,7 @@ mod tests {
             DEFAULT_TOLERANCE,
         )
         .len();
-        // The premise. At 1px the zigzag is above the declared grain, so the fit does
+        // The premise. At 1px the zigzag is above the declared tolerance, so the fit does
         // pay for some of it; without this the comparison below could be satisfied by
         // both fits being perfect, and the test would have stopped testing anything.
         assert!(

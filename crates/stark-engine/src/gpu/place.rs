@@ -204,7 +204,7 @@ fn texel(space: &dyn ColorSpace, rgba: [u8; 4]) -> Texel {
     // infinity the inversion would otherwise return.
     let want = (rgba[3] as f32 / 255.0).min(1.0 - (-OPACITY_K * OPAQUE_MASS).exp());
     let height = -(1.0 - want).ln() / OPACITY_K;
-    // Per-unit opacity 1: the paint itself is opaque, and how much of the ground it
+    // Per-unit opacity 1: the paint itself is opaque, and how much of the substrate it
     // hides is the height above (§6.1). The channels are premultiplied by it, which at
     // 1 is the identity — written as a multiplication anyway so the representation is
     // stated rather than implied.

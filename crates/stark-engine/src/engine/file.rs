@@ -2,12 +2,12 @@
 //! resources it is replayed against (§8, §6.4, §6.6).
 //!
 //! The document *is* the action log, so a file is that log plus what it takes to
-//! replay it — the brush shapes strokes reference and the canvas grounds they were
+//! replay it — the brush shapes strokes reference and the canvas substrates they were
 //! deposited against, both bundled, because a deposit is stored and no later arrival
-//! un-bakes one laid against the wrong ground. [`Engine::adopt`] is the order those
+//! un-bakes one laid against the wrong substrate. [`Engine::adopt`] is the order those
 //! have to arrive in, written once for the three callers that need it.
 //!
-//! The registries live here for the same reason: a ground is a replay input first
+//! The registries live here for the same reason: a substrate is a replay input first
 //! and a rendering input second, and its identity is derived from its bytes rather
 //! than asserted alongside them, so a wrong binding cannot be expressed.
 
@@ -19,18 +19,18 @@ use crate::Result;
 use crate::colorspace::ColorSpace;
 use crate::document::{DocState, LinearTimeline, effective_actions};
 use crate::gpu::EnvironmentId;
-use crate::gpu::surface::Ground;
+use crate::gpu::substrate::Substrate;
 use stark_model::AssetId;
 use stark_model::AssetNeed;
 use stark_model::ColorSpaceId;
 use stark_model::DocumentFile;
-use stark_model::SurfaceId;
+use stark_model::SubstrateId;
 use stark_model::document::Action;
 
 impl Engine {
     /// Snapshot the document as a saveable [`DocumentFile`] (§8), bundling the
     /// brush-shape assets that strokes actually reference (§6.6) and the canvas
-    /// grounds the log names (§6.4).
+    /// substrates the log names (§6.4).
     ///
     /// **What the log names is asked of [`DocumentFile::required_content`]**, which
     /// is the crate's one answer to that question (`content.rs`) and already what
@@ -39,7 +39,7 @@ impl Engine {
     /// about a new action that carries an id — and the one that is *not* taught
     /// writes a file that silently fails to bundle it.
     ///
-    /// Every ground the log names travels, not just the one it ends on: the tooth
+    /// Every substrate the log names travels, not just the one it ends on: the tooth
     /// reads whichever was in force when a stroke was made, so a document that
     /// switched part-way through needs both to replay to the same pixels. `Flat` is
     /// skipped — procedural, no bytes — as is anything whose image never arrived,
@@ -47,10 +47,10 @@ impl Engine {
     pub fn document_file(&self) -> DocumentFile {
         let mut file = DocumentFile::new(self.timeline.clone_actions());
         file.canvas.color_space = self.shared.color_space.id();
-        // Before the scan below, which reads it: the ground the log *starts* on is
+        // Before the scan below, which reads it: the substrate the log *starts* on is
         // named by the container rather than by any action, and is otherwise the one
         // piece of content nothing asks for.
-        file.canvas.surface = self.initial_surface;
+        file.canvas.substrate = self.initial_substrate;
         for need in file.required_content() {
             match need {
                 AssetNeed::Brush(id) => {
@@ -58,14 +58,14 @@ impl Engine {
                         file.assets.push((id, bytes));
                     }
                 }
-                AssetNeed::Ground(_) => {
-                    if let Some(id) = need.surface()
-                        && let Some(bytes) = self.surface_bytes(id)
+                AssetNeed::Substrate(_) => {
+                    if let Some(id) = need.substrate()
+                        && let Some(bytes) = self.substrate_bytes(id)
                     {
-                        file.surfaces.push((id, bytes));
+                        file.substrates.push((id, bytes));
                     }
                 }
-                // The third bag (§23). Its own, for the reason the ground has one:
+                // The third bag (§23). Its own, for the reason the substrate has one:
                 // the bytes decode differently, so a single bag would hand each
                 // store the others' to reinterpret (§8).
                 AssetNeed::Picture(id) => {
@@ -88,7 +88,7 @@ impl Engine {
     /// of the assets it ships with (§8, §12.4).
     ///
     /// Worth it because the bundle dominates the file: a log is fitted paths and
-    /// a canvas ground is megabytes, so a doodle on the built-in rough ground weighs 2.8
+    /// a canvas substrate is megabytes, so a doodle on the built-in rough substrate weighs 2.8
     /// MB of which almost none is the painting. The id stays in the file either
     /// way, so what is left out is looked up rather than guessed at, and bytes
     /// that do not hash to it are refused rather than substituted.
@@ -102,8 +102,8 @@ impl Engine {
         let mut file = self.document_file();
         let keep = |id: &AssetId| !resolvable.contains(id);
         file.assets.retain(|(id, _)| keep(id));
-        file.surfaces
-            .retain(|(id, _)| AssetNeed::ground(*id).is_none_or(|n| keep(&n.content())));
+        file.substrates
+            .retain(|(id, _)| AssetNeed::for_substrate(*id).is_none_or(|n| keep(&n.content())));
         // Pictures are *not* retained against this list, and cannot be: `resolvable`
         // is what the opening app ships with (§12.4), and a picture is by definition
         // something someone brought in — no build ships one. Filtering it anyway
@@ -119,31 +119,31 @@ impl Engine {
     /// The order is the whole content, and every step of it is a replay *input*
     /// rather than a preference:
     ///
-    /// - the ground the log starts from, recorded before `reset_document` seeds the
-    ///   empty document with it; replayed `SetSurface` actions move it from there
+    /// - the substrate the log starts from, recorded before `reset_document` seeds the
+    ///   empty document with it; replayed `SetSubstrate` actions move it from there
     ///   (§6.4);
     /// - the document's color space, since the channel layouts differ between
     ///   spaces and a stroke replayed through the wrong shaders is a different
     ///   painting (§6.7);
-    /// - the brush shapes strokes reference, and the grounds the log names, both
+    /// - the brush shapes strokes reference, and the substrates the log names, both
     ///   before any stroke that needs them. A deposit is *stored*: unlike the media
-    ///   pass, which re-reads the ground every frame and rights itself the moment an
+    ///   pass, which re-reads the substrate every frame and rights itself the moment an
     ///   image lands, no later arrival un-bakes a stroke laid against the flat
     ///   stand-in (§6.6, §6.4).
     ///
     /// The three callers had this written out three times and it had already drifted
-    /// three ways — the timelapse was missing the initial ground, so every frame
-    /// before the log's first `SetSurface` deposited against the wrong weave; it was
+    /// three ways — the timelapse was missing the initial substrate, so every frame
+    /// before the log's first `SetSubstrate` deposited against the wrong substrate; it was
     /// missing the color space too, so a Mixbox document replayed through Oklab's
     /// shaders; and it swallowed a broken brush asset silently where the other two
     /// said so. A sequence whose *order* is the correctness argument is a sequence to
     /// write once.
     ///
-    /// A ground or a shape that fails to install is logged and skipped rather than
+    /// A substrate or a shape that fails to install is logged and skipped rather than
     /// fatal: the document still opens, degraded, which is the same bargain either
     /// asset gets.
     pub(super) fn adopt(&mut self, file: &DocumentFile) {
-        self.initial_surface = file.canvas.surface;
+        self.initial_substrate = file.canvas.substrate;
         self.reset_document();
         if file.canvas.color_space != self.shared.color_space.id() {
             // A `DocumentFile` reaches here from exactly two places, and both have
@@ -162,9 +162,9 @@ impl Engine {
                 tracing::warn!("skipping unreadable brush asset: {e}");
             }
         }
-        for (id, bytes) in &file.surfaces {
-            if let Err(e) = self.accept_surface(*id, bytes) {
-                tracing::warn!("skipping a canvas ground this document names: {e}");
+        for (id, bytes) in &file.substrates {
+            if let Err(e) = self.accept_substrate(*id, bytes) {
+                tracing::warn!("skipping a canvas substrate this document names: {e}");
             }
         }
         for (id, bytes) in &file.pictures {
@@ -176,8 +176,8 @@ impl Engine {
         // Reachable only from a collaboration join now — [`Engine::load_document`] and
         // the timelapse refuse outright rather than adopt (`DocError::MissingContent`).
         // A joiner is the one caller that legitimately starts short: the actions arrive
-        // over the same transport as the blobs, and the waitlist parks a `SetSurface`
-        // until its ground lands (§12.4), so this is a statement about ordering in
+        // over the same transport as the blobs, and the waitlist parks a `SetSubstrate`
+        // until its substrate lands (§12.4), so this is a statement about ordering in
         // flight rather than about a document that cannot be reproduced.
         let missing = self.unresolved_content(file);
         if !missing.is_empty() {
@@ -186,9 +186,9 @@ impl Engine {
                 "joining a session whose content has not arrived yet; the waitlist                  holds anything that depends on it"
             );
         }
-        // The empty document is on the log's initial ground, so bind it — a timelapse
+        // The empty document is on the log's initial substrate, so bind it — a timelapse
         // renders its first frame before any action has moved it.
-        self.apply_document_surface();
+        self.apply_document_substrate();
     }
 
     /// Replace the document by replaying a loaded file's action log. The full
@@ -209,7 +209,7 @@ impl Engine {
         }
         self.resync_counters(&file.actions);
         // Whatever the replayed log left the document on.
-        self.apply_document_surface();
+        self.apply_document_substrate();
         Ok(())
     }
 
@@ -264,7 +264,7 @@ impl Engine {
     ///
     /// Refuses on unresolved content for the same reason [`Self::load_document`] does,
     /// and it matters more here rather than less: a timelapse renders every
-    /// intermediate state, so a missing ground is baked into every frame it emits.
+    /// intermediate state, so a missing substrate is baked into every frame it emits.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn replay_timelapse(
         &mut self,
@@ -275,11 +275,11 @@ impl Engine {
         self.adopt(file);
         for action in effective_actions(&file.actions) {
             self.replay_one(action);
-            // Per action, not once before the loop: a replayed `SetSurface` moves the
-            // ground the *media pass* samples as well as the one the deposit reads, so
+            // Per action, not once before the loop: a replayed `SetSubstrate` moves the
+            // substrate the *media pass* samples as well as the one the deposit reads, so
             // a timelapse across a mid-document switch would otherwise go on lighting
-            // every later frame through the weave the piece started on.
-            self.apply_document_surface();
+            // every later frame through the substrate the piece started on.
+            self.apply_document_substrate();
             on_frame(self.render_to_image());
         }
         self.resync_counters(&file.actions);
@@ -309,9 +309,9 @@ impl Engine {
     pub fn holds(&self, need: AssetNeed) -> bool {
         match need {
             AssetNeed::Brush(id) => self.has_asset(id),
-            AssetNeed::Ground(_) => need
-                .surface()
-                .is_some_and(|id| self.surface_bytes(id).is_some()),
+            AssetNeed::Substrate(_) => need
+                .substrate()
+                .is_some_and(|id| self.substrate_bytes(id).is_some()),
             AssetNeed::Picture(id) => self.shared.apply.pictures.contains(id),
         }
     }
@@ -321,7 +321,7 @@ impl Engine {
     ///
     /// A lean file leaves out content it expects the opening app to produce — the
     /// assets that ship with it — so this is the bill, and it has to be settled
-    /// **before** [`Engine::load_document`] replays the log. A `SetSurface` whose
+    /// **before** [`Engine::load_document`] replays the log. A `SetSubstrate` whose
     /// height map is not registered when its strokes replay deposits them through
     /// the flat stand-in, and those pixels are stored (§6.4).
     ///
@@ -334,7 +334,7 @@ impl Engine {
             .collect()
     }
 
-    /// Start a fresh, empty document in `color_space`, on `surface`.
+    /// Start a fresh, empty document in `color_space`, on `substrate`.
     ///
     /// The **only** way to choose a color space, and deliberately so: the channel
     /// layouts differ between spaces, so existing tiles cannot be reinterpreted and
@@ -343,7 +343,7 @@ impl Engine {
     ///
     /// Takes `&mut self` rather than being an associated function because
     /// frontend-provided *resources* survive: imported brush assets, and the
-    /// registered surface and environment bytes. Those belong to the app, not to
+    /// registered substrate and environment bytes. Those belong to the app, not to
     /// the document, and re-fetching them on every New would be gratuitous.
     /// Fails with [`DocError::UnsupportedColorSpace`] if this build does not carry
     /// `color_space`, **before** anything is reset — so a refusal leaves the open
@@ -354,81 +354,86 @@ impl Engine {
     pub fn new_document(
         &mut self,
         color_space: ColorSpaceId,
-        surface: SurfaceId,
+        substrate: SubstrateId,
     ) -> crate::error::Result<()> {
         let cs = crate::colorspace::make(color_space)
             .ok_or(DocError::UnsupportedColorSpace(color_space))?;
-        self.initial_surface = surface;
+        self.initial_substrate = substrate;
         self.reset_document();
         self.rebuild_gpu_for(cs);
-        self.apply_document_surface();
+        self.apply_document_substrate();
         Ok(())
     }
 
-    /// The document's current surface (§6.4). Change it with
-    /// [`crate::command::DocCommand::SetSurface`].
-    pub fn surface(&self) -> SurfaceId {
-        self.document().surface
+    /// The document's current substrate (§6.4). Change it with
+    /// [`crate::command::DocCommand::SetSubstrate`].
+    pub fn substrate(&self) -> SubstrateId {
+        self.document().substrate
     }
 
-    /// The canonical PNG bytes of a loaded image ground — what a save file bundles
+    /// The canonical PNG bytes of a loaded image substrate — what a save file bundles
     /// and what a live session serves to a joining peer (§8, §12.4).
-    pub fn surface_bytes(&self, id: SurfaceId) -> Option<Vec<u8>> {
-        self.shared.apply.surfaces.bytes(id)
+    pub fn substrate_bytes(&self, id: SubstrateId) -> Option<Vec<u8>> {
+        self.shared.apply.substrates.bytes(id)
     }
 
-    /// What share of a ground a tip with this `tooth`, travelling along `dir`, stands
+    /// What share of a substrate a tip with this `tooth`, travelling along `dir`, stands
     /// on (§6.4) — the bearing fraction the tool books its half of a toothed transfer
     /// against.
     ///
-    /// Exposed because it is the model's own falsifiable quantity: it is the ground's
+    /// Exposed because it is the model's own falsifiable quantity: it is the substrate's
     /// own rise-along-the-travel distribution integrated against the contact gate, so
     /// it can be checked against the map rather than taken on trust
-    /// (`tests/tooth.rs`). `dir` is there because contact reads the ground's slope
-    /// *along the travel*, which makes the curve a property of the weave and the
-    /// direction crossing it together. Builds the surface if this is the first time
+    /// (`tests/tooth.rs`). `dir` is there because contact reads the substrate's slope
+    /// *along the travel*, which makes the curve a property of the substrate and the
+    /// direction crossing it together. Builds the substrate if this is the first time
     /// it has been asked for.
     ///
-    /// At the **document's** scale, since that is the ground a stroke would actually
+    /// At the **document's** scale, since that is the substrate a stroke would actually
     /// bite right now (§6.4) — the same pair `apply` resolves. Asking for a bearing
-    /// against a differently-sized weave than the one in force would be asking about
-    /// a ground nothing is painting on.
-    pub fn surface_bearing(&self, id: SurfaceId, tooth: f32, dir: stark_model::geom::Vec2) -> f32 {
-        let ground = Ground {
+    /// against a differently-sized substrate than the one in force would be asking about
+    /// a substrate nothing is painting on.
+    pub fn substrate_bearing(
+        &self,
+        id: SubstrateId,
+        tooth: f32,
+        dir: stark_model::geom::Vec2,
+    ) -> f32 {
+        let substrate = Substrate {
             id,
-            scale: self.document().surface_scale,
+            scale: self.document().substrate_scale,
         };
         self.shared
             .apply
-            .surfaces
-            .get(&self.shared.gpu, ground)
+            .substrates
+            .get(&self.shared.gpu, substrate)
             .bearing(tooth, dir.to_array())
     }
 
-    /// Import a canvas ground from a height-map PNG, returning the id that names it
+    /// Import a canvas substrate from a height-map PNG, returning the id that names it
     /// (§6.4). The frontend fetches the bytes — the engine embeds none — and this is
-    /// how a ground enters the engine, whether it ships with the app, came out of a
+    /// how a substrate enters the engine, whether it ships with the app, came out of a
     /// save file, or arrived from a peer.
     ///
     /// **The id is derived from the image, never asserted alongside it.** The
-    /// previous `register_surface(id, bytes)` let a caller bind any name to any
+    /// previous `register_substrate(id, bytes)` let a caller bind any name to any
     /// bytes, and nothing downstream could tell a wrong binding from a right one —
-    /// which is the joint the tooth's divergence came through, since a ground that
+    /// which is the joint the tooth's divergence came through, since a substrate that
     /// failed to arrive fell back to `Flat` and baked a flat deposit into tiles that
     /// never heal. Here a mismatch cannot be expressed: ask for `id`, and `id` is
     /// what these bytes *are*.
     ///
     /// Idempotent, and cheap on a repeat — the same image re-imports to the same id.
-    /// If it is the ground in use, it is rebuilt so the bytes take effect at once.
-    pub fn import_surface(&mut self, png_bytes: &[u8]) -> Result<SurfaceId> {
-        let (id, canonical) = crate::gpu::surface::canonicalize(png_bytes)?;
+    /// If it is the substrate in use, it is rebuilt so the bytes take effect at once.
+    pub fn import_substrate(&mut self, png_bytes: &[u8]) -> Result<SubstrateId> {
+        let (id, canonical) = crate::gpu::substrate::canonicalize(png_bytes)?;
         if self
             .shared
             .apply
-            .surfaces
+            .substrates
             .register(&self.shared.gpu, id, canonical)
         {
-            self.apply_surface();
+            self.apply_substrate();
         }
         Ok(id)
     }
@@ -455,10 +460,10 @@ impl Engine {
     /// Take in a picture that arrives already named: out of a save file's bundle, or
     /// fetched for a peer's `PlaceImage` (§8, §12.4, §23).
     ///
-    /// [`accept_surface`](Engine::accept_surface)'s argument, applied to the third
+    /// [`accept_substrate`](Engine::accept_substrate)'s argument, applied to the third
     /// kind: bytes installed under someone else's id would place a *different
     /// picture* than the log says, so they are refused rather than installed. The
-    /// failure it rules out is quieter than a ground's — no tooth is baked, the wrong
+    /// failure it rules out is quieter than a substrate's — no tooth is baked, the wrong
     /// photograph simply appears — but it is the same joint, and the same check closes
     /// it.
     pub fn accept_picture(&self, expected: AssetId, png_bytes: &[u8]) -> Result<()> {
@@ -472,64 +477,73 @@ impl Engine {
         Ok(())
     }
 
-    /// Take in a ground that arrives already named: out of a save file's bundle, or
-    /// fetched for a peer's `SetSurface` (§8, §12.4). The bytes are kept verbatim —
+    /// Take in a substrate that arrives already named: out of a save file's bundle, or
+    /// fetched for a peer's `SetSubstrate` (§8, §12.4). The bytes are kept verbatim —
     /// they are canonical by construction — and **checked against the id that asked
     /// for them**.
     ///
     /// The check is the point. Bytes installed under someone else's id are the one
-    /// way a content-addressed ground could still deposit the wrong tooth, so they
-    /// are refused rather than installed. `import_surface` needs no equivalent: there
+    /// way a content-addressed substrate could still deposit the wrong tooth, so they
+    /// are refused rather than installed. `import_substrate` needs no equivalent: there
     /// the id comes out of the bytes, so there is nothing to disagree with.
     ///
-    /// If this is the ground the document already moved to while its bytes were in
+    /// If this is the substrate the document already moved to while its bytes were in
     /// flight, registering it is also what swaps the flat stand-in for the real
-    /// weave.
-    pub fn accept_surface(&mut self, expected: SurfaceId, png_bytes: &[u8]) -> Result<SurfaceId> {
-        let actual = crate::gpu::surface::identify(png_bytes)?;
+    /// substrate.
+    pub fn accept_substrate(
+        &mut self,
+        expected: SubstrateId,
+        png_bytes: &[u8],
+    ) -> Result<SubstrateId> {
+        let actual = crate::gpu::substrate::identify(png_bytes)?;
         if actual != expected {
             return Err(DocError::Asset(format!(
-                "ground {expected:?} arrived as {actual:?}; refusing to install it"
+                "substrate {expected:?} arrived as {actual:?}; refusing to install it"
             ))
             .into());
         }
         if self
             .shared
             .apply
-            .surfaces
+            .substrates
             .register(&self.shared.gpu, actual, png_bytes.to_vec())
         {
-            self.apply_surface();
+            self.apply_substrate();
         }
         Ok(actual)
     }
 
-    /// Bring the GPU-side surface in line with the document's, rebuilding it if the
+    /// Bring the GPU-side substrate in line with the document's, rebuilding it if the
     /// document moved to a different one **or laid the same one at a different size**
     /// — after a commit, an undo, a load, or a remote merge. A no-op when unchanged,
     /// which is the common case.
     ///
-    /// The pair, through [`DocState::ground`], because the pair is what a `Surface` is
-    /// built from (§6.4): a scale change with the weave unmoved has to rebind the
-    /// media pass exactly as a weave change does, and asking with the id alone was
+    /// The pair, through [`DocState::substrate`], because the pair is what a `SubstrateMap` is
+    /// built from (§6.4): a scale change with the substrate unmoved has to rebind the
+    /// media pass exactly as a substrate change does, and asking with the id alone was
     /// how it would silently not.
     ///
-    /// There is deliberately no public `set_surface`: the surface is document state
+    /// There is deliberately no public `set_substrate`: the substrate is document state
     /// (§6.4), so it changes by logging an action like anything else.
     ///
-    /// [`DocState::ground`]: crate::document::DocState::ground
-    pub(super) fn apply_document_surface(&mut self) {
-        let ground = self.document().ground();
-        if self.shared.apply.surfaces.set(&self.shared.gpu, ground) {
-            self.apply_surface();
+    /// [`DocState::substrate`]: crate::document::DocState::substrate
+    pub(super) fn apply_document_substrate(&mut self) {
+        let substrate = self.document().substrate();
+        if self
+            .shared
+            .apply
+            .substrates
+            .set(&self.shared.gpu, substrate)
+        {
+            self.apply_substrate();
         }
     }
 
-    /// Rebind the current surface in the media pass — the only thing that samples
+    /// Rebind the current substrate in the media pass — the only thing that samples
     /// it. No pipeline or pool rebuild, no document reset.
-    fn apply_surface(&mut self) {
+    fn apply_substrate(&mut self) {
         self.compositor_pipeline
-            .set_surface(self.shared.apply.surfaces.current());
+            .set_substrate(self.shared.apply.substrates.current());
     }
 
     /// The current lighting environment (§6.3).
@@ -580,8 +594,8 @@ impl Engine {
     /// "unsupported space" case left to handle here or to forget.
     fn rebuild_gpu_for(&mut self, cs: Arc<dyn ColorSpace>) {
         // Cloned out before the rebuild: the registry lives on `self.shared.apply`, which is
-        // replaced below, and a `Surface` is two reference-counted wgpu handles.
-        let surface = self.shared.apply.surfaces.current();
+        // replaced below, and a `SubstrateMap` is two reference-counted wgpu handles.
+        let substrate = self.shared.apply.substrates.current();
         let environment = self.shared.environment.current();
         let built = build_gpu(GpuBuild {
             // What a rebuild does not touch, moved through into the new context —
@@ -591,12 +605,12 @@ impl Engine {
                 gpu: self.shared.gpu.clone(),
                 assets: self.shared.apply.assets.clone(),
                 selection: self.shared.apply.selection.clone(),
-                surfaces: self.shared.apply.surfaces.clone(),
+                substrates: self.shared.apply.substrates.clone(),
                 environments: self.shared.environment.clone(),
             },
             target_format: self.shared.target_format,
             cs: &cs,
-            surface: &surface,
+            substrate: &substrate,
             environment: &environment,
         });
         // Whole, not field by field: anything added to the shared half is rebuilt
@@ -615,7 +629,7 @@ impl Engine {
     /// network side; `join_collaboration` re-enables after its reset.
     fn reset_document(&mut self) {
         self.timeline = Box::new(LinearTimeline::new(
-            DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface),
+            DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate),
         ));
         self.preview.clear();
         self.peers.clear();

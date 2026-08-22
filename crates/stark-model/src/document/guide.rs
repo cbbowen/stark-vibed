@@ -790,7 +790,7 @@ impl AxisPencil {
     }
 }
 
-/// One plane of one guide — the surface spanned by a *pair* of axes — as a
+/// One plane of one guide — the plane spanned by a *pair* of axes — as a
 /// **chart**: the map between the canvas and the plane's own flat, metric
 /// coordinates, both ways (§20.7).
 ///

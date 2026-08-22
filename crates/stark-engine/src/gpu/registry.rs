@@ -6,30 +6,30 @@
 //! of registered bytes, the id currently in use, and the GPU object built for that
 //! id — and the same two operations: *register bytes* (rebuild if they are the ones
 //! in use) and *switch* (rebuild if it actually changed). Written twice, for the
-//! canvas surface and the lighting environment, those were the same six lines with
+//! canvas substrate and the lighting environment, those were the same six lines with
 //! different nouns.
 //!
 //! Each resource keeps one **builtin** id that needs no bytes at all — `Flat` for
-//! surfaces, the procedural `Neutral` for environments — which is also the fallback
+//! substrates, the procedural `Neutral` for environments — which is also the fallback
 //! when an id's bytes have not arrived yet.
 //!
 //! # What is registered and what is built are two keys
 //!
-//! Usually the same one. The canvas surface is why they are separate: a ground is
+//! Usually the same one. The canvas substrate is why they are separate: a substrate is
 //! baked *per scale* (§6.4) — the rise a tip meets is measured over a reach in canvas
-//! px, so how large the weave is laid changes the map that gets built from it — while
+//! px, so how large the substrate is laid changes the map that gets built from it — while
 //! the height map those bakes come from is one PNG whatever scale it is laid at. So
 //! bytes are filed under [`Resource::Content`] and built objects under the resource
-//! itself, and registering a ground's bytes readies every scale of it at once.
+//! itself, and registering a substrate's bytes readies every scale of it at once.
 //!
 //! # The store is shared; the *choice* is not
 //!
 //! The bytes and the built objects live behind an `Arc`, and `Clone` hands out a
 //! sibling registry over the same store with its own current id. That is what lets a
 //! second engine on the same device ([`Engine::new_sharing`]) reuse every decode this
-//! one has paid for — a ground's height map is a PNG decode plus two whole-image CPU
+//! one has paid for — a substrate's height map is a PNG decode plus two whole-image CPU
 //! passes, an environment is an HDR decode plus a full mip chain — while still being
-//! free to stand on a different ground. Which id is *in use* is the one part of the
+//! free to stand on a different substrate. Which id is *in use* is the one part of the
 //! shape that is genuinely per-engine: it mirrors that engine's document (§6.4) or
 //! its view (§6.3), and siblings agreeing on it would be a bug, not a feature.
 //!
@@ -50,8 +50,8 @@ pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
     type Gpu: Clone;
 
     /// **What the frontend registers bytes under** — see the module note. The
-    /// lighting environment is its own content and says so; a ground is its
-    /// `SurfaceId`, so every scale it may be laid at shares one registration.
+    /// lighting environment is its own content and says so; a substrate is its
+    /// `SubstrateId`, so every scale it may be laid at shares one registration.
     type Content: Copy + Eq + Hash + std::fmt::Debug;
 
     /// The registered bytes this id builds from.
@@ -72,14 +72,14 @@ struct Store<R: Resource> {
     /// Everything built, keyed by id; the id in use is always present.
     ///
     /// A **cache**, not a set of live resources, and it exists for the canvas
-    /// surface's sake. Once the deposition tooth reads the surface (§6.4), a stroke
-    /// replayed from before a `SetSurface` has to deposit against the ground it was
+    /// substrate's sake. Once the deposition tooth reads the substrate (§6.4), a stroke
+    /// replayed from before a `SetSubstrate` has to deposit against the substrate it was
     /// actually painted on rather than the one in use now — so [`Registry::get`]
     /// can be asked for any id at any time, and re-decoding a multi-megabyte PNG
     /// every time the log crosses that boundary is not a thing to do on an undo
     /// step. Bounded by the number of distinct ids a document ever names — for a
-    /// ground, by the number of *(weave, scale)* pairs it ever names, which is what
-    /// `SurfaceScale`'s ladder is there to keep small.
+    /// substrate, by the number of *(substrate, scale)* pairs it ever names, which is what
+    /// `SubstrateScale`'s ladder is there to keep small.
     built: HashMap<R, R::Gpu>,
 }
 
@@ -158,7 +158,7 @@ impl<R: Resource> Registry<R> {
     /// The object for **any** `id`, built on demand and cached — without changing
     /// which one is in use.
     ///
-    /// This is what a replay asks: the surface a stroke deposits against is the one
+    /// This is what a replay asks: the substrate a stroke deposits against is the one
     /// the document was on *at that point in the log* (§6.4), which is a question
     /// about the action being applied, not about what the compositor is showing.
     /// Also how [`register`](Self::register) and [`set`](Self::set) rebuild the
@@ -195,7 +195,7 @@ impl<R: Resource> Registry<R> {
         // Whatever was built from this content was built from the *old* bytes —
         // usually the builtin fallback, standing in while the fetch was in flight.
         // Dropping it is what makes `get` return the real thing from now on. Every
-        // build of it, since one height map bakes a ground per scale (see the module
+        // build of it, since one height map bakes a substrate per scale (see the module
         // note): a `retain` rather than a `remove`, because the bytes are one key and
         // the objects are another.
         store.built.retain(|id, _| id.content() != content);

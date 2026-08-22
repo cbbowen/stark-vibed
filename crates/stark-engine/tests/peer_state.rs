@@ -714,7 +714,7 @@ fn every_replacement_of_the_preview_base_moves_the_epoch() {
 
     let e0 = engine.preview_epoch();
     // Installing a drag preview replaces the base the fold composites onto.
-    engine.process(ViewCommand::PreviewBackground(Some(Srgb::new([
+    engine.process(ViewCommand::PreviewSubstrateColor(Some(Srgb::new([
         0.2, 0.4, 0.9,
     ]))));
     let e1 = moved(&mut engine, e0, "installing a drag preview");
@@ -733,7 +733,7 @@ fn every_replacement_of_the_preview_base_moves_the_epoch() {
     // The case an epoch bump inside the seek's own `if` would miss: a drag preview up,
     // and a `Seek` that declines to move the playhead. The slot is dropped either way,
     // so the epoch must move either way.
-    engine.process(ViewCommand::PreviewBackground(Some(Srgb::new([
+    engine.process(ViewCommand::PreviewSubstrateColor(Some(Srgb::new([
         0.9, 0.3, 0.1,
     ]))));
     let e5 = moved(&mut engine, e4, "installing a second drag preview");

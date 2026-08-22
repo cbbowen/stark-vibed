@@ -20,10 +20,10 @@ const MEDIA_SLOTS: &[Slot] = &[
     Slot::at(mcd::M),
     Slot::at(mcd::COMP_COLOR),
     Slot::at(mcd::COMP_AUX),
-    // The weave and the environment are read through samplers — the first filtered at
+    // The substrate and the environment are read through samplers — the first filtered at
     // canvas scale, the second mipped for the roughness lobe (§6.3).
-    Slot::sampled(mcd::SURFACE),
-    Slot::at(mcd::SURFACE_SAMP),
+    Slot::sampled(mcd::SUBSTRATE),
+    Slot::at(mcd::SUBSTRATE_SAMP),
     Slot::sampled(mcd::ENV),
     Slot::at(mcd::ENV_SAMP),
     // The composited residual, declared by `media_mixbox.wesl` itself rather than by
@@ -37,7 +37,7 @@ fn tex(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
     wgpu::BindingResource::TextureView(v)
 }
 use crate::gpu::environment::Environment;
-use crate::gpu::surface::Surface;
+use crate::gpu::substrate::SubstrateMap;
 
 // Generated from `media_common.wesl`'s own declaration (§6.7).
 pub(super) use stark_shaders::mirror::media_common::Media as MediaUniform;
@@ -48,7 +48,7 @@ pub(super) use stark_shaders::mirror::media_common::Media as MediaUniform;
 /// its pixels).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct MediaParams {
-    /// Relief slope: how strongly the height field tilts normals (impasto/weave).
+    /// Relief slope: how strongly the height field tilts normals (impasto/substrate).
     pub height_strength: f32,
     /// Paint glossiness in `[0,1]`: how smooth (low-roughness) the paint film is,
     /// driving the Cook–Torrance specular. 0 = matte; 1 = near mirror-smooth. It is
@@ -56,8 +56,8 @@ pub struct MediaParams {
     /// ramped only by how much of the fragment *is* paint (its visible alpha), so
     /// the bare canvas behind it stays rough → matte.
     pub specular: f32,
-    /// How strongly the canvas surface relief shows (its weave amplitude).
-    pub surface_strength: f32,
+    /// How strongly the canvas substrate relief shows (its substrate amplitude).
+    pub substrate_strength: f32,
 }
 
 impl Default for MediaParams {
@@ -65,10 +65,10 @@ impl Default for MediaParams {
         Self {
             height_strength: 0.15,
             specular: 0.20,
-            // The weave is off until asked for: the default canvas is linen, and its
+            // The substrate is off until asked for: the default canvas is linen, and its
             // relief is there to be *painted into* (§6.2) whether or not the light is
             // made to show it. Raising this embosses it into the lit result.
-            surface_strength: 0.0,
+            substrate_strength: 0.0,
         }
     }
 }
@@ -165,24 +165,24 @@ impl MediaPass {
 pub(super) struct MediaScene<'a> {
     pub(super) params: MediaParams,
     pub(super) environment: &'a Environment,
-    /// Canvas px → surface-tile uv for the ground **the document is on**
-    /// ([`Ground::uv_scale`](crate::gpu::Ground::uv_scale)) — how large the weave is
+    /// Canvas px → substrate-tile uv for the substrate **the document is on**
+    /// ([`Substrate::uv_scale`](crate::gpu::Substrate::uv_scale)) — how large the substrate is
     /// laid, as this frame is showing it.
     ///
     /// Off the document rather than off the bound map, and that is not a shortcut:
-    /// the map's *height* channel — the only one this pass reads — is what the ground
+    /// the map's *height* channel — the only one this pass reads — is what the substrate
     /// is, and is the same field however large it is laid. All the scale-dependence
     /// of a bake is in the rise channels, which only the deposit reads. So the light
     /// can follow a scale the instant it changes, while the tooth waits for the bake
     /// the commit triggers — which is exactly what makes the slider previewable
-    /// (`ViewCommand::PreviewSurfaceScale`) instead of costing a whole-image filter
+    /// (`ViewCommand::PreviewSubstrateScale`) instead of costing a whole-image filter
     /// per pointer sample.
-    pub(super) grain_uv: f32,
-    /// The **supersampled** view, so the weave and the relief are measured in the
+    pub(super) substrate_uv_scale: f32,
+    /// The **supersampled** view, so the substrate and the relief are measured in the
     /// texels this pass is actually shading (§6.4).
     pub(super) view: ViewTransform,
-    pub(super) background: [f32; 4],
-    pub(super) background_resid: [f32; 4],
+    pub(super) substrate_color: [f32; 4],
+    pub(super) substrate_resid: [f32; 4],
     /// Skip the substrate and carry the paint's visible alpha out, for a cut-out
     /// export (§15.6).
     pub(super) transparent: bool,
@@ -192,8 +192,8 @@ impl MediaScene<'_> {
     /// The scene as the shader reads it — the one place these numbers become an ABI.
     fn uniform(&self) -> MediaUniform {
         let m = self.params;
-        // Screen→canvas mapping for sampling the surface bump in canvas space, so the
-        // weave stays attached to the canvas as it pans, zooms, turns and mirrors
+        // Screen→canvas mapping for sampling the substrate bump in canvas space, so the
+        // substrate stays attached to the canvas as it pans, zooms, turns and mirrors
         // (§6.4, §18.1.2).
         let canvas_origin = self.view.screen_to_canvas(stark_model::geom::Vec2::ZERO);
         // Diffuse samples a heavily-blurred high mip ≈ hemispherical irradiance; the
@@ -208,22 +208,22 @@ impl MediaScene<'_> {
         // an unrelieved patch of paint comes back out its own color.
         let exposure = self.environment.exposure / self.environment.flat_irradiance;
         MediaUniform {
-            bg: self.background,
-            bg_resid: self.background_resid,
+            bg: self.substrate_color,
+            bg_resid: self.substrate_resid,
             shade: [exposure, diffuse_lod, m.specular, m.height_strength],
-            surf_a: [
+            view_a: [
                 canvas_origin.x,
                 canvas_origin.y,
                 1.0 / self.view.zoom,
-                self.grain_uv,
+                self.substrate_uv_scale,
             ],
-            surf_b: [
-                m.surface_strength,
+            sub_b: [
+                m.substrate_strength,
                 if self.transparent { 1.0 } else { 0.0 },
                 0.0,
                 0.0,
             ],
-            surf_m: self.view.inverse_linear().to_cols_array(),
+            view_m: self.view.inverse_linear().to_cols_array(),
         }
     }
 }
@@ -251,7 +251,7 @@ pub(super) struct OffscreenDesc<'a> {
     pub(super) media: &'a MediaPass,
     /// The consumer's own uniform buffer, which this bind group names.
     pub(super) media_buf: &'a wgpu::Buffer,
-    pub(super) surface: &'a Surface,
+    pub(super) substrate: &'a SubstrateMap,
     pub(super) environment: &'a Environment,
 }
 
@@ -285,7 +285,7 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
         formats,
         media,
         media_buf,
-        surface,
+        substrate,
         environment,
     } = d;
     let color = super::offscreen_view(device, size, formats.color, "stark comp color");
@@ -304,8 +304,8 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
             mc::M => media_buf.as_entire_binding(),
             mc::COMP_COLOR => tex(&color),
             mc::COMP_AUX => tex(&aux),
-            mc::SURFACE => tex(&surface.view),
-            mc::SURFACE_SAMP => wgpu::BindingResource::Sampler(&surface.sampler),
+            mc::SUBSTRATE => tex(&substrate.view),
+            mc::SUBSTRATE_SAMP => wgpu::BindingResource::Sampler(&substrate.sampler),
             mc::ENV => tex(&environment.view),
             mc::ENV_SAMP => wgpu::BindingResource::Sampler(&environment.sampler),
             mm::COMP_RESID => tex(resid

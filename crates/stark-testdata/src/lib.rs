@@ -2392,7 +2392,7 @@ pub const FAST_STROKE: &[[f32; 2]] = &[
 
 /// The app's shipped image assets, for tests that need the *real* bytes rather
 /// than a synthetic stand-in — the studio HDR the goldens are lit by, the bristle
-/// brush, the linen weave.
+/// brush, the linen substrate.
 ///
 /// These live in `crates/stark-ui/assets/` and are read from there. That is a
 /// crate boundary pointing the wrong way (§2 has stark-ui depending on
@@ -2432,27 +2432,27 @@ pub mod assets {
         read("shape/Flat.png")
     }
 
-    /// The built-in linen canvas weave (§6.4).
+    /// The built-in linen canvas substrate (§6.4).
     pub fn linen() -> Vec<u8> {
-        read("surface/Linen.png")
+        read("substrate/Linen.png")
     }
 
-    /// The built-in rough ground (§6.4) — the irregular one, which is what the
-    /// deposition tooth's tests want: a regular weave's bearing curve is a few
+    /// The built-in rough substrate (§6.4) — the irregular one, which is what the
+    /// deposition tooth's tests want: a regular substrate's bearing curve is a few
     /// discrete levels, so a level-set test on it proves much less.
     pub fn rough() -> Vec<u8> {
-        read("surface/Rough.png")
+        read("substrate/Rough.png")
     }
 
     /// Bytes for any image the app ships, **by content id** — the dev-side of
     /// `stark-ui::builtin_ids::fetch`, and what lets a headless engine open a lean
     /// document (§8).
     ///
-    /// The app saves lean: a `.stark` painted on Linen names the ground's id and
+    /// The app saves lean: a `.stark` painted on Linen names the substrate's id and
     /// carries none of its bytes, on the promise that whoever opens it can produce
     /// that id from its own assets. Only `stark-ui` could keep that promise, because
     /// only its build script hashes the shipped PNGs into a table. So every other
-    /// opener — a test, a repro harness, a CLI — got a ground that would not resolve
+    /// opener — a test, a repro harness, a CLI — got a substrate that would not resolve
     /// and a document that replayed through the flat stand-in, silently: no tooth, and
     /// stored pixels that no later arrival un-bakes (§6.4). A captured bug report was
     /// unreproducible for exactly this reason.
@@ -2464,7 +2464,7 @@ pub mod assets {
     ///
     /// **The lookup needs no kind, and that is a property of the ids rather than a
     /// convenience.** A shape's id is the hash of its decoded *coverage* and a
-    /// ground's is the hash of its *height*, so one PNG filed under both would earn two
+    /// substrate's is the hash of its *height*, so one PNG filed under both would earn two
     /// different ids; an id therefore already names which store it belongs in, and the
     /// caller — holding an `AssetNeed` — already knows. Kind only comes back at the
     /// install, where the two stores are different functions.
@@ -2480,7 +2480,7 @@ pub mod assets {
                 type Derive = fn(&[u8]) -> stark_assetid::Result<stark_assetid::Canonical>;
                 let kinds: [(&str, Derive); 2] = [
                     ("shape", stark_assetid::coverage),
-                    ("surface", stark_assetid::height),
+                    ("substrate", stark_assetid::height),
                 ];
                 for (sub, derive) in kinds {
                     for (path, bytes) in pngs(sub) {

@@ -36,7 +36,7 @@ const COVERAGE_EPS: f32 = 1e-4;
 // `matte.wesl` and `media_common.wesl` — three of them carrying a "must match"
 // comment at the very constant a shared import was already available for
 // (`stamp.wesl` imported this one). The `media_common` copy had by then
-// gone dead outright: its own comment said it "remains only for the weave-sink
+// gone dead outright: its own comment said it "remains only for the substrate-sink
 // correction", and that correction is a power law with no `K` in it.
 //
 // Every place the slab law is evaluated now reads this: the parcel stacking below,
@@ -78,10 +78,10 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
 
 // --- the deposition tooth (§6.4) -------------------------------------------------
 //
-// Paint lands where the tip touches the ground, and what a *dragged* tip touches is
-// not a level set of the ground's height — it is decided by the ground's **slope
-// along the travel**. A moving tip has give: it sinks after ground that falls away
-// beneath it and is pressed up by ground that rises to meet it, so it bears on the
+// Paint lands where the tip touches the substrate, and what a *dragged* tip touches is
+// not a level set of the substrate's height — it is decided by the substrate's **slope
+// along the travel**. A moving tip has give: it sinks after substrate that falls away
+// beneath it and is pressed up by substrate that rises to meet it, so it bears on the
 // near face of every bump and bridges the lee side behind it. That is why a dry
 // brush prints the leading edges of the grain rather than a speckle of its summits,
 // and it is why a height threshold — which reads the same mark whichever way the
@@ -92,9 +92,9 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
 //
 // **`tooth` is the give, inverted** (`tooth_level`). The gate thresholds the rise
 // against the steepest fall the tip can still follow, and the knob walks that limit
-// from infinite (tooth = 0: the tip tracks any fall — the surface is ignored,
+// from infinite (tooth = 0: the tip tracks any fall — the substrate is ignored,
 // exactly) through zero (tooth = ½: the tip holds its level, touching whatever is
-// flat or rising and bridging every fall) to *demanding* ground that rises at the
+// flat or rising and bridging every fall) to *demanding* substrate that rises at the
 // contact scale (tooth = 1: only the leading faces of the grain print — the dry
 // mark, still a mark). The field is directional outright: run the same stroke
 // backwards and the rise negates, so the mark moves to the other side of every
@@ -114,8 +114,8 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
 // complements of one exposure (`dynamics.wesl::Exchange`), so scaling the exposure
 // keeps them complementary and the canvas takes exactly what the tool gives up. The
 // two sides evaluate `g` differently — the canvas per texel, the tool against the
-// ground's mean bearing (`Surface::bearing`), since a reservoir cell has no ground of
-// its own — and they agree in expectation over any footprint spanning many grain
+// substrate's mean bearing (`Surface::bearing`), since a reservoir cell has no substrate of
+// its own — and they agree in expectation over any extent spanning many grain
 // features. That residual is the same order as the mean-field freeze either side of
 // the kernel already carries.
 //
@@ -126,7 +126,7 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
 // bit-identical to its neighbour's interior with no copy pass (§6.4); the gate still
 // factors out of the sum over a segment's overlapping quads, so `preview == committed`
 // survives; and — the reason the mark reads as paper rather than as noise —
-// successive strokes over the same ground in the same direction catch on the same
+// successive strokes over the same substrate in the same direction catch on the same
 // faces and register with each other. What is deliberately *not* invariant is the
 // stroke run the other way: that is the physics, not a leak.
 //
@@ -139,19 +139,19 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
 // A hard threshold is a binary indicator per texel: correct in the mean, and at
 // canvas resolution it aliases into hard-edged speckle that reads as dither rather
 // than as tooth. Too wide and the faces are smeared into a flat grey and the grain
-// stops reading at all. 0.06 is the bundled grounds' own interquartile rise, so the
+// stops reading at all. 0.06 is the bundled substrates' own interquartile rise, so the
 // transition spans the grain's natural variation.
-// **Must match `TOOTH_SOFTNESS` in `gpu::surface`.**
+// **Must match `TOOTH_SOFTNESS` in `gpu::substrate`.**
 const TOOTH_SOFTNESS: f32 = 0.06;
 
 // The contact scale: the rise, per reach of travel, that a full-tooth tip demands of
-// the ground before it presses — and the unit `tooth_level`'s follow limit is
-// measured in. Measured against the bundled grounds (mean |rise| 0.037–0.090), not
-// picked; see `gpu::surface::TOOTH_RISE`, which it **must match**.
+// the substrate before it presses — and the unit `tooth_level`'s follow limit is
+// measured in. Measured against the bundled substrates (mean |rise| 0.037–0.090), not
+// picked; see `gpu::substrate::TOOTH_RISE`, which it **must match**.
 const TOOTH_RISE: f32 = 0.05;
 
 // The half-range the rise bytes span, as a fraction of the height range — the scale
-// `gpu::surface::encode_rise` quantizes against, and which `rise_ahead` below has to
+// `gpu::substrate::encode_rise` quantizes against, and which `rise_ahead` below has to
 // decode with. The host reads this declaration rather than keeping a copy (§6.10),
 // which is why it is named here instead of folded into `rise_ahead`'s arithmetic as
 // the literals `255.0 / 512.0` and `0.25`. Naming it costs nothing: both spellings
@@ -162,10 +162,10 @@ const TOOTH_RISE: f32 = 0.05;
 // tooth's transition tonal rather than stepped.
 const RISE_LIMIT: f32 = 0.25;
 
-// The ground texel at a canvas position, sampled **nearest** rather than bilinear.
+// The substrate texel at a canvas position, sampled **nearest** rather than bilinear.
 //
 // Not a shortcut — bilinear would be wrong twice over. The map is minified (about two
-// texels per canvas px at `SURFACE_TILE_PX`), so filtering averages the faces the
+// texels per canvas px at `SUBSTRATE_TILE_PX`), so filtering averages the faces the
 // tooth exists to catch on and washes the grain toward its mean. And the distribution
 // the shader draws from has to be the map's own, because that distribution is what the
 // CPU integrates to get the bearing fraction the tool books against; a filtered tap
@@ -173,40 +173,40 @@ const RISE_LIMIT: f32 = 0.25;
 // also sidesteps the reduced-precision filter weights
 // `stamp_common.wesl::prefix_slice` documents, so the tap is bit-reproducible.
 //
-// The one tap serves the whole gate: the ground texture carries the rise ahead in
+// The one tap serves the whole gate: the substrate texture carries the rise ahead in
 // `gb` (its `r` is the height, which is the media pass's business, §6.3), so the
 // texel the gate thresholds is the map's own stored byte — which is what lets the
 // CPU tabulate the same distribution, byte for byte, and keep booking the tool's
 // half against the real thing.
 //
 // `dims` is the map's size; the modulo is the Repeat the sampler would have done.
-fn ground_at(uv: vec2<f32>, dims: vec2<u32>) -> vec2<i32> {
+fn substrate_texel_at(uv: vec2<f32>, dims: vec2<u32>) -> vec2<i32> {
     let d = vec2<f32>(dims);
     return vec2<i32>(fract(uv - floor(uv)) * d);
 }
 
-// The **rise ahead** at a ground texel `g`, under a tip whose travel here is the
-// unit tangent `travel`: how much higher the ground the tip is about to meet stands
-// than the ground here, `ahead·d̂` — the height's derivative along the travel, taken
+// The **rise ahead** at a substrate texel `g`, under a tip whose travel here is the
+// unit tangent `travel`: how much higher the substrate the tip is about to meet stands
+// than the substrate here, `ahead·d̂` — the height's derivative along the travel, taken
 // across the contact's own reach.
 //
-// `ahead` is baked into the map (`gpu::surface::pack_ground`) — how much higher the
-// ground stands one `TOOTH_REACH` further on along each canvas axis, filtered at the
+// `ahead` is baked into the map (`gpu::substrate::pack_substrate`) — how much higher the
+// substrate stands one `TOOTH_REACH` further on along each canvas axis, filtered at the
 // scale contact happens at and already scaled to canvas px, so nothing here depends on
-// how finely the weave was stored. The bytes span ±`RISE_LIMIT` = 0.25 of the height
+// how finely the substrate was stored. The bytes span ±`RISE_LIMIT` = 0.25 of the height
 // range (real rises are small; spending the byte there is what keeps the transition
-// tonal rather than stepped — `gpu::surface::RISE_LIMIT`, which the folded constants
+// tonal rather than stepped — `gpu::substrate::RISE_LIMIT`, which the folded constants
 // here **must match**). All that is left at draw time is the projection onto the
 // direction of travel, and that projection is the whole model: positive on a bump's
 // near face, where the tip bears early; negative past the summit, where it bridges;
 // negated outright when the same stroke runs the other way.
 //
-// **Mirrored on the CPU** in `gpu::surface::rise_ahead`, decode constants included,
+// **Mirrored on the CPU** in `gpu::substrate::rise_ahead`, decode constants included,
 // because the tool's half of the transfer is booked against this quantity's
 // distribution.
 fn rise_ahead(g: vec4<f32>, travel: vec2<f32>) -> f32 {
     // `byte·(L/128) − L`, with the `byte/255` the sampler already applied folded back
-    // out — the exact inverse of `gpu::surface::encode_rise`'s `128 + 128·rise/L`.
+    // out — the exact inverse of `gpu::substrate::encode_rise`'s `128 + 128·rise/L`.
     let ahead = g.gb * (255.0 * RISE_LIMIT / 128.0) - vec2<f32>(RISE_LIMIT, RISE_LIMIT);
     return dot(ahead, travel);
 }
@@ -218,7 +218,7 @@ fn rise_ahead(g: vec4<f32>, travel: vec2<f32>) -> f32 {
 // −∞ at `tooth = 0` (infinite give — the transition band runs out below any rise the
 // map can encode, so the knob's bottom meets the callers' `tooth <= 0` guard
 // *continuously*: a pen mapping sweeping through zero cannot pop), 0 at `tooth = ½`
-// (no give left going down: the tip holds its level, touches flat and rising ground,
+// (no give left going down: the tip holds its level, touches flat and rising substrate,
 // bridges every fall), +`TOOTH_RISE` at `tooth = 1` (contact demands a rise at the
 // contact scale — the leading faces alone). A `Flat` canvas never gets here: its
 // `relief` of 0 zeroes the uv scale upstream and the gate is exactly 1.
@@ -231,12 +231,12 @@ fn tooth_level(tooth: f32) -> f32 {
     return TOOTH_RISE * (2.0 - 1.0 / max(tooth, 0.01));
 }
 
-// The fraction of its paint a texel receives, given the rise `d` of the ground along
+// The fraction of its paint a texel receives, given the rise `d` of the substrate along
 // the tip's travel there (`rise_ahead`). A cubic smoothstep, for the reason
 // `taper_profile` is a polynomial: this decides stored pixels, and replay, goldens
 // and peers have to agree on it to the last bit (§12.1).
 //
-// **Mirrored on the CPU** in `gpu::surface`, which averages it over the map's rise
+// **Mirrored on the CPU** in `gpu::substrate`, which averages it over the map's rise
 // distribution to get the bearing fraction the tool books against. The two must be
 // the same function or the two halves of a toothed transfer disagree; the
 // conservation pair in `tests/dynamics.rs` is what notices if they drift.

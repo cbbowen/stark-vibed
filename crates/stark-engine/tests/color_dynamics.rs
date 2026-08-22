@@ -58,7 +58,7 @@ fn golden_color_jitter_white() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    // High-frequency white noise: fine speckled grain in lightness + chroma.
+    // High-frequency white noise: fine speckled noise in lightness + chroma.
     let b = jitter_brush(NoiseKind::White, [6.0, 6.0], [0.15, 0.10, 0.10]);
     stroke_with(&mut engine, b, &S_CURVE);
     let img = engine.render_to_image();

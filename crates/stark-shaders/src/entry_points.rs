@@ -14,7 +14,7 @@
 /// Every WESL module compiled to its own WGSL artifact, by module name.
 ///
 /// Kept sorted, which is not cosmetic: the pipeline this list drives is a `for` loop,
-/// so the order decides the order build errors surface in, and an alphabetical list is
+/// so the order decides the order build errors substrate in, and an alphabetical list is
 /// the one a reader can check for a missing entry at a glance.
 pub const ENTRY_POINTS: &[&str] = &[
     "blend_mixbox",

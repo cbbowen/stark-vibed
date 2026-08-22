@@ -13,7 +13,7 @@
 //!   [tag](Tag) saying whether what follows is an answer at all.
 //! - **The `iroh-blobs` ALPN** serves individual pieces of content to peers that
 //!   see an action referencing one they don't hold — a brush image, a canvas
-//!   ground, a placed picture (§23) — hash-verified, addressed by the blob hash a
+//!   substrate, a placed picture (§23) — hash-verified, addressed by the blob hash a
 //!   [`Stamped`] message carries alongside such an action.
 
 use std::sync::Mutex;
@@ -56,8 +56,8 @@ use crate::mirror::{Mirror, Served};
 /// 9: the drawing guides became document state, so `ActionKind` gained five
 /// variants, §20.5 — the plainest kind of shape change, and one an older peer
 /// would decode as some other action entirely;
-/// 10: how large the canvas weave is laid became document state, so `ActionKind`
-/// gained `SetSurfaceScale` — and *inserted*, beside the `SetSurface` it is the other
+/// 10: how large the canvas substrate is laid became document state, so `ActionKind`
+/// gained `SetSubstrateScale` — and *inserted*, beside the `SetSubstrate` it is the other
 /// half of, which shifts the index of every variant after it, §6.4).
 pub(crate) const ALPN: &[u8] = b"stark/collab/10";
 
@@ -199,7 +199,7 @@ pub(crate) enum Request {
 ///
 /// The hash has to come with it. A recovered action goes through the same door as
 /// one off the flood, and that door needs to know what to fetch — without it a
-/// recovered `SetSurface` would be applied against the flat stand-in, which is the
+/// recovered `SetSubstrate` would be applied against the flat stand-in, which is the
 /// divergence reconciliation exists to undo (§6.4).
 ///
 /// A named pair rather than the tuple it was, because a tuple has no *field* for the
@@ -311,7 +311,7 @@ mod tests {
                 lamport,
                 actor: ActorId(1),
             },
-            kind: ActionKind::SetBackground(Srgb::new([0.0; 3])),
+            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
         }
     }
 

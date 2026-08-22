@@ -7,14 +7,14 @@
 //     one particular build, so a stale copy pins the whole app to that build.
 //     Network-first: the network answers when it can, the cache when it can't.
 //   * **Everything else same-origin** — the wasm, the JS glue, the stylesheet,
-//     the brush stamps, the ground height maps, the HDR environment. Every one
+//     the brush stamps, the substrate height maps, the HDR environment. Every one
 //     of those is content-addressed by the asset pipeline (or by Stark itself:
 //     a stamp *is* the hash of its coverage, §6.6), so its URL changes when its
 //     bytes do and a hit can never be stale. Cache-first, revalidating in the
 //     background so a renamed file is in hand before it is asked for.
 //
 // The large runtime fetches are what this is really for. `builtins::import_all`,
-// `grounds::open_default` and the environment HDR are all fetched *after* the
+// `substrates::open_default` and the environment HDR are all fetched *after* the
 // wasm boots and are deliberately not in the binary — without a cache they are
 // a fresh megabyte-scale download every start, and offline they simply fail.
 //

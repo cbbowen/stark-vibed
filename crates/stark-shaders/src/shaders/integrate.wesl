@@ -1,5 +1,5 @@
 // Stroke *integrate* pass (§6.2/§6.1). Every brush rasterizes its swept
-// footprint into a *cleared scratch* tile (the stamp pass), then this fullscreen
+// extent into a *cleared scratch* tile (the stamp pass), then this fullscreen
 // pass merges that scratch into a fresh copy-on-write tile over the base:
 // `new = f(base, scratch)`, written to the color+aux MRT.
 //
@@ -89,7 +89,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     }
 
     var out: FsOut;
-    // The stroke's footprint missed this texel. An exact branch rather than the
+    // The stroke's extent missed this texel. An exact branch rather than the
     // general arithmetic, so a texel a stroke merely passed *near* — every tile it
     // overlaps is rewritten whole — passes through bit-for-bit. The f32→f16 store's
     // rounding is implementation-defined, so recomputing a resident value through

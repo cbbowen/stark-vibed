@@ -252,7 +252,7 @@ fn an_eraser_takes_the_paint_it_stopped_on() {
     );
     let img = engine.render_to_image();
     let y = SIZE.height / 2;
-    // Red on the warm ground pulls green down, so paint left behind reads as green
+    // Red on the warm substrate pulls green down, so paint left behind reads as green
     // that failed to come back up. Canvas 0 is the pen-up point.
     let trail = img.pixel(SIZE.width / 2 - 38, y)[1] as i32;
     let stop = img.pixel(SIZE.width / 2, y)[1] as i32;
@@ -733,7 +733,7 @@ fn a_conservative_smear_does_not_destroy_paint_either() {
 
     // Red paint pulls the green channel down, so paint going missing shows as green
     // coming back up. The field covers the whole viewport, so the "no paint" end of
-    // the scale comes from the ground itself: under the reference light a bare
+    // the scale comes from the substrate itself: under the reference light a bare
     // substrate renders its own sRGB to within a couple of levels (`reference.rs`),
     // which is exactly the guarantee that lets this test carry its own scale.
     let y = SIZE.height / 2;
@@ -903,7 +903,7 @@ fn a_carried_stroke_is_independent_of_how_the_path_was_cut() {
 
 /// Worst and rms per-pixel spread across renders that are supposed to be identical.
 ///
-/// Measured on green: the paint is red over a light grey ground, so green is the
+/// Measured on green: the paint is red over a light grey substrate, so green is the
 /// channel it moves furthest. No high-pass is needed the way there is when judging one
 /// image by eye — these five share a geometry, so the stroke's own gradient cancels in
 /// the spread and what is left is only the disagreement.
@@ -1260,7 +1260,7 @@ fn a_bleed_trail_across_an_edge_has_no_step_in_it() {
 
     let img = engine.render_to_image();
     let (cx, cy) = (img.width / 2, img.height / 2);
-    // Green: the paint is red over a light ground, so green is the channel it moves
+    // Green: the paint is red over a light substrate, so green is the channel it moves
     // furthest. Averaged across the blender's middle, since one column of it is noise.
     let profile: Vec<f64> = (0..img.height)
         .map(|y| {
@@ -1272,7 +1272,7 @@ fn a_bleed_trail_across_an_edge_has_no_step_in_it() {
         })
         .collect();
     // The trail below the bar: past its edge (60 px of tip) with a margin, out to where
-    // the smear has faded into the ground.
+    // the smear has faded into the substrate.
     let (from, to) = (cy as usize + 75, cy as usize + 150);
     let step = 8usize; // a tap scale: a ghost of the edge lands as a step this wide
     let ripple = |i: usize| (profile[i] - 0.5 * (profile[i - step] + profile[i + step])).abs();
@@ -1575,7 +1575,7 @@ fn a_smear_that_transfers_nothing_leaves_the_canvas_alone() {
 /// and those two bounds cross at the tip centre. Combined with a `min` the exposure is
 /// continuous there but its *slope* is not, and everything downstream is exponential in
 /// it, so the height field turns a corner along the line `xl = 0`. A corner in height is
-/// a step in the surface normal, and the media pass (§6.3) prints that as a hard line
+/// a step in the relief normal, and the media pass (§6.3) prints that as a hard line
 /// straight across the footprint, perpendicular to the travel — the one place in a
 /// stroke where the mark is not a smooth function of position.
 ///
@@ -1588,7 +1588,7 @@ fn a_smear_that_transfers_nothing_leaves_the_canvas_alone() {
 ///
 /// **On the studio HDR**, and it has to be — this is the second test in the suite to
 /// need it (`golden_studio_environment` is the other), and for the one reason that
-/// justifies the exception. What is defective here is a *surface normal*, and a normal
+/// justifies the exception. What is defective here is a *relief normal*, and a normal
 /// is only observable in the difference between the directions it can reflect. The
 /// reference light is procedural and near-uniform, so a specular reflection of it is
 /// almost independent of which way the paint faces: the same scene reads 2 levels
@@ -1733,7 +1733,7 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
     ];
 
     // Paint level per pixel against the pre-stroke render of the same engine, so the
-    // ground's own structure cancels: red paint pulls the green channel down.
+    // substrate's own structure cancels: red paint pulls the green channel down.
     let level =
         |before: &stark_engine::RgbaImage, after: &stark_engine::RgbaImage, x: u32, y: u32| {
             (before.pixel(x, y)[1] as i32 - after.pixel(x, y)[1] as i32).max(0)
@@ -1816,7 +1816,7 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
 /// The family this guards: a firing's window is history-free on purpose — walked
 /// back along the crossing segment's own arc, up to one `BLEED_TRAVEL_QUANTUM`
 /// *before* the segment it fires after (`plan::bleed_fires`) — so for the first
-/// segment of a live-tail range it can write ground behind everything the range's
+/// segment of a live-tail range it can write substrate behind everything the range's
 /// segments cover. Until 2026-08-11 the windows were absent from the region/tile
 /// accounting (`affected_tiles` and `chunk_segments` walked only the segments,
 /// while `snapshot_size` did take the fires), and flux written there was silently

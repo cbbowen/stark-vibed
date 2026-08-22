@@ -26,7 +26,7 @@ pub(crate) mod registry;
 pub(crate) mod selection;
 pub(crate) mod stroke;
 pub(crate) mod submit;
-pub(crate) mod surface;
+pub(crate) mod substrate;
 pub(crate) mod tile;
 pub(crate) mod transform;
 pub(crate) mod uniforms;
@@ -44,7 +44,7 @@ pub use place::PlaceRenderer;
 pub use registry::{Registry, Resource};
 pub use selection::SelectionRenderer;
 pub use stroke::{StrokeRenderer, StrokeSpans, ToolState};
-pub use surface::{Ground, Surface};
+pub use substrate::{Substrate, SubstrateMap};
 pub use tile::{
     AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, MASK_TEX, MaskHandle, TilePairHandle,
     TilePool, mask_tex_origin,

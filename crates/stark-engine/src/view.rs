@@ -23,7 +23,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use stark_model::geom::{Extent2, Mat2, Vec2};
 
 /// The pan/zoom/rotate/mirror transform applied when presenting the canvas to a
-/// surface (§6.4). This is session state and is never historized.
+/// substrate (§6.4). This is session state and is never historized.
 ///
 /// Everything here is *how you are looking at* the painting rather than anything
 /// about it, which is what makes turning the canvas and holding it up to a mirror
@@ -70,7 +70,7 @@ pub struct ViewTransform {
     /// those two the artist meant. It also keeps the mirror a *toggle* rather than
     /// two independent booleans that can both be on.
     pub flip_h: bool,
-    /// Size of the target surface, in pixels.
+    /// Size of the target substrate, in pixels.
     pub viewport: Extent2,
 }
 
@@ -194,7 +194,7 @@ impl ViewTransform {
         (self.center - extent, self.center + extent)
     }
 
-    /// Half the viewport, in screen px — the centre of the surface.
+    /// Half the viewport, in screen px — the centre of the substrate.
     fn half(self) -> Vec2 {
         Vec2::new(self.viewport.width as f32, self.viewport.height as f32) * 0.5
     }
@@ -325,7 +325,7 @@ impl ViewTransform {
         });
     }
 
-    /// Note that the target surface is now `viewport` pixels.
+    /// Note that the target substrate is now `viewport` pixels.
     ///
     /// Nothing to refuse — a pixel size is `u32` — but it goes through the same door
     /// as the rest, so "the view is mutated through its methods" has no exceptions to

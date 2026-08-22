@@ -223,7 +223,7 @@ fn transparent_export_cuts_out_the_paint() {
 /// The substrate is document state now (§15.5), so it travels with
 /// the export instead of depending on whichever frontend asked for it.
 #[test]
-fn export_uses_the_documents_ground() {
+fn export_uses_the_documents_substrate() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -240,9 +240,12 @@ fn export_uses_the_documents_ground() {
             .expect("paper"),
     )
     .expect("the readback completes");
-    assert!(!is_dark(paper.pixel(4, 4)), "default ground is near-white");
+    assert!(
+        !is_dark(paper.pixel(4, 4)),
+        "default substrate is near-white"
+    );
 
-    engine.process(DocCommand::SetBackground(Srgb::new([0.02, 0.02, 0.03])));
+    engine.process(DocCommand::SetSubstrateColor(Srgb::new([0.02, 0.02, 0.03])));
     let ink = pollster::block_on(
         engine
             .export(
@@ -257,7 +260,7 @@ fn export_uses_the_documents_ground() {
     .expect("the readback completes");
     assert!(
         is_dark(ink.pixel(4, 4)),
-        "a dark ground should reach the export, got {:?}",
+        "a dark substrate should reach the export, got {:?}",
         ink.pixel(4, 4)
     );
 
@@ -648,7 +651,7 @@ fn fitting_a_small_piece_fills_the_box() {
 /// An export is RGBA whatever the render target's own channel order is.
 ///
 /// This is the bug that shipped: every test renders to `Rgba8Unorm`, but a browser
-/// surface is typically `Bgra8Unorm`, and the readback handed those bytes straight
+/// substrate is typically `Bgra8Unorm`, and the readback handed those bytes straight
 /// to an RGBA image — so the exported PNG came out with red and blue swapped.
 /// Green, black and white are all fixed points of a R↔B swap, which is exactly why
 /// it read as a color-space problem rather than a byte-order one.
@@ -870,7 +873,7 @@ fn doc_revision_tracks_commits_and_not_gestures() {
 
     // Panning is not, and neither is an unlogged preview drag — but an undo is.
     engine.process(ViewCommand::CenterOn(Vec2::new(500.0, -250.0)));
-    engine.process(ViewCommand::PreviewBackground(Some(Srgb::new([
+    engine.process(ViewCommand::PreviewSubstrateColor(Some(Srgb::new([
         0.1, 0.1, 0.1,
     ]))));
     assert_eq!(engine.observe().doc_revision, committed);

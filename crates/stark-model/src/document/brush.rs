@@ -69,11 +69,11 @@ impl BrushShape {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub enum OrientationSource {
     /// The shape's native axis tracks the stroke tangent — the relative angle is always
-    /// 0, so the footprint always faces along the motion (the historical behaviour).
+    /// 0, so the extent always faces along the motion (the historical behaviour).
     #[default]
     FollowStroke,
     /// The shape stays pinned to the pen's orientation (the tilt azimuth) in canvas
-    /// space; as the stroke curves under a fixed pen the footprint angle stays put,
+    /// space; as the stroke curves under a fixed pen the extent angle stays put,
     /// like a calligraphy nib.
     Pen,
 }
@@ -194,7 +194,7 @@ impl BrushDynamics {
 /// cheap and deterministic across replay, peers, and builds.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub enum NoiseKind {
-    /// Uncorrelated per-texel randomness — grainy speckle.
+    /// Uncorrelated per-texel randomness — a fine speckle.
     White,
     /// Smooth organic gradient noise (a seamlessly tiling simplex-class noise) —
     /// soft, flowing variation.
@@ -215,7 +215,7 @@ pub enum NoiseKind {
 /// field is sampled in the stroke's **own** frame — `(lateral offset from the
 /// centreline, arc length)`, both in canvas px — so the variation belongs to the
 /// gesture rather than to the patch of canvas under it: one axis spreads the
-/// color across the footprint, the other evolves it along the stroke. The three
+/// color across the extent, the other evolves it along the stroke. The three
 /// noise channels offset the three color channels *of the current color space*
 /// (Oklab `L, a, b`; Mixbox pigment concentrations). The per-stroke `seed`
 /// translates the lookup so each stroke draws a fresh part of the field,
@@ -447,10 +447,10 @@ pub struct Modulations {
     /// Scales [`BrushDynamics::bleed`].
     pub bleed: Option<Modulation>,
     /// Scales [`BrushParams::tooth`] — how deep the tool bites into the canvas's
-    /// weave (§6.4). Mapped to pressure this is the charcoal behaviour: bear down and
+    /// substrate (§6.4). Mapped to pressure this is the charcoal behaviour: bear down and
     /// the tip flattens into the valleys, so the grain fills in.
     pub tooth: Option<Modulation>,
-    /// Scales [`BrushParams::stretch`] — how far the footprint elongates along the
+    /// Scales [`BrushParams::stretch`] — how far the extent elongates along the
     /// brush's facing axis (§6.6). Mapped to [`ModSource::Tilt`] with
     /// [`OrientationSource::Pen`] this is the pencil behaviour: lean the pen over and
     /// the contact patch draws out along the lean, exactly as a real tip's does.
@@ -634,26 +634,26 @@ pub struct BrushParams {
     /// scaling, held here as data so a preset can drop it or aim it elsewhere.
     #[serde(default = "Modulations::pressure_size")]
     pub modulation: Modulations,
-    /// How deeply this tool bites into the **canvas surface's tooth** (§6.4), in
-    /// [0, 1]: 0 = the tip reaches everywhere and the ground does not break the mark
+    /// How deeply this tool bites into the **canvas substrate's tooth** (§6.4), in
+    /// [0, 1]: 0 = the tip reaches everywhere and the substrate does not break the mark
     /// up at all (the historical behaviour, and the default); 1 = it touches only the
-    /// very tops of the weave, so the mark is what a dry brush leaves.
+    /// very tops of the substrate, so the mark is what a dry brush leaves.
     ///
-    /// The *ground* is document state ([`SurfaceId`](crate::SurfaceId)) — a pencil and a loaded brush
+    /// The *substrate* is document state ([`SubstrateId`](crate::SubstrateId)) — a pencil and a loaded brush
     /// on the same canvas see the same tooth, which is why the grain lives there and
     /// only this knob lives on the brush. What it scales is the paint the brush lays
-    /// per unit swept optical depth, gated per texel by whether the ground clears the
+    /// per unit swept optical depth, gated per texel by whether the substrate clears the
     /// level this tool presses to (`paint_common.wesl::tooth_gate`).
     ///
     /// Exactly 0 on a `Flat` canvas whatever this says, because `Surface::relief` is
     /// 0 there — so the axis is orthogonal to every golden that paints on `Flat`, the
-    /// same way the media pass's weave already is.
+    /// same way the media pass's substrate already is.
     #[serde(default)]
     pub tooth: f32,
-    /// How far the footprint **elongates along the brush's facing axis** (§6.6), in
+    /// How far the extent **elongates along the brush's facing axis** (§6.6), in
     /// `[0, 1)`: the tip is stretched by [`elongation`](Self::elongation)
     /// `s = 1/(1 − stretch)` along that axis and left alone across it, so 0 is the
-    /// footprint the shape draws and 0.5 is one twice as long as it is wide.
+    /// extent the shape draws and 0.5 is one twice as long as it is wide.
     ///
     /// **The axis is [`orientation`](Self::orientation)'s**, not a second direction to
     /// set. That is the whole of why this is one number: the brush already says which
@@ -666,9 +666,9 @@ pub struct BrushParams {
     /// a round tip and with no stamp asset at all.
     ///
     /// The renderer never stretches the *mask*: a swept integral of a stretched
-    /// footprint is the unstretched one read at another angle, over another travel,
+    /// extent is the unstretched one read at another angle, over another travel,
     /// with a factor on the result (§6.6), so the prefix-τ volume the brush already
-    /// binds is the volume this reads. What it does cost is footprint area — the tip
+    /// binds is the volume this reads. What it does cost is extent area — the tip
     /// reaches `s` times as far along its axis, so the tiles a segment touches, and
     /// the dynamics loop's dispatch over them, grow with it. That is what
     /// [`MAX_ELONGATION`](Self::MAX_ELONGATION) bounds.
@@ -731,7 +731,7 @@ impl BrushParams {
         start > 0.0 || end > 0.0
     }
 
-    /// The furthest the footprint may be drawn out along its facing axis — what
+    /// The furthest the extent may be drawn out along its facing axis — what
     /// [`elongation`](Self::elongation) saturates at, and so the factor by which the
     /// worst-case tip outgrows its own radius.
     ///
@@ -770,7 +770,7 @@ impl BrushParams {
     ///
     /// Every guard this replaces stays where it is. `taper_px`, `drain_px`,
     /// `elongation` and `stroke_rect` defend themselves against values that never
-    /// came through here, which is what keeps a footprint honest for a record built
+    /// came through here, which is what keeps an extent honest for a record built
     /// by hand in a test or arriving down a path this funnel does not cover (§12.6).
     pub fn sanitized(self) -> Self {
         let d = Self::default();
@@ -793,7 +793,7 @@ impl BrushParams {
         }
     }
 
-    /// [`stretch`](Self::stretch) as the factor the footprint is drawn out by along
+    /// [`stretch`](Self::stretch) as the factor the extent is drawn out by along
     /// the facing axis: `s = 1/(1 − stretch)`, clamped to
     /// [`MAX_ELONGATION`](Self::MAX_ELONGATION).
     ///
@@ -822,7 +822,7 @@ impl BrushParams {
         // `min` first and `max` second, and that order is the NaN policy: `f32::min`
         // and `f32::max` return the non-NaN operand (the argument at
         // `clamp01`), so this way a NaN knob falls out as the *identity* and the
-        // other way it would fall out as the widest footprint the brush can ask for.
+        // other way it would fall out as the widest extent the brush can ask for.
         1.0 / (1.0 - stretch).min(1.0).max(1.0 / Self::MAX_ELONGATION)
     }
 }

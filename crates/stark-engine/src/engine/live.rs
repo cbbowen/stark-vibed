@@ -459,7 +459,7 @@ impl Engine {
     ///
     /// `pub` for harnesses, not frontends: a frontend gets its flush from
     /// [`render`](Self::render) with the frame that shows the result, while the
-    /// stroke benchmark has no surface and must pay the fold explicitly to time
+    /// stroke benchmark has no substrate and must pay the fold explicitly to time
     /// it. Not a command, deliberately (§4): a command is an *input* — logged,
     /// replicated, countable — and this mutates no document or session state at
     /// all, only services a cache whose content is fully determined by them.
@@ -613,32 +613,32 @@ fn render_span_range(
     // lets one client's live stroke be reproduced faithfully on another's screen
     // while their selections differ (§17.3).
     let selection = base.selection_of(author);
-    // The ground this stroke is being laid on (§6.4) — the same texture
+    // The substrate this stroke is being laid on (§6.4) — the same texture
     // `CommitStroke`'s apply will resolve, which is what `preview == committed`
     // needs of the tooth.
     //
-    // The registry's *in-use* surface, not a lookup by `base.ground()`, and the two
-    // are the same thing here rather than nearly so: `apply_document_surface`
-    // holds `current()` equal to `document().ground()` after every commit, undo,
-    // load and merge, and a live gesture cannot straddle a `SetSurface` (or a
-    // `SetSurfaceScale`) because a gesture is not a logged action — any merge that
-    // moved the surface bumped the preview's epoch and threw every frozen head away
+    // The registry's *in-use* substrate, not a lookup by `base.substrate()`, and the two
+    // are the same thing here rather than nearly so: `apply_document_substrate`
+    // holds `current()` equal to `document().substrate()` after every commit, undo,
+    // load and merge, and a live gesture cannot straddle a `SetSubstrate` (or a
+    // `SetSubstrateScale`) because a gesture is not a logged action — any merge that
+    // moved the substrate bumped the preview's epoch and threw every frozen head away
     // with it. Asserted rather than only argued, since it is a `&self` path that
     // cannot build one on demand — and asserted on the *pair*, since the pair is what
-    // a `Surface` is built from.
+    // a `SubstrateMap` is built from.
     debug_assert_eq!(
-        base.ground(),
-        ctx.surfaces.id(),
-        "a live stroke is being drawn against a surface the document is not on",
+        base.substrate(),
+        ctx.substrates.id(),
+        "a live stroke is being drawn against a substrate the document is not on",
     );
-    let surface = ctx.surfaces.current();
+    let substrate = ctx.substrates.current();
     let (tiles, carry) = ctx.stroke.render_range(
         crate::gpu::stroke::StrokeScene {
             pool: &ctx.pool,
             assets: &ctx.assets,
             base: tiles_base,
             selection: &selection,
-            surface: &surface,
+            substrate: &substrate,
         },
         rec,
         spans,

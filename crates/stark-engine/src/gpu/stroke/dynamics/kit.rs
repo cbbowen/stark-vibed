@@ -36,7 +36,7 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     pub(in crate::gpu::stroke) composite_tile_bgl: wgpu::BindGroupLayout,
     pub(in crate::gpu::stroke) composite_sampler: wgpu::Sampler,
     // The stamp-loop dispatches (one compute shader, several entry points).
-    /// The footprint copy that gives the `deposit`/`settle` something to read while
+    /// The extent copy that gives the `deposit`/`settle` something to read while
     /// they storage-write the region.
     ///
     /// A painting segment does not dispatch it: its snapshot rides in the tail of its
@@ -66,7 +66,7 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     pub(in crate::gpu::stroke) deposit_bgl: wgpu::BindGroupLayout,
     /// The **coarse deposit** pair (§6.2), for the slots whose tip's shoulder lets
     /// the exchange be evaluated per cell instead of per texel
-    /// (`budget::footprint_cell`): `cell_hoist` distils the prefix and the bake into
+    /// (`budget::extent_cell`): `cell_hoist` distils the prefix and the bake into
     /// per-cell means, `deposit_coarse` reads them back over the exact kernel's own
     /// texel grid. Slots with a cell of 1 — every hard or small tip, every bleed and
     /// settle slot — never touch either and keep `deposit_pipeline` bit-for-bit.
@@ -81,7 +81,7 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     pub(in crate::gpu::stroke) settle_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) settle_bgl: wgpu::BindGroupLayout,
     /// The deposit's prefix-τ volume binding (group 1) — the same texture the
-    /// swept fast path samples, so the exchange footprint *is* the definite
+    /// swept fast path samples, so the exchange extent *is* the definite
     /// integral of the brush along the travel (compute-visible variant).
     pub(in crate::gpu::stroke) prefix_bgl: wgpu::BindGroupLayout,
     /// Bilinear clamp sampler for the region / reservoir / coverage lookups.

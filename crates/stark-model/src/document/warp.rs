@@ -10,7 +10,7 @@
 //! machinery of §16.4/§16.5 carries over: watertight quads, at most one parcel
 //! per destination texel, inverse mapping per fragment.
 //!
-//! **Identity is bit-exact by construction.** The surface is evaluated in
+//! **Identity is bit-exact by construction.** The substrate is evaluated in
 //! *deviation form*: control points are split into `base + delta` against the
 //! undeformed grid, only the deltas go through the Hermite arithmetic (in a
 //! form whose every term is a multiple of a delta difference), and the base
@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_WARP_GRID: u32 = 8;
 
 /// Bilinear sub-cells per control cell per axis — the fine-lattice density the
-/// smooth surface is sampled at. Fixed by design (not by quality settings), so
+/// smooth substrate is sampled at. Fixed by design (not by quality settings), so
 /// every peer and every replay rasterizes the identical lattice.
 pub(crate) const SUBDIV: usize = 8;
 
@@ -38,7 +38,7 @@ const MIN_JACOBIAN: f32 = 1e-6;
 
 /// A warp of the selected paint inside `[min, max]` (§16.9): the control grid's
 /// points are the images of the rect's uniform `cols × rows` grid, and the paint
-/// under the author's mask *within the rect* follows the interpolated surface.
+/// under the author's mask *within the rect* follows the interpolated substrate.
 /// Paint and mask outside the rect stay put — the mask coverage gates the cut,
 /// so a feathered selection's warp stays seamless at the rect edge.
 ///
@@ -104,7 +104,7 @@ fn hermite_axis(d: &[Vec2], k: usize, f: f32) -> Vec2 {
 
 /// Per-control-point weights of [`hermite_axis`] at `(k, f)`: the coefficient
 /// each `d[i]` contributes to the evaluated point. What lets a frontend solve
-/// "move the surface point under the finger exactly" — the least-norm control
+/// "move the substrate point under the finger exactly" — the least-norm control
 /// move is `Δpᵢ = Bᵢ·Δ / ΣB²` (§16.9).
 fn axis_basis(len: usize, k: usize, f: f32) -> Vec<f32> {
     let mut c = vec![0.0f32; len];
@@ -276,7 +276,7 @@ impl WarpMap {
         self.lattice().is_some_and(|lat| lat.positive())
     }
 
-    /// Sample the smooth surface onto the fine lattice. `None` when the map is
+    /// Sample the smooth substrate onto the fine lattice. `None` when the map is
     /// malformed or the rect is degenerate enough that the base lattice loses
     /// strict monotonicity in f32.
     pub fn lattice(&self) -> Option<Lattice> {
@@ -343,7 +343,7 @@ impl WarpMap {
     /// The control points as **deviations** from the undeformed grid — the only
     /// thing the Hermite arithmetic ever sees (see the module header).
     ///
-    /// Hoisted out of [`eval`](Self::eval) so a caller evaluating the surface many
+    /// Hoisted out of [`eval`](Self::eval) so a caller evaluating the substrate many
     /// times can compute it once: see [`prepared`](Self::prepared).
     fn deltas(&self) -> Vec<Vec2> {
         (0..self.rows)
@@ -353,10 +353,10 @@ impl WarpMap {
     }
 
     /// The mesh with its delta grid computed once, for a caller that is about to
-    /// evaluate the surface many times (§16.9).
+    /// evaluate the substrate many times (§16.9).
     ///
     /// **The frontend is that caller, in a loop.** Finding the grabbed point is a
-    /// search over the surface and drawing the mesh is one `eval` per point of
+    /// search over the substrate and drawing the mesh is one `eval` per point of
     /// every curve, so a drag was rebuilding the whole delta grid — a `Vec`
     /// allocation and `cols · rows` subtractions — per sample, tens to hundreds of
     /// times a frame. Nothing about the answer changes between them.
@@ -367,7 +367,7 @@ impl WarpMap {
         }
     }
 
-    /// The smooth surface at grid fraction `t ∈ [0,1]²` — what a frontend draws
+    /// The smooth substrate at grid fraction `t ∈ [0,1]²` — what a frontend draws
     /// its mesh curves with and inverts to find the grabbed point.
     ///
     /// Evaluating more than one point? [`prepared`](Self::prepared) hoists the
@@ -376,7 +376,7 @@ impl WarpMap {
         self.prepared().eval(t)
     }
 
-    /// Per-control-point influence at grid fraction `t`: how far the surface
+    /// Per-control-point influence at grid fraction `t`: how far the substrate
     /// point moves per unit move of each control point (row-major, like
     /// `points`). Weights sum to 1. The exact-follow surface drag rests on
     /// this (§16.9).
@@ -411,7 +411,7 @@ pub struct Prepared<'a> {
 }
 
 impl Prepared<'_> {
-    /// The smooth surface at grid fraction `t ∈ [0,1]²`.
+    /// The smooth substrate at grid fraction `t ∈ [0,1]²`.
     ///
     /// Bit-for-bit what [`WarpMap::eval`] computes — it *is* what `eval` computes,
     /// which is what keeps the hoist from being a second implementation that could
@@ -483,7 +483,7 @@ mod tests {
         let at = map.eval(t);
         assert!(
             (at - map.points[5]).length() < 1e-3,
-            "surface at the node's fraction is {at:?}, node is {:?}",
+            "substrate at the node's fraction is {at:?}, node is {:?}",
             map.points[5]
         );
     }
@@ -498,7 +498,7 @@ mod tests {
         let b = map.basis(t);
         let sum: f32 = b.iter().sum();
         assert!((sum - 1.0).abs() < 1e-4, "weights sum to {sum}");
-        // Moving every control point by its weighted share moves the surface
+        // Moving every control point by its weighted share moves the substrate
         // point by exactly the sum of shares — linearity, which the
         // exact-follow drag depends on.
         let before = map.eval(t);
@@ -511,7 +511,7 @@ mod tests {
         let after = moved.eval(t);
         assert!(
             (after - (before + delta)).length() < 1e-2,
-            "surface moved {:?}, wanted {delta:?}",
+            "substrate moved {:?}, wanted {delta:?}",
             after - before
         );
     }

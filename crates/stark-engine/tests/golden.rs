@@ -157,25 +157,25 @@ fn golden_bristle_stroke() {
 }
 
 #[test]
-fn golden_canvas_surface() {
+fn golden_canvas_substrate() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    // Paint on the linen canvas surface (§6.4): a light, partial-coverage
-    // stroke sits on the weave, and the bare paper
+    // Paint on the linen canvas substrate (§6.4): a light, partial-coverage
+    // stroke sits on the substrate, and the bare paper
     // shows the woven relief under raking light. The other goldens never register the
     // linen bytes, so they fall back to the flat builtin and test orthogonally. The
-    // surface bytes are read from disk and registered (the engine embeds none — the
+    // substrate bytes are read from disk and registered (the engine embeds none — the
     // frontend provides them at runtime).
     let linen = engine
-        .import_surface(&stark_testdata::assets::linen())
+        .import_substrate(&stark_testdata::assets::linen())
         .expect("the linen height map imports");
-    engine.process(DocCommand::SetSurface(linen));
-    // Turn the weave up: `surface_strength` defaults to 0, which leaves the relief
+    engine.process(DocCommand::SetSubstrate(linen));
+    // Turn the substrate up: `substrate_strength` defaults to 0, which leaves the relief
     // there for paint to sit in but keeps the light from embossing it. This golden is
     // about the embossing, so it has to ask for it.
     engine.process(ViewCommand::SetMediaParams(stark_engine::MediaParams {
-        surface_strength: 0.6,
+        substrate_strength: 0.6,
         ..Default::default()
     }));
     let mut brush = brush(RED, 60.0);
@@ -194,7 +194,7 @@ fn golden_canvas_surface() {
     engine.process(GestureCommand::End);
 
     let img = engine.render_to_image();
-    assert_golden("linen_surface", &img, 6);
+    assert_golden("linen_substrate", &img, 6);
 }
 
 #[test]

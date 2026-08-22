@@ -1,12 +1,12 @@
 //! What the app already has, by content id (§6.6, §6.4, §12.4).
 //!
-//! Every asset under `assets/shape` and `assets/surface` is hashed at build time
+//! Every asset under `assets/shape` and `assets/substrate` is hashed at build time
 //! (`build.rs`) into [`BUILTIN_IDS`], so this build knows the id of a bundled
-//! brush shape or canvas ground **without fetching it**. Both catalogs are
+//! brush shape or canvas substrate **without fetching it**. Both catalogs are
 //! explicit that an id is otherwise only knowable once the bytes have arrived;
 //! this is the table that breaks the circularity.
 //!
-//! What it buys: a peer that switches to a ground this app ships with names it by
+//! What it buys: a peer that switches to a substrate this app ships with names it by
 //! content id like any other, and the receiver — knowing it can resolve that id
 //! from its own bundle — declines the transfer instead of pulling megabytes over
 //! the network for bytes sitting next to its binary.
@@ -15,7 +15,7 @@
 //! local one; nothing here embeds an image.
 
 use stark_assetid::AssetId;
-use stark_model::SurfaceId;
+use stark_model::SubstrateId;
 use stark_net::AssetNeed;
 
 include!(concat!(env!("OUT_DIR"), "/builtin_ids.rs"));
@@ -32,7 +32,7 @@ pub fn asset_for(id: AssetId) -> Option<dioxus::prelude::Asset> {
         .find(|s| s.path == path)
         .map(|s| s.asset)
         .or_else(|| {
-            crate::grounds::GROUNDS
+            crate::substrates::SUBSTRATES
                 .iter()
                 .find(|g| g.path == Some(path))
                 .and_then(|g| g.asset)
@@ -81,11 +81,11 @@ pub async fn fetch(owed: &[AssetNeed]) -> Vec<(AssetNeed, Vec<u8>)> {
 /// asset, because locally-resolved content is not a different kind of content,
 /// only a different way of getting hold of it.
 ///
-/// `accept_surface` re-derives the id and refuses bytes that do not match, so a
+/// `accept_substrate` re-derives the id and refuses bytes that do not match, so a
 /// catalog file that changed out from under a document is caught there rather
-/// than deposited through the wrong weave; both wrappers log their own refusal.
+/// than deposited through the wrong substrate; both wrappers log their own refusal.
 /// **Exhaustive on the need, with no `_` arm**, rather than branching on whether it
-/// names a surface. That is not a style preference: `AssetNeed::surface()` answers
+/// names a substrate. That is not a style preference: `AssetNeed::substrate()` answers
 /// `None` for a brush *and* for a picture (§23), so the two-arm form quietly filed a
 /// picture's RGBA bytes in the brush store, where they would decode as luminance ×
 /// alpha and be neither. The catalogs ship no pictures, so it could not fire today —
@@ -94,7 +94,7 @@ pub async fn fetch(owed: &[AssetNeed]) -> Vec<(AssetNeed, Vec<u8>)> {
 pub fn install(r: &mut crate::render::Renderer, need: AssetNeed, bytes: &[u8]) {
     match need {
         AssetNeed::Brush(_) => r.import_brush(bytes),
-        AssetNeed::Ground(id) => r.accept_surface(SurfaceId::Image(id), bytes),
+        AssetNeed::Substrate(id) => r.accept_substrate(SubstrateId::Image(id), bytes),
         // No build ships a picture: one is by definition something a person brought
         // in, so a catalog naming one is a catalog that is wrong about itself.
         AssetNeed::Picture(id) => {
@@ -117,7 +117,7 @@ mod tests {
         let claimed: Vec<&str> = crate::builtins::SHAPES
             .iter()
             .map(|s| s.path)
-            .chain(crate::grounds::GROUNDS.iter().filter_map(|g| g.path))
+            .chain(crate::substrates::SUBSTRATES.iter().filter_map(|g| g.path))
             .collect();
         for path in &claimed {
             assert!(
@@ -161,11 +161,11 @@ mod tests {
                 "62b76803f7c06460854d3268cd41d868f271ba1cf54ecc53b7387cb81d83979e",
             ),
             (
-                "surface/Rough.png",
+                "substrate/Rough.png",
                 "0b88d740a6b3f35f57b5f1d6e4064ac7b4ace0d2c2abab417bbcce762602deb6",
             ),
             (
-                "surface/Linen.png",
+                "substrate/Linen.png",
                 "9d8105e76895f6e47b456177da890816a2983112548d7d748cd42c5d67cd5dc1",
             ),
         ];

@@ -38,17 +38,17 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
     // env lookup), so it's kept moderate: a gross seam (a real normal discontinuity)
     // still jumps tens of levels, but the apron's sub-pixel compositing residual —
     // which the sharp reflection would otherwise amplify past tolerance — stays
-    // small. Surface relief is turned OFF: the canvas weave is sampled in canvas
+    // small. SubstrateMap relief is turned OFF: the canvas substrate is sampled in canvas
     // space, so it intentionally is *not* tile-grid translation invariant and would
     // mask the apron behavior tested here.
     engine.process(ViewCommand::SetMediaParams(MediaParams {
         height_strength: 2.5,
         specular: 0.3,
-        surface_strength: 0.0,
+        substrate_strength: 0.0,
     }));
 
     // Diagonal stroke through the 4-tile corner at `shift` (origin for shift=0).
-    // Tooth off for the same reason (it gates deposition by canvas-space weave).
+    // Tooth off for the same reason (it gates deposition by canvas-space substrate).
     let b = brush(RED, 28.0);
     engine.process(ViewCommand::SetBrush(b));
     engine.process(GestureCommand::Start {
@@ -113,7 +113,7 @@ fn render_shifted_image(shift: Vec2) -> RgbaImage {
     engine.process(ViewCommand::SetMediaParams(MediaParams {
         height_strength: 2.5,
         specular: 0.3,
-        surface_strength: 0.0,
+        substrate_strength: 0.0,
     }));
 
     // A field of varying color and full alpha, big enough to span the 4-tile corner in
@@ -190,7 +190,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     engine.process(ViewCommand::SetMediaParams(MediaParams {
         height_strength: 2.5,
         specular: 0.3,
-        surface_strength: 0.0,
+        substrate_strength: 0.0,
     }));
 
     // A wide base field along the diagonal, fully containing the smudge's path.
@@ -252,7 +252,7 @@ fn apron_makes_dynamics_writeback_seamless_under_zoom() {
     // The two runs' *regions* differ in size (the corner stroke spans more tiles),
     // so the pickup's normalized-coordinate bilinear samples (`world / rdim`)
     // round differently at ~1 ulp; through f16 storage and the exaggerated relief
-    // lighting that surfaces as a broad, imperceptible (≤ a few levels) residual
+    // lighting that substrates as a broad, imperceptible (≤ a few levels) residual
     // over the smudged area — not a seam. A real missing halo is a *contiguous
     // band* of tens of levels along every boundary, so gate on the significantly-
     // different area instead of the any-difference area.

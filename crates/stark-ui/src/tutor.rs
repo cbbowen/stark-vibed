@@ -149,7 +149,7 @@ const GAP: f32 = 14.0;
 /// inset, so a card beside the stack stops where the stack does.
 const EDGE: f32 = 14.0;
 
-/// A thing the user has done, at the grain a person would describe it in.
+/// A thing the user has done, described the way a person would describe it.
 ///
 /// Deliberately not one variant per command: several commands are one deed (`Pan`,
 /// `Pinch`), and one command is two deeds or none depending on what moved

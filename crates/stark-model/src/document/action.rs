@@ -15,7 +15,7 @@ use super::layer::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
 use super::selection::SelectionOp;
 use crate::Srgb;
 use crate::geom::Vec2;
-use crate::{SurfaceId, SurfaceScale};
+use crate::{SubstrateId, SubstrateScale};
 
 /// Identifies the author of an action: one local user, or a peer (§4).
 /// Maps to an iroh `NodeId` when collaborating; a fixed value when solo.
@@ -87,7 +87,7 @@ pub struct StrokeRecord {
     /// The curve may extend *before* the press: the hover trail the engine was
     /// already watching becomes the stroke's **run-up**, fitted into the same
     /// curve so the entry's direction and curvature are measured from real
-    /// motion rather than guessed from the first grain-quantized steps. This
+    /// motion rather than guessed from the first tolerance-quantized steps. This
     /// marker records where on that curve the press really happened, and the
     /// deposit begins exactly there — everything before it is evidence, never
     /// paint. Rendering honours it in one place (the flattening funnel,
@@ -200,23 +200,25 @@ pub enum ActionKind {
     /// and only ever materializes those.
     Undo(ActionId),
 
-    /// Switch the canvas surface (§6.4).
+    /// Switch the canvas substrate (§6.4).
     ///
-    /// Logged rather than kept as a view setting because the surface feeds the
+    /// Logged rather than kept as a view setting because the substrate feeds the
     /// document: which canvas a piece was painted on is part of what it is, and
     /// replay has to reconstruct it. A document saved before this existed contains
-    /// none, and keeps the surface from `CanvasMeta`.
-    SetSurface(SurfaceId),
+    /// none, and keeps the substrate from `CanvasMeta`.
+    #[serde(alias = "SetSurface")]
+    SetSubstrate(SubstrateId),
 
-    /// Lay the canvas surface at a different scale (§6.4).
+    /// Lay the canvas substrate at a different scale (§6.4).
     ///
-    /// Logged for exactly the reason [`SetSurface`](Self::SetSurface) is, and it is
-    /// the same fact in two halves: the tooth reads the ground's rise over a reach
-    /// measured in **canvas px**, so how large the weave is laid decides what a tip
-    /// bites as surely as which weave it is. A stroke replayed from before this
+    /// Logged for exactly the reason [`SetSubstrate`](Self::SetSubstrate) is, and it is
+    /// the same fact in two halves: the tooth reads the substrate's rise over a reach
+    /// measured in **canvas px**, so how large the substrate is laid decides what a tip
+    /// bites as surely as which substrate it is. A stroke replayed from before this
     /// deposits at the scale it was painted at. A document saved before this existed
-    /// contains none and stands at [`SurfaceScale::NATURAL`].
-    SetSurfaceScale(SurfaceScale),
+    /// contains none and stands at [`SubstrateScale::NATURAL`].
+    #[serde(alias = "SetSurfaceScale")]
+    SetSubstrateScale(SubstrateScale),
 
     /// Edit the selection mask (§6.8). Historized because a stroke's
     /// pixels depend on the mask in force when it was drawn — replaying the log has
@@ -228,7 +230,7 @@ pub enum ActionKind {
     InvertSelection,
 
     /// Add a **matte** layer — a region filled with a [`MattePaint`]
-    /// (§15.2). A frame is one of these on top of the stack; a ground
+    /// (§15.2). A frame is one of these on top of the stack; a substrate
     /// ([`MatteRegion::Everything`]) is one at the bottom, which is why the
     /// anchor is the full [`Place`] where `AddLayer`'s stays the two-state
     /// `Option` (§15.5). The same action serves comic gutters once the region
@@ -247,11 +249,12 @@ pub enum ActionKind {
     SetMatteRect(LayerId, Vec2, Vec2),
     /// Repaint a matte — a flat color or a gradient ramp (§15.4, §22.4).
     SetMattePaint(LayerId, MattePaint),
-    /// Set the canvas substrate color — the ground the paint sits on, straight
-    /// sRGB (§15.5). Logged rather than held as a view setting, because the ground a
+    /// Set the canvas substrate color — the substrate the paint sits on, straight
+    /// sRGB (§15.5). Logged rather than held as a view setting, because the substrate a
     /// piece was painted on is part of what it is: unlogged, the paper color of a
     /// painting would not be saved at all.
-    SetBackground(Srgb),
+    #[serde(alias = "SetBackground")]
+    SetSubstrateColor(Srgb),
 
     /// Affine transform of the selected paint on `layer` (§16):
     /// cut what the **author's** selection holds, resample it once under
@@ -322,7 +325,7 @@ pub enum ActionKind {
     /// Warp of the selected paint on `layer` within the mesh's source rect
     /// (§16.9): the same cut/stack/carry as
     /// [`TransformPerspective`](Self::TransformPerspective), under the smooth
-    /// surface through the map's control grid. The log carries only the grid —
+    /// substrate through the map's control grid. The log carries only the grid —
     /// a few dozen floats — and every peer subdivides it identically.
     ///
     /// Deterministically **rejected** when the mesh folds (any sub-cell's
@@ -449,8 +452,8 @@ pub enum ActionKind {
     /// Add a **drawing guide** — a perspective grid to construct through
     /// (§20.5).
     ///
-    /// Logged like a layer, and for the same kind of reason `SetSurface` and
-    /// `SetBackground` are: a perspective set up over a drawing is part of the
+    /// Logged like a layer, and for the same kind of reason `SetSubstrate` and
+    /// `SetSubstrateColor` are: a perspective set up over a drawing is part of the
     /// drawing's construction, not a preference about how it is being looked at.
     /// Unlogged, it would be lost on reload and invisible to collaborators, and
     /// a scaffold the work is built on is worth exactly as much care as a layer.
@@ -569,14 +572,14 @@ impl ActionKind {
             | ActionKind::MoveLayer { .. }
             | ActionKind::MergeLayerDown { .. }
             | ActionKind::Undo(_)
-            | ActionKind::SetSurface(_)
-            | ActionKind::SetSurfaceScale(_)
+            | ActionKind::SetSubstrate(_)
+            | ActionKind::SetSubstrateScale(_)
             | ActionKind::Select(_)
             | ActionKind::InvertSelection
             | ActionKind::SetMatteRect(..)
             | ActionKind::SetMattePaint(..)
             | ActionKind::SetFilter(..)
-            | ActionKind::SetBackground(_)
+            | ActionKind::SetSubstrateColor(_)
             | ActionKind::Transform { .. }
             | ActionKind::TransformPerspective { .. }
             | ActionKind::TransformWarp { .. }
@@ -704,7 +707,7 @@ impl ActionKind {
             // **The list is what the compiler cannot check.** Every arm above says
             // "this payload holds its own invariant"; this one says "there is no
             // invariant to hold", and nothing but the reader tells the two apart. It
-            // is where `SetBackground`, `SetMattePaint` and `AddMatte` sat while
+            // is where `SetSubstrateColor`, `SetMattePaint` and `AddMatte` sat while
             // carrying colors to a shader, under a comment that named gates only the
             // three transforms have. So: a variant belongs here when its payload is
             // ids, flags, places, `bool`s and `String`s — and if it carries a float,
@@ -730,12 +733,12 @@ impl ActionKind {
             // The substrate color, which holds itself now: `Srgb` cannot be built
             // outside the cube, so this is back to being an arm with nothing in it
             // — the shape the comment above describes.
-            | ActionKind::SetBackground(_)
-            | ActionKind::SetSurface(_)
+            | ActionKind::SetSubstrateColor(_)
+            | ActionKind::SetSubstrate(_)
             // And the scale it is laid at, which holds itself the same way: a
-            // `SurfaceScale` off the ladder or outside the range cannot be built, so
+            // `SubstrateScale` off the ladder or outside the range cannot be built, so
             // there is nothing here to hold it to.
-            | ActionKind::SetSurfaceScale(_)
+            | ActionKind::SetSubstrateScale(_)
             | ActionKind::InvertSelection
             | ActionKind::Transform { .. }
             | ActionKind::TransformPerspective { .. }
@@ -781,9 +784,9 @@ impl ActionKind {
             ActionKind::SetFilter(..) => "Filter",
             ActionKind::SetMatteRect(..) => "Move frame",
             ActionKind::SetMattePaint(..) => "Matte paint",
-            ActionKind::SetBackground(_) => "Canvas color",
-            ActionKind::SetSurface(_) => "Canvas surface",
-            ActionKind::SetSurfaceScale(_) => "Surface scale",
+            ActionKind::SetSubstrateColor(_) => "Canvas color",
+            ActionKind::SetSubstrate(_) => "Canvas substrate",
+            ActionKind::SetSubstrateScale(_) => "Substrate scale",
             ActionKind::AddGuide { .. } => "Add guide",
             ActionKind::RemoveGuide(_) => "Remove guide",
             ActionKind::SetGuide(..) => "Perspective guide",

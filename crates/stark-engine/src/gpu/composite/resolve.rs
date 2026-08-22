@@ -106,7 +106,7 @@ pub(super) fn supersample(
 ///   ping-pongs, which is `scratch_needs`' answer read as memory (§18.0.4, §21.3).
 ///
 /// The last is the term a pixel count cannot express, and it is the one that
-/// dominates: a single blend group more than doubles the frame's footprint, and in a
+/// dominates: a single blend group more than doubles the frame's memory footprint, and in a
 /// pigment document it more than triples it.
 pub(super) fn attachment_bytes(
     formats: crate::gpu::channels::ChannelFormats,
@@ -121,7 +121,7 @@ pub(super) fn attachment_bytes(
 
 /// The resolve pass — the pipeline and its layout. The uniform it reads (`n`, the
 /// sample count) is the *rendering* consumer's: `n` is a function of that target's
-/// zoom, so the surface and a miniature beside it disagree about it by construction.
+/// zoom, so the substrate and a miniature beside it disagree about it by construction.
 /// It rides in the [`Supersampled`] set, which is exactly the state that exists only
 /// while a view is zoomed out.
 pub(super) struct ResolvePass {

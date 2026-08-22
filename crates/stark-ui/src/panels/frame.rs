@@ -14,10 +14,10 @@
 //! composing" more directly than a mode indicator would. Creating a frame is a
 //! button in the Layers panel, because a frame *is* a layer.
 //!
-//! Creating the **ground** (§15.5) is not, though it is a layer too: it happens
+//! Creating the **backing** (§15.5) is not, though it is a layer too: it happens
 //! at most once in a painting's life, and a header button standing there for the
 //! rest of it costs more than it earns. It is a chip in this bar instead —
-//! mounted only while there is no ground — so the once-per-drawing act lives in
+//! mounted only while there is no backing — so the once-per-drawing act lives in
 //! the bar that is already about composing a matte, and the header keeps the
 //! controls you reach for repeatedly.
 //!
@@ -45,10 +45,10 @@ use stark_model::geom::Vec2;
 /// piece" against almost any painting, which is what a crop scrim is for.
 const DEFAULT_MATTE: [f32; 3] = [0.06, 0.06, 0.07];
 
-/// A background's default fill: a warm paper tone — a ground is *under* the
+/// A backing's default fill: a warm paper tone — a backing is *under* the
 /// painting, so it defaults to something to paint over rather than a scrim
 /// (§15.5).
-const DEFAULT_GROUND: [f32; 3] = [0.93, 0.91, 0.86];
+const DEFAULT_BACKING: [f32; 3] = [0.93, 0.91, 0.86];
 
 /// Aspect presets, as width:height.
 const ASPECTS: [(&str, f32); 4] = [
@@ -136,7 +136,7 @@ fn default_rect(state: AppState) -> (Vec2, Vec2) {
 /// **The frame that says where the piece ends**: the topmost matte layer with a
 /// rect, or `None` in a document with none (§15.6).
 ///
-/// Only a matte *with a rect* frames anything — a background (§15.5) is under the
+/// Only a matte *with a rect* frames anything — a backing (§15.5) is under the
 /// piece, not a statement of where it stops — and the topmost of them wins, on the
 /// same reading that puts the newest work on top.
 ///
@@ -214,14 +214,14 @@ pub fn add_frame(state: AppState) {
     }
 }
 
-/// Whether the document already carries a ground. A ground is the one region
+/// Whether the document already carries a backing. A backing is the one region
 /// defined against no rect (§15.5), so "is there one" is asked of the projection
 /// the bar already reads rather than of a flag some other control has to keep.
 ///
 /// A hook, through a memo, for [`use_selected_frame`]'s reason — asked of `obs`
 /// directly it would subscribe the bar to the whole projection and undo the memo
 /// standing right above it. Call it unconditionally, and above the early returns.
-fn use_has_background(state: AppState) -> Memo<bool> {
+fn use_has_backing(state: AppState) -> Memo<bool> {
     use_obs_opt(state, |o| {
         o.is_some_and(|o| {
             o.layers
@@ -231,21 +231,21 @@ fn use_has_background(state: AppState) -> Memo<bool> {
     })
 }
 
-/// Make the §15.5 ground and select it: an `Everything` matte born at the
+/// Make the §15.5 backing and select it: an `Everything` matte born at the
 /// **bottom** of the stack, under the painting, defaulting to a paper tone.
 /// Selected immediately like a new frame, so its bar (paint only — it has no
 /// rect to compose) comes straight up.
-fn add_background(state: AppState) {
+fn add_backing(state: AppState) {
     dispatch(
         state,
         DocCommand::AddMatte {
             carrier: None,
             at: Place::Bottom,
             region: MatteRegion::Everything,
-            paint: MattePaint::Solid(Srgb::new(DEFAULT_GROUND)),
+            paint: MattePaint::Solid(Srgb::new(DEFAULT_BACKING)),
         },
     );
-    // The new ground is the only rect-less matte in the stack: it was just born,
+    // The new backing is the only rect-less matte in the stack: it was just born,
     // and there was none before or the control that got here would not have been
     // mounted. That identifies it without depending on where in the order it
     // landed, which "the bottom-most matte" did.
@@ -282,7 +282,7 @@ pub fn FrameBar() -> Element {
     // Both of these are hooks and both are here for that same reason — the bar has
     // two early returns below, and a hook that runs only sometimes is not a hook.
     let frame = use_selected_frame(state);
-    let has_background = use_has_background(state);
+    let has_backing = use_has_backing(state);
     let Some((info, matte)) = frame() else {
         return rsx! {};
     };
@@ -296,7 +296,7 @@ pub fn FrameBar() -> Element {
     // can be pressed under the composition.
     let composing = crate::modes::composing(state).is_some();
     // The rect half of the bar exists exactly when the region has a rect: an
-    // `Everything` matte (a background, §15.5) frames nothing, so the
+    // `Everything` matte (a backing, §15.5) frames nothing, so the
     // readout, the aspect and the fits stand down and the bar is its paint and
     // its Done. One bar for both kinds, because they are one kind of layer —
     // what differs is which properties exist, and the bar says so by what it
@@ -315,10 +315,10 @@ pub fn FrameBar() -> Element {
         c[2] * 100.0
     );
     let is_gradient = matches!(matte.paint, MattePaint::Gradient { .. });
-    // Offered only while there is no ground to make. Once there is one it is a
+    // Offered only while there is no backing to make. Once there is one it is a
     // row in the Layers panel like any other layer, and a second could not mean
     // anything — "the whole plane" admits no second.
-    let offer_background = !has_background();
+    let offer_backing = !has_backing();
     let paint_for_begin = matte.paint;
     let gradient_title = if is_gradient {
         "Recompose the gradient's axis"
@@ -473,21 +473,21 @@ pub fn FrameBar() -> Element {
                 {label("Gradient")}
             }
 
-            // Making the ground (§15.5) rides this bar rather than a button of
+            // Making the backing (§15.5) rides this bar rather than a button of
             // its own in the Layers panel's header beside "+ Frame". It is done
             // once per painting at most, and a permanent
             // button is the wrong price for that: here it is one chip in the bar
             // that is *already* about composing a matte, and it stands down the
-            // moment the ground exists — the same "absent rather than greyed
+            // moment the backing exists — the same "absent rather than greyed
             // out" the bar itself is built on.
-            if offer_background {
+            if offer_backing {
                 span { class: "bar-sep" }
 
                 button {
                     class: "chip",
-                    title: "Add a background: an opaque ground under the whole painting \u{2014} \
+                    title: "Add a background: an opaque layer under the whole painting \u{2014} \
                             flat or gradient, the underpainting's color",
-                    onclick: move |_| add_background(state),
+                    onclick: move |_| add_backing(state),
                     {icon(icons::BACKGROUND)}
                     {label("Add background")}
                 }

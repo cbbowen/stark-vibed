@@ -71,7 +71,7 @@ impl View {
 /// consumer's**, not the pipeline's.
 ///
 /// The buffer holds what this render is looking at, which is per-target by
-/// definition: the surface and the navigator's miniature draw the same document
+/// definition: the substrate and the navigator's miniature draw the same document
 /// through different transforms, at different sizes, in the same frame. It sat on
 /// the shared [`CompositorPasses`](super::CompositorPasses) for as long as the
 /// argument "every render writes it immediately before the submit that reads it, and

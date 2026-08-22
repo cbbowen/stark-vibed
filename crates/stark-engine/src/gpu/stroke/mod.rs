@@ -3,14 +3,14 @@
 //!
 //! Rather than stamping discrete dabs, each short segment of the flattened curve
 //! is drawn as one oriented quad whose coverage is the brush *swept* along it —
-//! the path integral of the footprint. Because alpha-"over" is additive in
+//! the path integral of the extent. Because alpha-"over" is additive in
 //! optical depth `τ = −ln(1−α)`, the swept depth of a segment is a difference of
 //! the brush's precomputed prefix-τ texture (`prefix(u) − prefix(u−d)`), and the
 //! premultiplied-over blend across overlapping segment quads sums those depths
 //! *exactly* — reconstructing the continuous stroke with no banding and no
 //! double-counting at the joints.
 //!
-//! That is the plain **add** fast path: footprint → cleared scratch tile →
+//! That is the plain **add** fast path: extent → cleared scratch tile →
 //! integrate over the base into a fresh CoW tile. A brush that also moves paint
 //! already on the canvas (`lift` / `deposit` / `charge` / `bleed`, §6.2) instead runs
 //! the sequential swept-exchange loop in `dynamics.wesl`; `dynamics_setup`
@@ -49,7 +49,7 @@ use scratch::ScratchPool;
 use swept::{SweptKit, build_swept_kit};
 use tips::TipCache;
 
-// The module's surface, re-exported so callers name `gpu::stroke::X` rather than the
+// The module's substrate, re-exported so callers name `gpu::stroke::X` rather than the
 // file X happens to live in — the split below is about where a maintainer reads, not
 // about what the engine depends on.
 pub use incremental::{StrokeCarry, StrokeSpans, ToolState};
@@ -141,15 +141,15 @@ pub struct StrokeScene<'a> {
     pub base: &'a TileMap,
     /// The selection in force, which gates the deposit (§6.8).
     pub selection: &'a Selection,
-    /// The canvas surface the document was on when this stroke was made (§6.4) —
-    /// the ground whose tooth gates how much of the brush's own paint lands
+    /// The canvas substrate the document was on when this stroke was made (§6.4) —
+    /// the substrate whose tooth gates how much of the brush's own paint lands
     /// (`BrushParams::tooth`).
     ///
     /// Handed in per call, like everything else here, rather than held on the
     /// renderer: it is *document* state, and a renderer that cached it would answer
     /// a replayed stroke with whatever the compositor happens to be showing. That is
-    /// the shape the deleted `StrokeRenderer::set_surface` had (§6.4).
-    pub surface: &'a crate::gpu::surface::Surface,
+    /// the shape the deleted `StrokeRenderer::set_substrate` had (§6.4).
+    pub substrate: &'a crate::gpu::substrate::SubstrateMap,
 }
 
 impl StrokeRenderer {
@@ -184,7 +184,7 @@ impl StrokeRenderer {
     ///
     /// The selection is applied at the *end* of each path — the integrate pass's
     /// merge on the fast path, the deposit's write-back in the stamp loop — rather
-    /// than by clipping the footprint. That keeps one rule for both paths (a texel
+    /// than by clipping the extent. That keeps one rule for both paths (a texel
     /// receives the mask's fraction of whatever the stroke did there) and is what
     /// makes a feathered selection fade a stroke out instead of scaling its optical
     /// depth, which for an opaque brush would barely fade at all (§6.8).
@@ -305,7 +305,7 @@ impl StrokeRenderer {
     fn stroke_constants(
         &self,
         rec: &StrokeRecord,
-        surface: &crate::gpu::surface::Surface,
+        substrate: &crate::gpu::substrate::SubstrateMap,
     ) -> StrokeConstants {
         // The brush keeps a bare RGBA because the frontend writes it a component
         // at a time (`Srgb`); this is the boundary where its RGB half becomes the
@@ -317,7 +317,7 @@ impl StrokeRenderer {
         StrokeConstants {
             channels: [ch[0], ch[1], ch[2], rec.brush.color[3]],
             resid: [res[0], res[1], res[2], 0.0],
-            grain_uv: surface.relief * surface.uv_scale,
+            substrate_uv_scale: substrate.relief * substrate.uv_scale,
             nfreq,
             namp,
             noff,
@@ -332,7 +332,7 @@ impl StrokeRenderer {
 /// stamp loop in a `Stamp` slot, but they are the same numbers — and they have to be,
 /// because which path a brush takes is decided by `dynamics_setup` from axes that have
 /// nothing to do with any of this: nudge `deposit` off zero and the same color, the
-/// same flow and the same ground must still lay the same paint.
+/// same flow and the same substrate must still lay the same paint.
 ///
 /// That is not hypothetical. `tests/dynamics.rs`'s
 /// `a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs` exists because the two
@@ -350,10 +350,10 @@ struct StrokeConstants {
     /// whole color — both paths write this lane unconditionally, since the uniform it
     /// lands in is one Rust struct across both shader variants.
     resid: [f32; 4],
-    /// Canvas px → surface-tile uv (§6.4). Zero on a ground with no relief — a `Flat`
+    /// Canvas px → substrate-tile uv (§6.4). Zero on a substrate with no relief — a `Flat`
     /// canvas, or one whose bytes have not arrived — which sends the tooth to exactly
     /// 1 and leaves the deposit bit-for-bit what it was before the tooth existed.
-    grain_uv: f32,
+    substrate_uv_scale: f32,
     /// The color-dynamics lookup (§6.2): per-axis frequency (across the stroke, along
     /// it) + 1/NOISE_TILE_PX, per-channel amplitude, and the per-stroke translation.
     /// Inactive jitter zeroes frequency *and* amplitude, so with the zero volume bound

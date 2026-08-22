@@ -36,7 +36,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 |---|---|---|
 | [architecture.md](docs/architecture.md) | §1–§5 | Principles, crate layout, the command/action boundary, the history & timeline model |
 | [brush.md](docs/brush.md) | §6.1, §6.2, §6.6, §6.9, §6.11 | Tiles and channels, path fitting, swept-segment stamping, the wet-mixing dynamics loop, brush shape assets, drag-and-hold shape assist, stroke smoothing (the towed tip) |
-| [rendering.md](docs/rendering.md) | §6.3–§6.5, §6.7, §6.10 | The three compositing passes, blend modes, the media/lighting pass, aprons and the canvas surface, Oklab and Mixbox, the generated uniform mirrors |
+| [rendering.md](docs/rendering.md) | §6.3–§6.5, §6.7, §6.10 | The three compositing passes, blend modes, the media/lighting pass, aprons and the canvas substrate, Oklab and Mixbox, the generated uniform mirrors |
 | [selection.md](docs/selection.md) | §6.8, §16 | The soft-mask coverage field every tool acts through, fill, and transform |
 | [layers.md](docs/layers.md) | §14, §15 | Groups and clipping as one mechanism; merging a layer down without changing the picture; matte layers, framing and export |
 | [filters.md](docs/filters.md) | §21 | Filter layers: adjustment as a layer, where it sits *is* its scope, the color filter, the spectral chromatic aberration, the gradient map |
@@ -47,6 +47,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [roadmap.md](docs/roadmap.md) | §13, §18, §19 | Build order and status, the gap analysis against the prior art, file-format stability |
 | [drawing-guides.md](docs/drawing-guides.md) | §20 | The perspective grid: one projective camera behind 1/2/3-point, the fan parametrization, the guide overlay pass, aligning strokes to an axis and to circles on a plane, the stereographic fisheye lens |
 | [tutorial.md](docs/tutorial.md) | §24 | The guided tour: a lesson is owed rather than scheduled, deeds read off the `dispatch` seam, the anchored card and what it may take, the browser-local ledger |
+| [glossary.md](docs/glossary.md) | — | One name per thing, and the file that owns it: the canvas **substrate** and what it is not (backdrop, `Background`, backing, surface, ground), the input **tolerance**, the stamp **extent** vs the CRDT `Footprint`. Read it before coining a term |
 | [ui.md](docs/ui.md) | §11, §25 | The Dioxus frontend: the one dispatch seam, the panels and the surface they float over. Then the chrome's registries — the command registry, the drag-binding table (and how the user rebinds it) and the browser-local store, which one a new feature joins, if any, and what a dialog and a run of buttons each owe whatever they hold |
 
 §6 — "rendering the canvas" — is the one chapter split across files: the stroke
@@ -65,7 +66,7 @@ docs became §14–§19.
 ```
 crates/
   stark-assetid/   what a content id *is*: decode, cap, hash for brush shapes
-                   and canvas grounds. No GPU, so a build script can compute one
+                   and canvas substrates. No GPU, so a build script can compute one
                    — which is what lets the frontend know a bundled asset's id
                    before fetching it. The file format's identity contract (§19)
   stark-model/     the document: the action log, its vocabulary, the save format
@@ -101,7 +102,7 @@ model *only* — it moves logs and assets and never names an engine type, which 
 what the split bought (§2). Which side a type belongs on has a mechanical answer:
 if it is `Serialize` it is a fact about the document and lives in the model; if it
 holds a tile it is a cache and lives in the engine. `AssetId`/`AssetStore`,
-`SurfaceId`/`Surface`, `LayerId`/`Layer`, `Action`/`DocState` are all the same pair.
+`SubstrateId`/`SubstrateMap`, `LayerId`/`Layer`, `Action`/`DocState` are all the same pair.
 
 The one crack in that: large image assets live in `stark-ui/assets/` because
 Dioxus's `asset!` rejects paths outside its own crate, and the engine's *tests* read

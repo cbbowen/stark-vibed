@@ -7,9 +7,9 @@
 //
 //   · The tiles — `composite.wesl` takes one bilinear tap per fragment, so at
 //     zoom z it reads one texel in every 1/z² the fragment covers.
-//   · The canvas weave — `media_common.wesl::surface_at` samples a periodic height
+//   · The canvas substrate — `media_common.wesl::substrate_height_at` samples a periodic height
 //     field in canvas space, which moirés the moment a screen pixel spans more than
-//     one weave period.
+//     one substrate period.
 //   · The relief shading — the normal is a finite difference of the height field
 //     over *screen* pixels, fed through a specular lobe and a tonemap. Shading is a
 //     nonlinear function of the height, so the correct minified pixel is the average

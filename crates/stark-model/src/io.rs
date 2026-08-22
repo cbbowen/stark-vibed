@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::AssetId;
 use crate::ColorSpaceId;
-use crate::SurfaceId;
+use crate::SubstrateId;
 use crate::document::Action;
 use crate::error::{DocError, Result};
 
@@ -72,7 +72,7 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// A ceiling on what a *stranger* can make this process allocate, which is the
 /// only reason there is one: deflate's ratio means a few kilobytes on the wire
 /// can name as many gigabytes as it likes. Generous against real documents — the
-/// log is a few MB at ten thousand actions, and the bundle is dominated by ground
+/// log is a few MB at ten thousand actions, and the bundle is dominated by substrate
 /// height maps at ~3 MB each — so this is roughly two orders of magnitude of
 /// headroom over anything a *session* produces.
 ///
@@ -128,22 +128,22 @@ impl Default for BuildId {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub struct CanvasMeta {
     pub color_space: ColorSpaceId,
-    /// The ground the log *starts* from — the initial condition of the empty
+    /// The substrate the log *starts* from — the initial condition of the empty
     /// document it replays onto, exactly as `color_space` is (§6.4). A
-    /// mid-document switch is an `ActionKind::SetSurface` in the log, so this is not
-    /// the current ground and loading has to replay to learn that.
+    /// mid-document switch is an `ActionKind::SetSubstrate` in the log, so this is not
+    /// the current substrate and loading has to replay to learn that.
     ///
-    /// The image behind it rides in [`DocumentFile::surfaces`]; this is only its
+    /// The image behind it rides in [`DocumentFile::substrates`]; this is only its
     /// name.
-    #[serde(default)]
-    pub surface: SurfaceId,
+    #[serde(default, alias = "surface")]
+    pub substrate: SubstrateId,
 }
 
 impl Default for CanvasMeta {
     fn default() -> Self {
         Self {
             color_space: ColorSpaceId::Oklab,
-            surface: SurfaceId::Flat,
+            substrate: SubstrateId::Flat,
         }
     }
 }
@@ -161,26 +161,27 @@ pub struct DocumentFile {
     /// compact grayscale PNGs (§6.6, §8). Bundled so the file is
     /// self-contained and replayable.
     pub assets: Vec<(AssetId, Vec<u8>)>,
-    /// The canvas grounds the document names — `CanvasMeta::surface` plus every
-    /// `SetSurface` in the log — as canonical grayscale height maps (§6.4, §8).
+    /// The canvas substrates the document names — `CanvasMeta::substrate` plus every
+    /// `SetSubstrate` in the log — as canonical grayscale height maps (§6.4, §8).
     ///
     /// Here for the same reason `assets` is, and it took the deposition tooth to
-    /// make that visible: once the ground gates how much paint lands, a height map
+    /// make that visible: once the substrate gates how much paint lands, a height map
     /// is a *replay input*, no different from a brush's coverage mask, and a file
     /// that omits one does not contain its own painting. Keyed separately from
     /// `assets` because the two decode differently — a mask is luminance × alpha,
-    /// a ground is channel 0 — so a single bag would hand each store the other's
+    /// a substrate is channel 0 — so a single bag would hand each store the other's
     /// bytes to reinterpret.
     ///
     /// `Flat` contributes nothing: it is procedural, and the empty vector of a
     /// document that never left it is the honest encoding of that.
-    pub surfaces: Vec<(SurfaceId, Vec<u8>)>,
+    #[serde(alias = "surfaces")]
+    pub substrates: Vec<(SubstrateId, Vec<u8>)>,
     /// The pictures the document places (§23), as canonical RGBA PNGs — one entry
     /// per `PlaceImage` in the log, deduplicated by content id.
     ///
     /// A **third** bag rather than a third use of `assets`, for the reason the second
     /// one exists: the three decode differently — a mask is luminance × alpha, a
-    /// ground is channel 0, a picture is all four channels kept — so a single bag
+    /// substrate is channel 0, a picture is all four channels kept — so a single bag
     /// would hand each store the others' bytes to reinterpret. An id is a *content*
     /// hash, so one image imported as a stamp and placed as a picture carries one id
     /// in two bags that cannot stand in for each other, and
@@ -201,7 +202,7 @@ impl DocumentFile {
             canvas: CanvasMeta::default(),
             actions,
             assets: Vec::new(),
-            surfaces: Vec::new(),
+            substrates: Vec::new(),
             pictures: Vec::new(),
         }
     }
@@ -455,10 +456,12 @@ mod tests {
     /// and the one a save format has to be held to.
     ///
     /// `Old` spells the four payloads that took the type the way they were written
-    /// *before* it — a bare `[f32; 3]` under the same field and variant names — and a
-    /// document written that way has to come back with the same colors. Names are
-    /// what carbonite reconciles on (§8), and `#[carbonite(as = "[f32; 3]")]` is what
-    /// keeps the column a plain triple on both sides of the change.
+    /// *before* it — a bare `[f32; 3]`, under the variant name that build used
+    /// (`SetBackground`, since renamed to `SetSubstrateColor`) — and a document
+    /// written that way has to come back with the same colors. Names are what
+    /// carbonite reconciles on (§8): `#[carbonite(as = "[f32; 3]")]` keeps the column
+    /// a plain triple on both sides of the change, and `#[serde(alias)]` is what finds
+    /// today's variant under yesterday's name.
     ///
     /// The hostile value is the second half of it: an older build could write a color
     /// outside the cube, since nothing stopped it, and such a file must **load**
@@ -501,7 +504,7 @@ mod tests {
             canvas: CanvasMeta,
             actions: Vec<OldAction>,
             assets: Vec<(AssetId, Vec<u8>)>,
-            surfaces: Vec<(SurfaceId, Vec<u8>)>,
+            surfaces: Vec<(SubstrateId, Vec<u8>)>,
             pictures: Vec<(AssetId, Vec<u8>)>,
         }
 
@@ -549,7 +552,7 @@ mod tests {
             .actions
             .iter()
             .map(|a| match &a.kind {
-                ActionKind::SetBackground(c) => c.get(),
+                ActionKind::SetSubstrateColor(c) => c.get(),
                 ActionKind::AddMatte {
                     paint: MattePaint::Solid(c),
                     ..
@@ -572,7 +575,7 @@ mod tests {
     /// these types loads, rather than being refused by a version number (§8).
     ///
     /// `Old` is what `DocumentFile` and `CanvasMeta` looked like at some earlier
-    /// build — no `surface` on the canvas (a field this build added), and a
+    /// build — no `substrate` on the canvas (a field this build added), and a
     /// `tile_size` this build has since dropped — spelled with the names the real
     /// types carry, because names are what carbonite reconciles on. Both moves are
     /// exercised at once: the added field arrives from its `#[serde(default)]`, the
@@ -598,7 +601,7 @@ mod tests {
             canvas: OldCanvas,
             actions: Vec<Action>,
             assets: Vec<(AssetId, Vec<u8>)>,
-            surfaces: Vec<(SurfaceId, Vec<u8>)>,
+            surfaces: Vec<(SubstrateId, Vec<u8>)>,
             pictures: Vec<(AssetId, Vec<u8>)>,
         }
 
@@ -625,8 +628,8 @@ mod tests {
         let back = DocumentFile::from_bytes(&bytes).expect("an older shape still loads");
         assert_eq!(back.canvas.color_space, ColorSpaceId::Oklab);
         assert_eq!(
-            back.canvas.surface,
-            SurfaceId::default(),
+            back.canvas.substrate,
+            SubstrateId::default(),
             "a field added since arrives from its serde default",
         );
         assert_eq!(back.actions.len(), 1);

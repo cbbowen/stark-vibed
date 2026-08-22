@@ -26,7 +26,7 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_engine::command::ViewCommand;
 use stark_engine::peer::Identity;
-use stark_model::SurfaceId;
+use stark_model::SubstrateId;
 use stark_net::{
     AssetNeed, Broadcaster, CollabSession, Events, Joined, LinkKind, NetOptions, RemoteEvent,
     SessionTicket, actor_from_endpoint_id,
@@ -91,10 +91,10 @@ pub fn share(state: AppState) {
         match CollabSession::host(doc, opts).await {
             Ok((session, events)) => {
                 // Seed every locally-imported brush so peers can fetch any the
-                // snapshot didn't already bundle (§12.4). The grounds need no
+                // snapshot didn't already bundle (§12.4). The substrates need no
                 // equivalent: the snapshot carries every one the log names, and
-                // hosting seeds the blob store from it — a ground imported *later*
-                // is seeded by `grounds::select` before its `SetSurface` goes out.
+                // hosting seeds the blob store from it — a substrate imported *later*
+                // is seeded by `substrates::select` before its `SetSubstrate` goes out.
                 for (id, bytes) in assets {
                     session.add_content(AssetNeed::Brush(id), bytes);
                 }
@@ -128,7 +128,7 @@ pub fn join(state: AppState, ticket_text: String) {
         // Same persisted key as hosting uses: joining is not a different person.
         let id = crate::identity::get();
         // What this build ships with, offered so the host can leave it out of the
-        // snapshot — the bundled grounds canonicalize to 2.0 and 2.8 MB of weave
+        // snapshot — the bundled substrates canonicalize to 2.0 and 2.8 MB of substrate
         // every install already has (§12.4). A promise, settled below before anything is
         // replayed, and called in again by `ResolveLocally` for the rest of the
         // session.
@@ -145,7 +145,7 @@ pub fn join(state: AppState, ticket_text: String) {
                 owed,
             }) => {
                 // Fetched *before* `join_collaboration`, which replays the log: a
-                // ground that is not registered when its `SetSurface` replays
+                // substrate that is not registered when its `SetSubstrate` replays
                 // deposits every later stroke against the flat stand-in, and
                 // those pixels are stored (§6.4). Awaited out here because the
                 // renderer guard must not be held across a fetch.
@@ -192,7 +192,7 @@ pub fn join(state: AppState, ticket_text: String) {
 ///
 /// Doing nothing here would also be correct: the transport dials a peer after a
 /// grace period, which is what it did before any of this existed. What this saves
-/// is the transfer — a collaborator switching to a ground the app ships with costs
+/// is the transfer — a collaborator switching to a substrate the app ships with costs
 /// a read from its own files instead of megabytes off a peer (§12.4).
 fn supply_locally(state: AppState, need: AssetNeed) {
     let Some(broadcaster): Option<Broadcaster> = state
@@ -211,7 +211,7 @@ fn supply_locally(state: AppState, need: AssetNeed) {
         };
         // Into the engine *before* the session is told. `add_content` releases
         // the action parked on this content, and that action is applied on the
-        // assumption its content is already installed — for a ground, getting
+        // assumption its content is already installed — for a substrate, getting
         // that order wrong is the flat stand-in again (§6.4).
         //
         // Quiet: bytes arriving change how a later action *renders*, not anything
@@ -330,15 +330,17 @@ fn install(state: AppState, session: CollabSession, mut events: Events, ticket_t
                     RemoteEvent::Asset { need, bytes } => {
                         // The transport says which store these bytes belong in —
                         // the action that referenced them is the only thing that
-                        // knows, and a brush mask and a canvas ground decode
+                        // knows, and a brush mask and a canvas substrate decode
                         // differently (§6.6, §6.4).
                         match need {
                             AssetNeed::Brush(_) => r.import_brush(&bytes),
-                            // Arrives *before* the `SetSurface` that wanted it, so
-                            // the tooth reads the real weave from the very first
+                            // Arrives *before* the `SetSubstrate` that wanted it, so
+                            // the tooth reads the real substrate from the very first
                             // stroke after the switch rather than baking a flat
                             // deposit that no later arrival un-bakes.
-                            AssetNeed::Ground(id) => r.accept_surface(SurfaceId::Image(id), &bytes),
+                            AssetNeed::Substrate(id) => {
+                                r.accept_substrate(SubstrateId::Image(id), &bytes)
+                            }
                             // Likewise before the `PlaceImage` that wanted it: the
                             // transport parks that action until the pixels land,
                             // because a placement without them is not a degraded

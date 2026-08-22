@@ -8,7 +8,7 @@
 // to do than merely be long. (`blend_oklab`/`blend_mixbox` and
 // `media_oklab`/`media_mixbox` are genuine pairs; those keep their suffixes.)
 //
-// Shares all geometry/sweep math with both spaces via `stamp_common.wesl`. The footprint deposits into a *cleared scratch* tile, which
+// Shares all geometry/sweep math with both spaces via `stamp_common.wesl`. The extent deposits into a *cleared scratch* tile, which
 // holds the **parcel this stroke is laying** rather than a tile of paint: color
 // premultiplied by the parcel's visible alpha, and the amounts that alpha was built
 // from (height, optical mass) in the aux. `integrate.wesl` is what turns the one
@@ -50,7 +50,7 @@
 
 import package::stamp_common::{
     VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color, stroke_arc, stroke_drain,
-    surface_tooth, xf,
+    substrate_tooth, xf,
 };
 import package::lib::paint_common::{OPACITY_K};
 
@@ -76,7 +76,7 @@ fn vs_main(
     // curvature, and the `add` source rate — the one paint rate the swept path
     // reads, here because a modulation can point at it (§6.2).
     @location(3) extra: vec4<f32>,
-    // How deep this segment's tip bites into the canvas weave (§6.4). Its own
+    // How deep this segment's tip bites into the canvas substrate (§6.4). Its own
     // attribute rather than a lane of `extra`, because `extra` is full and a
     // five-float vector would be three unused lanes to carry one number.
     @location(4) tooth: f32,
@@ -99,7 +99,7 @@ fn fs_main(in: VsOut) -> FsOut {
     // Where this fragment sits in the segment's travel frame — straight or curved,
     // the rest of this shader cannot tell the difference.
     let sw = sweep_of(in);
-    // The segment's swept optical depth — the footprint's geometric coverage
+    // The segment's swept optical depth — the extent's geometric coverage
     // integrated along the travel. Everything below is built from this.
     let tau = swept_depth(in, sw);
     // The brush's remaining load here. A function of the fragment's own arc length
@@ -113,12 +113,12 @@ fn fs_main(in: VsOut) -> FsOut {
     // the canvas alone. Height is linear in `τ`, and the per-unit opacity is a
     // property of the pigment rather than of how much of it there is, so the mass
     // (their product) is linear in `τ` too.
-    // The ground's share of this texel (§6.4): where the weave falls away faster than
+    // The substrate's share of this texel (§6.4): where the substrate falls away faster than
     // this tip can follow, the paint simply does not land. A per-*fragment*
     // factor on `τ`, exactly like `drain` — so the deposit stays linear in `τ` and
     // exactly independent of how the path was cut, which a factor on the finished
     // parcel would not be.
-    let tooth = surface_tooth(in, sw);
+    let tooth = substrate_tooth(in, sw);
     // `add` comes off the *instance*: it is the one paint rate the swept path reads,
     // and the pen can drive it (§6.2), so it varies segment to segment exactly as the
     // radius does. Constant within the segment either way, which is all the argument
@@ -137,12 +137,12 @@ fn fs_main(in: VsOut) -> FsOut {
     // "over" composes — the complements multiply out to `1 − exp(−K·Σm)`, the whole
     // stroke's parcel, whether the path was cut into one segment or a hundred. The
     // color it carries is per-fragment: color dynamics jitter it across the
-    // footprint and along the stroke (§6.2), and the "over" keeps that jitter
+    // extent and along the stroke (§6.2), and the "over" keeps that jitter
     // *ordered*, so a stroke crossing itself covers rather than averages.
     let w = 1.0 - exp(-OPACITY_K * m);
     out.color = vec4<f32>(brush_color(in, sw) * w, w);
     // The wide scratch aux (§6.1), both channels additive in τ so they sum to the
-    // true path integral of the footprint:
+    // true path integral of the extent:
     //   .x = laid height — the amount of paint, so a second pass builds impasto in
     //        full (a saturating form would flatten out instead);
     //   .y = the parcel's optical mass (opacity · height) — the currency the parcel

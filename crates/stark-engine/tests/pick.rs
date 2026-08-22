@@ -9,7 +9,7 @@
 //! and radius options select what they say they do.
 //!
 //! The one source that *does* answer on bare canvas is the composite over the
-//! substrate, and what it has to be held to is the opposite pair: that the ground
+//! substrate, and what it has to be held to is the opposite pair: that the substrate
 //! shows through where the paint does not cover, and that it stays out of the way
 //! where the paint does.
 //!
@@ -129,7 +129,7 @@ fn picks_the_paint_rather_than_the_lit_pixel() {
     );
 }
 
-/// Bare canvas has nothing to pick. The substrate is the ground, not something a
+/// Bare canvas has nothing to pick. The substrate is the substrate, not something a
 /// brush picks up, so an empty patch answers `None` rather than loading the brush
 /// with the paper color.
 #[test]
@@ -148,7 +148,7 @@ fn bare_canvas_has_nothing_to_pick() {
     );
 }
 
-/// Except over the substrate, where the ground *is* what was asked for: an empty
+/// Except over the substrate, where it *is* what was asked for: an empty
 /// patch answers with the canvas color rather than with nothing. And with the
 /// document's color, read at the moment of the sample — a remembered default would
 /// pass every test that never repaints the canvas.
@@ -157,12 +157,12 @@ fn over_the_substrate_answers_with_the_canvas_color() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    const GROUND: [f32; 3] = [0.2, 0.55, 0.35];
-    engine.process(DocCommand::SetBackground(Srgb::new(GROUND)));
+    const SUBSTRATE: [f32; 3] = [0.2, 0.55, 0.35];
+    engine.process(DocCommand::SetSubstrateColor(Srgb::new(SUBSTRATE)));
 
     assert_near(
         pick(&mut engine, Vec2::ZERO, over_substrate(0)),
-        [GROUND[0], GROUND[1], GROUND[2], 1.0],
+        [SUBSTRATE[0], SUBSTRATE[1], SUBSTRATE[2], 1.0],
         0.02,
         "bare canvas is the canvas color",
     );
@@ -178,7 +178,7 @@ fn over_the_substrate_answers_with_the_canvas_color() {
 /// opacity, so bare texels count for nothing and it reports the stroke alone, while
 /// over the substrate the same patch answers with the mixture an eye sees.
 ///
-/// The ground is blue and the paint red so the disagreement is a channel apart rather
+/// The substrate is blue and the paint red so the disagreement is a channel apart rather
 /// than a shade apart.
 #[test]
 fn thin_coverage_mixes_toward_the_canvas() {
@@ -199,8 +199,8 @@ fn thin_coverage_mixes_toward_the_canvas() {
         },
     )
     .expect("paint in the patch");
-    let with_ground =
-        pick(&mut engine, at, over_substrate(24)).expect("the ground is always there");
+    let with_substrate =
+        pick(&mut engine, at, over_substrate(24)).expect("the substrate is always there");
 
     assert!(
         near(paint_only, RED, 0.06),
@@ -208,22 +208,22 @@ fn thin_coverage_mixes_toward_the_canvas() {
          got {paint_only:?}"
     );
     assert!(
-        with_ground[2] > paint_only[2] + 0.1 && with_ground[0] < paint_only[0] - 0.1,
-        "the blue ground should show through where the paint does not cover: \
-         {with_ground:?} against {paint_only:?}"
+        with_substrate[2] > paint_only[2] + 0.1 && with_substrate[0] < paint_only[0] - 0.1,
+        "the blue substrate should show through where the paint does not cover: \
+         {with_substrate:?} against {paint_only:?}"
     );
     assert!(
-        with_ground[0] > 0.1,
-        "and it is a mixture, not a jump to the ground: {with_ground:?}"
+        with_substrate[0] > 0.1,
+        "and it is a mixture, not a jump to the substrate: {with_substrate:?}"
     );
 
-    // Where the paint *does* cover, the ground behind it changes nothing — otherwise
+    // Where the paint *does* cover, the substrate behind it changes nothing — otherwise
     // the mode would be tinting the paint rather than filling in behind it.
     assert_near(
         pick(&mut engine, Vec2::ZERO, over_substrate(0)),
         RED,
         0.08,
-        "opaque paint hides the ground",
+        "opaque paint hides the substrate",
     );
 }
 
@@ -562,14 +562,14 @@ fn a_root_layer_reads_the_root_stack_as_its_group() {
 
 /// The below source is the document with everything above the layer switched
 /// off, over the substrate: layers beneath the ancestor chain answer, members
-/// above the layer do not, and bare canvas answers with the ground.
+/// above the layer do not, and bare canvas answers with the substrate.
 #[test]
 fn the_below_source_cuts_the_stack_above_the_layer() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    const GROUND: [f32; 3] = [0.2, 0.55, 0.35];
-    engine.process(DocCommand::SetBackground(Srgb::new(GROUND)));
+    const SUBSTRATE: [f32; 3] = [0.2, 0.55, 0.35];
+    engine.process(DocCommand::SetSubstrateColor(Srgb::new(SUBSTRATE)));
     let (l0, _l1, m1, _m2) = scoped_doc(&mut engine);
     let below = |layer| source(PickSource::Below(layer));
 
@@ -593,13 +593,13 @@ fn the_below_source_cuts_the_stack_above_the_layer() {
     );
     assert_near(
         pick(&mut engine, Vec2::new(0.0, -200.0), below(m1)),
-        [GROUND[0], GROUND[1], GROUND[2], 1.0],
+        [SUBSTRATE[0], SUBSTRATE[1], SUBSTRATE[2], 1.0],
         0.02,
         "the substrate rides this source: bare canvas is the canvas color",
     );
     assert_near(
         pick(&mut engine, Vec2::new(0.0, 100.0), below(l0)),
-        [GROUND[0], GROUND[1], GROUND[2], 1.0],
+        [SUBSTRATE[0], SUBSTRATE[1], SUBSTRATE[2], 1.0],
         0.02,
         "below the bottom layer, everything else is switched off",
     );

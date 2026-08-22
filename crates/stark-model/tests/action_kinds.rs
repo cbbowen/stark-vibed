@@ -36,7 +36,7 @@ use stark_model::document::{
 use stark_model::geom::{Affine2, IVec2, Vec2};
 use stark_model::gradient::{Gradient, GradientStop};
 use stark_model::path::ControlPoint;
-use stark_model::{AssetId, Srgb, SurfaceId, SurfaceScale};
+use stark_model::{AssetId, Srgb, SubstrateId, SubstrateScale};
 
 // ---------------------------------------------------------------------------
 // The vocabulary
@@ -57,14 +57,14 @@ fn slot(kind: &ActionKind) -> usize {
         ActionKind::SetLayerVisible(..) => 5,
         ActionKind::MoveLayer { .. } => 6,
         ActionKind::Undo(_) => 7,
-        ActionKind::SetSurface(_) => 8,
-        ActionKind::SetSurfaceScale(_) => 9,
+        ActionKind::SetSubstrate(_) => 8,
+        ActionKind::SetSubstrateScale(_) => 9,
         ActionKind::Select(_) => 10,
         ActionKind::InvertSelection => 11,
         ActionKind::AddMatte { .. } => 12,
         ActionKind::SetMatteRect(..) => 13,
         ActionKind::SetMattePaint(..) => 14,
-        ActionKind::SetBackground(_) => 15,
+        ActionKind::SetSubstrateColor(_) => 15,
         ActionKind::Transform { .. } => 16,
         ActionKind::SetLayerName(..) => 17,
         ActionKind::Fill { .. } => 18,
@@ -173,8 +173,8 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             at: Place::Top,
         },
         ActionKind::Undo(action),
-        ActionKind::SetSurface(SurfaceId::Flat),
-        ActionKind::SetSurfaceScale(SurfaceScale::new(140)),
+        ActionKind::SetSubstrate(SubstrateId::Flat),
+        ActionKind::SetSubstrateScale(SubstrateScale::new(140)),
         // A **measurable** shape with poisoned scalars, for the reason `AddMatte`
         // below carries a usable region with poisoned paint: a shape's coordinates
         // are gated by `SelectionShape::bounds` refusing them rather than clamped,
@@ -205,7 +205,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
         },
         ActionKind::SetMatteRect(id, v, v),
         ActionKind::SetMattePaint(id, MattePaint::Solid(Srgb::new([n, 0.5, 0.75]))),
-        ActionKind::SetBackground(Srgb::new([n, 0.25, 0.75])),
+        ActionKind::SetSubstrateColor(Srgb::new([n, 0.25, 0.75])),
         ActionKind::Transform {
             layer: id,
             affine: Affine2::from_scale(v),

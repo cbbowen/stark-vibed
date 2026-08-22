@@ -101,14 +101,14 @@ pub enum DocError {
     /// in the file nor loaded in this engine (§8).
     ///
     /// **Refusing is the point.** Replaying anyway is not a degraded open, it is a
-    /// wrong one that persists: a `SetSurface` whose height map is missing deposits
+    /// wrong one that persists: a `SetSubstrate` whose height map is missing deposits
     /// every stroke made on it through the flat stand-in, and those pixels are stored,
     /// so no later arrival un-bakes them (§6.4). Logging and returning `Ok(())` here
     /// would report success and hand back a document that replays perfectly smooth,
-    /// with nothing on screen to say which ground it was actually painted through.
+    /// with nothing on screen to say which substrate it was actually painted through.
     ///
     /// Settle it first — `stark-engine`'s `Engine::unresolved_content` is the bill and
-    /// names each need, `import_brush`/`accept_surface` pay it. A collaboration *join*
+    /// names each need, `import_brush`/`accept_substrate` pay it. A collaboration *join*
     /// is the one caller that legitimately starts short and heals, and it does not come
     /// through here.
     #[error("this document names content that is neither bundled nor loaded: {0:?}")]

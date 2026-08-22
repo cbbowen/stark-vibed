@@ -209,10 +209,10 @@ pub(super) fn segment_end(s: &Sweep) -> Vec2 {
 /// **The tip's reach, not its radius.** The two are the same number only for a shape
 /// that stays inside the disc inscribed in its mask; a stamp that fills the corners
 /// reaches `√2` times as far, and swept along a diagonal that difference is a whole
-/// corner of the footprint. Under-reporting it here is a stroke clipped at a tile
+/// corner of the extent. Under-reporting it here is a stroke clipped at a tile
 /// boundary — `for_each_touched` leaves the tile out of the render (or leaves this
 /// segment out of a tile another segment brought in), and the dynamics loop dispatches
-/// a rect too small for its own footprint.
+/// a rect too small for its own extent.
 pub(super) fn coverage_bounds(s: &Sweep) -> (Vec2, Vec2) {
     let end = segment_end(s);
     let reach = Vec2::splat(s.reach + crate::path::arc_sagitta(s.curvature, s.length));
@@ -244,7 +244,7 @@ fn segment_bounds(s: &Sweep) -> (Vec2, Vec2) {
 ///
 /// Greedy: extend the run until one more segment would push its region past
 /// [`MAX_REGION_DIM`], or its dispatch batch past [`MAX_STAMPS`]. A run always holds
-/// at least one segment — one tip's own footprint is the floor no subdivision gets
+/// at least one segment — one tip's own extent is the floor no subdivision gets
 /// under, which is what [`segment_fits_region`] gates on instead.
 ///
 /// A segment is measured **with its own bleed firings** ([`piece_sweeps`]'s reason): a
@@ -280,11 +280,11 @@ pub(super) fn chunk_segments(segments: &[Segment], fires: &[BleedFire]) -> Vec<R
     runs
 }
 
-/// Whether one segment of `b`'s swept footprint fits a region.
+/// Whether one segment of `b`'s swept extent fits a region.
 ///
 /// [`chunk_segments`] can cut a stroke as fine as a single segment, but no finer: the
 /// reservoir pickup reduces over the whole tip at once, so the region can never be
-/// smaller than one footprint. A brush too fat for that is the one thing left that
+/// smaller than one extent. A brush too fat for that is the one thing left that
 /// sends a dynamics stroke to the plain swept deposit — and it is decided from the
 /// brush alone rather than from a whole-stroke measurement, so it costs nothing to
 /// re-ask on every pointer move and cannot answer differently for a piece than for the
@@ -436,7 +436,7 @@ mod tests {
             reach: radius,
             length,
             orient: 0.0,
-            // An unstretched tip, for the reason the ramp is zero: a footprint drawn
+            // An unstretched tip, for the reason the ramp is zero: an extent drawn
             // out along an axis is a second variable in every box these combine.
             stretch: Stretch::NONE,
             dist: 0.0,
@@ -620,7 +620,7 @@ mod tests {
     /// along its crossing segment's own arc and can start up to a
     /// [`BLEED_TRAVEL_QUANTUM`] before the piece's first segment
     /// (`plan::bleed_fires`); the margin the segment boxes leave is one apron
-    /// texel, so a bleeding tip wider than a few px reaches ground no segment box
+    /// texel, so a bleeding tip wider than a few px reaches substrate no segment box
     /// names whenever its box falls within a quantum of a tile origin. Both halves
     /// must take the windows: the tile walk (the region rectangle and the
     /// write-back follow it — a tile it misses is flux silently clipped and an
@@ -673,7 +673,7 @@ mod tests {
     #[test]
     fn the_chunks_tile_the_stroke_and_each_one_fits() {
         // A stroke far longer than one region in both axes, and a fat tip whose own
-        // footprint eats a good part of the budget.
+        // extent eats a good part of the budget.
         let segments: Vec<Segment> = (0..600)
             .map(|i| {
                 let t = i as f32;
@@ -699,7 +699,7 @@ mod tests {
         assert_eq!(next, segments.len(), "the pieces do not cover the stroke");
     }
 
-    /// The floor the chunker cannot get under: one segment's own footprint. A brush
+    /// The floor the chunker cannot get under: one segment's own extent. A brush
     /// whose tip fits is drawn by the loop however long the stroke gets, which is the
     /// whole point of cutting it into pieces; one whose tip does not is the only case
     /// left that degrades to the swept deposit.

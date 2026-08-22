@@ -244,7 +244,7 @@ pub const PEN_PAD: f32 = std::f32::consts::SQRT_2;
 /// The padded volume's `[-1, 1]²` is [`PEN_PAD`] tips wide, so the sweep has to be
 /// integrated in a frame that much larger for the mask inside it to land at the radius
 /// the brush asked for. The renderer scales the segment's frame by exactly this and
-/// leaves the tip's own radius alone, which is what keeps a nib's paint rates, bleed
+/// leaves the tip's own radius alone, which is what keeps a tip's paint rates, bleed
 /// cadence and touch-down dab the size of the tip rather than of the box around it.
 pub fn pen_frame_scale() -> f32 {
     PEN_PAD

@@ -1,25 +1,25 @@
 //! What an asset *id* is — and nothing that renders one (§6.6, §6.4, §19).
 //!
-//! Stark names a brush shape and a canvas ground by the BLAKE3 hash of its
+//! Stark names a brush shape and a canvas substrate by the BLAKE3 hash of its
 //! **decoded canonical form**, not its file bytes. That one decision is what lets
 //! a peer be handed content it has never seen and know it received the right
-//! thing, and what lets two people who encoded the same weave differently
+//! thing, and what lets two people who encoded the same substrate differently
 //! converge on one id. Everything downstream — the save format's bundle, the
 //! session snapshot, the blob fetch, the check in
-//! `accept_surface` — rests on every build agreeing about this function.
+//! `accept_substrate` — rests on every build agreeing about this function.
 //!
 //! Which is why it lives in a crate of its own. It is the **identity contract**
 //! of the file format (§19), and a contract that can only be evaluated by
 //! linking a GPU renderer is one that build scripts, tools and tests cannot
 //! check. Concretely, it is what lets the frontend know the id of a bundled
-//! ground *before* fetching several megabytes of it.
+//! substrate *before* fetching several megabytes of it.
 //!
 //! Three kinds, two shapes:
 //!
 //! - a **brush shape** is coverage — luminance × alpha, so white-on-black masks
 //!   and alpha-cut masks both work ([`coverage`]);
-//! - a **canvas ground** is height — channel 0, because a height map's grey *is*
-//!   its height and weighting the channels would tilt the ground ([`height`]);
+//! - a **canvas substrate** is height — channel 0, because a height map's grey *is*
+//!   its height and weighting the channels would tilt the substrate ([`height`]);
 //! - a **picture** is all four channels, kept ([`picture`]) — an image placed into
 //!   the document as paint (§23), where the other two are read *for* something and
 //!   this one is the thing itself.
@@ -65,18 +65,18 @@ pub const MAX_SHAPE_DIM: u32 = 1024;
 /// nothing binds one as a texture: the tiles it becomes are built on the CPU
 /// (`stark-engine`'s `gpu::place`). What it bounds is memory — 4096 clears a 4K
 /// screen capture on the long edge with room over and holds the decoded worst case
-/// to 67 MB of RGBA, the same order as the ground height maps a bundle already
+/// to 67 MB of RGBA, the same order as the substrate height maps a bundle already
 /// carries (§8) — and, through it, how much of a stranger's PNG this process will
 /// expand.
 pub const MAX_PICTURE_DIM: u32 = 4096;
 
-/// Largest edge (px) a canvas ground keeps (§6.4).
+/// Largest edge (px) a canvas substrate keeps (§6.4).
 ///
 /// Matches the engine's `MAX_TEXTURE_DIM_2D`, and is a fixed constant rather than
 /// a device query — which is load-bearing: were the downsample factor to follow
 /// the adapter's real limit, the same PNG would canonicalize differently on two
 /// machines and the id would stop naming one thing.
-pub const MAX_GROUND_DIM: u32 = 2048;
+pub const MAX_SUBSTRATE_DIM: u32 = 2048;
 
 /// Stable identity of an asset: the BLAKE3 hash of its **decoded canonical
 /// form** — dimensions and texels — not of its file bytes.
@@ -260,7 +260,7 @@ impl Picture {
 /// Decode a **picture** to its canonical RGBA field (§23).
 ///
 /// All four channels, kept: this is the one kind that is not read *for* something —
-/// a shape is read for coverage and a ground for height, while a picture is the
+/// a shape is read for coverage and a substrate for height, while a picture is the
 /// thing itself, and dropping any channel of it would be dropping part of the
 /// image someone imported.
 ///
@@ -376,16 +376,16 @@ pub fn coverage(png_bytes: &[u8]) -> Result<Canonical> {
     Ok(downsample(texels, info.width, info.height, MAX_SHAPE_DIM))
 }
 
-/// Decode a canvas ground to its canonical height field.
+/// Decode a canvas substrate to its canonical height field.
 ///
 /// Channel 0, not luminance — a height map's grey *is* its height, so an RGB
-/// source carries it in red and weighting the channels would tilt the ground.
+/// source carries it in red and weighting the channels would tilt the substrate.
 pub fn height(png_bytes: &[u8]) -> Result<Canonical> {
     let decoder = png::Decoder::new(Cursor::new(png_bytes));
     let mut reader = decoder.read_info().map_err(fail)?;
     let size = reader
         .output_buffer_size()
-        .ok_or_else(|| AssetError("surface: missing png size".into()))?;
+        .ok_or_else(|| AssetError("substrate: missing png size".into()))?;
     let mut buf = vec![0u8; size];
     let info = reader.next_frame(&mut buf).map_err(fail)?;
     let (w, h) = (info.width, info.height);
@@ -400,11 +400,11 @@ pub fn height(png_bytes: &[u8]) -> Result<Canonical> {
         png::ColorType::Rgba => buf.as_chunks::<4>().0.iter().map(|p| p[0]).collect(),
         other => {
             return Err(AssetError(format!(
-                "surface: unsupported PNG color type {other:?}"
+                "substrate: unsupported PNG color type {other:?}"
             )));
         }
     };
-    Ok(downsample(texels, w, h, MAX_GROUND_DIM))
+    Ok(downsample(texels, w, h, MAX_SUBSTRATE_DIM))
 }
 
 /// Box-downsample a single-channel image by the smallest integer factor that
@@ -549,7 +549,7 @@ mod tests {
     /// would stop matching the ids its log references.
     #[test]
     fn a_canonical_field_round_trips_to_the_same_id() {
-        for limit in [MAX_SHAPE_DIM, MAX_GROUND_DIM] {
+        for limit in [MAX_SHAPE_DIM, MAX_SUBSTRATE_DIM] {
             let src = gray_png(64, 48, |x, y| (x * 3 + y * 5) as u8);
             let once = if limit == MAX_SHAPE_DIM {
                 coverage(&src)
@@ -723,7 +723,7 @@ mod tests {
         assert_ne!(wide.id(), tall.id());
     }
 
-    /// A ground reads channel 0 and a shape reads luminance × alpha — the one
+    /// A substrate reads channel 0 and a shape reads luminance × alpha — the one
     /// difference between the two, and the reason the receiver has to be told
     /// which kind it is being handed (§6.4, §6.6).
     #[test]

@@ -87,11 +87,11 @@ pub(super) struct Sweep {
     /// unrolled in a frame that much larger for the mask inside it to land at the
     /// radius the brush asked for. Everything the shader derives from brush-local
     /// coordinates (the swept arc, the color-noise domain, the reservoir's placement)
-    /// is in this frame; nothing the host prices is, which is what keeps a nib's dab
+    /// is in this frame; nothing the host prices is, which is what keeps a tip's dab
     /// and its bleed the size of the tip instead of the size of the box around it.
     pub(super) frame: f32,
     /// How far from the centreline this tip's deposit can land, in canvas px — the
-    /// half-extent of its footprint **square**, not of the disc inscribed in it
+    /// half-extent of its extent **square**, not of the disc inscribed in it
     /// ([`tip_reach`], scaled by the radius).
     ///
     /// Scaled by the segment's **widest** tip rather than its mean, since the ramp
@@ -173,9 +173,9 @@ pub(super) struct Paint {
     pub(super) lift: f32,
     pub(super) deposit: f32,
     pub(super) bleed: f32,
-    /// How deep this segment's tip bites into the canvas weave (§6.4) — the brush's
+    /// How deep this segment's tip bites into the canvas substrate (§6.4) — the brush's
     /// `tooth`, likewise modulated. Not a paint rate: it gates `add` per *texel* from
-    /// the ground under it, in the shader.
+    /// the substrate under it, in the shader.
     pub(super) tooth: f32,
 }
 
@@ -212,7 +212,7 @@ pub(super) use stark_shaders::mirror::stamp::SegmentInstance;
 /// stroke is `1 − |y|^h`, for `h = 1/(1 − hardness)` and `y` the distance from the
 /// centreline in radii.
 ///
-/// The profile is what is being designed here, not the footprint. What `hardness`
+/// The profile is what is being designed here, not the extent. What `hardness`
 /// names is how the *stroke* falls off from its centreline; the tip that produces it
 /// is whatever it has to be, and it is not the profile's own shape — a swept deposit
 /// composes in **optical depth**, so a full pass lays `1 − exp(−τ(y))` where `τ` is
@@ -335,7 +335,7 @@ const TAPER_OUTLINE_PX: f32 = crate::path::FLATTEN_TOLERANCE.position;
 /// Where the tip's own falloff is wider than the floor, the outline budget grows with
 /// it: a quarter of the shoulder ([`shoulder_per_radius`](super::budget::shoulder_per_radius)),
 /// the same resolvable-feature bound
-/// [`footprint_cell`](super::budget::footprint_cell) coarsens against — an outline
+/// [`extent_cell`](super::budget::extent_cell) coarsens against — an outline
 /// error the coverage blurs over more than this cannot print as a scallop. What keeps
 /// a fat *soft* brush from buying smoothness its edge could not show.
 const TAPER_SHOULDER_SLACK: f32 = 0.25;
@@ -807,7 +807,7 @@ pub(super) fn generate_segments_in(
 }
 
 /// How far a tip of this shape deposits from the centreline, as a multiple of the
-/// radius in force (§6.6) — the half-extent of its footprint square, which is what
+/// radius in force (§6.6) — the half-extent of its extent square, which is what
 /// [`Segment::reach`] scales.
 ///
 /// The sweep integrates every shape over brush-local `|x| ≤ 1, |y| ≤ 1`, so what
@@ -858,7 +858,7 @@ pub(super) fn frame_scale(b: &BrushParams) -> f32 {
 ///   angle is always 0 (the historical behaviour; for a round tip it is moot anyway).
 /// - [`OrientationSource::Pen`]: the shape is pinned to the pen's azimuth (the tilt
 ///   direction) in canvas space, so relative to the travel direction it is `α − φ` — as
-///   the stroke curves the footprint angle stays fixed in the world, like a nib.
+///   the stroke curves the extent angle stays fixed in the world, like a nib.
 pub(super) fn orientation_turns(source: OrientationSource, dir: Vec2, tilt: Vec2) -> f32 {
     match source {
         OrientationSource::FollowStroke => 0.0,
@@ -872,14 +872,14 @@ pub(super) fn orientation_turns(source: OrientationSource, dir: Vec2, tilt: Vec2
 
 /// **The stretch of the tip along its facing axis, as the renderer reads it** (§6.6):
 /// the map carrying a point's place in the tip's reference travel frame into the frame
-/// the prefix-τ volume is looked up in, once the footprint is drawn out by
+/// the prefix-τ volume is looked up in, once the extent is drawn out by
 /// [`BrushParams::elongation`].
 ///
 /// The whole feature is here, so it is worth stating why it costs three floats and no
 /// new texture. Stretching the tip by `s` along a canvas axis `û` is the linear map
-/// `A = R_û·diag(s, 1)·R_ûᵀ` on the footprint, and the deposit is that footprint's
+/// `A = R_û·diag(s, 1)·R_ûᵀ` on the extent, and the deposit is that extent's
 /// integral as it is dragged along the travel `t̂`. Substituting `q = A⁻¹p` turns that
-/// integral into one of the **unstretched** footprint — dragged along
+/// integral into one of the **unstretched** extent — dragged along
 /// `v̂ = normalize(A⁻¹t̂)` instead of `t̂`, over a travel `m = |A⁻¹t̂|` times as long,
 /// with `1/m` on the result. Every one of those is something the existing volume
 /// already answers: it is indexed by the angle between the mask's native axis and the
@@ -1685,7 +1685,7 @@ mod tests {
     /// Every box a segment is measured by contains its whole arc, not just its two
     /// ends. Under-reporting here is a clipped stroke: `affected_tiles` would leave a
     /// tile out of the render, and the dynamics loop would dispatch a rect too small
-    /// for its own footprint.
+    /// for its own extent.
     #[test]
     fn the_coverage_box_contains_the_whole_arc() {
         let rec = curved_record(10.0, 150.0, 2.4);
@@ -2109,14 +2109,14 @@ mod tests {
 /// The stretched tip (§6.6).
 ///
 /// One claim is being tested here, and everything else is a reading of it: **the swept
-/// integral of a footprint drawn out along an axis is the integral of the *undrawn*
-/// footprint, along another direction, over another travel, times a constant.** That is
+/// integral of an extent drawn out along an axis is the integral of the *undrawn*
+/// extent, along another direction, over another travel, times a constant.** That is
 /// what lets a stretch cost three floats and no new texture, and it is exactly the kind
 /// of claim that is either exact or quietly wrong by a few percent everywhere — the mask
 /// is still swept, the stroke still looks like a stroke, and the profile it draws is not
 /// the one the brush names.
 ///
-/// So it is checked against a **direct numerical sweep** of the stretched footprint,
+/// So it is checked against a **direct numerical sweep** of the stretched extent,
 /// with a mask that is deliberately neither round nor symmetric: a rotation-invariant
 /// tip would satisfy the identity at every angle for the wrong reason (any slice would
 /// do), and a symmetric one would hide the shear.
@@ -2166,7 +2166,7 @@ mod stretch_tests {
             .sum()
     }
 
-    /// The swept depth at `p`, computed the long way: the stretched footprint dragged
+    /// The swept depth at `p`, computed the long way: the stretched extent dragged
     /// along `+x` for `len`, integrated step by step in the travel frame. The thing the
     /// renderer's three floats have to reproduce.
     fn swept_directly(p: (f32, f32), len: f32, elongation: f32, orient: f32) -> f32 {
@@ -2174,7 +2174,7 @@ mod stretch_tests {
         let psi = orient * TAU;
         let k = 1.0 / elongation;
         let (sn, cs) = psi.sin_cos();
-        // `A⁻¹ = I + (k − 1)·ûûᵀ`, the map the footprint is read through.
+        // `A⁻¹ = I + (k − 1)·ûûᵀ`, the map the extent is read through.
         let inv = |q: (f32, f32)| {
             let d = (k - 1.0) * (q.0 * cs + q.1 * sn);
             (q.0 + d * cs, q.1 + d * sn)
@@ -2183,7 +2183,7 @@ mod stretch_tests {
         (0..STEPS)
             .map(|i| {
                 let t = (i as f32 + 0.5) * dt;
-                // The tip's own footprint at this instant: the mask turned to face the
+                // The tip's own extent at this instant: the mask turned to face the
                 // shape's angle, then drawn out along it.
                 mask(rot(inv((p.0 - t, p.1)), -psi)) * dt
             })
@@ -2206,7 +2206,7 @@ mod stretch_tests {
     /// **The whole feature, against a sweep that knows nothing about it.**
     ///
     /// Across elongations, facing angles, sample points and travels: the definite
-    /// integral of the stretched footprint equals the unstretched volume read at
+    /// integral of the stretched extent equals the unstretched volume read at
     /// [`Stretch`]'s slice, over its travel, times its gain. If the derivation is wrong
     /// anywhere — the sign of the slice shift, the shear, the Jacobian — this is where
     /// it shows, because the left-hand side is the picture and the right-hand side is
@@ -2270,7 +2270,7 @@ mod stretch_tests {
     }
 
     /// `hull` has to hold **everything the mask can paint**, because what is drawn for
-    /// the footprint is drawn from it: the sweep strip in the shader, and the tile box
+    /// the extent is drawn from it: the sweep strip in the shader, and the tile box
     /// on the host. Under-report it and the stroke is cut off along a straight line
     /// where its own geometry ran out — the failure `tip_reach` was added for, which a
     /// stretch reintroduces at a different scale.

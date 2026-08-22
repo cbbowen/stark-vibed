@@ -790,7 +790,7 @@ pub async fn next_frame() {
 }
 
 /// How many physical pixels the display packs into a CSS pixel — what
-/// `input::input_resolution` prices a pointer's grain against.
+/// `input::input_resolution` prices a pointer's tolerance against.
 ///
 /// `1.0` where it cannot be read, and where it is not finite or not positive: a
 /// resolution is a divisor, and a bad one would make the fitting tolerance
@@ -1383,35 +1383,35 @@ pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), St
     Ok((base64_decode(b64)?, inverted))
 }
 
-/// Normalize an image into a **canvas-ground PNG**, using the browser as the decoder
-/// — any format it can display can become a weave (JPEG, WebP, TIFF, …).
+/// Normalize an image into a **canvas-substrate PNG**, using the browser as the decoder
+/// — any format it can display can become a substrate (JPEG, WebP, TIFF, …).
 ///
 /// [`normalize_shape_image`]'s sibling, and the differences are the whole of what a
-/// ground *is* as against a stamp (§6.4):
+/// substrate *is* as against a stamp (§6.4):
 ///
 /// - **Grayscale by luminance.** `stark_assetid::height` reads channel 0 and says why:
 ///   a height map's grey is its height, so weighting the channels of one that was
-///   authored as a height map would tilt the ground. That rule is about an authored
+///   authored as a height map would tilt the substrate. That rule is about an authored
 ///   map; this is the step before it, where a photograph of a canvas is being *turned
 ///   into* one, and taking the red channel of a photograph is not a height field. Once
 ///   it is grey the two readings agree, which is exactly the point — the engine's rule
 ///   is left untouched and the frontend's policy stops it from ever mattering.
 /// - **No inversion.** A stamp's polarity is a spelling (white paints, and a scan of
-///   ink on paper means the opposite); a ground's polarity is the ground. Inverting
+///   ink on paper means the opposite); a substrate's polarity is the substrate. Inverting
 ///   one would turn its ridges into its valleys, and nothing about the image says
 ///   which was meant.
-/// - **Capped at [`MAX_GROUND_DIM`](stark_assetid::MAX_GROUND_DIM)**, not the shape
+/// - **Capped at [`MAX_SUBSTRATE_DIM`](stark_assetid::MAX_SUBSTRATE_DIM)**, not the shape
 ///   cap. `stark_assetid::height` would cap it anyway; doing it here means the
 ///   full-size decode never crosses into wasm's heap.
 ///
-/// The result still goes through `Engine::import_surface`, which decodes it again and
-/// hashes what it finds: this makes a ground *possible*, and the id still comes out of
+/// The result still goes through `Engine::import_substrate`, which decodes it again and
+/// hashes what it finds: this makes a substrate *possible*, and the id still comes out of
 /// the bytes.
 #[cfg(target_arch = "wasm32")]
-pub async fn normalize_ground_image(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+pub async fn normalize_substrate_image(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     use wasm_bindgen::JsCast;
 
-    let (w, h, mut px) = decode_to_canvas(bytes, stark_assetid::MAX_GROUND_DIM).await?;
+    let (w, h, mut px) = decode_to_canvas(bytes, stark_assetid::MAX_SUBSTRATE_DIM).await?;
     let window = web_sys::window().ok_or("no window")?;
     let document = window.document().ok_or("no document")?;
     let canvas: web_sys::HtmlCanvasElement = document
@@ -1430,10 +1430,10 @@ pub async fn normalize_ground_image(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
 
     // The same luminance weights the coverage read uses, so "grey" means one thing
     // across the app. Alpha is *composited against white* rather than multiplied in:
-    // a mask's transparency means "no ink here", but a ground has no such thing as
+    // a mask's transparency means "no ink here", but a substrate has no such thing as
     // an absent height — a PNG with a transparent border would otherwise import as a
     // deep trench around a canvas that has none. White, not black, because an
-    // unpainted ground reads as its own top surface.
+    // unpainted substrate reads as its own top surface.
     for p in px.as_chunks_mut::<4>().0 {
         let lum = ((77 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32) >> 8) as u32;
         let a = p[3] as u32;

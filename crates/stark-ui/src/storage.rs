@@ -136,12 +136,17 @@ pub enum Store {
     Tutor,
     /// The custom brush-shape library (§6.6, `crate::shapes`).
     Shapes,
-    /// The custom canvas-ground library (§6.4, `crate::grounds`) — [`Shapes`]'s
+    /// The custom canvas-substrate library (§6.4, `crate::substrates`) — [`Shapes`]'s
     /// sibling in every respect, rows here and height maps in the blob store beside
     /// them (`crate::library`).
     ///
+    /// **Its key is still `stark.grounds`.** A key is browser-local data, not
+    /// vocabulary: renaming one silently orphans every library already saved under
+    /// it, and there is nothing to gain that is worth a user's imported substrates.
+    /// The same holds for every other row here.
+    ///
     /// [`Shapes`]: Self::Shapes
-    Grounds,
+    Substrates,
     /// The user's own brush presets (`crate::presets`).
     Presets,
     /// The ten brushes under the hand (§18.1.8, `crate::slots`).
@@ -174,7 +179,7 @@ impl Store {
             Store::Visible => ("stark.visible", "what is on screen"),
             Store::Tutor => ("stark.tutor", "the tips you have seen"),
             Store::Shapes => ("stark.shapes", "the shape library"),
-            Store::Grounds => ("stark.grounds", "the surface library"),
+            Store::Substrates => ("stark.grounds", "the substrate library"),
             Store::Presets => ("stark.presets", "the brush presets"),
             Store::Slots => ("stark.slots", "the quick brushes"),
             Store::Gradients => ("stark.gradients", "the gradient library"),

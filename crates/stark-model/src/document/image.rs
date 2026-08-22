@@ -1,7 +1,7 @@
 //! Where a placed picture lands (§23).
 //!
 //! The picture *itself* is [`stark_assetid::Picture`] — decode, cap, hash, the same
-//! identity contract a brush shape and a canvas ground pass through (§19). What is
+//! identity contract a brush shape and a canvas substrate pass through (§19). What is
 //! left here is the half that is a fact about the **document**: the geometry of a
 //! placement, and the bound on how much of the canvas one can rewrite.
 //!

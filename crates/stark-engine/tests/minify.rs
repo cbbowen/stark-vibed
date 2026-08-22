@@ -2,7 +2,7 @@
 //!
 //! **The claim.** Minifying the canvas is *averaging* it, not sampling one texel in
 //! every `1/z²` the output pixel covers. Sampling is what one bilinear tap per
-//! fragment gives — into a tile texture with no mip chain, a canvas weave read at
+//! fragment gives — into a tile texture with no mip chain, a canvas substrate read at
 //! LOD 0, impasto normals taken as a finite difference across screen pixels — and a
 //! thumbnail built that way is a sparse, phase-dependent sample of the painting, which
 //! crawls under a pan and buzzes on every edge. The navigator's miniature (a whole

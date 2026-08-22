@@ -79,7 +79,7 @@ pub fn begin_fill(state: AppState) {
 /// Gradient chip. A matte already wearing a gradient re-opens on its own ramp
 /// and axis, so the mode edits what is there; a solid one starts on the
 /// library's current ramp with a vertical axis across its rect (or the view,
-/// for a ground) — a graded sky's default, previewed immediately so entering
+/// for a substrate) — a graded sky's default, previewed immediately so entering
 /// the mode already shows something to adjust. With the library empty the mode
 /// still opens, carrying no ramp: the bar's well is where the first one is
 /// picked or traced, and the default axis stands ready for it.
@@ -120,7 +120,7 @@ pub fn begin_matte(state: AppState, layer: stark_model::document::LayerId, paint
 }
 
 /// The rect a fresh matte axis spans: the matte's own, or the view for a
-/// ground that has none.
+/// substrate that has none.
 fn default_axis_rect(state: AppState, layer: stark_model::document::LayerId) -> (Vec2, Vec2) {
     let obs = state.obs.peek();
     let matte_rect = obs

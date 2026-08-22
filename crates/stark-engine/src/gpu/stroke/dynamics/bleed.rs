@@ -88,12 +88,12 @@ pub(super) const MAX_BLEED_FIRES_PER_SEGMENT: usize = 16;
 const BLEED_BLEND: f32 = 0.5;
 /// The longest tap a firing may take, as a fraction of the tip's radius.
 ///
-/// The bound is the footprint, not stability. A tap landing outside the sweep has
+/// The bound is the extent, not stability. A tap landing outside the sweep has
 /// `w_n = 0` and carries nothing (`dynamics.wesl`), so a reach approaching the tip's
 /// own size is truncated for most of the tip: the delivered diffusivity falls below
 /// the asked-for one, and does so *position-dependently*, which is worse than falling
 /// short evenly. Half the radius keeps the long tap live over the inner half of the
-/// footprint. Past this the honest way to diffuse further is a finer cadence
+/// extent. Past this the honest way to diffuse further is a finer cadence
 /// ([`BLEED_TRAVEL_QUANTUM`]) — more steps, not longer ones, exactly as it would be
 /// in any explicit diffusion solver.
 const BLEED_REACH_MAX: f32 = 0.5;
@@ -336,17 +336,17 @@ mod tests {
         }
     }
 
-    /// The reach never outgrows the footprint it diffuses inside. Past this the long
+    /// The reach never outgrows the extent it diffuses inside. Past this the long
     /// tap leaves the sweep for most of the tip, where it carries nothing and the
     /// delivered diffusivity falls short of the asked-for one unevenly across the
-    /// footprint (`BLEED_REACH_MAX`).
+    /// extent (`BLEED_REACH_MAX`).
     #[test]
     fn the_reach_stays_inside_the_tip() {
         for (radius, span) in cases() {
             let (reach, _) = bleed_stencil(1.0, radius, span);
             assert!(
                 reach <= (BLEED_REACH_MAX * radius).round().max(1.0),
-                "radius {radius}, span {span}: reach {reach} overruns the footprint",
+                "radius {radius}, span {span}: reach {reach} overruns the extent",
             );
         }
     }

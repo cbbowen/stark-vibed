@@ -22,7 +22,7 @@
 //!
 //! Recovery is deliberately not a shortcut past anything. A recovered action goes
 //! through the same door as one off the flood — parked if it names content this
-//! peer lacks, released when that content lands — because a `SetSurface` recovered
+//! peer lacks, released when that content lands — because a `SetSubstrate` recovered
 //! and applied against the flat stand-in would be a divergence created by the
 //! machinery meant to remove one (§6.4).
 
@@ -219,7 +219,7 @@ mod tests {
                 lamport,
                 actor: ActorId(1),
             },
-            kind: ActionKind::SetBackground(Srgb::new([lamport as f32 / 8.0; 3])),
+            kind: ActionKind::SetSubstrateColor(Srgb::new([lamport as f32 / 8.0; 3])),
         }
     }
 

@@ -50,7 +50,6 @@ mod failure;
 mod files;
 mod gesture;
 mod gradients;
-mod grounds;
 mod icons;
 mod identity;
 mod images;
@@ -73,6 +72,7 @@ mod shapes;
 mod slots;
 mod state;
 mod storage;
+mod substrates;
 mod thumbs;
 mod timings;
 mod tutor;
@@ -244,18 +244,18 @@ fn app() -> Element {
             // ready — and so the default presets have ids to name
             // (§6.6, `crate::builtins`).
             builtins::import_all(&mut r).await;
-            // Fetch the default ground's height map and open the document on it
-            // (§6.4, §6.6). A ground is named by the hash of its image, so this
+            // Fetch the default substrate's height map and open the document on it
+            // (§6.4, §6.6). A substrate is named by the hash of its image, so this
             // cannot be done the other way round any more: the engine boots on
-            // `Flat` — the one ground it can name without bytes — and the id it
+            // `Flat` — the one substrate it can name without bytes — and the id it
             // moves to is only knowable once those bytes are in hand.
             //
-            // `new_document` rather than a `SetSurface`, so no bogus first step
+            // `new_document` rather than a `SetSubstrate`, so no bogus first step
             // lands in the undo history of every fresh document. It replaces a
             // document nobody has touched: the renderer signal is not published
             // until this whole block finishes, so nothing can have been painted yet.
             let color_space = r.color_space();
-            grounds::open_default(&mut r, color_space).await;
+            substrates::open_default(&mut r, color_space).await;
             // Fetch the default environment's HDR and light the canvas with it
             // (§6.3); until it arrives the procedural neutral one is used,
             // and the Lighting panel can switch back to it at any time. A no-op while
@@ -287,9 +287,9 @@ fn app() -> Element {
 
             // And the custom surface library, on the same footing and for a sharper
             // version of the same reason: a document opened from a file may name a
-            // weave this browser holds, and a library that had not arrived yet would
+            // substrate this browser holds, and a library that had not arrived yet would
             // leave the gallery unable to say so (§6.4).
-            grounds::load(state).await;
+            substrates::load(state).await;
 
             // The app's own presets join the library now rather than at
             // `presets::load`: they name bundled brush shapes, and a stamp is

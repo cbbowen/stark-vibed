@@ -13,7 +13,7 @@ use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand
 use stark_engine::path::DEFAULT_TOLERANCE;
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
-use stark_model::SurfaceId;
+use stark_model::SubstrateId;
 use stark_model::document::BrushShape;
 use stark_model::geom::Vec2;
 
@@ -23,8 +23,8 @@ const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
 const STROKE_A: &[Vec2] = &[Vec2::new(-40.0, -20.0), Vec2::new(40.0, 20.0)];
 const STROKE_B: &[Vec2] = &[Vec2::new(-40.0, 40.0), Vec2::new(40.0, -40.0)];
 
-/// A dry, toothed stroke: it reaches only for the ground's peaks, so its mark *is*
-/// the ground and a missing height map is visible in the pixels.
+/// A dry, toothed stroke: it reaches only for the substrate's peaks, so its mark *is*
+/// the substrate and a missing height map is visible in the pixels.
 fn paint_toothed(engine: &mut Engine) {
     stroke_with(
         engine,
@@ -212,26 +212,26 @@ fn saved_file_is_compact() {
     eprintln!("400-sample stroke document: {} bytes", bytes.len());
 }
 
-/// The canvas surface is document state (§6.4), so a mid-document switch
+/// The canvas substrate is document state (§6.4), so a mid-document switch
 /// is a logged action: it survives save/load, and undo takes it back.
 ///
-/// `CanvasMeta::surface` records the surface the log *starts* from; the switch
+/// `CanvasMeta::substrate` records the substrate the log *starts* from; the switch
 /// itself rides in the log, which is why loading has to replay to learn the
 /// current one rather than reading it off the header.
 #[test]
-fn a_surface_switch_is_historized() {
+fn a_substrate_switch_is_historized() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
-    let start = engine.surface();
+    let start = engine.substrate();
     assert_eq!(
         start,
-        SurfaceId::Flat,
-        "an engine holding no height map has exactly one ground it can name"
+        SubstrateId::Flat,
+        "an engine holding no height map has exactly one substrate it can name"
     );
-    // A real ground to switch *to*, imported so its id exists at all (§6.4).
+    // A real substrate to switch *to*, imported so its id exists at all (§6.4).
     let target = engine
-        .import_surface(&stark_testdata::assets::linen())
+        .import_substrate(&stark_testdata::assets::linen())
         .expect("the linen height map imports");
 
     paint(
@@ -240,20 +240,20 @@ fn a_surface_switch_is_historized() {
         20.0,
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
-    engine.process(DocCommand::SetSurface(target));
-    assert_eq!(engine.surface(), target);
+    engine.process(DocCommand::SetSubstrate(target));
+    assert_eq!(engine.substrate(), target);
 
     // Undo reaches it, because it is an action like any other.
     engine.process(DocCommand::Undo);
-    assert_eq!(engine.surface(), start, "undo must revert the surface");
+    assert_eq!(engine.substrate(), start, "undo must revert the substrate");
     engine.process(DocCommand::Redo);
-    assert_eq!(engine.surface(), target);
+    assert_eq!(engine.substrate(), target);
 
     // And it round-trips: the header still says the document *started* on `start`.
     let file = engine.document_file();
     assert_eq!(
-        file.canvas.surface, start,
-        "CanvasMeta records the initial surface, not the current one"
+        file.canvas.substrate, start,
+        "CanvasMeta records the initial substrate, not the current one"
     );
     let bytes = engine.save_bytes().expect("serialize");
 
@@ -262,63 +262,63 @@ fn a_surface_switch_is_historized() {
     };
     loaded.load_bytes(&bytes).expect("load");
     assert_eq!(
-        loaded.surface(),
+        loaded.substrate(),
         target,
-        "replaying the log must land on the switched-to surface"
+        "replaying the log must land on the switched-to substrate"
     );
 }
 
-/// **A document bundles every ground it names, not just the one it ends on**
+/// **A document bundles every substrate it names, not just the one it ends on**
 /// (§6.4, §8).
 ///
-/// The tooth reads whichever ground was in force when a stroke was made, so a
+/// The tooth reads whichever substrate was in force when a stroke was made, so a
 /// height map is a replay input exactly as a brush's coverage mask is — and a file
 /// that carries only the last one cannot reproduce a document that switched
 /// part-way. Checked on the container rather than on pixels because pixels cannot
-/// distinguish a ground faithfully reproduced from one that fell back to the flat
+/// distinguish a substrate faithfully reproduced from one that fell back to the flat
 /// stand-in; the bundle either holds the bytes or it does not.
 #[test]
-fn a_document_bundles_every_ground_it_names() {
+fn a_document_bundles_every_substrate_it_names() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     let linen = engine
-        .import_surface(&stark_testdata::assets::linen())
+        .import_substrate(&stark_testdata::assets::linen())
         .expect("the linen height map imports");
     let rough = engine
-        .import_surface(&stark_testdata::assets::rough())
+        .import_substrate(&stark_testdata::assets::rough())
         .expect("the rough height map imports");
-    assert_ne!(linen, rough, "two grounds, two content ids");
+    assert_ne!(linen, rough, "two substrates, two content ids");
 
     // Paint across a switch, so the log names both and ends on neither of them
     // first: linen, then rough, then back to smooth.
-    engine.process(DocCommand::SetSurface(linen));
+    engine.process(DocCommand::SetSubstrate(linen));
     paint(
         &mut engine,
         RED,
         20.0,
         &[Vec2::new(-40.0, -20.0), Vec2::new(40.0, -20.0)],
     );
-    engine.process(DocCommand::SetSurface(rough));
+    engine.process(DocCommand::SetSubstrate(rough));
     paint(
         &mut engine,
         RED,
         20.0,
         &[Vec2::new(-40.0, 20.0), Vec2::new(40.0, 20.0)],
     );
-    engine.process(DocCommand::SetSurface(SurfaceId::Flat));
+    engine.process(DocCommand::SetSubstrate(SubstrateId::Flat));
 
     let file = engine.document_file();
-    let bundled: Vec<SurfaceId> = file.surfaces.iter().map(|(id, _)| *id).collect();
+    let bundled: Vec<SubstrateId> = file.substrates.iter().map(|(id, _)| *id).collect();
     assert!(
         bundled.contains(&linen) && bundled.contains(&rough),
-        "both grounds the log names must ride with it, got {bundled:?}"
+        "both substrates the log names must ride with it, got {bundled:?}"
     );
     assert!(
-        !bundled.contains(&SurfaceId::Flat),
+        !bundled.contains(&SubstrateId::Flat),
         "`Flat` is procedural and has no bytes to bundle"
     );
-    for (id, bytes) in &file.surfaces {
+    for (id, bytes) in &file.substrates {
         assert!(!bytes.is_empty(), "{id:?} was bundled with no height map");
     }
 
@@ -326,51 +326,51 @@ fn a_document_bundles_every_ground_it_names() {
     let encoded = engine.save_bytes().expect("serialize");
     let back = stark_model::DocumentFile::from_bytes(&encoded).expect("deserialize");
     assert_eq!(
-        back.surfaces.len(),
-        file.surfaces.len(),
-        "the grounds must survive the round trip"
+        back.substrates.len(),
+        file.substrates.len(),
+        "the substrates must survive the round trip"
     );
 }
 
 /// Bytes offered under the wrong id are **refused**, not installed (§6.4).
 ///
-/// This is the one way a content-addressed ground could still deposit the wrong
+/// This is the one way a content-addressed substrate could still deposit the wrong
 /// tooth: a peer or a file handing over an image that is not the one the id names.
 /// Since the id is derived from the bytes on the way in, the disagreement is
 /// detectable, so it is detected.
 #[test]
-fn a_ground_that_is_not_what_it_claims_is_refused() {
+fn a_substrate_that_is_not_what_it_claims_is_refused() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     let linen = engine
-        .import_surface(&stark_testdata::assets::linen())
+        .import_substrate(&stark_testdata::assets::linen())
         .expect("the linen height map imports");
     assert!(
         engine
-            .accept_surface(linen, &stark_testdata::assets::rough())
+            .accept_substrate(linen, &stark_testdata::assets::rough())
             .is_err(),
         "rough's bytes must not install themselves as linen"
     );
     // The honest pairing still works, and is idempotent.
     assert_eq!(
         engine
-            .accept_surface(linen, &stark_testdata::assets::linen())
+            .accept_substrate(linen, &stark_testdata::assets::linen())
             .expect("linen's own bytes are accepted under linen's id"),
         linen
     );
 }
 
-/// **A lean file names the ground it was painted on but does not carry it, and
+/// **A lean file names the substrate it was painted on but does not carry it, and
 /// still replays to the same pixels** (§8's version 6, §12.4).
 ///
 /// The bundle is what a `.stark` file weighs — a log is fitted paths and a canvas
-/// ground is megabytes — so a document painted on an asset the app ships with
+/// substrate is megabytes — so a document painted on an asset the app ships with
 /// carried a copy of it for nothing. The id stays in the file; only the bytes go.
 ///
 /// What has to hold is that resolving the id back and installing it **before the
-/// replay** lands on the identical picture. A toothed brush on the irregular rough ground
-/// ground is the only configuration where getting that wrong shows up at all:
+/// replay** lands on the identical picture. A toothed brush on the irregular rough substrate
+/// substrate is the only configuration where getting that wrong shows up at all:
 /// without the height map the deposition gate is 1.0 everywhere and the stroke
 /// comes back smooth, into stored pixels that no later arrival un-bakes (§6.4).
 #[test]
@@ -380,32 +380,32 @@ fn a_lean_file_replays_identically_once_its_content_is_resolved() {
     };
     let rough_bytes = stark_testdata::assets::rough();
     let rough = original
-        .import_surface(&rough_bytes)
-        .expect("import ground");
-    original.process(DocCommand::SetSurface(rough));
+        .import_substrate(&rough_bytes)
+        .expect("import substrate");
+    original.process(DocCommand::SetSubstrate(rough));
     paint_toothed(&mut original);
     let expected = original.render_to_image();
 
-    // Saved twice: once bundling everything, once leaving out the ground on the
+    // Saved twice: once bundling everything, once leaving out the substrate on the
     // promise that whoever opens it can produce that id.
-    let SurfaceId::Image(ground_id) = rough else {
-        panic!("an imported ground is an image");
+    let SubstrateId::Image(substrate_id) = rough else {
+        panic!("an imported substrate is an image");
     };
     let fat = original.save_bytes().expect("serialize");
     let lean = original
-        .save_bytes_resolvable(&[ground_id])
+        .save_bytes_resolvable(&[substrate_id])
         .expect("serialize lean");
     assert!(
         lean.len() * 4 < fat.len(),
-        "leaving the ground out should dominate the file: {} vs {} bytes",
+        "leaving the substrate out should dominate the file: {} vs {} bytes",
         lean.len(),
         fat.len()
     );
 
     let file = stark_model::DocumentFile::from_bytes(&lean).expect("decode");
     assert!(
-        file.surfaces.is_empty(),
-        "the ground was promised, so it should not be in the bundle"
+        file.substrates.is_empty(),
+        "the substrate was promised, so it should not be in the bundle"
     );
 
     // Opening it: the bill, settled before a single action replays.
@@ -413,12 +413,12 @@ fn a_lean_file_replays_identically_once_its_content_is_resolved() {
     let owed = loaded.unresolved_content(&file);
     assert_eq!(
         owed,
-        vec![stark_model::AssetNeed::Ground(ground_id)],
+        vec![stark_model::AssetNeed::Substrate(substrate_id)],
         "a lean file has to say what it is missing, or the opener replays without it"
     );
     for need in &owed {
         loaded
-            .accept_surface(need.surface().expect("a ground"), &rough_bytes)
+            .accept_substrate(need.substrate().expect("a substrate"), &rough_bytes)
             .expect("resolve locally");
     }
     loaded
@@ -439,9 +439,9 @@ fn a_complete_file_owes_nothing() {
         return;
     };
     let rough = engine
-        .import_surface(&stark_testdata::assets::rough())
-        .expect("import ground");
-    engine.process(DocCommand::SetSurface(rough));
+        .import_substrate(&stark_testdata::assets::rough())
+        .expect("import substrate");
+    engine.process(DocCommand::SetSubstrate(rough));
     paint_toothed(&mut engine);
 
     let file = stark_model::DocumentFile::from_bytes(&engine.save_bytes().expect("serialize"))
@@ -466,7 +466,7 @@ fn a_complete_file_owes_nothing() {
 /// and returned as `Ok(())` instead, the load reports success and replays every toothed
 /// stroke through the flat stand-in, into *stored* pixels that no later arrival
 /// un-bakes (§6.4) — a document that opens perfectly smooth and gives no sign which
-/// ground it was painted through.
+/// substrate it was painted through.
 ///
 /// Two claims, and the second is the one a log line could not make. It fails — with
 /// the bill in the error, so a caller can act on it — and it fails *before* adopting
@@ -477,18 +477,18 @@ fn an_unsettled_lean_file_is_refused_and_changes_nothing() {
         return;
     };
     let rough = original
-        .import_surface(&stark_testdata::assets::rough())
-        .expect("import ground");
-    original.process(DocCommand::SetSurface(rough));
+        .import_substrate(&stark_testdata::assets::rough())
+        .expect("import substrate");
+    original.process(DocCommand::SetSubstrate(rough));
     paint_toothed(&mut original);
-    let SurfaceId::Image(ground_id) = rough else {
-        panic!("an imported ground is an image");
+    let SubstrateId::Image(substrate_id) = rough else {
+        panic!("an imported substrate is an image");
     };
     let lean = original
-        .save_bytes_resolvable(&[ground_id])
+        .save_bytes_resolvable(&[substrate_id])
         .expect("serialize lean");
 
-    // A second engine with a painting of its own already open, and no rough ground.
+    // A second engine with a painting of its own already open, and no rough substrate.
     let mut opener = engine_or_skip_blue().expect("adapter");
     paint(&mut opener, GREEN, 30.0, STROKE_B);
     let before = opener.render_to_image();
@@ -500,7 +500,7 @@ fn an_unsettled_lean_file_is_refused_and_changes_nothing() {
         stark_engine::EngineError::Document(stark_model::DocError::MissingContent(missing)) => {
             assert_eq!(
                 missing,
-                vec![stark_model::AssetNeed::Ground(ground_id)],
+                vec![stark_model::AssetNeed::Substrate(substrate_id)],
                 "the refusal has to name what is owed, or the caller cannot settle it"
             )
         }
@@ -517,7 +517,7 @@ fn an_unsettled_lean_file_is_refused_and_changes_nothing() {
 /// being able to open a lean capture at all (§8, §19).
 ///
 /// Two derivations, deliberately kept apart: a shape is hashed from its decoded
-/// *coverage* and a ground from its *height*, so the same file filed as both earns two
+/// *coverage* and a substrate from its *height*, so the same file filed as both earns two
 /// ids. This asserts the round trip in the direction that matters — engine derives the
 /// id, table hands back bytes that install under it — because the failure mode is
 /// silent. A table keyed on the wrong hash resolves nothing, `unresolved_content` stays
@@ -527,25 +527,25 @@ fn the_bundled_asset_table_agrees_with_the_engine_on_every_id() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let SurfaceId::Image(ground) = engine
-        .import_surface(&stark_testdata::assets::rough())
-        .expect("import ground")
+    let SubstrateId::Image(substrate) = engine
+        .import_substrate(&stark_testdata::assets::rough())
+        .expect("import substrate")
     else {
-        panic!("an imported ground is an image");
+        panic!("an imported substrate is an image");
     };
     let shape = engine
         .import_brush(&stark_testdata::assets::bristles())
         .expect("import shape");
 
-    for (what, id) in [("ground", ground), ("shape", shape)] {
+    for (what, id) in [("substrate", substrate), ("shape", shape)] {
         let bytes = stark_testdata::assets::bundled(id)
             .unwrap_or_else(|| panic!("the table ships no {what} for the id the engine derived"));
-        // Installing under the id it was looked up by is the check: `accept_surface`
+        // Installing under the id it was looked up by is the check: `accept_substrate`
         // re-derives and refuses a mismatch, and `import_brush` returns the id it
         // actually computed.
-        let landed = if what == "ground" {
-            match engine.accept_surface(SurfaceId::Image(id), &bytes) {
-                Ok(SurfaceId::Image(back)) => back,
+        let landed = if what == "substrate" {
+            match engine.accept_substrate(SubstrateId::Image(id), &bytes) {
+                Ok(SubstrateId::Image(back)) => back,
                 other => panic!("installing the {what} did not land on an image: {other:?}"),
             }
         } else {

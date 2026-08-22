@@ -322,7 +322,7 @@ fn a_pixel_staircase_holds_its_heading() {
         });
     }
     for s in &samples {
-        // A mouse's grain at 1:1 — the tolerance the frontend would state.
+        // A mouse's resolution at 1:1 — the tolerance the frontend would state.
         assert!(session.hover_to(*s, 1.0, 50.0));
     }
 
@@ -373,7 +373,7 @@ fn a_pixel_staircase_holds_its_heading() {
 ///
 /// The scenario is the jitter pathology at full strength: a 14° line reported
 /// as a 1-in-4 pixel staircase. Cold, the entry's heading is decided by where
-/// one control point lands against grain-quantized samples; after a watched
+/// one control point lands against tolerance-quantized samples; after a watched
 /// approach, the press is an *interior* sample of a longer curve and the entry
 /// is smoothed through it. Measured when this was written: the conditioned
 /// entry reads 14.4° at the marker on the 14.04° line, 0.19 px off the press,

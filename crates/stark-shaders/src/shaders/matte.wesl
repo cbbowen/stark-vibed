@@ -9,7 +9,7 @@
 //     `1 − exp(−OPACITY_K · color.a · thickness)`, so a matte that wrote only
 //     color would be perfectly invisible (§15.4.1).
 //   · Its interior is at *constant* height, so its gradient is zero and it lights
-//     flat — no weave, and the paint film's uniform sheen (media_common.wesl) reads
+//     flat — no substrate, and the paint film's uniform sheen (media_common.wesl) reads
 //     as an even wash rather than a glint, like a mat board. Its boundary is a
 //     height cliff and catches light the way every stroke edge already does.
 //   · Both targets blend as premultiplied `over` (declared by the pipeline, NOT
@@ -59,7 +59,7 @@ struct Ramp {
 
 // Thickness of the matte slab, in the same units as paint height. With
 // `OPACITY_K = 1` a thickness of 8 leaves the slab's visible alpha > 0.999 even
-// after the weave-sink discount (media_common.wesl), so a matte at full opacity
+// after the substrate-sink discount (media_common.wesl), so a matte at full opacity
 // reads solid.
 const MATTE_THICKNESS: f32 = 8.0;
 
@@ -107,7 +107,7 @@ fn vs_main(
     // not allocate.
     @location(3) resid: vec4<f32>,
     // Region kind: 0 = outside `rect` (the frame), 1 = the whole plane
-    // (§15.5's ground) — `rect` then carries zeros and is never read.
+    // (§15.5's substrate) — `rect` then carries zeros and is never read.
     @location(4) flags: f32,
 ) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));

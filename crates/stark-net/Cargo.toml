@@ -87,11 +87,11 @@ wgpu = { workspace = true }
 glam = { workspace = true }
 # Synthesizing brush-shape PNGs for the mid-session asset replication test.
 png = { workspace = true }
-# Deriving a ground's content id without a GPU, which is what lets a test promise
+# Deriving a substrate's content id without a GPU, which is what lets a test promise
 # content the way the frontend's build-time manifest does.
 stark-assetid = { workspace = true }
-# The real rough height map, for the ground-replication test. A synthetic one
-# would do the job less well: the deposition tooth reads the ground's *histogram*
+# The real rough height map, for the substrate-replication test. A synthetic one
+# would do the job less well: the deposition tooth reads the substrate's *histogram*
 # (§6.4), and a smooth synthetic blob has almost none of one, so a peer left on
 # the flat stand-in could still land within tolerance.
 stark-testdata = { path = "../stark-testdata" }

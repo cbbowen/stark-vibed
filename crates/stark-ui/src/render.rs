@@ -17,7 +17,7 @@ use stark_engine::command::ViewCommand;
 use stark_engine::{Engine, EnvironmentId, GpuContext, InputCommand, InputSample, ObservableState};
 use stark_model::AssetNeed;
 use stark_model::ColorSpaceId;
-use stark_model::SurfaceId;
+use stark_model::SubstrateId;
 use stark_model::geom::Extent2;
 
 pub const CANVAS_ID: &str = "stark-canvas";
@@ -51,16 +51,16 @@ pub struct Renderer {
     /// A short list looked up by name a handful of times per frame at most —
     /// a `Vec` beats a map, and keeps gallery order.
     builtins: Vec<(&'static str, stark_model::AssetId)>,
-    /// The canvas grounds bundled with the app (`crate::grounds`), each imported
+    /// The canvas substrates bundled with the app (`crate::substrates`), each imported
     /// once its height map is fetched (§6.4), keyed by the name that module gives
     /// it.
     ///
-    /// The same shape as `builtins` above and for the same reason: a ground is
+    /// The same shape as `builtins` above and for the same reason: a substrate is
     /// named by the hash of its image, so its id is only knowable once the bytes
     /// have arrived, and this is where the answer is remembered. A document may
-    /// perfectly well be on a ground that is in no catalog — one a peer brought —
+    /// perfectly well be on a substrate that is in no catalog — one a peer brought —
     /// which is why this is a *display* index and never the source of truth.
-    grounds: Vec<(&'static str, SurfaceId)>,
+    substrates: Vec<(&'static str, SubstrateId)>,
     /// The Navigator panel's canvas and everything that draws into it — `None` until
     /// the panel mounts one ([`Renderer::attach_overview`]).
     overview: Option<Overview>,
@@ -163,7 +163,7 @@ impl Renderer {
     /// the chrome reads back, so its own control re-renders showing the *previous*
     /// value and stays wrong until some unrelated command happens to refresh `obs`
     /// (§4, §7). Core declines to expose such a setter for the canvas surface for the
-    /// same reason (`Engine::apply_document_surface`).
+    /// same reason (`Engine::apply_document_substrate`).
     ///
     /// Frontend code holding an `AppState` calls `state::dispatch`, which is this
     /// plus that refresh, the repaint and the outbox flush. This is for the callers
@@ -226,7 +226,7 @@ impl Renderer {
     /// Start a fresh document in `color_space`, on `surface` (§6.7).
     /// The color space cannot be changed any other way — see
     /// [`Engine::new_document`].
-    pub fn new_document(&mut self, color_space: ColorSpaceId, surface: SurfaceId) {
+    pub fn new_document(&mut self, color_space: ColorSpaceId, surface: SubstrateId) {
         if let Err(e) = self.engine.new_document(color_space, surface) {
             // Unreachable from the picker, which only offers spaces this build
             // carries — but a `Renderer` is also driven from tests and scripts, and
@@ -237,51 +237,51 @@ impl Renderer {
     }
 
     /// The document's current canvas surface (§6.4).
-    pub fn surface(&self) -> SurfaceId {
-        self.engine.surface()
+    pub fn substrate(&self) -> SubstrateId {
+        self.engine.substrate()
     }
 
-    /// Import a canvas ground from a fetched height map, returning the id that
+    /// Import a canvas substrate from a fetched height map, returning the id that
     /// names it (§6.4). The id comes *out of* the bytes, so it can only be had
     /// once they have arrived.
-    pub fn import_surface(&mut self, png_bytes: &[u8]) -> Option<SurfaceId> {
-        match self.engine.import_surface(png_bytes) {
+    pub fn import_substrate(&mut self, png_bytes: &[u8]) -> Option<SubstrateId> {
+        match self.engine.import_substrate(png_bytes) {
             Ok(id) => Some(id),
             Err(e) => {
-                tracing::warn!("canvas ground failed to import: {e}");
+                tracing::warn!("canvas substrate failed to import: {e}");
                 None
             }
         }
     }
 
-    /// Take in a ground that arrives already named — from a peer — checking the
+    /// Take in a substrate that arrives already named — from a peer — checking the
     /// bytes against the id that asked for them (§12.4).
-    pub fn accept_surface(&mut self, id: SurfaceId, png_bytes: &[u8]) {
-        if let Err(e) = self.engine.accept_surface(id, png_bytes) {
-            tracing::warn!("remote canvas ground rejected: {e}");
+    pub fn accept_substrate(&mut self, id: SubstrateId, png_bytes: &[u8]) {
+        if let Err(e) = self.engine.accept_substrate(id, png_bytes) {
+            tracing::warn!("remote canvas substrate rejected: {e}");
         }
     }
 
-    /// The canonical height map of a loaded ground — for seeding a live session so
+    /// The canonical height map of a loaded substrate — for seeding a live session so
     /// peers can fetch it by hash.
-    pub fn surface_bytes(&self, id: SurfaceId) -> Option<Vec<u8>> {
-        self.engine.surface_bytes(id)
+    pub fn substrate_bytes(&self, id: SubstrateId) -> Option<Vec<u8>> {
+        self.engine.substrate_bytes(id)
     }
 
-    /// Import a bundled ground from its fetched bytes, caching its id under the
-    /// name `crate::grounds` gives it. Idempotent: a repeat import is free
+    /// Import a bundled substrate from its fetched bytes, caching its id under the
+    /// name `crate::substrates` gives it. Idempotent: a repeat import is free
     /// (content-addressed) and simply refreshes the entry.
-    pub fn load_ground(&mut self, name: &'static str, png_bytes: &[u8]) -> Option<SurfaceId> {
-        let id = self.import_surface(png_bytes)?;
-        self.grounds.retain(|(n, _)| *n != name);
-        self.grounds.push((name, id));
+    pub fn load_substrate(&mut self, name: &'static str, png_bytes: &[u8]) -> Option<SubstrateId> {
+        let id = self.import_substrate(png_bytes)?;
+        self.substrates.retain(|(n, _)| *n != name);
+        self.substrates.push((name, id));
         Some(id)
     }
 
-    /// The ground `name` resolved to, or `None` while its height map has yet to be
+    /// The substrate `name` resolved to, or `None` while its height map has yet to be
     /// fetched and imported.
-    pub fn ground(&self, name: &str) -> Option<SurfaceId> {
-        self.grounds
+    pub fn builtin_substrate(&self, name: &str) -> Option<SubstrateId> {
+        self.substrates
             .iter()
             .find(|(n, _)| *n == name)
             .map(|(_, id)| *id)
@@ -705,7 +705,7 @@ impl Renderer {
     /// because the only correction is the DOM resize observer, and it reports through
     /// [`crate::state::resize`], which can act only once the renderer signal is
     /// published — while everything between `init` and that publish is a *network
-    /// fetch* (shape assets, the ground's height map, the environment HDR). The
+    /// fetch* (shape assets, the substrate's height map, the environment HDR). The
     /// corrected size therefore lands squarely inside the window where it is dropped,
     /// and the viewport keeps a size the canvas has not had since the first frame:
     /// the view's `half()` is off by the difference, so every stroke lands away from
@@ -858,8 +858,8 @@ impl Renderer {
     /// Build a second [`Renderer`] on this one's device: a new surface bound to
     /// `canvas` plus an engine of its own that **shares** this engine's expensive
     /// state — every compiled pipeline, the imported brush shapes, and the decoded
-    /// ground and environment caches (`Engine::new_sharing`). The preview document
-    /// stays fully isolated from the real one; it opens on this document's ground,
+    /// substrate and environment caches (`Engine::new_sharing`). The preview document
+    /// stays fully isolated from the real one; it opens on this document's substrate,
     /// under this canvas's lighting and media parameters, so a stroke on it reads
     /// exactly as it would here — with nothing re-fetched and nothing re-decoded.
     ///
@@ -907,7 +907,7 @@ impl Renderer {
             // the assets behind them are shared, so the donor's answers are this
             // engine's answers.
             builtins: self.builtins.clone(),
-            grounds: self.grounds.clone(),
+            substrates: self.substrates.clone(),
             overview: None,
             layer_thumbs: stark_engine::Offscreen::default(),
             frames_in_flight: Arc::new(AtomicU32::new(0)),
@@ -916,7 +916,7 @@ impl Renderer {
 
     /// The expensive half of this renderer's engine, on its own
     /// (`stark_engine::EngineShared`) — the device, the compiled pipelines, the brush
-    /// assets and the decoded grounds.
+    /// assets and the decoded substrates.
     ///
     /// **It outlives this renderer's borrow, which is the point.** A consumer that
     /// only wants to *render* something — a preset thumbnail — previously had to hold
@@ -977,7 +977,7 @@ async fn finish_init(canvas: Canvas, surface: wgpu::Surface<'static>, gpu: GpuCo
         config,
         engine,
         builtins: Vec::new(),
-        grounds: Vec::new(),
+        substrates: Vec::new(),
         overview: None,
         layer_thumbs: stark_engine::Offscreen::default(),
         frames_in_flight: Arc::new(AtomicU32::new(0)),

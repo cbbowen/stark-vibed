@@ -37,7 +37,7 @@
 //! that is why the method is idempotent — see its own note.
 
 use dioxus::prelude::*;
-use stark_model::{Srgb, SurfaceScale};
+use stark_model::{Srgb, SubstrateScale};
 
 use crate::state::{AppState, dispatch};
 use stark_engine::command::{DocCommand, ViewCommand};
@@ -162,21 +162,23 @@ pub const MATTE_PAINT: Preview<(LayerId, MattePaint)> =
     });
 
 /// The canvas substrate color — the Lighting panel's pop-out (§15.5).
-pub const BACKGROUND: Preview<Srgb> =
-    Preview::new(ViewCommand::PreviewBackground, DocCommand::SetBackground);
+pub const BACKGROUND: Preview<Srgb> = Preview::new(
+    ViewCommand::PreviewSubstrateColor,
+    DocCommand::SetSubstrateColor,
+);
 
-/// How large the canvas weave is laid — the Lighting panel's scale slider (§6.4).
+/// How large the canvas substrate is laid — the Lighting panel's scale slider (§6.4).
 ///
 /// The row where the bargain buys the most. Every other pair here spends an undo step
-/// per pointer sample if it is got wrong; this one would also **bake a ground** per
-/// sample, since a `Surface` is built from the weave and its scale together
-/// (`stark-engine`'s `gpu::surface::Ground`). The preview costs one number in the
+/// per pointer sample if it is got wrong; this one would also **bake a substrate** per
+/// sample, since a `Surface` is built from the substrate and its scale together
+/// (`stark-engine`'s `gpu::substrate::Substrate`). The preview costs one number in the
 /// media pass's uniform, because the height field a light reads is the same field
 /// however large it is laid — only the deposit's rise channels move with the scale,
 /// and nothing deposits while a slider is under the hand.
-pub const SURFACE_SCALE: Preview<SurfaceScale> = Preview::new(
-    ViewCommand::PreviewSurfaceScale,
-    DocCommand::SetSurfaceScale,
+pub const SUBSTRATE_SCALE: Preview<SubstrateScale> = Preview::new(
+    ViewCommand::PreviewSubstrateScale,
+    DocCommand::SetSubstrateScale,
 );
 
 /// A gradient fill of the selection — the gradient bar's composing axis (§22.4).
@@ -282,14 +284,14 @@ mod tests {
         check_pair!(
             BACKGROUND,
             Srgb::new([0.93, 0.91, 0.86]),
-            ViewCommand::PreviewBackground(Some(shown)),
-            DocCommand::SetBackground(laid) => (shown, laid)
+            ViewCommand::PreviewSubstrateColor(Some(shown)),
+            DocCommand::SetSubstrateColor(laid) => (shown, laid)
         );
         check_pair!(
-            SURFACE_SCALE,
-            SurfaceScale::new(160),
-            ViewCommand::PreviewSurfaceScale(Some(shown)),
-            DocCommand::SetSurfaceScale(laid) => (shown, laid)
+            SUBSTRATE_SCALE,
+            SubstrateScale::new(160),
+            ViewCommand::PreviewSubstrateScale(Some(shown)),
+            DocCommand::SetSubstrateScale(laid) => (shown, laid)
         );
         check_pair!(
             FILL,
@@ -347,8 +349,8 @@ mod tests {
             ViewCommand::PreviewGuide(None)
         ));
         assert!(matches!(
-            (SURFACE_SCALE.show)(None),
-            ViewCommand::PreviewSurfaceScale(None)
+            (SUBSTRATE_SCALE.show)(None),
+            ViewCommand::PreviewSubstrateScale(None)
         ));
     }
 }

@@ -39,7 +39,7 @@ use stark_model::document::{
     SelectionOp, SelectionShape, TransformMap, WarpMap, footprint, rect_corners,
 };
 use stark_model::geom::{Affine2, IVec2, TileCoord, Vec2};
-use stark_model::{SurfaceId, SurfaceScale};
+use stark_model::{SubstrateId, SubstrateScale};
 
 // ---------------------------------------------------------------------------
 // The state diff
@@ -126,11 +126,11 @@ fn selections_agree(a: &Selection, b: &Selection) -> bool {
 
 fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
     let mut out = Vec::new();
-    if before.surface != after.surface {
-        out.push(Diff::Named(Resource::Surface));
+    if before.substrate != after.substrate {
+        out.push(Diff::Named(Resource::Substrate));
     }
-    if before.background != after.background {
-        out.push(Diff::Named(Resource::Background));
+    if before.substrate_color != after.substrate_color {
+        out.push(Diff::Named(Resource::SubstrateColor));
     }
     if shape(before) != shape(after) {
         out.push(Diff::Named(Resource::StackOrder));
@@ -229,14 +229,14 @@ fn slot(kind: &ActionKind) -> usize {
         ActionKind::SetLayerVisible(..) => 5,
         ActionKind::MoveLayer { .. } => 6,
         ActionKind::Undo(_) => 7,
-        ActionKind::SetSurface(_) => 8,
-        ActionKind::SetSurfaceScale(_) => 9,
+        ActionKind::SetSubstrate(_) => 8,
+        ActionKind::SetSubstrateScale(_) => 9,
         ActionKind::Select(_) => 10,
         ActionKind::InvertSelection => 11,
         ActionKind::AddMatte { .. } => 12,
         ActionKind::SetMatteRect(..) => 13,
         ActionKind::SetMattePaint(..) => 14,
-        ActionKind::SetBackground(_) => 15,
+        ActionKind::SetSubstrateColor(_) => 15,
         ActionKind::Transform { .. } => 16,
         ActionKind::SetLayerName(..) => 17,
         ActionKind::Fill { .. } => 18,
@@ -272,8 +272,8 @@ const NAMES: [&str; KINDS] = [
     "Layer visibility",
     "Reorder layer",
     "Undo",
-    "Canvas surface",
-    "Surface scale",
+    "Canvas substrate",
+    "Substrate scale",
     "Select",
     "Invert selection",
     "Add matte",
@@ -500,7 +500,7 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "background",
-        DocCommand::SetBackground(Srgb::new([0.2, 0.3, 0.4])),
+        DocCommand::SetSubstrateColor(Srgb::new([0.2, 0.3, 0.4])),
     );
 
     // Mattes.
@@ -569,22 +569,22 @@ fn every_action_touches_only_what_it_declares() {
         DocCommand::RemoveLayer(placed),
     );
 
-    // A ground the document names but holds no bytes for still changes what the
+    // A substrate the document names but holds no bytes for still changes what the
     // log says the paint sat on, which is what the footprint has to claim.
     step(
         &mut engine,
         seen,
-        "switch the canvas surface",
-        DocCommand::SetSurface(SurfaceId::Image(AssetId([7; 32]))),
+        "switch the canvas substrate",
+        DocCommand::SetSubstrate(SubstrateId::Image(AssetId([7; 32]))),
     );
 
     // And laying it at a different size, which the same resource claims (§6.4): the
-    // weave and how large it is are one fact about what a stroke bites.
+    // substrate and how large it is are one fact about what a stroke bites.
     step(
         &mut engine,
         seen,
-        "lay the canvas surface larger",
-        DocCommand::SetSurfaceScale(SurfaceScale::new(200)),
+        "lay the canvas substrate larger",
+        DocCommand::SetSubstrateScale(SubstrateScale::new(200)),
     );
 
     // Selection, and the tools that act through it.
@@ -821,7 +821,7 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "rename a guide",
-        DocCommand::SetGuideName(first, Some("the ground".into())),
+        DocCommand::SetGuideName(first, Some("the substrate".into())),
     );
     step(
         &mut engine,

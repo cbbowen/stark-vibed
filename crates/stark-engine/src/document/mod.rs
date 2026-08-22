@@ -28,7 +28,9 @@ pub use layer::{CompositeParams, Layer, LayerContent, PaintTiles};
 /// leaves the document looking the same, which is the whole of what a merge promises.
 pub use merge::MergePlan;
 pub use selection::Selection;
-pub use state::{CanvasBounds, DEFAULT_BACKGROUND, DEFAULT_SURFACE, DocState, Guide, LayerSite};
+pub use state::{
+    CanvasBounds, DEFAULT_SUBSTRATE, DEFAULT_SUBSTRATE_COLOR, DocState, Guide, LayerSite,
+};
 pub use timeline::{
     LinearTimeline, ReplicatedTimeline, Timeline, TimelineStats, effective_actions,
 };

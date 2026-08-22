@@ -2,7 +2,7 @@
 // payoff. Color arrives premultiplied by *coverage* — pass A weighs each layer by
 // its slab visible alpha (composite.wesl), so alpha here is the stack's
 // accumulated coverage. We un-premultiply, composite the paint over the substrate
-// by that coverage (weave-sunk paint discounted, `paint_vis_at`), convert
+// by that coverage (substrate-sunk paint discounted, `paint_vis_at`), convert
 // Oklab → linear sRGB, and hand off to the shared lighting tail.
 
 import package::lib::color::{oklab_to_linear_srgb};
@@ -21,7 +21,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let dim = vec2<i32>(textureDimensions(comp_aux));
 
     let cc = textureLoad(comp_color, p, 0);    // (Oklab · coverage, coverage)
-    let vis = paint_vis_at(p, dim);            // accumulated coverage, weave-corrected
+    let vis = paint_vis_at(p, dim);            // accumulated coverage, substrate-corrected
     let lab = cc.rgb / max(cc.a, COVERAGE_EPS); // un-premultiply coverage → latent Oklab
     let over = over_substrate(lab, vis);       // substrate, or a transparent cut-out
 

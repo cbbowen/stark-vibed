@@ -20,7 +20,7 @@
 //! would rescale a row's picture as its layer is painted outward.
 //!
 //! **Cut out, not on the substrate** (`Background::Transparent`): a row shows where
-//! the layer *has* paint, and a ground under it would fill every thumbnail edge to
+//! the layer *has* paint, and a substrate under it would fill every thumbnail edge to
 //! edge and hide exactly that. The stylesheet puts a flat tint behind it rather than
 //! the usual transparency checker — at this size a checker is noise, and it would
 //! have to be drawn with the same `background-image` the picture arrives in.

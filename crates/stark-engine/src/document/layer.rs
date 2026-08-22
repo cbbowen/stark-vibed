@@ -175,7 +175,7 @@ pub enum LayerContent {
     ///
     /// Physically this is a flat, opaque *coat of paint*: the compositor gives it
     /// a constant thickness, so its interior lights flat (zero height gradient —
-    /// no weave, and the paint film's uniform sheen reads as an even wash rather
+    /// no substrate, and the paint film's uniform sheen reads as an even wash rather
     /// than a glint) while its boundary catches light the same way any stroke edge
     /// does — a graded wash varies the paint's color, never its thickness, the
     /// same statement the gradient fill makes (§22.4). See §15.4 for

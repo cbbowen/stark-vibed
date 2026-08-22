@@ -31,7 +31,7 @@ pub enum PickSource {
     /// canvas color standing in wherever the paint does not cover.
     ///
     /// The one source that answers on bare canvas, and the only one whose answer can
-    /// be a color no layer holds — a glaze over the ground is a mixture of the two.
+    /// be a color no layer holds — a glaze over the substrate is a mixture of the two.
     /// That is what it is for: matching what the eye sees at a point rather than what
     /// is stored there, which is the question being asked when the paint is thin.
     CompositeOverSubstrate,
@@ -78,7 +78,7 @@ pub enum PickSource {
     /// The substrate is in the question, as it is for
     /// [`CompositeOverSubstrate`](Self::CompositeOverSubstrate): "what would I
     /// see here without the layers over this one" is asked of a canvas, not of
-    /// paint floating in the void — so bare canvas answers with the ground.
+    /// paint floating in the void — so bare canvas answers with the substrate.
     Below(LayerId),
 }
 
@@ -147,7 +147,7 @@ fn mean_channels(texels: &[f32]) -> Option<[f32; 4]> {
 /// about a color the screen has already decided.
 ///
 /// It is a **plain** mean where [`mean_channels`] is an opacity-weighted one, and
-/// that difference *is* the mode: with the ground behind it every texel is opaque, so
+/// that difference *is* the mode: with the substrate behind it every texel is opaque, so
 /// a patch half-covered by a stroke reads as the mixture of paint and canvas an eye
 /// sees there instead of reporting the stroke alone. `over` is linear in each texel,
 /// so compositing every texel and then averaging is exactly the arithmetic below.
@@ -157,7 +157,7 @@ fn mean_over_substrate(texels: &[f32], bg: [f32; 4]) -> Option<[f32; 4]> {
         return None;
     }
     let n = count as f32;
-    // Clamped because it is about to be read as "how much of the patch the ground
+    // Clamped because it is about to be read as "how much of the patch the substrate
     // shows through": the composite cannot exceed full coverage, and a float that
     // lands a hair over 1 would subtract substrate rather than none of it.
     let bare = 1.0 - (sum[3] / n).clamp(0.0, 1.0);
@@ -226,10 +226,10 @@ impl Engine {
     /// mixture, which would make picking the mix back up impossible. That is the
     /// entire reason pigment mixing is worth having.
     ///
-    /// `None` where the sampled patch holds no paint: the substrate is the ground,
+    /// `None` where the sampled patch holds no paint: the substrate is the backdrop,
     /// not something a brush picks up, so bare canvas answers "nothing here" rather
     /// than quietly loading the brush with the paper color. The one source that
-    /// answers anyway is [`PickSource::CompositeOverSubstrate`], where the ground is
+    /// answers anyway is [`PickSource::CompositeOverSubstrate`], where the substrate is
     /// what was asked for.
     ///
     /// Renders immediately and returns a future for the **readback**, the only
@@ -298,17 +298,17 @@ impl Engine {
         let size = Extent2::new(2 * radius + 1, 2 * radius + 1);
         // Read here rather than in the future, because it is document state and
         // the future deliberately does not borrow the engine. That the other
-        // sources have no ground is why the substrate rides the *source* rather
+        // sources have no substrate is why the substrate rides the *source* rather
         // than a flag beside it: asking paint for its own color and asking what
         // the canvas shows are different questions, and only the second kind has
         // a substrate in it — `CompositeOverSubstrate` and `Below` are both that
         // kind.
-        let ground = matches!(
+        let substrate = matches!(
             options.source,
             PickSource::CompositeOverSubstrate | PickSource::Below(_)
         )
         .then(|| {
-            let bg = self.presented().background;
+            let bg = self.presented().substrate_color;
             (
                 self.shared.color_space.rgb_to_channels(bg),
                 self.shared.color_space.rgb_to_resid(bg),
@@ -427,7 +427,7 @@ impl Engine {
                 .iter()
                 .enumerate()
                 .map(|(i, texels)| {
-                    let mean = match ground {
+                    let mean = match substrate {
                         Some((bg, _)) => mean_over_substrate(texels, bg),
                         None => mean_channels(texels),
                     };
@@ -436,7 +436,7 @@ impl Engine {
                     // color's: `sum[3]` is the same coverage sum either way, so the
                     // opacity weighting and the over-substrate blend are already the
                     // right ones for it (§6.7).
-                    let mean_resid = resid_sets.as_ref().and_then(|sets| match ground {
+                    let mean_resid = resid_sets.as_ref().and_then(|sets| match substrate {
                         Some((_, bg_resid)) => mean_over_substrate(
                             &sets[i],
                             [bg_resid[0], bg_resid[1], bg_resid[2], 1.0],

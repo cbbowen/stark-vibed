@@ -3292,7 +3292,7 @@ button.layer-remove:hover {
    invitation, lit while a drag hovers. */
 /* --- the asset galleries ---
    One grid, two libraries: the brush editor's stamps (`ShapeGallery`) and the
-   Lighting panel's canvas weaves (`SurfaceGallery`). They are the same object twice
+   Lighting panel's canvas weaves (`SubstrateGallery`). They are the same object twice
    over (`stark-ui/src/library.rs`), so they are the same picture — which is also why
    these classes are `asset-` and not `shape-`: the grid was the brush editor's alone
    once, and `.be-shapes` said so.

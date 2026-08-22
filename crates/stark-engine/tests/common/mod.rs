@@ -30,7 +30,7 @@ pub const BG: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 /// A light neutral grey substrate, for color spaces that composite over a light
-/// ground. Matches the engine's `DEFAULT_BACKGROUND`. Neutral on purpose: a warm
+/// substrate. Matches the engine's `DEFAULT_SUBSTRATE_COLOR`. Neutral on purpose: a warm
 /// paper rendered so red-dominant it defeated channel-dominance checks like `is_red`
 /// (tests asserting "is paint here?" were vacuously true on bare paper). Now that
 /// [`engine_or_skip`] leaves the light on `Neutral` as well, nothing anywhere in the
@@ -142,35 +142,35 @@ pub fn engine_or_skip_sized(size: Extent2) -> Option<Engine> {
     build(size, ColorSpaceId::Oklab)
 }
 
-/// A headless engine on the **blue** ground ([`BG`]) rather than the default
+/// A headless engine on the **blue** substrate ([`BG`]) rather than the default
 /// paper.
 ///
 /// The substrate is document state (§15.5), so choosing it is a
 /// logged edit like any other — which is exactly how a user would do it. Blue is
 /// deliberate for these tests: they ask "is there paint here?" by channel dominance,
-/// and a saturated ground answers in the *other* direction, so `is_blue` reads "bare
+/// and a saturated substrate answers in the *other* direction, so `is_blue` reads "bare
 /// canvas" as positively as `is_red` reads "paint". Grey paper can only ever fail
 /// `is_red`, which a black frame would too.
 pub fn engine_or_skip_blue() -> Option<Engine> {
     engine_or_skip().map(on_blue)
 }
 
-/// [`engine_or_skip_sized`] on the blue ground.
+/// [`engine_or_skip_sized`] on the blue substrate.
 pub fn engine_or_skip_sized_blue(size: Extent2) -> Option<Engine> {
     engine_or_skip_sized(size).map(on_blue)
 }
 
 pub fn on_blue(mut engine: Engine) -> Engine {
-    engine.process(stark_engine::command::DocCommand::SetBackground(Srgb::new(
-        [BG.r as f32, BG.g as f32, BG.b as f32],
-    )));
+    engine.process(stark_engine::command::DocCommand::SetSubstrateColor(
+        Srgb::new([BG.r as f32, BG.g as f32, BG.b as f32]),
+    ));
     engine
 }
 
 /// A headless engine rendering to a chosen target format.
 ///
 /// Exists because everything else here uses [`TARGET`] (`Rgba8Unorm`) while a real
-/// browser surface is usually `Bgra8Unorm` — a difference no single-format test
+/// browser substrate is usually `Bgra8Unorm` — a difference no single-format test
 /// can see, and one that silently swapped red and blue in exported PNGs.
 pub fn engine_or_skip_in_format(format: wgpu::TextureFormat) -> Option<Engine> {
     // Not through `build`, which pins [`TARGET`] — the whole point here is a

@@ -85,7 +85,7 @@ fn undo_matches_shorter_history() {
 // a time would — the property that lets the mode reuse the undo stack instead of
 // keeping a second playhead beside it.
 //
-// These build on `engine_or_skip` rather than the blue-ground helper the tests
+// These build on `engine_or_skip` rather than the blue-substrate helper the tests
 // above use: setting the substrate is a *logged* action (§15.5), so a
 // blue engine starts one step into its own history and every position here would
 // have to be written as an offset from that. What is being asserted is arithmetic

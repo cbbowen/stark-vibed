@@ -31,12 +31,12 @@
 //! render writes (what it is looking at, how it is lit, how many samples it took).
 //!
 //! The split exists because more than one thing gets drawn from the same document,
-//! at different sizes: the surface every frame, and beside it an export or the
+//! at different sizes: the substrate every frame, and beside it an export or the
 //! navigator's miniature. One `Compositor` shared between them spends a rebuild of
 //! *both* sizes' attachments per alternation — which is affordable for a file export
 //! and not for a miniature refreshed on every edit. So each keeps its own, and they
 //! share the expensive half by reference. What they must not each keep a copy of is
-//! the view settings: two consumers disagreeing about the canvas weave or the
+//! the view settings: two consumers disagreeing about the canvas substrate or the
 //! lighting would be a bug visible only in the smaller picture, so those live in the
 //! pipeline behind a generation counter that each `Compositor` notices.
 
@@ -58,7 +58,7 @@ use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::environment::Environment;
-use crate::gpu::surface::Surface;
+use crate::gpu::substrate::SubstrateMap;
 use crate::gpu::uniforms::{InstanceStream, UniformSlots};
 use crate::view::ViewTransform;
 use stark_model::geom::Extent2;
@@ -112,26 +112,26 @@ struct PreparedStreams<'a> {
 ///
 /// These four travel together because they are one description of the document at an
 /// instant, assembled in one place — [`Engine::render_view`](crate::Engine) — and
-/// meaningless apart: the ground belongs under the stack, the outlines over it, and
-/// `transparent` says whether the ground is drawn at all.
+/// meaningless apart: the substrate belongs under the stack, the outlines over it, and
+/// `transparent` says whether the substrate is drawn at all.
 pub struct CompositeScene<'a> {
-    /// The substrate color in the document's working channels — the ground under
+    /// The substrate color in the document's working channels — the substrate under
     /// the paint (§15.5).
-    pub background: [f32; 4],
+    pub substrate_color: [f32; 4],
     /// The substrate color's **residual** in `.xyz` (§6.7); `.w` unused. Zero in a
-    /// space that has none — and the reason a *black* ground in a pigment document
+    /// space that has none — and the reason a *black* substrate in a pigment document
     /// finally reads black, since Mixbox's polynomial renders those concentrations
     /// `#383838` on their own.
-    pub background_resid: [f32; 4],
-    /// How large the canvas weave is laid, as canvas px → surface-tile uv
-    /// ([`Ground::uv_scale`]).
+    pub substrate_resid: [f32; 4],
+    /// How large the canvas substrate is laid, as canvas px → substrate-tile uv
+    /// ([`Substrate::uv_scale`]).
     ///
     /// Travels with the scene beside `background`, and for that field's reason: both
     /// are document state the media pass reads (§6.4, §15.5), so both follow an
     /// unlogged preview without anything having to be rebuilt.
     ///
-    /// [`Ground::uv_scale`]: crate::gpu::Ground::uv_scale
-    pub grain_uv: f32,
+    /// [`Substrate::uv_scale`]: crate::gpu::Substrate::uv_scale
+    pub substrate_uv_scale: f32,
     /// The visible layers, bottom-to-top, cut into blend groups.
     pub groups: &'a [CompositeGroup],
     /// Selection outlines to draw over the lit result: the local actor's and each
@@ -212,7 +212,7 @@ pub struct CompositorPasses {
 /// into a target of its own size and therefore keeps its own attachments; what they
 /// must *not* keep their own of is anything on this side of the line — the pipelines
 /// because they are expensive (six passes, plus a decoded Mixbox LUT), and the view
-/// settings because two consumers disagreeing about the canvas weave or the lighting
+/// settings because two consumers disagreeing about the canvas substrate or the lighting
 /// would be a bug that shows only in the smaller picture.
 ///
 /// Not immutable: the view settings change, through `&mut self` on this type. It
@@ -227,12 +227,12 @@ pub struct CompositorPipeline {
     /// Lighting parameters for the media pass (§6.3) — a view setting like the two
     /// below, copied into each renderer's own media uniform on every render.
     media_params: MediaParams,
-    // The canvas surface (bump) sampled by the media pass for relief.
-    surface: Surface,
+    // The canvas substrate (bump) sampled by the media pass for relief.
+    substrate: SubstrateMap,
     // The HDR lighting environment sampled by the media pass (§6.3).
     environment: Environment,
     /// A stamp for "the state a media bind group would be built against". Moved
-    /// whenever `surface` or `environment` is swapped: both are bound *into* each
+    /// whenever `substrate` or `environment` is swapped: both are bound *into* each
     /// consumer's bind group, so each has to notice and rebuild — and a stamp is what
     /// makes noticing structural rather than a fan-out of notifications that a new
     /// consumer could be left out of.
@@ -268,7 +268,7 @@ fn next_generation() -> u64 {
 /// **written per render** — which is the same line, since a value a render writes is
 /// a value two targets would disagree about.
 ///
-/// One per thing being drawn into — the surface, and (with its own) anything that
+/// One per thing being drawn into — the substrate, and (with its own) anything that
 /// renders beside it: an export, the navigator's miniature. Sharing one across
 /// targets of different sizes means each render resizes the attachments the other
 /// just built, so the cost is paid twice per alternation rather than once ever.
@@ -327,7 +327,7 @@ pub struct Compositor {
     guide_uniforms: UniformSlots<GuideUniform>,
 }
 
-/// Somewhere for a render that is **not** the surface's to keep its attachments
+/// Somewhere for a render that is **not** the substrate's to keep its attachments
 /// between calls — a [`Compositor`], built on first use.
 ///
 /// Whether they are worth keeping is the caller's to know, not the engine's, and it
@@ -374,7 +374,7 @@ impl CompositorPipeline {
         ctx: &GpuContext,
         target_format: wgpu::TextureFormat,
         color_space: &dyn ColorSpace,
-        surface: Surface,
+        substrate: SubstrateMap,
         environment: Environment,
         blend: Arc<BlendPass>,
         filter: Arc<FilterPass>,
@@ -399,7 +399,7 @@ impl CompositorPipeline {
         };
         Self::sharing(
             Arc::new(passes),
-            surface,
+            substrate,
             environment,
             MediaParams::default(),
         )
@@ -416,14 +416,14 @@ impl CompositorPipeline {
     /// [`Engine::new_sharing`]: crate::Engine::new_sharing
     pub(crate) fn sharing(
         passes: Arc<CompositorPasses>,
-        surface: Surface,
+        substrate: SubstrateMap,
         environment: Environment,
         media_params: MediaParams,
     ) -> Self {
         Self {
             passes,
             media_params,
-            surface,
+            substrate,
             environment,
             generation: next_generation(),
         }
@@ -444,14 +444,14 @@ impl CompositorPipeline {
         self.media_params = media;
     }
 
-    /// Swap the canvas surface (bump) so the next render shades against it
+    /// Swap the canvas substrate (bump) so the next render shades against it
     /// (§6.4). A view-time swap — the composited tiles are untouched.
     ///
     /// Each [`Compositor`] rebuilds its media bind group when it next notices the
     /// generation moved, rather than being told: a swap has to reach every consumer,
     /// and the one that would be forgotten is exactly the one nobody is looking at.
-    pub fn set_surface(&mut self, surface: Surface) {
-        self.surface = surface;
+    pub fn set_substrate(&mut self, substrate: SubstrateMap) {
+        self.substrate = substrate;
         self.generation = next_generation();
     }
 
@@ -480,7 +480,7 @@ impl CompositorPipeline {
             formats: self.formats,
             media: &self.media_pass,
             media_buf,
-            surface: &self.surface,
+            substrate: &self.substrate,
             environment: &self.environment,
         })
     }
@@ -523,14 +523,14 @@ impl Compositor {
 
     /// Bring the attachments in line with what is about to be drawn — a target of
     /// `target_size` rendered at `ss` samples per axis, against the pipeline's current
-    /// surface/environment — and hand back the accumulator to draw into.
+    /// substrate/environment — and hand back the accumulator to draw into.
     ///
     /// Returning it rather than leaving the caller to unwrap [`Self::accum`] is what
     /// makes "the accumulator exists" a consequence of having called this, in the one
     /// place that can build it.
     ///
     /// Called at the top of every render, so a resized target, a zoom that crossed a
-    /// supersampling threshold, a swapped canvas weave, a swapped light and a whole
+    /// supersampling threshold, a swapped canvas substrate, a swapped light and a whole
     /// rebuilt pipeline (a color-space change, which changes the channel *formats*)
     /// all land without anyone having to be notified — see
     /// [`CompositorPipeline::generation`].
@@ -895,16 +895,16 @@ impl Compositor {
         scene: CompositeScene<'_>,
     ) {
         let CompositeScene {
-            background: bg_channels,
-            background_resid: bg_resid,
-            grain_uv,
+            substrate_color: bg_channels,
+            substrate_resid: bg_resid,
+            substrate_uv_scale,
             groups,
             outlines,
             transparent,
             guides,
         } = scene;
         // How hard this view is minifying, and therefore how many samples per output
-        // pixel it takes to stop the paint, the weave and the impasto relief aliasing
+        // pixel it takes to stop the paint, the substrate and the impasto relief aliasing
         // (§6.4). 1 at 1:1 and closer, where the rest of this is a no-op.
         // Everything this frame's pass A does, decided once (§14.7). It comes first
         // because the sample count below is chosen from what it costs: the scratch
@@ -925,7 +925,7 @@ impl Compositor {
         // This compositor's attachments, brought in line with what is about to be
         // drawn. Nobody else's: a render into something other than this target — an
         // export, the navigator's miniature — goes through a `Compositor` of its own,
-        // so the surface's attachments (and the frame already presented from them)
+        // so the substrate's attachments (and the frame already presented from them)
         // are never resized out from under it and rebuilt on the next frame.
         self.ensure_targets(p, view.viewport, ss);
         // From here down, `view` is the supersampled one and `target` is the only
@@ -973,10 +973,10 @@ impl Compositor {
             media::MediaScene {
                 params: p.media_params,
                 environment: &p.environment,
-                grain_uv,
+                substrate_uv_scale,
                 view,
-                background: bg_channels,
-                background_resid: bg_resid,
+                substrate_color: bg_channels,
+                substrate_resid: bg_resid,
                 transparent,
             },
         );

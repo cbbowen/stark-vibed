@@ -79,7 +79,7 @@ const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
 /// Both shaders sweep a curved segment by **unrolling** the annulus about its centre
 /// of curvature into the straight travel frame, which treats a canvas point as sliding
 /// through the tip frame along a line of constant lateral offset. It does not: the
-/// true track is an arc of radius `ρ`, so a point out at the footprint's shoulder is
+/// true track is an arc of radius `ρ`, so a point out at the extent's shoulder is
 /// off that line by `≈ r²/2R`, i.e. **`radius · |curvature| / 2` as a fraction of the
 /// tip radius**. That is the constant's real job. The annular sector the swept path
 /// rasterizes also folds over itself once `radius ≥ |R|`, but that bound (1.0) is five
@@ -119,10 +119,10 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // sweep as an arc is priced as a chord as well as drawn as one.
     //
     // Against the tip's **stretched** reach, not its radius (§6.6). Every reason the
-    // cap exists is about the footprint rather than about the number that names it: the
+    // cap exists is about the extent rather than about the number that names it: the
     // swept sector stays a simple polygon only while the inner rim clears the centre of
     // curvature, and the reservoir's crescent seams are a misplacement measured across
-    // the tip. A footprint drawn out `s` times reaches `s` times as far, so it may bend
+    // the tip. An extent drawn out `s` times reaches `s` times as far, so it may bend
     // `s` times less. The brush's own elongation and not a segment's, for the reason
     // every bound here is stated against `b`: a modulation only ever scales the knob
     // down, so this one bounds them all.
@@ -235,19 +235,19 @@ const EXCHANGE_REFERENCE_RATE: f32 = 5.991_465;
 /// the tip. None of those care how fast paint changes hands.
 const MAX_EXCHANGE_TRAVEL: f32 = 1.0;
 
-/// Ceiling on the footprint cell, in texels. [`footprint_cell`]'s own law reaches 10
+/// Ceiling on the extent cell, in texels. [`extent_cell`]'s own law reaches 10
 /// at the 500 px radius cap, so this is headroom against a future cap rather than a
 /// number any brush hits today — it exists so a degenerate input cannot ask the cell
 /// scratch for a stencil coarser than the shoulder argument was ever measured at.
-const FOOTPRINT_CELL_MAX: f32 = 16.0;
+const EXTENT_CELL_MAX: f32 = 16.0;
 
-/// The **footprint cell** (§6.2): the edge, in canvas texels, of the square over which
+/// The **extent cell** (§6.2): the edge, in canvas texels, of the square over which
 /// the coarse deposit may evaluate the exchange laws *once* and apply the result to
 /// every texel inside — 1 meaning the exact per-texel kernel and nothing else.
 ///
 /// The bound is the tip's **shoulder** — the width of a round tip's coverage falloff,
 /// `3·(1−hardness)·radius` for the `1 − |y|^h` profile family — because that is the
-/// finest feature the footprint-domain fields can carry: the prefix-τ differences, the
+/// finest feature the extent-domain fields can carry: the prefix-τ differences, the
 /// baked reservoir means and the exchange solves the cell hoists are all smooth at the
 /// scale the coverage itself varies. A quarter of the shoulder puts at least four
 /// cells across the falloff; the `0.02·radius` term keeps the cell a fixed small
@@ -277,13 +277,13 @@ const FOOTPRINT_CELL_MAX: f32 = 16.0;
 /// [`shoulder_per_radius`], shared with the taper's subdivision, which leans on the
 /// same fact from the other side: a feature narrower than a quarter of the shoulder
 /// is one the coverage cannot show.
-pub(super) fn footprint_cell(shape: &BrushShape, radius: f32) -> u32 {
+pub(super) fn extent_cell(shape: &BrushShape, radius: f32) -> u32 {
     let shoulder = shoulder_per_radius(shape) * radius;
     let cell = (0.02 * radius).min(0.25 * shoulder);
     if cell <= 2.0 {
         1
     } else {
-        cell.min(FOOTPRINT_CELL_MAX) as u32
+        cell.min(EXTENT_CELL_MAX) as u32
     }
 }
 
@@ -292,7 +292,7 @@ pub(super) fn footprint_cell(shape: &BrushShape, radius: f32) -> u32 {
 /// `Stamp`, which may be arbitrarily hard and is treated as the sharpest case.
 ///
 /// The one definition, used from both sides of the same fact: features narrower than
-/// a fraction of the shoulder are ones the coverage cannot carry. [`footprint_cell`]
+/// a fraction of the shoulder are ones the coverage cannot carry. [`extent_cell`]
 /// spends that as *coarsening* (the cell the coarse deposit may evaluate at), the
 /// taper's subdivision as *smoothness* (the radius step a segment boundary may take
 /// without printing, `segments::Taper`).
@@ -306,7 +306,7 @@ pub(super) fn shoulder_per_radius(shape: &BrushShape) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // --- the footprint cell ------------------------------------------------
+    // --- the extent cell ------------------------------------------------
 
     /// The property the whole coarse deposit rests on: **a tip with no shoulder earns
     /// no coarsening**, at any size. `hardness = 1` and every `Stamp` mask take the
@@ -317,11 +317,8 @@ mod tests {
     fn a_shoulderless_tip_is_never_coarsened() {
         let stamp = BrushShape::Stamp(stark_model::AssetId([7u8; 32]));
         for radius in [8.0f32, 100.0, 250.0, 500.0, 4000.0] {
-            assert_eq!(
-                footprint_cell(&BrushShape::Round { hardness: 1.0 }, radius),
-                1
-            );
-            assert_eq!(footprint_cell(&stamp, radius), 1);
+            assert_eq!(extent_cell(&BrushShape::Round { hardness: 1.0 }, radius), 1);
+            assert_eq!(extent_cell(&stamp, radius), 1);
         }
     }
 
@@ -333,7 +330,7 @@ mod tests {
         for radius in [50.0f32, 250.0, 500.0] {
             let mut last = u32::MAX;
             for h in [0.0f32, 0.25, 0.5, 0.8, 0.95, 0.99, 1.0] {
-                let cell = footprint_cell(&BrushShape::Round { hardness: h }, radius);
+                let cell = extent_cell(&BrushShape::Round { hardness: h }, radius);
                 assert!(
                     cell <= last,
                     "radius {radius}: hardness {h} got cell {cell}, harder was {last}",
@@ -352,23 +349,20 @@ mod tests {
         let soft = BrushShape::Round { hardness: 0.5 };
         for radius in [8.0f32, 30.0, 100.0] {
             assert_eq!(
-                footprint_cell(&soft, radius),
+                extent_cell(&soft, radius),
                 1,
                 "radius {radius} must stay exact"
             );
         }
-        assert_eq!(footprint_cell(&soft, 250.0), 5);
-        assert_eq!(footprint_cell(&soft, 500.0), 10);
+        assert_eq!(extent_cell(&soft, 250.0), 5);
+        assert_eq!(extent_cell(&soft, 500.0), 10);
         // Shoulder-bound: at hardness 0.99 a 500 px tip's shoulder is 15 px, so the
         // quarter-shoulder term (3.75) undercuts the 10 the radius term would give.
-        assert_eq!(
-            footprint_cell(&BrushShape::Round { hardness: 0.99 }, 500.0),
-            3
-        );
+        assert_eq!(extent_cell(&BrushShape::Round { hardness: 0.99 }, 500.0), 3);
         // At least four cells across the shoulder wherever the shoulder binds.
         for h in [0.9f32, 0.95, 0.99] {
             let shoulder = 3.0 * (1.0 - h) * 500.0;
-            let cell = footprint_cell(&BrushShape::Round { hardness: h }, 500.0);
+            let cell = extent_cell(&BrushShape::Round { hardness: h }, 500.0);
             assert!(
                 cell as f32 * 4.0 <= shoulder || cell == 1,
                 "hardness {h}: cell {cell} puts fewer than 4 cells across the \

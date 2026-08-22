@@ -1,5 +1,5 @@
 //! The floating Lighting panel: the image-based-lighting media pass and the canvas
-//! surface (§6.3, §6.4).
+//! substrate (§6.3, §6.4).
 
 use dioxus::prelude::*;
 use stark_model::Srgb;
@@ -11,12 +11,12 @@ use crate::widgets::Slider;
 use dioxus::dioxus_core::spawn_forever;
 use stark_engine::command::ViewCommand;
 use stark_engine::{EnvironmentId, MediaParams};
-use stark_model::{SurfaceId, SurfaceScale};
+use stark_model::{SubstrateId, SubstrateScale};
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
 /// stay out of the wasm binary (§6.6). The engine is handed the bytes.
 ///
-/// Canvas grounds are *not* here — they are `crate::grounds`, because a ground is
+/// Canvas substrates are *not* here — they are `crate::substrates`, because a substrate is
 /// content-addressed and so needs a resolved-id cache that a bare `Asset` constant has
 /// nowhere to keep (§6.4).
 pub const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1k.hdr");
@@ -56,7 +56,7 @@ pub fn LightingPanel() -> Element {
     // …and through a memo, so the panel wakes when one of these moves and sleeps
     // through the strokes and pans that merely rewrite the projection
     // (`state::use_obs`). These are the slowest-moving values in it — a light and a
-    // ground are chosen between passages, not during one.
+    // substrate are chosen between passages, not during one.
     //
     // The canvas substrate color (straight sRGB) is shown as a swatch that pops out
     // an Oklab picker. Read from the projection rather than a local signal for the
@@ -65,25 +65,25 @@ pub fn LightingPanel() -> Element {
     let scene = use_obs(state, |o| {
         (
             o.media,
-            o.surface,
-            o.surface_scale,
+            o.substrate,
+            o.substrate_scale,
             o.environment,
-            o.background,
+            o.substrate_color,
         )
     });
     let (p, surf, scale, env, c) = scene().unwrap_or_else(|| {
         (
             MediaParams::default(),
-            SurfaceId::default(),
-            SurfaceScale::NATURAL,
+            SubstrateId::default(),
+            SubstrateScale::NATURAL,
             EnvironmentId::default(),
-            stark_engine::document::DEFAULT_BACKGROUND,
+            stark_engine::document::DEFAULT_SUBSTRATE_COLOR,
         )
     });
     let mut show_bg_picker = use_signal(|| false);
-    // What a release would lay down (`preview::SURFACE_SCALE`). Held rather than read
+    // What a release would lay down (`preview::SUBSTRATE_SCALE`). Held rather than read
     // back off `scale` at commit time, which reports the *preview* mid-drag.
-    let laying = use_signal(|| None::<SurfaceScale>);
+    let laying = use_signal(|| None::<SubstrateScale>);
     let swatch = format!(
         "background: rgb({:.1}% {:.1}% {:.1}%);",
         c[0] * 100.0,
@@ -93,8 +93,8 @@ pub fn LightingPanel() -> Element {
     rsx! {
         Slider { label: "Impasto", min: 0.0, max: 1.0, value: p.height_strength,
             oninput: move |v| update_media(state, move |m| m.height_strength = v) }
-        Slider { label: "Texture", min: 0.0, max: 1.0, value: p.surface_strength,
-            oninput: move |v| update_media(state, move |m| m.surface_strength = v) }
+        Slider { label: "Texture", min: 0.0, max: 1.0, value: p.substrate_strength,
+            oninput: move |v| update_media(state, move |m| m.substrate_strength = v) }
         Slider { label: "Gloss", min: 0.0, max: 0.35, value: p.specular,
             oninput: move |v| update_media(state, move |m| m.specular = v) }
         div { class: "slider-row",
@@ -126,47 +126,47 @@ pub fn LightingPanel() -> Element {
                 }
             }
         }
-        // Every ground the app ships with, every one the artist imported, and the
-        // import card — the brush editor's shape gallery with weaves in it, because a
-        // weave a user brings is the same kind of thing as a bundled one all the way
-        // down (`crate::grounds`). A `select` stood here, which could offer a list but
-        // not a picture, and a canvas ground is judged by looking at it.
+        // Every substrate the app ships with, every one the artist imported, and the
+        // import card — the brush editor's shape gallery with substrates in it, because a
+        // substrate a user brings is the same kind of thing as a bundled one all the way
+        // down (`crate::substrates`). A `select` stood here, which could offer a list but
+        // not a picture, and a canvas substrate is judged by looking at it.
         // The dialogs' group heading, borrowed: a small caption over a set of things
         // is the same object in a panel as it is in a modal, and the alternative was
         // a second class with the same four declarations.
         div { class: "modal-section-label", "SURFACE" }
-        crate::grounds::SurfaceGallery {}
-        // How large the weave is laid (§6.4). A raw range rather than `Slider`,
+        crate::substrates::SubstrateGallery {}
+        // How large the substrate is laid (§6.4). A raw range rather than `Slider`,
         // because this one is document state: it previews per sample and commits
         // once, which needs the three drag-ending events `Slider` does not carry
-        // (`preview::SURFACE_SCALE`, and `Preview::settle` for why there are three).
+        // (`preview::SUBSTRATE_SCALE`, and `Preview::settle` for why there are three).
         //
         // The percentage is in the label because it is the one number here worth
-        // reading back — a weave is judged by eye, but "the same as last time" is
+        // reading back — a substrate is judged by eye, but "the same as last time" is
         // judged by the figure.
         div { class: "slider-row",
-            div { class: "slider-label", "Weave {scale.percent()}%" }
+            div { class: "slider-label", "Substrate {scale.percent()}%" }
             input {
                 class: "slider",
                 r#type: "range",
-                min: "{SurfaceScale::MIN}",
-                max: "{SurfaceScale::MAX}",
+                min: "{SubstrateScale::MIN}",
+                max: "{SubstrateScale::MAX}",
                 // The control steps on the same ladder the value does, so the track
-                // cannot offer a position `SurfaceScale::new` would move the handle
+                // cannot offer a position `SubstrateScale::new` would move the handle
                 // off (§6.4).
-                step: "{SurfaceScale::STEP}",
+                step: "{SubstrateScale::STEP}",
                 value: "{scale.percent()}",
-                // Inert on `Smooth`, whose height is a constant: there is no weave to
+                // Inert on `Smooth`, whose height is a constant: there is no substrate to
                 // size, and a live slider would claim otherwise.
-                disabled: surf == SurfaceId::Flat,
+                disabled: surf == SubstrateId::Flat,
                 oninput: move |e| {
                     if let Ok(v) = e.value().parse::<u16>() {
-                        preview::SURFACE_SCALE.during(state, laying, SurfaceScale::new(v));
+                        preview::SUBSTRATE_SCALE.during(state, laying, SubstrateScale::new(v));
                     }
                 },
-                onchange: move |_| preview::SURFACE_SCALE.settle(state, laying),
-                onpointerup: move |_| preview::SURFACE_SCALE.settle(state, laying),
-                onpointercancel: move |_| preview::SURFACE_SCALE.settle(state, laying),
+                onchange: move |_| preview::SUBSTRATE_SCALE.settle(state, laying),
+                onpointerup: move |_| preview::SUBSTRATE_SCALE.settle(state, laying),
+                onpointercancel: move |_| preview::SUBSTRATE_SCALE.settle(state, laying),
             }
         }
         div { class: "slider-row",
@@ -216,7 +216,7 @@ pub fn environment_asset(id: EnvironmentId) -> Option<Asset> {
 /// Re-light the canvas with `id` and repaint. A view setting: no stored pixel moves,
 /// only how the relief catches the light (§6.3). HDR-backed environments
 /// are fetched on first use — the same `spawn_forever` + register-then-switch shape
-/// as [`crate::grounds::select`], for the same reason: closing the panel mid-fetch
+/// as [`crate::substrates::select`], for the same reason: closing the panel mid-fetch
 /// must not cancel the switch.
 ///
 /// The switch itself goes through [`dispatch`], not through the renderer signal, and

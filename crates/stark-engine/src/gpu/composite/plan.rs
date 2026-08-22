@@ -360,7 +360,7 @@ pub(super) fn filter_uniform(f: &FilterDraw, view: ViewTransform) -> FilterUnifo
 /// spread in canvas px, angle in canvas radians) into the **accumulator texels**
 /// the pass samples in, through the view's full canvas→screen linear map — zoom,
 /// rotation and mirror alike, so the fringes stay attached to the artwork exactly
-/// as the canvas weave does (§21.10, §6.4). Zero for every other filter kind,
+/// as the canvas substrate does (§21.10, §6.4). Zero for every other filter kind,
 /// which is the true value rather than a stand-in: no other kind disperses.
 fn chromatic_disp(f: &FilterDraw, view: ViewTransform) -> [f32; 2] {
     if f.kind != stark_shaders::mirror::filter_common::FILTER_CHROMATIC {

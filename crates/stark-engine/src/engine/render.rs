@@ -3,7 +3,7 @@
 //!
 //! One path serves all three consumers, which is what keeps them from disagreeing
 //! about what the document looks like. [`Engine::render_view`] takes a view, a
-//! ground and somewhere to put the pass-A attachments, and every caller differs only
+//! substrate and somewhere to put the pass-A attachments, and every caller differs only
 //! in those: the screen renders through the session's view with chrome, the
 //! navigator's miniature through a planned rect without it, and an export through
 //! the same planned rect into a texture it then reads back. "Export" was a
@@ -25,7 +25,7 @@ use stark_model::geom::{Extent2, TileRect};
 /// What sits under the paint when rendering (§15.6).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum Background {
-    /// The document's substrate color, lit and textured by the canvas weave —
+    /// The document's substrate color, lit and textured by the canvas substrate —
     /// what the screen shows.
     #[default]
     Substrate,
@@ -48,16 +48,16 @@ enum Chrome {
 /// Which [`Compositor`] a render's offscreen attachments come from.
 ///
 /// Compositing runs through pass-A attachments the size of the target, so *whose*
-/// they are decides who pays for a resize. The surface's are kept from frame to
+/// they are decides who pays for a resize. The substrate's are kept from frame to
 /// frame; anything rendered beside them is a different size and brings its own, so
 /// the screen's are never resized out from under it — and never rebuilt on the next
 /// frame to recover. That mattered as soon as something rendered off-screen
 /// *repeatedly*: the navigator's miniature is one render per edit, and sharing the
-/// surface's attachments made it two rebuilds of window-sized textures and a full
+/// substrate's attachments made it two rebuilds of window-sized textures and a full
 /// recomposite per edit.
 enum Attachments<'a> {
-    /// The surface's own, cached across frames ([`Engine::compositor`]).
-    Surface,
+    /// The screen's own, cached across frames ([`Engine::compositor`]).
+    Screen,
     /// The caller's, so whether they outlive the call is decided by whoever knows
     /// whether the render repeats — see [`Offscreen`].
     Offscreen(&'a mut Offscreen),
@@ -186,12 +186,12 @@ impl Engine {
             Background::Substrate,
             Chrome::Shown,
             Rendered::Live,
-            Attachments::Surface,
+            Attachments::Screen,
         );
     }
 
     /// Render the document through `view` into a target that is **not** the engine's
-    /// own surface — a second surface showing the same document (§11).
+    /// own substrate — a second substrate showing the same document (§11).
     ///
     /// The navigator's miniature is the consumer: an overview of the whole piece is a
     /// second view of the canvas, and once it has somewhere to draw there is no reason
@@ -202,9 +202,9 @@ impl Engine {
     /// `into` holds the pass-A attachments (see [`Offscreen`]); a consumer drawing
     /// repeatedly keeps them, so a refresh allocates nothing at all. `target` must
     /// carry the format [`target_format`](Self::target_format) reports and be
-    /// `view.viewport` in size — a surface texture configured to match.
+    /// `view.viewport` in size — a substrate texture configured to match.
     ///
-    /// No chrome: a selection outline belongs to the surface you are painting on, not
+    /// No chrome: a selection outline belongs to the substrate you are painting on, not
     /// to a thumbnail of the piece.
     pub fn render_into(
         &mut self,
@@ -226,7 +226,7 @@ impl Engine {
     }
 
     /// The texture format this engine's pipelines render to. A frontend configuring a
-    /// second surface for [`render_into`](Self::render_into) has to match it.
+    /// second substrate for [`render_into`](Self::render_into) has to match it.
     pub fn target_format(&self) -> wgpu::TextureFormat {
         self.shared.target_format
     }
@@ -248,7 +248,7 @@ impl Engine {
     ///
     /// Private, with [`Engine::export`] and [`Engine::render_into`] as the two
     /// consumers: what a caller may choose is a view, how much of the document, a
-    /// ground and where the attachments live, never whether chrome is drawn (it is,
+    /// substrate and where the attachments live, never whether chrome is drawn (it is,
     /// for the screen alone) nor how the two are wired together.
     ///
     /// Over the arity lint by one, and left that way: **every parameter here is a
@@ -272,7 +272,7 @@ impl Engine {
     ) {
         // Everything a painted frame costs on the CPU, from the fold through to the
         // last command encoded. The frontend's own `frame` span sits outside it and
-        // adds the surface acquire and the present, so the difference between the two
+        // adds the substrate acquire and the present, so the difference between the two
         // rows is what the *page* costs on top of what the engine does.
         crate::timing::span!("render.view");
         // The fold is rebuilt lazily (`Engine::mark_live_stale`), and this is the
@@ -315,12 +315,12 @@ impl Engine {
             );
         }
 
-        // The substrate is document state now (§15.5), so the ground a
+        // The substrate is document state now (§15.5), so the substrate a
         // piece was painted on travels with it instead of living in whichever
         // frontend happened to render it.
-        let bg_channels = self.shared.color_space.rgb_to_channels(doc.background);
+        let bg_channels = self.shared.color_space.rgb_to_channels(doc.substrate_color);
         let bg_resid = {
-            let r = self.shared.color_space.rgb_to_resid(doc.background);
+            let r = self.shared.color_space.rgb_to_resid(doc.substrate_color);
             [r[0], r[1], r[2], 0.0]
         };
         // Chrome never reaches a file: an exported image gets no selection outline
@@ -367,11 +367,11 @@ impl Engine {
             .as_ref()
             .map_or(&[], |c| c.groups.as_slice());
         let scene = CompositeScene {
-            background: bg_channels,
-            background_resid: bg_resid,
+            substrate_color: bg_channels,
+            substrate_resid: bg_resid,
             // Off `doc`, which is the *previewed* document when one is up — so an
-            // unlogged scale drag re-lights the weave at pointer rate (§6.4).
-            grain_uv: doc.ground().uv_scale(),
+            // unlogged scale drag re-lights the substrate at pointer rate (§6.4).
+            substrate_uv_scale: doc.substrate().uv_scale(),
             groups,
             outlines: &outlines,
             transparent: background == Background::Transparent,
@@ -386,7 +386,7 @@ impl Engine {
         // looks like from the CPU's side.
         crate::timing::span!("render.composite");
         match attachments {
-            Attachments::Surface => {
+            Attachments::Screen => {
                 self.compositor
                     .render(&self.compositor_pipeline, target, view, scene)
             }
@@ -441,7 +441,7 @@ impl Engine {
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
         let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        // The caller's attachments, not the surface's — see [`Attachments`].
+        // The caller's attachments, not the substrate's — see [`Attachments`].
         self.render_view(
             &target_view,
             view,
@@ -503,7 +503,7 @@ impl Engine {
     /// through the media pass — just with the view centred on the frame at
     /// `zoom = scale`. Nothing is special-cased: a frame matte covers only
     /// *outside* its rect, which is clipped away here, so it contributes nothing
-    /// to its own export, while a ground matte is inside and contributes exactly
+    /// to its own export, while a substrate matte is inside and contributes exactly
     /// what it should.
     /// Renders immediately and returns a future for the **readback**, which is the
     /// only asynchronous part (§7 — on WebGPU `mapAsync` settles only
@@ -524,7 +524,7 @@ impl Engine {
     /// suits a render repeated on a cadence rather than written to a file.)
     ///
     /// `into` is where the render's attachments live. It renders **beside** the
-    /// surface rather than into it, so it never touches the screen's; whether its own
+    /// substrate rather than into it, so it never touches the screen's; whether its own
     /// outlive the call is the caller's call, and the caller is the only one who knows
     /// (see [`Offscreen`]) — a `&mut Offscreen::default()` for a one-shot, a held one
     /// for a render that repeats.
@@ -660,7 +660,7 @@ impl Engine {
     ///
     /// Within a run this is an *ordered* item list rather than a flat tile list
     /// because a matte has to composite at its own place in the stack — a frame over
-    /// the painting, a ground under it (§15.4.4). The compositor
+    /// the painting, a substrate under it (§15.4.4). The compositor
     /// re-batches consecutive tiles into one instanced draw, so an all-paint document
     /// costs nothing for it.
     ///
@@ -1179,7 +1179,7 @@ impl Engine {
         let doc = self.timeline.current();
         // An `Everything` matte has no rect and so defines no frame: naming one
         // falls through to the painted bounds, the same answer as no frame at
-        // all — a ground is under the picture, not a crop of it (§15.6).
+        // all — a substrate is under the picture, not a crop of it (§15.6).
         if let Some(id) = frame
             && let Some(rect) = doc
                 .layer(id)

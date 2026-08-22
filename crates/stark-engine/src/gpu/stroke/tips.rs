@@ -75,7 +75,7 @@ impl TipCache {
         }
     }
 
-    /// The brush's swept-footprint prefix-τ texture: an image brush's from the asset
+    /// The brush's swept-extent prefix-τ texture: an image brush's from the asset
     /// store, the round tip's generated (and cached) from its hardness.
     ///
     /// Both render paths resolve it the same way — they differ in which bind-group

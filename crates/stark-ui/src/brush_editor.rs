@@ -11,7 +11,7 @@
 //!
 //! The preview is a second `Engine` on its **own document**, built by **sharing
 //! the main engine's state** ([`Renderer::shared`]): same device, same compiled
-//! pipelines, same imported shapes, and it opens on the canvas's ground under its
+//! pipelines, same imported shapes, and it opens on the canvas's substrate under its
 //! lighting — so a stroke reads exactly like it will on the real canvas, and the
 //! dialog opens without fetching or decoding anything. One test stroke — a seeded default with a pressure bell
 //! and a ramping forward tilt (so pressure/tilt-driven settings respond even
@@ -34,7 +34,7 @@ use stark_engine::command::Tool;
 
 use stark_engine::InputSample;
 use stark_model::ColorSpaceId;
-use stark_model::SurfaceId;
+use stark_model::SubstrateId;
 use stark_model::document::{
     BrushParams, BrushShape, ModSource, Modulation, Modulations, NoiseKind, OrientationSource,
     PenState,
@@ -328,12 +328,12 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         .as_ref()
         .map(|r| r.color_space())
         .unwrap_or(ColorSpaceId::Oklab);
-    // The ground the document is on (§6.4) — what the tooth has to bite into.
-    let surface = state
+    // The substrate the document is on (§6.4) — what the tooth has to bite into.
+    let substrate = state
         .renderer
         .read()
         .as_ref()
-        .map(|r| r.surface())
+        .map(|r| r.substrate())
         .unwrap_or_default();
     let ch_labels = match space {
         ColorSpaceId::Mixbox => ["Pigment 1", "Pigment 2", "Pigment 3"],
@@ -469,18 +469,18 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // knob: the paint height laid per unit swept optical depth.
                     {mod_slider(state, preview, mod_open, ModRow::Flow, brush)}
                     // How deeply the tip bites into the canvas's own tooth
-                    // (§6.4): at 0 the ground is irrelevant and the mark is solid,
-                    // and turned up the paint catches on the weave's peaks and
+                    // (§6.4): at 0 the substrate is irrelevant and the mark is solid,
+                    // and turned up the paint catches on the substrate's peaks and
                     // skips its valleys, which is what a dry brush leaves.
                     {mod_slider(state, preview, mod_open, ModRow::Tooth, brush)}
-                    // The ground is the *document's*, not the brush's — a pencil
+                    // The substrate is the *document's*, not the brush's — a pencil
                     // and a loaded brush on one canvas see one tooth — so on a
                     // smooth canvas this knob has nothing to bite and says so,
                     // rather than moving and changing nothing.
-                    if brush.tooth > 0.0 && surface == SurfaceId::Flat {
+                    if brush.tooth > 0.0 && substrate == SubstrateId::Flat {
                         div { class: "be-note",
                             "This canvas is smooth, so there is no tooth to catch on. \
-                             Pick a surface in the Lighting panel."
+                             Pick a substrate in the Lighting panel."
                         }
                     }
                     // Per-unit opacity, independent of the amount laid (§6.1).
@@ -915,8 +915,8 @@ fn More(open: Signal<bool>, children: Element) -> Element {
 // --- preview engine ---
 
 /// Build the preview renderer by **sharing** the main engine's state
-/// (`Renderer::shared`): pipelines, imported stamp shapes, the decoded ground and
-/// environment all arrive with it, and the document opens on the canvas's ground
+/// (`Renderer::shared`): pipelines, imported stamp shapes, the decoded substrate and
+/// environment all arrive with it, and the document opens on the canvas's substrate
 /// under its lighting — so there is nothing to fetch and nothing to mirror but the
 /// background, which is document state. Then seed the default test stroke and
 /// paint it with the current brush.
@@ -929,7 +929,9 @@ async fn init_preview(state: AppState, mut preview: Preview) {
         let renderer = state.renderer.peek();
         renderer.as_ref().map(|main| {
             let mut r = main.shared(crate::platform::canvas_by_id(PREVIEW_CANVAS_ID));
-            r.process(DocCommand::SetBackground(main.observe().background));
+            r.process(DocCommand::SetSubstrateColor(
+                main.observe().substrate_color,
+            ));
             r
         })
     };

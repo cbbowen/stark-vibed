@@ -32,7 +32,7 @@
 //!   is the whole difference between this and a shape tool.
 //!
 //! Everything the recognizer measures against is denominated in the gesture's **input
-//! tolerance** — the device's own grain in canvas px, which the frontend already
+//! tolerance** — the device's own tolerance in canvas px, which the frontend already
 //! states for the fit (see [`PathFitter::with_tolerance`](crate::path::PathFitter::with_tolerance)).
 //! A "close enough to a line" bar fixed in canvas px would mean two different things
 //! at two zoom levels, for the same reason the fit's own prices would.
@@ -284,7 +284,7 @@ impl AssistShape {
 
 /// The shape `trace` resembles, or `None` to leave the stroke as it was drawn.
 ///
-/// `tolerance` is the gesture's input tolerance in canvas px — the device's own grain,
+/// `tolerance` is the gesture's input tolerance in canvas px — the device's own tolerance,
 /// which is the unit every bar here is quoted in. `guides` is what the grids on the
 /// screen offer: axes a line may be aimed along (§20.6) and planes a loop may be a
 /// circle on (§20.7). Pass an empty one and the answer is the hand's own shape.

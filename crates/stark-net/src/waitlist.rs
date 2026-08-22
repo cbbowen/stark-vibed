@@ -2,7 +2,7 @@
 //!
 //! An action naming content this peer does not hold cannot be applied
 //! faithfully: a stroke would stamp with the round tip instead of its shape
-//! (§6.6), and a `SetSurface` would move the document onto a flat stand-in,
+//! (§6.6), and a `SetSubstrate` would move the document onto a flat stand-in,
 //! after which every stroke bakes a smooth deposit into stored tiles that no
 //! later arrival un-bakes (§6.4). So the action waits for the content.
 //!
@@ -38,7 +38,7 @@
 //! What this file does *not* decide is how hard to try. Whether an action waits is
 //! here; how long the fetch it waits on keeps going, and who it asks, is
 //! [`content`](crate::content) — the two halves of one question, split where the
-//! brush and the ground stop behaving alike.
+//! brush and the substrate stop behaving alike.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -178,14 +178,14 @@ impl Waitlist {
     }
 
     /// Nothing could be fetched: release the parked actions to whatever fallback
-    /// their kind has. Only ever reached for a brush — a ground is not given up
+    /// their kind has. Only ever reached for a brush — a substrate is not given up
     /// on (see `resolve_asset`).
     pub fn abandoned(&self, need: AssetNeed) {
         let parked = self.take_parked(need, None);
         self.release(parked);
     }
 
-    /// A remote action arriving with everything it needs: mirror it and surface
+    /// A remote action arriving with everything it needs: mirror it and substrate
     /// it to the engine, unless it has been seen before.
     pub fn accept(&self, action: Action) {
         self.release(vec![action]);
@@ -203,7 +203,7 @@ impl Waitlist {
     }
 
     /// A locally-committed action on its way out to the swarm: mirror it so this
-    /// peer can serve it to a joiner, and surface nothing — the engine authored
+    /// peer can serve it to a joiner, and substrate nothing — the engine authored
     /// it and has applied it already.
     pub fn published(&self, action: Action) {
         self.mirror.lock().expect("mirror poisoned").insert(action);
@@ -221,7 +221,7 @@ impl Waitlist {
         parked.remove(&need).unwrap_or_default()
     }
 
-    /// Mirror actions and surface them in order, skipping ones already seen.
+    /// Mirror actions and substrate them in order, skipping ones already seen.
     fn release(&self, actions: Vec<Action>) {
         for action in actions {
             let fresh = self
@@ -271,7 +271,7 @@ mod tests {
                 lamport,
                 actor: ActorId(1),
             },
-            kind: ActionKind::SetBackground(Srgb::new([0.0; 3])),
+            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
         }
     }
 
@@ -297,13 +297,13 @@ mod tests {
     fn an_action_waits_for_its_content_and_arrives_behind_it() {
         let (waitlist, mut rx) = setup();
         assert!(matches!(waitlist.claim(need(1), &action(1)), Admit::Fetch));
-        assert!(drain(&mut rx).is_empty(), "nothing surfaces while parked");
+        assert!(drain(&mut rx).is_empty(), "nothing substrates while parked");
 
         let (bytes, hash) = content(1);
         waitlist.resolved(need(1), bytes, hash);
 
         // The order is the whole point: applying the action first is what bakes a
-        // flat deposit for a ground (§6.4).
+        // flat deposit for a substrate (§6.4).
         let events = drain(&mut rx);
         assert!(
             matches!(events[0], RemoteEvent::Asset { .. }),
@@ -394,7 +394,7 @@ mod tests {
     }
 
     /// Gossip delivers the same action more than once, and a duplicate that
-    /// parked would otherwise surface a second time when its content landed.
+    /// parked would otherwise substrate a second time when its content landed.
     #[test]
     fn a_duplicate_action_surfaces_once() {
         let (waitlist, mut rx) = setup();

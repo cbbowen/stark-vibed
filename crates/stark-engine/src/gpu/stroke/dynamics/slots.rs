@@ -33,7 +33,7 @@
 use crate::gpu::desc::Slot;
 use stark_shaders::mirror::dynamics::decl as d;
 
-/// The footprint copy that gives `deposit`/`settle` something to read while they
+/// The extent copy that gives `deposit`/`settle` something to read while they
 /// storage-write the region.
 pub(super) const SNAPSHOT: &[Slot] = &[
     Slot::dynamic(d::ST),
@@ -47,7 +47,7 @@ pub(super) const SNAPSHOT: &[Slot] = &[
 
 /// The tool's own side of one segment's transfer.
 ///
-/// The footprint `snapshot`'s targets are here too: a painting segment's snapshot runs
+/// The extent `snapshot`'s targets are here too: a painting segment's snapshot runs
 /// from the tail of the `exchange` grid rather than from a dispatch of its own
 /// (`dynamics.wesl::exchange`), so its writes belong to this layout.
 pub(super) const EXCHANGE: &[Slot] = &[
@@ -105,9 +105,9 @@ pub(super) const DEPOSIT: &[Slot] = &[
     // The selection mask over the region (§6.8) — read 1:1 with the region here, so
     // `textureLoad` suffices.
     Slot::at(d::SEL_MASK),
-    // The canvas surface's height map — the deposition tooth (§6.4). Read nearest, so
+    // The canvas substrate's height map — the deposition tooth (§6.4). Read nearest, so
     // it needs no sampler and is not filterable.
-    Slot::at(d::SURFACE_TEX),
+    Slot::at(d::SUBSTRATE_TEX),
     // The bleed pair's hoisted mobility (§6.2). Bound on every deposit, not only a
     // firing's: a painting segment carries `lambda_bleed = 0` and never reads it, and a
     // 1×1 stand-in is what it binds there — the same "one shader, one layout" the 1×1
@@ -145,7 +145,7 @@ pub(super) const DEPOSIT_COARSE: &[Slot] = &[
     Slot::sampled(d::DYN_NOISE_TEX),
     Slot::at(d::DYN_NOISE_SAMP),
     Slot::at(d::SEL_MASK),
-    Slot::at(d::SURFACE_TEX),
+    Slot::at(d::SUBSTRATE_TEX),
     Slot::at(d::CELL_TOOL),
     Slot::at(d::CELL_LAT),
     Slot::at(d::CELL_RES),
@@ -166,8 +166,8 @@ pub(super) const SETTLE: &[Slot] = &[
     Slot::at(d::REGION_AUX_W),
     Slot::at(d::REGION_RESID_W),
     Slot::at(d::SEL_MASK),
-    // The ground (§6.4): the settle lays paint, so it reads the tooth too.
-    Slot::at(d::SURFACE_TEX),
+    // The substrate (§6.4): the settle lays paint, so it reads the tooth too.
+    Slot::at(d::SUBSTRATE_TEX),
 ];
 
 #[cfg(test)]

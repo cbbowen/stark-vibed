@@ -14,7 +14,7 @@ mixbox = ["stark-engine/mixbox"]
 webrtc = ["stark-net/webrtc"]
 
 [build-dependencies]
-# Hashing the bundled shapes and grounds into their content ids at build time
+# Hashing the bundled shapes and substrates into their content ids at build time
 # (build.rs). The whole reason that crate is separate from stark-engine: an id has
 # to be computable without linking a GPU renderer.
 stark-assetid = { workspace = true }

@@ -14,7 +14,7 @@
 //! # Which side of the line a type belongs on
 //!
 //! An **id** is in the log; a **resource** is in the engine. The pairs were there
-//! before the crates were: [`AssetId`]/`AssetStore`, [`SurfaceId`]/`Surface`,
+//! before the crates were: [`AssetId`]/`AssetStore`, [`SubstrateId`]/`Surface`,
 //! [`ColorSpaceId`]/`ColorSpace`, [`LayerId`]/`Layer`, [`SelectionOp`]/`Selection`,
 //! [`Action`](document::Action)/`DocState`.
 //!
@@ -35,12 +35,12 @@ pub mod gradient;
 pub mod io;
 pub mod path;
 pub mod peer;
-pub mod surface;
+pub mod substrate;
 
 // # What the root re-exports, and what it does not
 //
 // The small modules below are flat: `color`, `colorspace`, `content`, `geom`,
-// `gradient`, `io`, `path`, `peer` and `surface` each hold a handful of items, so
+// `gradient`, `io`, `path`, `peer` and `substrate` each hold a handful of items, so
 // their headline types are lifted here and the module stays available for the
 // rest. That is the ordinary prelude shape.
 //
@@ -64,7 +64,7 @@ pub use peer::{GestureFrame, PeerFrame, StrokeHead};
 /// an id, which is what lets the frontend know a bundled asset's id before fetching
 /// it. This crate is the same argument one level up, and has no reason to restate it.
 pub use stark_assetid::{AssetId, MAX_SHAPE_DIM};
-pub use surface::{SurfaceId, SurfaceScale};
+pub use substrate::{SubstrateId, SubstrateScale};
 
 /// `x` into [0, 1], with NaN landing on 0 — **the crate's NaN policy**, in one
 /// place because it is one policy.

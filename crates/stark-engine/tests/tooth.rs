@@ -1,36 +1,36 @@
-//! The deposition tooth (§6.4): the canvas's own ground gating how much of the
+//! The deposition tooth (§6.4): the canvas's own substrate gating how much of the
 //! brush's paint lands.
 //!
 //! Two claims, and neither is "the mark gets patchy" — dither would do that.
 //!
 //! The first is that the patches are a **level set of one field**: turn the tooth up
 //! and the texels that still take paint are the ones that already took it, because
-//! both are reading the ground's rise along the travel through a rising threshold
+//! both are reading the substrate's rise along the travel through a rising threshold
 //! (the follow limit, `paint_common.wesl`). That is what makes successive strokes in
 //! one direction register with each other instead of stacking independent noise, and
 //! it is what [`turning_the_tooth_up_takes_a_level_set_away`] measures.
 //!
-//! The second is that the field is the **slope of the ground along the stroke**, not
-//! its height: a dragged tip is pressed up by ground that rises to meet it and left
-//! bridging ground that falls away, so it catches the near face of every bump and
+//! The second is that the field is the **slope of the substrate along the stroke**, not
+//! its height: a dragged tip is pressed up by substrate that rises to meet it and left
+//! bridging substrate that falls away, so it catches the near face of every bump and
 //! skips the lee side. That makes the mark a property of the stroke as well as the
-//! ground — run the same line the other way and the ink lands on the other side of
+//! substrate — run the same line the other way and the ink lands on the other side of
 //! every feature ([`a_stroke_catches_on_the_faces_it_meets`]), which is precisely
 //! what a height threshold cannot do.
 //!
-//! Everything here paints on **Rough**: an irregular ground, whose rise distribution
-//! is a smooth spread rather than the handful of discrete slopes a regular weave
+//! Everything here paints on **Rough**: an irregular substrate, whose rise distribution
+//! is a smooth spread rather than the handful of discrete slopes a regular substrate
 //! gives, so a level-set claim about it says something.
 //!
 //! The model's own arithmetic — the sign of the rise, its null cases, and the knob's
-//! ends — is pinned without a GPU in `gpu::surface`'s unit tests, on a ground of
+//! ends — is pinned without a GPU in `gpu::substrate`'s unit tests, on a substrate of
 //! ramps built for the purpose.
 
 mod common;
 
 use common::*;
 use stark_engine::command::DocCommand;
-use stark_model::SurfaceId;
+use stark_model::SubstrateId;
 use stark_model::document::{BrushDynamics, BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
@@ -38,7 +38,7 @@ const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
 /// A brush with a given tooth, and nothing else that varies along a stroke: no
 /// drain, no taper, and — deliberately — **no size mapping**, so every stroke here
-/// covers exactly the same ground and only the gate differs.
+/// covers exactly the same substrate and only the gate differs.
 fn toothed(tooth: f32) -> BrushParams {
     BrushParams {
         drain: 0.0,
@@ -57,28 +57,28 @@ fn toothed(tooth: f32) -> BrushParams {
 }
 
 /// The stroke every test here draws: a straight run across the middle, long enough
-/// to cross several of the ground's features.
+/// to cross several of the substrate's features.
 fn run() -> [Vec2; 2] {
     [Vec2::new(-140.0, 0.0), Vec2::new(140.0, 0.0)]
 }
 
-/// The rough ground imported into `engine`, and the id that names it.
+/// The rough substrate imported into `engine`, and the id that names it.
 ///
 /// The id comes *out of* the height map (§6.4), so it cannot be named before the
-/// bytes are in hand — which is the property that stops a ground going quietly
+/// bytes are in hand — which is the property that stops a substrate going quietly
 /// missing, and the reason every test here imports rather than asserting a name.
-fn rough(engine: &mut stark_engine::Engine) -> SurfaceId {
+fn rough(engine: &mut stark_engine::Engine) -> SubstrateId {
     engine
-        .import_surface(&stark_testdata::assets::rough())
+        .import_substrate(&stark_testdata::assets::rough())
         .expect("the rough height map imports")
 }
 
-/// An engine on the rough ground. Without a real height map a ground is `Flat`,
+/// An engine on the rough substrate. Without a real height map a substrate is `Flat`,
 /// whose relief is 0, and every test here would silently be testing nothing.
 fn rough_engine() -> Option<stark_engine::Engine> {
     let mut engine = engine_or_skip()?;
     let id = rough(&mut engine);
-    engine.process(DocCommand::SetSurface(id));
+    engine.process(DocCommand::SetSubstrate(id));
     Some(engine)
 }
 
@@ -114,7 +114,7 @@ fn one_mark(engine: &mut stark_engine::Engine, b: BrushParams) -> (Vec<bool>, f6
     out
 }
 
-/// `tooth = 0` leaves the mark **solid on a ground that would otherwise break it**:
+/// `tooth = 0` leaves the mark **solid on a substrate that would otherwise break it**:
 /// every texel a toothed setting reaches is reached here too, and many it does not.
 ///
 /// The stronger claim — that the deposit at `tooth = 0` is the float it always was,
@@ -124,7 +124,7 @@ fn one_mark(engine: &mut stark_engine::Engine, b: BrushParams) -> (Vec<bool>, f6
 /// evidence §6.4 cites for the original tooth having been inert, read the other way
 /// round.
 #[test]
-fn no_tooth_leaves_a_ground_that_has_tooth_alone() {
+fn no_tooth_leaves_a_substrate_that_has_tooth_alone() {
     let Some(mut engine) = rough_engine() else {
         return;
     };
@@ -145,7 +145,7 @@ fn no_tooth_leaves_a_ground_that_has_tooth_alone() {
 }
 
 /// A smooth canvas has no tooth to catch on, whatever the brush says — and that is
-/// structural, not a check: `Surface::relief` is 0 on `Flat`, which zeroes the uv
+/// structural, not a check: `SubstrateMap::relief` is 0 on `Flat`, which zeroes the uv
 /// scale the shader gates on before the brush's number is ever consulted.
 ///
 /// It is what keeps the axis orthogonal to the golden suite, nearly all of which
@@ -165,15 +165,15 @@ fn a_smooth_canvas_has_no_tooth_whatever_the_brush_says() {
     assert_eq!(
         diff_fraction(&smooth, &toothy),
         (0.0, 0),
-        "on a flat ground the tooth has nothing to bite and must change no pixel"
+        "on a flat substrate the tooth has nothing to bite and must change no pixel"
     );
     assert!(mark(&before, &smooth).1 > 0.0, "the test drew nothing");
 }
 
-/// The headline: a ground with tooth breaks the mark up, and turning the knob up
+/// The headline: a substrate with tooth breaks the mark up, and turning the knob up
 /// takes more of it away.
 #[test]
-fn a_ground_with_tooth_breaks_the_mark_up() {
+fn a_substrate_with_tooth_breaks_the_mark_up() {
     let Some(mut engine) = rough_engine() else {
         return;
     };
@@ -184,11 +184,11 @@ fn a_ground_with_tooth_breaks_the_mark_up() {
     let broken_n = broken.iter().filter(|h| **h).count();
     assert!(
         solid_n > 0,
-        "the un-toothed stroke covered nothing — the ground is not registered"
+        "the un-toothed stroke covered nothing — the substrate is not registered"
     );
     assert!(
         broken_n < solid_n,
-        "a toothed brush should skip part of the ground: {broken_n} of {solid_n} texels"
+        "a toothed brush should skip part of the substrate: {broken_n} of {solid_n} texels"
     );
     assert!(
         broken_n > solid_n / 20,
@@ -241,9 +241,9 @@ fn apart(a: &[f64], b: &[f64]) -> f64 {
 }
 
 /// **The headline claim of the leading edge.** A brush stroke is not a stamp: the tip
-/// rides up onto the ground it is about to meet, so it catches on the near face of
+/// rides up onto the substrate it is about to meet, so it catches on the near face of
 /// every bump and bridges the lee side behind it. Run the same line the other way and
-/// the near faces become the far ones — so the *same* brush on the *same* ground
+/// the near faces become the far ones — so the *same* brush on the *same* substrate
 /// leaves a materially different mark.
 ///
 /// That is the whole of what separates this from a height threshold, which cannot tell
@@ -268,7 +268,7 @@ fn a_stroke_catches_on_the_faces_it_meets() {
 
     // Neither run may be a wholesale loss of the mark — the anticipation moves contact
     // between the faces of the grain, it does not throw it away. The two runs read the
-    // same ground through the same curve, only from opposite sides.
+    // same substrate through the same curve, only from opposite sides.
     let ratio = back_ink / there_ink;
     assert!(
         (0.85..1.18).contains(&ratio),
@@ -283,7 +283,7 @@ fn a_stroke_catches_on_the_faces_it_meets() {
     assert!(
         moved > 0.12,
         "the two directions laid all but {:.1}% of their ink on the same texels — the \
-         tooth is reading the ground under the tip rather than the ground ahead of it",
+         tooth is reading the substrate under the tip rather than the substrate ahead of it",
         moved * 100.0
     );
 }
@@ -321,7 +321,7 @@ fn with_no_tooth_the_direction_stops_mattering() {
 /// on one rise field, so the texels a stiffer tip keeps are a *subset* of the ones a
 /// softer one kept — the marks are nested level sets, not independent noise.
 ///
-/// This is the property that separates a ground from a dither, and it is the reason
+/// This is the property that separates a substrate from a dither, and it is the reason
 /// overpainting registers: two strokes the same way at the same tooth catch on the
 /// same faces, so the second one lands *on* the first rather than filling its gaps.
 ///
@@ -350,7 +350,7 @@ fn turning_the_tooth_up_takes_a_level_set_away() {
     assert!(
         (escaped as f64) < 0.05 * deep_n as f64,
         "the deeper tooth kept {escaped} of {deep_n} texels the shallower one skipped — \
-         the two marks are not level sets of one ground"
+         the two marks are not level sets of one substrate"
     );
 }
 
@@ -359,11 +359,11 @@ fn turning_the_tooth_up_takes_a_level_set_away() {
 /// Worth its own test because the two paths compute the gate in different shaders
 /// from different bindings, and the failure mode is the one §6.2 has been bitten by
 /// before: a brush whose behaviour changes because some unrelated axis moved it onto
-/// the other path. Nudging `lift` off zero must not change what the ground does.
+/// the other path. Nudging `lift` off zero must not change what the substrate does.
 ///
 /// Measured with a **hysteresis pair** rather than one hit threshold, because the
 /// two marks legitimately differ a few percent in *amount* — the loop's lift takes
-/// back a share of the `add` it lays — and the slope gate leaves much of the ground
+/// back a share of the `add` it lays — and the slope gate leaves much of the substrate
 /// mid-contact, so any single threshold has a large borderline population that a few
 /// percent flips. A texel one path calls 11 levels and the other 13 is agreement in
 /// substance; what the gate reading *differently* looks like is solid ink on one path
@@ -371,7 +371,7 @@ fn turning_the_tooth_up_takes_a_level_set_away() {
 ///
 /// **The pair is a fraction of the mark's own contrast, not a level count**, and that
 /// is not fussiness. A level count is a claim about the light (§6.3): change the
-/// lighting and the ink-to-ground swing changes with it — the mark's strong ink runs
+/// lighting and the ink-to-substrate swing changes with it — the mark's strong ink runs
 /// to 190 levels under the reference light and to a few tens under a warm studio one —
 /// so fixed thresholds slide down into the rim, where a borderline population lives
 /// that neither path is claiming anything about. A pair quoted against the swing it is
@@ -422,7 +422,7 @@ fn the_tooth_reads_the_same_on_both_render_paths() {
     // Measured at 3.4% of 7091 material texels.
     assert!(
         (disagree as f64) < 0.05 * material as f64,
-        "the two paths disagree about the ground on {disagree} of {material} texels (solid > {solid:.0}, blank < {blank:.0})"
+        "the two paths disagree about the substrate on {disagree} of {material} texels (solid > {solid:.0}, blank < {blank:.0})"
     );
     let (ink_a, ink_b) = (a.iter().sum::<f64>(), b.iter().sum::<f64>());
     let ratio = ink_b / ink_a;
@@ -432,35 +432,35 @@ fn the_tooth_reads_the_same_on_both_render_paths() {
     );
 }
 
-/// The ground is the **document's**, so a stroke deposits through the tooth that was
+/// The substrate is the **document's**, so a stroke deposits through the tooth that was
 /// in force where it sits in the log — not through whatever the canvas was switched
 /// to afterwards (§6.4).
 ///
 /// Asserted through a save/load round trip, because that is the only thing that
-/// actually re-runs the earlier strokes: a live `SetSurface` leaves their tiles
+/// actually re-runs the earlier strokes: a live `SetSubstrate` leaves their tiles
 /// alone, so it could not tell a correct engine from one holding a single "current
-/// surface" the whole log renders against. On load the log is replayed in order onto
+/// substrate" the whole log renders against. On load the log is replayed in order onto
 /// an empty document, and a stroke laid before the switch has to come back with its
 /// tooth and one laid after it without.
 ///
-/// This is what the surface registry moving onto the apply context buys, and why
-/// `SetSurface` was a logged action from the start rather than a view setting — §6.4
+/// This is what the substrate registry moving onto the apply context buys, and why
+/// `SetSubstrate` was a logged action from the start rather than a view setting — §6.4
 /// says so in as many words, several years of commits before there was anything to
 /// read it.
 #[test]
-fn a_stroke_keeps_the_ground_it_was_painted_on() {
+fn a_stroke_keeps_the_substrate_it_was_painted_on() {
     let Some(mut engine) = rough_engine() else {
         return;
     };
     let before = engine.render_to_image();
-    // One stroke on the toothed ground, then the canvas is switched to smooth and a
+    // One stroke on the toothed substrate, then the canvas is switched to smooth and a
     // second is laid across the other half.
     stroke_with(
         &mut engine,
         toothed(0.55),
         &[Vec2::new(-140.0, -40.0), Vec2::new(140.0, -40.0)],
     );
-    engine.process(DocCommand::SetSurface(SurfaceId::Flat));
+    engine.process(DocCommand::SetSubstrate(SubstrateId::Flat));
     stroke_with(
         &mut engine,
         toothed(0.55),
@@ -473,17 +473,17 @@ fn a_stroke_keeps_the_ground_it_was_painted_on() {
     let Some(mut loaded) = engine_or_skip() else {
         return;
     };
-    // Nothing hands the ground to this engine: the *file* carries it (§6.4, §8).
+    // Nothing hands the substrate to this engine: the *file* carries it (§6.4, §8).
     // That is the second half of what makes the round trip meaningful — a file that
-    // named its ground and left the image to the reader would replay these strokes
-    // on the flat stand-in, and pixels cannot say whether a ground was reproduced or
+    // named its substrate and left the image to the reader would replay these strokes
+    // on the flat stand-in, and pixels cannot say whether a substrate was reproduced or
     // merely defaulted to.
     loaded.load_bytes(&bytes).expect("deserialize + replay");
 
     assert_eq!(
         diff_fraction(&live, &loaded.render_to_image()),
         (0.0, 0),
-        "the replay did not put each stroke back on the ground it was painted on",
+        "the replay did not put each stroke back on the substrate it was painted on",
     );
 }
 
@@ -508,7 +508,7 @@ fn a_stroke_keeps_the_ground_it_was_painted_on() {
 /// the canvas is the only place that amount can go, so a tool that gives up more than
 /// the canvas accepts destroys the difference, and one that gives up less than the
 /// canvas takes mints it. Run long enough to empty, the total delivered is the charge
-/// whatever the ground does — the tooth decides *where* it lands, not how much there
+/// whatever the substrate does — the tooth decides *where* it lands, not how much there
 /// was.
 #[test]
 fn a_toothed_transfer_delivers_the_whole_glob() {
@@ -519,12 +519,12 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
     // not one: the media pass takes its normals from the height gradient (§6.3), so
     // the same paint laid bumpily catches more light than the same paint laid smooth —
     // which is the whole visible point of the tooth, and here it is the contaminant.
-    // At `height_strength = 0` and `surface_strength = 0` the pass is the reference
+    // At `height_strength = 0` and `substrate_strength = 0` the pass is the reference
     // identity and the deviation from bare tracks visible alpha, which tracks mass.
     engine.process(stark_engine::command::ViewCommand::SetMediaParams(
         stark_engine::MediaParams {
             height_strength: 0.0,
-            surface_strength: 0.0,
+            substrate_strength: 0.0,
             ..Default::default()
         },
     ));
@@ -616,29 +616,29 @@ fn far_share(before: &stark_engine::RgbaImage, after: &stark_engine::RgbaImage) 
     (if all > 0.0 { far / all } else { 0.0 }, all)
 }
 
-/// The bearing fraction is the mean of the gate over the ground, so it has to *be*
+/// The bearing fraction is the mean of the gate over the substrate, so it has to *be*
 /// that: monotone down in the tooth, exactly 1 where there is nothing to bite.
 ///
-/// It is a CPU mirror of a GPU function (`Surface::bearing` against
+/// It is a CPU mirror of a GPU function (`SubstrateMap::bearing` against
 /// `paint_common.wesl::tooth_gate`), and a mirror is only as good as what notices it
 /// drifting. What notices is the conservation test above; this one pins the shape so
 /// a failure there points at the right half.
 #[test]
-fn the_bearing_fraction_tracks_the_ground() {
+fn the_bearing_fraction_tracks_the_substrate() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
     let east = Vec2::new(1.0, 0.0);
-    let flat = engine.surface_bearing(SurfaceId::Flat, 0.5, east);
-    assert_eq!(flat, 1.0, "a smooth ground is full contact at any tooth");
+    let flat = engine.substrate_bearing(SubstrateId::Flat, 0.5, east);
+    assert_eq!(flat, 1.0, "a smooth substrate is full contact at any tooth");
 
-    let ground = rough(&mut engine);
-    let at = |t| engine.surface_bearing(ground, t, east);
+    let substrate = rough(&mut engine);
+    let at = |t| engine.substrate_bearing(substrate, t, east);
     assert_eq!(at(0.0), 1.0, "no tooth is full contact, exactly");
     let (a, b, c) = (at(0.25), at(0.5), at(0.75));
     assert!(
         1.0 > a && a > b && b > c && c > 0.0,
-        "contact must fall as the tip reaches for higher ground: {a} {b} {c}"
+        "contact must fall as the tip reaches for higher substrate: {a} {b} {c}"
     );
 }
 
@@ -655,12 +655,12 @@ fn the_bearing_curve_is_continuous_in_the_direction() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let ground = rough(&mut engine);
+    let substrate = rough(&mut engine);
     // A full turn in fine steps: no adjacent pair may jump by more than a small
     // fraction of the curve's own value, and the walk must close on itself.
     let at = |engine: &mut stark_engine::Engine, turns: f32| {
         let a = turns * std::f32::consts::TAU;
-        engine.surface_bearing(ground, 0.55, Vec2::new(a.cos(), a.sin()))
+        engine.substrate_bearing(substrate, 0.55, Vec2::new(a.cos(), a.sin()))
     };
     let samples: Vec<f32> = (0..=128)
         .map(|i| at(&mut engine, i as f32 / 128.0))
@@ -687,7 +687,7 @@ fn the_bearing_curve_is_continuous_in_the_direction() {
 /// head and then a tail over it; the commit renders the whole stroke in one range.
 /// A gate that is a pure function of canvas position factors out of the sum over
 /// segments, so the two must agree — this is where that claim is checked, since the
-/// suite's existing split-preview test runs on a ground with no relief.
+/// suite's existing split-preview test runs on a substrate with no relief.
 #[test]
 fn a_toothed_live_preview_matches_the_commit() {
     let Some(mut engine) = rough_engine() else {

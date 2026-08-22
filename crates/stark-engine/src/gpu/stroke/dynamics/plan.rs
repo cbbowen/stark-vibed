@@ -10,8 +10,8 @@
 //! field lands in the lane the shader reads it from — all of it is pinned below, on
 //! any machine.
 //!
-//! The one GPU *type* that reaches in is the canvas [`Surface`](crate::gpu::surface),
-//! and only for `bearing` — plain CPU arithmetic over the ground's statistics, which
+//! The one GPU *type* that reaches in is the canvas [`SubstrateMap`](crate::gpu::substrate),
+//! and only for `bearing` — plain CPU arithmetic over the substrate's statistics, which
 //! happens to live on the struct that also owns its texture.
 //!
 //! Every slot is a pure function of the record and the piece's own geometry, in plain
@@ -20,7 +20,7 @@
 use stark_model::document::StrokeRecord;
 use stark_model::geom::Vec2;
 
-use super::super::budget::{footprint_cell, lambda};
+use super::super::budget::{extent_cell, lambda};
 use super::super::region::{coverage_bounds, segment_end};
 use super::super::segments::{BleedFire, Segment, Stretch, Sweep};
 use super::bleed::{BLEED_TRAVEL_QUANTUM, MAX_BLEED_FIRES_PER_SEGMENT, bleed_stencil};
@@ -46,14 +46,14 @@ pub(super) const SLOT: usize = std::mem::size_of::<Stamp>();
 /// stands for.
 pub(super) struct LoopDispatch {
     pub(super) slot: Stamp,
-    /// Workgroup counts for the slot's footprint work — the `deposit`, and the
+    /// Workgroup counts for the slot's extent work — the `deposit`, and the
     /// `snapshot` that rides in `exchange`'s grid. The slot's own coverage box
     /// rather than the piece-wide worst-case square, so an axis-aligned sweep pays for
-    /// the ~4·r² texels its footprint can reach instead of the ~10·r² a diagonal one
+    /// the ~4·r² texels its extent can reach instead of the ~10·r² a diagonal one
     /// might have needed.
     pub(super) groups: (u32, u32),
     /// Workgroup counts for the `cell_hoist` grid when this slot takes the **coarse
-    /// deposit** (§6.2) — `Some` exactly when [`footprint_cell`] beat 1 for this
+    /// deposit** (§6.2) — `Some` exactly when [`extent_cell`] beat 1 for this
     /// segment's tip, which only a painting segment's can. `None` is the exact
     /// per-texel `deposit`, bit-for-bit the kernel every slot ran before the coarse
     /// path existed; bleed and settle slots are always `None`, so the lateral flux
@@ -93,16 +93,16 @@ struct SlotCommon<'a> {
     /// fills `f`, `g.xyz` and `h.xy`. Borrowed rather than copied out, so a slot and
     /// the swept path's `TileXform` are demonstrably reading one resolution of them.
     k: &'a super::super::StrokeConstants,
-    /// `i.yzw`: the region texel → weave map, with the piece's origin already
+    /// `i.yzw`: the region texel → substrate map, with the piece's origin already
     /// folded into the bias. Only `i.x` — how deep this slot's tip bites — varies.
     ///
     /// The one lane here that is not a stroke constant: the bias is where the *piece*
     /// sits, which `k` cannot know.
-    weave: [f32; 3],
+    substrate: [f32; 3],
 }
 
 impl SlotCommon<'_> {
-    /// The lanes every slot fills the same way — the stroke's color and the weave
+    /// The lanes every slot fills the same way — the stroke's color and the substrate
     /// map — over the neutral value of everything a slot kind may leave alone.
     ///
     /// A slot kind then names only what it actually differs by, which is the whole of
@@ -113,8 +113,8 @@ impl SlotCommon<'_> {
             // The other half of the same color (§6.7) — filled wherever `channels` is,
             // and zero in a space whose three channels already say everything.
             resid: self.k.resid,
-            weave_scale: self.weave[0],
-            weave_bias: Vec2::new(self.weave[1], self.weave[2]),
+            substrate_uv_scale: self.substrate[0],
+            substrate_uv_bias: Vec2::new(self.substrate[1], self.substrate[2]),
             ..Slot::default()
         }
     }
@@ -206,18 +206,18 @@ struct Slot {
     noise_off: [f32; 2],
     /// Arc length at the slot's start (canvas px) — the noise's third axis.
     dist: f32,
-    /// The tooth's bearing fraction: the share of the ground a tip with this `tooth`,
+    /// The tooth's bearing fraction: the share of the substrate a tip with this `tooth`,
     /// going this way, stands on (§6.4). What the *tool* books its half of the
-    /// transfer against, having no ground of its own. 1 where there is nothing to bite.
+    /// transfer against, having no substrate of its own. 1 where there is nothing to bite.
     bearing: f32,
     /// The lateral canvas diffusion rate (≤ 0) — nonzero **only** on a bleed slot.
     lambda_bleed: f32,
-    /// How little give this slot's tip has (0 = the ground gates nothing), over the
-    /// region texel → weave map `uv = rt · weave_scale + weave_bias` (§6.4).
+    /// How little give this slot's tip has (0 = the substrate gates nothing), over the
+    /// region texel → substrate map `uv = rt · substrate_uv_scale + substrate_uv_bias` (§6.4).
     tooth: f32,
-    weave_scale: f32,
-    weave_bias: Vec2,
-    /// The footprint cell's edge in texels (§6.2) — 1 is the exact per-texel deposit,
+    substrate_uv_scale: f32,
+    substrate_uv_bias: Vec2,
+    /// The extent cell's edge in texels (§6.2) — 1 is the exact per-texel deposit,
     /// which is also the neutral value: the exact kernels never read the lane.
     cell: f32,
     /// The cell grid's canvas anchor: the region's canvas origin modulo the cell,
@@ -251,8 +251,8 @@ impl Default for Slot {
     /// Zero everywhere except the three fields whose neutral value is **1**, each for
     /// the same reason: they are *scales*, and a zeroed scale does not mean "none of
     /// this" but "none of the thing it multiplies". `bearing` is the share of the
-    /// ground a tip stands on where there is nothing to bite — zeroed it would book the
-    /// tool's half of every transfer against no ground at all, which is not "no tooth"
+    /// substrate a tip stands on where there is nothing to bite — zeroed it would book the
+    /// tool's half of every transfer against no substrate at all, which is not "no tooth"
     /// but "infinite tooth". `cell` at 1 is the exact per-texel deposit. `frame_scale`
     /// at 1 is an unpadded volume, where the frame and the tip are one thing.
     fn default() -> Self {
@@ -279,8 +279,8 @@ impl Default for Slot {
             bearing: 1.0,
             lambda_bleed: 0.0,
             tooth: 0.0,
-            weave_scale: 0.0,
-            weave_bias: Vec2::ZERO,
+            substrate_uv_scale: 0.0,
+            substrate_uv_bias: Vec2::ZERO,
             cell: 1.0,
             cell_anchor: Vec2::ZERO,
             ramp: 0.0,
@@ -331,12 +331,12 @@ impl Slot {
             ],
             orientation: self.orient,
             noise_off: self.noise_off,
-            weave_uv_bias: self.weave_bias.to_array(),
+            substrate_uv_bias: self.substrate_uv_bias.to_array(),
             rect_origin: [self.rect_origin.x as i32, self.rect_origin.y as i32],
             cell_anchor: [self.cell_anchor.x as i32, self.cell_anchor.y as i32],
             tooth: self.tooth,
             tooth_bearing: self.bearing,
-            weave_uv_scale: self.weave_scale,
+            substrate_uv_scale: self.substrate_uv_scale,
             cell_px: self.cell as i32,
             bleed_reach: self.bleed_reach as i32,
             ..Default::default()
@@ -354,7 +354,7 @@ pub(super) struct PlanCtx<'a> {
     pub(super) rec: &'a StrokeRecord,
     /// The budget `rec` was flattened at, handed down from [`dynamics_setup`] rather
     /// than recomputed — one place answers what a stroke's segments are. Only the
-    /// pen-up frame reads it ([`settle_tangent`]), which re-flattens a footprint's
+    /// pen-up frame reads it ([`settle_tangent`]), which re-flattens an extent's
     /// worth of the record and must cut it exactly as the segments in hand were cut.
     pub(super) tol: crate::path::FlattenTolerance,
     /// The region rectangle's top-left in canvas px — what every slot's coordinates
@@ -362,9 +362,9 @@ pub(super) struct PlanCtx<'a> {
     pub(super) region_origin: Vec2,
     /// Everything both render paths read off the record and the scene
     /// ([`StrokeConstants`](super::super::StrokeConstants)) — the color a slot's `c` is, the
-    /// weave map its `i` carries, and the color-dynamics lookup for `f`–`h`.
+    /// substrate map its `i` carries, and the color-dynamics lookup for `f`–`h`.
     pub(super) consts: &'a super::super::StrokeConstants,
-    pub(super) surface: &'a crate::gpu::surface::Surface,
+    pub(super) substrate: &'a crate::gpu::substrate::SubstrateMap,
 }
 
 /// The margin, in canvas px, a dispatch rect is grown by each side so a fragment
@@ -533,7 +533,7 @@ impl SlotSource<'_> {
             // The tip's own square rather than a swept box — a pen-up is a standing
             // tip. Its half-extent is the tip's `reach`, which is the radius only for a
             // shape that stays inside its own disc (`segments::tip_reach`); the settle
-            // writes the same footprint the pass was laying, corners included. It
+            // writes the same extent the pass was laying, corners included. It
             // cannot be the largest box in the piece: a segment's box is this square
             // grown by its travel, and this is the last segment's.
             SlotSource::Settle(s) => {
@@ -588,27 +588,27 @@ pub(super) fn dynamics_plan(
         rec,
         region_origin,
         consts,
-        surface,
+        substrate,
         ..
     } = ctx;
     let b = &rec.brush;
-    // The canvas → weave map, folded so the shader can go straight from its *region*
-    // texel to the ground under it: `uv = rt · grain_uv + grain_bias` (§6.4). Only the
+    // The canvas → substrate map, folded so the shader can go straight from its *region*
+    // texel to the substrate under it: `uv = rt · substrate_uv_scale + substrate_uv_bias` (§6.4). Only the
     // bias belongs to the piece — the shader never learns where the piece sits, only
-    // where the weave does; the scale is a stroke constant and comes off `consts`,
+    // where the substrate does; the scale is a stroke constant and comes off `consts`,
     // which is what keeps it the same number the swept path writes.
-    let grain_bias = region_origin * consts.grain_uv;
-    // What share of the ground a tip with this tooth, going this way, stands on — per
+    let substrate_uv_bias = region_origin * consts.substrate_uv_scale;
+    // What share of the substrate a tip with this tooth, going this way, stands on — per
     // segment because the tooth is modulated per segment (§6.2) and because the
-    // direction is the segment's own. The canvas side of the exchange asks the ground
+    // direction is the segment's own. The canvas side of the exchange asks the substrate
     // ahead of each texel; the tool has none of its own and books against this mean,
-    // which is what makes a toothed smear conserve (`Surface::bearing`).
+    // which is what makes a toothed smear conserve (`SubstrateMap::bearing`).
     //
     // At the segment's **midpoint** tangent, the same second-order choice `mid` is
     // sampled at below: a curved segment's canvas side reads a tangent that turns
     // across the sweep, and the midpoint is the representative of that whose error is
     // second order where either endpoint's would be first.
-    let bearing = |tooth: f32, dir: Vec2| surface.bearing(tooth, dir.to_array());
+    let bearing = |tooth: f32, dir: Vec2| substrate.bearing(tooth, dir.to_array());
     // λ per axis is [`lambda`](super::super::budget::lambda) — one definition, the
     // same clamp the flattening budget prices. Taken **per segment**, off the rates
     // the segment generator resolved from the pen (§6.2), rather than once for the
@@ -616,7 +616,11 @@ pub(super) fn dynamics_plan(
     // where the exchange happens.
     let common = SlotCommon {
         k: consts,
-        weave: [consts.grain_uv, grain_bias.x, grain_bias.y],
+        substrate: [
+            consts.substrate_uv_scale,
+            substrate_uv_bias.x,
+            substrate_uv_bias.y,
+        ],
     };
 
     // Drained in step with the walk below, which is only correct because `bleed_fires`
@@ -641,7 +645,7 @@ pub(super) fn dynamics_plan(
     }
     // The pen-up (`dynamics.wesl::settle`), as one more slot on the same uniform: the
     // tip standing at the stroke's last point with **zero travel**, which is what makes
-    // the shared `segment_frame`/`outside_sweep` reduce to the tip's own footprint and
+    // the shared `segment_frame`/`outside_sweep` reduce to the tip's own extent and
     // `snapshot` copy exactly the texels the settle will write. Everything the settle
     // reads is already here — the frame, the radius, the two λs and the orientation —
     // so it costs a slot rather than a second uniform.
@@ -673,12 +677,12 @@ pub(super) fn dynamics_plan(
                 // order where either endpoint's would be first.
                 let (_, mid_dir) =
                     crate::path::arc_at(sw.start, sw.dir, sw.curvature, sw.length * 0.5);
-                // The footprint cell this segment's deposit may evaluate the exchange
+                // The extent cell this segment's deposit may evaluate the exchange
                 // at (§6.2): a pure function of the brush shape and the segment's own
-                // radius ([`footprint_cell`]), so a live tail and its commit pick the
+                // radius ([`extent_cell`]), so a live tail and its commit pick the
                 // same cell — and 1, the exact kernel, for every tip whose shoulder
                 // proves nothing.
-                let cell = footprint_cell(&b.shape, sw.radius);
+                let cell = extent_cell(&b.shape, sw.radius);
                 let (cell_anchor, cell_groups) = cell_geometry(cell, region_origin, rect, dsize);
                 LoopDispatch {
                     groups,
@@ -756,7 +760,7 @@ pub(super) fn dynamics_plan(
                     // so the canvas keeps everything, λ_deposit = 0 so the (uninvolved)
                     // tool lays nothing, no drain because nothing is laid, no `add`
                     // because this is not a stretch of painting, no tooth because there
-                    // is no `add` for the ground to gate, and no color jitter — which is
+                    // is no `add` for the substrate to gate, and no color jitter — which is
                     // zeroed rather than shared, so the deposit skips its noise taps
                     // entirely.
                     //
@@ -824,7 +828,7 @@ pub(super) fn dynamics_plan(
                         stretch: sw.stretch,
                         drain: b.drain_px(),
                         // The last segment's tooth: the settle delivers what the pass
-                        // still owed, and it owes it through the same ground the pass
+                        // still owed, and it owes it through the same substrate the pass
                         // was laying through. What the valleys do not take stays on the
                         // tool, which is discarded — a knife lifted off a canvas keeps
                         // what it did not reach (§6.4).
@@ -840,7 +844,7 @@ pub(super) fn dynamics_plan(
                         //
                         // The bearing is the neutral 1: the tool is not written back at
                         // pen-up, so nothing reads it — the settle's own gate is per
-                        // texel, from the weave. The color channels are filled
+                        // texel, from the substrate. The color channels are filled
                         // consistently with a segment slot rather than left as junk,
                         // though the settle lays the tool's *carried* paint and so reads
                         // none of them.
@@ -990,7 +994,7 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<BleedFire> {
                     // the same one the inherited rates below make.
                     ramp: 0.0,
                     // The crossing segment's shape is the window's shape — a firing is
-                    // that segment relaxing its own footprint, so it is swept in the
+                    // that segment relaxing its own extent, so it is swept in the
                     // same frame and reaches exactly as far from the centreline.
                     frame: s.frame,
                     reach: s.reach,
@@ -998,8 +1002,8 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<BleedFire> {
                     // travel in — and what `bleed_stencil` is calibrated against.
                     length: bq,
                     orient: s.orient,
-                    // The window is that segment's footprint relaxing, so it is the
-                    // same footprint — drawn out along the same axis by the same
+                    // The window is that segment's extent relaxing, so it is the
+                    // same extent — drawn out along the same axis by the same
                     // amount, which is already folded into the `orient` beside it
                     // (§6.6). The reach it inherits above was measured with it.
                     stretch: s.stretch,
@@ -1012,7 +1016,7 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<BleedFire> {
 }
 
 /// The travel direction the pen-up settle measures `owed` and `received` along: the
-/// chord over the **last footprint's worth of path**, rather than the last segment's
+/// chord over the **last extent's worth of path**, rather than the last segment's
 /// own tangent.
 ///
 /// The last segment's tangent cannot be trusted, and the reason is a property of real
@@ -1031,7 +1035,7 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<BleedFire> {
 /// wandered from stroke to stroke, and worse the higher `lift` and `deposit` were.
 ///
 /// One radius is the natural window because it is the extent of the thing being
-/// settled — the tip's own footprint — so this is the direction the tip was travelling
+/// settled — the tip's own extent — so this is the direction the tip was travelling
 /// over precisely the stretch of canvas the settle acts on, and no new constant.
 ///
 /// **Measured on the record, not on the segments in hand**, and that is the whole of
@@ -1072,7 +1076,7 @@ fn settle_tangent(
     let tip = crate::path::span_end(&rec.path, last - 1);
     // The first span boundary a radius or more back from the tip, measured on chords
     // — which under-estimate arc length, so the span this admits genuinely holds a
-    // footprint's worth of path behind it. Walking boundaries rather than the polyline
+    // extent's worth of path behind it. Walking boundaries rather than the polyline
     // is what keeps the flatten below proportional to the *radius* instead of to the
     // length of the stroke.
     let mut from = 0;
@@ -1091,7 +1095,7 @@ fn settle_tangent(
     let Some(tail) = pts.last() else {
         return fallback();
     };
-    // Back one radius of **travel**, not of displacement — the window is a footprint's
+    // Back one radius of **travel**, not of displacement — the window is an extent's
     // worth of path, and a stroke that curls back on itself still spent that path. The
     // polyline carries its own arc-length accumulator, so this is a comparison rather
     // than a second summation.
@@ -1206,8 +1210,8 @@ mod tests {
             bearing: 30.0,
             lambda_bleed: 31.0,
             tooth: 32.0,
-            weave_scale: 33.0,
-            weave_bias: Vec2::new(34.0, 35.0),
+            substrate_uv_scale: 33.0,
+            substrate_uv_bias: Vec2::new(34.0, 35.0),
             resid: [36.0, 37.0, 38.0, 39.0],
             cell: 40.0,
             cell_anchor: Vec2::new(41.0, 42.0),
@@ -1228,8 +1232,8 @@ mod tests {
         assert_eq!(packed.arc_at_start, 29.0, "dist → arc_at_start");
         assert_eq!(packed.radius_ramp, 44.0, "ramp → radius_ramp (§6.2)");
         assert_eq!(packed.tooth_bearing, 30.0, "bearing → tooth_bearing (§6.4)");
-        assert_eq!(packed.weave_uv_scale, 33.0, "weave_scale → weave_uv_scale");
-        assert_eq!(packed.weave_uv_bias, [34.0, 35.0], "weave_bias");
+        assert_eq!(packed.substrate_uv_scale, 33.0, "substrate_uv_scale");
+        assert_eq!(packed.substrate_uv_bias, [34.0, 35.0], "substrate_uv_bias");
         assert_eq!(packed.cell_px, 40, "cell → cell_px, as an integer (§6.2)");
         assert_eq!(packed.cell_anchor, [41, 42], "cell_anchor, as integers");
         assert_eq!(packed.rect_origin, [13, 14], "rect_origin, as integers");
@@ -1263,7 +1267,7 @@ mod tests {
     /// The neutral slot is neutral *in the shader's terms*, which for five fields is
     /// not zero. Each of them is a **scale**, and a zeroed scale does not say "none of
     /// this" but "none of the thing it multiplies": a `bearing` of 0 books the tool's
-    /// half of every transfer against no ground at all — infinite tooth, not absent
+    /// half of every transfer against no substrate at all — infinite tooth, not absent
     /// tooth; a `cell` of 0 is no deposit grid rather than the exact one; a
     /// `frame_scale` of 0 is a tip of no width rather than an unpadded volume; and a
     /// zeroed stretch is a tip of no width whose every prefix difference is divided by
@@ -1619,7 +1623,7 @@ mod tests {
     /// tail shorter than the tip being settled.
     #[test]
     fn the_settle_frame_does_not_depend_on_where_the_stroke_was_cut() {
-        // A circle of radius 200 under a 60 px tip: a footprint's worth of path turns
+        // A circle of radius 200 under a 60 px tip: an extent's worth of path turns
         // through 60/200 ≈ 17°, so a lookback that comes up short points somewhere
         // measurably different.
         let curve: Vec<Vec2> = (0..=16)
@@ -1776,7 +1780,7 @@ mod tests {
         }
     }
 
-    /// A bleed window can be the largest footprint in its piece — it sweeps up to a
+    /// A bleed window can be the largest extent in its piece — it sweeps up to a
     /// quarter-radius where the piece's own segments may be sub-pixel — so the scratch
     /// has to be sized with the firings in it, not just the segments.
     ///

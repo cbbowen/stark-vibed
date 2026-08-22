@@ -2,10 +2,10 @@
 //!
 //! A studio (or any) HDR is decoded from its Radiance RGBE file into a linear-RGB
 //! equirectangular image, then used to light the painting: the media pass samples
-//! it in the surface-normal direction (diffuse irradiance) and the view-reflection
+//! it in the substrate-normal direction (diffuse irradiance) and the view-reflection
 //! direction (the paint's specular), so impasto relief catches the environment's lights.
 //!
-//! Like [`super::surface::Surface`], the bytes come from the frontend at runtime
+//! Like [`super::substrate::SubstrateMap`], the bytes come from the frontend at runtime
 //! (the engine embeds none); decoding and prefiltering happen here, on the CPU,
 //! once per environment.
 
@@ -60,10 +60,10 @@ impl EnvironmentId {
 
 /// A decoded, prefiltered environment ready for image-based lighting: an
 /// equirectangular `Rgba16Float` texture with a full mip chain (each level a box
-/// downsample of the last). The media pass samples a high mip in the surface-normal
+/// downsample of the last). The media pass samples a high mip in the substrate-normal
 /// direction for diffuse irradiance and a gloss-selected mip in the reflection
 /// direction for the paint's specular (§6.3). Cloning is cheap (Arc-backed wgpu
-/// handles), so it can live alongside the [`super::surface::Surface`].
+/// handles), so it can live alongside the [`super::substrate::SubstrateMap`].
 #[derive(Clone)]
 pub struct Environment {
     pub view: wgpu::TextureView,

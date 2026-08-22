@@ -182,7 +182,7 @@ pub fn LayerPanel() -> Element {
             // panel of its own (§15.7). Both adds render their command whole
             // ([`add_layer`], `panels::frame::add_frame`).
             CommandButton { command: Command::AddLayer, class: "layer-add" }
-            // No "+ Background" beside it: the ground is made at most once per
+            // No "+ Background" beside it: the substrate is made at most once per
             // painting, so it is a chip in the frame bar instead (§15.5) rather
             // than a button standing here for the rest of the session.
             // The third kind of layer (§21). Beside the other two rather than in a
@@ -644,7 +644,7 @@ pub fn LayerRow(
     // `active` arrives as a prop resolved once by the panel, it is a consequence of
     // one comparison rather than of one per row.
     //
-    // Three kinds of row, and the two that are not paint wear their own ground: a
+    // Three kinds of row, and the two that are not paint wear their own substrate: a
     // frame is dashed (§15.7) and a filter is ruled (§21.6), because in both cases
     // "the brush has nowhere to go here" is the thing to see before reaching for it.
     // A filter's mark is a *line* rather than a dash: a frame bounds the piece, and a

@@ -6,7 +6,7 @@
 // reuses it, since its deposit is the same premultiplied-"over").
 
 import package::lib::noise::{color_jitter};
-import package::lib::paint_common::{ground_at, rise_ahead, tooth_gate};
+import package::lib::paint_common::{substrate_texel_at, rise_ahead, tooth_gate};
 import package::lib::sample::{bilerp_taps, bilerp_mix1};
 
 struct TileXform {
@@ -30,10 +30,10 @@ struct TileXform {
     resid: vec4<f32>,
     // The `drain` falloff per canvas px in .x (`BrushParams::drain_px` — the brush's
     // own knob is quoted per *radius*, and the host divides), and the canvas →
-    // surface-tile uv scale (1/SURFACE_TILE_PX, zero when the ground has no relief
+    // substrate-tile uv scale (1/SUBSTRATE_TILE_PX, zero when the substrate has no relief
     // to gate with) in .y; .zw unused. Both stroke constants in the only sense that
     // matters — each is a function of something the fragment already knows, so it is
-    // evaluated there (`stroke_drain`, `surface_tooth`). `add` is not among them: it
+    // evaluated there (`stroke_drain`, `substrate_tooth`). `add` is not among them: it
     // is pen-driven (§6.2) and rides the segment instance, like the radius.
     paint: vec4<f32>,
     // Color dynamics (§6.2): noise frequency per lookup axis
@@ -57,7 +57,7 @@ struct TileXform {
 // A 1×1 zero tile is bound when the brush's jitter is off.
 @group(2) @binding(0) var noise_tex: texture_2d<f32>;
 @group(2) @binding(1) var noise_samp: sampler;
-// The canvas surface's tileable ground (§6.4) — height in `r` (the media pass's),
+// The canvas substrate's tileable height map (§6.4) — height in `r` (the media pass's),
 // the rise one reach ahead in `gb` — whose rise along the travel gates the deposit.
 // Read in *canvas* space, so the grain belongs to the canvas and successive strokes
 // in one direction register with each other; that is also what keeps the gate a pure
@@ -65,8 +65,8 @@ struct TileXform {
 // binds its 1×1 texel and arrives here with the uv scale zeroed, so the gate is
 // exactly 1.
 //
-// No sampler: the tap is nearest (`ground_at`), for the reasons given there.
-@group(2) @binding(2) var surface_tex: texture_2d<f32>;
+// No sampler: the tap is nearest (`substrate_texel_at`), for the reasons given there.
+@group(2) @binding(2) var substrate_tex: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -97,7 +97,7 @@ struct VsOut {
     // **The stretch of the tip's travel this point is swept by**, in radius units:
     // where the point sits in the tip frame when the segment ends .x, and where when it
     // starts .y — the tip advancing carries the point backwards through its own
-    // footprint, so `.y` is the larger. The deposit is one prefix-τ difference across
+    // extent, so `.y` is the larger. The deposit is one prefix-τ difference across
     // it (`swept_depth`), and `sweep_of` reads the pair off as `Sweep::span`.
     //
     // Carried from the vertices rather than recovered per fragment, and that is the
@@ -147,7 +147,7 @@ struct Sweep {
     // **The two travel coordinates the prefix difference is taken across**: where the
     // point sits in the tip's frame when the segment starts .x, and when it ends .y
     // (so `.x ≥ .y` — the tip advancing carries the point backwards through its own
-    // footprint). `swept_depth` is `prefix(.x) − prefix(.y)`, and everything below the
+    // extent). `swept_depth` is `prefix(.x) − prefix(.y)`, and everything below the
     // frame reads the pair from here rather than rebuilding it from `local.x` and
     // `lr`.
     //
@@ -170,13 +170,13 @@ struct Sweep {
     // How far the tip's heading has turned from the segment's start by the time it
     // reaches this point, signed the way the arc goes — 0 on a straight sweep. Feed it
     // to `sweep_tangent` for the direction the tip is actually going here, which is
-    // what the deposition tooth reads the ground ahead along (§6.4).
+    // what the deposition tooth reads the substrate ahead along (§6.4).
     //
     // The **angle** rather than the tangent, because the rotation is the expensive half
     // and almost nobody wants it: `outside_sweep` rejects on the frame alone, and the
     // bleed flux builds a dozen of these per thread to read its neighbours' exposure.
     // The angle falls out of the arc arithmetic already done, so carrying it is free
-    // and the sines are paid for only where a ground is actually being gated.
+    // and the sines are paid for only where a substrate is actually being gated.
     //
     // Local rather than the segment's start tangent, for the reason everything else
     // here is evaluated per fragment: a segment may bend by tens of degrees, and a
@@ -196,11 +196,11 @@ struct Sweep {
 
 // ---- the stretched tip (§6.6) ----------------------------------------------------
 //
-// A brush may draw its footprint **out along the axis it faces** — what makes a leaned
+// A brush may draw its extent **out along the axis it faces** — what makes a leaned
 // pencil lay a broad mark and an upright one a fine line. Stretching by `s` along a
-// canvas axis `û` is the linear map `A = R_û·diag(s, 1)·R_ûᵀ` on the footprint, and
+// canvas axis `û` is the linear map `A = R_û·diag(s, 1)·R_ûᵀ` on the extent, and
 // substituting `q = A⁻¹p` into the swept integral turns it into an integral of the
-// **unstretched** footprint: along `v̂ = normalize(A⁻¹t̂)` rather than the travel `t̂`,
+// **unstretched** extent: along `v̂ = normalize(A⁻¹t̂)` rather than the travel `t̂`,
 // over a travel `m = |A⁻¹t̂|` times as long, with `1/m` on the result.
 //
 // Every one of those the existing prefix-τ volume already answers, which is why there
@@ -264,7 +264,7 @@ fn stretch_gain(st: vec3<f32>) -> f32 {
 //
 // A point takes paint only where the map above lands it inside the mask's own
 // `|x| ≤ 1, |y| ≤ 1`, so `|y| ≤ 1/lateral` across and `|x| ≤ (1 + |shear|/lateral)/m`
-// along. What needs it is the geometry drawn *for* the footprint — the sweep strip
+// along. What needs it is the geometry drawn *for* the extent — the sweep strip
 // below, and the dynamics loop's rim test — because a stretched tip paints outside the
 // strip an unstretched one would have been given, and a fragment never rasterized is a
 // stroke cut off along a straight line. `segments::Stretch::hull` is this same
@@ -322,7 +322,7 @@ fn ramp_apply(sw: Sweep, ramp: f32) -> Sweep {
     out.radius = sw.radius * s;
     // **And the two ends of the span against the tips that are actually there** — the
     // one at the segment's start against `r_start`, the one at its end against `r_end`
-    // (`Sweep::span`). The exposure is the integral of the footprint over the offsets
+    // (`Sweep::span`). The exposure is the integral of the extent over the offsets
     // the point occupied relative to the tip, and that offset is measured in whatever
     // tip was in force at the moment: `r(0)` when the sweep opens and `r(len)` when it
     // closes. Dividing both by the reference radius instead over-counts the segment's
@@ -363,7 +363,7 @@ fn sweep_tangent(dir: vec2<f32>, turn: f32) -> vec2<f32> {
 // `ρω` while the tip travels at `Rω`.
 //
 // That ratio is the whole content of `warp`. The prefix-τ volume integrates a
-// footprint dragged across a point at unit speed; here the drag is `ρ/|R|` times the
+// extent dragged across a point at unit speed; here the drag is `ρ/|R|` times the
 // tip's own travel, so a prefix difference comes out in the point's measure and
 // `warp` puts it back into the tip's. Concretely the swept depth is
 // `(|R|/ρ)·(prefix(x) − prefix(x − lr))`, and for a hard disc that evaluates to
@@ -420,7 +420,7 @@ fn sweep_at(
 }
 
 // How many cross-sections the swept geometry is built from. The sweep is a curve, so
-// its footprint is an annular *sector*, and this is how finely that sector is
+// its extent is an annular *sector*, and this is how finely that sector is
 // approximated by a triangle strip. Purely a fill-rate knob — the deposit itself is
 // computed per fragment from the exact arc — so it is small, and the strip is
 // circumscribed (below) so no value of it can clip the stroke.
@@ -432,7 +432,7 @@ const SWEEP_VERTS: u32 = 18u;
 // brush-local x ∈ [-1, lr+1], y ∈ [-1, 1] — a radius of margin at each end for the
 // round cap — bent around the segment's arc and mapped into the tile's apron'd target.
 //
-// Nothing here has to be tight, only *conservative*: a fragment outside the footprint
+// Nothing here has to be tight, only *conservative*: a fragment outside the extent
 // differences two prefix taps to zero and writes nothing. So the outer rim is pushed
 // out to circumscribe the true arc and the inner rim pulled in, and both errors cost
 // a few fragments rather than a clipped stroke. What it must not do is cover a texel
@@ -444,7 +444,7 @@ fn sweep_vertex(
     dir: vec2<f32>,   // unit tangent at the segment start
     geom: vec3<f32>,  // reference radius, arc length, radius ramp
     extra: vec4<f32>, // orientation (turns ∈ [0,1)), arc length at start, curvature, `add`
-    tooth: f32,       // how deep this tip bites into the weave (§6.4)
+    tooth: f32,       // how deep this tip bites into the substrate (§6.4)
     stretch: vec3<f32>, // the tip drawn out along its facing axis (§6.6)
 ) -> VsOut {
     let radius = geom.x;
@@ -453,8 +453,8 @@ fn sweep_vertex(
     let perp = vec2<f32>(-dir.y, dir.x);
 
     // The strip is built at the segment's **widest** tip, not its reference one: a
-    // ramping segment's footprint reaches `radius·(1 + |ramp|/2)` at the fat end, and
-    // the strip has only to be conservative — a fragment outside the true footprint
+    // ramping segment's extent reaches `radius·(1 + |ramp|/2)` at the fat end, and
+    // the strip has only to be conservative — a fragment outside the true extent
     // differences its prefix taps to zero and writes nothing, while one the strip
     // misses is a clipped stroke. Exactly `radius` when the tip does not ramp, so no
     // existing stroke pays a fragment for this.
@@ -629,7 +629,7 @@ fn stroke_drain(arc: f32) -> f32 {
     return clamp(1.0 - xf.paint.x * arc, 0.0, 1.0);
 }
 
-// The share of its paint this fragment's texel receives from the ground under it
+// The share of its paint this fragment's texel receives from the substrate under it
 // (§6.4) — the deposition tooth, `paint_common.wesl::tooth_gate` fed the rise this
 // fragment's tip meets along its travel there (`rise_ahead`).
 //
@@ -643,13 +643,13 @@ fn stroke_drain(arc: f32) -> f32 {
 // `xf.paint.y` is zero on a canvas with no relief (`Surface::relief`), so the guard
 // returns exactly 1.0 before the map is read: a `Flat` document deposits bit-for-bit
 // what it always did whatever the brush's tooth says.
-fn surface_tooth(in: VsOut, sw: Sweep) -> f32 {
+fn substrate_tooth(in: VsOut, sw: Sweep) -> f32 {
     let uv_scale = xf.paint.y;
     if uv_scale <= 0.0 || in.tooth <= 0.0 {
         return 1.0;
     }
-    let dims = textureDimensions(surface_tex);
-    let g = textureLoad(surface_tex, ground_at(in.canvas * uv_scale, dims), 0);
+    let dims = textureDimensions(substrate_tex);
+    let g = textureLoad(substrate_tex, substrate_texel_at(in.canvas * uv_scale, dims), 0);
     return tooth_gate(rise_ahead(g, sweep_tangent(in.dir, sw.turn)), in.tooth);
 }
 
@@ -711,7 +711,7 @@ fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
 // Written as the span rather than as two lookups because everything except the travel
 // coordinate is shared between them, and paying for it twice was the shape of the
 // hottest lookup the dynamics loop has (`deposit` takes this difference at every
-// footprint texel, and the bleed ladder takes it thirty-six more times to read its
+// extent texel, and the bleed ladder takes it thirty-six more times to read its
 // neighbours' exposure). The lateral guard, `textureNumLayers`, and the whole
 // orientation-slice selection now happen once.
 //
@@ -725,7 +725,7 @@ fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
 // `x0 <= -1` is the plain single lookup: nothing is subtracted, because the tip had not
 // reached the point when the span opened. `prefix_at` passes `-2` and means exactly that.
 fn prefix_span(x1: f32, x0: f32, yl: f32, w: f32) -> f32 {
-    // Outside the footprint's own square there is no shape to integrate: every mask is
+    // Outside the extent's own square there is no shape to integrate: every mask is
     // swept over brush-local `|x| ≤ 1, |y| ≤ 1` and is zero beyond it by construction
     // (`segments::tip_reach`). Stated rather than left to the mask's border row,
     // because `bilerp_taps` **clamps** — so a lateral tap past the edge silently reads
@@ -759,7 +759,7 @@ fn prefix_span(x1: f32, x0: f32, yl: f32, w: f32) -> f32 {
     return mix(a, b, fw);
 }
 
-// Swept geometric optical depth over the fragment's segment: the brush footprint
+// Swept geometric optical depth over the fragment's segment: the brush extent
 // integrated as it travels, as a difference of prefix sums on the segment's orientation
 // slice. Sums exactly across a stroke's overlapping segment sweeps (under "over" for τ,
 // or additively for amounts), reconstructing the continuous path integral — each
@@ -772,9 +772,9 @@ fn swept_depth(in: VsOut, sw: Sweep) -> f32 {
     let w = in.extra.x;
     // The one place the tip's stretch is applied on this path (§6.6), and deliberately
     // the last thing done. Everything else the fragment reads out of its frame — the
-    // arc it sits at, the color-noise domain, the tip in force, the ground it is gated
+    // arc it sits at, the color-noise domain, the tip in force, the substrate it is gated
     // by — is a property of where the *tip* went, and the stretch is a property of the
-    // footprint the tip carries. So the frame stays the tip's own the whole way down
+    // extent the tip carries. So the frame stays the tip's own the whole way down
     // and only the lookup into the mask is re-coordinated, which is also what keeps
     // `stroke_arc` measuring canvas px rather than the lookup frame's own units.
     let l = stretch_look(sw, in.stretch);

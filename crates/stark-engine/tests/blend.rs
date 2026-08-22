@@ -438,7 +438,7 @@ fn black_is_the_identity_through_the_round_trip() {
             let Some(mut engine) = engine_or_skip_with(space) else {
                 return;
             };
-            // A wide black ground with the color laid over the middle of it, thick
+            // A wide black substrate with the color laid over the middle of it, thick
             // enough to reach full coverage — see the note above.
             paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 70.0, H_STROKE);
             engine.process(DocCommand::AddLayer {
@@ -497,7 +497,7 @@ fn white_is_the_identity_through_the_round_trip() {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;
         };
-        // A wide white ground with the color laid over the middle of it, thick
+        // A wide white substrate with the color laid over the middle of it, thick
         // enough to reach full coverage — see the note on the black case.
         paint(&mut engine, [1.0, 1.0, 1.0, 1.0], 70.0, H_STROKE);
         engine.process(DocCommand::AddLayer {
@@ -577,7 +577,7 @@ fn multiply_over_black_is_black() {
 
 /// **Glow cannot blow out.** Reinhard's curve is asymptotic, so no amount of light
 /// reaches white — which is the difference from Screen, and the reason to reach for
-/// it. Five stacked layers of near-white on a light ground must still leave headroom
+/// it. Five stacked layers of near-white on a light substrate must still leave headroom
 /// somewhere; the same five under `Drago`, whose log curve has no asymptote, are
 /// allowed to (and do) push into the roll-off.
 #[test]
@@ -728,13 +728,13 @@ fn golden_multiply_layer() {
 /// stored beside it could have stood in.
 ///
 /// Asserted **against Oklab** rather than against zero, because the media pass has
-/// its own say: the dielectric sheen and the tonemap leave a black ground a little
+/// its own say: the dielectric sheen and the tonemap leave a black substrate a little
 /// above zero in either space, and a test that demanded absolute black would be
 /// testing the lighting. What must agree is the two spaces — whatever the light does
 /// to black, it does the same to both, and the gap between them is the pigment error
 /// this channel removes.
 ///
-/// Both halves are checked because they failed differently. A black **ground** goes
+/// Both halves are checked because they failed differently. A black **substrate** goes
 /// through `over_substrate` and the media pass; black **paint** goes through the
 /// stamp, the integrate and the composite first. Either one alone would leave the
 /// other free to regress.
@@ -746,12 +746,12 @@ fn golden_multiply_layer() {
 fn black_is_black_in_the_pigment_space() {
     let black_in = |space| -> Option<([u8; 4], [u8; 4])> {
         let mut engine = engine_or_skip_with(space)?;
-        engine.process(DocCommand::SetBackground(Srgb::new([0.0, 0.0, 0.0])));
-        let ground = center(&engine.render_to_image());
+        engine.process(DocCommand::SetSubstrateColor(Srgb::new([0.0, 0.0, 0.0])));
+        let substrate = center(&engine.render_to_image());
         paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 70.0, H_STROKE);
-        Some((ground, center(&engine.render_to_image())))
+        Some((substrate, center(&engine.render_to_image())))
     };
-    let (Some((ok_ground, ok_paint)), Some((mix_ground, mix_paint))) = (
+    let (Some((ok_substrate, ok_paint)), Some((mix_substrate, mix_paint))) = (
         black_in(ColorSpaceId::Oklab),
         black_in(ColorSpaceId::Mixbox),
     ) else {
@@ -761,7 +761,7 @@ fn black_is_black_in_the_pigment_space() {
     // Two levels, the same bound the round-trip cases above hold to. Before the
     // residual was carried this gap was ~56.
     for (what, ok, mix) in [
-        ("a black ground", ok_ground, mix_ground),
+        ("a black substrate", ok_substrate, mix_substrate),
         ("black paint", ok_paint, mix_paint),
     ] {
         let worst = ok
@@ -797,11 +797,11 @@ fn carrying_brush() -> BrushParams {
     b
 }
 
-/// Drag black paint out of a band and across the origin, on a ground of `bg`.
+/// Drag black paint out of a band and across the origin, on a substrate of `bg`.
 #[cfg(feature = "mixbox")]
 fn carried_onto(space: ColorSpaceId, bg: [f32; 3]) -> Option<[u8; 4]> {
     let mut engine = engine_or_skip_with(space)?;
-    engine.process(DocCommand::SetBackground(Srgb::new(bg)));
+    engine.process(DocCommand::SetSubstrateColor(Srgb::new(bg)));
     paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 30.0, BLACK_BAND);
     stroke_with(&mut engine, carrying_brush(), CARRY_DRAG);
     Some(center(&engine.render_to_image()))
@@ -818,12 +818,12 @@ fn carried_onto(space: ColorSpaceId, bg: [f32; 3]) -> Option<[u8; 4]> {
 /// the fast-path test cannot see any of them — a loop that carried concentrations
 /// alone would pick up black paint and put down the grey they describe (§6.7).
 ///
-/// **Read on a black ground, which is what makes the comparison mean anything.** The
+/// **Read on a black substrate, which is what makes the comparison mean anything.** The
 /// drag delivers a *partial* coverage of black, and a half-covered black is not a
-/// space-independent color: Mixbox mixing pigment towards a white ground and Oklab
+/// space-independent color: Mixbox mixing pigment towards a white substrate and Oklab
 /// interpolating towards it legitimately disagree by far more than the bound here, so
 /// the same reading over white would be measuring the spaces rather than the channel.
-/// Black paint over a black ground is black at *every* coverage in either space, so a
+/// Black paint over a black substrate is black at *every* coverage in either space, so a
 /// difference between them can only be the residual — the identical trick
 /// [`black_is_black_in_the_pigment_space`] plays for the same reason.
 /// Mixbox-only, so it exists only in a build carrying the `mixbox` feature.
@@ -832,7 +832,7 @@ fn carried_onto(space: ColorSpaceId, bg: [f32; 3]) -> Option<[u8; 4]> {
 #[cfg(feature = "mixbox")]
 #[test]
 fn a_carried_black_stays_black_in_the_pigment_space() {
-    // The drag has to actually deliver paint at the origin, which a black ground
+    // The drag has to actually deliver paint at the origin, which a black substrate
     // cannot show. Established once over white — and in Oklab, whose three channels
     // are exact, so this reads the *geometry* and never the channel under test.
     let Some(over_white) = carried_onto(ColorSpaceId::Oklab, [1.0, 1.0, 1.0]) else {

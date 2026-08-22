@@ -10,7 +10,7 @@
 //! you see. That is the whole claim the `Neutral` environment makes — it is the light
 //! you switch to in order to judge a color rather than enjoy it — and it is a claim
 //! about the *entire* tail of the pipeline, so nothing here reaches into it. Each test
-//! paints (or grounds) a known sRGB color, renders, and reads the byte back.
+//! paints (or substrates) a known sRGB color, renders, and reads the byte back.
 //!
 //! The pass is not, and cannot be, exactly the identity: paint is a dielectric, so a
 //! flat patch still carries the environment's ambient sheen, and the diffuse it leaves
@@ -27,14 +27,14 @@ use stark_model::Srgb;
 use stark_model::document::{BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
-/// The reference configuration: no relief to tilt a normal, no weave, no gloss —
+/// The reference configuration: no relief to tilt a normal, no substrate, no gloss —
 /// every knob that could shape the light turned off, so what is left is only the
 /// lighting model itself. Exposure is not among them: it rides with the environment,
 /// and these tests run on `Neutral`, whose exposure is 1.0 for exactly this reason.
 const REFERENCE: MediaParams = MediaParams {
     height_strength: 0.0,
     specular: 0.0,
-    surface_strength: 0.0,
+    substrate_strength: 0.0,
 };
 
 /// Largest byte error the reference light is allowed. Two levels out of 255 — the
@@ -87,7 +87,7 @@ fn reference_light_reproduces_the_substrate() {
     };
     engine.process(ViewCommand::SetMediaParams(REFERENCE));
     for &c in PROBES {
-        engine.process(DocCommand::SetBackground(Srgb::new(c)));
+        engine.process(DocCommand::SetSubstrateColor(Srgb::new(c)));
         let got = center_rgb(&mut engine);
         assert_reproduces("substrate", c, got);
     }
@@ -99,8 +99,8 @@ fn reference_light_reproduces_the_substrate() {
 /// Each probe is painted twice, on black and on white. Visible alpha is
 /// `1 - exp(-opacity · thickness)` — it approaches 1 without reaching it — so a patch
 /// that is merely *nearly* opaque still carries a trace of what it was laid on, and
-/// the two grounds are far enough apart that such a trace breaks one of them. Running
-/// both is what makes this a test of the light rather than of the ground.
+/// the two substrates are far enough apart that such a trace breaks one of them. Running
+/// both is what makes this a test of the light rather than of the substrate.
 #[test]
 fn reference_light_reproduces_opaque_paint() {
     let Some(mut engine) = engine_or_skip() else {
@@ -109,13 +109,13 @@ fn reference_light_reproduces_opaque_paint() {
     engine.process(ViewCommand::SetMediaParams(REFERENCE));
 
     // Two passes: one is already opaque to within a byte, the second puts the visible
-    // alpha far enough into the exponential's tail that the ground cannot reach the
-    // surface at all — which is the property the two grounds below check.
+    // alpha far enough into the exponential's tail that the substrate cannot reach the
+    // substrate at all — which is the property the two substrates below check.
     const PASSES: usize = 2;
 
     for &c in PROBES {
-        for ground in [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]] {
-            engine.process(DocCommand::SetBackground(Srgb::new(ground)));
+        for substrate in [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]] {
+            engine.process(DocCommand::SetSubstrateColor(Srgb::new(substrate)));
             let brush = BrushParams {
                 color: [c[0], c[1], c[2], 1.0],
                 radius: 48.0,
@@ -131,7 +131,7 @@ fn reference_light_reproduces_opaque_paint() {
                 );
             }
             let got = center_rgb(&mut engine);
-            assert_reproduces(&format!("paint on {ground:?}"), c, got);
+            assert_reproduces(&format!("paint on {substrate:?}"), c, got);
             // Back to bare canvas — one undo per committed stroke, so the probes
             // cannot tint one another.
             for _ in 0..PASSES {

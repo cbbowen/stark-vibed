@@ -26,7 +26,7 @@ use crate::clamp01;
 /// Every color the *document* carries is one of these: the substrate a painting sits
 /// on (§15.5), a matte's paint, a fill's parcel, a gradient stop. They had four
 /// separate clamps between them, one per funnel — and the funnels were where three of
-/// the four were missing. `SetBackground` and `MattePaint` had none at all and sat
+/// the four were missing. `SetSubstrateColor` and `MattePaint` had none at all and sat
 /// under a comment saying there was nothing to hold; the ramp's was spelled
 /// `f32::clamp`, which returns the `NaN` it exists to catch.
 ///

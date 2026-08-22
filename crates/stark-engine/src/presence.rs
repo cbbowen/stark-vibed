@@ -25,7 +25,7 @@
 //! and `tests::round_trip_survives_a_lossy_channel` drives one through a dropping,
 //! duplicating, delaying channel into the other.
 //!
-//! The wire *types* stay in [`crate::peer`], which is the public surface. What lives
+//! The wire *types* stay in [`crate::peer`], which is the public substrate. What lives
 //! here is the state that interprets them.
 
 use crate::path::frozen_spans_for;

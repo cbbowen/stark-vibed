@@ -81,7 +81,7 @@ use stark_model::document::{
     PerspectiveGuide, Place, SelectionOp, ShapeAction, TransformMap,
 };
 use stark_model::geom::{Extent2, IVec2, Vec2};
-use stark_model::{SurfaceId, SurfaceScale};
+use stark_model::{SubstrateId, SubstrateScale};
 
 /// One pen/mouse sample in canvas space.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -145,15 +145,15 @@ impl Default for InputSample {
 /// lengths: unnamed they could be silently transposed, which is the
 /// arrangement this codebase's argument lints already guard against.
 ///
-/// `tolerance` is the input grain, exactly [`GestureCommand::Start`]'s field,
+/// `tolerance` is the input tolerance, exactly [`GestureCommand::Start`]'s field,
 /// restated per report because the zoom it derives from can change mid-hover.
 /// `reach` is how far ahead of the cursor the predicted mark extends — canvas
 /// px **by nature rather than by conversion**: the mark is a hypothesis about
 /// paint, paint is denominated on the canvas, and a screen-fixed length grew
 /// in canvas terms as the view zoomed out, promising more painting the less
 /// closely you looked. The window the heading is estimated over rides neither
-/// field: it is a fact about the grain alone, so the engine derives it from
-/// `tolerance` (`session`'s `WINDOW_ARC_GRAINS`).
+/// field: it is a fact about the tolerance alone, so the engine derives it from
+/// `tolerance` (`session`'s `WINDOW_ARC_TOLERANCES`).
 #[derive(Copy, Clone, Debug)]
 pub struct HoverReport {
     pub sample: InputSample,
@@ -191,7 +191,7 @@ pub enum GestureCommand {
         ///
         /// The frontend states it because the frontend is the only thing that knows
         /// it: canvas px are 64× coarser zoomed out than zoomed in, and a pen
-        /// digitizer, a touchscreen and a mouse each report at a different grain
+        /// digitizer, a touchscreen and a mouse each report at a different tolerance
         /// through the same API. Passing [`DEFAULT_TOLERANCE`](crate::path::DEFAULT_TOLERANCE)
         /// asks for the fit the engine has always done: one canvas px, i.e. a mouse
         /// at 1:1.
@@ -335,7 +335,7 @@ pub enum DocCommand {
     },
 
     /// Add a **matte** layer — a region filled with a [`MattePaint`]
-    /// (§15.2). A frame is one of these on top of the stack; a ground
+    /// (§15.2). A frame is one of these on top of the stack; a substrate
     /// ([`MatteRegion::Everything`]) is one at the bottom, hence the full
     /// [`Place`] anchor (§15.5). The engine mints the id, as it does
     /// for `AddLayer`; unlike `AddLayer` it does *not* become the active layer,
@@ -407,10 +407,10 @@ pub enum DocCommand {
     /// Repaint a matte — a flat color or a gradient ramp (§15.4, §22.4). One
     /// action per pick or per composed axis, committed when the gesture settles.
     SetMattePaint(LayerId, MattePaint),
-    /// Set the canvas substrate color — the ground under everything, straight
+    /// Set the canvas substrate color — the substrate under everything, straight
     /// sRGB (§15.5). A document property, not a view setting: it is
     /// what the piece was painted on, and it is saved.
-    SetBackground(Srgb),
+    SetSubstrateColor(Srgb),
 
     /// Transform this client's selected paint on `layer` — affine, perspective
     /// or warp (§16, §16.8, §16.9) — carrying the selection along with it. A
@@ -423,25 +423,25 @@ pub enum DocCommand {
         map: TransformMap,
     },
 
-    /// Switch the canvas surface (§6.4).
+    /// Switch the canvas substrate (§6.4).
     ///
     /// Document state, not view state: which canvas a piece was painted on is part
-    /// of what the document *is* — it is saved, and reopening on a different weave
+    /// of what the document *is* — it is saved, and reopening on a different substrate
     /// would be a different painting. It also **gates deposition** (§6.4): the tooth
-    /// reads the surface in force at each action's point in the log, so a switch
+    /// reads the substrate in force at each action's point in the log, so a switch
     /// part-way through changes the strokes after it and not the ones before. That
     /// this was already a logged action is what made the tooth a rendering change
     /// rather than a history one, exactly as this note anticipated.
-    SetSurface(SurfaceId),
+    SetSubstrate(SubstrateId),
 
-    /// Lay the canvas surface at a different size (§6.4).
+    /// Lay the canvas substrate at a different size (§6.4).
     ///
-    /// Document state on [`SetSurface`](Self::SetSurface)'s argument, and the same
-    /// gate: the tooth reads the ground's rise over a reach in canvas px, so the size
-    /// the weave is laid at decides what a stroke deposits as surely as which weave
+    /// Document state on [`SetSubstrate`](Self::SetSubstrate)'s argument, and the same
+    /// gate: the tooth reads the substrate's rise over a reach in canvas px, so the size
+    /// the substrate is laid at decides what a stroke deposits as surely as which substrate
     /// it is. One action per slider drag, committed on release
-    /// (`ViewCommand::PreviewSurfaceScale`).
-    SetSurfaceScale(SurfaceScale),
+    /// (`ViewCommand::PreviewSubstrateScale`).
+    SetSubstrateScale(SubstrateScale),
 
     /// Add a **drawing guide** — a perspective grid to construct through
     /// (§20.5), directly after `after` in the roster or at its head.
@@ -681,24 +681,24 @@ pub enum ViewCommand {
     /// same reason: a color picker reports a value per pointer *move*, so
     /// committing each one would spend an undo step — and, in a shared session, a
     /// replicated log entry — on every sample of a single drag. The frontend knows
-    /// where the drag ends and commits one [`DocCommand::SetBackground`] there.
-    PreviewBackground(Option<Srgb>),
+    /// where the drag ends and commits one [`DocCommand::SetSubstrateColor`] there.
+    PreviewSubstrateColor(Option<Srgb>),
 
-    /// Show the weave laid at `scale` **without logging it** — the in-flight half of
-    /// a surface-scale slider drag (§6.4). `None` drops the preview.
+    /// Show the substrate laid at `scale` **without logging it** — the in-flight half of
+    /// a substrate-scale slider drag (§6.4). `None` drops the preview.
     ///
-    /// The same bargain as [`PreviewBackground`](Self::PreviewBackground), and it
-    /// buys more here than an undo step: a *committed* scale is a ground the engine
-    /// bakes and holds (`gpu::surface::Ground`), so a drag that logged every value it
+    /// The same bargain as [`PreviewSubstrateColor`](Self::PreviewSubstrateColor), and it
+    /// buys more here than an undo step: a *committed* scale is a substrate the engine
+    /// bakes and holds (`gpu::substrate::Substrate`), so a drag that logged every value it
     /// crossed would leave a texture behind for each one. A preview costs neither —
     /// only the compositor reads a preview, and what it reads of the scale is one
     /// number in a uniform.
-    PreviewSurfaceScale(Option<SurfaceScale>),
+    PreviewSubstrateScale(Option<SubstrateScale>),
 
     /// Show a layer at `opacity` **without logging it** — the in-flight half of an
     /// opacity-slider drag (§14.6). `None` drops the preview.
     ///
-    /// The same bargain as [`PreviewBackground`](Self::PreviewBackground), for the
+    /// The same bargain as [`PreviewSubstrateColor`](Self::PreviewSubstrateColor), for the
     /// same reason: a slider reports a value per pointer *move*, so committing each
     /// one spends an undo step — and, in a shared session, a replicated action — on
     /// every sample of what the hand did once. The frontend knows where the drag
@@ -764,7 +764,7 @@ pub enum ViewCommand {
     /// already there, wet-mixing included, so it is exactly what committing
     /// that gesture would land. A window rather than the newest pair because
     /// the smoothing lives in the fit: reports are quantized to the device
-    /// grain, a lone pair's heading snaps between the eight compass points,
+    /// tolerance, a lone pair's heading snaps between the eight compass points,
     /// and only redundancy lets the tolerance price that jitter away
     /// (`Session::hover_to`).
     ///

@@ -61,7 +61,7 @@ impl PictureStore {
     /// loading a document or receiving one from a peer — keeps the bytes verbatim.
     ///
     /// The id is still **derived** rather than taken on trust, exactly as
-    /// `surface::identify` derives a ground's: bytes that do not hash to the id that
+    /// `substrate::identify` derives a substrate's: bytes that do not hash to the id that
     /// asked for them are a different picture, and a caller comparing what it got
     /// against what it wanted is the whole of how that is caught (§19).
     pub fn insert_bytes(&self, bytes: &[u8]) -> Result<AssetId> {

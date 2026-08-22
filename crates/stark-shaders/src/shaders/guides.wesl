@@ -93,7 +93,7 @@ const SPACING_HI: f32 = 9.0;
 // the sooner (`plane_fade`). Distance is in units of the 45° ring: a plane whose
 // normal *is* the view axis holds inside PLANE_LO of it and is gone by PLANE_HI,
 // and one the view axis lies in recedes at PLANE_BASE of that rate — far enough
-// out that the ground under a drawing is never the thing that goes.
+// out that the substrate under a drawing is never the thing that goes.
 const PLANE_LO: f32 = 0.18;
 const PLANE_HI: f32 = 0.50;
 const PLANE_BASE: f32 = 0.25;

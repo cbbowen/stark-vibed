@@ -34,8 +34,8 @@ pub(crate) const DOC_EXT: &str = "stark";
 /// Write the document — the action log, not the pixels (§8).
 ///
 /// Lean: content this build ships with is named but not carried, because the
-/// bundle is what a `.stark` file weighs. A log is fitted paths; a canvas ground is
-/// megabytes, so carrying one puts a doodle on the built-in rough ground at 2.8 MB of which
+/// bundle is what a `.stark` file weighs. A log is fitted paths; a canvas substrate is
+/// megabytes, so carrying one puts a doodle on the built-in rough substrate at 2.8 MB of which
 /// almost none is the painting. Opening one resolves those ids out of the app's
 /// own files (`crate::builtin_ids`), and the catalog is append-only so that keeps
 /// working.
@@ -115,7 +115,7 @@ pub(crate) fn open_bytes(state: AppState, bytes: Vec<u8>) {
     };
     spawn_forever(async move {
         // Resolved out of this build's own assets, and *before* the replay:
-        // the file carries the grounds it was painted on or names ones this
+        // the file carries the substrates it was painted on or names ones this
         // app ships, and either way they have to be registered before a single
         // action runs, or every stroke made on one deposits through the flat
         // stand-in into stored pixels (§6.4, §8).
@@ -175,7 +175,7 @@ const SCALES: [(&str, f32); 4] = [
     ("4\u{00D7}", 4.0),
 ];
 
-/// The export dialog: pick a resolution and a ground, see the pixel size you will
+/// The export dialog: pick a resolution and a substrate, see the pixel size you will
 /// get, and write the PNG.
 #[component]
 pub fn ExportModal(on_close: EventHandler<()>) -> Element {

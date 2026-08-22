@@ -31,21 +31,21 @@ const XFORM_SLOTS: &[Slot] = &[Slot::dynamic(sd::XF)];
 const PREFIX_SLOTS: &[Slot] = &[Slot::at(sd::PREFIX_TEX)];
 
 /// Group 2: the color-dynamics noise field and its repeat sampler (§6.2), and beside
-/// them the canvas surface's ground — height and the rise ahead — with its own sampler,
+/// them the canvas substrate's map — height and the rise ahead — with its own sampler,
 /// for the deposition tooth (§6.4). In this group rather than one of its own because it
 /// is the same kind of thing as the noise: a tileable field the deposit samples per
 /// fragment, resolved per stroke.
 const NOISE_SLOTS: &[Slot] = &[
     Slot::sampled(sd::NOISE_TEX),
     Slot::at(sd::NOISE_SAMP),
-    // The ground is read **nearest** (`ground_at`, §6.4), so it needs no filtering and
+    // The substrate is read **nearest** (`substrate_texel_at`, §6.4), so it needs no filtering and
     // has no sampler — which is what naming the declarations turned up here. The host
     // had been declaring a fourth entry, a filtering sampler at binding 3, and binding
-    // `surface.sampler` into it; `stamp_common.wesl` declares no such slot and says on
+    // `substrate.sampler` into it; `stamp_common.wesl` declares no such slot and says on
     // its face that it does not ("No sampler: the tap is nearest"). A layout may carry
     // an entry no shader reads, so nothing failed — it was a sampler bound for a
     // lookup that stopped existing.
-    Slot::at(sd::SURFACE_TEX),
+    Slot::at(sd::SUBSTRATE_TEX),
 ];
 
 /// The integrate pass (`integrate.wesl`, §6.2/§6.1): the layer's resident paint, the
@@ -103,7 +103,7 @@ const XFORM_SLOT: u64 = std::mem::size_of::<TileXform>() as u64;
 const SCRATCH_RING: usize = 3;
 
 /// The swept fast path's GPU objects, built once (§6.2) — the sweep that accumulates
-/// a stroke's footprint into a scratch tile, and the integrate that stacks that
+/// a stroke's extent into a scratch tile, and the integrate that stacks that
 /// scratch over the base into a fresh CoW tile.
 ///
 /// A kit for the same reason [`DynamicsKit`](super::DynamicsKit) is one, and it is
@@ -117,13 +117,13 @@ const SCRATCH_RING: usize = 3;
 pub(super) struct SweptKit {
     /// The sweep: one instanced quad strip per segment, over-blended into the scratch
     /// pair, with the per-tile transform at group 0, the prefix-τ volume at group 1
-    /// and the noise + ground fields at group 2.
+    /// and the noise + substrate fields at group 2.
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) uniform_bgl: wgpu::BindGroupLayout,
     pub(super) prefix_bgl: wgpu::BindGroupLayout,
     pub(super) noise_bgl: wgpu::BindGroupLayout,
     /// The integrate (§6.2/§6.1): a fullscreen pass reading the base tile + the
-    /// stroke's footprint scratch and writing `new = f(base, scratch)` into a fresh CoW
+    /// stroke's extent scratch and writing `new = f(base, scratch)` into a fresh CoW
     /// tile's color+aux MRT — the scratch's accumulated parcel stacked on the base
     /// through the shared law in `paint_common.wesl`, the same one a fill lands through
     /// and the stamp loop's `deposit` uses.
@@ -156,7 +156,7 @@ pub(super) fn build_swept_kit(device: &wgpu::Device, color_space: &dyn ColorSpac
     let prefix_bgl = desc::layout_for(device, "stark sweep prefix bgl", PREFIX_SLOTS, frag, false);
 
     // Group 2: the color-dynamics noise field (a tileable 3-D volume) + its
-    // repeat sampler (§6.2), and beside it the canvas surface's ground (height +
+    // repeat sampler (§6.2), and beside it the canvas substrate's map (height +
     // the rise ahead) + its own repeat sampler — the deposition tooth (§6.4). In
     // this group rather than one of its own because it is the same kind of thing
     // as the noise: a tileable field the deposit samples per fragment, resolved
@@ -230,10 +230,10 @@ impl StrokeRenderer {
             assets,
             base,
             selection,
-            surface,
+            substrate,
         } = scene;
         // Everything both paths share, resolved once (see [`StrokeConstants`]).
-        let k = self.stroke_constants(rec, surface);
+        let k = self.stroke_constants(rec, substrate);
         let (segments, end_dist) = generate_segments_in(rec, tol, spans);
         if segments.is_empty() {
             return (
@@ -271,7 +271,7 @@ impl StrokeRenderer {
         // tile with zero amplitudes — the deposit is exactly the constant
         // color.
         let noise_view = self.tips.noise_view(&rec.brush.color_dynamics);
-        // The canvas ground beside it (§6.4): the deposition tooth's height and the
+        // The canvas substrate beside it (§6.4): the deposition tooth's height and the
         // rise ahead of it, in the same group because it is the same kind of thing —
         // a field the deposit samples per fragment.
         let noise_bg = desc::bind_group_for(
@@ -283,7 +283,7 @@ impl StrokeRenderer {
             |b| match b {
                 sc::NOISE_TEX => wgpu::BindingResource::TextureView(&noise_view),
                 sc::NOISE_SAMP => wgpu::BindingResource::Sampler(&self.tips.noise_sampler),
-                sc::SURFACE_TEX => wgpu::BindingResource::TextureView(&surface.view),
+                sc::SUBSTRATE_TEX => wgpu::BindingResource::TextureView(&substrate.view),
                 other => unreachable!("`NOISE_SLOTS` lists no binding {other}"),
             },
         );
@@ -374,7 +374,7 @@ impl StrokeRenderer {
                 ],
                 color: k.channels,
                 resid: k.resid,
-                paint: [rec.brush.drain_px(), k.grain_uv, 0.0, 0.0],
+                paint: [rec.brush.drain_px(), k.substrate_uv_scale, 0.0, 0.0],
                 noise_freq: k.nfreq,
                 noise_amp: k.namp,
                 noise_off: k.noff,
@@ -402,7 +402,7 @@ impl StrokeRenderer {
             }],
         });
 
-        // Footprint → cleared scratch tile: within-stroke accumulation of the parcel
+        // Extent → cleared scratch tile: within-stroke accumulation of the parcel
         // this stroke lays (the color target over-blends the parcel's visible alpha
         // with the latent premultiplied by it, the aux accumulates its height and
         // optical mass additively). The scratch aux is the wide format.

@@ -50,7 +50,7 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 ///
 /// **Pixels never ride gossip**, and that is a property of the vocabulary rather than
 /// of this number: every kind of content a log can name — a brush shape, a canvas
-/// ground, a placed picture (§23) — is named by a content id and moved over the blob
+/// substrate, a placed picture (§23) — is named by a content id and moved over the blob
 /// ALPN, so what crosses here is always a description. A placed picture is the case
 /// that could most easily have been otherwise, and the one this ceiling decided: it is
 /// megabytes, it would not fit, and raising the ceiling to suit the largest photograph
@@ -117,7 +117,7 @@ pub(crate) struct Dialer {
     /// Live blob connections, by provider.
     ///
     /// A resolver's retry loop asks the same provider on every round, and a
-    /// ground's rounds are unbounded — so without this, one 20 KB PNG could cost a
+    /// substrate's rounds are unbounded — so without this, one 20 KB PNG could cost a
     /// QUIC handshake per round, forever. The retry exists for the case where the
     /// provider is slow, which is exactly when handshaking again costs most.
     ///
@@ -329,7 +329,7 @@ impl Catchup {
 /// resolver now asks both; this is the one that shutting down actually controls.
 ///
 /// [`sleep`](Cancel::sleep) is the reason it carries a `Notify` rather than being
-/// a bare flag: a ground's backoff widens to half a minute, and a session that has
+/// a bare flag: a substrate's backoff widens to half a minute, and a session that has
 /// ended should not wait out the rest of one.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Cancel(Arc<CancelInner>);

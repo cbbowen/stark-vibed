@@ -21,7 +21,7 @@ use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
-/// Channel dominance, with the margin `stroke.rs` justifies: over the blue ground,
+/// Channel dominance, with the margin `stroke.rs` justifies: over the blue substrate,
 /// this cleanly separates lit paint from lit substrate.
 fn is_red(c: [u8; 4]) -> bool {
     c[0] as i32 > c[1] as i32 + 60 && c[0] as i32 > c[2] as i32 + 60
@@ -230,15 +230,15 @@ fn panning_follows_the_pointer_on_a_turned_canvas() {
 /// That makes it the sharpest check available on the screen path at a non-identity
 /// orientation, and it covers all three separately-written copies of the view's map:
 /// the composite's canvas→NDC matrix, the matte shader's own inverse of it, and the
-/// media pass's screen→canvas matrix for the canvas weave. A sign wrong in any one of
+/// media pass's screen→canvas matrix for the canvas substrate. A sign wrong in any one of
 /// them shows up here and nowhere else — each was checked by breaking it.
 ///
-/// The weave is on, and its **embossing** deliberately off. With the light fixed to
+/// The substrate is on, and its **embossing** deliberately off. With the light fixed to
 /// the room and the canvas moving under it, a mirrored canvas genuinely catches the
 /// light differently — the shading is not mirrored, and must not be, or turning the
 /// easel would stop changing how impasto reads, which is half of why anyone turns it.
 /// That is a real ~130-level difference and it is the lighting answering correctly, so
-/// it is taken out of the question here; what is left of the weave is where it is
+/// it is taken out of the question here; what is left of the substrate is where it is
 /// *sampled*, which is exactly the thing under test.
 #[test]
 fn mirroring_reflects_every_pixel_of_the_screen_path() {
@@ -247,15 +247,15 @@ fn mirroring_reflects_every_pixel_of_the_screen_path() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
-    // The weave, embossed hard enough to see — this is what `surf_m` carries.
+    // The substrate, embossed hard enough to see — this is what `view_m` carries.
     let linen = engine
-        .import_surface(&stark_testdata::assets::linen())
+        .import_substrate(&stark_testdata::assets::linen())
         .expect("the linen height map imports");
-    engine.process(DocCommand::SetSurface(linen));
+    engine.process(DocCommand::SetSubstrate(linen));
     engine.process(ViewCommand::SetMediaParams(stark_engine::MediaParams {
-        // The weave *on*, so where it is sampled is part of the answer, but its
+        // The substrate *on*, so where it is sampled is part of the answer, but its
         // embossing *off* — see the note above.
-        surface_strength: 1.0,
+        substrate_strength: 1.0,
         height_strength: 0.0,
         ..Default::default()
     }));

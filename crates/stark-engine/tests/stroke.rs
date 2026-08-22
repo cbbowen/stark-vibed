@@ -285,7 +285,7 @@ fn the_taper_widens_without_a_step() {
     // last 16 px are the round **cap**, which must narrow — that is what a round tip
     // is — and narrowing there says nothing about whether the taper has a step in it.
     // Walking further — to 226, say — asks the cap's own curve to be monotone: under
-    // the reference light the paint sits against an achromatic ground and the cap
+    // the reference light the paint sits against an achromatic substrate and the cap
     // reads to its full extent, so its edge stays above the dominance threshold all
     // the way out.
     let widths: Vec<u32> = (30..212).map(|x| painted_height(&img, x)).collect();
@@ -344,7 +344,7 @@ fn a_tapers_deposit_has_no_ripple_at_the_cut() {
 
     // How far this column has been moved off bare canvas, summed down the rows. A
     // linear reading, so it tracks `τ` rather than an edge's crossing of a threshold;
-    // the ground is uniform, so one corner texel is what "bare" means everywhere.
+    // the substrate is uniform, so one corner texel is what "bare" means everywhere.
     let bare = img.pixel(0, 0);
     let lean = |c: [u8; 4]| c[0] as f32 - c[2] as f32;
     let ink = |x: u32| -> f32 {
@@ -397,7 +397,7 @@ fn a_click_paints_nothing_and_commits_nothing() {
         engine.process(ViewCommand::SetBrush(b));
         let before = engine.render_to_image();
         // The committed document as it stands — `engine_or_skip_blue` already
-        // banked a `SetBackground`, so "nothing committed" is a revision that
+        // banked a `SetSubstrateColor`, so "nothing committed" is a revision that
         // did not move, never an undo stack that is empty.
         let rev = engine.observe().doc_revision;
         engine.process(GestureCommand::Start {
@@ -432,14 +432,14 @@ fn stroke_commit_undo_redo() {
     assert!(is_red(center(&committed)), "committed center should be red");
     assert!(
         is_blue(committed.pixel(10, 10)),
-        "untouched corner should be background blue"
+        "untouched corner should be substrate blue"
     );
 
     engine.process(DocCommand::Undo);
     assert!(engine.observe().can_redo);
     assert!(
         is_blue(center(&engine.render_to_image())),
-        "after undo, center should be background"
+        "after undo, center should be the substrate"
     );
 
     engine.process(DocCommand::Redo);

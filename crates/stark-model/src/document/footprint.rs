@@ -117,18 +117,18 @@ pub enum Resource {
     Layer(LayerId),
     /// An actor's selection mask (§17.3).
     Selection(ActorId),
-    /// The canvas surface (§6.4): **which ground, and the scale it is laid at.**
+    /// The canvas substrate (§6.4): **which substrate, and the scale it is laid at.**
     ///
     /// One resource for the two, on [`StackOrder`](Self::StackOrder)'s argument. They
-    /// are one fact about the substrate — the tooth reads the ground's rise over a
-    /// reach in canvas px, so the weave and how large it is laid decide the deposit
+    /// are one fact about the substrate — the tooth reads the substrate's rise over a
+    /// reach in canvas px, so the substrate and how large it is laid decide the deposit
     /// together — and both are chosen between passages rather than during one. What a
     /// finer split would buy is the commutation fast path between two collaborators
-    /// who happened to pick a ground and a scale at the same moment; §12.6 permits a
+    /// who happened to pick a substrate and a scale at the same moment; §12.6 permits a
     /// footprint to claim too much, and this is what that permission is for.
-    Surface,
+    Substrate,
     /// The substrate color (§15.5).
-    Background,
+    SubstrateColor,
     /// **The whole drawing-guide roster** (§20.5): every guide, everything about
     /// each of them, and the order they are arranged in.
     ///
@@ -169,8 +169,8 @@ impl Resource {
             | Resource::Layer(id) => Some(*id),
             Resource::StackOrder
             | Resource::Selection(_)
-            | Resource::Surface
-            | Resource::Background
+            | Resource::Substrate
+            | Resource::SubstrateColor
             | Resource::Guides => None,
         }
     }
@@ -265,7 +265,7 @@ fn stroke_pad(brush: &BrushParams) -> f32 {
 /// begins at [`StrokeRecord::start`], so the pre-marker stretch only ever
 /// *over*-declares — the safe direction (§12.6), and the price of keeping this a
 /// fold over control points with no span arithmetic in the model. A run-up is
-/// bounded by the hover window's own scale, so the slack is a few dozen grains.
+/// bounded by the hover window's own scale, so the slack is a few dozen tolerances.
 pub fn stroke_rect(rec: &StrokeRecord) -> TileRect {
     let mut min = Vec2::splat(f32::INFINITY);
     let mut max = Vec2::splat(f32::NEG_INFINITY);
@@ -406,13 +406,13 @@ pub fn footprint(action: &Action) -> Footprint {
             reads: Vec::new(),
             writes: vec![Resource::Selection(actor)],
         },
-        ActionKind::SetSurface(_) | ActionKind::SetSurfaceScale(_) => Footprint {
+        ActionKind::SetSubstrate(_) | ActionKind::SetSubstrateScale(_) => Footprint {
             reads: Vec::new(),
-            writes: vec![Resource::Surface],
+            writes: vec![Resource::Substrate],
         },
-        ActionKind::SetBackground(_) => Footprint {
+        ActionKind::SetSubstrateColor(_) => Footprint {
             reads: Vec::new(),
-            writes: vec![Resource::Background],
+            writes: vec![Resource::SubstrateColor],
         },
         // Every guide edit claims the whole roster, which is what
         // [`Resource::Guides`] being one resource means. The anchors an add and a
@@ -638,8 +638,8 @@ mod tests {
             Resource::Prop(b, Prop::Name),
             Resource::StackOrder,
             Resource::Selection(ActorId(1)),
-            Resource::Surface,
-            Resource::Background,
+            Resource::Substrate,
+            Resource::SubstrateColor,
             Resource::Guides,
         ] {
             assert!(!whole.overlaps(&r), "{whole:?} must not meet {r:?}");

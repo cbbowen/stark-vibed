@@ -3,7 +3,7 @@
 //! [`Action`] itself — what the log carries, what a peer receives, what a file
 //! stores — is `stark-model`'s. This is the other half of the same sentence: what
 //! *happens* when one is applied, which needs the renderers, the tile pool and the
-//! canvas surfaces, and so cannot live where the action does.
+//! canvas substrates, and so cannot live where the action does.
 //!
 //! The two are tied together by [`Materialize`](stark_model::document::Materialize):
 //! the model owns *that* an action folds over some state and which actions commute,
@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use crate::gpu::surface::Ground;
+use crate::gpu::substrate::Substrate;
 use stark_model::document::ActorId;
 use stark_model::document::{Action, ActionKind, GuideId, Materialize};
 
@@ -46,34 +46,34 @@ pub struct ApplyCtx {
     /// The one renderer here holding no pipeline, because that path has no pass.
     pub place: crate::gpu::place::PlaceRenderer,
     /// The pictures a `PlaceImage` names (§23) — the third content-addressed store,
-    /// beside `assets` and `surfaces` and for their reason: the log carries the id
+    /// beside `assets` and `substrates` and for their reason: the log carries the id
     /// and the pixels ride here.
     pub pictures: crate::pictures::PictureStore,
-    /// The device, so a canvas surface can be built here on demand.
+    /// The device, so a canvas substrate can be built here on demand.
     pub gpu: crate::gpu::context::GpuContext,
-    /// The canvas surfaces and the bytes registered for them (§6.4).
+    /// The canvas substrates and the bytes registered for them (§6.4).
     ///
     /// It lives here, rather than beside the compositor it also feeds, because the
-    /// **deposit reads it**: the tooth gates the paint a stroke lays by the ground
-    /// under it, so which surface a stroke sees is part of applying that stroke.
-    /// Asked with [`DocState::surface`](super::state::DocState) and its scale *as the
-    /// log stood at that action*, which is the whole reason `SetSurface` was made a
+    /// **deposit reads it**: the tooth gates the paint a stroke lays by the substrate
+    /// under it, so which substrate a stroke sees is part of applying that stroke.
+    /// Asked with [`DocState::substrate`](super::state::DocState) and its scale *as the
+    /// log stood at that action*, which is the whole reason `SetSubstrate` was made a
     /// logged action rather than a view setting — a stroke from before a mid-document
-    /// switch deposits against the ground it was actually painted on, at the size it
+    /// switch deposits against the substrate it was actually painted on, at the size it
     /// was laid at, on replay and on a peer alike.
-    pub surfaces: crate::gpu::registry::Registry<Ground>,
+    pub substrates: crate::gpu::registry::Registry<Substrate>,
 }
 
 impl ApplyCtx {
-    /// The canvas surface `ground` names, built on demand ([`Registry::get`]).
+    /// The canvas substrate `substrate` names, built on demand ([`Registry::get`]).
     ///
-    /// Returns an owned handle rather than a borrow — `Surface` is a pair of
+    /// Returns an owned handle rather than a borrow — `SubstrateMap` is a pair of
     /// reference-counted wgpu objects, so the clone is two atomic bumps — because
     /// the caller then borrows other fields of `self` to build the scene around it.
     ///
     /// [`Registry::get`]: crate::gpu::registry::Registry::get
-    pub fn surface(&self, ground: Ground) -> crate::gpu::surface::Surface {
-        self.surfaces.get(&self.gpu, ground)
+    pub fn substrate(&self, substrate: Substrate) -> crate::gpu::substrate::SubstrateMap {
+        self.substrates.get(&self.gpu, substrate)
     }
 }
 
@@ -267,18 +267,18 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             // folded over, so replay reproduces it exactly; keyed by the
             // author, so a collaborator's lasso never clips this stroke.
             let selection = state.selection_of(action.id.actor);
-            // The ground this stroke was painted on, as the log stood here —
+            // The substrate this stroke was painted on, as the log stood here —
             // not as it stands now (§6.4). The tooth gates the deposit by it,
-            // so a mid-document `SetSurface` changes what comes *after* it and
+            // so a mid-document `SetSubstrate` changes what comes *after* it and
             // nothing before, on replay exactly as it did live.
-            let surface = ctx.surface(state.ground());
+            let substrate = ctx.substrate(state.substrate());
             let tiles = ctx.stroke.render(
                 crate::gpu::stroke::StrokeScene {
                     pool: &ctx.pool,
                     assets: &ctx.assets,
                     base: &base,
                     selection: &selection,
-                    surface: &surface,
+                    substrate: &substrate,
                 },
                 rec,
             );
@@ -368,8 +368,8 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             let selection = ctx.selection.invert(&ctx.pool, &prev);
             state.with_selection(action.id.actor, selection)
         }
-        ActionKind::SetSurface(id) => state.with_surface(*id),
-        ActionKind::SetSurfaceScale(scale) => state.with_surface_scale(*scale),
+        ActionKind::SetSubstrate(id) => state.with_substrate(*id),
+        ActionKind::SetSubstrateScale(scale) => state.with_substrate_scale(*scale),
         ActionKind::AddMatte {
             id,
             carrier,
@@ -389,7 +389,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         ActionKind::SetFilter(id, filter) => state.set_filter(*id, filter.clone()),
         ActionKind::SetMatteRect(id, min, max) => state.set_matte_rect(*id, *min, *max),
         ActionKind::SetMattePaint(id, paint) => state.set_matte_paint(*id, paint.clone()),
-        ActionKind::SetBackground(rgb) => state.with_background(*rgb),
+        ActionKind::SetSubstrateColor(rgb) => state.with_substrate_color(*rgb),
 
         // The drawing guides (§20.5). The one family of actions with no pixel on
         // the other side of it: a guide is geometry to construct through, so
@@ -478,7 +478,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
 /// there say why that is uncomfortable: it is "a second rule about what a matte
 /// is, kept somewhere `apply` cannot see". The four that had a check were not
 /// the four that needed one, either: `SetLayerVisible`, `SetLayerClip`,
-/// `SetMatteRect` and `SetBackground` had none, so setting a value to the value
+/// `SetMatteRect` and `SetSubstrateColor` had none, so setting a value to the value
 /// it already held cost an undo step that appears to do nothing when reached.
 ///
 /// Asked of the action **as it will be logged**. The engine sanitizes at mint
@@ -542,9 +542,9 @@ pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState) -> bool {
                 .and_then(|r| r.rect())
                 == Some((*min, *max))
         }
-        ActionKind::SetBackground(rgb) => state.background == *rgb,
-        ActionKind::SetSurface(id) => state.surface == *id,
-        ActionKind::SetSurfaceScale(scale) => state.surface_scale == *scale,
+        ActionKind::SetSubstrateColor(rgb) => state.substrate_color == *rgb,
+        ActionKind::SetSubstrate(id) => state.substrate == *id,
+        ActionKind::SetSubstrateScale(scale) => state.substrate_scale == *scale,
         // A guide edit that changes nothing, asked of the guide as it stands —
         // and answering `false` for one that is not there, on this function's
         // general rule: inert here, live on a peer whose roster is a step ahead.

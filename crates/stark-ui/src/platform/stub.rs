@@ -194,7 +194,7 @@ pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), St
     Ok((bytes, false))
 }
 
-pub async fn normalize_ground_image(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+pub async fn normalize_substrate_image(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 

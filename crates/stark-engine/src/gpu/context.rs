@@ -86,7 +86,7 @@ impl GpuHealth {
     }
 }
 
-/// Max surface texture edge. `Limits::downlevel_defaults()` (and WebGL2) cap 2D
+/// Max substrate texture edge. `Limits::downlevel_defaults()` (and WebGL2) cap 2D
 /// textures at 2048, so larger sources are box-downsampled by an integer factor
 /// (which preserves tileability) — applied on every target so deposition stays
 /// deterministic across native and web.
@@ -115,7 +115,7 @@ impl GpuContext {
     ///
     /// **Installs this crate's device callbacks**, which is not a courtesy — it is
     /// the only way the engine can find out that its device has died.
-    /// `Action::Error` is `Infallible` on the stated grounds that "GPU work reports
+    /// `Action::Error` is `Infallible` on the stated substrates that "GPU work reports
     /// failure via wgpu's device error callbacks"; for a long time nothing installed
     /// one, so the sentence described a mechanism that did not exist and the first
     /// anyone knew of a lost device was an `expect` in the readback path — an abort,
@@ -163,7 +163,7 @@ impl GpuContext {
         // **The stamp loop's `exchange` writes six storage textures where WebGPU
         // guarantees four.**
         //
-        // The four it always wrote — the footprint snapshot's color and aux, and the
+        // The four it always wrote — the extent snapshot's color and aux, and the
         // reservoir's color and aux, since the segment's `snapshot` rides in the tail
         // of that same dispatch (§6.2) — sit exactly on the downlevel limit, so the
         // residual channel's two (§6.7) put it over. This is the one limit Stark asks
@@ -196,7 +196,7 @@ impl GpuContext {
         required_limits
     }
 
-    /// Create an offscreen context with no surface, for headless rendering.
+    /// Create an offscreen context with no substrate, for headless rendering.
     pub async fn headless() -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = instance

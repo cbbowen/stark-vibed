@@ -277,7 +277,7 @@ pub enum BlendMode {
     /// (`media_common.wesl`) — so a glaze laid on bare canvas leaves the paper's own
     /// color untouched instead of tinting it. On white paper that is exactly right,
     /// white being multiply's identity, and it is why the mode reads correctly to a
-    /// painter by default. On a toned ground it is a divergence from what a real
+    /// painter by default. On a toned substrate it is a divergence from what a real
     /// glaze would do, and the fix is not here: it is for the substrate to become the
     /// bottom of the stack rather than a step of the media pass.
     Multiply,
@@ -427,7 +427,7 @@ impl BlendMode {
 /// canvas position — satisfies the §6.4 seam invariant for free.
 ///
 /// Two variants, because two are built — the frame, and the §15.2 table's third
-/// row, the whole-plane ground ([`Everything`](Self::Everything), §15.5's
+/// row, the whole-plane substrate ([`Everything`](Self::Everything), §15.5's
 /// "opaque underpainting"). This is still the seam where the `SelectionOp`
 /// algebra lands (§15.9, P4), bringing comic gutters, lasso mattes and
 /// frame-from-selection at once. Per this codebase's own precedent (§1 —
@@ -438,7 +438,7 @@ impl BlendMode {
 pub enum MatteRegion {
     /// Everything *outside* this canvas-space rect — the frame / mat board.
     OutsideRect { min: Vec2, max: Vec2 },
-    /// The whole plane — a ground / underpainting, made to sit at the bottom of
+    /// The whole plane — a substrate / underpainting, made to sit at the bottom of
     /// the stack (§15.5). It has no rect: it frames nothing, so it
     /// defines no export rect and mounts no handles — the coverage is the whole
     /// of what it says.

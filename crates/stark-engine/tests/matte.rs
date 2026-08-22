@@ -358,11 +358,13 @@ fn dragging_the_canvas_color_previews_without_logging() {
     let blank = engine.render_to_image();
     paint(&mut engine, RED, 30.0, WIDE_STROKE);
     let painted = engine.render_to_image();
-    let ground = engine.observe().background;
+    let substrate = engine.observe().substrate_color;
 
-    // Three "pointer moves" of a drag towards a dark ground.
+    // Three "pointer moves" of a drag towards a dark substrate.
     for v in [0.5f32, 0.3, 0.1] {
-        engine.process(ViewCommand::PreviewBackground(Some(Srgb::new([v, v, v]))));
+        engine.process(ViewCommand::PreviewSubstrateColor(Some(Srgb::new([
+            v, v, v,
+        ]))));
     }
     let dragging = engine.render_to_image();
     assert!(
@@ -371,7 +373,7 @@ fn dragging_the_canvas_color_previews_without_logging() {
     );
     // `observe` reports the previewed color, so the panel's swatch agrees with the
     // canvas it controls instead of trailing a commit behind it.
-    assert_eq!(engine.observe().background, Srgb::new([0.1, 0.1, 0.1]));
+    assert_eq!(engine.observe().substrate_color, Srgb::new([0.1, 0.1, 0.1]));
 
     // Undoing now must take back the *stroke*, not a drag step, and drop the
     // preview with it — landing on the untouched document, because nothing about
@@ -384,7 +386,7 @@ fn dragging_the_canvas_color_previews_without_logging() {
     engine.process(DocCommand::Redo);
 
     // Releasing commits exactly one action, and drops the preview.
-    engine.process(DocCommand::SetBackground(Srgb::new([0.1, 0.1, 0.1])));
+    engine.process(DocCommand::SetSubstrateColor(Srgb::new([0.1, 0.1, 0.1])));
     let committed = engine.render_to_image();
     assert!(
         images_match(&dragging, &committed, 2),
@@ -392,8 +394,8 @@ fn dragging_the_canvas_color_previews_without_logging() {
     );
     engine.process(DocCommand::Undo);
     assert_eq!(
-        engine.observe().background,
-        ground,
+        engine.observe().substrate_color,
+        substrate,
         "one undo should take back the whole drag"
     );
     assert!(
@@ -551,11 +553,11 @@ fn red_blue() -> Gradient {
     .expect("two stops")
 }
 
-/// A ground: an `Everything` matte born at the bottom of the stack covers the
+/// A substrate: an `Everything` matte born at the bottom of the stack covers the
 /// whole view — and stays *under* the paint, which is the §15.5 claim that a
-/// ground is an underpainting, not a wash over the picture.
+/// substrate is an underpainting, not a wash over the picture.
 #[test]
-fn an_everything_matte_grounds_the_whole_view_beneath_the_paint() {
+fn an_everything_matte_backs_the_whole_view_beneath_the_paint() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -571,12 +573,12 @@ fn an_everything_matte_grounds_the_whole_view_beneath_the_paint() {
     let corner = at(&img, 6, 6);
     assert!(
         corner[1] > corner[0] + 30 && corner[1] > corner[2] + 30,
-        "the ground should cover bare canvas, got {corner:?}"
+        "the substrate should cover bare canvas, got {corner:?}"
     );
     // …and the stroke still on top of it.
     assert!(
         red_dominant(outside(&img)),
-        "a ground at the bottom must not cover the paint"
+        "a substrate at the bottom must not cover the paint"
     );
 }
 
@@ -685,20 +687,20 @@ fn an_everything_matte_defines_no_export_frame() {
         region: MatteRegion::Everything,
         paint: MattePaint::Solid(Srgb::new([0.9, 0.9, 0.85])),
     });
-    let ground = engine
+    let substrate = engine
         .observe()
         .layers
         .first()
-        .expect("the ground is at the bottom")
+        .expect("the substrate is at the bottom")
         .id;
-    let with_ground = engine
-        .export_plan(Some(ground), stark_engine::ExportScale::Factor(1.0))
+    let with_substrate = engine
+        .export_plan(Some(substrate), stark_engine::ExportScale::Factor(1.0))
         .expect("plan");
     let without = engine
         .export_plan(None, stark_engine::ExportScale::Factor(1.0))
         .expect("plan");
     assert_eq!(
-        (with_ground.min, with_ground.max),
+        (with_substrate.min, with_substrate.max),
         (without.min, without.max),
         "a rect-less matte must fall back to the painted bounds"
     );

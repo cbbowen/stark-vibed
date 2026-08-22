@@ -74,10 +74,10 @@ impl Engine {
                 a.id.actor = actor;
             }
         }
-        // Replay from the surface this document's log *starts* from, not from the
+        // Replay from the substrate this document's log *starts* from, not from the
         // default — same base state `reset_document` builds, so re-hosting a document
         // that was created on a non-default canvas doesn't silently move it.
-        let initial = DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface);
+        let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
         let ctx = &mut self.shared.apply;
         self.timeline = Box::new(ReplicatedTimeline::from_log(actor, initial, log, ctx));
         self.authoring.actor = actor;
@@ -103,7 +103,7 @@ impl Engine {
         // the most.
         self.adopt(file);
         let ctx = &mut self.shared.apply;
-        let initial = DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface);
+        let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
         self.timeline = Box::new(ReplicatedTimeline::from_log(
             actor,
             initial,
@@ -115,7 +115,7 @@ impl Engine {
         self.resync_counters(&file.actions);
         self.authoring.outbox = Some(Vec::new());
         // Whatever the replayed log left the document on.
-        self.apply_document_surface();
+        self.apply_document_substrate();
         self.committed_changed();
         self.mark_live_stale();
     }
@@ -160,8 +160,8 @@ impl Engine {
             self.peers.clear_gesture(author);
             self.mark_live_stale();
         }
-        // A peer may have switched the surface (§6.4).
-        self.apply_document_surface();
+        // A peer may have switched the substrate (§6.4).
+        self.apply_document_substrate();
         merged
     }
 

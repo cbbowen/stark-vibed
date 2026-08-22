@@ -38,7 +38,7 @@
 // exists to work around.
 //
 // **Written across the four channels at once, and branch-free.** This runs on every
-// store of the loop's hottest kernels — the deposit writes three targets per footprint
+// store of the loop's hottest kernels — the deposit writes three targets per extent
 // texel — and as four scalar calls it was four copies of two branches, on a machine
 // whose lanes have to agree about which way each one goes. Every step below is the
 // scalar law componentwise: same bit pattern, same tie rule, same treatment of what has

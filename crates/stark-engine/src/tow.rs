@@ -62,23 +62,23 @@ const EMIT_SPACING: f32 = 0.25;
 ///
 /// The bound is read off the tractrix rather than picked. The tip's offset from its
 /// straight asymptote is `2·rope·t/√(1+t²) ≤ 2·rope·t`, and the half-angle decays as
-/// `t = t₀·exp(−Δs/rope)` with `t₀ ≤ 1` — so the bend is under the input's own grain,
-/// and therefore invisible to the fit that grain prices ([`path::clamp_tolerance`]),
-/// after `rope · ln(2·rope/grain)`. Past it the run's final emission is the only one
+/// `t = t₀·exp(−Δs/rope)` with `t₀ ≤ 1` — so the bend is under the input's own tolerance,
+/// and therefore invisible to the fit that tolerance prices ([`path::clamp_tolerance`]),
+/// after `rope · ln(2·rope/tolerance)`. Past it the run's final emission is the only one
 /// that carries anything.
 ///
 /// Two properties follow, and both are the point:
 ///
-/// * **A report costs `4·ln(2·rope/grain) + 1` emissions at worst** — under 30 across
-///   the whole reachable range of the knob, at any zoom, because rope and grain are
+/// * **A report costs `4·ln(2·rope/tolerance) + 1` emissions at worst** — under 30 across
+///   the whole reachable range of the knob, at any zoom, because rope and tolerance are
 ///   both carried through the view and the ratio is what survives. Bounded in the
 ///   rope rather than inverse in it.
-/// * **A rope at or under half the grain reaches zero**, so the tow emits exactly one
+/// * **A rope at or under half the tolerance reaches zero**, so the tow emits exactly one
 ///   sample per report: the same rate as no tow at all, which is the right answer for
 ///   a string shorter than the pointer can resolve. The knob's bottom end degrades to
 ///   the untowed path instead of falling off a cliff into it.
-fn bend_reach(rope: f32, grain: f32) -> f32 {
-    (2.0 * rope / grain).ln().max(0.0) * rope
+fn bend_reach(rope: f32, tolerance: f32) -> f32 {
+    (2.0 * rope / tolerance).ln().max(0.0) * rope
 }
 
 /// The in-flight string, for the frontend's overlay (§6.11): drawn from the
@@ -102,11 +102,11 @@ pub struct TowString {
 #[derive(Clone, Debug)]
 pub struct Tow {
     rope: f32,
-    /// The input's own positional resolution, in canvas px — the same grain the
+    /// The input's own positional resolution, in canvas px — the same tolerance the
     /// fit prices its thresholds in (`PathFitter::with_tolerance`), held to the
     /// same bounds. What it decides here is how far the emission grid runs: see
     /// [`bend_reach`].
-    grain: f32,
+    tolerance: f32,
     tip: Vec2,
     /// The last raw report — the target the string runs to. Kept whole (not
     /// just the position) because a run's emissions interpolate the pen
@@ -115,7 +115,7 @@ pub struct Tow {
 }
 
 impl Tow {
-    /// A tow of `rope` canvas px over input that resolves to `grain` canvas px,
+    /// A tow of `rope` canvas px over input that resolves to `tolerance` canvas px,
     /// tip parked on the first report.
     ///
     /// Callers gate construction on `rope > 0` — a rope of zero is no tow, and
@@ -124,14 +124,14 @@ impl Tow {
     /// [`bend_reach`] takes it to one emission a report, which is that same
     /// rate.
     ///
-    /// `grain` is the caller's declared input resolution, the one thing the tow
-    /// cannot work out for itself and the same number the fitter is built with —
+    /// `tolerance` is the caller's declared input resolution — the one thing the tow
+    /// cannot work out for itself, and the same number the fitter is built with —
     /// so it is held to the same bounds by the same function, rather than by a
     /// second copy of them here.
-    pub fn new(rope: f32, grain: f32, first: InputSample) -> Self {
+    pub fn new(rope: f32, tolerance: f32, first: InputSample) -> Self {
         Self {
             rope,
-            grain: crate::path::clamp_tolerance(grain),
+            tolerance: crate::path::clamp_tolerance(tolerance),
             tip: first.pos,
             target: first,
         }
@@ -230,7 +230,7 @@ impl Tow {
         // A count computed up front cannot do either: it is bounded by
         // [`bend_reach`]'s own logarithm, and it is an integer.
         let step = self.rope * EMIT_SPACING;
-        let reach = bend_reach(self.rope, self.grain).min(len - s0);
+        let reach = bend_reach(self.rope, self.tolerance).min(len - s0);
         let steps = if step > 0.0 {
             (reach / step) as usize
         } else {
@@ -264,7 +264,7 @@ mod tests {
 
     /// Feed a polyline through a tow, collecting every emission. At
     /// [`DEFAULT_TOLERANCE`](crate::path::DEFAULT_TOLERANCE), which is what a
-    /// replay declares and the coarsest grain any of these ropes meets.
+    /// replay declares and the coarsest tolerance any of these ropes meets.
     fn run(rope: f32, pts: &[Vec2]) -> (Tow, Vec<Vec2>) {
         let mut tow = Tow::new(
             rope,
@@ -416,11 +416,11 @@ mod tests {
     /// alone.
     #[test]
     fn one_report_costs_a_bounded_number_of_emissions() {
-        // `rope_in` / `input_tolerance_in`: both the string and the grain are the
+        // `rope_in` / `tolerance_in`: both the string and the tolerance are the
         // hand's, carried through the view, which is why the ratio that decides the
         // count survives the zoom and the count does not blow up at either end.
         let rope_in = |amount: f32, zoom: f32| amount * amount * 160.0 / zoom;
-        let grain_in = |res: f32, zoom: f32| res / zoom;
+        let tolerance_in = |res: f32, zoom: f32| res / zoom;
         let mut worst = 0usize;
         for &amount in &[1.0f32, 0.5, 0.25, 0.1, 0.05, 0.02, 0.01, 0.001, 1e-6] {
             for &zoom in &[0.05f32, 1.0, 8.0, 64.0] {
@@ -431,7 +431,7 @@ mod tests {
                     if rope <= 0.0 {
                         continue;
                     }
-                    let mut tow = Tow::new(rope, grain_in(res, zoom), sample(0.0, 0.0));
+                    let mut tow = Tow::new(rope, tolerance_in(res, zoom), sample(0.0, 0.0));
                     // Reports 4 canvas px apart at this zoom: an unhurried hand at a
                     // few hundred hertz, which is the case that used to cost seconds.
                     let step = 4.0 / zoom;

@@ -49,8 +49,8 @@ use crate::gpu::MediaParams;
 use crate::gpu::desc::Zeroes;
 use crate::gpu::{
     BlendPass, Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer,
-    FilterPass, GpuContext, Ground, MergeRenderer, Registry, SelectionRenderer, StrokeRenderer,
-    Surface, TilePool, TransformRenderer,
+    FilterPass, GpuContext, MergeRenderer, Registry, SelectionRenderer, StrokeRenderer, Substrate,
+    SubstrateMap, TilePool, TransformRenderer,
 };
 use crate::peer::Peers;
 use crate::session::ShapeResult;
@@ -62,7 +62,7 @@ use stark_model::document::{
     Scaffold, ShapeAction,
 };
 use stark_model::geom::Extent2;
-use stark_model::{SurfaceId, SurfaceScale};
+use stark_model::{SubstrateId, SubstrateScale};
 
 /// The starting layer present in every new document.
 const ROOT_LAYER: LayerId = LayerId(0);
@@ -475,15 +475,15 @@ pub struct ObservableState {
     /// The document's color space. Immutable for the document's life — changing
     /// it means starting a new document ([`Engine::new_with_color_space`]).
     pub color_space: ColorSpaceId,
-    /// The physical canvas surface (§6.4).
-    pub surface: SurfaceId,
-    /// How large that weave is laid (§6.4) — what the Lighting panel's scale slider
+    /// The physical canvas substrate (§6.4).
+    pub substrate: SubstrateId,
+    /// How large that substrate is laid (§6.4) — what the Lighting panel's scale slider
     /// reads and what it commits against.
-    pub surface_scale: SurfaceScale,
+    pub substrate_scale: SubstrateScale,
     /// The canvas substrate color, straight sRGB (§15.5). Document
     /// state, not a view setting — projected here so the frontend shows what the
     /// document says rather than a copy of its own that goes stale.
-    pub background: Srgb,
+    pub substrate_color: Srgb,
 
     /// Set once the GPU has failed — a lost device, an out-of-memory, an error no
     /// scope caught (§5). `None` for a healthy device, which is every ordinary
@@ -506,14 +506,14 @@ pub struct ObservableState {
 /// reuses rather than rebuilding (§11).
 ///
 /// **What "shared" means here is exactly what [`Registry`] means by it** — *the store
-/// is shared; the choice is not*. The maps of registered bytes, the decoded grounds
+/// is shared; the choice is not*. The maps of registered bytes, the decoded substrates
 /// and environments, the tile pool, the compiled pipelines and the content-addressed
 /// brush assets all sit behind `Arc`s and are genuinely one copy. The *choices* that
-/// ride along — which ground is in use, which environment, the media parameters —
+/// ride along — which substrate is in use, which environment, the media parameters —
 /// are per-engine values that a clone merely **seeds** from the donor, so a sibling
 /// opens mirroring the canvas it came from and is free to move from there. That
 /// seeding is deliberate and is what lets the brush editor's preview open on the
-/// document's own ground with nothing re-fetched (`CompositorPipeline::sharing`).
+/// document's own substrate with nothing re-fetched (`CompositorPipeline::sharing`).
 ///
 /// **Why it is a type rather than a constructor's argument list.** `Engine::new_sharing`
 /// used to assemble this field by field, and that had already gone wrong once in the
@@ -534,7 +534,7 @@ pub struct ObservableState {
 pub struct EngineShared {
     gpu: GpuContext,
     /// The format every pipeline in `passes` was compiled against. A sibling must
-    /// present to the same one — a second surface that chose differently would fail
+    /// present to the same one — a second substrate that chose differently would fail
     /// validation rather than merely look wrong.
     target_format: wgpu::TextureFormat,
     /// The document's color space (§6.7). Shared because the pipelines below were
@@ -543,7 +543,7 @@ pub struct EngineShared {
     color_space: Arc<dyn ColorSpace>,
     /// The GPU subsystems an action needs in order to apply itself — the tile pool,
     /// the stroke renderer, the asset store, the selection rasterizer, and the canvas
-    /// grounds — held as the `history::Action::Context` (§5).
+    /// substrates — held as the `history::Action::Context` (§5).
     ///
     /// Stored rather than built per call. `history`'s `Context` is an owned associated
     /// type, so there is nothing to hand it a borrow of — and building it per call
@@ -573,7 +573,7 @@ impl EngineShared {
         &self.gpu
     }
 
-    /// The texture format every pipeline here was compiled against. A surface a
+    /// The texture format every pipeline here was compiled against. A substrate a
     /// sibling presents to has to be configured for it.
     pub fn target_format(&self) -> wgpu::TextureFormat {
         self.target_format
@@ -590,7 +590,7 @@ pub struct Engine {
     /// added to it is shared on every path rather than on the paths somebody
     /// remembered — see [`EngineShared`].
     shared: EngineShared,
-    /// Compositing state for the **surface**: the attachments a screen frame is
+    /// Compositing state for the **substrate**: the attachments a screen frame is
     /// built through, kept from frame to frame (`gpu::composite`). Anything drawn
     /// beside the screen — an export, the navigator's miniature — gets a
     /// [`Compositor`] of its own for the call, so it never resizes these.
@@ -599,13 +599,13 @@ pub struct Engine {
     /// beside the one above rather than inside it because a second one borrows it:
     /// the expensive half of compositing is built once, and the view settings the
     /// media pass reads have one owner, so two consumers cannot disagree about the
-    /// canvas weave or the lighting.
+    /// canvas substrate or the lighting.
     compositor_pipeline: CompositorPipeline,
-    /// The surface the action log starts from, written to `CanvasMeta` and used to
+    /// The substrate the action log starts from, written to `CanvasMeta` and used to
     /// seed the document. Plays the same role as `CanvasMeta::color_space`: it
     /// describes the empty document that the log is replayed onto, and is not
     /// itself a logged change.
-    initial_surface: SurfaceId,
+    initial_substrate: SubstrateId,
     timeline: Box<dyn Timeline>,
     session: crate::session::Session,
     /// Everyone else in the session (§17.4). Empty when solo.
@@ -743,7 +743,7 @@ impl Authoring {
 }
 
 impl Engine {
-    /// Build an engine that presents to `target_format` (a surface format, or a
+    /// Build an engine that presents to `target_format` (a substrate format, or a
     /// test target), in the default Oklab color space. Takes wgpu handles from
     /// the frontend (CLAUDE.md).
     pub fn new(gpu: GpuContext, target_format: wgpu::TextureFormat, viewport: Extent2) -> Self {
@@ -768,17 +768,17 @@ impl Engine {
     ) -> Result<Self> {
         let color_space = crate::colorspace::make(color_space)
             .ok_or(DocError::UnsupportedColorSpace(color_space))?;
-        // The registry starts on the builtin flat ground — it is all that can be
+        // The registry starts on the builtin flat substrate — it is all that can be
         // built before any bytes exist, and it is also what a fresh document is on
-        // (`DEFAULT_SURFACE`), so there is nothing to reconcile between the two. A
-        // ground is named by the hash of its height map (§6.4), so an engine with no
-        // bytes has exactly one ground it can truthfully name, and a frontend that
+        // (`DEFAULT_SUBSTRATE`), so there is nothing to reconcile between the two. A
+        // substrate is named by the hash of its height map (§6.4), so an engine with no
+        // bytes has exactly one substrate it can truthfully name, and a frontend that
         // wants another opens a document on it.
-        let surfaces = Registry::<Ground>::new(&gpu, Ground::default());
+        let substrates = Registry::<Substrate>::new(&gpu, Substrate::default());
         // Lighting starts on the procedural neutral environment; image HDRs are
         // registered later by the frontend (§6.3).
         let environments = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
-        let surface = surfaces.current();
+        let substrate = substrates.current();
         // Read out before the registry moves into the keep — the live object, not the
         // registry, is what the media pass binds.
         let environment = environments.current();
@@ -787,17 +787,17 @@ impl Engine {
                 assets: AssetStore::new(gpu.clone()),
                 selection: SelectionRenderer::new(&gpu),
                 gpu: gpu.clone(),
-                surfaces,
+                substrates,
                 environments,
             },
             target_format,
             cs: &color_space,
-            surface: &surface,
+            substrate: &substrate,
             environment: &environment,
         });
 
         let initial = DocState::with_layer(ROOT_LAYER);
-        let initial_surface = initial.surface;
+        let initial_substrate = initial.substrate;
         let timeline: Box<dyn Timeline> = Box::new(LinearTimeline::new(initial));
         let session = crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER);
 
@@ -805,7 +805,7 @@ impl Engine {
             shared: built.shared,
             compositor: built.compositor,
             compositor_pipeline: built.compositor_pipeline,
-            initial_surface,
+            initial_substrate,
             timeline,
             session,
             peers: Peers::new(),
@@ -821,17 +821,17 @@ impl Engine {
             debug_samples: Vec::new(),
             authoring: Authoring::solo(),
         };
-        // Point the ground registry at the document's ground. A no-op for a fresh
+        // Point the substrate registry at the document's substrate. A no-op for a fresh
         // document (both are `Flat`), and not for one seeded by `new_document`,
-        // where it parks the registry on the id so the ground actually renders.
-        engine.apply_document_surface();
+        // where it parks the registry on the id so the substrate actually renders.
+        engine.apply_document_substrate();
         Ok(engine)
     }
 
     /// A second engine on `donor`'s device, **sharing** everything expensive and
     /// immutable — the compiled pipelines (stroke, compositing, selection,
     /// transform, fill, merge, the blend pass and its pigment LUT), the tile
-    /// allocator, the content-addressed brush assets, and the decoded ground and
+    /// allocator, the content-addressed brush assets, and the decoded substrate and
     /// environment caches — around a fresh document of its own.
     ///
     /// This is what a *preview* engine is (§11): the brush editor's test canvas and
@@ -843,14 +843,14 @@ impl Engine {
     /// decoded once.
     ///
     /// What is shared is exactly what cannot disagree: the shared pieces are either
-    /// immutable (pipelines), content-addressed (assets, the ground/environment
+    /// immutable (pipelines), content-addressed (assets, the substrate/environment
     /// byte-and-build caches), or an allocator (the tile pool). Everything an engine
     /// can *set* stays per-engine — the document, the session view, and the three
     /// compositor view settings, which start mirroring the donor's current look
-    /// (ground, lighting, media parameters) and move independently from there.
+    /// (substrate, lighting, media parameters) and move independently from there.
     ///
-    /// The document opens on the donor's current ground, so a preview needs no
-    /// `SetSurface` step — and no ground bytes handed across, which is the point.
+    /// The document opens on the donor's current substrate, so a preview needs no
+    /// `SetSubstrate` step — and no substrate bytes handed across, which is the point.
     ///
     /// Divergence after construction is safe but not tracked: a
     /// [`new_document`](Self::new_document) that changes *this* engine's color
@@ -866,21 +866,21 @@ impl Engine {
     ///
     /// That is the difference worth having. A preset thumbnail wants the device and
     /// the pipelines; asking it to produce a *donor engine* meant borrowing whichever
-    /// live one happened to exist — with its surface, its document and its in-flight
+    /// live one happened to exist — with its substrate, its document and its in-flight
     /// gesture — for the length of the call, so the thumbnail rig could not be built
     /// until one did and had to be created lazily inside the loop that used it. An
     /// `EngineShared` clones for a handful of refcount bumps and outlives whoever it
     /// came from.
     ///
-    /// The document opens on `shared`'s current ground, so a preview needs no
-    /// `SetSurface` step — and no ground bytes handed across, which is the point.
+    /// The document opens on `shared`'s current substrate, so a preview needs no
+    /// `SetSubstrate` step — and no substrate bytes handed across, which is the point.
     pub fn on_shared(shared: EngineShared, viewport: Extent2) -> Self {
-        let ground = shared.apply.surfaces.id();
-        let initial_surface = ground.id;
+        let substrate = shared.apply.substrates.id();
+        let initial_substrate = substrate.id;
         let timeline: Box<dyn Timeline> = Box::new(LinearTimeline::new(
             DocState::with_layer(ROOT_LAYER)
-                .with_surface(initial_surface)
-                .with_surface_scale(ground.scale),
+                .with_substrate(initial_substrate)
+                .with_substrate_scale(substrate.scale),
         ));
         let session = crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER);
         // Its own three view settings over the shared passes — the whole of what a
@@ -888,7 +888,7 @@ impl Engine {
         // `shared` so it opens mirroring the canvas it came from.
         let compositor_pipeline = CompositorPipeline::sharing(
             shared.passes.clone(),
-            shared.apply.surfaces.current(),
+            shared.apply.substrates.current(),
             shared.environment.current(),
             shared.media,
         );
@@ -897,7 +897,7 @@ impl Engine {
             shared,
             compositor,
             compositor_pipeline,
-            initial_surface,
+            initial_substrate,
             timeline,
             session,
             peers: Peers::new(),
@@ -913,10 +913,10 @@ impl Engine {
             debug_samples: Vec::new(),
             authoring: Authoring::solo(),
         };
-        // Park the sibling registry on the document's ground — a no-op here, since
+        // Park the sibling registry on the document's substrate — a no-op here, since
         // both were just seeded from the same place, but stated so this constructor
         // upholds the invariant the same way `new_with_color_space` does.
-        engine.apply_document_surface();
+        engine.apply_document_substrate();
         engine
     }
 
@@ -1091,7 +1091,7 @@ impl Engine {
                     // layer routinely stops existing here. `committed_changed`
                     // repoints the brush for every such cause at once (§17.9).
                     self.committed_changed();
-                    self.apply_document_surface();
+                    self.apply_document_substrate();
                 }
             }
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
@@ -1119,20 +1119,20 @@ impl Engine {
                     self.preview.set_doc(None);
                 }
             }
-            DocCommand::SetSurface(id) => {
-                self.settle(ActionKind::SetSurface(id));
-                // Unconditional, and a no-op when the ground did not move: the
+            DocCommand::SetSubstrate(id) => {
+                self.settle(ActionKind::SetSubstrate(id));
+                // Unconditional, and a no-op when the substrate did not move: the
                 // registry is brought level with the document rather than with what
                 // this command asked for.
-                self.apply_document_surface();
+                self.apply_document_substrate();
             }
-            DocCommand::SetSurfaceScale(scale) => {
-                self.settle(ActionKind::SetSurfaceScale(scale));
+            DocCommand::SetSubstrateScale(scale) => {
+                self.settle(ActionKind::SetSubstrateScale(scale));
                 // The same call for the same reason, and it is the same *state*: a
-                // `Surface` is built from the weave and its scale together, so laying
-                // the weave larger invalidates the bound ground exactly as switching
-                // it does (`gpu::surface::Ground`).
-                self.apply_document_surface();
+                // `SubstrateMap` is built from the substrate and its scale together, so laying
+                // the substrate larger invalidates the bound substrate exactly as switching
+                // it does (`gpu::substrate::Substrate`).
+                self.apply_document_substrate();
             }
             DocCommand::AddLayer { carrier, above } => {
                 let id = self.mint_layer();
@@ -1218,7 +1218,7 @@ impl Engine {
             DocCommand::SetMattePaint(id, paint) => {
                 self.settle(ActionKind::SetMattePaint(id, paint))
             }
-            DocCommand::SetBackground(rgb) => self.settle(ActionKind::SetBackground(rgb)),
+            DocCommand::SetSubstrateColor(rgb) => self.settle(ActionKind::SetSubstrateColor(rgb)),
             DocCommand::DuplicateLayer(source) => {
                 // One minted id per layer of the subtree, paired with the layer it
                 // copies, in composite order — the map the action carries
@@ -1397,19 +1397,19 @@ impl Engine {
                     drag.map(|(id, min, max)| self.timeline.current().set_matte_rect(id, min, max));
                 self.set_doc_preview(preview);
             }
-            ViewCommand::PreviewBackground(rgb) => {
-                let preview = rgb.map(|rgb| self.timeline.current().with_background(rgb));
+            ViewCommand::PreviewSubstrateColor(rgb) => {
+                let preview = rgb.map(|rgb| self.timeline.current().with_substrate_color(rgb));
                 self.set_doc_preview(preview);
             }
             // The preview moves the *document* the compositor reads, and stops there:
-            // no `apply_document_surface`, so nothing is baked while the hand is on
+            // no `apply_document_substrate`, so nothing is baked while the hand is on
             // the slider. What that costs is honest and worth stating — a preview
             // shows the scale in the **light**, since the media pass re-reads the
-            // weave every frame off one uniform, and not in the **tooth**, whose
-            // ground is a stored bake. Paint already down looks right immediately;
+            // substrate every frame off one uniform, and not in the **tooth**, whose
+            // substrate is a stored bake. Paint already down looks right immediately;
             // what the next stroke will bite is right from the commit.
-            ViewCommand::PreviewSurfaceScale(scale) => {
-                let preview = scale.map(|s| self.timeline.current().with_surface_scale(s));
+            ViewCommand::PreviewSubstrateScale(scale) => {
+                let preview = scale.map(|s| self.timeline.current().with_substrate_scale(s));
                 self.set_doc_preview(preview);
             }
             ViewCommand::PreviewMattePaint(pick) => {
@@ -1450,7 +1450,7 @@ impl Engine {
                     // own row, so the cost of following a resting pointer is
                     // never folded into what painting costs (`input.fit`, §7.1).
                     crate::timing::span!("input.hover");
-                    // A report the window declined — sub-grain drift under a
+                    // A report the window declined — sub-tolerance drift under a
                     // resting pen — refolds nothing.
                     if self.session.hover_to(r.sample, r.tolerance, r.reach) {
                         self.mark_live_stale();
@@ -1499,7 +1499,7 @@ impl Engine {
         let mut it = samples.iter();
         let Some(first) = it.next() else { return };
         // Replayed samples are already in canvas space and came from a fit or from a
-        // generator, not from a device, so there is no device grain to declare.
+        // generator, not from a device, so there is no device tolerance to declare.
         self.session
             .start_stroke(tool, *first, seed, crate::path::DEFAULT_TOLERANCE, rope);
         for s in it {
@@ -1809,9 +1809,9 @@ impl Engine {
             media: self.compositor_pipeline.media(),
             environment: self.shared.environment.id(),
             color_space: self.shared.color_space.id(),
-            surface: doc.surface,
-            surface_scale: doc.surface_scale,
-            background: shown.background,
+            substrate: doc.substrate,
+            substrate_scale: doc.substrate_scale,
+            substrate_color: shown.substrate_color,
             gpu_failure: self.shared.gpu.health().failure().map(Arc::new),
         }
     }
@@ -1851,7 +1851,7 @@ impl Engine {
         self.timeline.scrub_labels()
     }
 
-    /// The GPU context this engine renders with (for surface/readback setup).
+    /// The GPU context this engine renders with (for substrate/readback setup).
     pub fn gpu(&self) -> &GpuContext {
         self.shared.gpu()
     }
@@ -1907,7 +1907,7 @@ impl Engine {
     /// is an `Undo` of an `Undo` — so the *only* thing that differs is which pair of
     /// timeline methods is asked. Passing the pair rather than writing the body out
     /// twice is what stops the two drifting: dropping the preview, bumping the
-    /// revision on the navigating branch and re-reading the document's ground
+    /// revision on the navigating branch and re-reading the document's substrate
     /// afterwards are all things one arm could have grown and the other not.
     fn navigate(
         &mut self,
@@ -1921,9 +1921,9 @@ impl Engine {
             step(self.timeline.as_mut(), &mut self.shared.apply);
             self.committed_changed();
         }
-        // A step across a `SetSurface` — or a `SetSurfaceScale` — moves the
-        // document's ground (§6.4).
-        self.apply_document_surface();
+        // A step across a `SetSubstrate` — or a `SetSubstrateScale` — moves the
+        // document's substrate (§6.4).
+        self.apply_document_substrate();
     }
 
     /// Log one action and apply it.
@@ -2130,7 +2130,7 @@ struct GpuBuild<'a> {
     // construction would overwrite it on its first render anyway, since that is the
     // only moment the zoom — and so the supersampled size — is known.
     cs: &'a Arc<dyn ColorSpace>,
-    surface: &'a Surface,
+    substrate: &'a SubstrateMap,
     environment: &'a Environment,
 }
 
@@ -2149,11 +2149,11 @@ struct GpuKeep {
     /// A mask is one coverage channel whatever the paint is, so the rasterizer is
     /// color-space independent and is handed back in rather than rebuilt (§6.8).
     selection: SelectionRenderer,
-    /// The canvas grounds and their registered bytes: a height map, likewise
-    /// nothing to do with how color is represented (§6.4). Keyed by the weave *and
-    /// the scale it is laid at*, since that is what a ground is baked from
-    /// (`gpu::surface::Ground`).
-    surfaces: Registry<Ground>,
+    /// The canvas substrates and their registered bytes: a height map, likewise
+    /// nothing to do with how color is represented (§6.4). Keyed by the substrate *and
+    /// the scale it is laid at*, since that is what a substrate is baked from
+    /// (`gpu::substrate::Substrate`).
+    substrates: Registry<Substrate>,
     /// The lighting environments and their registered bytes — a *view* setting, and
     /// color-space independent, so a rebuild carries it rather than re-decoding the
     /// HDR and its whole mip chain (§6.3).
@@ -2186,12 +2186,12 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
                 gpu,
                 assets,
                 selection,
-                surfaces,
+                substrates,
                 environments,
             },
         target_format,
         cs,
-        surface,
+        substrate,
         environment,
     } = b;
     // The color space's formats — the only ones this call site knows. The pool
@@ -2219,7 +2219,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
         &gpu,
         target_format,
         cs.as_ref(),
-        surface.clone(),
+        substrate.clone(),
         environment.clone(),
         blend.clone(),
         filter.clone(),
@@ -2256,7 +2256,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
             place,
             pictures,
             gpu,
-            surfaces,
+            substrates,
         },
     };
     GpuBuilt {

@@ -11,7 +11,7 @@
 //! [`with_engine_quiet`], which is named for what it declines to do. The failure this
 //! rules out: a panel reaches the engine through the signal, changes something the
 //! chrome reads back, and leaves the chrome showing the previous value until an
-//! unrelated command refreshes it (§4, §7). Both the canvas ground and the lighting
+//! unrelated command refreshes it (§4, §7). Both the canvas substrate and the lighting
 //! environment are reachable that way, and neither spelling compiles.
 
 use dioxus::dioxus_core::{Subscribers, Task};
@@ -326,8 +326,8 @@ pub struct Signals {
     pub timeline: TimelineState,
     /// The custom brush-shape library (§6.6; `crate::shapes`).
     pub shapes: ShapesState,
-    /// The custom canvas-ground library (§6.4; `crate::grounds`).
-    pub grounds: GroundsState,
+    /// The custom canvas-substrate library (§6.4; `crate::substrates`).
+    pub substrates: SubstratesState,
     /// The brush preset library (`crate::presets`), loaded from `localStorage`
     /// at startup like the shape library.
     pub presets: Signal<Vec<crate::presets::PresetEntry>>,
@@ -601,20 +601,20 @@ pub struct TowUi {
     pub rope: f32,
 }
 
-/// The custom canvas-ground library's signals (`crate::grounds`) — [`ShapesState`]'s
+/// The custom canvas-substrate library's signals (`crate::substrates`) — [`ShapesState`]'s
 /// sibling, and root-owned for its reason.
 #[derive(Clone, Copy)]
-pub struct GroundsState {
+pub struct SubstratesState {
     /// Library entries, read at startup from the browser's two stores (§25.6). Empty
-    /// until that read lands, which is why `grounds::load` is awaited ahead of the
+    /// until that read lands, which is why `substrates::load` is awaited ahead of the
     /// first thing that could resolve one.
-    pub entries: Signal<Vec<crate::grounds::GroundEntry>>,
+    pub entries: Signal<Vec<crate::substrates::SubstrateEntry>>,
     /// A transient line under the surface gallery: import errors, or the "already in
     /// your library" note. `None` when quiet.
     pub notice: Signal<Option<String>>,
 }
 
-impl GroundsState {
+impl SubstratesState {
     fn new() -> Self {
         Self {
             entries: root_signal(Vec::new),
@@ -679,7 +679,7 @@ impl AppState {
             collab: CollabState::new(),
             timeline: TimelineState::new(),
             shapes: ShapesState::new(),
-            grounds: GroundsState::new(),
+            substrates: SubstratesState::new(),
             presets: root_signal(Vec::new),
             thumbs: crate::thumbs::ThumbState::new(),
             layer_thumbs: crate::layer_thumbs::LayerThumbState::new(),

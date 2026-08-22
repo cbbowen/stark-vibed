@@ -92,7 +92,7 @@ struct Filter {
     // (a spread in canvas px and a canvas-space angle, `params.xy`) taken through
     // the view's canvas→screen linear map — the fringes belong to the artwork, so
     // they must turn, mirror and scale with it rather than with the window, which
-    // is the same statement `media_common`'s `surf_m` makes about the weave. View
+    // is the same statement `media_common`'s `view_m` makes about the substrate. View
     // state, never document state; zero for every other kind.
     disp: vec2<f32>,
     // The filter's own numbers, read according to `kind`. For `FILTER_COLOR`

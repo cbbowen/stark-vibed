@@ -41,7 +41,7 @@ pub struct MatteDraw {
 /// One item of compositing pass A, in bottom-to-top stack order.
 ///
 /// An ordered list rather than a flat tile array because a matte composites at
-/// its own place in the stack — a frame over the painting, a ground under it
+/// its own place in the stack — a frame over the painting, a substrate under it
 /// (§15.4.4). Tiles already cost one draw each (each needs its own
 /// bind group), so interleaving mattes adds no per-tile overhead.
 #[derive(Clone)]

@@ -14,7 +14,7 @@ use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand
 use stark_engine::engine::headless_engine;
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
-use stark_model::SurfaceId;
+use stark_model::SubstrateId;
 use stark_model::document::{BrushParams, BrushShape};
 use stark_model::geom::{Extent2, Vec2};
 use stark_model::peer::{GestureFrame, PeerFrame, StrokeHead};
@@ -83,10 +83,10 @@ fn drain_events(events: &mut Events, engine: &mut Engine) -> usize {
                 AssetNeed::Brush(_) => {
                     engine.import_brush(&bytes).expect("import remote brush");
                 }
-                AssetNeed::Ground(id) => {
+                AssetNeed::Substrate(id) => {
                     engine
-                        .accept_surface(SurfaceId::Image(id), &bytes)
-                        .expect("install remote ground");
+                        .accept_substrate(SubstrateId::Image(id), &bytes)
+                        .expect("install remote substrate");
                 }
                 AssetNeed::Picture(id) => {
                     engine
@@ -365,20 +365,20 @@ async fn custom_shapes_replicate_mid_session() {
     peer_session.shutdown().await;
 }
 
-/// **A peer that has never seen a ground still paints on it** (§6.4, §12.4).
+/// **A peer that has never seen a substrate still paints on it** (§6.4, §12.4).
 ///
-/// What content-addressing the ground buys. Name a ground instead, and the name is
+/// What content-addressing the substrate buys. Name a substrate instead, and the name is
 /// only as good as the table the reader holds: the host switches to one the peer has
 /// never fetched, the peer's registry silently falls back to the flat stand-in, and
 /// from then on every stroke it merges deposits with no deposition tooth. The canvases
 /// diverge with nothing on either screen to say why — the peer's pixels are a
 /// perfectly plausible painting, just not the same one.
 ///
-/// It has to be a *toothed* brush on an irregular ground, because that is the only
+/// It has to be a *toothed* brush on an irregular substrate, because that is the only
 /// thing the fallback changes: with `tooth: 0.0` the gate is 1.0 everywhere and a
-/// missing ground is invisible.
+/// missing substrate is invisible.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_peer_paints_on_a_ground_it_has_never_seen() {
+async fn a_peer_paints_on_a_substrate_it_has_never_seen() {
     let (Some(mut host), Some(mut peer)) = (engine_or_skip(), engine_or_skip()) else {
         return;
     };
@@ -411,26 +411,26 @@ async fn a_peer_paints_on_a_ground_it_has_never_seen() {
         .expect("join session");
     peer.join_collaboration(&snapshot, peer_session.actor_id());
 
-    // The host takes up a ground mid-session. The peer has never held these bytes:
+    // The host takes up a substrate mid-session. The peer has never held these bytes:
     // it joined a document that was on `Flat`, and nothing has offered it since.
     let rough = host
-        .import_surface(&stark_testdata::assets::rough())
+        .import_substrate(&stark_testdata::assets::rough())
         .expect("the rough height map imports");
     host_session.add_content(
-        AssetNeed::ground(rough).expect("the rough ground is an image"),
-        host.surface_bytes(rough).expect("canonical bytes"),
+        AssetNeed::for_substrate(rough).expect("the rough substrate is an image"),
+        host.substrate_bytes(rough).expect("canonical bytes"),
     );
-    host.process(DocCommand::SetSurface(rough));
+    host.process(DocCommand::SetSubstrate(rough));
     flush_outbox(&mut host, &host_session).await;
     wait_for_actions(&mut peer_events, &mut peer, 1).await;
 
     assert_eq!(
-        peer.surface(),
+        peer.substrate(),
         rough,
-        "the peer's document must move to the host's ground"
+        "the peer's document must move to the host's substrate"
     );
 
-    // A dry brush: it reaches only for the peaks, so its mark *is* the ground.
+    // A dry brush: it reaches only for the peaks, so its mark *is* the substrate.
     let dry = BrushParams {
         color: [0.85, 0.15, 0.1, 1.0],
         radius: 30.0,
@@ -448,7 +448,7 @@ async fn a_peer_paints_on_a_ground_it_has_never_seen() {
 
     assert!(
         identical(&host.render_to_image(), &peer.render_to_image()),
-        "peers diverged over a ground the peer had never seen — the stroke deposited \
+        "peers diverged over a substrate the peer had never seen — the stroke deposited \
          through a different tooth on each"
     );
 
@@ -618,21 +618,21 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
     far_session.shutdown().await;
 }
 
-/// **A joiner that already has a ground is not sent it — and still replays on it.**
+/// **A joiner that already has a substrate is not sent it — and still replays on it.**
 ///
-/// The whole point of the promise (§12.4). Ground bytes are the biggest thing that
-/// moves in this system: the app's own grounds canonicalize to 2.0 and 2.8 MB,
+/// The whole point of the promise (§12.4). Substrate bytes are the biggest thing that
+/// moves in this system: the app's own substrates canonicalize to 2.0 and 2.8 MB,
 /// against a log that is a handful of fitted paths. Before this, every join pulled
 /// a copy over the network into an install that shipped with it.
 ///
 /// The hazard the omission introduces is *replay*, not live painting. The snapshot
-/// here already contains a toothed stroke made on the rough ground, so the joiner
+/// here already contains a toothed stroke made on the rough substrate, so the joiner
 /// has to have those bytes registered **before** `join_collaboration` replays the
 /// log — otherwise the stroke re-deposits through the flat stand-in and the result
-/// is stored (§6.4). A toothed brush on an irregular ground is the only
+/// is stored (§6.4). A toothed brush on an irregular substrate is the only
 /// configuration where that shows up in pixels at all.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
+async fn a_promised_substrate_is_left_out_of_the_snapshot_and_still_replays() {
     let (Some(mut host), Some(mut peer)) = (engine_or_skip(), engine_or_skip()) else {
         return;
     };
@@ -640,8 +640,10 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
     // Painted *before* sharing, so the stroke is in the snapshot's log and the
     // joiner reaches it by replay rather than by gossip.
     let rough_bytes = stark_testdata::assets::rough();
-    let rough = host.import_surface(&rough_bytes).expect("import ground");
-    host.process(DocCommand::SetSurface(rough));
+    let rough = host
+        .import_substrate(&rough_bytes)
+        .expect("import substrate");
+    host.process(DocCommand::SetSubstrate(rough));
     paint_with(
         &mut host,
         BrushParams {
@@ -673,10 +675,10 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
         .parse()
         .expect("ticket text");
 
-    // The joiner says it can resolve the rough ground itself — which, being a
-    // ground that ships with the app, it can.
-    let stark_model::SurfaceId::Image(promised) = rough else {
-        panic!("an imported ground is an image");
+    // The joiner says it can resolve the rough substrate itself — which, being a
+    // substrate that ships with the app, it can.
+    let stark_model::SubstrateId::Image(promised) = rough else {
+        panic!("an imported substrate is an image");
     };
     let Joined {
         session: peer_session,
@@ -688,8 +690,8 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
         .expect("join session");
 
     assert!(
-        snapshot.surfaces.is_empty(),
-        "the host still sent a ground the joiner said it had"
+        snapshot.substrates.is_empty(),
+        "the host still sent a substrate the joiner said it had"
     );
     assert!(
         snapshot.actions.len() >= 2,
@@ -697,42 +699,44 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
     );
     assert_eq!(
         owed,
-        vec![AssetNeed::Ground(promised)],
+        vec![AssetNeed::Substrate(promised)],
         "the omission has to come back as a bill, or the joiner replays without it"
     );
 
     // Settle the bill the way the frontend does: install, *then* replay.
     for need in &owed {
-        let id = need.surface().expect("a ground need names a surface");
-        peer.accept_surface(id, &rough_bytes)
-            .expect("install the promised ground");
+        let id = need
+            .substrate()
+            .expect("a substrate need names a substrate");
+        peer.accept_substrate(id, &rough_bytes)
+            .expect("install the promised substrate");
     }
     peer.join_collaboration(&snapshot, peer_session.actor_id());
 
     assert!(
         identical(&host.render_to_image(), &peer.render_to_image()),
-        "the peer replayed a toothed stroke against a ground it resolved locally and          landed somewhere else — the omission is not sound"
+        "the peer replayed a toothed stroke against a substrate it resolved locally and          landed somewhere else — the omission is not sound"
     );
 
     host_session.shutdown().await;
     peer_session.shutdown().await;
 }
 
-/// **Mid-session, a promised ground is asked of the frontend rather than a peer.**
+/// **Mid-session, a promised substrate is asked of the frontend rather than a peer.**
 ///
 /// The join negotiation covers the snapshot; this is the rest of the session. The
 /// transport asks the frontend first and only dials if the answer does not come, so a
-/// collaborator switching to a ground that ships with the app costs every other client
-/// a read from disk rather than a transfer of the canonical weave.
+/// collaborator switching to a substrate that ships with the app costs every other client
+/// a read from disk rather than a transfer of the canonical substrate.
 ///
-/// The peer here plays the frontend by hand: it promises the ground, waits to be
+/// The peer here plays the frontend by hand: it promises the substrate, waits to be
 /// asked, and supplies the bytes from its own copy — which is exactly what
 /// `stark-ui`'s `supply_locally` does with its bundle. The proof that the local
 /// answer was *used* rather than merely offered is in the pixels: the toothed
 /// stroke that follows lands identically, which it cannot do against the flat
 /// stand-in.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_promised_ground_is_asked_of_the_frontend_mid_session() {
+async fn a_promised_substrate_is_asked_of_the_frontend_mid_session() {
     let (Some(mut host), Some(mut peer)) = (engine_or_skip(), engine_or_skip()) else {
         return;
     };
@@ -756,13 +760,13 @@ async fn a_promised_ground_is_asked_of_the_frontend_mid_session() {
         .parse()
         .expect("ticket text");
 
-    // The peer promises the rough ground before it has any reason to want it.
+    // The peer promises the rough substrate before it has any reason to want it.
     let rough_bytes = stark_testdata::assets::rough();
     // Derived without a GPU, exactly as `stark-ui`'s build script derives the ids
     // of the assets it bundles — and the `assert_eq!` below is what checks that
-    // this route and the engine's `import_surface` agree on the name.
+    // this route and the engine's `import_substrate` agree on the name.
     let probe = stark_assetid::height(&rough_bytes)
-        .expect("decode the ground")
+        .expect("decode the substrate")
         .id();
     let Joined {
         session: peer_session,
@@ -775,13 +779,15 @@ async fn a_promised_ground_is_asked_of_the_frontend_mid_session() {
     peer.join_collaboration(&snapshot, peer_session.actor_id());
 
     // The host takes it up mid-session and paints through a dry, toothed brush,
-    // whose mark *is* the ground.
-    let rough = host.import_surface(&rough_bytes).expect("import ground");
+    // whose mark *is* the substrate.
+    let rough = host
+        .import_substrate(&rough_bytes)
+        .expect("import substrate");
     host_session.add_content(
-        AssetNeed::ground(rough).expect("an image ground"),
-        host.surface_bytes(rough).expect("canonical bytes"),
+        AssetNeed::for_substrate(rough).expect("an image substrate"),
+        host.substrate_bytes(rough).expect("canonical bytes"),
     );
-    host.process(DocCommand::SetSurface(rough));
+    host.process(DocCommand::SetSubstrate(rough));
     paint_with(
         &mut host,
         BrushParams {
@@ -816,16 +822,19 @@ async fn a_promised_ground_is_asked_of_the_frontend_mid_session() {
         }
     })
     .await
-    .expect("timed out waiting to be asked for the promised ground");
-    assert_eq!(asked, AssetNeed::ground(rough).expect("an image ground"));
+    .expect("timed out waiting to be asked for the promised substrate");
+    assert_eq!(
+        asked,
+        AssetNeed::for_substrate(rough).expect("an image substrate")
+    );
 
     // Supply it the way `supply_locally` does: into the engine, then the session,
-    // which releases the `SetSurface` parked on it.
-    peer.accept_surface(asked.surface().expect("a ground"), &rough_bytes)
+    // which releases the `SetSubstrate` parked on it.
+    peer.accept_substrate(asked.substrate().expect("a substrate"), &rough_bytes)
         .expect("install locally");
     peer_session.add_content(asked, rough_bytes.clone());
 
-    // The `SetSurface` and the stroke, less whatever landed before we were asked.
+    // The `SetSubstrate` and the stroke, less whatever landed before we were asked.
     wait_for_actions(&mut peer_events, &mut peer, 2 - merged).await;
     assert!(
         identical(&host.render_to_image(), &peer.render_to_image()),

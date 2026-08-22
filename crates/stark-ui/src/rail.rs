@@ -22,13 +22,13 @@ use crate::components::menubar::{
     Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger,
 };
 use crate::credits::CreditsModal;
-use crate::grounds::NewDocumentModal;
 use crate::icons::{self, icon, icon_large};
 use crate::input::accel;
 use crate::layout::chrome_class;
 use crate::platform;
 use crate::settings::SettingsModal;
 use crate::state::{AppState, use_obs_opt};
+use crate::substrates::NewDocumentModal;
 use crate::{collab, drags, files, timings};
 
 /// A vertical rail on the far left (§11): the command search, the visibility

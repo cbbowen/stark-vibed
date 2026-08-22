@@ -1,25 +1,25 @@
-//! Which canvas a document is painted on (§6.4) — the id, not the ground.
+//! Which canvas a document is painted on (§6.4) — the id, not the map.
 
 use serde::{Deserialize, Serialize};
 
 use stark_assetid::AssetId;
 
-/// Which physical surface a document is painted on. Saved in `CanvasMeta` (§8)
+/// Which physical substrate a document is painted on. Saved in `CanvasMeta` (§8)
 /// because which canvas a piece was painted on is part of the document, so it is
 /// reproducible.
 ///
 /// **Two variants, and the split is the point.** `Flat` is procedural and needs no
-/// bytes; every other ground *is* its bytes, named by the hash of them. There is no
-/// third case — no ground named by a label whose image the engine would have to be
+/// bytes; every other substrate *is* its bytes, named by the hash of them. There is no
+/// third case — no substrate named by a label whose image the engine would have to be
 /// told about separately — because that case is exactly the one that can go missing
 /// (§6.4). A peer, a save file or a replay that meets an
 /// [`Image`](Self::Image) id it has never seen can always ask for it by content, and
-/// verify what comes back; a ground called "Rough" could only be looked up in a
+/// verify what comes back; a substrate called "Rough" could only be looked up in a
 /// table the asker might not have, and the miss was silent — the tooth read a flat
 /// stand-in and baked it into the tiles.
 ///
 /// So this is the same bargain brush shapes already make (§6.6): the id
-/// comes *from* the image (`stark-engine`'s `Engine::import_surface`),
+/// comes *from* the image (`stark-engine`'s `Engine::import_substrate`),
 /// which is what makes "built-in" a property of the frontend's asset list and of
 /// nothing downstream. The engine still embeds no image bytes.
 #[derive(
@@ -36,47 +36,47 @@ use stark_assetid::AssetId;
     Default,
     carbonite::Schema,
 )]
-pub enum SurfaceId {
+pub enum SubstrateId {
     /// Perfectly smooth: zero height everywhere, so the
     /// constant height has zero gradient (no relief). Paint behaves exactly as if
-    /// there were no surface — the orthogonal default.
+    /// there were no substrate — the orthogonal default.
     #[default]
     Flat,
     /// A height map, named by the BLAKE3 hash of its canonical decoded form
-    /// (`stark-engine`'s `surface::identify`). Covers the grounds that ship with the app and the ones a
+    /// (`stark-engine`'s `substrate::identify`). Covers the substrates that ship with the app and the ones a
     /// user brings, identically — the engine cannot tell them apart, which is why
     /// neither can go missing in a way the other wouldn't.
     Image(AssetId),
 }
 
-/// How large the ground's weave is laid on the canvas, as a **percentage of its
+/// How large the substrate is laid on the canvas, as a **percentage of its
 /// natural size** (§6.4).
 ///
-/// The natural size is one map tile per `SURFACE_TILE_PX` canvas px, which is the
+/// The natural size is one map tile per `SUBSTRATE_TILE_PX` canvas px, which is the
 /// engine's; this is the document's say over it. Document state, saved and
-/// replicated, because it decides what the tooth bites as surely as *which* ground
+/// replicated, because it decides what the tooth bites as surely as *which* substrate
 /// does: at 200% a tip crosses half as many threads per px, so it bridges further
 /// and rides fewer faces. A stroke replayed from before a change has to be deposited
-/// at the scale it was painted at, exactly as it has to be deposited on the ground it
-/// was painted on — so this rides beside [`SurfaceId`] everywhere that one goes.
+/// at the scale it was painted at, exactly as it has to be deposited on the substrate it
+/// was painted on — so this rides beside [`SubstrateId`] everywhere that one goes.
 ///
 /// # Why a quantized integer and not an `f32`
 ///
 /// Three reasons, and the third is the one that decided it.
 ///
-/// - **It is a key.** The engine bakes a ground *per scale* — the rise a tip meets
+/// - **It is a key.** The engine bakes a substrate *per scale* — the rise a tip meets
 ///   over its reach is measured in the map's own texels, so the reach in texels
 ///   moves when the scale does — and that bake is cached under the pair. An `f32`
 ///   is neither `Eq` nor `Hash`, and quantizing at the cache would be the same
 ///   decision made somewhere it could drift from the log.
 /// - **It replicates exactly.** Two peers that landed on 1.37 by different
-///   arithmetic would bake two grounds and deposit two different marks; `137` is
+///   arithmetic would bake two substrates and deposit two different marks; `137` is
 ///   `137` on both.
 /// - **It bounds what a document can cost.** Each distinct scale a document names
-///   is a ground texture held for as long as the log can be replayed across it.
+///   is a substrate texture held for as long as the log can be replayed across it.
 ///   [`STEP`](Self::STEP) is what keeps a slider dragged from end to end from
 ///   naming three hundred of them, and 5% is comfortably under the smallest change
-///   in a weave anyone can see.
+///   in a substrate anyone can see.
 #[derive(
     Copy,
     Clone,
@@ -92,13 +92,13 @@ pub enum SurfaceId {
 )]
 #[serde(from = "u16", into = "u16")]
 #[carbonite(as = "u16")]
-pub struct SurfaceScale(u16);
+pub struct SubstrateScale(u16);
 
-impl SurfaceScale {
-    /// The weave at the size the map was authored at — one tile per
-    /// `SURFACE_TILE_PX` canvas px.
+impl SubstrateScale {
+    /// The substrate at the size the map was authored at — one tile per
+    /// `SUBSTRATE_TILE_PX` canvas px.
     pub const NATURAL: Self = Self(100);
-    /// The finest weave offered: a quarter size, four tiles to the natural one.
+    /// The finest substrate offered: a quarter size, four tiles to the natural one.
     pub const MIN: u16 = 25;
     /// The coarsest: four times natural, past which a 2048-texel map is under one
     /// texel per canvas px and the grain is a blur rather than a tooth.
@@ -133,20 +133,20 @@ impl SurfaceScale {
     }
 }
 
-impl Default for SurfaceScale {
+impl Default for SubstrateScale {
     fn default() -> Self {
         Self::NATURAL
     }
 }
 
-impl From<u16> for SurfaceScale {
+impl From<u16> for SubstrateScale {
     fn from(percent: u16) -> Self {
         Self::new(percent)
     }
 }
 
-impl From<SurfaceScale> for u16 {
-    fn from(scale: SurfaceScale) -> Self {
+impl From<SubstrateScale> for u16 {
+    fn from(scale: SubstrateScale) -> Self {
         scale.0
     }
 }
@@ -162,14 +162,14 @@ mod tests {
     #[test]
     fn every_scale_lands_on_the_ladder_inside_the_range() {
         for percent in 0..=1000u16 {
-            let scale = SurfaceScale::new(percent);
+            let scale = SubstrateScale::new(percent);
             assert_eq!(
-                scale.percent() % SurfaceScale::STEP,
+                scale.percent() % SubstrateScale::STEP,
                 0,
                 "{percent} is off the ladder"
             );
             assert!(
-                (SurfaceScale::MIN..=SurfaceScale::MAX).contains(&scale.percent()),
+                (SubstrateScale::MIN..=SubstrateScale::MAX).contains(&scale.percent()),
                 "{percent} escaped the range as {}",
                 scale.percent()
             );
@@ -180,10 +180,10 @@ mod tests {
     /// slider dragged to 138 shows 140 rather than backing up to 135.
     #[test]
     fn a_scale_between_two_rungs_takes_the_nearer_one() {
-        assert_eq!(SurfaceScale::new(138).percent(), 140);
-        assert_eq!(SurfaceScale::new(137).percent(), 135);
-        assert_eq!(SurfaceScale::NATURAL.percent(), 100);
-        assert_eq!(SurfaceScale::NATURAL.factor(), 1.0);
+        assert_eq!(SubstrateScale::new(138).percent(), 140);
+        assert_eq!(SubstrateScale::new(137).percent(), 135);
+        assert_eq!(SubstrateScale::NATURAL.percent(), 100);
+        assert_eq!(SubstrateScale::NATURAL.factor(), 1.0);
     }
 
     /// Sanitizing is idempotent — the property §8's funnel rests on: a value read
@@ -192,8 +192,8 @@ mod tests {
     #[test]
     fn holding_a_held_scale_leaves_it_alone() {
         for percent in 0..=1000u16 {
-            let once = SurfaceScale::new(percent);
-            assert_eq!(SurfaceScale::new(once.percent()), once);
+            let once = SubstrateScale::new(percent);
+            assert_eq!(SubstrateScale::new(once.percent()), once);
         }
     }
 }
