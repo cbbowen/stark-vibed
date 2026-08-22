@@ -1,31 +1,43 @@
 # `stark-model` cleanup
 
 A review of `crates/stark-model` as of 2026-08-21 (`f443530`): six defects, five
-structural changes and four sweeps, each with the file and line that shows it.
+structural changes and four sweeps, each with the file and line that shows it —
+and, below each, what actually happened when it was fixed.
+
+A seventh defect (**D7**) was found in the fixing rather than in the reading, by
+the test **A3** asked for. That is the one result here worth carrying into the next
+review: the item that paid best was not any of the six, it was the one that said the
+crate could not check itself.
 
 ## Status
 
 | | | |
 |---|---|---|
-| **D1** | gradient stop count | **open** |
-| **D2** | "nothing to hold" holds plenty | **open** |
-| **D3** | selection shape unvalidated | **open** |
-| **D4** | gradient parcel skips a clamp | **open** |
-| **D5** | idempotence test claims 31, drives 24 | **open** |
-| **D6** | doc block on the wrong item | **open** |
-| **A1** | the funnel belongs in the payloads | **open** |
-| **A2** | perspective footprint's honesty | **open** |
-| **A3** | no `tests/` in the crate that owns §12.6 | **open** |
-| **A4** | `Tool` is session state | **open** |
-| **A5** | `geom.rs` is two modules | **open** |
-| **S1** | unused `tracing` dependency | **open** |
-| **S2** | two allocations per logged action | **open** |
-| **S3** | `to_bytes` copies three times | **open** |
+| **D1** | gradient stop count | **done** — `f7639e5` |
+| **D2** | "nothing to hold" holds plenty | **done** — `f7639e5` |
+| **D3** | selection shape unvalidated | **done** — `f7639e5` |
+| **D4** | gradient parcel skips a clamp | **done** — `f7639e5` |
+| **D5** | idempotence test claims 31, drives 24 | **done** — `f7639e5` |
+| **D6** | doc block on the wrong item | **done** — `e653851` |
+| **D7** | an infinite feather | **done** — `f7639e5`; found in the doing, see below |
+| **A1** | the funnel belongs in the payloads | **done** — `f7639e5` |
+| **A2** | perspective footprint's honesty | **done** — `e653851` |
+| **A3** | no `tests/` in the crate that owns §12.6 | **done** — `f7639e5` |
+| **A4** | `Tool` is session state | **done** — `e653851` |
+| **A5** | `geom.rs` is two modules | **part** — the stale claim fixed (`e653851`); the move still owed, see the item |
+| **S1** | unused `tracing` dependency | **done** — `e653851` |
+| **S2** | two allocations per logged action | **closed** — measured, not worth it; see the item |
+| **S3** | `to_bytes` copies three times | **done** — `e653851` |
 | **S4** | `Action` clone carries stroke paths | **open** |
+
+Everything here is on `model-cleanup`, checked against every gate the project
+names — both clippy configurations, `cargo nextest run --workspace` (1112 tests,
+all passing), the doctests, and the wasm build.
 
 The line numbers below are from the review and are **not** updated as the fixes
 land — they are what the finding was found at. Follow the named function, not
-the number.
+the number. Each item carries an **As built** note; several of them record the
+doing differing from the sketch, and one (**A5**) records the review being wrong.
 
 Nothing here is a redesign. The crate's spine holds up: `Logged<S>` solving the
 orphan-rule problem *and* caching the footprint once per push, `Materialize`
@@ -44,7 +56,7 @@ the shader against a constant while the data is free to disagree with both
 In every case the enforcement stops one step short of what the design already
 claims, which is why the fixes are small.
 
-The three worth doing first, if only three are done: **D1** (a handful of lines
+The three that were worth doing first, and were: **D1** (a handful of lines
 in `Gradient::new`, and it is a panic reachable from a document you opened),
 **D2** (four action kinds carrying floats to a shader through a funnel that
 believes it covered them), and **A1** (which is what makes **D2** and **D4**
@@ -104,6 +116,16 @@ failures for the caller who traced a line, exactly as it does now. The paragraph
 that anticipated the bound is the one piece of evidence that this is a gap rather
 than a decision.
 
+**As built** (`f7639e5`): `Gradient::new` calls a `thin` that keeps both endpoints
+and spreads the rest evenly **across the list rather than across `t`** — a capture
+puts stops where the ramp turns, so index spacing already tracks where the
+structure is, and thinning by position would spend the budget on whichever stretch
+happened to be long. Keeping the ends is what lets it run before the rescale
+below it: `lo` and `hi` are the same stops either way. `MAX_STOPS`' own doc now
+says it is an invariant of the type rather than a budget of the fitter, and
+`gpu/fill.rs`'s const assert says what it actually guards — two constants, never
+the data.
+
 ### D2. Four action kinds carry unvalidated floats under "nothing to hold"
 
 `ActionKind::sanitized` (`action.rs:639`) is the crate's centrepiece: one funnel,
@@ -129,6 +151,16 @@ A NaN background reaches the presenter's clear; a NaN matte color reaches
 a pixel as anything but "the frame is wrong".
 
 The narrow fix is four arms. The fix that makes it not come back is **A1**.
+
+**As built** (`f7639e5`): the paint is clamped and the geometry is gated, which is
+the split the arm's comment was reaching for and got backwards. `MattePaint` and
+`Parcel` grew a `sanitized`; `MatteRegion` grew a `usable`, and `insert_matte` and
+`set_matte_rect` decline an unmeasurable rect the way `apply` declines an unusable
+affine — a frame is a rectangle the artist placed, and there is no other rectangle
+that is a repaired version of one nobody can measure. The "nothing to hold" comment
+now states the rule rather than an example of it: *a variant belongs here when its
+payload is ids, flags, places, `bool`s and `String`s; if it carries a float, it
+belongs above, or beside a `usable` this comment can name.*
 
 ### D3. A selection's shape is never validated — neither its coordinates nor its size
 
@@ -163,6 +195,15 @@ bounds the per-texel cost. Both the finiteness test and the vertex cap belong in
 `SelectionOp::at`, beside the two clamps already there — and the cap wants the
 same repair-not-refuse stance as **D1**.
 
+**As built** (`f7639e5`): the two halves landed in different places, and that turned
+out to be the point. The **count** is repaired, in a `SelectionShape::sanitized` both
+funnels call. The **coordinates** are not: `bounds` refuses what it cannot measure,
+and every consumer already had the right answer waiting — a `None` declines the op
+at `Selection::plan`, fills nothing at `fill::plan`, and claims the whole layer in a
+footprint, which are the safe answers in their three directions. So a bad rect is
+gated exactly as a bad affine is, and only the lasso's length is repaired. The
+lasso's fold became a `try_fold`, which is the same shape `stroke_rect` uses.
+
 ### D4. `Parcel::Gradient` skips the clamp its sibling gets
 
 ```rust
@@ -183,6 +224,21 @@ into the sRGB cube, with a good argument for why —
 inside a `FillOp` gets nothing, and the one inside a `MattePaint` is not
 sanitized at all (**D2**). Same data, same shader path, opposite treatment, no
 stated reason for the difference.
+
+**As built** (`f7639e5`): `Gradient::clamped` is the one definition now, called from
+all three. It returns `Self` rather than `Option`, since clamping moves no position
+and drops no stop — so there is nothing for the funnel to refuse, and the `and_then`
+the filter site had to explain away is gone. The loop it replaced spelled the bound
+`f32::clamp`, which returns the NaN it exists to catch: unreachable there, because
+`Gradient::new` admits no non-finite stop, but the third place in the crate to write
+the policy down and the second to write it wrongly — which is the argument for there
+being one of it.
+
+The **axis** needed an answer the review had not thought about: `ramp_position`
+already floors a zero-length line and a zero radius, so the only unhandled case is
+non-finite, and there is no repaired axis to clamp to. It degrades the parcel to
+`Solid(gradient.sample(0.0))` — `swatch` already calls the first stop "the stop the
+axis anchors on", so a ramp nobody can place still knows what color it starts from.
 
 ### D5. The idempotence test claims a generality it does not have
 
@@ -205,6 +261,19 @@ claim is unverified, and the comment above the test is the reason nobody noticed
 Either drive it off `slot`'s list for real (see **A3**) or delete the sentence.
 The sentence is worse than no sentence.
 
+**As built** (`f7639e5`): driven off a real list, in `stark-model/tests/action_kinds.rs`
+(**A3**), and `the_list_holds_one_of_every_kind` pins the list to the match so it
+cannot drift again. One list serves both runs — `kinds(n)` takes the number every
+float in it is built from, so the poisoned run and the idempotence run cover *the
+same* set by construction, which is the failure this whole item is about.
+
+One thing the sketch got wrong: there is no single `n` in range for every field (a
+tint stops at 0.16, a focal length starts at 1), so a bit-for-bit "ordinary" run
+over `kinds` would have been checking the literal chosen in the test rather than the
+funnel. The property goldens actually rest on is that each type's **own default** is
+a fixed point, which is in range by construction — that is
+`every_default_is_already_sanitized`, and it is the stronger claim.
+
 ### D6. A doc block is attached to the wrong item
 
 `brush.rs:779-803`: three paragraphs describing the `elongation()` *function* —
@@ -218,6 +287,24 @@ is not findable from the function it is about.
 Cheap, and worth doing for the same reason **D5** is: in this crate the prose is
 the specification, so prose that has drifted off its subject is the same class of
 defect as code that has.
+
+### D7. An infinite feather is half a selection, everywhere
+
+**Found by the fix for D5, not by the review** — which is the best argument for
+**A3** this document contains.
+
+Both funnels floored the feather with `feather.max(0.0)`, under a comment
+explaining that `max` rather than `clamp` is what makes a `NaN` land on 0. True,
+and exactly half a guard: `f32::max` passes `+inf` straight through. An infinite
+feather reaches `selection.wesl` as a coverage ramp of infinite width, where
+`clamp(0.5 - sd/w, 0, 1)` is `0.5` at every texel that is not itself infinitely far
+away — a half-selected plane nobody asked for — and `NaN` at the ones that are.
+
+The same half-guard was *not* present in `brush.rs`, which had spelled the pattern
+properly as `at_least_zero` (finite first, **then** floored) for every length it
+holds. So the fix was to stop having two spellings: `at_least_zero` and `finite_or`
+moved to the crate root beside `clamp01`, and every non-negative length in the crate
+goes through one of them.
 
 ## Architecture
 
@@ -291,6 +378,17 @@ comparison where it is, since that genuinely needs a device — would let the
 model's own suite fail when a variant escapes the funnel, and would give **D5**
 something real to be driven off.
 
+**As built** (`f7639e5`): `stark-model/tests/action_kinds.rs`, seven tests, no GPU.
+The engine keeps its own `slot` — two exhaustive matches in two crates is not
+duplication to remove, since each fails to compile when a variant appears, which is
+the entire point of both, and neither crate can see the other's test.
+
+It paid for itself immediately: **D7** is a defect the review missed, and the first
+run of `the_funnel_leaves_no_action_holding_a_number_a_shader_cannot_use` caught it.
+That test asks its question of the whole action's `Debug` output rather than field by
+field, deliberately — a per-field list is one a new field can be left out of, and
+what is being checked is a class.
+
 ### A4. `Tool` is session state living in the document crate
 
 `Tool` (`action.rs:78`) has zero uses inside `stark-model` beyond its definition
@@ -311,6 +409,11 @@ the other way from the crate's own argument, and it moves to `stark-engine`'s
 Worth saying plainly in `lib.rs` either way: the test is a sufficient condition,
 not a partition.
 
+**As built** (`e653851`): moved to `stark-engine::command`, beside the command
+vocabulary that is the only thing which ever asked what tool was in hand. Thirty-odd
+files across four crates changed an import and nothing else, which is the honest
+measure of how much the model was using it.
+
 ### A5. `geom.rs` is two modules under one name
 
 The tile grid — `TileCoord`, `TileRect`, `covering`, `TILE_SIZE` — is genuinely
@@ -330,6 +433,21 @@ UV bias certainly is not. This is not urgent and nothing is wrong today — the
 model compiles without the shaders either way — but it is the seam along which
 the file will keep growing, and naming it now is cheaper than finding it later.
 
+**As built** (`e653851`), and **the review was wrong about a third of this item.**
+`Ellipse` and `principal_axis` do *not* have both callers in the engine: `guide`
+landed in the model whole (§20.5) and reads an ellipse off the quadratic part of a
+conic (§20.7), which is fifteen uses in `document/guide.rs`. The review repeated
+their doc comments instead of checking them — the same class of defect as **D6**,
+found the same way. The comments now say what is true, and the two types stay.
+
+What is left of the item is real and still owed: the five genuinely shader-facing
+items — `INTERIOR_UV_SCALE`, `INTERIOR_UV_BIAS`, `MASK_TEX`, `mask_tex_origin`,
+`lasso_edges` — have **zero** callers in `stark-model` outside `geom.rs` itself, and
+belong with `gpu`. `TILE_APRON`, `TILE_TEX` and `TILE_SIZE` stay: the model's own
+quantization is written against them (`fill_bounds`' reach, `image_tiles`,
+`tile_box`), and `TILE_SIZE` is *derived* from `TILE_TEX`, so the tile constants are
+one thing and cannot be split down the middle.
+
 ## Sweeps
 
 ### S1. `tracing` is an unused dependency
@@ -337,6 +455,8 @@ the file will keep growing, and naming it now is cheaper than finding it later.
 `Cargo.toml:30`. No `tracing::`, no `use tracing`, no `info!`/`warn!`/`debug!`/
 `instrument` anywhere in `src/`. It is in the wasm payload and the build graph for
 nothing. One line.
+
+**As built** (`e653851`): one line.
 
 ### S2. Two heap allocations per logged action, for the life of the history
 
@@ -350,9 +470,25 @@ nested scan cache-resident. `conflicts` is the hot one: `history` builds the
 centralizer once per removal and then asks it about *every* later action, which
 is the whole reason the footprint is cached in `Logged` in the first place.
 
-Measure first: the win is in allocator traffic and locality rather than in a
-number a profile hands over, and it costs a dependency the crate does not have
-today.
+**Measured** (`f7639e5`), and the answer is no.
+
+`a_footprint_stays_small_enough_for_a_nested_scan` in the new test file prints the
+numbers and now pins them. `size_of::<Resource>()` is 32 and `size_of::<Footprint>()`
+is 48. Across all thirty-one kinds the widest claim is **2 reads and 7 writes**
+(`MergeLayerDown`, which names everything about both layers); everything else is at
+most 2 and 3. The one kind that scales with the document is `DuplicateLayer`, and
+that is exactly what `Resource::Layer` was introduced to collapse.
+
+So the two allocations are **once per commit**, amortized against the GPU work a
+commit already does — not in `conflicts`' loop, which is a scan over at most nine
+32-byte values behind one pointer hop. Inline storage would trade roughly 130 bytes
+per logged action, plus a dependency the crate does not otherwise want, for removing
+two mallocs from a path that already submits a command buffer.
+
+The measurement stays as an assertion rather than a printout, because the thing
+worth guarding is the *premise*: a future action whose footprint wanted a dozen
+resources would not be wrong, but it would want `Resource::Layer`'s treatment, and
+the test is where that is said.
 
 ### S3. `to_bytes` copies the whole document three times
 
@@ -376,6 +512,13 @@ Whether that shows up depends on how often `history` clones rather than borrows.
 `Arc<StrokeRecord>`, or `Arc<[ControlPoint]>` for the path alone, is the lever if
 it does. **Measure before acting** — and note the wire is unaffected either way,
 since `Arc<T>` serializes as `T`.
+
+**Still open, deliberately.** Unlike **S2** this one cannot be measured from inside
+the model: what it turns on is how often `history` clones a `Logged` rather than
+borrowing it, which is a fact about the other crate and about a real editing session.
+The place to find out is the in-app Timing Stats probe (§7.1) on a document with long
+strokes, not a unit test — and it is worth doing after a session that has felt slow
+rather than on spec.
 
 ## What was checked and found sound
 
@@ -421,24 +564,59 @@ Recorded so the next reader does not re-derive it:
 
 ## What this was checked against
 
-Reading, not running: this is a review of `crates/stark-model` and its consumers
-in `stark-engine`, and no gate was run for it. Every claim above is a citation to
-a line in the tree at `f443530`, and the two that are behavioural rather than
-structural — the `stop_c[i]` panic in **D1**, and the shader-side NaN in **D3** —
-are read off the array's declared length (`fill.wesl:65`, `array<vec4<f32>, 16>`)
-and off `selection.wesl`'s ramp rather than observed.
+Every gate the project names, after the last commit on this branch: `cargo fmt
+--all --check`; `cargo clippy --workspace --all-targets -D warnings` in **both**
+configurations, the default and `--no-default-features --features
+stark-net/webrtc`; `cargo nextest run --workspace` — 1112 tests, all passing;
+`cargo test --workspace --doc`; and `cargo check -p stark-ui --target
+wasm32-unknown-unknown`.
 
-**Both are worth reproducing before they are fixed**, since a fix aimed at the
-wrong failure mode is what **D1** already is once:
+**Not a golden moved**, which is the assertion that matters most here. The funnel
+runs on replay, so a clamp that pulled an ordinary value would have shifted every
+reference image — and the whole point of `every_default_is_already_sanitized` is to
+say that in the suite rather than in a paragraph.
 
-- **D1** — construct a `Gradient` with seventeen stops through `try_from` (a
-  hand-built `Vec<GradientStop>`, since `fit` will not produce one), put it in a
-  `FillOp` parcel, and apply the fill. The expectation is an index panic, not a
-  truncated ramp.
-- **D3** — a `Lasso` with one NaN vertex, committed as a `Select`, and the
-  question is what the mask does with it on this adapter versus another. The
-  divergence is the finding; the tight bbox is only how it gets there.
+### What was *not* reproduced
 
-Neither needs a document on disk — both are reachable from
-`stark-engine`'s test harness with a hand-built action, which is the same route
-`tests/footprint.rs` already takes.
+The review said the two behavioural claims — the `stop_c[i]` panic in **D1** and the
+shader-side NaN in **D3** — were read off declarations rather than observed, and
+recommended reproducing them before fixing. **That was not done.** Both fixes went
+in on the reading, and the reason is that the reading got sharper rather than
+weaker: `fill.wesl:65` declares `array<vec4<f32>, 16>`, the mirror generator turns
+that into `[[f32; 4]; 16]`, and `gpu/fill.rs:194` indexes it by `enumerate()` — there
+is no arrangement of those three facts in which a seventeenth stop is not an index
+past the end.
+
+What that leaves genuinely unverified is narrower than the original claim and worth
+stating plainly:
+
+- **D1** — that the panic *fires* rather than being unreachable for some other
+  reason (a caller that caps stops before this point, say). The fix makes it
+  unreachable either way, so this can only be checked by reverting.
+- **D3** — what `selection.wesl` actually *does* with a NaN vertex on this adapter
+  versus another. The divergence was the finding; it is now unreachable through the
+  op, but the shader's behaviour is still unknown, and it would be worth knowing if
+  another path ever feeds that buffer.
+- **D7** — the same, for an infinite feather. The arithmetic is written out in
+  `at_least_zero`'s doc and follows from `max(feather, 1)`, but nobody has seen the
+  half-selected plane.
+
+None of the three is load-bearing for the fixes, which are all "hold the invariant
+the type already claimed". They are load-bearing for the *severity* the review
+assigned them, and that is the part still taken on reading.
+
+## What is left
+
+Three things, in the order I would take them:
+
+1. **A5's move** — the five shader-facing items out of `geom.rs`. Mechanical, and
+   the item says exactly which five and why the tile constants are not among them.
+2. **A1's newtype** — `Srgb([f32; 3])`, which turns four `map(clamp01)` calls into a
+   type that cannot hold an out-of-range color. A save-format change to five
+   payloads, so it wants its own commit and its own older-shape test.
+3. **S4** — measured in the app, not in a test, and only after a session that has
+   felt slow.
+
+`MattePaint` and `Parcel` merging is the same change as (2) and would ride with it:
+they are the same type with two wire shapes, which is now written down at
+`MattePaint::sanitized` rather than only noticed here.
