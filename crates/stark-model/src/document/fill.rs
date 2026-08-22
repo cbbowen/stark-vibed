@@ -27,10 +27,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::brush::clamp01;
 use super::selection::{SelectionMode, SelectionShape};
 use crate::geom::{TILE_APRON, Vec2};
 use crate::gradient::Gradient;
+use crate::{at_least_zero, clamp01};
 
 /// Largest number of paint tiles one fill may write. The same stance and roughly
 /// the same size as [`MAX_TRANSFORM_TILES`](super::transform::MAX_TRANSFORM_TILES):
@@ -90,6 +90,38 @@ pub enum Parcel {
     Gradient(GradientParcel),
 }
 
+impl Parcel {
+    /// The same paint with every color inside the sRGB cube and every axis one the
+    /// ramp pass can evaluate — the parcel's half of the funnel
+    /// [`FillOp::with_paint`] and
+    /// [`MattePaint::sanitized`](super::layer::MattePaint::sanitized) are.
+    ///
+    /// Held here rather than at the two gates because it is a fact about *paint*
+    /// and both of them lay the same paint through the same shader. `FillOp` used
+    /// to clamp a `Solid` and pass a `Gradient` through untouched — a solid's three
+    /// floats guarded and a ramp's forty-eight not, from the same picker, into the
+    /// same texel.
+    ///
+    /// **An unusable axis degrades the parcel to the ramp's anchor**, rather than
+    /// being clamped into a different axis or refusing the fill. That is the honest
+    /// reading of a gradient nobody can place: `swatch` already calls the first stop
+    /// "the stop the axis anchors on", so a parcel that cannot say *where* the
+    /// transition goes still knows exactly what color it starts from. Deterministic,
+    /// and it cannot make a `NaN`.
+    pub fn sanitized(self) -> Self {
+        match self {
+            Self::Solid(c) => Self::Solid(c.map(clamp01)),
+            Self::Gradient(GradientParcel { gradient, axis }) => {
+                let gradient = gradient.clamped();
+                match axis.usable() {
+                    true => Self::Gradient(GradientParcel { gradient, axis }),
+                    false => Self::Solid(gradient.sample(0.0)),
+                }
+            }
+        }
+    }
+}
+
 /// The gradient half of a [`Parcel`]: which ramp, along what axis (§22.4).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct GradientParcel {
@@ -112,6 +144,24 @@ pub enum GradientAxis {
     Linear { from: Vec2, to: Vec2 },
     /// `t` grows with distance from `center`, reaching 1 at `radius`.
     Radial { center: Vec2, radius: f32 },
+}
+
+impl GradientAxis {
+    /// Whether `ramp_common::ramp_position` can evaluate this axis at all.
+    ///
+    /// **Finiteness only**, because that is the only thing the shader does not
+    /// already handle: `ramp_position` floors both denominators at `1e-6`, so a
+    /// zero-length line and a zero radius are degenerate-but-defined (everything
+    /// lands at `t = 0`). A non-finite coordinate is the case it cannot floor — the
+    /// guard is a `max`, which is unspecified on a `NaN`, and the `clamp` after it
+    /// no better. That is a texel-wide disagreement between two clients rasterizing
+    /// the same log.
+    pub fn usable(&self) -> bool {
+        match self {
+            Self::Linear { from, to } => from.is_finite() && to.is_finite(),
+            Self::Radial { center, radius } => center.is_finite() && radius.is_finite(),
+        }
+    }
 }
 
 /// One logged fill (§18.0.4): a region, and the parcel of paint to
@@ -169,19 +219,20 @@ impl FillOp {
     }
 
     pub fn with_paint(shape: SelectionShape, feather: f32, paint: Parcel, opacity: f32) -> Self {
-        let paint = match paint {
-            Parcel::Solid(c) => Parcel::Solid(c.map(clamp01)),
-            gradient => gradient,
-        };
         Self {
-            shape,
+            // Both payloads hold their own invariants, so this gate states no bound
+            // of its own beyond the two scalars that are the *fill's* rather than
+            // anything else's (§1). Spelled inline, it clamped a solid color and
+            // handed a ramp and a lasso straight through.
+            shape: shape.sanitized(),
             // Floored like a selection op's, and for the same reason now that this
             // is also the deserialization gate: `reach` scales it into the fill's
             // claimed box, so a negative one shrinks the box the footprint promised
             // — the §12.6 direction — and a NaN one unquantizes it entirely.
-            // `max` rather than `clamp`, so NaN lands on 0 (`brush::clamp01`).
-            feather: feather.max(0.0),
-            paint,
+            // A length, so `at_least_zero` rather than a bare `max` — see there for
+            // the infinity the floor alone let past.
+            feather: at_least_zero(feather, 0.0),
+            paint: paint.sanitized(),
             opacity: clamp01(opacity),
         }
     }

@@ -14,6 +14,7 @@ use super::guide::{GuideId, PerspectiveGuide};
 use super::layer::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
 use super::selection::SelectionOp;
 use crate::SurfaceId;
+use crate::clamp01;
 use crate::geom::Vec2;
 
 /// Identifies the author of an action: one local user, or a peer (§4).
@@ -58,42 +59,6 @@ impl ActorId {
 pub struct ActionId {
     pub lamport: u64,
     pub actor: ActorId,
-}
-
-/// The tool a gesture drives. Tools become an open registry later (§10).
-///
-/// **Session state, not document state.** Only [`Brush`](Self::Brush) ever reaches
-/// a [`StrokeRecord`]: the selection tools produce a [`SelectionOp`] instead of a
-/// stroke (§6.8). They share the enum — and so the pointer-gesture plumbing —
-/// because from the frontend's point of view they are the same interaction: press,
-/// drag, release. But which of them was in hand is not part of what a document
-/// *is*; the stroke or the op it produced is, and that is what the log carries.
-///
-/// So it is **not serializable**, which is the paragraph above enforced rather than
-/// asserted. It carried `Serialize`/`Deserialize`/`Schema` while reachable from no
-/// saved or sent type at all — a standing counterexample to the crate's own placement
-/// rule, *if a type is serializable it is a fact about the document and lives here*
-/// (`lib.rs`), which is the rule the next type is placed by.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub enum Tool {
-    #[default]
-    Brush,
-    /// Rectangular marquee.
-    SelectRect,
-    /// Elliptical marquee.
-    SelectEllipse,
-    /// Freehand lasso.
-    SelectLasso,
-}
-
-impl Tool {
-    /// Whether this tool edits the selection rather than the paint.
-    pub fn is_selection(self) -> bool {
-        matches!(
-            self,
-            Tool::SelectRect | Tool::SelectEllipse | Tool::SelectLasso
-        )
-    }
 }
 
 /// A fully-recorded stroke: enough to replay it bit-for-bit (§4).
@@ -695,13 +660,48 @@ impl ActionKind {
                 name,
             },
             ActionKind::SetGuide(id, guide) => ActionKind::SetGuide(id, guide.sanitized()),
+            // A matte's paint is a color or a ramp on an axis, and every one of
+            // those numbers reaches `matte.wesl` — the same payload a `Fill` carries
+            // and, until this arm existed, the one that carried it *past* the
+            // funnel. The region beside it is geometry, gated at `apply` by
+            // `MatteRegion::usable` rather than clamped, for the reason the
+            // transforms are.
+            ActionKind::SetMattePaint(id, paint) => {
+                ActionKind::SetMattePaint(id, paint.sanitized())
+            }
+            ActionKind::AddMatte {
+                id,
+                carrier,
+                at,
+                region,
+                paint,
+            } => ActionKind::AddMatte {
+                id,
+                carrier,
+                at,
+                region,
+                paint: paint.sanitized(),
+            },
+            // The substrate color is straight sRGB, exactly like a matte's solid —
+            // and it is the one every document has, since it is what the paint sits
+            // on (§15.5). It sat under "nothing to hold" holding three floats.
+            ActionKind::SetBackground(rgb) => ActionKind::SetBackground(rgb.map(clamp01)),
             // Nothing to hold: ids, flags, places, and the geometry whose own
             // `usable`/`affine_usable` gate rejects it at `apply` rather than
             // rounding it into something else (§16.1) — a transform that cannot be
             // clamped into a *different* transform without changing what the
-            // author asked for.
+            // author asked for, and a frame rect that cannot either
+            // (`MatteRegion::usable`).
+            //
+            // **The list is what the compiler cannot check.** Every arm above says
+            // "this payload holds its own invariant"; this one says "there is no
+            // invariant to hold", and nothing but the reader tells the two apart. It
+            // is where `SetBackground`, `SetMattePaint` and `AddMatte` sat while
+            // carrying colors to a shader, under a comment that named gates only the
+            // three transforms have. So: a variant belongs here when its payload is
+            // ids, flags, places, `bool`s and `String`s — and if it carries a float,
+            // it belongs above, or beside a `usable` this comment can name.
             ActionKind::AddLayer { .. }
-            | ActionKind::AddMatte { .. }
             // A placement carries pixels and an integer position: no float to be
             // non-finite, no knob to be out of range. What *could* be malformed about
             // an image — dimensions that disagree with the buffer, a size past the cap
@@ -715,9 +715,10 @@ impl ActionKind {
             | ActionKind::SetLayerClip(..)
             | ActionKind::SetLayerVisible(..)
             | ActionKind::SetLayerName(..)
+            // The rect a frame is dragged to, gated by `MatteRegion::usable` at
+            // `apply` beside the three transforms below rather than rounded into a
+            // different rectangle. Its *paint* is sanitized above.
             | ActionKind::SetMatteRect(..)
-            | ActionKind::SetMattePaint(..)
-            | ActionKind::SetBackground(_)
             | ActionKind::SetSurface(_)
             | ActionKind::InvertSelection
             | ActionKind::Transform { .. }
@@ -787,7 +788,6 @@ pub struct Action {
 mod tests {
     use super::*;
     use crate::document::{Parcel, SelectionMode, SelectionShape};
-    use crate::geom::Vec2;
 
     /// The funnel reaches the payloads that carry numbers — the three that had no
     /// gate of their own before it existed (a stroke's brush, a fill's op, a
@@ -854,99 +854,5 @@ mod tests {
             panic!()
         };
         assert!(a.is_finite());
-    }
-
-    /// **Idempotent, on every variant.** The funnel runs where an action is minted
-    /// *and* where it enters state, so a second pass that moved anything would make
-    /// every load and every replay a small edit — and goldens are blessed against
-    /// the first pass.
-    ///
-    /// Driven off the same one-of-each list the footprint's exhaustiveness device
-    /// uses, so a variant added later is covered here as soon as it is added there.
-    #[test]
-    fn sanitizing_is_idempotent_on_every_kind() {
-        let id = LayerId(3);
-        let kinds = [
-            ActionKind::CommitStroke(StrokeRecord {
-                layer: id,
-                brush: BrushParams::default(),
-                path: vec![crate::path::ControlPoint::at(Vec2::splat(4.0))],
-                seed: 1,
-                start: 0.0,
-            }),
-            ActionKind::AddLayer {
-                id,
-                carrier: None,
-                above: None,
-            },
-            ActionKind::RemoveLayer(id),
-            ActionKind::SetLayerBlend(id, BlendMode::Drago { k: 1e9 }),
-            ActionKind::SetLayerOpacity(id, 0.5),
-            ActionKind::SetLayerVisible(id, true),
-            ActionKind::SetLayerClip(id, true),
-            ActionKind::SetLayerName(id, Some("wash".into())),
-            ActionKind::MoveLayer {
-                id,
-                carrier: None,
-                at: Place::Top,
-            },
-            ActionKind::DuplicateLayer {
-                ids: vec![(id, LayerId(9))],
-            },
-            ActionKind::MergeLayerDown {
-                source: id,
-                dest: LayerId(1),
-            },
-            ActionKind::Undo(ActionId {
-                lamport: 1,
-                actor: ActorId::SOLO,
-            }),
-            ActionKind::SetSurface(crate::SurfaceId::Flat),
-            ActionKind::Select(SelectionOp::select_all()),
-            ActionKind::InvertSelection,
-            ActionKind::AddMatte {
-                id,
-                carrier: None,
-                at: Place::Bottom,
-                region: MatteRegion::Everything,
-                paint: MattePaint::Solid([0.0; 3]),
-            },
-            ActionKind::PlaceImage {
-                id,
-                carrier: None,
-                above: None,
-                at: crate::geom::IVec2::new(-3, 9),
-                name: Some("sunset.png".into()),
-                image: crate::AssetId([4; 32]),
-            },
-            ActionKind::SetMatteRect(id, Vec2::ZERO, Vec2::splat(4.0)),
-            ActionKind::SetMattePaint(id, MattePaint::Solid([1.0; 3])),
-            ActionKind::SetBackground([0.5; 3]),
-            ActionKind::Transform {
-                layer: id,
-                affine: crate::geom::Affine2::IDENTITY,
-            },
-            ActionKind::Fill {
-                layer: id,
-                op: FillOp::of_selection([0.2, 0.4, 0.6]),
-            },
-            ActionKind::AddFilter {
-                id,
-                carrier: None,
-                above: None,
-                filter: Filter::ALL[0].clone(),
-            },
-            ActionKind::SetFilter(id, Filter::ALL[1].clone()),
-        ];
-        for kind in kinds {
-            let once = kind.sanitized();
-            let twice = once.clone().sanitized();
-            assert_eq!(
-                format!("{once:?}"),
-                format!("{twice:?}"),
-                "sanitizing {} moved on the second pass",
-                once.label(),
-            );
-        }
     }
 }

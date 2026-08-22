@@ -23,6 +23,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::{at_least_zero, clamp01, finite_or};
+
 /// The brush tip shape (§6.6).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum BrushShape {
@@ -420,42 +422,6 @@ impl Modulation {
     }
 }
 
-/// `x` into [0, 1], with NaN landing on 0 — these arrive from files, presets and
-/// peers, and a NaN factor would propagate straight into a radius.
-///
-/// `max`-then-`min` rather than `clamp`, which is what makes that true:
-/// `f32::max`/`min` return the non-NaN operand where `clamp` returns the NaN. Same
-/// argument as [`BrushParams::taper_px`], and the reason clippy's suggestion here is
-/// the wrong one.
-///
-/// `pub(crate)` because it is the document's NaN policy and not the brush's:
-/// [`SelectionOp::at`](super::selection::SelectionOp::at) and
-/// [`FillOp::with_paint`](super::fill::FillOp::with_paint) are deserialization
-/// gates now, and both spelled the bound `clamp` — which passed a `NaN` opacity
-/// through the very funnel that exists to stop one. One definition, so the policy
-/// is stated once and cannot be half-remembered at the next gate.
-#[allow(clippy::manual_clamp)]
-pub(crate) fn clamp01(x: f32) -> f32 {
-    x.max(0.0).min(1.0)
-}
-
-/// `x` if it is a number this parameter can be, else `fallback` — the shape every
-/// `sanitized` here takes for a knob with no upper bound to clamp to.
-///
-/// Falling back to the field's **default** rather than to zero is
-/// [`ColorAdjust::sanitized`](super::filter::ColorAdjust::sanitized)'s argument
-/// read for a brush: `NaN` says nothing about which end was meant, and a radius
-/// silently rounded to 0 is a brush that paints nothing, which is a worse answer
-/// than the one the slider ships at.
-fn finite_or(x: f32, fallback: f32) -> f32 {
-    if x.is_finite() { x } else { fallback }
-}
-
-/// `x` as a non-negative length or rate: finite, and floored at zero.
-fn at_least_zero(x: f32, fallback: f32) -> f32 {
-    finite_or(x, fallback).max(0.0)
-}
-
 /// Which brush parameters the pen drives, and how (§6.2) — the mapping from pen
 /// input to brush parameter that makes one tool a brush and another a palette knife.
 ///
@@ -776,20 +742,6 @@ impl BrushParams {
     /// starts reading as a smear the length of the tip.
     pub const MAX_ELONGATION: f32 = 8.0;
 
-    /// [`stretch`](Self::stretch) as the factor the footprint is drawn out by along
-    /// the facing axis: `s = 1/(1 − stretch)`, clamped to
-    /// [`MAX_ELONGATION`](Self::MAX_ELONGATION).
-    ///
-    /// **Exactly 1 at `stretch = 0`**, which is the whole reason the knob is quoted as
-    /// the reciprocal's argument rather than as `s` itself: a brush that never heard of
-    /// stretch — and one whose modulation is sitting at a zero floor because the pen is
-    /// upright or there is no pen — takes the renderer's identity path bit for bit.
-    ///
-    /// Takes the modulated knob rather than reading [`stretch`](Self::stretch), because
-    /// what a [`Modulation`] scales is the knob and not the factor: scaling `s` towards
-    /// 0 would *shrink* the tip across its axis at a low tilt, where scaling the knob
-    /// walks `s` back to 1 and leaves the shape alone.
-    ///
     /// The stretch knob's own top: the value at which
     /// [`elongation`](Self::elongation) reaches [`MAX_ELONGATION`](Self::MAX_ELONGATION)
     /// and the knob stops meaning anything (§6.6).
@@ -841,6 +793,20 @@ impl BrushParams {
         }
     }
 
+    /// [`stretch`](Self::stretch) as the factor the footprint is drawn out by along
+    /// the facing axis: `s = 1/(1 − stretch)`, clamped to
+    /// [`MAX_ELONGATION`](Self::MAX_ELONGATION).
+    ///
+    /// **Exactly 1 at `stretch = 0`**, which is the whole reason the knob is quoted as
+    /// the reciprocal's argument rather than as `s` itself: a brush that never heard of
+    /// stretch — and one whose modulation is sitting at a zero floor because the pen is
+    /// upright or there is no pen — takes the renderer's identity path bit for bit.
+    ///
+    /// Takes the modulated knob rather than reading [`stretch`](Self::stretch), because
+    /// what a [`Modulation`] scales is the knob and not the factor: scaling `s` towards
+    /// 0 would *shrink* the tip across its axis at a low tilt, where scaling the knob
+    /// walks `s` back to 1 and leaves the shape alone.
+    ///
     /// `min`-then-`max` rather than `clamp`, for `clamp01`'s reason and with more
     /// riding on it: `clamp` returns the NaN where these return the other operand, and
     /// the NaN would reach a lane the shaders divide by.

@@ -27,6 +27,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::gradient::Gradient;
+
 /// What a filter layer does to the stack beneath it (§21.2).
 ///
 /// Three variants, because three are built. The enum is the seam the rest of §21.7
@@ -142,21 +144,18 @@ impl Filter {
             // are already held by construction — deserialization funnels through
             // `Gradient::new` — so what is left to hold is the *range*: stop
             // colors are straight sRGB, and a finite 1e30 would reach every
-            // texel just as surely as a NaN saturation. Clamping to the cube and
-            // re-funnelling keeps the promise one gate deep; a ramp that somehow
-            // degenerates under it falls back to the neutral, the one answer
-            // that cannot make a picture worse.
-            Filter::GradientMap(g) => Filter::GradientMap(g.and_then(|g| {
-                let stops = g
-                    .stops()
-                    .iter()
-                    .map(|s| crate::gradient::GradientStop {
-                        t: s.t,
-                        color: s.color.map(|c| c.clamp(0.0, 1.0)),
-                    })
-                    .collect();
-                crate::gradient::Gradient::new(stops)
-            })),
+            // texel just as surely as a NaN saturation.
+            //
+            // `Gradient::clamped` rather than a loop here, because a fill's parcel
+            // and a matte's paint want the identical thing and this was the copy
+            // they were written against. It also cannot fail where this could:
+            // clamping moves no position and drops no stop, so there is nothing for
+            // the funnel to refuse and no `and_then` to explain — and the loop it
+            // replaces spelled the bound `clamp`, which returns the NaN it is meant
+            // to catch (`crate::clamp01`). Unreachable here, since `new` admits no
+            // non-finite stop, but it is the third place in the crate to have
+            // written the policy down and the second to have written it wrongly.
+            Filter::GradientMap(g) => Filter::GradientMap(g.map(Gradient::clamped)),
         }
     }
 }

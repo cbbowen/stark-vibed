@@ -65,9 +65,16 @@ fn tex(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
     wgpu::BindingResource::TextureView(v)
 }
 
-// The shader's stop capacity is the fitter's (§22.1) — asserted rather than
-// commented, since a gradient with more stops than the uniform holds would
-// truncate silently (§6.10).
+// The shader's stop capacity is the ramp's own bound (§22.1) — asserted rather than
+// commented, since the two are declared in different crates and nothing else would
+// notice them parting (§6.10).
+//
+// **What this does not guard is the data**, and it cannot: it is a statement about
+// two constants. The loop below indexes `stop_c` by a stop's position, so a ramp
+// longer than the array is an index off the end of a uniform — a panic, not the
+// silent truncation this comment used to claim. That bound belongs to `Gradient`,
+// which holds it in `new`; this assert only keeps the number the same on both sides
+// of the seam.
 const _: () = assert!(
     stark_shaders::mirror::fill::MAX_GRADIENT_STOPS as usize == stark_model::gradient::MAX_STOPS
 );

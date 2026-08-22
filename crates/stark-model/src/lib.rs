@@ -64,3 +64,53 @@ pub use peer::{GestureFrame, PeerFrame, StrokeHead};
 /// it. This crate is the same argument one level up, and has no reason to restate it.
 pub use stark_assetid::{AssetId, MAX_SHAPE_DIM};
 pub use surface::SurfaceId;
+
+/// `x` into [0, 1], with NaN landing on 0 — **the crate's NaN policy**, in one
+/// place because it is one policy.
+///
+/// `max`-then-`min` rather than `clamp`, which is what makes the NaN clause true:
+/// `f32::max`/`min` return the non-NaN operand where `clamp` returns the NaN. Same
+/// argument as [`BrushParams::taper_px`](document::BrushParams::taper_px), and the
+/// reason clippy's suggestion here is the wrong one.
+///
+/// It grew up in `document::brush`, which is where the values it guards were first
+/// coming from, and moved here when the fourth caller was a
+/// [`Gradient`](gradient::Gradient) — a type outside `document` entirely. Every
+/// deserialization gate in the crate spells the bound this way now
+/// ([`SelectionOp::at`](document::SelectionOp::at),
+/// [`FillOp::with_paint`](document::FillOp::with_paint),
+/// `Gradient::clamped`), and each of them at some point spelled it `clamp` instead
+/// — passing a `NaN` opacity through the very funnel that exists to stop one. One
+/// definition, so the policy cannot be half-remembered at the next gate.
+#[allow(clippy::manual_clamp)]
+pub(crate) fn clamp01(x: f32) -> f32 {
+    x.max(0.0).min(1.0)
+}
+
+/// `x` if it is a number this parameter can be, else `fallback` — [`clamp01`]'s
+/// companion for a knob with **no upper bound** to clamp to.
+///
+/// Falling back to the field's own default rather than to zero is
+/// [`ColorAdjust::sanitized`](document::ColorAdjust)'s argument, read for any
+/// parameter: `NaN` says nothing about which end was meant, and a radius silently
+/// rounded to 0 is a brush that paints nothing, which is a worse answer than the
+/// one the slider ships at.
+pub(crate) fn finite_or(x: f32, fallback: f32) -> f32 {
+    if x.is_finite() { x } else { fallback }
+}
+
+/// `x` as a non-negative length or rate: finite, and floored at zero.
+///
+/// **Finite first, then floored**, and that order is the whole of it. A bare
+/// `x.max(0.0)` turns a `NaN` into 0 and an *infinity* into an infinity, which is
+/// exactly half a guard — and the half that was missing is the one a shader
+/// notices: an infinite feather reaches `selection.wesl` as a coverage ramp of
+/// infinite width, where `0.5 - sd/w` is `0.5` at every texel that is not itself
+/// infinitely far away, and `NaN` at the ones that are. A selection nobody asked
+/// for, drawn at half strength across the plane.
+///
+/// Every non-negative length in the crate goes through here now — a brush's radius,
+/// drain and tapers, a selection's feather, a fill's feather.
+pub(crate) fn at_least_zero(x: f32, fallback: f32) -> f32 {
+    finite_or(x, fallback).max(0.0)
+}

@@ -62,6 +62,13 @@ pub struct GradientStop {
 /// offending stops, spread coincident positions, fall back to a two-stop ramp) with
 /// [`new`](Self::new) left refusing for the *authoring* path, where a caller who
 /// traced a line does need to hear that the samples describe no ramp.
+///
+/// [`MAX_STOPS`] is the first condition added that way, and the paragraph above is
+/// why it thins rather than refuses. It is an invariant of *this type* and not of the
+/// fitter that happens to share the number: every consumer reads the stops into a
+/// fixed array of exactly that length (`fill.wesl`, `matte.wesl`,
+/// `filter_common.wesl`), so a ramp longer than the bound is not a richer picture —
+/// it is an index past the end of a uniform.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, carbonite::Schema)]
 #[serde(try_from = "Vec<GradientStop>", into = "Vec<GradientStop>")]
 #[carbonite(as = "Vec<GradientStop>")]
@@ -71,13 +78,20 @@ pub struct Gradient {
 
 impl Gradient {
     /// Build a gradient from stops, normalizing to the invariants: sorted by
-    /// `t`, positions rescaled so the first sits at 0 and the last at 1.
-    /// `None` if fewer than two stops arrive, if any component is non-finite,
-    /// or if every stop sits at one position (there is no ramp to rescale).
+    /// `t`, at most [`MAX_STOPS`] of them, positions rescaled so the first sits
+    /// at 0 and the last at 1. `None` if fewer than two stops arrive, if any
+    /// component is non-finite, or if every stop sits at one position (there is
+    /// no ramp to rescale).
     ///
     /// The only door, and it refuses: a caller that traced a line expecting a ramp
     /// needs to hear "these samples do not describe one" (§22.2), and so does a file
     /// carrying a stop list that is not one.
+    ///
+    /// **Except for the count, which is thinned rather than refused** — see the
+    /// type's own note. Every other condition here is about a list that names no
+    /// ramp at all; a long list names one perfectly well and simply names more of
+    /// it than a uniform can hold, so refusing would unload a file over something
+    /// this can answer.
     pub fn new(mut stops: Vec<GradientStop>) -> Option<Self> {
         if stops.len() < 2 {
             return None;
@@ -87,6 +101,7 @@ impl Gradient {
             return None;
         }
         stops.sort_by(|a, b| a.t.total_cmp(&b.t));
+        thin(&mut stops);
         let (lo, hi) = (stops[0].t, stops[stops.len() - 1].t);
         if hi <= lo {
             return None;
@@ -100,6 +115,26 @@ impl Gradient {
     /// The stops, ascending, endpoints at 0 and 1.
     pub fn stops(&self) -> &[GradientStop] {
         &self.stops
+    }
+
+    /// The same ramp with every stop color inside the sRGB cube — the *range* half
+    /// of a ramp's sanitizing, which [`new`](Self::new) deliberately does not do.
+    ///
+    /// `new` holds what makes a list a *ramp*: two stops, finite, ascending,
+    /// spanning. A stop color of `1e30` passes all of that and is still a value that
+    /// reaches every texel of a fill, a matte or a filter — so it is held here, at
+    /// the funnels that know the color is straight sRGB (§6.5).
+    ///
+    /// Direct construction rather than `new`, for [`reversed`](Self::reversed)'s
+    /// reason: clamping touches no position and no count, and `clamp01` maps finite
+    /// to finite and NaN to 0, so every invariant survives it and the funnel would
+    /// have nothing to refuse. That it *cannot* fail is why this returns `Self` where
+    /// the three call sites it replaces each had an `Option` to explain away.
+    pub fn clamped(mut self) -> Self {
+        for s in &mut self.stops {
+            s.color = s.color.map(crate::clamp01);
+        }
+        self
     }
 
     /// The color at `t` (clamped to `[0,1]`), interpolated **in Oklab** between
@@ -174,6 +209,29 @@ impl TryFrom<Vec<GradientStop>> for Gradient {
     }
 }
 
+/// Reduce a sorted stop list to at most [`MAX_STOPS`], keeping both endpoints and
+/// spreading the rest evenly across the ramp — [`Gradient::new`]'s one repair.
+///
+/// **Evenly across the list, not across `t`.** A capture puts stops where the ramp
+/// *turns* ([`fit`]), so index spacing is already a rough measure of where the
+/// structure is; thinning by position instead would spend the budget on whichever
+/// stretch happened to be long. Keeping the ends is what makes this safe to run
+/// before the rescale below it: `lo` and `hi` are the same stops either way, so a
+/// thinned ramp still spans exactly the range the full one did.
+///
+/// Consecutive indices are strictly increasing whenever this runs at all
+/// (`len > MAX_STOPS` makes the step `(len - 1)/(MAX_STOPS - 1) > 1`), so no stop is
+/// picked twice and the result cannot collapse.
+fn thin(stops: &mut Vec<GradientStop>) {
+    let len = stops.len();
+    if len <= MAX_STOPS {
+        return;
+    }
+    *stops = (0..MAX_STOPS)
+        .map(|i| stops[i * (len - 1) / (MAX_STOPS - 1)])
+        .collect();
+}
+
 fn to_lab(srgb: [f32; 3]) -> [f32; 3] {
     let l = srgb_to_oklab([srgb[0], srgb[1], srgb[2], 1.0]);
     [l[0], l[1], l[2]]
@@ -200,9 +258,20 @@ pub const SAMPLE_SPACING: f32 = 4.0;
 /// readback slot, so an unbounded trace would be an unbounded render.
 pub const MAX_SAMPLES: usize = 128;
 
-/// Largest stop count [`fit`] will emit. Sixteen is far more structure than a
-/// hand places; past it the tolerance is allowed to give rather than the list
-/// allowed to grow.
+/// Largest stop count a [`Gradient`] may hold. Sixteen is far more structure than
+/// a hand places; past it [`fit`] lets the tolerance give rather than the list
+/// grow, and [`Gradient::new`] thins what arrives some other way.
+///
+/// **An invariant of the type, not a budget of the fitter**, and the difference is
+/// what a shader does with the number. Every consumer copies the stops into a fixed
+/// array of exactly this length — `fill.wesl`'s `stop_c`, `matte.wesl`'s `Ramp`,
+/// `filter_common.wesl`'s gradient map, each asserted equal to this constant
+/// host-side (§6.10) — so the constant, the shader and *the data* have to agree.
+/// The first two were pinned by a `const` assert while the third was free: `fit`
+/// respected the bound, and a stop list arriving from a file or a peer went through
+/// `try_from`, which checked everything about a ramp except how long it was. The
+/// assert cannot see that, because it is not about the data; only the constructor
+/// can, which is where the bound now is.
 pub const MAX_STOPS: usize = 16;
 
 /// The fitting tolerance: the largest Oklab distance allowed between the
@@ -435,6 +504,79 @@ mod tests {
         // list is exactly what a file carries, so this is the path that matters.
         let lone = carbonite::to_vec_static(&vec![stop(0.5, [1.0; 3])]).expect("encodes");
         assert!(carbonite::from_slice_static::<Gradient>(&lone).is_err());
+    }
+
+    /// **A ramp can never be longer than the array every consumer reads it into.**
+    ///
+    /// `fill.wesl`, `matte.wesl` and `filter_common.wesl` each hold exactly
+    /// [`MAX_STOPS`] lanes, and the hosts that fill them index by the stop's own
+    /// position — so one stop past the bound is an index off the end of a uniform,
+    /// which is a panic on two of those three paths. Nothing bounded it: `fit`
+    /// respected the number, and every other way in went through this gate, which
+    /// checked what a ramp *is* and never how long.
+    ///
+    /// Thinned rather than refused, because a long list names a perfectly good ramp
+    /// (see [`Gradient`]) — so what is asserted is that the ramp *survives*, keeps
+    /// its ends, and stays a ramp.
+    #[test]
+    fn a_ramp_longer_than_the_uniform_is_thinned_rather_than_refused() {
+        let long: Vec<GradientStop> = (0..=1000)
+            .map(|i| {
+                let t = i as f32 / 1000.0;
+                stop(t, [t, 1.0 - t, 0.5])
+            })
+            .collect();
+        let (first, last) = (long[0], long[long.len() - 1]);
+
+        // Through the constructor *and* through the encoding, since a file carries
+        // the stop list and that is the path the bound exists for.
+        let bytes = carbonite::to_vec_static(&long).expect("encodes");
+        for g in [
+            Gradient::new(long.clone()).expect("a long ramp is still a ramp"),
+            carbonite::from_slice_static::<Gradient>(&bytes).expect("and decodes as one"),
+        ] {
+            assert!(
+                g.stops().len() <= MAX_STOPS,
+                "{} stops would index past every consumer's array",
+                g.stops().len(),
+            );
+            assert!(g.stops().len() >= 2, "thinning must not collapse the ramp");
+            // The ends are kept, so the thinned ramp spans what the full one did —
+            // which is also what makes thinning safe to run before the rescale.
+            assert_eq!(g.stops()[0].color, first.color);
+            assert_eq!(g.stops()[g.stops().len() - 1].color, last.color);
+            assert_eq!(
+                (g.stops()[0].t, g.stops()[g.stops().len() - 1].t),
+                (0.0, 1.0)
+            );
+            // Still ascending, with no stop picked twice.
+            assert!(
+                g.stops().windows(2).all(|w| w[0].t < w[1].t),
+                "thinning must leave the positions strictly ascending",
+            );
+        }
+
+        // Exactly at the bound nothing moves, and one past it thins to the bound —
+        // the two sides of the boundary, since an off-by-one here is the whole bug.
+        let at = |n: usize| -> Vec<GradientStop> {
+            (0..n)
+                .map(|i| stop(i as f32 / (n - 1) as f32, [0.0; 3]))
+                .collect()
+        };
+        let exact = Gradient::new(at(MAX_STOPS)).expect("the bound itself is fine");
+        assert_eq!(exact.stops().len(), MAX_STOPS);
+        assert_eq!(
+            exact.stops(),
+            at(MAX_STOPS),
+            "a ramp at the bound is untouched"
+        );
+        assert_eq!(
+            Gradient::new(at(MAX_STOPS + 1))
+                .expect("one past it")
+                .stops()
+                .len(),
+            MAX_STOPS,
+        );
     }
 
     #[test]

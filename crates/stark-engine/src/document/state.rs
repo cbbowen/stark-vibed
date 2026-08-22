@@ -530,6 +530,14 @@ impl DocState {
     /// these on top of the stack; a ground ([`MatteRegion::Everything`]) is one
     /// at the bottom, which is why this takes the full [`Place`] where the
     /// other inserts keep the two-state anchor (§15.5).
+    ///
+    /// **Declined, deterministically, for a region nobody can measure**
+    /// ([`MatteRegion::usable`]) — the frame's half of the gate an unusable affine
+    /// already passes through (§16.1). A rect cannot be clamped into a repaired
+    /// rect without reframing the piece, so it is refused instead, and every peer
+    /// and every replay refuses the same one. The paint beside it *is* clamped, by
+    /// `ActionKind::sanitized` on the way in, because a color out of range does have
+    /// a nearest legal value.
     pub fn insert_matte(
         &self,
         id: LayerId,
@@ -538,6 +546,9 @@ impl DocState {
         region: MatteRegion,
         paint: MattePaint,
     ) -> Self {
+        if !region.usable() {
+            return self.clone();
+        }
         self.insert(Layer::matte(id, region, paint), carrier, at)
     }
 
@@ -671,10 +682,17 @@ impl DocState {
     /// ([`MatteRegion::with_rect`]).
     pub fn set_matte_rect(&self, id: LayerId, min: Vec2, max: Vec2) -> Self {
         self.map_content(id, |c| match c {
-            LayerContent::Matte { region, paint } => Some(LayerContent::Matte {
-                region: region.with_rect(min, max),
-                paint: paint.clone(),
-            }),
+            // Refused rather than repaired when the rect cannot be measured, for
+            // [`insert_matte`](Self::insert_matte)'s reason — spelled as the same
+            // `None` this arm already returns for a layer that is not a matte, since
+            // both are "this action names something that is not there".
+            LayerContent::Matte { region, paint } => {
+                let region = region.with_rect(min, max);
+                region.usable().then(|| LayerContent::Matte {
+                    region,
+                    paint: paint.clone(),
+                })
+            }
             LayerContent::Paint(_) | LayerContent::Filter(_) => None,
         })
     }

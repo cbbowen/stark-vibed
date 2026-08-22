@@ -1077,6 +1077,12 @@ impl Engine {
                                 [center.x, center.y, *radius, 0.0]
                             }
                         };
+                        // Indexed by the stop's own position, and bounded by
+                        // `Gradient`'s invariant rather than by a check here: a ramp
+                        // holds at most `gradient::MAX_STOPS`, which is the length
+                        // `matte.wesl` declares `stop_c` at. Truncating instead would
+                        // hide a broken invariant behind a wrong picture; this way it
+                        // is loud, at the site.
                         for (i, stop) in stops.iter().enumerate() {
                             let c = self.shared.color_space.rgb_to_channels(stop.color);
                             let r = self.shared.color_space.rgb_to_resid(stop.color);

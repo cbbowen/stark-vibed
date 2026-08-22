@@ -28,14 +28,31 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::brush::clamp01;
 use crate::geom::Vec2;
+use crate::{at_least_zero, clamp01};
 
 /// Largest number of mask tiles one op may rasterize (~64 MB of R8 coverage). An op
 /// that would exceed it is rejected rather than truncated — a silently clipped
 /// selection is worse than none, and [`SelectionShape::All`] already expresses
 /// "everything" at zero cost.
 pub const MAX_SELECTION_TILES: usize = 1024;
+
+/// Most vertices one lasso may carry. A bound on what a mask pass *costs*, where
+/// [`MAX_SELECTION_TILES`] bounds how much of the canvas it covers — the two are
+/// independent, and only the first was held.
+///
+/// Two things ride on it. The edge list is uploaded as an `N×1` texture
+/// (`gpu::selection::edge_texture`), so `N` has to stay inside the smallest
+/// `maxTextureDimension1D` any WebGPU adapter guarantees (8192) or the op fails
+/// validation instead of rasterizing; and `selection.wesl` walks every edge **per
+/// texel**, so `N` prices the pass linearly across a million-texel tile set.
+///
+/// Four thousand is far past any loop a hand draws: the frontend decimates live
+/// input to one vertex per `LASSO_MIN_STEP` (2 px), so this is a boundary some
+/// eight kilopixels long. What it is defending against is not a drawing but a
+/// document — a stop list, a stroke path and a lasso are all `Vec`s a file or a
+/// peer states the length of, and this is the one that was unbounded.
+pub const MAX_LASSO_POINTS: usize = 4096;
 
 /// A region-producing shape, in canvas space (§6.8).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
@@ -70,21 +87,68 @@ impl SelectionShape {
         }
     }
 
-    /// The shape's canvas-space bounding box, or `None` when it is unbounded
-    /// ([`Self::All`]) or degenerate (a lasso with no vertices).
+    /// The shape's canvas-space bounding box, or `None` when there is no box to
+    /// give: the shape is unbounded ([`Self::All`]), degenerate (a lasso with no
+    /// vertices), or **not measurable** (any coordinate non-finite).
+    ///
+    /// The third case is the one worth naming, because every consumer already had
+    /// the right answer waiting for it and only this function could reach it. A
+    /// `None` here declines a selection op outright (`Selection::plan` returns
+    /// `None`, and the caller leaves the mask alone), fills nothing on the fill path
+    /// (`document::fill::plan`'s `None` arm), and claims the whole layer in a
+    /// footprint (`fill_rect`) — a deterministic refusal, an empty write and an
+    /// over-claim, which are the safe answers in their three directions.
+    ///
+    /// **The lasso is tested rather than folded**, exactly as `stroke_rect` is and
+    /// for its reason (§12.6): `f32::min`/`max` return the *non*-NaN operand, so a
+    /// fold steps straight over a bad vertex and leaves the box looking tight. That
+    /// box quantized cleanly, so the op proceeded and the NaN reached
+    /// `selection.wesl`'s coverage ramp, where `clamp` on a NaN is not specified —
+    /// two clients disagreeing about a mask, which §6.8 says is the one thing that
+    /// may not happen. Shapes arrive from files and peers; a shape that cannot be
+    /// bounded has to say so.
     pub fn bounds(&self) -> Option<(Vec2, Vec2)> {
+        let finite = |lo: Vec2, hi: Vec2| (lo.is_finite() && hi.is_finite()).then_some((lo, hi));
         match self {
             Self::All => None,
-            Self::Rect { min, max } => Some((*min, *max)),
+            Self::Rect { min, max } => finite(*min, *max),
             Self::Ellipse { center, radii } => {
                 let r = radii.abs();
-                Some((*center - r, *center + r))
+                finite(*center - r, *center + r)
             }
             Self::Lasso(points) => {
                 let mut it = points.iter();
                 let first = *it.next()?;
-                Some(it.fold((first, first), |(lo, hi), p| (lo.min(*p), hi.max(*p))))
+                let (lo, hi) = it.try_fold((first, first), |(lo, hi), p| {
+                    p.is_finite().then(|| (lo.min(*p), hi.max(*p)))
+                })?;
+                finite(lo, hi)
             }
+        }
+    }
+
+    /// The same shape with no more vertices than a mask pass can carry — the
+    /// shape's half of the funnel [`SelectionOp::at`] and
+    /// [`FillOp::with_paint`](super::fill::FillOp::with_paint) are.
+    ///
+    /// Only the lasso has anything to hold. The analytic shapes carry four floats
+    /// each and are already answered by [`bounds`](Self::bounds), which refuses what
+    /// it cannot measure rather than rounding it into a different rectangle.
+    ///
+    /// **Decimated rather than refused**, on `Gradient`'s argument (§19): a long
+    /// loop describes a perfectly good region and simply describes it with more
+    /// vertices than the pass can carry, so refusing would unload a document over
+    /// something this can answer. Evenly around the cycle, which is what keeps the
+    /// loop a loop — the first vertex is kept and the closing edge is implicit, so
+    /// there is no end to pin the way a ramp's is.
+    pub fn sanitized(self) -> Self {
+        match self {
+            Self::Lasso(points) if points.len() > MAX_LASSO_POINTS => Self::Lasso(
+                (0..MAX_LASSO_POINTS)
+                    .map(|i| points[i * points.len() / MAX_LASSO_POINTS])
+                    .collect(),
+            ),
+            shape => shape,
         }
     }
 
@@ -187,9 +251,15 @@ impl SelectionOp {
         let unbounded = matches!(shape, SelectionShape::All);
         Self {
             mode,
-            shape,
-            // `max` rather than `clamp`, so a NaN lands on 0 — see `clamp01`.
-            feather: feather.max(0.0),
+            // The shape holds its own invariant, so this gate does not have to know
+            // what one is (§1). It used to clamp two scalars and hand the geometry
+            // through untouched — which left the one field that is a `Vec` as the
+            // only payload in the op with no bound at all.
+            shape: shape.sanitized(),
+            // A length, so `at_least_zero` rather than a bare `max`: the floor
+            // alone lands a NaN on 0 and lets an *infinity* straight through, and an
+            // infinitely wide coverage ramp is a half-selected plane (see there).
+            feather: at_least_zero(feather, 0.0),
             opacity: if unbounded { 1.0 } else { clamp01(opacity) },
         }
     }
@@ -300,6 +370,52 @@ mod tests {
             0.4,
         );
         assert_eq!(back(&wire(&clean)), clean);
+    }
+
+    /// **A lasso is decimated to something a mask pass can carry**, and the funnel
+    /// is where that happens — the frontend's `LASSO_MIN_STEP` decimates live input
+    /// and says nothing about what a file or a peer states the length of.
+    ///
+    /// Two things ride on the bound (see [`MAX_LASSO_POINTS`]): the edge list is
+    /// uploaded as an `N×1` texture, so an over-long one fails wgpu validation
+    /// instead of rasterizing, and `selection.wesl` walks every edge per texel, so
+    /// `N` prices the pass across a million-texel tile set.
+    #[test]
+    fn a_lasso_longer_than_a_mask_pass_can_carry_is_decimated() {
+        let long: Vec<Vec2> = (0..MAX_LASSO_POINTS * 3)
+            .map(|i| {
+                let t = i as f32 * 0.01;
+                Vec2::new(t.cos() * 500.0, t.sin() * 500.0)
+            })
+            .collect();
+        let op = SelectionOp::new(
+            SelectionMode::Replace,
+            SelectionShape::Lasso(long.clone()),
+            0.0,
+        );
+        let SelectionShape::Lasso(kept) = &op.shape else {
+            panic!("a lasso stays a lasso")
+        };
+        assert_eq!(kept.len(), MAX_LASSO_POINTS);
+        assert_eq!(kept[0], long[0], "the loop still starts where it started");
+        // Evenly around the cycle and in order, so the polygon keeps its shape
+        // rather than collapsing onto one arc of it.
+        assert!(
+            kept.windows(2).all(|w| w[0] != w[1]),
+            "no vertex is taken twice",
+        );
+
+        // Idempotent: a decimated loop is already short enough, so a second pass
+        // through the funnel must not thin it again (§8 — a load is not an edit).
+        let again = SelectionOp::new(SelectionMode::Replace, op.shape.clone(), 0.0);
+        assert_eq!(again.shape, op.shape);
+
+        // …and an ordinary loop is untouched.
+        let small = SelectionShape::Lasso(long[..8].to_vec());
+        assert_eq!(
+            SelectionOp::new(SelectionMode::Replace, small.clone(), 0.0).shape,
+            small,
+        );
     }
 
     /// The mirror type **is** the wire shape (§8), so what is left to check is that

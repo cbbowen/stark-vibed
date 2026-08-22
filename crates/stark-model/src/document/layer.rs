@@ -459,6 +459,26 @@ impl MatteRegion {
         }
     }
 
+    /// Whether this region may be applied at all: its rect, if it has one, is
+    /// measurable. Deterministic, so peers and replays agree about rejection —
+    /// exactly [`TransformMap::usable`](super::transform::TransformMap::usable)'s
+    /// contract, and here for its reason.
+    ///
+    /// **Refused rather than clamped**, which is the whole of why this is a
+    /// predicate and not a `sanitized`. A frame is a rectangle the artist placed;
+    /// there is no other rectangle that is a repaired version of one nobody can
+    /// measure, and rounding it to the origin would silently reframe the piece —
+    /// the export rect, the aspect readout and the handle box all read this. The
+    /// same argument §16.1 makes for an unusable affine, which is also why the
+    /// matte's *paint* is sanitized where its *geometry* is gated: a color out of
+    /// range has an obvious nearest legal value and a rect does not.
+    pub fn usable(&self) -> bool {
+        match self {
+            Self::OutsideRect { min, max } => min.is_finite() && max.is_finite(),
+            Self::Everything => true,
+        }
+    }
+
     /// The same region with its rect replaced (the frame drag's commit) — a
     /// no-op on a region that has none, matching `SetMatteRect`'s no-op on a
     /// layer that is not a matte: the action names a property this region does
@@ -503,6 +523,35 @@ impl MattePaint {
         match self {
             Self::Solid(c) => *c,
             Self::Gradient { gradient, .. } => gradient.sample(0.0),
+        }
+    }
+
+    /// The same paint with every color inside the sRGB cube and an axis the ramp
+    /// pass can evaluate — a matte's half of
+    /// [`ActionKind::sanitized`](super::ActionKind::sanitized).
+    ///
+    /// Word for word [`Parcel::sanitized`](super::fill::Parcel::sanitized), because
+    /// this is word for word a [`Parcel`](super::fill::Parcel): both are "what paint
+    /// to lay", both are a solid or a ramp on an axis, and both reach the same
+    /// `ramp_common::ramp_position` through different passes. They are two types
+    /// only because they reached the file at different times and their wire shapes
+    /// were written differently (`Gradient { gradient, axis }` against
+    /// `Gradient(GradientParcel)`); merging them is a save-format change and is
+    /// worth doing on its own, not as a side effect of closing this gap.
+    ///
+    /// Until then the *argument* is shared even though the match is not: see
+    /// `Parcel::sanitized` for why an unusable axis degrades to the ramp's anchor
+    /// rather than being clamped or refused.
+    pub fn sanitized(self) -> Self {
+        match self {
+            Self::Solid(c) => Self::Solid(c.map(crate::clamp01)),
+            Self::Gradient { gradient, axis } => {
+                let gradient = gradient.clamped();
+                match axis.usable() {
+                    true => Self::Gradient { gradient, axis },
+                    false => Self::Solid(gradient.sample(0.0)),
+                }
+            }
         }
     }
 }
