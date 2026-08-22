@@ -10,9 +10,11 @@
 //! and [`DocState`] is this crate's answer to what the state is. The orphan rule
 //! forced that shape and it is the right one — see §2.
 
+use std::sync::Arc;
+
 use stark_model::SurfaceId;
 use stark_model::document::ActorId;
-use stark_model::document::{Action, ActionKind, Materialize};
+use stark_model::document::{Action, ActionKind, GuideId, Materialize};
 
 use super::layer::{Layer, LayerContent};
 use super::state::DocState;
@@ -387,6 +389,28 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         ActionKind::SetMatteRect(id, min, max) => state.set_matte_rect(*id, *min, *max),
         ActionKind::SetMattePaint(id, paint) => state.set_matte_paint(*id, paint.clone()),
         ActionKind::SetBackground(rgb) => state.with_background(*rgb),
+
+        // The drawing guides (§20.5). The one family of actions with no pixel on
+        // the other side of it: a guide is geometry to construct through, so
+        // applying one moves a roster and nothing else — which is also why none
+        // of these touches `ctx`.
+        //
+        // **The id is the action's own** (`GuideId`), which is what an add mints
+        // by being applied at all. Everything else names one that was minted
+        // earlier and no-ops when it is not there, the way every action naming an
+        // absent layer does.
+        ActionKind::AddGuide { guide, after, name } => state.insert_guide(
+            GuideId(action.id),
+            *guide,
+            *after,
+            name.as_deref().map(Arc::from),
+        ),
+        ActionKind::RemoveGuide(id) => state.remove_guide(*id),
+        ActionKind::SetGuide(id, guide) => state.set_guide(*id, *guide),
+        ActionKind::SetGuideName(id, name) => {
+            state.set_guide_name(*id, name.as_deref().map(Arc::from))
+        }
+        ActionKind::MoveGuide { id, after } => state.move_guide(*id, *after),
         // Cut the author's selected paint, restack it under the affine, and
         // carry the author's mask with it (§16). Gated and
         // keyed exactly as a stroke is: the mask comes off the state being
@@ -519,6 +543,34 @@ pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState) -> bool {
         }
         ActionKind::SetBackground(rgb) => state.background == *rgb,
         ActionKind::SetSurface(id) => state.surface == *id,
+        // A guide edit that changes nothing, asked of the guide as it stands —
+        // and answering `false` for one that is not there, on this function's
+        // general rule: inert here, live on a peer whose roster is a step ahead.
+        ActionKind::SetGuide(id, guide) => {
+            state.guide(*id).is_some_and(|g| g.camera == *guide)
+        }
+        // Commit-on-blur makes a rename to the name it already has the common
+        // case: leaving a field you only looked at must cost nothing.
+        ActionKind::SetGuideName(id, name) => {
+            state.guide(*id).is_some_and(|g| g.name.as_deref() == name.as_deref())
+        }
+        // A move is nothing when the guide already sits directly after the anchor.
+        // Asked of the roster rather than of the drag, so a row dropped back where
+        // it was picked up costs no undo step however the frontend spelled it.
+        ActionKind::MoveGuide { id, after } => {
+            let roster = state.guides();
+            let Some(i) = roster.iter().position(|g| g.id == *id) else {
+                return false;
+            };
+            // What it sits after today — `None` at the head of the roster.
+            let before = i
+                .checked_sub(1)
+                .map(|j| roster.get(j).expect("indexed from the roster").id);
+            // An anchor no longer in the roster lands the guide at the head, so it
+            // asks for the same place naming nothing asks for.
+            let anchor = after.filter(|a| roster.iter().any(|g| g.id == *a));
+            before == anchor
+        }
         // Everything whose effect is pixels, or whose effect depends on a tree
         // walk this question will not pay for.
         ActionKind::CommitStroke(_)
@@ -536,6 +588,10 @@ pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState) -> bool {
         | ActionKind::RemoveLayer(_)
         | ActionKind::MergeLayerDown { .. }
         | ActionKind::MoveLayer { .. }
+        // An add always changes the roster; a remove of an absent guide answers
+        // `false` for the reason every other absent-target arm does.
+        | ActionKind::AddGuide { .. }
+        | ActionKind::RemoveGuide(_)
         | ActionKind::Undo(_) => false,
     }
 }

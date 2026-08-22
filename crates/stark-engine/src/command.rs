@@ -39,8 +39,8 @@ use crate::gpu::{EnvironmentId, MediaParams};
 use stark_model::AssetId;
 use stark_model::SurfaceId;
 use stark_model::document::{
-    BlendMode, BrushParams, FillOp, Filter, LayerId, MattePaint, MatteRegion, Place, SelectionOp,
-    ShapeAction, Tool, TransformMap,
+    BlendMode, BrushParams, FillOp, Filter, GuideId, LayerId, MattePaint, MatteRegion,
+    PerspectiveGuide, Place, SelectionOp, ShapeAction, Tool, TransformMap,
 };
 use stark_model::geom::{Extent2, IVec2, Vec2};
 
@@ -394,6 +394,46 @@ pub enum DocCommand {
     /// this was already a logged action is what made the tooth a rendering change
     /// rather than a history one, exactly as this note anticipated.
     SetSurface(SurfaceId),
+
+    /// Add a **drawing guide** — a perspective grid to construct through
+    /// (§20.5), directly after `after` in the roster or at its head.
+    ///
+    /// Unlike every other `Add…`, the engine mints no id: a guide's identity is
+    /// the id of the action that adds it
+    /// ([`GuideId`](stark_model::document::GuideId)), so the frontend learns it
+    /// by reading the roster back off the projection rather than being told.
+    /// That is also why there is no counter here to resync (§17.9).
+    AddGuide {
+        guide: PerspectiveGuide,
+        after: Option<GuideId>,
+        /// What to call it. Trimmed and length-capped on the way in, and one
+        /// that comes out blank leaves the guide unnamed rather than named
+        /// something blank — [`SetLayerName`](Self::SetLayerName)'s rule, shared
+        /// with it (`normalize_name`).
+        name: Option<String>,
+    },
+    /// Remove a drawing guide.
+    RemoveGuide(GuideId),
+    /// Reshape a guide — the **whole camera** at once (§20.5): the orbit, the
+    /// lens, the crosshair, the cell count, the opacity, the plane chips and the
+    /// fisheye toggle all come through here.
+    ///
+    /// One action per settled gesture, not one per pointer move: the drag
+    /// previews through [`ViewCommand::PreviewGuide`] and commits once on
+    /// release — the bargain the frame drag and the opacity slider already make
+    /// (§15.7, §14.6).
+    SetGuide(GuideId, PerspectiveGuide),
+    /// Name a guide, or with `None` clear the name so it goes back to being
+    /// described by its place in the roster. Trimmed and capped like
+    /// [`SetLayerName`](Self::SetLayerName), through the same funnel.
+    SetGuideName(GuideId, Option<String>),
+    /// Move a guide within the roster — the panel's drag-to-reorder. `after` is
+    /// [`AddGuide`](Self::AddGuide)'s anchor: the guide it lands directly after,
+    /// or the head of the roster when `None`.
+    MoveGuide {
+        id: GuideId,
+        after: Option<GuideId>,
+    },
 }
 
 /// Mutations of **view state**: per-client, transient, never logged and never sent
@@ -506,18 +546,37 @@ pub enum ViewCommand {
     /// a preference about what you look at, not a fact about the drawing.
     SetShowPeerSelections(bool),
 
-    /// Replace the drawing-guide list (§20.5) — the whole list at once, the
-    /// same read-modify-commit shape as [`SetMediaParams`](Self::SetMediaParams):
-    /// the frontend reads the current list off the projection, adjusts one
-    /// guide or one field, and sends it back, so the engine never needs one
-    /// command per slider, per drag sample, or per row.
+    /// Open or shut a guide's **eye** (§20.5) — whether this client draws it.
     ///
-    /// View state *for now*: a guide is an aid for the hand holding the pen,
-    /// per-client like the pan and the zoom. If guides later become part of
-    /// what a document carries, that is a new `DocCommand` and an action —
-    /// this command would remain as the in-flight preview half, the bargain
-    /// [`PreviewMatteRect`](Self::PreviewMatteRect) strikes.
-    SetGuides(Vec<crate::guides::PerspectiveGuide>),
+    /// The one thing about a guide that is *not* document state, and the reason
+    /// is that it is a statement about what you are looking at rather than about
+    /// the drawing: shutting a guide to see the picture underneath must not reach
+    /// across a shared session, must not be saved, and must not cost an undo
+    /// step. Everything else a guide has — its camera, its name, its place in the
+    /// roster — is logged (`DocCommand::SetGuide` and its siblings).
+    ///
+    /// **A guide is hidden until this client asks for it**, so one arriving from
+    /// a peer or out of a file draws nothing until an eye is opened on it. That
+    /// is the direction that reads right once a guide can arrive from somewhere
+    /// else: the alternative lays every perspective the document has ever carried
+    /// over the canvas the moment it opens.
+    ///
+    /// The frontend need not send this on the common path — picking a guide up to
+    /// shape it opens its eye, which covers adding and duplicating one too
+    /// (`panels::guides`' `begin_guide_edit`).
+    SetGuideVisible(GuideId, bool),
+
+    /// Show `guide` in place of the one `id` names **without logging it**
+    /// (§20.5) — the in-flight half of an orbit, a lens drag, a crosshair drag
+    /// or a slider. `None` drops the preview.
+    ///
+    /// The bargain [`PreviewMatteRect`](Self::PreviewMatteRect) strikes, and the
+    /// bargain §20.5 predicted a guide would need the day it became document
+    /// state: the hand reports a pose per pointer sample, this shows each one,
+    /// and the frontend commits a single [`DocCommand::SetGuide`] when the
+    /// gesture settles — so shaping a perspective costs one undo step rather than
+    /// five thousand.
+    PreviewGuide(Option<(GuideId, PerspectiveGuide)>),
 
     /// Show a matte at `min..max` **without logging it** — the in-flight half of a
     /// frame-handle drag (§15.7). `None` drops the preview.

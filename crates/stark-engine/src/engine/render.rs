@@ -19,7 +19,7 @@ use crate::gpu::{
 use crate::image::RgbaImage;
 use crate::view::ViewTransform;
 use crate::{EngineError, Result};
-use stark_model::document::LayerId;
+use stark_model::document::{GuideScene, LayerId};
 use stark_model::geom::{Extent2, TileRect};
 
 /// What sits under the paint when rendering (§15.6).
@@ -343,14 +343,15 @@ impl Engine {
         // draw *with*, so an export or a miniature never carries one (§20.4).
         // Derived fresh per render — the camera math is a handful of products,
         // and a cached copy would shadow the session's state.
-        let guide_scenes: Vec<crate::guides::GuideScene> = match chrome {
+        let guide_scenes: Vec<GuideScene> = match chrome {
             Chrome::Hidden => Vec::new(),
+            // The document holds the guides and the session holds whose eye is
+            // shut (§20.5), so what is on screen is the two combined — one filter,
+            // written once, in `Session::shown_guides`.
             Chrome::Shown => self
                 .session
-                .guides
-                .iter()
-                .filter(|g| g.visible)
-                .map(|g| g.scene())
+                .shown_guides(&doc)
+                .map(|g| g.camera.scene())
                 .collect(),
         };
         // Read as a **field**, not through an accessor: a `&self` method borrows the

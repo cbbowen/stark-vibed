@@ -149,10 +149,13 @@ pub fn leave(state: AppState) {
         crate::preview::TRANSFORM.clear(state);
     }
 
-    // View state, previewed by being live: there is nothing to drop, only the
-    // mode itself to end (`panels::guides`).
+    // A guide is document state now (§20.5), so its drag previews and commits
+    // like the transform above rather than being live — and leaving has to drop
+    // what a drag still in the hand was showing, or the pose the artist abandoned
+    // stays on the canvas with no commit ever coming to supersede it.
     let mut guide_edit = state.guide_edit;
     if guide_edit.peek().is_some() {
+        crate::preview::GUIDE.clear(state);
         guide_edit.set(None);
     }
 

@@ -24,7 +24,7 @@ use crate::prefs::Prefs;
 use crate::render::Renderer;
 use stark_engine::command::ViewCommand;
 use stark_engine::{InputCommand, ObservableState};
-use stark_model::document::{BrushParams, LayerId};
+use stark_model::document::{BrushParams, GuideId, LayerId};
 use stark_model::geom::Vec2;
 
 /// Create one of [`AppState`]'s signals, owned by the **root** scope rather than by
@@ -265,8 +265,13 @@ pub struct AppState {
     pub gradient_resume: Signal<Option<GradientUi>>,
     /// The drawing-guide edit mode (§20.5): `Some` while a guide is selected
     /// for composing — the canvas drags the camera, and the Perspective Guide
-    /// bar stands in at the bottom. View state through and through: the engine
-    /// sees only the `SetGuides` lists the gestures produce.
+    /// bar stands in at the bottom.
+    ///
+    /// **The mode** is view state; the guide it names is not. A guide is document
+    /// state now, so what the gestures produce is a `PreviewGuide` per pointer
+    /// sample and one `SetGuide` when each settles — the bargain every continuous
+    /// control in the app makes (`crate::preview`). What is per-client here is only
+    /// *which* guide is in hand, and the locks held on it for this sitting.
     pub guide_edit: Signal<Option<GuideEdit>>,
     /// Whether a [`request_paint`] is already waiting on the next animation frame.
     /// The latch that turns any number of paint requests into one paint per frame.
@@ -442,11 +447,21 @@ pub struct SlotState {
 /// releases them.
 #[derive(Clone, Copy, PartialEq)]
 pub struct GuideEdit {
-    /// Index into the engine's guide list ([`ObservableState::guides`]).
-    pub index: usize,
+    /// Which guide is being shaped ([`ObservableState::guides`]).
+    ///
+    /// An **id**, not the index it used to be, and the difference is the whole of
+    /// what a guide having one buys this mode (§20.5): the roster is document state
+    /// now, so a peer's edit or an undo can reorder it or take a row out from under
+    /// the hand. An index had to be re-pointed by every path that could move the
+    /// list — the panel's reorder, its removal — and would silently address a
+    /// *different* guide for any path that forgot. There is nothing to re-point.
+    pub id: GuideId,
     /// World axes held fixed under the orbit drag: one lock constrains the
     /// drag to turning about that axis, two pin the frame entirely
-    /// ([`PerspectiveGuide::dragged`](stark_engine::PerspectiveGuide::dragged)).
+    /// ([`PerspectiveGuide::dragged`](stark_model::document::PerspectiveGuide::dragged)).
+    ///
+    /// Not part of the guide, and not part of the document: a lock is a constraint
+    /// on the hand for the duration of one sitting.
     pub locked: [bool; 3],
 }
 

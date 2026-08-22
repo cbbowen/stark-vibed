@@ -17,6 +17,13 @@
 //! | `selection` | `SelectionOp` and its shapes | `Selection`, the mask itself |
 //! | `fill` | `FillOp`, `fill_bounds` | `plan`, which needs the mask |
 //! | `transform` | the maps, and the homography solve | the tile plans |
+//!
+//! `guide` is the one that is *not* split (§20.5). A drawing guide is document
+//! state — logged, saved, replicated, undoable — and everything derived from one
+//! is a pure function of the camera, so the derivations sit here beside the fact
+//! for the reason `fill_bounds` and the homography solve do. What the engine
+//! keeps is the roster's per-client half: whose eye is shut, and the packing of a
+//! `GuideScene` into the guide pass's uniform.
 
 pub(crate) mod action;
 pub(crate) mod brush;
@@ -24,6 +31,7 @@ pub(crate) mod fill;
 pub(crate) mod filter;
 pub(crate) mod fold;
 pub(crate) mod footprint;
+pub(crate) mod guide;
 pub(crate) mod image;
 pub(crate) mod layer;
 pub(crate) mod selection;
@@ -41,6 +49,9 @@ pub use fold::{Logged, Materialize};
 /// The commutation vocabulary (§12.6) — what an action reads and writes, and
 /// whether two of them can be reordered.
 pub use footprint::{Footprint, Prop, Resource, fill_rect, footprint, stroke_rect};
+pub use guide::{
+    AxisPencil, AxisPlane, GuideId, GuideScene, Lens, PairTrace, PerspectiveGuide, Scaffold,
+};
 pub use image::{MAX_IMAGE_TILES, image_tiles};
 pub use layer::{BlendMode, DRAGO_K, DRAGO_K_RANGE, LayerId, MattePaint, MatteRegion, Place};
 pub use selection::{MAX_SELECTION_TILES, SelectionMode, SelectionOp, SelectionShape};

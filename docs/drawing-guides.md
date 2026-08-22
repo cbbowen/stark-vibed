@@ -8,11 +8,14 @@ What a stroke aligns to is in §20.6 and §20.7.
 
 ## 20 Drawing guides
 
-Guides are scaffolding for the hand: geometry drawn over the canvas that a
-stroke can be aligned to (§20.6) and that no pixel ever records. The first
-guide is the classical perspective grid, and its design principle is the one
-this chapter keeps returning to: **the guide is a camera, and everything the
-artist sees is derived from it.**
+Guides are scaffolding for the construction: geometry drawn over the canvas that
+a stroke can be aligned to (§20.6) and that no pixel ever records. They are
+**part of the document** all the same (§20.5) — saved, replicated, undoable —
+because a perspective built over a drawing is part of how that drawing was made,
+even though nothing it draws is paint. The first guide is the classical
+perspective grid, and its design principle is the one this chapter keeps
+returning to: **the guide is a camera, and everything the artist sees is derived
+from it.**
 
 ## 20.1 One camera, three special cases
 
@@ -20,7 +23,8 @@ Art tools habitually ship "1-point", "2-point" and "3-point perspective" as
 three modes with three data models — one draggable dot, two dots on a shared
 horizon, three free dots — and each mode's invariants (horizontals stay level,
 verticals stay parallel) are enforced by *code* in that mode. Stark refuses the
-split. The guide's state is exactly a projective camera (`guides.rs`):
+split. The guide's state is exactly a projective camera
+(`stark-model`'s `document::guide`):
 
 - a **center of view** `c` — the principal point, where the view axis meets the
   picture plane, in canvas px;
@@ -286,59 +290,175 @@ the dashed 45° circle) ride in the same pass as more distance fields, packed
 as `position + valid` uniform slots so the shader branches on data, never on
 pipeline variants. Axis hues follow the X/Y/Z semantics every 3D tool taught.
 
-## 20.5 The list, the edit mode, and the drag
+## 20.5 The roster, the edit mode, and the drag
 
-Guides are a **list** (`Session::guides`), and the whole list is view state:
-per-client, unlogged, unsent — an aid for the hand holding the pen, like the
-pan and the zoom. Every mutation — a slider, a drag sample, a row toggle —
-travels as one `ViewCommand::SetGuides` carrying the whole list, the same
-read-modify-commit shape `SetMediaParams` uses; the engine never needs one
-command per control. If guides later become part of what a document carries (a
-shared scaffold peers should see), that is a new `DocCommand` and an action;
-`SetGuides` would remain as the in-flight preview half, the same bargain the
-matte-rect drag strikes (§4). Rendering-side, each visible guide gets a
-dynamic-offset uniform slot and its own fullscreen draw in pass D — slots
-rather than one rewritten buffer for the reason `BLEND_SLOT` records.
+Guides are a **roster**, and the roster is **document state**: saved with the
+file, replicated to peers, and reachable by undo, exactly like the layer stack.
+Each guide has a `GuideId`, a camera (`PerspectiveGuide`), a name, and a place
+in the arrangement, and every edit is a logged action — `AddGuide`,
+`SetGuide`, `SetGuideName`, `MoveGuide`, `RemoveGuide`.
+
+This was the other way round. A guide was view state — per-client, unlogged,
+unsent, outside the undo history — on the argument that it is an aid for the
+hand holding the pen, like the pan and the zoom. That argument was wrong about
+what a guide *is*. A perspective built over a drawing is part of the drawing's
+construction: it is what the artist reasons in, it takes as much care to set up
+as a layer takes to paint, and losing it on reload — or leaving a collaborator
+unable to see the scaffold the work is being built on — is losing work. It is
+the argument §6.4 makes for the canvas weave and §15.5 makes for the substrate
+color, and the guides sat on the wrong side of it.
+
+**The one exception is the eye.** Whether a guide is *drawn* is per-client
+(`Session::visible_guides`, `ViewCommand::SetGuideVisible`): shutting a guide to see
+the picture underneath must not reach across a shared session, must not be saved,
+and must not cost an undo step — an artist who hides a guide and then presses
+undo wants their last *edit* back. So a guide is two things kept in two places,
+and the two are combined into one per-client reading of the roster (`GuideInfo`)
+by `Engine::observe`.
+
+**A guide is hidden until this client asks for it.** That is the second half of
+the same decision, and it is the half that only became necessary once the first
+one landed: a document now carries every perspective anyone ever built over it,
+so opening a painting from last year — or joining somebody's session — would
+otherwise lay all of them across the canvas at once. Scaffolding you did not ask
+for is not scaffolding; it is something to clear away, and a tool that hands you
+that on open has made the feature cost more than it gives. The construction is
+kept because it is part of the drawing; looking at it stays a thing you do. It
+also makes the guides free to accumulate — a document may carry a dozen, one per
+part of the picture, without any of them being in the way of the others.
+
+So the state is the set of guides this client has **opened**, and an absent entry
+means not drawn. That is the cheaper end as well as the right default: a client
+typically has one guide up out of however many the document holds, so the set
+holds what is in use rather than what is being ignored. An id stays in it when
+its guide is removed, deliberately — the removal may be undone, and a guide that
+shut its own eye on the way back would be the tool changing what you are looking
+at, which here would look like an undo that only half worked.
+
+Nothing opens an eye but the artist, and the panel needs exactly one line for it:
+**picking a guide up to shape it opens it** (`begin_guide_edit`). Adding and
+duplicating come free, because both end by picking up what they made — so "the
+guide I am working on is one I can see" is stated once rather than at each path
+that can produce a guide, and there is no way to end up in the edit mode dragging
+a construction that is not on the screen. The row's eye is the only other way in,
+and it is the artist saying so directly.
+
+### Identity, and why there is no counter
+
+**A guide's id is the id of the action that added it.** An `ActionId` is already
+the log's total-order key `(lamport, actor)`, so it is already globally unique:
+two actions cannot share one, therefore two guides cannot. That makes "no two
+guides carry the same id" a property of the representation rather than a rule a
+call site could forget (§1), and it means there is no per-actor counter to
+partition and nothing for `resync_counters` to resume past — the whole apparatus
+§17.9 needs for layers. It works here and not for layers because of a difference
+in the vocabularies rather than a preference: one `AddGuide` mints exactly one
+guide, where `DuplicateLayer` mints one id per layer of a subtree and so has to
+carry a map of them in its payload. An action id can name one thing.
+
+The engine therefore mints nothing when a guide is added, and the frontend
+learns the new id by reading the roster back off the projection — which is why
+`AddGuide` carries the *name* too, rather than leaving a following
+`SetGuideName` to supply it: duplicating a guide copies the artist's own word for
+it, and two actions would put one gesture two undo steps deep with a nameless
+guide in between. It is `PlaceImage`'s bargain (§23), for its reason.
+
+`AddGuide` and `MoveGuide` anchor with `after: Option<GuideId>` — the guide the
+new one lands directly after, or the head of the roster when `None`. A flat list
+of `n` guides has `n + 1` places to land in and one optional id reaches every one
+of them, which is why guides need no `Place` where a layer stack does (§14.8):
+`Place` exists because a stack's two-state anchor could not say "under the bottom
+layer", and `None` meaning the head is that third state spelled without a type.
+
+### One resource, one preview
+
+The whole roster is **one footprint resource**, `Resource::Guides` (§12.6). Two
+concurrent guide edits therefore do not commute, and that is the trade taken
+knowingly: spelling it finely — a resource per guide, plus one for the
+arrangement — buys only the case of two artists shaping two *different* guides at
+once, while a footprint may always claim too much. Nothing on the drawing path
+contends with it. A stroke reads the guides to snap through them, but it reads
+them before it is an action at all, so the action it commits names this nowhere.
+
+Every control that is *dragged* previews and commits, the bargain
+`crate::preview` states once for the whole app: `ViewCommand::PreviewGuide` shows
+a pose per pointer sample without logging it, and one `DocCommand::SetGuide` is
+laid down when the gesture settles (§15.7, §21.6). So shaping a perspective costs
+one undo step per adjustment rather than one per sample of the hand — and
+`SetGuide` carries the **whole camera** for the reason `SetFilter` carries the
+whole filter: a guide that grows a knob then needs no new action and no
+wire-format break. The controls that settle the moment they are used — a plane
+chip, the lens toggle — commit directly. Rendering-side, each guide this client
+draws gets a dynamic-offset uniform slot and its own fullscreen draw in pass D —
+slots rather than one rewritten buffer for the reason `BLEND_SLOT` records.
+
+Retiring the old whole-list `SetGuides` view command was free where retiring a
+*logged* action would not have been (§8, §19): a `ViewCommand` is never
+serialized, so it has no files to keep readable. The five actions that replaced
+it are new variants in `ActionKind`, which is a change to the wire's shape — the
+ALPN moves to `stark/collab/9`.
+
+### The panel
 
 The **Drawing Guides panel** is the roster, shaped like the Layers panel
 because it answers the same question about a different stack: "Add
 Perspective" (placed at the view center, so the grid lands where you look),
 one row per guide, carrying what a layer row carries in the same order and
-glyphs: the name, then duplicate, then remove, then the eye. Duplicating drops
-the copy in the row below and picks it up, because duplicating a guide is asking
-to shape a variant of it — the same argument that has "Add Perspective" open the
-mode on what it made. The copy keeps the source's name for the reason the layer
-duplicate does (§14.8): a name is the author's own word. The name renames on a
+glyphs: the name, then duplicate, then remove, then the eye. Every one of those
+is a logged edit except the last, which is the eye. Duplicating drops the copy in
+the row below and picks it up, because duplicating a guide is asking to shape a
+variant of it — the same argument that has "Add Perspective" open the mode on
+what it made. The copy keeps the source's name for the reason the layer duplicate
+does (§14.8): a name is the author's own word. The name renames on a
 double-click, exactly as a layer's does — one draft per row, committed on Enter
 or blur, abandoned on Escape, and a field left empty is *no name* rather than a
 blank one, so the row goes back to describing its position ("Perspective 2").
-That last rule is `normalize_name` in the engine, shared with layers and
-applied to every guide the `SetGuides` arm accepts: the list arrives whole, so
-there is no path to a guide's name that avoids it. A row **moves by being
-dragged**, and it is the same gesture the layer tree is arranged with, down to
-the code (§14.6, `panels::reorder`): the rows open the slot the guide is going
-into and the guide floats over it, so the preview is the answer rather than a
-symbol for one. What differs is only what a landing *means* — this list is flat,
-so it is an index, and nothing sideways is asked of the hand where the layer tree
-asks for a depth. Two smaller differences follow from the list being view state
-rather than document state: there is no undo step to spend on a move, and the
-mode's index has to be **remapped** as the list closes up behind the dragged row
-(`moved`), since a guide is addressed by position and has no id to be found by.
-Reordering deliberately does *not* enter the edit mode: arranging the roster is
-tidying, and tidying must not take over the canvas. Selecting a row — or
-adding — enters the **edit mode**: a full-viewport catcher owns the pointer for the
-mode's duration (the transform-mode bargain, §16.6; navigation still works),
-and the **Perspective Guide bar** stands at the bottom with the per-axis
-locks, per-plane visibility (§20.3 — three chips, XY / YZ / ZX, each lettered
-in its two axes' own hues), the Fisheye lens toggle (§20.8), the cell count,
-opacity, and "Done". The locks stay per-*axis* and the visibility is
+That last rule is `normalize_name` in the engine, shared with layers and applied
+to every guide name that reaches a `SetGuideName` or an `AddGuide`.
+
+A row **moves by being dragged**, and it is the same gesture the layer tree is
+arranged with, down to the code (§14.6, `panels::reorder`): the rows open the
+slot the guide is going into and the guide floats over it, so the preview is the
+answer rather than a symbol for one. What differs is only what a landing *means*
+— this list is flat, so nothing sideways is asked of the hand where the layer
+tree asks for a depth. The drag measures drawn rows against each other and so
+speaks in positions; the action has to name a *guide*, or it would mean something
+else on a peer whose roster has moved, and `anchor_at` is the one place the two
+readings meet. Reordering deliberately does *not* enter the edit mode: arranging
+the roster is tidying, and tidying must not take over the canvas.
+
+What the ids removed is a whole class of bookkeeping. The mode holds a `GuideId`,
+so a removal or a reorder elsewhere in the roster moves nothing it points at —
+where an index had to be re-pointed by every path that could move the list, and
+would silently address a *different* guide from any path that forgot.
+
+Selecting a row — or adding — enters the **edit mode**, and opens that guide's
+eye on the way in (a guide is hidden until asked for, and shaping one you cannot
+see would be dragging an invisible construction): a full-viewport catcher owns
+the pointer for the mode's duration (the transform-mode bargain, §16.6;
+navigation still works), and the **Perspective Guide bar** stands at the bottom
+with the per-axis locks, per-plane visibility (§20.3 — three chips, XY / YZ / ZX,
+each lettered in its two axes' own hues), the Fisheye lens toggle (§20.8), the
+cell count, opacity, and "Done". The locks stay per-*axis* and the visibility is
 per-*plane*, which is not an inconsistency: a lock constrains a rotation, and a
-rotation is about an axis; visibility governs what is drawn, and what is drawn
-is a plane. The cell count is the *length* of the lattice (§20.3) —
-how many cells lie between the eye and its corner — so the slider scales the
-grid and leaves the corner where it is, and it steps in **halvings** so that a
-change of scale subdivides the grid instead of sliding it. Which of 1/2/3-point you are in is never stored or displayed as a
-mode: the canvas shows it, as the count of finite vanishing points.
+rotation is about an axis; visibility governs what is drawn, and what is drawn is
+a plane. That per-plane visibility is document state, unlike the guide's own eye,
+and for the reason the split runs where it does — which planes a perspective
+rules is a statement about the construction, where whether you are looking at it
+is a statement about you. The cell count is the *length* of the lattice (§20.3) —
+how many cells lie between the eye and its corner — so the slider scales the grid
+and leaves the corner where it is, and it steps in **halvings** so that a change
+of scale subdivides the grid instead of sliding it. Which of 1/2/3-point you are
+in is never stored or displayed as a mode: the canvas shows it, as the count of
+finite vanishing points.
+
+There is no Cancel chip on the bar, alone among the mode bars, and it is not the
+lie it would have been when a guide was live view state: every control lays its
+own value down as it settles, so by the time you could reach a Cancel there is
+nothing uncommitted for it to keep back. What a mistake costs is one undo step,
+which is what it costs everywhere else in the app.
+
+### The drag
 
 The drag *is* the manipulation, classified by what the press lands on:
 
@@ -353,9 +473,12 @@ The drag *is* the manipulation, classified by what the press lands on:
   line between the X and Z vanishing points orbits Y, and a 2-point setup
   dragged by its own horizon stays exactly 2-point. `PerspectiveGuide::horizons`
   is that list indexed the way the hand thinks of it, by the axis turned about,
-  and it offers a horizon only where the guide draws one — a hidden guide, a
-  pair missing an axis, or a trace at infinity puts up no handle, the gating
-  §20.6 states for the same reason.
+  and it offers a horizon only where the guide draws one — a pair missing an
+  axis, an overlay turned down to nothing, or a trace at infinity puts up no
+  handle, the gating §20.6 states for the same reason. The guide's own eye is
+  the one gate that is *not* asked there, because it is not a fact the camera
+  carries: it is applied one level up, by the engine handing `Scaffold::of` only
+  the guides this client draws.
 - **Locks** are the same constraint made standing rather than momentary:
   rotations fixing an axis are exactly the turns about it, so one locked axis
   confines *every* drag to its orbit, and two pin the frame (the identity is
@@ -363,7 +486,9 @@ The drag *is* the manipulation, classified by what the press lands on:
   for the drag's duration, and it arrives at `dragged` as one — so there is one
   constrained-turn path rather than two, and a lit lock the horizon contradicts
   pins the frame by the standing two-lock rule instead of by a new one. Locks
-  are gesture state, held by the mode and released with it.
+  are gesture state, held by the mode and released with it: a constraint on the
+  hand for one sitting, not a fact about the guide, which is why they are the
+  one thing on that bar the document never hears about.
 - **The 45° circle: drag the lens.** The circle's radius *is* the focal
   length, so `f` becomes the distance from the center to the pointer and the
   ring follows the hand exactly — the §20.1 identity made into a handle.
@@ -401,7 +526,7 @@ Deferred, deliberately (§18 discipline — nothing inert ships):
   and it waits until the question of what a placed corner should hold fixed
   under a subsequent orbit has an answer worth shipping.
 - **Other guide kinds** (isometric, ellipse/vanishing-scale, symmetry): each a
-  new derivation over the same pass-D machinery and the same list.
+  new derivation over the same pass-D machinery and the same roster.
 
 ## 20.6 Strokes on the grid
 

@@ -417,9 +417,9 @@ undo step).
 
 **The whole filter travels on every edit**, rather than one command per knob. The bar
 reads the current settings off the projection, replaces one number, and sends the
-result back — the read-modify-commit shape `ViewCommand::SetGuides` uses (§20.5). So a
-filter that grows a parameter, and the next *kind* of filter, need no new command, no
-new action, and no wire-format break.
+result back — the read-modify-commit shape `DocCommand::SetGuide` uses for a guide's
+whole camera (§20.5). So a filter that grows a parameter, and the next *kind* of
+filter, need no new command, no new action, and no wire-format break.
 
 ### 21.7 Plumbing
 

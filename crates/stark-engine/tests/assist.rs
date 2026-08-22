@@ -15,16 +15,26 @@
 
 use glam::Quat;
 use stark_engine::Assisted;
-use stark_engine::PerspectiveGuide;
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::path::{DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, flatten};
 use stark_engine::session::Session;
-use stark_model::document::{LayerId, Tool};
+use stark_model::document::{LayerId, PerspectiveGuide, Scaffold, Tool};
 use stark_model::geom::{Ellipse, Extent2, Vec2};
 
 fn session() -> Session {
     Session::new(ViewTransform::identity(Extent2::new(512, 512)), LayerId(0))
+}
+
+/// What a session is offered when no guide is up — most of the tests here.
+///
+/// The scaffold arrives from the caller now (§20.5): a guide is document state and
+/// the eye that hides one is the session's, so `Engine` is the only side holding
+/// both and the assist is handed the geometry rather than reaching for it. What
+/// that costs here is this one line; what it buys is that a test can put a guide
+/// on the screen without a document.
+fn nothing() -> Scaffold {
+    Scaffold::default()
 }
 
 /// Drag a stroke out through `f`, sampled `n` times, without ending it.
@@ -81,7 +91,7 @@ fn holding_snaps_a_rough_drag_to_a_line() {
     assert!(crooked > 1.0, "the drag was already straight ({crooked}px)");
 
     let ordinal = session.gesture_ordinal();
-    assert!(session.assist_stroke(), "a rough drag is a line");
+    assert!(session.assist_stroke(&nothing()), "a rough drag is a line");
     assert_eq!(session.assisted(), Some(Assisted::Line));
     let snapped = bow(&session);
     assert!(snapped < 0.05, "the snap bows {snapped}px");
@@ -113,7 +123,7 @@ fn a_held_gesture_steers_instead_of_extending() {
     drag(&mut session, 40, |t| {
         a.lerp(b, t) + wobble((t * 39.0) as usize)
     });
-    assert!(session.assist_stroke());
+    assert!(session.assist_stroke(&nothing()));
 
     // Swing the held end a long way off the original line. A stroke that was still
     // being *extended* would grow a corner and keep everything before it.
@@ -150,7 +160,10 @@ fn holding_on_a_squiggle_changes_nothing() {
     });
     let before = session.preview_record().expect("in flight").path;
 
-    assert!(!session.assist_stroke(), "a squiggle is not a shape");
+    assert!(
+        !session.assist_stroke(&nothing()),
+        "a squiggle is not a shape"
+    );
     assert_eq!(session.assisted(), None);
     assert_eq!(
         session.preview_record().expect("in flight").path,
@@ -171,7 +184,10 @@ fn a_rough_loop_snaps_to_an_ellipse() {
         let u = t * std::f32::consts::TAU;
         center + Vec2::new(radii.x * u.cos(), radii.y * u.sin()) + wobble((t * 89.0) as usize)
     });
-    assert!(session.assist_stroke(), "a rough loop is an ellipse");
+    assert!(
+        session.assist_stroke(&nothing()),
+        "a rough loop is an ellipse"
+    );
 
     let record = session.preview_record().expect("in flight");
     let worst = flatten(&record.path, FLATTEN_TOLERANCE)
@@ -198,12 +214,12 @@ fn holding_twice_is_one_snap() {
     drag(&mut session, 40, |t| {
         Vec2::new(t * 300.0, t * 40.0) + wobble((t * 39.0) as usize)
     });
-    assert!(session.assist_stroke());
+    assert!(session.assist_stroke(&nothing()));
     let ordinal = session.gesture_ordinal();
     let path = session.preview_record().expect("in flight").path;
 
     assert!(
-        !session.assist_stroke(),
+        !session.assist_stroke(&nothing()),
         "a snapped gesture cannot snap again"
     );
     assert_eq!(session.gesture_ordinal(), ordinal);
@@ -223,7 +239,7 @@ fn a_held_line_takes_the_axis_of_a_visible_guide() {
         ..Default::default()
     };
     let vp = guide.scene().vps[2].expect("Z vanishes on the canvas");
-    session.guides = vec![guide].into();
+    let up = Scaffold::of(std::slice::from_ref(&guide));
 
     // Drawn from `start`, 400px toward the vanishing point but 4° off it.
     let start = Vec2::new(-240.0, 180.0);
@@ -231,7 +247,7 @@ fn a_held_line_takes_the_axis_of_a_visible_guide() {
     drag(&mut session, 40, |t| {
         start + aim * (400.0 * t) + wobble((t * 39.0) as usize)
     });
-    assert!(session.assist_stroke(), "a rough drag is a line");
+    assert!(session.assist_stroke(&up), "a rough drag is a line");
 
     let record = session.end_stroke().expect("a stroke to commit");
     let (a, b) = (record.path[0].pos, record.path.last().unwrap().pos);
@@ -253,7 +269,7 @@ fn the_same_drag_without_a_guide_keeps_its_own_direction() {
     drag(&mut session, 40, |t| {
         start + aim * (400.0 * t) + wobble((t * 39.0) as usize)
     });
-    assert!(session.assist_stroke());
+    assert!(session.assist_stroke(&nothing()));
 
     let record = session.end_stroke().expect("a stroke to commit");
     let (a, b) = (record.path[0].pos, record.path.last().unwrap().pos);
@@ -277,7 +293,7 @@ fn steering_an_axis_line_stays_on_the_axis() {
         ..Default::default()
     };
     let vp = guide.scene().vps[2].expect("Z vanishes on the canvas");
-    session.guides = vec![guide].into();
+    let up = Scaffold::of(std::slice::from_ref(&guide));
 
     let start = Vec2::new(-240.0, 180.0);
     let aim = Vec2::from_angle(4f32.to_radians()).rotate((vp - start).normalize());
@@ -285,7 +301,7 @@ fn steering_an_axis_line_stays_on_the_axis() {
     drag(&mut session, 40, |t| {
         start + aim * (400.0 * t) + wobble((t * 39.0) as usize)
     });
-    assert!(session.assist_stroke());
+    assert!(session.assist_stroke(&up));
 
     // Swing the pointer a long way off the line, as a hand steering the far end does.
     let moved = end + Vec2::new(60.0, 220.0);
@@ -335,7 +351,7 @@ fn a_held_loop_becomes_a_circle_on_a_visible_plane() {
         radii,
         angle,
     } = plane.circle_seen(at, radius).expect("a bounded image");
-    session.guides = vec![guide].into();
+    let up = Scaffold::of(std::slice::from_ref(&guide));
 
     // Drawn a tenth too round and leaning 3° off — the two things a hand gets wrong.
     let (u, v) = (
@@ -349,7 +365,7 @@ fn a_held_loop_becomes_a_circle_on_a_visible_plane() {
             + v * (radii.y * 1.1 * a.sin())
             + wobble((t * 89.0) as usize)
     });
-    assert!(session.assist_stroke(), "a rough loop is an ellipse");
+    assert!(session.assist_stroke(&up), "a rough loop is an ellipse");
 
     let record = session.end_stroke().expect("a stroke to commit");
     let poly = flatten(&record.path, FLATTEN_TOLERANCE);
@@ -387,25 +403,21 @@ fn a_held_loop_becomes_a_circle_on_a_visible_plane() {
 
 /// The same drag with the guide's eye shut stays the ellipse it was drawn as, wonky
 /// eccentricity and all.
+///
+/// The eye is per-client, so it is not a field of the guide any more (§20.5) —
+/// shutting one is the engine leaving it out of the scaffold, which is what an
+/// empty one here stands for.
 #[test]
 fn a_hidden_plane_leaves_the_loop_alone() {
     let mut session = session();
-    let guide = PerspectiveGuide {
-        center: Vec2::new(90.0, -40.0),
-        focal: 700.0,
-        rotation: Quat::from_rotation_x(0.35) * Quat::from_rotation_y(0.5),
-        visible: false,
-        ..Default::default()
-    };
-    assert!(guide.planes()[2].is_none(), "a hidden guide put up a plane");
-    session.guides = vec![guide].into();
+    let up = Scaffold::default();
 
     let (center, radii) = (Vec2::new(40.0, -20.0), Vec2::new(200.0, 90.0));
     drag(&mut session, 90, |t| {
         let a = t * std::f32::consts::TAU;
         center + Vec2::new(radii.x * a.cos(), radii.y * a.sin()) + wobble((t * 89.0) as usize)
     });
-    assert!(session.assist_stroke());
+    assert!(session.assist_stroke(&up));
 
     // Still the drawn ellipse: 200×90, not something a plane chose.
     let record = session.end_stroke().expect("a stroke to commit");
@@ -425,11 +437,11 @@ fn a_hidden_plane_leaves_the_loop_alone() {
 #[test]
 fn a_hold_with_nothing_in_flight_is_a_no_op() {
     let mut session = session();
-    assert!(!session.assist_stroke());
+    assert!(!session.assist_stroke(&nothing()));
 
     // A shape gesture builds no stroke, and an exact marquee has nothing to snap to.
     session.start_selection(Tool::SelectRect, Vec2::ZERO);
     session.selection_to(Vec2::new(60.0, 60.0));
-    assert!(!session.assist_stroke());
+    assert!(!session.assist_stroke(&nothing()));
     assert!(session.is_selecting(), "the marquee survived the hold");
 }

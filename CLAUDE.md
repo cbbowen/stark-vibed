@@ -70,8 +70,10 @@ crates/
                    before fetching it. The file format's identity contract (§19)
   stark-model/     the document: the action log, its vocabulary, the save format
                    and the presence wire. No wgpu, no shaders, no build script
-    document/      actions, footprints, and the halves of layer/selection/fill/
-                   transform that are facts rather than tiles
+    document/      actions, footprints, the halves of layer/selection/fill/
+                   transform that are facts rather than tiles, and `guide` —
+                   the one that is *not* split, since nothing §20 derives from
+                   a camera needs a pixel (§20.5)
     io.rs          the save format, which *is* the action log (§8)
   stark-engine/    the derived view — no UI, no windowing; compiles to wasm
     document/      DocState, the timeline, and the fold that fills them

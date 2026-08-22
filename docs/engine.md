@@ -388,6 +388,7 @@ last of the three would still be a break today, which is the whole point of the 
 | 11 | `BlendMode::Drago` gained its bend `k` (§6.3) | payload on a variant that had none |
 | 12 | `BrushParams` gained `stretch`, `Modulations` a lane to drive it (§6.6) | appended |
 | 13 | Placed images (§23): `PlaceImage` joined the log and `pictures` joined the bundle | appended variant + a third bag |
+| 14 | Drawing guides became document state (§20.5): five variants joined the log | appended variants |
 
 Five of them are worth more than a row.
 

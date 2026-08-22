@@ -27,9 +27,42 @@
 //! over untouched, while the straight guide lines bow into exact circles and
 //! both poles of every axis come into view.
 //!
-//! [`PerspectiveGuide`] is one guide; the session carries a list of them
-//! (§20.5) and the panel edits it whole through
-//! [`ViewCommand::SetGuides`](crate::command::ViewCommand::SetGuides).
+//! # Why the whole of it is here, in the document
+//!
+//! A guide used to be view state — per-client, unlogged, unsaved, outside the
+//! undo history — on the argument that it is an aid for the hand holding the
+//! pen, like the pan and the zoom. That argument was wrong about what a guide
+//! *is*. A perspective set up over a drawing is part of the drawing's
+//! construction: it is what the artist reasons in, it is worth as much care as
+//! a layer, and losing it on reload — or leaving a collaborator unable to see
+//! the scaffold the work is being built on — is losing work. So a guide is a
+//! document entity now, with an id, saved in the log, replicated to peers and
+//! undoable (§20.5).
+//!
+//! The one thing that stayed per-client is **whether a guide is drawn**. That
+//! genuinely is about the hand rather than about the drawing: shutting a
+//! guide's eye to see the picture underneath must not reach across the session,
+//! must not be saved, and must not cost an undo step. It lives beside the pan
+//! and the zoom in `stark-engine`'s `Session`, which is also where the two are
+//! combined into one per-client reading of the roster (`GuideInfo`).
+//!
+//! And it defaults to **not drawn**, which is the same sentence read forwards: a
+//! document now carries every perspective anyone ever built over it, so laying
+//! them all on the canvas the moment it opens would make the scaffolding into
+//! something you have to clear away. The construction is kept; looking at it is
+//! a thing you ask for. Nothing here knows that — a camera has no eye — but it
+//! is why the derivations below gate on the guide's own controls and never on
+//! whether it is on screen.
+//!
+//! # What is derived
+//!
+//! [`PerspectiveGuide`] is one guide's camera; the document carries a roster of
+//! them keyed by [`GuideId`], and every edit is an action
+//! ([`AddGuide`](super::ActionKind::AddGuide),
+//! [`SetGuide`](super::ActionKind::SetGuide),
+//! [`SetGuideName`](super::ActionKind::SetGuideName),
+//! [`MoveGuide`](super::ActionKind::MoveGuide),
+//! [`RemoveGuide`](super::ActionKind::RemoveGuide)).
 //! [`PerspectiveGuide::scene`] derives the [`GuideScene`] the compositor's
 //! guide pass draws (§20.4), and [`PerspectiveGuide::dragged`] is the direct
 //! manipulation: the grabbed direction follows the pointer, held about the
@@ -39,14 +72,38 @@
 //! [`PerspectiveGuide::planes`] are the other direction — what the drawing
 //! assist holds a snapped stroke to: the axes a line is aimed along (§20.6) and
 //! the planes a loop is a circle on (§20.7), gathered for it as a [`Scaffold`].
-//! Everything here is plain CPU math, computed once per render and unit-tested
-//! against the classical theorems.
+//!
+//! **None of it needs a pixel**, which is what puts the derivations here beside
+//! the fact rather than leaving them in the engine: every one is a pure
+//! function of the camera, exactly as [`fill_bounds`](super::fill_bounds) and
+//! the homography solve are pure functions of their own action payloads (§2).
+//! What the engine keeps is the part that genuinely needs the GPU — packing a
+//! [`GuideScene`] into the guide pass's uniform — and the part that needs the
+//! *session*, which is the visibility filter deciding which guides are handed
+//! to [`Scaffold::of`] at all. Everything here is plain CPU math, computed once
+//! per render and unit-tested against the classical theorems.
 
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 
 use glam::{Mat3, Quat, Vec2, Vec3};
 
-use stark_model::geom::{Ellipse, principal_axis};
+use super::action::ActionId;
+use crate::geom::{Ellipse, principal_axis};
+
+/// The shortest focal length a guide may hold, canvas px (`sanitized`).
+///
+/// Not a taste limit — the panel's own range starts two orders of magnitude
+/// above it (§20.5) — but the floor under which the camera stops being one:
+/// `ray` and `project` both divide by the focal length, so at zero every
+/// direction images at infinity and the whole overlay is one uniform of
+/// `inf`. One pixel is already far past any pose an artist can reach.
+const MIN_FOCAL: f32 = 1.0;
+
+/// The shortest a quaternion may be and still name a direction to normalize
+/// towards (`sanitized`). Below it the division amplifies whatever rounding
+/// produced the value into an arbitrary pose, so the identity — looking straight
+/// down the world Z axis, the 1-point case — is the honest answer instead.
+const MIN_QUAT_SQ: f32 = 1e-12;
 
 /// A lattice whose corner sits closer than this many cells to the eye names no
 /// grid (§20.3). Not a tolerance: there all three planes pass through the eye,
@@ -90,7 +147,7 @@ const FISHEYE_LINE_EPS: f32 = 1e-3;
 /// canvas point, and the *only* thing that differs between a classical and a
 /// curvilinear perspective — the camera, the fans, the drag and the locks are
 /// all stated in direction space and never notice.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub enum Lens {
     /// The gnomonic picture plane of classical perspective: straight world
     /// lines image straight. Directions are projective (a direction and its
@@ -125,33 +182,54 @@ impl Lens {
     }
 }
 
-/// The perspective-grid guide: a camera, plus how densely to dress it
-/// (§20.1). View state — per-client, never logged, never sent — one entry of
-/// the list the `Session` carries (§20.5).
-#[derive(Clone, Debug, PartialEq)]
+/// Stable identifier for a drawing guide within a document (§20.5).
+///
+/// **The id of the action that added it**, and that is the whole of how guide
+/// identity is kept unique across peers — there is no counter here, and nothing
+/// to resync when a log is picked back up (compare
+/// [`LayerId::mint`](super::LayerId::mint), which needs both).
+///
+/// An [`ActionId`] is already the log's total-order key `(lamport, actor)`, so
+/// it is already globally unique: two actions cannot share one, therefore two
+/// guides cannot share a `GuideId`. That makes "no two guides carry the same
+/// id" a property of the representation rather than a rule a call site could
+/// forget, which is what §1 asks for wherever a guarantee can be made
+/// structural.
+///
+/// It works here and not for layers because of a difference between the two
+/// vocabularies rather than a preference: one `AddGuide` mints exactly one
+/// guide, where `DuplicateLayer` mints one id per layer of a subtree and so has
+/// to carry a map of them. An action id can name one thing.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    carbonite::Schema,
+)]
+pub struct GuideId(pub ActionId);
+
+/// The perspective-grid guide: a camera, plus how densely to dress it (§20.1).
+///
+/// **Document state** (§20.5): saved with the log, replicated to peers, and
+/// undoable like any other edit. What is *not* here is the guide's name, which
+/// the roster carries beside it because the state holds it as an `Arc<str>` and
+/// the wire as a `String` — the split
+/// [`SetLayerName`](super::ActionKind::SetLayerName) already draws — and
+/// whether it is drawn, which is per-client and lives in the session.
+///
+/// `Copy`, which it became by losing those two fields and is worth keeping so:
+/// a drag rebuilds one of these per pointer sample from the pose the press
+/// started in, and every derivation below takes `&self` and answers with
+/// something new.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct PerspectiveGuide {
-    /// What the artist calls this guide, or `None` for one never named — the
-    /// panel then shows its *place* in the list ("Perspective 2"), which is a
-    /// description rather than a name and is why it is not stored as one
-    /// (the same distinction [`LayerInfo::name`](crate::LayerInfo::name) draws).
-    ///
-    /// Normalized on the way in by the engine's [`SetGuides`] handler, so
-    /// "either absent or something you can read" is a property of the model
-    /// rather than a habit of whichever frontend collected it.
-    ///
-    /// An `Arc<str>` for the reason [`LayerInfo::name`] is one: the whole guide
-    /// list is cloned into [`ObservableState`] after *every* command, including
-    /// the pointer moves of a stroke, so a name that reallocated there would put
-    /// an allocation per guide on the drawing path to say what it said last
-    /// frame. A refcount bump costs a handful of instructions and `observe()`
-    /// stays cheap.
-    ///
-    /// [`SetGuides`]: crate::command::ViewCommand::SetGuides
-    /// [`LayerInfo::name`]: crate::LayerInfo::name
-    /// [`ObservableState`]: crate::ObservableState
-    pub name: Option<Arc<str>>,
-    /// Whether this guide is drawn — the list row's eye (§20.5).
-    pub visible: bool,
     /// The **center of view** (principal point): where the view axis meets the
     /// picture plane, in canvas px. The one point of the drawing seen without
     /// obliquity, and the center of the 45° circle.
@@ -223,13 +301,17 @@ pub struct PerspectiveGuide {
     /// when either plane it is a side of is — that is what its vanishing point
     /// and its stroke [`pencil`](Self::pencils) follow, since an axis with no
     /// plane left draws no line anywhere.
+    ///
+    /// A statement about what the guide *is*, and so document state, where the
+    /// guide's own eye is a statement about what one client is looking at and
+    /// is not.
     pub pairs: [bool; 3],
 }
 
 impl Default for PerspectiveGuide {
-    /// Unnamed and visible, centred on the canvas origin, at a moderate lens,
-    /// turned to the most-reached-for case (2-point). The caller placing a new
-    /// guide moves `center` to where the artist is looking.
+    /// Centred on the canvas origin, at a moderate lens, turned to the
+    /// most-reached-for case (2-point). The caller placing a new guide moves
+    /// `center` to where the artist is looking.
     ///
     /// The lattice stands the artist four cells above its floor and a short way
     /// in from its two walls, which under this turn puts the corner just below
@@ -240,8 +322,6 @@ impl Default for PerspectiveGuide {
     /// guide lines.
     fn default() -> Self {
         Self {
-            name: None,
-            visible: true,
             center: Vec2::ZERO,
             focal: 900.0,
             rotation: Quat::from_rotation_y(30f32.to_radians()),
@@ -254,6 +334,64 @@ impl Default for PerspectiveGuide {
 }
 
 impl PerspectiveGuide {
+    /// This camera with every number finite and in range — the guide's half of
+    /// [`ActionKind::sanitized`](super::ActionKind::sanitized), the one funnel an
+    /// action passes through on its way into the document (§21.5).
+    ///
+    /// Every field here reaches a shader: the center and the focal length are
+    /// the guide pass's own uniform lanes (§20.4), the rotation becomes the axis
+    /// frame every fan is ruled from, and the opacity multiplies the overlay. A
+    /// `NaN` in any of them is not a wrong picture but no picture — and it would
+    /// be *saved*, now that a guide is document state.
+    ///
+    /// **Idempotent**, which is what lets it run both at mint and on the way into
+    /// state without a load becoming a small edit: every step is a clamp or a
+    /// replacement, and the rotation is left exactly alone once it is near enough
+    /// to unit for [`Quat::is_normalized`] — so a second pass changes nothing a
+    /// first pass produced.
+    ///
+    /// The focal floor is one canvas pixel. Not a taste limit — the panel's own
+    /// range starts far above it (§20.5) — but the point where [`ray`](Self::ray)
+    /// and [`project`](Self::project) stop being a projection at all, since both
+    /// divide by it.
+    #[must_use]
+    pub fn sanitized(self) -> Self {
+        /// A finite replacement, or the fallback — the same shape three times
+        /// below, and worth naming so the fallback reads beside what it stands in
+        /// for rather than after two lines of `is_finite`.
+        fn or(v: f32, fallback: f32) -> f32 {
+            if v.is_finite() { v } else { fallback }
+        }
+        let default = Self::default();
+        Self {
+            center: if self.center.is_finite() {
+                self.center
+            } else {
+                default.center
+            },
+            focal: or(self.focal, default.focal).max(MIN_FOCAL),
+            // Left untouched once it is a rotation, so this is idempotent. A
+            // quaternion that is not one — un-normalized by a drag's accumulated
+            // error past the tolerance, or `NaN` — is renormalized, and one with
+            // no direction left to normalize towards looks down the world Z axis,
+            // which is the identity pose and the honest answer to "no rotation
+            // was stated".
+            rotation: match self.rotation {
+                q if q.is_finite() && q.is_normalized() => q,
+                q if q.is_finite() && q.length_squared() > MIN_QUAT_SQ => q.normalize(),
+                _ => Quat::IDENTITY,
+            },
+            lens: self.lens,
+            lattice: if self.lattice.is_finite() {
+                self.lattice
+            } else {
+                default.lattice
+            },
+            opacity: or(self.opacity, 1.0).clamp(0.0, 1.0),
+            pairs: self.pairs,
+        }
+    }
+
     /// The world axes as directions in **camera space** (§20.1) — the columns
     /// of [`rotation`](Self::rotation) as a matrix.
     ///
@@ -350,7 +488,7 @@ impl PerspectiveGuide {
     #[must_use]
     pub fn dragged(&self, from: Vec2, to: Vec2, locked: [bool; 3]) -> Self {
         if locked.iter().filter(|l| **l).count() >= 2 {
-            return self.clone();
+            return *self;
         }
         let (r0, r1) = (self.ray(from), self.ray(to));
         let delta = match locked.iter().position(|l| *l) {
@@ -360,7 +498,7 @@ impl PerspectiveGuide {
         };
         Self {
             rotation: (delta * self.rotation).normalize(),
-            ..self.clone()
+            ..*self
         }
     }
 
@@ -420,10 +558,10 @@ impl PerspectiveGuide {
     /// the X and Z vanishing points turns about Y" is a step it is easy to take
     /// off by one.
     ///
-    /// `None` for a horizon that is not on the screen to be grabbed: a hidden
-    /// guide, one turned down to nothing, a plane switched off, or a trace at
-    /// infinity — the same rule [`pencils`](Self::pencils) is gated by, over
-    /// the same controls, because it exists for the same reason. A horizon
+    /// `None` for a horizon that is not on the screen to be grabbed: a guide
+    /// turned down to nothing, a plane switched off, or a trace at infinity —
+    /// the same rule [`pencils`](Self::pencils) is gated by, over the same
+    /// controls, because it exists for the same reason. A horizon
     /// belongs to a plane rather than to the axis it turns about, and follows
     /// that plane's flag: it is the plane's own infinity that is being drawn.
     ///
@@ -433,7 +571,7 @@ impl PerspectiveGuide {
     /// never enters (§20.8) — where a pencil would have had to promise a
     /// straight line the fisheye does not draw.
     pub fn horizons(&self) -> [Option<PairTrace>; 3] {
-        let shown = self.visible && self.opacity > 0.0;
+        let shown = self.opacity > 0.0;
         std::array::from_fn(|n| {
             // Pair `(n+1, n+2)` is the plane axis `n` is normal to.
             let k = (n + 1) % 3;
@@ -447,16 +585,22 @@ impl PerspectiveGuide {
     /// `None` for an axis that is not on the screen.
     ///
     /// Gated on what is *shown* rather than on what exists, because a snap the
-    /// artist cannot see coming reads as the tool bending a considered line. A
-    /// hidden guide, an overlay turned down to nothing, and an axis with no
-    /// plane left to rule all offer nothing — the same rule stated once, over
-    /// the same three controls the panel puts on the bar.
+    /// artist cannot see coming reads as the tool bending a considered line. An
+    /// overlay turned down to nothing and an axis with no plane left to rule
+    /// both offer nothing — the same rule stated once, over the controls the
+    /// panel puts on the bar.
     ///
     /// That last one is [`is_drawn`](Self::is_drawn), and it is the same rule
     /// rather than a second one. A guide line is a line *in a pair plane*
     /// (§20.3), so an axis draws only on the two planes it is a side of; switch
     /// both of those off and nothing of the axis appears, so nothing of it may
     /// bend a stroke — even though its vanishing point is as computable as ever.
+    ///
+    /// The guide's own **eye** is the third way to be unshown, and it is
+    /// deliberately not asked here: it is per-client, so it is not a fact this
+    /// type carries (§20.5). It is applied one level up instead, by
+    /// [`Scaffold::of`] being handed only the guides this client draws — one
+    /// filter at one place rather than a term repeated in three derivations.
     ///
     /// A **fisheye** guide offers nothing either (§20.8): its guide lines are
     /// circles, and the pencil this returns describes straight lines — a snap
@@ -465,7 +609,7 @@ impl PerspectiveGuide {
     /// exists to prevent. Snapping strokes to the fisheye's arcs is its own
     /// future piece of work.
     pub fn pencils(&self) -> [Option<AxisPencil>; 3] {
-        let shown = self.visible && self.opacity > 0.0 && self.lens == Lens::Rectilinear;
+        let shown = self.opacity > 0.0 && self.lens == Lens::Rectilinear;
         let dirs = self.axis_dirs();
         std::array::from_fn(|i| {
             (shown && self.is_drawn(i)).then_some(AxisPencil {
@@ -501,10 +645,7 @@ impl PerspectiveGuide {
     /// axis, so the three planes are this guide's one axis matrix with its
     /// columns cyclically shifted.
     pub fn planes(&self) -> [Option<AxisPlane>; 3] {
-        let shown = self.visible
-            && self.opacity > 0.0
-            && self.focal > 0.0
-            && self.lens == Lens::Rectilinear;
+        let shown = self.opacity > 0.0 && self.focal > 0.0 && self.lens == Lens::Rectilinear;
         let dirs = self.axis_dirs();
         let lens = Mat3::from_cols(
             Vec3::new(self.focal, 0.0, 0.0),
@@ -823,32 +964,40 @@ fn congruent(conic: Mat3, m: Mat3) -> Mat3 {
 ///
 /// Gathered whole, so the assist takes one argument and never sees a
 /// [`PerspectiveGuide`] — what it needs from the guides is a list of geometry,
-/// not a list of guides, and nothing about a name or an opacity survives the
-/// crossing.
+/// not a list of guides, and nothing about a name, an eye or an opacity
+/// survives the crossing.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scaffold {
-    /// Every shown axis of every visible guide.
+    /// Every shown axis of every guide handed in.
     pub axes: Vec<AxisPencil>,
     /// Every plane *both* of whose axes are shown.
     pub planes: Vec<AxisPlane>,
 }
 
 impl Scaffold {
-    /// What a list of guides puts up. Nothing visible in the list allocates
-    /// nothing, which is the common case — most strokes are drawn without a grid.
-    pub fn of(guides: &[PerspectiveGuide]) -> Self {
-        Self {
-            axes: guides
-                .iter()
-                .flat_map(PerspectiveGuide::pencils)
-                .flatten()
-                .collect(),
-            planes: guides
-                .iter()
-                .flat_map(PerspectiveGuide::planes)
-                .flatten()
-                .collect(),
+    /// What a run of guides puts up. Nothing shown allocates nothing, which is
+    /// the common case — most strokes are drawn without a grid.
+    ///
+    /// **`guides` is what this client draws**, not the document's whole roster:
+    /// a guide's eye is per-client (§20.5), so the caller drops the ones it has
+    /// shut before handing them over. That is the one place the visibility
+    /// filter is applied — [`pencils`](PerspectiveGuide::pencils) and
+    /// [`planes`](PerspectiveGuide::planes) gate on the document's own controls
+    /// and know nothing about an eye — and the caller is the engine, which is
+    /// the only side holding both halves.
+    ///
+    /// Takes an iterator rather than a slice for exactly that reason: the
+    /// filtered roster is a `filter` over the document's, and asking for a slice
+    /// would make every snap collect one. Both lists are filled in the **one**
+    /// pass that costs, which is also what keeps the iterator from needing to be
+    /// `Clone` — `rpds`'s is not.
+    pub fn of<'a>(guides: impl IntoIterator<Item = &'a PerspectiveGuide>) -> Self {
+        let mut out = Self::default();
+        for g in guides {
+            out.axes.extend(g.pencils().into_iter().flatten());
+            out.planes.extend(g.planes().into_iter().flatten());
         }
+        out
     }
 }
 
@@ -1252,7 +1401,7 @@ mod tests {
         let coarse = guide(0.5, 0.35, 0.2);
         let fine = PerspectiveGuide {
             lattice: coarse.lattice * 2.0,
-            ..coarse.clone()
+            ..coarse
         };
         for p in [
             coarse.center + Vec2::new(-380.0, 210.0),
@@ -1360,10 +1509,6 @@ mod tests {
         assert!(g.pencils().iter().all(Option::is_none), "nothing drawn");
 
         g.pairs = [true; 3];
-        g.visible = false;
-        assert!(g.pencils().iter().all(Option::is_none), "a hidden guide");
-
-        g.visible = true;
         g.opacity = 0.0;
         assert!(g.pencils().iter().all(Option::is_none), "an invisible one");
     }
@@ -1702,10 +1847,6 @@ mod tests {
         assert!(g.horizons()[0].is_some() && g.horizons()[2].is_some());
 
         g.pairs = [true; 3];
-        g.visible = false;
-        assert!(g.horizons().iter().all(Option::is_none), "a hidden guide");
-
-        g.visible = true;
         g.opacity = 0.0;
         assert!(g.horizons().iter().all(Option::is_none), "an invisible one");
     }

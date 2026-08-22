@@ -9,6 +9,7 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
 use crate::view::ViewTransform;
+use stark_model::document::GuideScene;
 use stark_shaders::mirror::guides::decl as gd;
 
 /// The guide overlay's one binding (§20.4).
@@ -36,8 +37,8 @@ pub(super) use stark_shaders::mirror::guides::Guide as GuideUniform;
 /// A free function rather than the `GuideUniform::pack` it replaced: the type is
 /// generated into `stark-shaders` now, and an inherent impl on another crate's type
 /// is not allowed.
-fn pack_guides(scene: &crate::guides::GuideScene, view: ViewTransform) -> GuideUniform {
-    use crate::guides::{Lens, PairTrace};
+fn pack_guides(scene: &GuideScene, view: ViewTransform) -> GuideUniform {
+    use stark_model::document::{Lens, PairTrace};
     let inv = view.inverse_linear();
     let org = view.screen_to_canvas(stark_model::geom::Vec2::ZERO);
     let point = |v: Option<stark_model::geom::Vec2>| match v {
@@ -132,7 +133,7 @@ impl GuidePass {
         ctx: &GpuContext,
         encoder: &mut wgpu::CommandEncoder,
         slots: &mut UniformSlots<GuideUniform>,
-        scenes: &[crate::guides::GuideScene],
+        scenes: &[GuideScene],
         view: ViewTransform,
         target: &wgpu::TextureView,
     ) {

@@ -14,7 +14,9 @@ use super::selection::Selection;
 use stark_model::SurfaceId;
 use stark_model::document::ActorId;
 use stark_model::document::Filter;
-use stark_model::document::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
+use stark_model::document::{
+    BlendMode, GuideId, LayerId, MattePaint, MatteRegion, PerspectiveGuide, Place,
+};
 use stark_model::geom::{TileCoord, Vec2};
 
 /// Inclusive tile-coordinate bounding box of all populated tiles (§6),
@@ -141,6 +143,51 @@ pub struct DocState {
     /// substrate sits under everything, is lit, and the canvas weave shows through
     /// it (the media pass composites paint over it, §6.3).
     pub background: [f32; 3],
+    /// The **drawing guides** the artist has set up, in roster order (§20.5).
+    ///
+    /// Document state on the argument the substrate above makes, and it took a
+    /// while to see it: a perspective built over a drawing is part of the
+    /// drawing's construction, not a preference about how it is being looked at.
+    /// Held as view state, it was lost on reload and invisible to collaborators —
+    /// work thrown away by the same reasoning that would have thrown away the
+    /// paper color.
+    ///
+    /// Whether a guide is *drawn* is the half that genuinely is per-client, and it
+    /// is not here: it lives beside the pan and the zoom in `Session`, and the two
+    /// are combined into one reading of the roster by `Engine::observe` (§20.5).
+    ///
+    /// Private where `surface` and `background` are `pub`, for
+    /// [`bounds`](Self::bounds)' reason rather than theirs: those two are a value,
+    /// this is a **list with an invariant** — no two entries share an id — and the
+    /// insert that holds it is the only way in.
+    guides: Vector<Guide>,
+}
+
+/// One guide in the roster: the camera, and what the artist calls it (§20.5).
+///
+/// The engine's half of the `GuideId`/`PerspectiveGuide` pair, and the whole of
+/// what it adds is the name — held as an `Arc<str>` for the reason
+/// [`Layer::name`](super::layer::Layer) is one, where the action carrying it
+/// holds a `String` because that is what goes on the wire.
+///
+/// A struct rather than the `(GuideId, Option<Arc<str>>, PerspectiveGuide)` it
+/// would otherwise be, on `Ellipse`'s argument: a tuple of three says nothing
+/// about which of them is which.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Guide {
+    pub id: GuideId,
+    /// What the artist calls this guide, or `None` for one never named — the
+    /// panel then shows its *place* in the roster ("Perspective 2"), which is a
+    /// description rather than a name and is why it is not stored as one (the
+    /// same distinction [`Layer::name`](super::layer::Layer) draws).
+    ///
+    /// Normalized on the way in by the engine's command handler, the same funnel
+    /// a layer's name passes through (`normalize_name`), so "either absent or
+    /// something you can read" is a property of the document rather than a habit
+    /// of whichever frontend collected it.
+    pub name: Option<Arc<str>>,
+    /// The camera, and how densely to dress it — everything §20 derives from.
+    pub camera: PerspectiveGuide,
 }
 
 /// The default substrate: a light neutral grey ground. Neutral on purpose — an HDR
@@ -178,6 +225,7 @@ impl DocState {
             selections: HashTrieMap::new(),
             surface: DEFAULT_SURFACE,
             background: DEFAULT_BACKGROUND,
+            guides: Vector::new(),
         }
         .insert_layer(id, None, None)
     }
@@ -211,6 +259,127 @@ impl DocState {
     pub fn with_background(&self, background: [f32; 3]) -> Self {
         Self {
             background,
+            ..self.clone()
+        }
+    }
+
+    // --- the drawing-guide roster (§20.5) -----------------------------------
+
+    /// The guides the artist has set up, in roster order.
+    ///
+    /// Order changes no pixel — every guide a client draws is drawn, whichever
+    /// row it sits on — so this is a `Vector` for the arrangement's sake alone,
+    /// which is the artist's own and is kept for the reason a layer's name is.
+    /// Lookup is a scan, and deliberately: a roster is a handful of entries,
+    /// where a map would cost the order this exists to hold.
+    pub fn guides(&self) -> &Vector<Guide> {
+        &self.guides
+    }
+
+    /// The guide with this id, or `None` if it is not there — which is what a
+    /// concurrent removal looks like from every action that names one.
+    pub fn guide(&self, id: GuideId) -> Option<&Guide> {
+        self.guides.iter().find(|g| g.id == id)
+    }
+
+    /// The roster with a new guide directly after `after`, or at its head when
+    /// nothing is named (§20.5).
+    ///
+    /// An anchor that is not there lands the guide at the head — deterministic,
+    /// taken the same way by every peer, and the same shape [`Place::Above`]
+    /// takes for a sibling that has gone.
+    pub fn insert_guide(
+        &self,
+        id: GuideId,
+        camera: PerspectiveGuide,
+        after: Option<GuideId>,
+        name: Option<Arc<str>>,
+    ) -> Self {
+        // An id already in the roster is refused rather than doubled. It cannot
+        // arise — a `GuideId` *is* an action's id and an action is applied once —
+        // but the roster is a list rather than a map, so nothing about the
+        // representation says so, and a lookup answering the first of two would
+        // be the quiet kind of divergence.
+        if self.guide(id).is_some() {
+            return self.clone();
+        }
+        let at = slot_after(&self.guides, after);
+        Self {
+            guides: insert_at(&self.guides, at, &Guide { id, name, camera }),
+            ..self.clone()
+        }
+    }
+
+    /// The roster without `id`. A no-op when it is already gone.
+    pub fn remove_guide(&self, id: GuideId) -> Self {
+        let Some(i) = self.guides.iter().position(|g| g.id == id) else {
+            return self.clone();
+        };
+        Self {
+            guides: remove_at(&self.guides, i),
+            ..self.clone()
+        }
+    }
+
+    /// Reshape a guide — the whole camera at once (§20.5). A no-op on a guide
+    /// that is not there.
+    pub fn set_guide(&self, id: GuideId, camera: PerspectiveGuide) -> Self {
+        self.map_guide(id, |g| Guide {
+            camera,
+            ..g.clone()
+        })
+    }
+
+    /// Name a guide, or with `None` take its name away so it goes back to being
+    /// described by its place in the roster.
+    pub fn set_guide_name(&self, id: GuideId, name: Option<Arc<str>>) -> Self {
+        self.map_guide(id, |g| Guide {
+            name: name.clone(),
+            ..g.clone()
+        })
+    }
+
+    /// Move a guide so it sits directly after `after`, or at the roster's head.
+    ///
+    /// Taken out and put back, **in that order**, which is the only reading under
+    /// which `after` is an anchor in the roster the drag was drawn against: the
+    /// slot is re-derived against the shortened list, so an anchor above the row
+    /// that left keeps the place it names rather than one past it.
+    pub fn move_guide(&self, id: GuideId, after: Option<GuideId>) -> Self {
+        let Some(from) = self.guides.iter().position(|g| g.id == id) else {
+            return self.clone();
+        };
+        let moved = self.guides.get(from).expect(IN_RANGE).clone();
+        let rest = remove_at(&self.guides, from);
+        let to = slot_after(&rest, after);
+        Self {
+            guides: insert_at(&rest, to, &moved),
+            ..self.clone()
+        }
+    }
+
+    /// The whole roster, replaced — what a patch puts back when an undo crosses a
+    /// guide edit. [`Resource::Guides`] is one resource, so a patch restores one
+    /// thing (§12.6).
+    ///
+    /// [`Resource::Guides`]: stark_model::document::Resource::Guides
+    pub(crate) fn with_guides(&self, guides: Vector<Guide>) -> Self {
+        Self {
+            guides,
+            ..self.clone()
+        }
+    }
+
+    /// Rewrite one guide in place, leaving the roster's order alone. A guide that
+    /// is not there is left alone too, which is how every action naming one
+    /// declines.
+    fn map_guide(&self, id: GuideId, f: impl FnOnce(&Guide) -> Guide) -> Self {
+        let Some(i) = self.guides.iter().position(|g| g.id == id) else {
+            return self.clone();
+        };
+        let guide = f(self.guides.get(i).expect(IN_RANGE));
+        Self {
+            guides: self.guides.set(i, guide).expect(IN_RANGE),
             ..self.clone()
         }
     }
@@ -540,7 +709,7 @@ impl DocState {
     /// absent id, like every other content setter here.
     ///
     /// The whole filter travels rather than one knob, on the argument
-    /// [`ViewCommand::SetGuides`](crate::command::ViewCommand::SetGuides) makes: the
+    /// [`set_guide`](Self::set_guide) makes for a guide's whole camera (§20.5): the
     /// frontend reads the current settings off the projection, moves one of them, and
     /// sends the value back, so a filter that grows a parameter needs no command of
     /// its own — and neither does the next filter kind.
@@ -760,6 +929,7 @@ impl DocState {
             selections: self.selections.clone(),
             surface: self.surface,
             background: self.background,
+            guides: self.guides.clone(),
         }
     }
 }
@@ -830,13 +1000,7 @@ fn copy_subtree(layer: &Layer, ids: &[(LayerId, LayerId)]) -> Option<Layer> {
 fn remove_in(layers: &Vector<Layer>, id: LayerId) -> Option<(Vector<Layer>, Layer)> {
     if let Some(i) = layers.iter().position(|l| l.id == id) {
         let taken = layers.get(i).expect(IN_RANGE).clone();
-        let mut out = Vector::new();
-        for (j, l) in layers.iter().enumerate() {
-            if j != i {
-                out = out.push_back(l.clone());
-            }
-        }
-        return Some((out, taken));
+        return Some((remove_at(layers, i), taken));
     }
     for (i, l) in layers.iter().enumerate() {
         if let Some((carries, taken)) = remove_in(&l.carries, id) {
@@ -861,20 +1025,45 @@ fn splice(stack: &Vector<Layer>, place: Place, layer: &Layer) -> Vector<Layer> {
     insert_at(stack, at, layer)
 }
 
-/// `stack` with `layer` at `index`, counting from the bottom. `rpds::Vector` has
-/// no insert-at, so this rebuilds.
-fn insert_at(stack: &Vector<Layer>, index: usize, layer: &Layer) -> Vector<Layer> {
+/// `v` with `item` at `index`, counting from the bottom. `rpds::Vector` has no
+/// insert-at, so this rebuilds.
+///
+/// Generic because the argument is about the collection and not about what is in
+/// it: a layer stack and the guide roster (§20.5) are both ordered lists whose
+/// only structural edit is putting one entry somewhere.
+fn insert_at<T: Clone>(v: &Vector<T>, index: usize, item: &T) -> Vector<T> {
     let mut out = Vector::new();
-    for (i, l) in stack.iter().enumerate() {
+    for (i, l) in v.iter().enumerate() {
         if i == index {
-            out = out.push_back(layer.clone());
+            out = out.push_back(item.clone());
         }
         out = out.push_back(l.clone());
     }
-    if index >= stack.len() {
-        out = out.push_back(layer.clone());
+    if index >= v.len() {
+        out = out.push_back(item.clone());
     }
     out
+}
+
+/// `v` without the entry at `index` — [`insert_at`]'s other half, and rebuilding
+/// for its reason.
+fn remove_at<T: Clone>(v: &Vector<T>, index: usize) -> Vector<T> {
+    let mut out = Vector::new();
+    for (i, l) in v.iter().enumerate() {
+        if i != index {
+            out = out.push_back(l.clone());
+        }
+    }
+    out
+}
+
+/// The index the anchor `after` names in `roster`: one past the guide it names,
+/// or the head when it names nothing — or names a guide that is no longer there,
+/// which every peer reads the same way (§20.5).
+fn slot_after(roster: &Vector<Guide>, after: Option<GuideId>) -> usize {
+    after
+        .and_then(|id| roster.iter().position(|g| g.id == id))
+        .map_or(0, |i| i + 1)
 }
 
 #[cfg(test)]

@@ -69,6 +69,7 @@ stark/
 │   │       │   ├── selection.rs # SelectionOp and its shapes (§6.8)
 │   │       │   ├── fill.rs      # FillOp, and the box it writes (§18.0.4)
 │   │       │   ├── filter.rs    # the filter parameters (§21)
+│   │       │   ├── guide.rs     # the perspective guide, and all §20 derives (§20.5)
 │   │       │   ├── transform.rs # the maps, and the homography solve (§16)
 │   │       │   └── warp.rs      # the warp lattice (§16.9)
 │   │       ├── io.rs           # the save format, which *is* the action log (§8)
@@ -93,7 +94,7 @@ stark/
 │   │   │   ├── filters.rs      # the filter passes' host-side numbers (§6.10, §21)
 │   │   │   ├── document/       # the state the log folds into
 │   │   │   │   ├── apply.rs     # impl Materialize for DocState — the fold (§4)
-│   │   │   │   ├── state.rs     # DocState: layers, per-actor selections, surface
+│   │   │   │   ├── state.rs     # DocState: layers, selections, surface, guides
 │   │   │   │   ├── timeline.rs  # Timeline trait; Linear + Replicated impls
 │   │   │   │   ├── layer.rs     # Layer, LayerContent, PaintTiles (§14)
 │   │   │   │   ├── selection.rs # the mask the op produces (§6.8)
@@ -183,6 +184,15 @@ already enforces, which is why the boundary can be checked rather than remembere
 Four modules are cut down the middle by that line and keep the same file name on
 both sides — `document/layer.rs`, `document/selection.rs`, `document/fill.rs`,
 `document/transform.rs`. Reading an import tells you which half you are in.
+
+`document/guide.rs` (§20.5) is the module the rule places *whole*, and it is worth
+knowing why. Everything §20 derives from a perspective — its vanishing points, its
+fans, the draw-ready `GuideScene`, the `Scaffold` a snapped stroke is held to — is
+a pure function of the camera and touches no state, no device and no shader, which
+puts all of it beside the fact, on the argument that already put `fill_bounds` and
+the homography solve there. The engine keeps the two pieces that genuinely need
+its side: packing a `GuideScene` into the guide pass's uniform, and the roster's
+per-client half — which of the document's guides *this* client is looking at.
 
 **An action folds over the state through `stark_model::document::Materialize`.** The
 history crate asks for `history::Action`, whose `State` would be `DocState`; with the
@@ -319,6 +329,11 @@ pub enum DocCommand {              // each becomes an Action
     InvertSelection,
     SetSurface(SurfaceId),         // which canvas the piece is painted on (§6.4)
     SetBackground([f32; 3]),       // the substrate (§15.5)
+    AddGuide { guide, after, name },  // a perspective to construct through (§20.5)
+    RemoveGuide(GuideId),
+    SetGuide(GuideId, PerspectiveGuide),   // the whole camera, per settled gesture
+    SetGuideName(GuideId, Option<String>),
+    MoveGuide { id, after },       // the roster's arrangement
 }
 
 pub enum ViewCommand {             // never logged, never sent
@@ -341,6 +356,8 @@ pub enum ViewCommand {             // never logged, never sent
     PreviewLayerOpacity(..),       // §14.6  — the in-flight half of a slider drag
     PreviewLayerBlend(..),         // §6.3   — the same, for a mode's own parameters
     SetShowPeerSelections(bool),   // §17.3
+    PreviewGuide(..),              // §20.5 — the in-flight half of a guide drag
+    SetGuideVisible(GuideId, bool),// §20.5 — a guide's eye is *yours*, not the doc's
 }
 
 pub enum PeerCommand {             // never logged, but published (§17.7)
@@ -436,6 +453,8 @@ pub enum ActionKind {
     SetLayerBlend(LayerId, BlendMode), SetLayerClip(LayerId, bool), ...
     Select(SelectionOp), InvertSelection,
     SetSurface(SurfaceId), SetBackground([f32; 3]),
+    AddGuide { .. }, RemoveGuide(GuideId), SetGuide(..), SetGuideName(..),
+    MoveGuide { .. },           // the drawing guides (§20.5)
     Undo(ActionId),             // undo-as-an-action (§5.4 / §12.3)
 }
 

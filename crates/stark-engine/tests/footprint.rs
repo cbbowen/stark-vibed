@@ -35,8 +35,8 @@ use stark_model::AssetId;
 use stark_model::SurfaceId;
 use stark_model::document::{
     ActionId, ActionKind, ActorId, BlendMode, ColorAdjust, FillOp, Filter, LayerId, MattePaint,
-    MatteRegion, PerspectiveMap, Place, Prop, Resource, SelectionMode, SelectionOp, SelectionShape,
-    TransformMap, WarpMap, footprint, rect_corners,
+    MatteRegion, PerspectiveGuide, PerspectiveMap, Place, Prop, Resource, SelectionMode,
+    SelectionOp, SelectionShape, TransformMap, WarpMap, footprint, rect_corners,
 };
 use stark_model::geom::{Affine2, IVec2, TileCoord, Vec2};
 
@@ -133,6 +133,13 @@ fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
     }
     if shape(before) != shape(after) {
         out.push(Diff::Named(Resource::StackOrder));
+    }
+    // The guide roster is one coarse resource (§20.5), so this compares it as one
+    // thing: every guide and the order they sit in. `Guide` is `PartialEq`, so the
+    // whole roster answers in a line — which is the point of the resource being
+    // coarse and the reason there is nothing finer here to miss.
+    if before.guides() != after.guides() {
+        out.push(Diff::Named(Resource::Guides));
     }
 
     // Every actor either state has a mask for. An absent entry *is* the
@@ -239,13 +246,18 @@ fn slot(kind: &ActionKind) -> usize {
         ActionKind::SetFilter(..) => 23,
         ActionKind::MergeLayerDown { .. } => 24,
         ActionKind::PlaceImage { .. } => 25,
+        ActionKind::AddGuide { .. } => 26,
+        ActionKind::SetGuide(..) => 27,
+        ActionKind::SetGuideName(..) => 28,
+        ActionKind::MoveGuide { .. } => 29,
+        ActionKind::RemoveGuide(_) => 30,
     }
 }
 
 /// How many kinds there are — `slot`'s range, bumped with its last arm. [`NAMES`]
 /// is indexed by slot and its length is held to this by the type, so a slot added
 /// without a name is a compile error rather than a worse failure message.
-const KINDS: usize = 26;
+const KINDS: usize = 31;
 
 /// What to call each slot when the run has missed one. `ActionKind::label`'s own
 /// captions, which is what a reader of the failure will go looking for.
@@ -276,6 +288,11 @@ const NAMES: [&str; KINDS] = [
     "Filter",
     "Merge down",
     "Place image",
+    "Add guide",
+    "Perspective guide",
+    "Rename guide",
+    "Reorder guide",
+    "Remove guide",
 ];
 
 /// The action kinds a run actually reached, by [`slot`].
@@ -745,6 +762,69 @@ fn every_action_touches_only_what_it_declares() {
         seen,
         "merge down",
         DocCommand::MergeLayerDown(upper),
+    );
+
+    // The drawing guides (§20.5). No pixel moves for any of these — a guide is
+    // geometry to construct through — which is exactly why they belong in this
+    // run: `Resource::Guides` is a resource nothing else claims, and a footprint
+    // that forgot to claim it would be invisible to every other check here.
+    step(
+        &mut engine,
+        seen,
+        "add a guide",
+        DocCommand::AddGuide {
+            guide: PerspectiveGuide::default(),
+            after: None,
+            name: Some("horizon".into()),
+        },
+    );
+    let first = engine.observe().guides.first().expect("the guide").id;
+    step(
+        &mut engine,
+        seen,
+        "a second guide",
+        DocCommand::AddGuide {
+            guide: PerspectiveGuide {
+                focal: 640.0,
+                ..PerspectiveGuide::default()
+            },
+            after: Some(first),
+            name: None,
+        },
+    );
+    let second_guide = engine.observe().guides.last().expect("the guide").id;
+    step(
+        &mut engine,
+        seen,
+        "reshape a guide",
+        DocCommand::SetGuide(
+            first,
+            PerspectiveGuide {
+                focal: 1200.0,
+                ..PerspectiveGuide::default()
+            },
+        ),
+    );
+    step(
+        &mut engine,
+        seen,
+        "rename a guide",
+        DocCommand::SetGuideName(first, Some("the ground".into())),
+    );
+    step(
+        &mut engine,
+        seen,
+        "reorder the guides",
+        DocCommand::MoveGuide {
+            id: first,
+            after: Some(second_guide),
+        },
+    );
+    step(
+        &mut engine,
+        seen,
+        "remove a guide",
+        DocCommand::RemoveGuide(second_guide),
     );
 
     // What the run actually reached. Without this the test could rot into

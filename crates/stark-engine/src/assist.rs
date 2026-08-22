@@ -41,9 +41,9 @@ use std::f32::consts::TAU;
 
 use nalgebra::{Const, Dyn, OMatrix};
 
-use crate::guides::{AxisPencil, AxisPlane, Scaffold};
 use crate::path::{FLATTEN_TOLERANCE, arc_profile, clamp_tilt, flatten, param_at};
 use crate::spline::{CubicBSpline, Observations, SplineIndex};
+use stark_model::document::{AxisPencil, AxisPlane, Scaffold};
 use stark_model::geom::{Ellipse, Vec2, principal_axis};
 use stark_model::path::ControlPoint;
 
@@ -1471,7 +1471,7 @@ mod tests {
 
     // --- lines on a guide axis (§20.6) -------------------------------------
 
-    use crate::guides::PerspectiveGuide;
+    use stark_model::document::PerspectiveGuide;
 
     /// A guide in general position: three finite vanishing points, none of its axes
     /// level, so nothing here can pass by accidentally agreeing with the canvas.
@@ -1576,11 +1576,16 @@ mod tests {
         }
     }
 
-    /// What the artist cannot see cannot bend a line: the same trace, with the guide's
-    /// eye shut, is the hand's own.
+    /// What the artist cannot see cannot bend a line: the same trace, with the
+    /// guide's eye shut, is the hand's own.
+    ///
+    /// The eye is per-client, so it is not a field of the guide any more (§20.5) —
+    /// shutting one is the engine leaving it out of the scaffold, and what this
+    /// pins is that the assist reads the scaffold and nothing else. A guide it was
+    /// not handed cannot reach a stroke however visible it is to somebody.
     #[test]
     fn a_hidden_guide_does_not_snap() {
-        let mut g = guide();
+        let g = guide();
         let start = Vec2::new(-260.0, 210.0);
         let trace = aimed(&g, 1, start, 420.0, 0.05, 2.5);
         assert!(
@@ -1590,13 +1595,8 @@ mod tests {
             .2
         );
 
-        g.visible = false;
-        assert!(
-            !as_line(
-                recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g))).expect("a line")
-            )
-            .2
-        );
+        let shut = Scaffold::of(std::iter::empty());
+        assert!(!as_line(recognize(&trace, TOL, &shut).expect("a line")).2);
     }
 
     /// A curve is still a curve. The grid may only choose *which* line a line is, and
@@ -1805,9 +1805,19 @@ mod tests {
         assert!(claimed(&g), "a plane went with its neighbours");
         g.pairs = [true, true, false];
         assert!(!claimed(&g), "a plane survived being switched off");
+        // …and a guide this client has hidden reaches nothing at all. The eye is
+        // per-client now (§20.5), so shutting one is the engine leaving the guide
+        // out of the scaffold rather than a flag on the guide itself.
         g.pairs = [true; 3];
-        g.visible = false;
-        assert!(!claimed(&g), "a plane survived the guide's eye");
+        assert!(claimed(&g));
+        assert!(
+            as_ellipse(
+                recognize(&trace, TOL, &Scaffold::of(std::iter::empty())).expect("an ellipse")
+            )
+            .3
+            .is_none(),
+            "a guide that was never handed over reshaped a loop"
+        );
     }
 
     /// The width of the window is the feature, not an implementation detail: a hand

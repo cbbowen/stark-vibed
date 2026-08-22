@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::brush::BrushParams;
 use super::fill::FillOp;
 use super::filter::Filter;
+use super::guide::{GuideId, PerspectiveGuide};
 use super::layer::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
 use super::selection::SelectionOp;
 use crate::SurfaceId;
@@ -469,6 +470,84 @@ pub enum ActionKind {
         /// exactly as a stamp brush's shape is (§6.6, §23).
         image: crate::AssetId,
     },
+    /// Add a **drawing guide** — a perspective grid to construct through
+    /// (§20.5).
+    ///
+    /// Logged like a layer, and for the same kind of reason `SetSurface` and
+    /// `SetBackground` are: a perspective set up over a drawing is part of the
+    /// drawing's construction, not a preference about how it is being looked at.
+    /// Unlogged, it would be lost on reload and invisible to collaborators, and
+    /// a scaffold the work is built on is worth exactly as much care as a layer.
+    ///
+    /// **It mints no id.** A guide's identity is the id of *this* action
+    /// ([`GuideId`]), so there is no counter to partition, nothing for
+    /// `minted_layers` to report, and no way for two peers adding at once to
+    /// land on one id. What makes that available here and not to `AddLayer` is
+    /// that this mints exactly one thing — see [`GuideId`].
+    ///
+    /// `after` names the guide it lands directly after in the roster, or the
+    /// **head** of it when `None`. A flat list of `n` guides has `n + 1` places
+    /// to land in and this reaches every one of them, which is why guides need
+    /// no [`Place`] where a layer stack does: `Place` exists because a stack's
+    /// two-state anchor could not say "under the bottom layer", and `None`
+    /// meaning the head is that same third state spelled without a type.
+    ///
+    /// The name arrives with the guide rather than in a following
+    /// [`SetGuideName`](Self::SetGuideName) for
+    /// [`PlaceImage`](Self::PlaceImage)'s reason: duplicating a guide copies the
+    /// artist's own word for it, and spelling that as two actions would put one
+    /// gesture two undo steps deep with a nameless guide in between.
+    AddGuide {
+        guide: PerspectiveGuide,
+        /// The guide this one lands directly after, or the head of the roster
+        /// when `None`.
+        after: Option<GuideId>,
+        /// What to call it, or `None` to leave it described by its place in the
+        /// roster ("Perspective 2"). A `String` rather than the `Arc<str>` the
+        /// state holds, exactly as [`SetLayerName`](Self::SetLayerName) carries
+        /// one: this is the file and wire form, where a shared pointer means
+        /// nothing.
+        name: Option<String>,
+    },
+    /// Remove a drawing guide (§20.5). A no-op on a guide that is not there,
+    /// which is what a concurrent removal looks like from here.
+    RemoveGuide(GuideId),
+    /// Reshape a guide — the **whole camera** at once (§20.5).
+    ///
+    /// One action for the orbit drag, the lens drag, the crosshair, the cell
+    /// slider, the opacity slider, the plane chips and the fisheye toggle,
+    /// carrying the camera entire for the reason [`SetFilter`](Self::SetFilter)
+    /// carries the whole filter: a guide that grows a knob then needs no new
+    /// action and no wire-format break, and there is nothing finer than the
+    /// camera that an artist can be said to have set.
+    ///
+    /// **One per settled gesture, not one per pointer move.** A drag previews in
+    /// view state and commits on release — the bargain
+    /// [`SetMatteRect`](Self::SetMatteRect) and
+    /// [`SetFilter`](Self::SetFilter) already strike (§15.7, §21.5) — so
+    /// shaping a perspective costs one undo step per adjustment rather than one
+    /// per sample of the hand.
+    SetGuide(GuideId, PerspectiveGuide),
+    /// Name a guide, or with `None` take its name away so it falls back to being
+    /// described by its place in the roster.
+    ///
+    /// Its own action rather than a field of [`SetGuide`](Self::SetGuide),
+    /// exactly as [`SetLayerName`](Self::SetLayerName) is not a field of the
+    /// camera: the name is held as an `Arc<str>` in state and a `String` here,
+    /// and a rename must commute with a drag of the same guide the way a layer's
+    /// rename commutes with its opacity.
+    SetGuideName(GuideId, Option<String>),
+    /// Move a guide within the roster — the panel's drag-to-reorder (§20.5).
+    ///
+    /// `after` is [`AddGuide`](Self::AddGuide)'s anchor, read the same way. The
+    /// roster's order changes no pixel: every guide this client draws is drawn,
+    /// whatever order they are listed in. It is logged anyway because it is the
+    /// artist's own arrangement of their scaffolding, which is the same thing a
+    /// layer's name is and is kept for the same reason.
+    MoveGuide {
+        id: GuideId,
+        after: Option<GuideId>,
+    },
 }
 
 impl ActionKind {
@@ -524,7 +603,15 @@ impl ActionKind {
             | ActionKind::Transform { .. }
             | ActionKind::TransformPerspective { .. }
             | ActionKind::TransformWarp { .. }
-            | ActionKind::Fill { .. } => (None, &[]),
+            | ActionKind::Fill { .. }
+            // A guide mints an id of its own, and deliberately not from a counter
+            // this reports for: it *is* the id of the action that added it, so
+            // there is nothing to resume past (`GuideId`).
+            | ActionKind::AddGuide { .. }
+            | ActionKind::RemoveGuide(_)
+            | ActionKind::SetGuide(..)
+            | ActionKind::SetGuideName(..)
+            | ActionKind::MoveGuide { .. } => (None, &[]),
         };
         one.into_iter().chain(copies.iter().map(|&(_, copy)| copy))
     }
@@ -599,6 +686,15 @@ impl ActionKind {
                     },
                 )
             }
+            // A guide's every number reaches the guide pass's uniform, and now
+            // the saved log as well — `PerspectiveGuide::sanitized` is where what
+            // each of them may hold is written down (§20.5).
+            ActionKind::AddGuide { guide, after, name } => ActionKind::AddGuide {
+                guide: guide.sanitized(),
+                after,
+                name,
+            },
+            ActionKind::SetGuide(id, guide) => ActionKind::SetGuide(id, guide.sanitized()),
             // Nothing to hold: ids, flags, places, and the geometry whose own
             // `usable`/`affine_usable` gate rejects it at `apply` rather than
             // rounding it into something else (§16.1) — a transform that cannot be
@@ -627,6 +723,11 @@ impl ActionKind {
             | ActionKind::Transform { .. }
             | ActionKind::TransformPerspective { .. }
             | ActionKind::TransformWarp { .. }
+            // A guide named, moved or removed carries an id, an anchor and a
+            // name; the camera is the only thing with a number in it.
+            | ActionKind::RemoveGuide(_)
+            | ActionKind::SetGuideName(..)
+            | ActionKind::MoveGuide { .. }
             | ActionKind::Undo(_) => self,
         }
     }
@@ -665,6 +766,11 @@ impl ActionKind {
             ActionKind::SetMattePaint(..) => "Matte paint",
             ActionKind::SetBackground(_) => "Canvas color",
             ActionKind::SetSurface(_) => "Canvas surface",
+            ActionKind::AddGuide { .. } => "Add guide",
+            ActionKind::RemoveGuide(_) => "Remove guide",
+            ActionKind::SetGuide(..) => "Perspective guide",
+            ActionKind::SetGuideName(..) => "Rename guide",
+            ActionKind::MoveGuide { .. } => "Reorder guide",
             ActionKind::Undo(_) => "Undo",
         }
     }

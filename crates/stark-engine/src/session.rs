@@ -8,15 +8,15 @@
 
 use crate::assist::{AssistShape, PenProfile};
 use crate::command::InputSample;
-use crate::guides::Scaffold;
 use crate::path::PathFitter;
 use crate::peer::{GestureView, Identity, LiveGesture, default_name};
 use crate::presence::{GestureSource, GestureTx};
 use crate::tow::{Tow, TowString};
 use crate::view::ViewTransform;
+use stark_model::document::Scaffold;
 use stark_model::document::{
-    ActorId, BrushParams, FillOp, LayerId, SelectionOp, SelectionShape, ShapeAction, StrokeRecord,
-    Tool,
+    ActorId, BrushParams, FillOp, GuideId, LayerId, SelectionOp, SelectionShape, ShapeAction,
+    StrokeRecord, Tool,
 };
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
@@ -248,10 +248,39 @@ pub struct Session {
     /// on every frame you look at it, and most of the time the answer to "what is
     /// that line?" should be "the one I drew".
     pub show_peer_selections: bool,
-    /// The drawing guides (§20.5) — every perspective grid the artist has set
-    /// up, visible or not. View state for now: an aid for the hand holding
-    /// the pen, per-client like the pan and the zoom.
-    pub guides: crate::engine::Guides,
+    /// The drawing guides whose **eye this client has opened** (§20.5).
+    ///
+    /// The one per-client thing about a guide. The guides themselves are document
+    /// state now — logged, saved, replicated, undoable (`DocState::guides`) —
+    /// because a perspective set up over a drawing is part of its construction;
+    /// but whether *you* are looking at one is not, so it is here beside the pan
+    /// and the zoom, never logged and never sent.
+    ///
+    /// **Opened rather than shut, so an absent entry means not drawn**, and a
+    /// guide is therefore hidden until somebody on this client asks for it. That
+    /// is the direction that reads right once a guide can arrive from somewhere
+    /// else: opening a painting from last year, or joining a session, would
+    /// otherwise lay every perspective anyone ever built over the canvas at once,
+    /// and a scaffold you did not ask for is exactly what a scaffold must not be.
+    /// The document remembers the construction; looking at it is a thing you do.
+    ///
+    /// It is also the cheaper end. A client typically has one guide up while it
+    /// works, out of however many the document carries, so the set holds what is
+    /// *in use* rather than what is being ignored — the same argument
+    /// `DocState::selections` makes for storing only the actors that have selected
+    /// something, pointed the other way because the common case is the other way.
+    ///
+    /// Nothing puts an id in here but the artist: `panels::guides`'
+    /// `begin_guide_edit` opens the eye of a guide picked up to be shaped — which
+    /// covers adding and duplicating one too, since both end by picking up what
+    /// they made — and the row's eye toggles it directly.
+    ///
+    /// A guide removed from the document leaves its id here. Deliberately: the
+    /// removal may be undone, and an eye that shut itself because the guide went
+    /// away and came back would be the tool changing what you are looking at.
+    /// Bounded by the number of guides an artist has ever opened, which is not a
+    /// number that grows on its own.
+    visible_guides: std::collections::HashSet<GuideId>,
 
     // --- the published half (§17.4) -------------------------
     //
@@ -318,7 +347,7 @@ impl Session {
             selection_feather: 0.0,
             shape_opacity: 1.0,
             show_peer_selections: false,
-            guides: Default::default(),
+            visible_guides: std::collections::HashSet::new(),
             name: String::new(),
             name_chosen: false,
             cursor: None,
@@ -350,6 +379,48 @@ impl Session {
         self.name_chosen = !name.is_empty();
         self.name.clear();
         self.name.push_str(name);
+    }
+
+    // --- the guide roster's per-client half (§20.5) --------------------------
+
+    /// Whether this client draws the guide `id`. A guide nobody here has opened is
+    /// **not** drawn, which is what an absent entry in [`visible_guides`] means (§20.5).
+    ///
+    /// [`visible_guides`]: Self::visible_guides
+    pub fn guide_visible(&self, id: GuideId) -> bool {
+        self.visible_guides.contains(&id)
+    }
+
+    /// Open or shut a guide's eye. Answers whether that changed anything, so a
+    /// command that says what is already true costs no repaint and no
+    /// observation.
+    pub fn set_guide_visible(&mut self, id: GuideId, visible: bool) -> bool {
+        if visible {
+            self.visible_guides.insert(id)
+        } else {
+            self.visible_guides.remove(&id)
+        }
+    }
+
+    /// The guides this client actually draws, in roster order: the document's own
+    /// list, kept down to the ones whose eye this client has opened.
+    ///
+    /// **The one place the two halves of a guide meet** (§20.5). Everything that
+    /// asks "what perspective is on the screen" — the guide overlay pass, the
+    /// stroke assist's [`Scaffold`], the panel's rows — asks it through here, so
+    /// the filter is written once rather than repeated wherever a roster is read.
+    ///
+    /// Takes the document rather than reaching for one, because a `Session` has
+    /// none: it is the *other* half, and which document it is combined with is
+    /// the caller's business — the committed one for a commit, the previewed one
+    /// for what is on screen.
+    pub fn shown_guides<'a>(
+        &'a self,
+        doc: &'a crate::document::DocState,
+    ) -> impl Iterator<Item = &'a crate::document::Guide> {
+        doc.guides()
+            .iter()
+            .filter(|g| self.visible_guides.contains(&g.id))
     }
 
     /// Adopt the identity a session has given this client.
@@ -698,15 +769,20 @@ impl Session {
     /// it nearly lies on (§20.7). That is the only coupling between the two features,
     /// and it runs one way — the guides are read, never touched, and a document with
     /// none up puts up an empty scaffold.
-    pub fn assist_stroke(&mut self) -> bool {
-        let guides = Scaffold::of(&self.guides);
+    ///
+    /// The scaffold arrives from the caller rather than being built here, and that
+    /// is the guides having become document state (§20.5): they live in `DocState`
+    /// now and the eye that hides one lives in this session, so the only place
+    /// holding both halves is `Engine` — see [`Session::shown_guides`], which is
+    /// the filter, and `Engine::scaffold`, which applies it.
+    pub fn assist_stroke(&mut self, guides: &Scaffold) -> bool {
         let Some(b) = self.in_flight.as_mut() else {
             return false;
         };
         if b.assist.is_some() {
             return false;
         }
-        let Some(base) = crate::assist::recognize(&b.fitter.trace(), b.tolerance, &guides) else {
+        let Some(base) = crate::assist::recognize(&b.fitter.trace(), b.tolerance, guides) else {
             return false;
         };
         let drawn = b.fitter.path();

@@ -121,6 +121,20 @@ pub enum Resource {
     Surface,
     /// The substrate color (§15.5).
     Background,
+    /// **The whole drawing-guide roster** (§20.5): every guide, everything about
+    /// each of them, and the order they are arranged in.
+    ///
+    /// One coarse resource, on [`StackOrder`](Self::StackOrder)'s argument and
+    /// [`Layer`](Self::Layer)'s. Spelling it finely — a resource per guide, plus
+    /// one for the arrangement — would let two artists shape two different
+    /// guides concurrently without a rebase, and that is the entire prize; a
+    /// footprint may claim too much (§12.6), and what it costs here is the
+    /// commutation fast path between two *guide* edits, which arrive one per
+    /// settled gesture on a roster that holds a handful of entries. Nothing on
+    /// the drawing path touches it: a stroke reads the guides to snap through
+    /// them, but it reads them before it is an action at all, so the action it
+    /// commits names this nowhere and paint and guides never contend.
+    Guides,
 }
 
 impl Resource {
@@ -148,7 +162,8 @@ impl Resource {
             Resource::StackOrder
             | Resource::Selection(_)
             | Resource::Surface
-            | Resource::Background => None,
+            | Resource::Background
+            | Resource::Guides => None,
         }
     }
 }
@@ -391,6 +406,18 @@ pub fn footprint(action: &Action) -> Footprint {
             reads: Vec::new(),
             writes: vec![Resource::Background],
         },
+        // Every guide edit claims the whole roster, which is what
+        // [`Resource::Guides`] being one resource means. The anchors an add and a
+        // move are stated against are guides in that same roster, so there is
+        // nothing left to name as a separate read.
+        ActionKind::AddGuide { .. }
+        | ActionKind::RemoveGuide(_)
+        | ActionKind::SetGuide(..)
+        | ActionKind::SetGuideName(..)
+        | ActionKind::MoveGuide { .. } => Footprint {
+            reads: Vec::new(),
+            writes: vec![Resource::Guides],
+        },
         ActionKind::Transform { layer, .. } => Footprint {
             reads: vec![Resource::Existence(*layer)],
             writes: vec![
@@ -608,6 +635,7 @@ mod tests {
             Resource::Selection(ActorId(1)),
             Resource::Surface,
             Resource::Background,
+            Resource::Guides,
         ] {
             assert!(!whole.overlaps(&r), "{whole:?} must not meet {r:?}");
             assert!(!r.overlaps(&whole), "…and from the other side");

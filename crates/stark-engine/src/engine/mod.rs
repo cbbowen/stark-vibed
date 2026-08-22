@@ -57,7 +57,8 @@ use stark_model::AssetId;
 use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
 use stark_model::document::{
-    Action, ActionId, ActionKind, ActorId, BrushParams, LayerId, ShapeAction, Tool,
+    Action, ActionId, ActionKind, ActorId, BrushParams, GuideId, LayerId, PerspectiveGuide,
+    Scaffold, ShapeAction, Tool,
 };
 use stark_model::geom::Extent2;
 
@@ -155,11 +156,10 @@ fn normalize_name<T: From<String>>(name: Option<impl AsRef<str>>) -> Option<T> {
 ///
 /// Generic because the argument is about what a *projection* is, not about what any
 /// one list holds. It was written twice for the layer roster and applied to it
-/// alone: the guide list, projected from the same `observe()` at the same rate,
+/// alone: the guide roster, projected from the same `observe()` at the same rate,
 /// stayed a `Vec` that was deep-cloned and deep-compared per pointer sample even
-/// though [`PerspectiveGuide::name`](crate::guides::PerspectiveGuide) had already
-/// been made an `Arc<str>` citing this very reasoning. One type is what stops the
-/// third list repeating that.
+/// though a guide's name had already been made an `Arc<str>` citing this very
+/// reasoning. One type is what stops the third list repeating that.
 ///
 /// Derefs to `[T]`, so it is read exactly as the `Vec` it replaces was. Building one
 /// is `Vec::into`, which happens where the list actually changes and nowhere else.
@@ -225,8 +225,38 @@ impl<T: PartialEq> PartialEq for Projected<T> {
 /// it is a type.
 pub type Layers = Projected<LayerInfo>;
 
-/// The drawing-guide list, shared on exactly [`Layers`]' argument (§20.5).
-pub type Guides = Projected<crate::guides::PerspectiveGuide>;
+/// What [`Engine::projected_guides`] memoizes, and the three counters it is a
+/// function of: the committed document, the preview, and this client's own guides.
+type GuideCache = ((u64, u64, u64), Guides);
+
+/// The drawing-guide roster, shared on exactly [`Layers`]' argument (§20.5).
+pub type Guides = Projected<GuideInfo>;
+
+/// One row of the drawing-guide roster, **as this client sees it** (§20.5).
+///
+/// The whole reason this type exists rather than the document's own
+/// [`PerspectiveGuide`] being projected: a guide is two things kept in two
+/// places. Its camera, its name and its place in the roster are document state —
+/// logged, saved, replicated, undoable — while its **eye** is per-client view
+/// state that is none of those. What a panel row, a hit test and the overlay all
+/// want is the two put together, and putting them together is a projection's
+/// job.
+///
+/// The same shape [`LayerInfo`] takes for the same reason, and cloned as cheaply:
+/// the camera is `Copy` and the name is an `Arc<str>` bump.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GuideInfo {
+    pub id: GuideId,
+    /// What the artist calls it, or `None` for one never named — the panel then
+    /// describes it by its place in the roster ("Perspective 2").
+    pub name: Option<Arc<str>>,
+    /// Whether **this client** draws it — `false` until somebody here asks for it
+    /// (§20.5). Never saved, never sent, never undoable; see
+    /// [`ViewCommand::SetGuideVisible`](crate::command::ViewCommand).
+    pub visible: bool,
+    /// The camera and its dressing: everything §20 derives from.
+    pub guide: PerspectiveGuide,
+}
 
 /// A layer's presentation properties, for the UI's layer panel (§11).
 ///
@@ -419,8 +449,13 @@ pub struct ObservableState {
     /// it (§4). Stark's own settings dialog reads its slider off this, and its
     /// stored preference is captured from it.
     pub history_budget: u64,
-    /// The drawing guides (§20.5) — projected so the Drawing Guides panel and
-    /// the edit bar read the engine's list rather than a shadow of their own.
+    /// The drawing guides (§20.5), **as this client sees them**: the document's
+    /// roster with each row carrying whether this client's eye on it is open.
+    ///
+    /// Projected so the Drawing Guides panel, the edit bar and the hit test read
+    /// the engine's roster rather than a shadow of their own — and so that the two
+    /// halves of a guide are put together once, here, rather than at each of them
+    /// ([`GuideInfo`]).
     pub guides: Guides,
 
     // --- view settings (per-client, never historized) ---------------------
@@ -613,6 +648,16 @@ pub struct Engine {
     /// *read*, and making it `&mut` to let it memoize would put a mutable borrow of
     /// the whole engine on the path every panel takes to draw itself.
     layer_cache: std::cell::RefCell<Option<((u64, u64), Layers)>>,
+    /// The guide projection and the counters it was built from —
+    /// [`Engine::projected_guides`], on `layer_cache`'s terms plus one.
+    guide_cache: std::cell::RefCell<Option<GuideCache>>,
+    /// Bumped whenever this client opens or shuts a **guide's eye** (§20.5).
+    ///
+    /// Its own counter beside `doc_revision` because it is the exact complement of
+    /// one: the eye is the one thing about a guide that is *not* in the document,
+    /// so nothing in the document's revision moves when it does — and the roster
+    /// this client sees is a function of both.
+    guide_epoch: u64,
     /// Bumped whenever the **committed** document changes — a commit, an undo, a
     /// merged remote action, a load. Projected as
     /// [`ObservableState::doc_revision`], where it is what a frontend showing a
@@ -764,6 +809,8 @@ impl Engine {
             doc_revision: 0,
             draw_cache: None,
             layer_cache: std::cell::RefCell::new(None),
+            guide_cache: std::cell::RefCell::new(None),
+            guide_epoch: 0,
             history_budget: DEFAULT_HISTORY_BUDGET,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
@@ -851,6 +898,8 @@ impl Engine {
             doc_revision: 0,
             draw_cache: None,
             layer_cache: std::cell::RefCell::new(None),
+            guide_cache: std::cell::RefCell::new(None),
+            guide_epoch: 0,
             history_budget: DEFAULT_HISTORY_BUDGET,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
@@ -939,7 +988,15 @@ impl Engine {
             // changes what the *same* drag builds, and the release still commits one
             // stroke either way.
             GestureCommand::Hold => {
-                if self.session.assist_stroke() {
+                // Built here rather than inside the session, because the two halves
+                // of a guide live in two places now (§20.5) and this is the only
+                // side holding both. Off the **committed** document, which is what
+                // a stroke is drawn over — a guide being dragged elsewhere in the
+                // same instant previews without moving what a snap aims at, and a
+                // snap that changed underfoot mid-gesture is the surprise §20.5
+                // rules out.
+                let scaffold = self.scaffold(self.timeline.current());
+                if self.session.assist_stroke(&scaffold) {
                     self.mark_live_stale();
                 }
             }
@@ -1231,6 +1288,25 @@ impl Engine {
             DocCommand::MoveLayer { id, carrier, at } => {
                 self.commit(ActionKind::MoveLayer { id, carrier, at })
             }
+
+            // The drawing guides (§20.5). No id is minted for an add: a guide's
+            // identity is the id of the action that adds it, which the fold reads
+            // off `action.id` — so there is no counter here and nothing for
+            // `resync_counters` to resume past (`GuideId`).
+            DocCommand::AddGuide { guide, after, name } => self.commit(ActionKind::AddGuide {
+                guide,
+                after,
+                name: normalize_name(name),
+            }),
+            DocCommand::RemoveGuide(id) => self.commit(ActionKind::RemoveGuide(id)),
+            // `settle` rather than `commit`, like every other control that is
+            // dragged: a gesture released on the pose it was pressed on must not
+            // leave an undo step that does nothing when it is reached.
+            DocCommand::SetGuide(id, guide) => self.settle(ActionKind::SetGuide(id, guide)),
+            DocCommand::SetGuideName(id, name) => {
+                self.settle(ActionKind::SetGuideName(id, normalize_name(name)))
+            }
+            DocCommand::MoveGuide { id, after } => self.settle(ActionKind::MoveGuide { id, after }),
         }
     }
 
@@ -1279,15 +1355,26 @@ impl Engine {
                 self.session.shape_opacity = opacity.clamp(0.0, 1.0)
             }
             ViewCommand::SetShowPeerSelections(show) => self.session.show_peer_selections = show,
-            ViewCommand::SetGuides(mut guides) => {
-                // The whole list arrives on every edit (§20.5), so the names are
-                // normalized here rather than in a rename command of their own —
-                // there is no path to a guide's name that does not come through
-                // this arm, which is what makes the guarantee structural.
-                for g in &mut guides {
-                    g.name = normalize_name(g.name.take());
+            ViewCommand::SetGuideVisible(id, visible) => {
+                // The eye is the one per-client thing about a guide (§20.5), so it
+                // moves the session and never the document. The bump is what a
+                // frontend's memo on the roster watches: nothing in `doc_revision`
+                // moves when an eye does, and without saying so the panel would
+                // keep showing the eye it drew last time.
+                if self.session.set_guide_visible(id, visible) {
+                    self.guide_epoch = self.guide_epoch.wrapping_add(1);
+                    self.mark_live_stale();
                 }
-                self.session.guides = guides.into();
+            }
+            ViewCommand::PreviewGuide(drag) => {
+                let preview = drag.map(|(id, guide)| {
+                    // Sanitized here for `PreviewFilter`'s reason (§21.5): the
+                    // commit funnels through `ActionKind::sanitized`, so a preview
+                    // that skipped it could show a pose the commit would then
+                    // refuse.
+                    self.timeline.current().set_guide(id, guide.sanitized())
+                });
+                self.set_doc_preview(preview);
             }
             ViewCommand::PreviewMatteRect(drag) => {
                 let preview =
@@ -1467,6 +1554,46 @@ impl Engine {
         layers
     }
 
+    /// The drawing-guide roster this client sees, memoized against the terms it
+    /// is a function of — [`projected_layers`](Self::projected_layers)' bargain,
+    /// and it is here for the property rather than for the cost (§20.5).
+    ///
+    /// Building the roster is cheap: a handful of rows, a `Copy` camera and an
+    /// `Arc` bump apiece. What the cache buys is that an *unchanged* roster hands
+    /// back the same `Arc`, so the frontend's "did this move?" stays the pointer
+    /// comparison [`Projected`] exists for. Rebuilt fresh per observation it would
+    /// be a new allocation every time, and every memo over the roster would fall
+    /// through to comparing rows — which is exactly the state this type replaced.
+    ///
+    /// **Three terms, not two.** The document's two are the layer projection's,
+    /// and for its reasons. The third is `guide_epoch`, and it is what a
+    /// per-client eye costs: shutting one changes what this answers while changing
+    /// nothing about the document at all, so a key built from the document alone
+    /// would keep handing back a roster whose guides are wrong.
+    fn projected_guides(&self, build: impl FnOnce() -> Vec<GuideInfo>) -> Guides {
+        let key = (self.doc_revision, self.preview.epoch(), self.guide_epoch);
+        let mut cache = self.guide_cache.borrow_mut();
+        if let Some((cached, guides)) = cache.as_ref()
+            && *cached == key
+        {
+            return guides.clone();
+        }
+        let guides = Guides::from(build());
+        *cache = Some((key, guides.clone()));
+        guides
+    }
+
+    /// What the guide overlay draws and what a snapped stroke is held to, for the
+    /// document `doc` — this client's shown guides (§20.5), gathered.
+    ///
+    /// The one place the two halves of the roster meet on the *rendering* side, as
+    /// `GuideInfo` is on the panel's: the document holds the guides,
+    /// [`Session::shown_guides`](crate::session::Session::shown_guides) drops the
+    /// ones this client has hidden, and everything past here sees only geometry.
+    pub(crate) fn scaffold(&self, doc: &DocState) -> Scaffold {
+        Scaffold::of(self.session.shown_guides(doc).map(|g| &g.camera))
+    }
+
     pub fn observe(&self) -> ObservableState {
         /// Whether `l`'s **own content** puts anything into the accumulator: a
         /// matte always covers, paint only once painted, a filter never — it
@@ -1636,7 +1763,22 @@ impl Engine {
             shape_opacity: self.session.shape_opacity,
             show_peer_selections: self.session.show_peer_selections,
             history_budget: self.history_budget,
-            guides: self.session.guides.clone(),
+            guides: self.projected_guides(|| {
+                // Off `shown` — the previewed document — for the reason the layer
+                // list and the substrate color are: a guide's drag previews
+                // through `PreviewGuide`, and a panel reading the committed
+                // roster would show the pose the hand left behind (§20.5).
+                shown
+                    .guides()
+                    .iter()
+                    .map(|g| GuideInfo {
+                        id: g.id,
+                        name: g.name.clone(),
+                        visible: self.session.guide_visible(g.id),
+                        guide: g.camera,
+                    })
+                    .collect()
+            }),
             media: self.compositor_pipeline.media(),
             environment: self.shared.environment.id(),
             color_space: self.shared.color_space.id(),

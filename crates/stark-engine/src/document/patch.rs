@@ -17,7 +17,7 @@ use rpds::Vector;
 
 use super::layer::{Layer, LayerContent};
 use super::selection::Selection;
-use super::state::{DocState, LayerSite};
+use super::state::{DocState, Guide, LayerSite};
 use crate::gpu::tile::TilePairHandle;
 use stark_model::SurfaceId;
 use stark_model::document::Filter;
@@ -68,6 +68,15 @@ enum PatchOp {
     Selection(ActorId, Selection),
     Surface(SurfaceId),
     Background([f32; 3]),
+    /// The **whole drawing-guide roster** (§20.5): every guide and the order they
+    /// were arranged in.
+    ///
+    /// One op for all five guide actions, because `Resource::Guides` is one
+    /// resource for all five — the same correspondence `Structure` keeps with
+    /// `StackOrder`, and cheap for the same kind of reason it is not there: the
+    /// roster is a persistent vector, so capturing it whole is an `Arc` bump
+    /// rather than a walk.
+    Guides(Vector<Guide>),
 }
 
 impl PatchOp {
@@ -109,6 +118,7 @@ impl PatchOp {
             PatchOp::Selection(actor, selection) => state.with_selection(*actor, selection.clone()),
             PatchOp::Surface(id) => state.with_surface(*id),
             PatchOp::Background(rgb) => state.with_background(*rgb),
+            PatchOp::Guides(guides) => state.with_guides(guides.clone()),
         }
     }
 }
@@ -233,6 +243,7 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
         Resource::Selection(actor) => ops.push(PatchOp::Selection(*actor, to.selection_of(*actor))),
         Resource::Surface => ops.push(PatchOp::Surface(to.surface)),
         Resource::Background => ops.push(PatchOp::Background(to.background)),
+        Resource::Guides => ops.push(PatchOp::Guides(to.guides().clone())),
     }
 }
 

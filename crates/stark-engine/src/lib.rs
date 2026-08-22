@@ -49,8 +49,8 @@
 //! `path`, …) are `pub` and curate their own surface, while the ones that exist to
 //! *serve* them are `pub(crate)` with their public types re-exported at the root:
 //! `error`, `image` and `content` were reached only that way already, and `assist`,
-//! `noise`, `spline`, `guides` and `tow` were reached from outside the crate for a
-//! grand total of two names — both of which the re-export list already carried.
+//! `noise`, `spline` and `tow` were reached from outside the crate for a grand
+//! total of two names — both of which the re-export list already carried.
 //!
 //! The practical reading: `stark_engine::RgbaImage`, not `stark_engine::image::RgbaImage`.
 //!
@@ -65,7 +65,6 @@ pub mod engine;
 pub(crate) mod error;
 pub mod filters;
 pub mod gpu;
-pub(crate) mod guides;
 pub(crate) mod image;
 pub(crate) mod noise;
 pub mod path;
@@ -120,8 +119,8 @@ pub use colorspace::ColorSpace;
 pub use command::{InputCommand, InputSample};
 pub use document::Selection;
 pub use engine::{
-    Background, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan, ExportScale, Guides,
-    LayerInfo, Layers, MatteInfo, ObservableState, PickOptions, PickSource, PresenceTick,
+    Background, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan, ExportScale, GuideInfo,
+    Guides, LayerInfo, Layers, MatteInfo, ObservableState, PickOptions, PickSource, PresenceTick,
     Projected, Rendered,
 };
 pub use error::{EngineError, Result};
@@ -129,7 +128,6 @@ pub use gpu::{
     Compositor, CompositorPipeline, DeviceFailure, EnvironmentId, FailureKind, GpuContext,
     GpuHealth, MediaParams, Offscreen, StrokeRenderer, TilePairHandle, TilePool,
 };
-pub use guides::{AxisPencil, AxisPlane, GuideScene, Lens, PairTrace, PerspectiveGuide, Scaffold};
 pub use image::RgbaImage;
 pub use peer::{LiveGesture, Peer, Peers};
 pub use tow::TowString;

@@ -44,10 +44,12 @@ use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
 use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, guide_boxes, select_all};
+use crate::preview;
 use crate::state::{AppState, GuideEdit, dispatch};
 use crate::widgets::CommandButton;
-use stark_engine::command::ViewCommand;
-use stark_engine::{Lens, PairTrace, PerspectiveGuide};
+use stark_engine::GuideInfo;
+use stark_engine::command::{DocCommand, ViewCommand};
+use stark_model::document::{GuideId, Lens, PairTrace, PerspectiveGuide};
 use stark_model::geom::Vec2;
 
 /// The axis hues, by **name**: `stark.css` declares `--axis-x/y/z` and this
@@ -100,8 +102,9 @@ const FOCAL_RANGE: (f32, f32) = (120.0, 12000.0);
 /// drifting sideways rather than as a change of scale.
 const CELL_OCTAVES: (i32, i32) = (-2, 2);
 
-/// The engine's guide list, cloned for a read-modify-commit.
-fn guides_of(state: AppState) -> Vec<PerspectiveGuide> {
+/// The engine's guide roster, as this client sees it (§20.5) — the document's
+/// guides, each row carrying whether this client's eye on it is open.
+fn guides_of(state: AppState) -> Vec<GuideInfo> {
     state
         .obs
         .read()
@@ -110,37 +113,96 @@ fn guides_of(state: AppState) -> Vec<PerspectiveGuide> {
         .unwrap_or_default()
 }
 
-/// Adjust one guide and push the whole list back — every mutation funnels
-/// through here, the same shape as `update_media` (§4).
-fn update_guide(state: AppState, index: usize, f: impl FnOnce(&mut PerspectiveGuide)) {
-    let mut guides = guides_of(state);
-    let Some(g) = guides.get_mut(index) else {
-        return;
-    };
-    f(g);
-    dispatch(state, ViewCommand::SetGuides(guides));
+/// The camera of the guide `id` as the engine holds it now, or `None` if it has
+/// gone.
+///
+/// Read back per edit rather than kept beside the mode, and that is worth saying:
+/// the roster is projected off the **previewed** document, so mid-drag this
+/// reports what the canvas is showing. Every reader below wants that — a chip
+/// clicked during nothing is reading the committed camera, and a chip clicked
+/// while a slider is still open is reading the one under the hand.
+fn camera_of(state: AppState, id: GuideId) -> Option<PerspectiveGuide> {
+    guides_of(state)
+        .into_iter()
+        .find(|g| g.id == id)
+        .map(|g| g.guide)
 }
 
-/// Enter the edit mode on guide `index` — fresh locks each time: a lock is a
+/// Adjust one guide's camera and **lay it down** — one logged action, one undo
+/// step (§20.5).
+///
+/// For the controls that settle the moment they are used: a plane chip, the lens
+/// toggle, a keyboard nudge. A control that is *dragged* wants [`drag_guide`]
+/// instead, so the artist sees every value the pointer crosses and pays for one.
+fn edit_guide(state: AppState, id: GuideId, f: impl FnOnce(&mut PerspectiveGuide)) {
+    let Some(mut camera) = camera_of(state, id) else {
+        return;
+    };
+    f(&mut camera);
+    preview::GUIDE.commit(state, (id, camera));
+}
+
+/// Adjust one guide's camera and **show it without logging it** — one sample of a
+/// drag (§20.5).
+///
+/// The pending half of [`preview::GUIDE`]: the value is held so the release lays
+/// down exactly what the canvas is showing, and the caller wires
+/// [`settle_guide`] to every event that can end the gesture.
+fn drag_guide(
+    state: AppState,
+    pending: Signal<Option<(GuideId, PerspectiveGuide)>>,
+    id: GuideId,
+    f: impl FnOnce(&mut PerspectiveGuide),
+) {
+    let Some(mut camera) = camera_of(state, id) else {
+        return;
+    };
+    f(&mut camera);
+    preview::GUIDE.during(state, pending, (id, camera));
+}
+
+/// End a guide drag: lay down what the previews have been showing, once.
+/// Idempotent, which is what lets it hang off `change`, `pointerup` and
+/// `pointercancel` alike ([`Preview::settle`]).
+fn settle_guide(state: AppState, pending: Signal<Option<(GuideId, PerspectiveGuide)>>) {
+    preview::GUIDE.settle(state, pending);
+}
+
+/// Enter the edit mode on guide `id` — fresh locks each time: a lock is a
 /// constraint on the hand for one sitting, not a fact about the guide.
-pub fn begin_guide_edit(state: AppState, index: usize) {
+///
+/// **Opens the guide's eye**, and this is the one place that does it besides the
+/// row's own eye control. A guide is hidden until asked for (§20.5), so shaping
+/// one you cannot see would be dragging an invisible construction — and picking a
+/// guide up *is* asking to see it. Adding and duplicating come free: both end by
+/// picking up what they made, so the rule is written once here rather than at
+/// each path that produces a guide.
+///
+/// It stays open afterwards. Leaving the mode does not shut it again, because by
+/// then it is an opinion the artist expressed rather than one the tool assumed.
+pub fn begin_guide_edit(state: AppState, id: GuideId) {
     // One composing mode at a time (`crate::modes`): picking a guide up puts
     // down a transform or a gradient axis rather than stacking a second catcher
-    // over the first. The re-pointing after a reorder or a removal writes the
-    // signal itself, so it does not come through here and cannot end the mode
-    // it is only adjusting.
+    // over the first.
     crate::modes::leave(state);
+    dispatch(state, ViewCommand::SetGuideVisible(id, true));
     let mut mode = state.guide_edit;
     mode.set(Some(GuideEdit {
-        index,
+        id,
         locked: [false; 3],
     }));
 }
 
 /// Leave the edit mode — the bar's "Done", and Enter's (`crate::modes::finish`).
-/// A guide is view state previewed by being live (§20.5), so there is nothing
-/// here for a commit and a cancel to differ about.
+///
+/// Every control on the bar lays its own value down as it settles (§20.5), so
+/// there is nothing half-composed here for a commit and a cancel to differ
+/// about — which is why the bar offers no Cancel chip. The preview is dropped on
+/// the way out all the same: a mode left while a pointer is still down would
+/// otherwise strand the pose under the hand on the canvas with no commit coming
+/// to supersede it.
 pub fn end_guide_edit(state: AppState) {
+    preview::GUIDE.clear(state);
     let mut mode = state.guide_edit;
     mode.set(None);
 }
@@ -155,14 +217,25 @@ pub fn add_perspective(state: AppState) {
         .as_ref()
         .map(|o| o.view.center)
         .unwrap_or(Vec2::ZERO);
-    let mut guides = guides_of(state);
-    guides.push(PerspectiveGuide {
-        center,
-        ..Default::default()
-    });
-    let index = guides.len() - 1;
-    dispatch(state, ViewCommand::SetGuides(guides));
-    begin_guide_edit(state, index);
+    let after = guides_of(state).last().map(|g| g.id);
+    dispatch(
+        state,
+        DocCommand::AddGuide {
+            guide: PerspectiveGuide {
+                center,
+                ..Default::default()
+            },
+            after,
+            name: None,
+        },
+    );
+    // The engine mints no id for a guide — its identity is the id of the action
+    // that added it (§20.5) — so the new guide is *found* rather than returned.
+    // It was appended, so it is the tail; `dispatch` refreshes the projection
+    // inside the engine's own borrow, so the roster read here already has it.
+    if let Some(added) = guides_of(state).last().map(|g| g.id) {
+        begin_guide_edit(state, added);
+    }
 }
 
 /// Copy a guide into the row directly below the one it was copied from, and pick
@@ -174,86 +247,105 @@ pub fn add_perspective(state: AppState) {
 /// the author's own word, and decorating it into "Horizon copy" would be inventing
 /// one they never typed. An unnamed guide keeps being described by its position,
 /// so the copy simply reads as the row it now is.
-fn duplicate_guide(state: AppState, index: usize) {
-    let mut guides = guides_of(state);
-    let Some(guide) = guides.get(index).cloned() else {
+///
+/// One action rather than an add and then a rename, which is why `AddGuide`
+/// carries a name at all: two would put one gesture two undo steps deep with a
+/// nameless guide in between.
+fn duplicate_guide(state: AppState, id: GuideId) {
+    let guides = guides_of(state);
+    let Some(source) = guides.iter().find(|g| g.id == id) else {
         return;
     };
-    guides.insert(index + 1, guide);
-    dispatch(state, ViewCommand::SetGuides(guides));
-    begin_guide_edit(state, index + 1);
+    dispatch(
+        state,
+        DocCommand::AddGuide {
+            guide: source.guide,
+            after: Some(id),
+            name: source.name.as_deref().map(str::to_owned),
+        },
+    );
+    // The copy landed directly after its source, which is where to find it — the
+    // roster read *after* the dispatch, since the engine mints no id to hand back
+    // (§20.5).
+    let after = guides_of(state);
+    let copy = after
+        .iter()
+        .position(|g| g.id == id)
+        .and_then(|i| after.get(i + 1))
+        .map(|g| g.id);
+    if let Some(copy) = copy {
+        begin_guide_edit(state, copy);
+    }
 }
 
-/// Move the guide at `from` so that it sits at index `to`, and keep the edit mode
-/// pointed at the **guide** it was pointed at rather than at the index.
+/// Move the guide `id` so that it sits at index `to` in the roster.
 ///
-/// That second half is not a nicety. This panel's rows are addressed by position —
-/// a guide has no id — so every index in flight is a claim about a list that has
-/// just changed underneath it, and the mode holds one. [`remove_guide`] carries the
-/// same correction for the same reason; this is that rule for a move rather than a
-/// removal.
+/// The index is the drag's own answer — `reorder::Slide` speaks in gaps — and it
+/// is turned into the anchor the action carries here, which is the guide the
+/// dragged one lands *after*. The two readings differ by one at exactly one
+/// place, the head of the roster, and naming a guide rather than a position is
+/// what makes the action mean the same thing on a peer whose roster has moved.
 ///
-/// The list is view state, so it goes back whole — the read-modify-commit shape
-/// every mutation here takes ([`update_guide`]) — and there is no undo step to spend.
-/// A drag that lands where it began is still declined, but for the plainer reason
-/// that it is not a move.
-fn move_guide(state: AppState, from: usize, to: usize) {
-    let mut guides = guides_of(state);
-    if from >= guides.len() || to >= guides.len() {
+/// Nothing to re-point afterwards, unlike the version this replaces: the mode
+/// holds a `GuideId` now, and an id does not shift when the list closes up
+/// behind a row.
+fn move_guide(state: AppState, id: GuideId, to: usize) {
+    let ids: Vec<GuideId> = guides_of(state).iter().map(|g| g.id).collect();
+    let Some(from) = ids.iter().position(|g| *g == id) else {
         return;
-    }
-    let guide = guides.remove(from);
-    guides.insert(to, guide);
-    dispatch(state, ViewCommand::SetGuides(guides));
+    };
+    dispatch(
+        state,
+        DocCommand::MoveGuide {
+            id,
+            after: anchor_at(&ids, from, to),
+        },
+    );
+}
+
+/// The guide a row taken from `from` and dropped at gap `to` lands **after** —
+/// `None` for the head of the roster.
+///
+/// Its own function, and pure, because it is the one piece of off-by-one
+/// arithmetic in this file: the gap is counted in the rows that *stay put*, so it
+/// is an index into the roster with the dragged row already removed, and the
+/// anchor is the entry one before it in that same shortened list. The engine
+/// resolves the anchor against exactly that list (`DocState::move_guide`), which
+/// is what makes the round trip exact — and what
+/// [`the_anchor_lands_the_row_where_it_was_dropped`] pins.
+fn anchor_at(ids: &[GuideId], from: usize, to: usize) -> Option<GuideId> {
+    let rest: Vec<GuideId> = ids
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != from)
+        .map(|(_, id)| *id)
+        .collect();
+    to.min(rest.len()).checked_sub(1).map(|i| rest[i])
+}
+
+/// Remove a guide, and end the edit mode if it was the guide being shaped.
+///
+/// The re-pointing this used to carry is gone with the index it corrected: the
+/// mode names a guide, so every other row's mode survives a removal untouched.
+fn remove_guide(state: AppState, id: GuideId) {
+    dispatch(state, DocCommand::RemoveGuide(id));
     let mut mode = state.guide_edit;
     let current = *mode.peek();
-    mode.set(current.map(|e| GuideEdit {
-        index: moved(e.index, from, to),
-        ..e
-    }));
-}
-
-/// Where the guide at `i` ends up once the one at `from` has been taken out and put
-/// back at `to` — the two steps, in that order, which is the only reading under which
-/// `to` is an index into the list the drag was drawn against.
-fn moved(i: usize, from: usize, to: usize) -> usize {
-    if i == from {
-        return to;
+    if current.is_some_and(|e| e.id == id) {
+        mode.set(None);
     }
-    let out = if i > from { i - 1 } else { i };
-    if out >= to { out + 1 } else { out }
 }
 
-/// Remove a guide, keeping the edit mode pointed at the row it was on: the
-/// indices above the removed one all shift down, and the mode follows —
-/// unless it was the removed guide itself, in which case it ends.
-fn remove_guide(state: AppState, index: usize) {
-    let mut guides = guides_of(state);
-    if index >= guides.len() {
-        return;
-    }
-    guides.remove(index);
-    dispatch(state, ViewCommand::SetGuides(guides));
-    let mut mode = state.guide_edit;
-    let current = *mode.peek();
-    let adjusted = current.and_then(|e| match e.index {
-        i if i == index => None,
-        i if i > index => Some(GuideEdit { index: i - 1, ..e }),
-        _ => Some(e),
-    });
-    mode.set(adjusted);
-}
-
-/// What to call a guide that has never been named: its place in the list.
+/// What to call a guide that has never been named: its place in the roster.
 ///
 /// The Layers panel's counterpart numbers by [`LayerId::ordinal`], which is stable
-/// for the layer's whole life; a guide has no id, so this numbers by *position* and
-/// the labels below a removed guide shift up. That is the honest reading either
-/// way — an unnamed row is being described, not named, and the description of the
-/// second row is "the second one". Naming it is how you stop it moving.
+/// for the layer's whole life; this numbers by *position*, so the labels below a
+/// removed guide shift up. That is the honest reading either way — an unnamed row
+/// is being described, not named, and the description of the second row is "the
+/// second one". Naming it is how you stop it moving.
 ///
 /// [`LayerId::ordinal`]: stark_model::document::LayerId::ordinal
-fn guide_label(index: usize, guide: &PerspectiveGuide) -> String {
+fn guide_label(index: usize, guide: &GuideInfo) -> String {
     match &guide.name {
         Some(name) => name.to_string(),
         None => format!("Perspective {}", index + 1),
@@ -265,14 +357,15 @@ fn guide_label(index: usize, guide: &PerspectiveGuide) -> String {
 ///
 /// The drag is the layer panel's, sharing its code (`panels::reorder`): the press,
 /// the lift, the slot opening under the hand, the release. All this panel adds is
-/// what a landing means, which for a flat list is an index — and the correction that
-/// costs, since a guide is addressed by *position* and the mode holds one of those
-/// (see [`move_guide`]).
+/// what a landing means, which for a flat list is a gap between rows — turned into
+/// the guide it lands *after* at the one place that knows both (see
+/// [`move_guide`]), because an action has to name a guide rather than a position
+/// to mean the same thing on a peer.
 #[component]
 pub fn GuidesPanel() -> Element {
     let state = use_context::<AppState>();
     let guides = guides_of(state);
-    let editing = (*state.guide_edit.read()).map(|e| e.index);
+    let editing = (*state.guide_edit.read()).map(|e| e.id);
     // The in-flight row drag, if any — panel-local, and delimited by the browser's
     // own gesture rather than by a timer (§11).
     let mut drag = use_signal(|| None::<Grab>);
@@ -306,8 +399,8 @@ pub fn GuidesPanel() -> Element {
             GuideRow {
                 key: "{i}",
                 index: i,
+                active: editing == Some(g.id),
                 guide: g,
-                active: editing == Some(i),
                 motion: land.map_or_else(Motion::default, |s| s.motion(i, lift)),
                 drag,
                 onland: move |from: usize| {
@@ -330,15 +423,22 @@ pub fn GuidesPanel() -> Element {
                     let Some(slide) = land else {
                         return;
                     };
+                    // The row the drag was drawn against, by *position*, which is all
+                    // a drag over drawn rows can name. Turned into the guide's own id
+                    // here and never carried further: everything downstream of this
+                    // handler addresses a guide by id (§20.5).
+                    let Some(id) = guides_of(state).get(from).map(|g| g.id) else {
+                        return;
+                    };
                     if slide.inert() {
                         // A drag that went nowhere is the click it nearly was, and on
                         // this row a click is picking the guide up to shape it.
-                        begin_guide_edit(state, from);
+                        begin_guide_edit(state, id);
                     } else {
                         // Deliberately *not* an edit-mode entry: reordering the roster
                         // is tidying, and tidying must not take over the canvas. What
                         // you were shaping stays what you are shaping.
-                        move_guide(state, from, slide.gap);
+                        move_guide(state, id, slide.gap);
                     }
                 },
             }
@@ -353,7 +453,7 @@ pub fn GuidesPanel() -> Element {
 #[component]
 fn GuideRow(
     index: usize,
-    guide: PerspectiveGuide,
+    guide: GuideInfo,
     active: bool,
     motion: Motion,
     drag: Signal<Option<Grab>>,
@@ -369,10 +469,15 @@ fn GuideRow(
     // second finds no draft. An emptied field is a *removed* name rather than a
     // blank one, which is the engine's rule for every name (`normalize_name`), so
     // the row goes back to describing its position.
+    let id = guide.id;
     let mut commit = move || {
         let text = draft.write().take();
         if let Some(text) = text {
-            update_guide(state, index, move |g| g.name = Some(text.into()));
+            // Through the engine's name funnel like a layer's: trimmed, capped, and
+            // one that comes out blank clears the name rather than setting an empty
+            // one (`normalize_name`). One logged action, so a mistyped rename is
+            // undoable the way a mis-set opacity is (§20.5).
+            dispatch(state, DocCommand::SetGuideName(id, Some(text)));
         }
     };
     let label = guide_label(index, &guide);
@@ -397,9 +502,10 @@ fn GuideRow(
             class: "{class}",
             style: "{shift}",
             // Which row this element is, for `platform::guide_boxes` to read back.
-            // The index *is* the identity here — a guide has no id — which is sound
-            // for the length of one gesture, since nothing reorders the list while a
-            // pointer is down on it.
+            // A *position*, not the guide's id, and deliberately: what the drag
+            // measures is drawn rows against each other, and `reorder` speaks in
+            // rows. The landing is turned back into a guide by the one handler that
+            // knows both (`GuidesPanel`'s `onland`).
             "data-guide": "{index}",
             if let Some(text) = draft() {
                 input {
@@ -441,11 +547,11 @@ fn GuideRow(
                     class: "guide-name",
                     title: "Shape this guide \u{2014} drag to reorder, double-click to rename",
                     // The click a drag leaves behind is not this row's: the drop has
-                    // already said what it meant, and on a roster addressed by
-                    // position that click names whichever guide took this one's place.
+                    // already said what it meant, and the row this click lands on is
+                    // whichever guide took this one's place.
                     onclick: move |_| {
                         if !reorder::claimed(&mut drag) {
-                            begin_guide_edit(state, index);
+                            begin_guide_edit(state, id);
                         }
                     },
                     ondoubleclick: move |_| draft.set(Some(seed.clone())),
@@ -494,7 +600,7 @@ fn GuideRow(
             button {
                 class: "guide-duplicate",
                 title: "Duplicate this guide",
-                onclick: move |_| duplicate_guide(state, index),
+                onclick: move |_| duplicate_guide(state, id),
                 {icon(icons::DUPLICATE)}
             }
             // Remove then the eye, the order the Layers panel's rows put them in —
@@ -505,13 +611,18 @@ fn GuideRow(
             button {
                 class: "guide-remove",
                 title: "Remove this guide",
-                onclick: move |_| remove_guide(state, index),
+                onclick: move |_| remove_guide(state, id),
                 {icon(icons::REMOVE)}
             }
+            // The eye, and the one control on this row that is **not** a document
+            // edit (§20.5): whether *you* are looking at a guide is not a fact about
+            // the drawing, so it is a view command — unsaved, unsent, and not an undo
+            // step. Everything else here — the name, the order, the camera, the
+            // guide's existence — is logged.
             button {
                 class: if visible { "guide-eye" } else { "guide-eye hidden" },
                 title: if visible { "Hide this guide" } else { "Show this guide" },
-                onclick: move |_| update_guide(state, index, |g| g.visible = !g.visible),
+                onclick: move |_| dispatch(state, ViewCommand::SetGuideVisible(id, !visible)),
                 {icon(if visible { icons::VISIBLE } else { icons::HIDDEN })}
             }
         }
@@ -524,20 +635,34 @@ fn GuideRow(
 #[component]
 pub fn PerspectiveGuideBar() -> Element {
     let state = use_context::<AppState>();
+    // What the bar's sliders are showing but have not laid down (§20.5). Bar-local,
+    // and hoisted above the early returns because a hook has to be: a bar that
+    // unmounts mid-drag takes the pending value with it, and the mode's own exit
+    // drops the preview it was showing (`end_guide_edit`).
+    let pending = use_signal(|| None::<(GuideId, PerspectiveGuide)>);
     let Some(edit) = *state.guide_edit.read() else {
         return rsx! {};
     };
     let guides = guides_of(state);
-    let Some(g) = guides.get(edit.index) else {
-        // The guide went away under the mode (a stale index would edit the
-        // wrong guide); fold the bar rather than pointing it at nothing.
+    let Some((index, row)) = guides
+        .iter()
+        .position(|g| g.id == edit.id)
+        .map(|i| (i, &guides[i]))
+    else {
+        // The guide went away under the mode — a peer removed it, or an undo
+        // crossed the add. Fold the bar rather than pointing it at nothing.
+        //
+        // A guide is *found* here rather than indexed, which is the whole of what
+        // its having an id buys the mode: a removal or a reorder elsewhere in the
+        // roster used to have to re-point this, and now moves nothing it holds.
         end_guide_edit(state);
         return rsx! {};
     };
-    let index = edit.index;
+    let id = edit.id;
+    let g = &row.guide;
     // The bar names the guide the same way its row does, so a renamed guide is
     // called the same thing in both places.
-    let name = guide_label(index, g);
+    let name = guide_label(index, row);
     // The grid's scale is the *length* of the lattice: how many cells lie
     // between the eye and its corner, which is all a camera with no world scale
     // of its own can say about the size of a cell (§20.3). The bar states it in
@@ -625,7 +750,7 @@ pub fn PerspectiveGuideBar() -> Element {
                                 title: "Show the {AXIS_NAMES[a]}{AXIS_NAMES[b]} plane \u{2014} \
                                         its two fans of guide lines, its horizon and its \
                                         station point",
-                                onclick: move |_| update_guide(state, index, move |g| {
+                                onclick: move |_| edit_guide(state, id, move |g| {
                                     g.pairs[k] = !g.pairs[k];
                                 }),
                                 // Each letter in its own axis's hue, so the chip
@@ -649,7 +774,7 @@ pub fn PerspectiveGuideBar() -> Element {
                 title: "Curvilinear (fisheye): a stereographic lens \u{2014} straight \
                         world lines bow into circles, and both poles of every axis \
                         come into view",
-                onclick: move |_| update_guide(state, index, |g| {
+                onclick: move |_| edit_guide(state, id, |g| {
                     g.lens = match g.lens {
                         Lens::Rectilinear => Lens::Fisheye,
                         Lens::Fisheye => Lens::Rectilinear,
@@ -680,11 +805,16 @@ pub fn PerspectiveGuideBar() -> Element {
                 // and the grid stays hung on the viewer either way (§20.3).
                 oninput: move |e| {
                     if let Ok(k) = e.value().parse::<f32>() {
-                        update_guide(state, index, move |g| {
+                        drag_guide(state, pending, id, move |g| {
                             g.lattice = base * 2f32.powi(k.round() as i32);
                         });
                     }
                 },
+                // All three, because none of them alone ends every drag
+                // ([`Preview::settle`], which is idempotent for this reason).
+                onchange: move |_| settle_guide(state, pending),
+                onpointerup: move |_| settle_guide(state, pending),
+                onpointercancel: move |_| settle_guide(state, pending),
             }
             // The ghost the Layers panel and the brush editor wear: how much of what
             // is under this shows through, asked of a guide over the paint.
@@ -699,9 +829,12 @@ pub fn PerspectiveGuideBar() -> Element {
                 title: "How strongly the guide reads over the paint",
                 oninput: move |e| {
                     if let Ok(v) = e.value().parse::<f32>() {
-                        update_guide(state, index, move |g| g.opacity = v);
+                        drag_guide(state, pending, id, move |g| g.opacity = v);
                     }
                 },
+                onchange: move |_| settle_guide(state, pending),
+                onpointerup: move |_| settle_guide(state, pending),
+                onpointercancel: move |_| settle_guide(state, pending),
             }
             span { class: "bar-sep" }
             button {
@@ -826,24 +959,29 @@ pub fn GuideEditOverlay() -> Element {
     let state = use_context::<AppState>();
     let mut drag = use_signal(|| None::<Drag>);
     let mut hover = use_signal(|| None::<GuideRegion>);
+    // What the drag is showing but has not laid down (§20.5). A guide is document
+    // state, so a canvas drag makes the bargain every continuous control in the app
+    // makes: preview per sample, one logged action on release (`crate::preview`).
+    let pending = use_signal(|| None::<(GuideId, PerspectiveGuide)>);
     let nav = Nav::use_nav(state);
 
     let Some(edit) = *state.guide_edit.read() else {
         return rsx! {};
     };
     let (view, guide) = match state.obs.read().as_ref() {
-        Some(o) => match o.guides.get(edit.index) {
-            Some(g) => (o.view, g.clone()),
+        // Found by id, not by index. The roster is read off the *previewed*
+        // document, so mid-drag this is the pose under the hand — which is what the
+        // hit test wants: a handle has to be where it is drawn.
+        Some(o) => match o.guides.iter().find(|g| g.id == edit.id) {
+            Some(g) => (o.view, g.guide),
             None => return rsx! {},
         },
         None => return rsx! {},
     };
-    let index = edit.index;
+    let id = edit.id;
     let locked = edit.locked;
-    // The grabbable geometry, derived once. Taken as a value rather than off
-    // `guide` so the closures below capture nothing that is not `Copy` — a
-    // guide carries a name now, and a handler that captured the whole guide
-    // could not be shared between the move and the release.
+    // The grabbable geometry, derived once and `Copy`, so the pointer handlers can
+    // share the hit test.
     let handles = Handles::of(&guide);
 
     let to_canvas = move |e: &Event<PointerData>| view.screen_to_canvas(page_xy(e));
@@ -859,10 +997,10 @@ pub fn GuideEditOverlay() -> Element {
             return;
         };
         match d.region {
-            GuideRegion::Center => update_guide(state, index, move |g| {
+            GuideRegion::Center => drag_guide(state, pending, id, move |g| {
                 g.center = d.start.center + (pc - d.from);
             }),
-            GuideRegion::Focal(factor) => update_guide(state, index, move |g| {
+            GuideRegion::Focal(factor) => drag_guide(state, pending, id, move |g| {
                 g.focal =
                     ((pc - d.start.center).length() / factor).clamp(FOCAL_RANGE.0, FOCAL_RANGE.1);
             }),
@@ -884,7 +1022,7 @@ pub fn GuideEditOverlay() -> Element {
                 if let GuideRegion::Horizon(n) = d.region {
                     held[n] = true;
                 }
-                update_guide(state, index, move |g| {
+                drag_guide(state, pending, id, move |g| {
                     g.rotation = d.start.dragged(d.from, pc, held).rotation;
                 })
             }
@@ -892,6 +1030,10 @@ pub fn GuideEditOverlay() -> Element {
     };
     let mut finish = move |e: &Event<PointerData>| {
         follow(e);
+        // One logged action for the whole gesture, laying down exactly the pose the
+        // canvas is showing (§20.5). After `follow`, so a release that also moved the
+        // pointer commits where it ended rather than where the last move left it.
+        settle_guide(state, pending);
         nav.stop();
         drag.set(None);
     };
@@ -923,9 +1065,12 @@ pub fn GuideEditOverlay() -> Element {
             style: "{cursor}",
             onpointerdown: move |e| {
                 if nav.begin(&e) {
-                    // A second finger turns the drag into navigation
-                    // (§18.1.7). The guide keeps whatever the drag had done —
-                    // there is nothing to commit, view state is already live.
+                    // A second finger turns the drag into navigation (§18.1.7).
+                    // What the drag had reached is *laid down* rather than dropped:
+                    // the pose on the canvas is the one the artist was looking at
+                    // when they reached for the second finger, and abandoning it
+                    // would take the work back for navigating (§20.5).
+                    settle_guide(state, pending);
                     drag.set(None);
                     return;
                 }
@@ -938,12 +1083,20 @@ pub fn GuideEditOverlay() -> Element {
                 drag.set(Some(Drag {
                     region: classify(pc),
                     from: pc,
-                    start: guide.clone(),
+                    start: guide,
                 }));
             },
             onpointermove: move |e| follow(&e),
             onpointerup: move |e| if !nav.release(&e) { finish(&e) },
-            onpointercancel: move |e| if !nav.release(&e) { nav.stop(); drag.set(None); },
+            onpointercancel: move |e| if !nav.release(&e) {
+                // A cancel lays down what was reached, like a release: the browser
+                // taking the gesture or a pen leaving the tablet is not the artist
+                // asking for the pose back (§20.5). `settle` is idempotent, so a
+                // cancel that follows a release costs nothing.
+                settle_guide(state, pending);
+                nav.stop();
+                drag.set(None);
+            },
             onwheel: move |e| nav.wheel(e),
         }
     }
@@ -1151,31 +1304,47 @@ mod tests {
         assert_eq!(h.at(Vec2::new(300.0, y_at), 1.0), GuideRegion::Horizon(1));
     }
 
-    /// [`moved`] must agree with the list surgery it describes, for **every** pair of
-    /// positions: take the guide at `from` out, put it back at `to`, and every other
-    /// guide's new index is the one it claims.
+    /// [`anchor_at`] must name the guide that puts the dragged row exactly where it
+    /// was dropped, for **every** pair of positions — checked against the surgery
+    /// the engine performs, spelled out here rather than called, so the two are
+    /// held together by agreeing rather than by sharing code.
     ///
-    /// Exhaustive rather than sampled, because this is off-by-one arithmetic over two
-    /// steps that shift indices in opposite directions, and the pair that is wrong is
-    /// never the one anyone would think to write down. It is worth the certainty: the
-    /// edit mode holds one of these indices, so an error here points the Perspective
-    /// bar — and every drag on the canvas — at a guide the artist did not touch.
+    /// Exhaustive rather than sampled, because this is off-by-one arithmetic over
+    /// two steps that shift indices in opposite directions, and the pair that is
+    /// wrong is never the one anyone would think to write down. It is worth the
+    /// certainty for a second reason now that the move is logged: an error here is
+    /// an undo step that rearranges the roster in a way the artist never asked for,
+    /// and it is replicated.
     #[test]
-    fn the_index_remap_agrees_with_the_move_it_describes() {
+    fn the_anchor_lands_the_row_where_it_was_dropped() {
+        let id = |i: usize| {
+            GuideId(stark_model::document::ActionId {
+                lamport: i as u64,
+                actor: stark_model::document::ActorId(1),
+            })
+        };
         for n in 1..7usize {
-            let list: Vec<usize> = (0..n).collect();
+            let ids: Vec<GuideId> = (0..n).map(id).collect();
             for from in 0..n {
                 for to in 0..n {
-                    let mut after = list.clone();
-                    let guide = after.remove(from);
-                    after.insert(to, guide);
-                    for i in 0..n {
-                        assert_eq!(
-                            after[moved(i, from, to)],
-                            i,
-                            "n={n} from={from} to={to}: guide {i} is not where it was sent"
-                        );
-                    }
+                    // What the panel sends…
+                    let after = anchor_at(&ids, from, to);
+                    // …and what `DocState::move_guide` does with it: take the row
+                    // out, then land it one past the anchor in what is left.
+                    let mut rest = ids.clone();
+                    let moved = rest.remove(from);
+                    let slot = after
+                        .and_then(|a| rest.iter().position(|g| *g == a))
+                        .map_or(0, |i| i + 1);
+                    rest.insert(slot, moved);
+                    // …against the list surgery the drag was drawn against.
+                    let mut want = ids.clone();
+                    let row = want.remove(from);
+                    want.insert(to.min(want.len()), row);
+                    assert_eq!(
+                        rest, want,
+                        "n={n} from={from} to={to}: the anchor landed the row elsewhere"
+                    );
                 }
             }
         }

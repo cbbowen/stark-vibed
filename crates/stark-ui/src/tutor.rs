@@ -1321,6 +1321,11 @@ fn stroke(state: AppState) -> Vec<Deed> {
         // A guide on the screen is what makes the grid's aiming reachable (§20.6) —
         // whether *this* line landed near enough for it to take is not the question,
         // because the lesson is about the thing that is about to start happening.
+        //
+        // Asked of `visible`, which is this client's own eye rather than the
+        // document's roster (§20.5). That is the right half: the tour is about what
+        // the artist in front of *this* screen can see coming, so a guide a
+        // collaborator has up and this client has hidden teaches nothing here.
         let guided = shape == stark_engine::Assisted::Line && obs.guides.iter().any(|g| g.visible);
         if guided {
             deeds.push(Deed::GuidedLine);

@@ -41,7 +41,9 @@ use dioxus::prelude::*;
 use crate::state::{AppState, dispatch};
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::LayerId;
-use stark_model::document::{BlendMode, FillOp, Filter, MattePaint, TransformMap};
+use stark_model::document::{
+    BlendMode, FillOp, Filter, GuideId, MattePaint, PerspectiveGuide, TransformMap,
+};
 use stark_model::geom::Vec2;
 
 /// One control's pair: the command that shows `T` on the canvas without logging
@@ -169,6 +171,22 @@ pub const FILL: Preview<(LayerId, FillOp)> =
         op,
     });
 
+/// A drawing guide's camera — every control on the Perspective Guide bar, and
+/// every drag on the canvas while one is being shaped (§20.5).
+///
+/// The whole camera travels, for the reason [`FILTER`]'s whole filter does: an
+/// orbit writes the rotation, the ring drag writes the focal length and the cell
+/// slider writes the lattice, and one pair covers all of them without a command
+/// per knob.
+///
+/// The newest row, and the one the table was waiting for: guides became document
+/// state after this module was written, which turned every control on that bar
+/// from a live view-state write into exactly the bargain described above.
+pub const GUIDE: Preview<(GuideId, PerspectiveGuide)> =
+    Preview::new(ViewCommand::PreviewGuide, |(id, guide)| {
+        DocCommand::SetGuide(id, guide)
+    });
+
 /// The transform gesture — the widget's whole composition, committed on "Done"
 /// (§16.6, §16.8, §16.9).
 pub const TRANSFORM: Preview<(LayerId, TransformMap)> =
@@ -179,6 +197,7 @@ pub const TRANSFORM: Preview<(LayerId, TransformMap)> =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stark_model::document::ActorId;
 
     /// The claim the type makes, asked of each pair: **the command that shows a
     /// value and the command that lays it down carry the same value**.
@@ -239,6 +258,20 @@ mod tests {
             _ => panic!("MATTE_PAINT is not a pair"),
         }
 
+        let guide = (
+            GuideId(stark_model::document::ActionId {
+                lamport: 3,
+                actor: ActorId(1),
+            }),
+            PerspectiveGuide::default(),
+        );
+        match ((GUIDE.show)(Some(guide)), (GUIDE.lay)(guide)) {
+            (ViewCommand::PreviewGuide(Some(shown)), DocCommand::SetGuide(id, laid)) => {
+                assert_eq!(shown, (id, laid))
+            }
+            _ => panic!("GUIDE is not a pair"),
+        }
+
         let rgb = [0.93, 0.91, 0.86];
         match ((BACKGROUND.show)(Some(rgb)), (BACKGROUND.lay)(rgb)) {
             (ViewCommand::PreviewBackground(Some(shown)), DocCommand::SetBackground(laid)) => {
@@ -269,6 +302,10 @@ mod tests {
         assert!(matches!(
             (MATTE_PAINT.show)(None),
             ViewCommand::PreviewMattePaint(None)
+        ));
+        assert!(matches!(
+            (GUIDE.show)(None),
+            ViewCommand::PreviewGuide(None)
         ));
     }
 }

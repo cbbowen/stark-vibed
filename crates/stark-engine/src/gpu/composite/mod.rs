@@ -135,7 +135,7 @@ pub struct CompositeScene<'a> {
     /// The visible drawing guides, drawn over everything (§20.4). Empty for
     /// anything that is not the screen — chrome, on the same argument as
     /// `outlines`.
-    pub guides: &'a [crate::guides::GuideScene],
+    pub guides: &'a [stark_model::document::GuideScene],
 }
 
 /// The pipelines themselves — the six passes, their layouts and samplers, and the

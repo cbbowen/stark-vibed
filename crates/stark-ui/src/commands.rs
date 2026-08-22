@@ -1362,10 +1362,19 @@ impl Command {
                     crate::panels::frame::add_frame(state);
                 }
             }
-            // Ungated: guides are view state (`ViewCommand::SetGuides`), not an
-            // edit of the document, and entering the shaping mode already puts
-            // down whatever was composing (`modes::leave`).
-            Command::AddPerspective => crate::panels::guides::add_perspective(state),
+            // Half of [`may_edit`], and the halves are asked separately on purpose.
+            // Adding a guide *is* a document edit now (§20.5), so it is refused
+            // while the timeline is playing back, like every other one: what is on
+            // screen then is a historical state, and editing it would be editing
+            // the wrong document. The composing half is deliberately not asked —
+            // this command puts down whatever was composing itself
+            // (`modes::leave`), so it replaces a mode rather than being refused by
+            // one, which is the behaviour it has always had.
+            Command::AddPerspective => {
+                if !crate::panels::timeline::is_playing(state) {
+                    crate::panels::guides::add_perspective(state);
+                }
+            }
             Command::CancelMode => escape(state),
             // Gated on the dialogs where CancelMode ladders through them:
             // Enter under a dialog belongs to the dialog's form, and a commit

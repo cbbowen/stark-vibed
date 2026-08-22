@@ -120,6 +120,14 @@ pub fn action_content(action: &Action) -> Option<AssetNeed> {
         | ActionKind::TransformPerspective { .. }
         | ActionKind::TransformWarp { .. }
         | ActionKind::Fill { .. }
+        // A guide is geometry all the way down — a camera and a lattice — so it
+        // names nothing that has to travel beside the log (§20.5). It is the one
+        // document entity with no content at all.
+        | ActionKind::AddGuide { .. }
+        | ActionKind::RemoveGuide(_)
+        | ActionKind::SetGuide(..)
+        | ActionKind::SetGuideName(..)
+        | ActionKind::MoveGuide { .. }
         | ActionKind::Undo(_) => None,
     }
 }
