@@ -25,6 +25,7 @@
 
 mod common;
 
+use stark_model::Srgb;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::{engine_or_skip, paint};
@@ -497,7 +498,7 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "background",
-        DocCommand::SetBackground([0.2, 0.3, 0.4]),
+        DocCommand::SetBackground(Srgb::new([0.2, 0.3, 0.4])),
     );
 
     // Mattes.
@@ -512,7 +513,7 @@ fn every_action_touches_only_what_it_declares() {
                 min: Vec2::new(10.0, 10.0),
                 max: Vec2::new(180.0, 140.0),
             },
-            paint: MattePaint::Solid([0.9, 0.9, 0.9]),
+            paint: MattePaint::Solid(Srgb::new([0.9, 0.9, 0.9])),
         },
     );
     let matte = engine
@@ -531,7 +532,7 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "recolor matte",
-        DocCommand::SetMattePaint(matte, MattePaint::Solid([0.1, 0.1, 0.1])),
+        DocCommand::SetMattePaint(matte, MattePaint::Solid(Srgb::new([0.1, 0.1, 0.1]))),
     );
     step(
         &mut engine,
@@ -627,7 +628,7 @@ fn every_action_touches_only_what_it_declares() {
             op: FillOp::new(
                 rect(Vec2::new(40.0, 40.0), Vec2::new(80.0, 80.0)),
                 1.0,
-                [0.2, 0.7, 0.4],
+                Srgb::new([0.2, 0.7, 0.4]),
                 0.5,
             ),
         },
@@ -638,7 +639,7 @@ fn every_action_touches_only_what_it_declares() {
         "fill the selection",
         DocCommand::Fill {
             layer: root,
-            op: FillOp::of_selection([0.3, 0.3, 0.8]),
+            op: FillOp::of_selection(Srgb::new([0.3, 0.3, 0.8])),
         },
     );
 

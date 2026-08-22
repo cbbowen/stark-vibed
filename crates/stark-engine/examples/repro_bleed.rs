@@ -17,6 +17,7 @@
 
 mod common;
 
+use stark_model::Srgb;
 use std::io::BufWriter;
 use std::path::PathBuf;
 
@@ -97,7 +98,7 @@ fn main() {
             op: FillOp::new(
                 SelectionShape::rect_from_corners(lo - pad, hi + pad),
                 0.0,
-                [0.45, 0.40, 0.38],
+                Srgb::new([0.45, 0.40, 0.38]),
                 1.0,
             ),
         };

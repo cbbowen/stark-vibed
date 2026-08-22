@@ -27,8 +27,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::gradient::Gradient;
-
 /// What a filter layer does to the stack beneath it (§21.2).
 ///
 /// Three variants, because three are built. The enum is the seam the rest of §21.7
@@ -142,20 +140,17 @@ impl Filter {
             Filter::Chromatic(c) => Filter::Chromatic(c.sanitized()),
             // A `Gradient`'s structural invariants (two stops, ascending, finite)
             // are already held by construction — deserialization funnels through
-            // `Gradient::new` — so what is left to hold is the *range*: stop
-            // colors are straight sRGB, and a finite 1e30 would reach every
-            // texel just as surely as a NaN saturation.
+            // `Gradient::new`, and its stops' *range* is held by `Srgb`, which is
+            // the only thing a stop's color can be. So this arm has nothing left to
+            // do, and it is worth leaving as an arm rather than folding into a
+            // catch-all: this is where a gradient map's knobs would go if it grew
+            // one, and the enum is exhaustive here for `sanitized`'s usual reason.
             //
-            // `Gradient::clamped` rather than a loop here, because a fill's parcel
-            // and a matte's paint want the identical thing and this was the copy
-            // they were written against. It also cannot fail where this could:
-            // clamping moves no position and drops no stop, so there is nothing for
-            // the funnel to refuse and no `and_then` to explain — and the loop it
-            // replaces spelled the bound `clamp`, which returns the NaN it is meant
-            // to catch (`crate::clamp01`). Unreachable here, since `new` admits no
-            // non-finite stop, but it is the third place in the crate to have
-            // written the policy down and the second to have written it wrongly.
-            Filter::GradientMap(g) => Filter::GradientMap(g.map(Gradient::clamped)),
+            // It has been three things on this branch — a loop spelling the bound
+            // `f32::clamp` (which returns the NaN it exists to catch), then a call
+            // to `Gradient::clamped`, and now nothing at all. That is the newtype's
+            // whole argument in one arm.
+            Filter::GradientMap(g) => Filter::GradientMap(g),
         }
     }
 }
@@ -464,33 +459,39 @@ mod tests {
         );
     }
 
-    /// The gradient map's sanitizer holds the one thing `Gradient::new` does not:
-    /// the **range** of a stop color. Structure (two stops, ascending, finite) is
-    /// the constructor's promise; a finite color outside the sRGB cube is still a
-    /// value a hostile file can carry, and it reaches every texel of the frame.
+    /// A gradient map's stops are inside the cube **before the sanitizer sees
+    /// them**, which is what the newtype bought.
+    ///
+    /// This used to assert that `Filter::sanitized` clamped them, and it was the
+    /// only one of the three ramp sites that did. Now a stop's color is an
+    /// [`Srgb`](crate::Srgb) and there is no way to build one outside the cube, so
+    /// what is left to check is that the *ramp* still survives being given hot
+    /// values — the clamp must not turn two stops into a degenerate one — and that
+    /// the sanitizer is the identity on it.
     #[test]
-    fn sanitizing_a_gradient_map_clamps_its_stops_to_the_cube() {
+    fn a_gradient_maps_stops_are_inside_the_cube_before_it_is_sanitized() {
+        use crate::Srgb;
         use crate::gradient::{Gradient, GradientStop};
         let hot = Gradient::new(vec![
             GradientStop {
                 t: 0.0,
-                color: [-2.0, 0.5, 1e30],
+                color: Srgb::new([-2.0, 0.5, 1e30]),
             },
             GradientStop {
                 t: 1.0,
-                color: [0.25, 2.0, 0.75],
+                color: Srgb::new([0.25, 2.0, 0.75]),
             },
         ])
-        .unwrap();
-        let Filter::GradientMap(Some(g)) = Filter::GradientMap(Some(hot)).sanitized() else {
-            panic!("a clampable ramp must survive sanitizing as a ramp");
-        };
-        assert_eq!(g.stops()[0].color, [0.0, 0.5, 1.0]);
-        assert_eq!(g.stops()[1].color, [0.25, 1.0, 0.75]);
-        // …and an in-range ramp comes through bit for bit: sanitizing is
-        // idempotent on anything this engine wrote.
-        let clean = Filter::GradientMap(Some(g));
-        assert_eq!(clean.clone().sanitized(), clean);
+        .expect("clamping must not degenerate the ramp");
+        assert_eq!(hot.stops()[0].color.get(), [0.0, 0.5, 1.0]);
+        assert_eq!(hot.stops()[1].color.get(), [0.25, 1.0, 0.75]);
+
+        let filter = Filter::GradientMap(Some(hot));
+        assert_eq!(
+            filter.clone().sanitized(),
+            filter,
+            "there is nothing left for the sanitizer to do to a ramp",
+        );
     }
 
     /// A freshly added filter must change nothing: adding one is a step you take

@@ -13,8 +13,8 @@ use super::filter::Filter;
 use super::guide::{GuideId, PerspectiveGuide};
 use super::layer::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
 use super::selection::SelectionOp;
+use crate::Srgb;
 use crate::SurfaceId;
-use crate::clamp01;
 use crate::geom::Vec2;
 
 /// Identifies the author of an action: one local user, or a peer (§4).
@@ -240,7 +240,7 @@ pub enum ActionKind {
     /// sRGB (§15.5). Logged rather than held as a view setting, because the ground a
     /// piece was painted on is part of what it is: unlogged, the paper color of a
     /// painting would not be saved at all.
-    SetBackground([f32; 3]),
+    SetBackground(Srgb),
 
     /// Affine transform of the selected paint on `layer` (§16):
     /// cut what the **author's** selection holds, resample it once under
@@ -682,10 +682,6 @@ impl ActionKind {
                 region,
                 paint: paint.sanitized(),
             },
-            // The substrate color is straight sRGB, exactly like a matte's solid —
-            // and it is the one every document has, since it is what the paint sits
-            // on (§15.5). It sat under "nothing to hold" holding three floats.
-            ActionKind::SetBackground(rgb) => ActionKind::SetBackground(rgb.map(clamp01)),
             // Nothing to hold: ids, flags, places, and the geometry whose own
             // `usable`/`affine_usable` gate rejects it at `apply` rather than
             // rounding it into something else (§16.1) — a transform that cannot be
@@ -719,6 +715,10 @@ impl ActionKind {
             // `apply` beside the three transforms below rather than rounded into a
             // different rectangle. Its *paint* is sanitized above.
             | ActionKind::SetMatteRect(..)
+            // The substrate color, which holds itself now: `Srgb` cannot be built
+            // outside the cube, so this is back to being an arm with nothing in it
+            // — the shape the comment above describes.
+            | ActionKind::SetBackground(_)
             | ActionKind::SetSurface(_)
             | ActionKind::InvertSelection
             | ActionKind::Transform { .. }
@@ -825,7 +825,7 @@ mod tests {
             op: FillOp {
                 shape: SelectionShape::All,
                 feather: -1.0,
-                paint: Parcel::Solid([bad; 3]),
+                paint: Parcel::Solid(Srgb::new([bad; 3])),
                 opacity: 5.0,
             },
         }

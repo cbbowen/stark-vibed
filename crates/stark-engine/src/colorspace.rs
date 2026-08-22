@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use stark_model::Srgb;
 use stark_model::{ColorSpaceId, color};
 
 /// Construct the color space implementation for `id`, or `None` when this
@@ -86,7 +87,11 @@ pub trait ColorSpace {
     fn aux_blend(&self) -> wgpu::BlendState;
 
     /// Straight display RGB → the space's four color channels (pre-coverage).
-    fn rgb_to_channels(&self, rgb: [f32; 3]) -> [f32; 4];
+    ///
+    /// The parameter says "straight display RGB" in the type now rather than in this
+    /// line: an [`Srgb`] is in the cube by construction, so neither implementation
+    /// has to wonder whether it was handed one that is not (§6.5).
+    fn rgb_to_channels(&self, rgb: Srgb) -> [f32; 4];
     /// Straight display RGB → the **residual** those channels leave behind (§6.7).
     ///
     /// Zero for a space with no [`resid_format`](Self::resid_format), and zero
@@ -94,7 +99,7 @@ pub trait ColorSpace {
     /// conversion but the true answer, since such a space's channels already say the
     /// whole color. Callers write it unconditionally into a uniform lane, and for
     /// Oklab that lane is genuinely zeroes rather than an unread field.
-    fn rgb_to_resid(&self, _rgb: [f32; 3]) -> [f32; 3] {
+    fn rgb_to_resid(&self, _rgb: Srgb) -> [f32; 3] {
         [0.0; 3]
     }
     /// The space's color channels **and residual** → straight display RGB (picker
@@ -173,7 +178,7 @@ impl ColorSpace for OkLabColorSpace {
         additive()
     }
 
-    fn rgb_to_channels(&self, rgb: [f32; 3]) -> [f32; 4] {
+    fn rgb_to_channels(&self, rgb: Srgb) -> [f32; 4] {
         let lin = [
             color::srgb_to_linear(rgb[0]),
             color::srgb_to_linear(rgb[1]),
@@ -259,13 +264,13 @@ impl ColorSpace for MixboxColorSpace {
         additive()
     }
 
-    fn rgb_to_channels(&self, rgb: [f32; 3]) -> [f32; 4] {
+    fn rgb_to_channels(&self, rgb: Srgb) -> [f32; 4] {
         // Mixbox latent = [c0, c1, c2, c3, residual…]; keep the concentrations.
         let z = mixbox::float_rgb_to_latent(&rgb);
         [z[0], z[1], z[2], 1.0]
     }
 
-    fn rgb_to_resid(&self, rgb: [f32; 3]) -> [f32; 3] {
+    fn rgb_to_resid(&self, rgb: Srgb) -> [f32; 3] {
         // The other half of the same latent: `rgb − poly(c)`, which is what makes the
         // round trip below exact rather than approximate.
         let z = mixbox::float_rgb_to_latent(&rgb);

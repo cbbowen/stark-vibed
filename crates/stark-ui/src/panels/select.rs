@@ -4,6 +4,7 @@
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
 use stark_engine::command::Tool;
+use stark_model::Srgb;
 
 use crate::commands::Command;
 use crate::icons::{self, icon, icon_tinted, label};
@@ -290,7 +291,7 @@ pub fn fill_selection(state: AppState) {
         state,
         DocCommand::Fill {
             layer,
-            op: FillOp::of_selection([r, g, b]),
+            op: FillOp::of_selection(Srgb::new([r, g, b])),
         },
     );
 }

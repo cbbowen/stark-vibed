@@ -19,6 +19,7 @@ use super::layer::{Layer, LayerContent};
 use super::selection::Selection;
 use super::state::{DocState, Guide, LayerSite};
 use crate::gpu::tile::TilePairHandle;
+use stark_model::Srgb;
 use stark_model::SurfaceId;
 use stark_model::document::Filter;
 use stark_model::document::{Action, ActorId};
@@ -67,7 +68,7 @@ enum PatchOp {
     Filter(LayerId, Filter),
     Selection(ActorId, Selection),
     Surface(SurfaceId),
-    Background([f32; 3]),
+    Background(Srgb),
     /// The **whole drawing-guide roster** (§20.5): every guide and the order they
     /// were arranged in.
     ///
@@ -429,7 +430,7 @@ mod tests {
                 None,
                 Place::Top,
                 rect,
-                MattePaint::Solid([0.2, 0.4, 0.6]),
+                MattePaint::Solid(Srgb::new([0.2, 0.4, 0.6])),
             )
             .insert_filter(LayerId(4), None, None, Filter::Color(ColorAdjust::NEUTRAL));
 
@@ -441,7 +442,7 @@ mod tests {
                 Prop::Visible => (ActionKind::SetLayerVisible(B, false), B),
                 Prop::Name => (ActionKind::SetLayerName(B, Some("wash".into())), B),
                 Prop::Matte => (
-                    ActionKind::SetMattePaint(LayerId(3), MattePaint::Solid([1.0; 3])),
+                    ActionKind::SetMattePaint(LayerId(3), MattePaint::Solid(Srgb::new([1.0; 3]))),
                     LayerId(3),
                 ),
                 Prop::Filter => (
@@ -571,10 +572,10 @@ mod tests {
     /// any layer.
     #[test]
     fn the_canvas_round_trips() {
-        let before = flat().with_background([0.5, 0.5, 0.5]);
-        let after = before.with_background([0.1, 0.2, 0.3]);
+        let before = flat().with_background(Srgb::new([0.5, 0.5, 0.5]));
+        let after = before.with_background(Srgb::new([0.1, 0.2, 0.3]));
         let back = unapply(
-            &act(ActionKind::SetBackground([0.1, 0.2, 0.3])),
+            &act(ActionKind::SetBackground(Srgb::new([0.1, 0.2, 0.3]))),
             &before,
             &after,
         );

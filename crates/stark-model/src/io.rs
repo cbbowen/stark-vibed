@@ -451,6 +451,123 @@ mod tests {
         }
     }
 
+    /// **A color newtype is not a format change**, which is the claim `Srgb` makes
+    /// and the one a save format has to be held to.
+    ///
+    /// `Old` spells the four payloads that took the type the way they were written
+    /// *before* it — a bare `[f32; 3]` under the same field and variant names — and a
+    /// document written that way has to come back with the same colors. Names are
+    /// what carbonite reconciles on (§8), and `#[carbonite(as = "[f32; 3]")]` is what
+    /// keeps the column a plain triple on both sides of the change.
+    ///
+    /// The hostile value is the second half of it: an older build could write a color
+    /// outside the cube, since nothing stopped it, and such a file must **load**
+    /// rather than be refused — clamped on the way in, which is the whole stance §19
+    /// takes about tightening an invariant.
+    #[test]
+    fn a_document_written_before_the_color_newtype_still_loads() {
+        use crate::document::{ActionKind, LayerId, MattePaint, MatteRegion, Place};
+
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "MattePaint")]
+        enum OldPaint {
+            Solid([f32; 3]),
+        }
+
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "ActionKind")]
+        enum OldKind {
+            SetBackground([f32; 3]),
+            AddMatte {
+                id: LayerId,
+                carrier: Option<LayerId>,
+                at: Place,
+                region: MatteRegion,
+                paint: OldPaint,
+            },
+        }
+
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "Action")]
+        struct OldAction {
+            id: ActionId,
+            kind: OldKind,
+        }
+
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "DocumentFile")]
+        struct OldFile {
+            app_build: BuildId,
+            canvas: CanvasMeta,
+            actions: Vec<OldAction>,
+            assets: Vec<(AssetId, Vec<u8>)>,
+            surfaces: Vec<(SurfaceId, Vec<u8>)>,
+            pictures: Vec<(AssetId, Vec<u8>)>,
+        }
+
+        let at = |lamport| ActionId {
+            lamport,
+            actor: ActorId::SOLO,
+        };
+        let old = OldFile {
+            app_build: BuildId::default(),
+            canvas: CanvasMeta::default(),
+            actions: vec![
+                OldAction {
+                    id: at(1),
+                    kind: OldKind::SetBackground([0.25, 0.5, 0.75]),
+                },
+                // What an older build could write and this one cannot: outside the
+                // cube, and a `NaN`.
+                OldAction {
+                    id: at(2),
+                    kind: OldKind::SetBackground([-1.0, 2.0, f32::NAN]),
+                },
+                OldAction {
+                    id: at(3),
+                    kind: OldKind::AddMatte {
+                        id: LayerId(1),
+                        carrier: None,
+                        at: Place::Bottom,
+                        region: MatteRegion::Everything,
+                        paint: OldPaint::Solid([0.1, 0.2, 0.3]),
+                    },
+                },
+            ],
+            assets: Vec::new(),
+            surfaces: Vec::new(),
+            pictures: Vec::new(),
+        };
+
+        let body = carbonite::to_vec_static(&old).expect("encode the old shape");
+        let mut encoder = DeflateEncoder::new(Vec::from(&MAGIC[..]), Compression::default());
+        encoder.write_all(&body).expect("deflate");
+        let bytes = encoder.finish().expect("deflate");
+
+        let back = DocumentFile::from_bytes(&bytes).expect("a pre-newtype document still loads");
+        let colors: Vec<[f32; 3]> = back
+            .actions
+            .iter()
+            .map(|a| match &a.kind {
+                ActionKind::SetBackground(c) => c.get(),
+                ActionKind::AddMatte {
+                    paint: MattePaint::Solid(c),
+                    ..
+                } => c.get(),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            colors,
+            vec![
+                [0.25, 0.5, 0.75],
+                // Clamped on the way in rather than refused — the file opens.
+                [0.0, 1.0, 0.0],
+                [0.1, 0.2, 0.3],
+            ],
+        );
+    }
+
     /// **The whole point of the format**: a file written against an older shape of
     /// these types loads, rather than being refused by a version number (§8).
     ///

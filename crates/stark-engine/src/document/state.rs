@@ -11,6 +11,7 @@ use rpds::{HashTrieMap, Vector};
 
 use super::layer::{CompositeParams, Layer, LayerContent};
 use super::selection::Selection;
+use stark_model::Srgb;
 use stark_model::SurfaceId;
 use stark_model::document::ActorId;
 use stark_model::document::Filter;
@@ -142,7 +143,7 @@ pub struct DocState {
     /// Distinct from a matte layer, which is a slab of opaque *paint*: the
     /// substrate sits under everything, is lit, and the canvas weave shows through
     /// it (the media pass composites paint over it, §6.3).
-    pub background: [f32; 3],
+    pub background: Srgb,
     /// The **drawing guides** the artist has set up, in roster order (§20.5).
     ///
     /// Document state on the argument the substrate above makes, and it took a
@@ -194,7 +195,7 @@ pub struct Guide {
 /// lights the scene warm, and a warm ground on top of that reads noticeably red.
 /// Grey rather than near-white so paint has somewhere to go in *both* directions:
 /// a highlight can read lighter than the bare canvas.
-pub const DEFAULT_BACKGROUND: [f32; 3] = [0.85, 0.85, 0.85];
+pub const DEFAULT_BACKGROUND: Srgb = Srgb::new([0.85, 0.85, 0.85]);
 
 /// The canvas a document starts on when nobody says otherwise (§6.4): `Flat`, the
 /// one ground that is procedural.
@@ -256,7 +257,7 @@ impl DocState {
     }
 
     /// The same document on a different substrate color (§15.5).
-    pub fn with_background(&self, background: [f32; 3]) -> Self {
+    pub fn with_background(&self, background: Srgb) -> Self {
         Self {
             background,
             ..self.clone()

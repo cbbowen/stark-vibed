@@ -276,6 +276,7 @@ pub(crate) use iroh_wire::{CollabProto, request};
 #[cfg(test)]
 mod tests {
     use stark_model::DocumentFile;
+    use stark_model::Srgb;
     use stark_model::document::{Action, ActionId, ActionKind, ActorId};
 
     use super::*;
@@ -307,7 +308,7 @@ mod tests {
                 lamport,
                 actor: ActorId(1),
             },
-            kind: ActionKind::SetBackground([0.0; 3]),
+            kind: ActionKind::SetBackground(Srgb::new([0.0; 3])),
         }
     }
 

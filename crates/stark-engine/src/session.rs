@@ -14,6 +14,7 @@ use crate::peer::{GestureView, Identity, LiveGesture, default_name};
 use crate::presence::{GestureSource, GestureTx};
 use crate::tow::{Tow, TowString};
 use crate::view::ViewTransform;
+use stark_model::Srgb;
 use stark_model::document::Scaffold;
 use stark_model::document::{
     ActorId, BrushParams, FillOp, GuideId, LayerId, SelectionOp, SelectionShape, ShapeAction,
@@ -118,7 +119,7 @@ struct ShapeDrag {
     feather: f32,
     /// The color a fill will lay, taken off the brush when the drag began. Unused
     /// by a selecting gesture, which has no paint.
-    color: [f32; 3],
+    color: Srgb,
     /// How strongly this gesture's coverage lands — captured with the rest, so
     /// moving the slider mid-drag cannot change what the drag already looks like it
     /// is doing. Read by *both* actions: it is the selection's opacity when the
@@ -612,7 +613,7 @@ impl Session {
             // Its *alpha* is not: that is the brush's pigment talking, and how
             // strongly this gesture lands is the panel's own question (see
             // [`shape_opacity`](Self::shape_opacity)).
-            color: [r, g, b],
+            color: Srgb::new([r, g, b]),
             opacity: self.shape_opacity,
             start: pos,
             points: vec![pos],

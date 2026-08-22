@@ -13,6 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::action::ActorId;
+use crate::Srgb;
 use crate::geom::Vec2;
 
 /// Stable identifier for a layer within a document.
@@ -501,11 +502,9 @@ impl MatteRegion {
 /// per-unit opacity where the fill's parcel does.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum MattePaint {
-    /// One color everywhere. Straight sRGB, like [`BrushParams::color`],
-    /// converted to working-space channels at composite time.
-    ///
-    /// [`BrushParams::color`]: crate::document::BrushParams::color
-    Solid([f32; 3]),
+    /// One color everywhere, converted to working-space channels at composite
+    /// time.
+    Solid(Srgb),
     /// A color ramp along an axis (§22.4): interpolated per fragment in the
     /// working space, so an Oklab document's matte matches the library strip
     /// and a Mixbox document's is a pigment ramp — a graded wash, not a screen
@@ -519,7 +518,7 @@ pub enum MattePaint {
 impl MattePaint {
     /// The color a one-swatch summary shows: the solid itself, or the ramp's
     /// start — the stop the axis anchors on.
-    pub fn swatch(&self) -> [f32; 3] {
+    pub fn swatch(&self) -> Srgb {
         match self {
             Self::Solid(c) => *c,
             Self::Gradient { gradient, .. } => gradient.sample(0.0),
@@ -544,14 +543,11 @@ impl MattePaint {
     /// rather than being clamped or refused.
     pub fn sanitized(self) -> Self {
         match self {
-            Self::Solid(c) => Self::Solid(c.map(crate::clamp01)),
-            Self::Gradient { gradient, axis } => {
-                let gradient = gradient.clamped();
-                match axis.usable() {
-                    true => Self::Gradient { gradient, axis },
-                    false => Self::Solid(gradient.sample(0.0)),
-                }
-            }
+            // See `Parcel::sanitized`: the colors hold themselves, and the axis is
+            // all that is left to answer.
+            Self::Solid(_) => self,
+            Self::Gradient { gradient, axis } if axis.usable() => Self::Gradient { gradient, axis },
+            Self::Gradient { gradient, .. } => Self::Solid(gradient.sample(0.0)),
         }
     }
 }

@@ -196,6 +196,7 @@ impl Reconciler {
 /// message is precisely one gossip never delivers.
 #[cfg(test)]
 mod tests {
+    use stark_model::Srgb;
     use std::time::Duration;
 
     use stark_model::DocumentFile;
@@ -218,7 +219,7 @@ mod tests {
                 lamport,
                 actor: ActorId(1),
             },
-            kind: ActionKind::SetBackground([lamport as f32 / 8.0; 3]),
+            kind: ActionKind::SetBackground(Srgb::new([lamport as f32 / 8.0; 3])),
         }
     }
 

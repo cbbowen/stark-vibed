@@ -23,6 +23,7 @@ mod common;
 use common::*;
 use stark_engine::MediaParams;
 use stark_engine::command::{DocCommand, ViewCommand};
+use stark_model::Srgb;
 use stark_model::document::{BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
@@ -86,7 +87,7 @@ fn reference_light_reproduces_the_substrate() {
     };
     engine.process(ViewCommand::SetMediaParams(REFERENCE));
     for &c in PROBES {
-        engine.process(DocCommand::SetBackground(c));
+        engine.process(DocCommand::SetBackground(Srgb::new(c)));
         let got = center_rgb(&mut engine);
         assert_reproduces("substrate", c, got);
     }
@@ -114,7 +115,7 @@ fn reference_light_reproduces_opaque_paint() {
 
     for &c in PROBES {
         for ground in [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]] {
-            engine.process(DocCommand::SetBackground(ground));
+            engine.process(DocCommand::SetBackground(Srgb::new(ground)));
             let brush = BrushParams {
                 color: [c[0], c[1], c[2], 1.0],
                 radius: 48.0,

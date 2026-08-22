@@ -6,6 +6,7 @@
 pub mod corpus;
 
 use stark_engine::command::Tool;
+use stark_model::Srgb;
 use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -160,11 +161,9 @@ pub fn engine_or_skip_sized_blue(size: Extent2) -> Option<Engine> {
 }
 
 pub fn on_blue(mut engine: Engine) -> Engine {
-    engine.process(stark_engine::command::DocCommand::SetBackground([
-        BG.r as f32,
-        BG.g as f32,
-        BG.b as f32,
-    ]));
+    engine.process(stark_engine::command::DocCommand::SetBackground(Srgb::new(
+        [BG.r as f32, BG.g as f32, BG.b as f32],
+    )));
     engine
 }
 

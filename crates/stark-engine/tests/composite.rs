@@ -29,6 +29,7 @@ use common::*;
 use stark_engine::command::DocCommand;
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
+use stark_model::Srgb;
 use stark_model::document::{BrushDynamics, BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
@@ -172,7 +173,7 @@ fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
                 min: -HALF,
                 max: HALF,
             },
-            paint: MattePaint::Solid([0.0, 0.0, 0.0]),
+            paint: MattePaint::Solid(Srgb::new([0.0, 0.0, 0.0])),
         });
         let frame = engine.observe().layers.last().expect("matte").id;
         // The view is the export's, so nothing about the surface's size can reach
@@ -255,7 +256,7 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
                 min: Vec2::new(-80.0, -60.0),
                 max: Vec2::new(80.0, 60.0),
             },
-            paint: MattePaint::Solid([0.0, 0.0, 0.0]),
+            paint: MattePaint::Solid(Srgb::new([0.0, 0.0, 0.0])),
         });
     };
     let shot = |engine: &mut stark_engine::Engine, into: &mut Offscreen, scale: f32| {
@@ -374,7 +375,7 @@ fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
             min: Vec2::new(-80.0, -60.0),
             max: Vec2::new(80.0, 60.0),
         },
-        paint: MattePaint::Solid([0.0, 0.0, 0.0]),
+        paint: MattePaint::Solid(Srgb::new([0.0, 0.0, 0.0])),
     });
     let frame = engine.observe().layers.last().expect("matte").id;
 

@@ -20,6 +20,7 @@ mod common;
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_engine::{Engine, RgbaImage};
+use stark_model::Srgb;
 use stark_model::document::{ChromaticAberration, ColorAdjust, Filter, LayerId, Place};
 use stark_model::geom::Vec2;
 use stark_model::gradient::{Gradient, GradientStop};
@@ -105,7 +106,10 @@ fn ramp(stops: &[(f32, [f32; 3])]) -> Gradient {
     Gradient::new(
         stops
             .iter()
-            .map(|&(t, color)| GradientStop { t, color })
+            .map(|&(t, color)| GradientStop {
+                t,
+                color: Srgb::new(color),
+            })
             .collect(),
     )
     .expect("a valid test ramp")

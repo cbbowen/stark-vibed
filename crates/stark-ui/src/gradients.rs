@@ -370,17 +370,18 @@ pub fn trace_long_enough(points: &[Vec2]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stark_model::Srgb;
     use stark_model::gradient::GradientStop;
 
     fn gradient() -> Gradient {
         Gradient::new(vec![
             GradientStop {
                 t: 0.0,
-                color: [1.0, 0.0, 0.0],
+                color: Srgb::new([1.0, 0.0, 0.0]),
             },
             GradientStop {
                 t: 1.0,
-                color: [0.0, 0.0, 1.0],
+                color: Srgb::new([0.0, 0.0, 1.0]),
             },
         ])
         .unwrap()

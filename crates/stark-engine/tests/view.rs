@@ -15,6 +15,7 @@ use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered, RgbaImage};
+use stark_model::Srgb;
 use stark_model::document::{MattePaint, MatteRegion, Place};
 use stark_model::geom::Vec2;
 
@@ -120,7 +121,7 @@ fn the_view_never_reaches_the_document() {
             min: Vec2::new(-100.0, -60.0),
             max: Vec2::new(100.0, 60.0),
         },
-        paint: MattePaint::Solid([0.0, 0.0, 0.0]),
+        paint: MattePaint::Solid(Srgb::new([0.0, 0.0, 0.0])),
     });
     let frame = engine.observe().layers.last().expect("matte").id;
     let shot = |engine: &mut Engine| {
@@ -268,7 +269,7 @@ fn mirroring_reflects_every_pixel_of_the_screen_path() {
             min: Vec2::new(-70.0, -50.0),
             max: Vec2::new(90.0, 40.0),
         },
-        paint: MattePaint::Solid([0.0, 0.0, 0.0]),
+        paint: MattePaint::Solid(Srgb::new([0.0, 0.0, 0.0])),
     });
 
     // At two orientations, because the mirror is *screen*-relative: it has to swap the

@@ -26,6 +26,7 @@
 //! canvas earns its keep (§15.1).
 
 use dioxus::prelude::*;
+use stark_model::Srgb;
 
 use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
@@ -196,7 +197,7 @@ pub fn add_frame(state: AppState) {
             carrier: None,
             at: Place::Top,
             region: MatteRegion::OutsideRect { min, max },
-            paint: MattePaint::Solid(DEFAULT_MATTE),
+            paint: MattePaint::Solid(Srgb::new(DEFAULT_MATTE)),
         },
     );
     // Select it. `AddMatte` mints the id engine-side, so the new frame is the
@@ -241,7 +242,7 @@ fn add_background(state: AppState) {
             carrier: None,
             at: Place::Bottom,
             region: MatteRegion::Everything,
-            paint: MattePaint::Solid(DEFAULT_GROUND),
+            paint: MattePaint::Solid(Srgb::new(DEFAULT_GROUND)),
         },
     );
     // The new ground is the only rect-less matte in the stack: it was just born,
@@ -440,18 +441,18 @@ pub fn FrameBar() -> Element {
                 if show_picker {
                     div { class: "color-popout",
                         OklabPicker {
-                            init: c,
+                            init: (c).get(),
                             // Previewed while the pointer is down, committed once on
                             // release: the fill is document state, so a pick costs one
                             // undo step — and one replicated action — rather than one
                             // per color the pointer crossed on the way (§15.7).
                             onchange: move |rgb: [f32; 3]| {
                                 preview::MATTE_PAINT
-                                    .show(state, (info.id, MattePaint::Solid(rgb)));
+                                    .show(state, (info.id, MattePaint::Solid(Srgb::new(rgb))));
                             },
                             oncommit: move |rgb: [f32; 3]| {
                                 preview::MATTE_PAINT
-                                    .commit(state, (info.id, MattePaint::Solid(rgb)));
+                                    .commit(state, (info.id, MattePaint::Solid(Srgb::new(rgb))));
                             },
                         }
                     }

@@ -31,6 +31,7 @@ use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap, TilePairHandle, TilePool};
 use crate::noise::NOISE_TILE_PX;
 use crate::unpoisoned;
+use stark_model::Srgb;
 use stark_model::document::StrokeRecord;
 
 mod budget;
@@ -306,7 +307,10 @@ impl StrokeRenderer {
         rec: &StrokeRecord,
         surface: &crate::gpu::surface::Surface,
     ) -> StrokeConstants {
-        let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
+        // The brush keeps a bare RGBA because the frontend writes it a component
+        // at a time (`Srgb`); this is the boundary where its RGB half becomes the
+        // display color the conversion is defined on.
+        let rgb = Srgb::new([rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]]);
         let ch = self.color_space.rgb_to_channels(rgb);
         let res = self.color_space.rgb_to_resid(rgb);
         let (nfreq, namp, noff) = noise_uniform(rec);

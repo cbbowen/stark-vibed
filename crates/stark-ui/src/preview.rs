@@ -37,6 +37,7 @@
 //! that is why the method is idempotent — see its own note.
 
 use dioxus::prelude::*;
+use stark_model::Srgb;
 
 use crate::state::{AppState, dispatch};
 use stark_engine::command::{DocCommand, ViewCommand};
@@ -161,7 +162,7 @@ pub const MATTE_PAINT: Preview<(LayerId, MattePaint)> =
     });
 
 /// The canvas substrate color — the Lighting panel's pop-out (§15.5).
-pub const BACKGROUND: Preview<[f32; 3]> =
+pub const BACKGROUND: Preview<Srgb> =
     Preview::new(ViewCommand::PreviewBackground, DocCommand::SetBackground);
 
 /// A gradient fill of the selection — the gradient bar's composing axis (§22.4).
@@ -260,19 +261,19 @@ mod tests {
         );
         check_pair!(
             MATTE_PAINT,
-            (id, MattePaint::Solid([0.1, 0.2, 0.3])),
+            (id, MattePaint::Solid(Srgb::new([0.1, 0.2, 0.3]))),
             ViewCommand::PreviewMattePaint(Some(shown)),
             DocCommand::SetMattePaint(layer, laid) => (shown, (layer, laid))
         );
         check_pair!(
             BACKGROUND,
-            [0.93, 0.91, 0.86],
+            Srgb::new([0.93, 0.91, 0.86]),
             ViewCommand::PreviewBackground(Some(shown)),
             DocCommand::SetBackground(laid) => (shown, laid)
         );
         check_pair!(
             FILL,
-            (id, FillOp::new(SelectionShape::All, 2.0, [0.2, 0.4, 0.6], 0.75)),
+            (id, FillOp::new(SelectionShape::All, 2.0, Srgb::new([0.2, 0.4, 0.6]), 0.75)),
             ViewCommand::PreviewFill(Some(shown)),
             DocCommand::Fill { layer, op } => (shown, (layer, op))
         );

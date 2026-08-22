@@ -237,6 +237,7 @@ impl<S: ContentSource> Resolver<S> {
 /// waited for it would be measuring `tokio::time` rather than the retry.
 #[cfg(test)]
 mod tests {
+    use stark_model::Srgb;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -312,7 +313,7 @@ mod tests {
                 lamport,
                 actor: ActorId(1),
             },
-            kind: ActionKind::SetBackground([0.0; 3]),
+            kind: ActionKind::SetBackground(Srgb::new([0.0; 3])),
         }
     }
 

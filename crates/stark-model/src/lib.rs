@@ -51,6 +51,7 @@ pub mod surface;
 // apiece, with nothing choosing between them and no rule saying which four were
 // special. Nothing in the workspace ever took the short path; the four are gone
 // rather than the other twenty added, so `document::` means what it says.
+pub use color::Srgb;
 pub use colorspace::ColorSpaceId;
 pub use content::{AssetNeed, action_content};
 pub use error::{DocError, Result};
@@ -83,7 +84,7 @@ pub use surface::SurfaceId;
 /// — passing a `NaN` opacity through the very funnel that exists to stop one. One
 /// definition, so the policy cannot be half-remembered at the next gate.
 #[allow(clippy::manual_clamp)]
-pub(crate) fn clamp01(x: f32) -> f32 {
+pub(crate) const fn clamp01(x: f32) -> f32 {
     x.max(0.0).min(1.0)
 }
 

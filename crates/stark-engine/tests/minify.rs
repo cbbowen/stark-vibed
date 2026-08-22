@@ -25,6 +25,7 @@ mod common;
 use common::*;
 use stark_engine::command::DocCommand;
 use stark_engine::{Background, ExportScale, Offscreen, Rendered, RgbaImage};
+use stark_model::Srgb;
 use stark_model::document::{BrushParams, BrushShape, MattePaint, MatteRegion, Place};
 use stark_model::geom::Vec2;
 
@@ -135,7 +136,7 @@ fn hatched(engine: &mut stark_engine::Engine) {
             min: Vec2::new(-HALF, -HALF),
             max: Vec2::new(HALF, HALF),
         },
-        paint: MattePaint::Solid([0.0, 0.0, 0.0]),
+        paint: MattePaint::Solid(Srgb::new([0.0, 0.0, 0.0])),
     });
 }
 

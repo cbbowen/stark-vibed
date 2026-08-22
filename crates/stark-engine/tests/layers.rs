@@ -6,6 +6,7 @@ mod common;
 use common::*;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_engine::{Background, Engine, Offscreen, Rendered};
+use stark_model::Srgb;
 use stark_model::document::{BlendMode, DRAGO_K, LayerId, Place};
 use stark_model::geom::{Extent2, Vec2};
 
@@ -354,11 +355,11 @@ fn setting_a_value_to_the_one_it_already_holds_is_not_an_edit() {
     engine.process(DocCommand::SetLayerVisible(TOP, false));
     engine.process(DocCommand::SetLayerClip(TOP, true));
     engine.process(DocCommand::SetLayerOpacity(TOP, 1.0));
-    engine.process(DocCommand::SetBackground([
+    engine.process(DocCommand::SetBackground(Srgb::new([
         BG.r as f32,
         BG.g as f32,
         BG.b as f32,
-    ]));
+    ])));
     assert_eq!(
         logged(&engine),
         before,

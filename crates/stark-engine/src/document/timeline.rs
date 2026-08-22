@@ -795,6 +795,7 @@ impl Timeline for ReplicatedTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stark_model::Srgb;
 
     fn id(lamport: u64, actor: u64) -> ActionId {
         ActionId {
@@ -807,7 +808,7 @@ mod tests {
     fn edit(lamport: u64, actor: u64) -> Action {
         Action {
             id: id(lamport, actor),
-            kind: ActionKind::SetBackground([0.0; 3]),
+            kind: ActionKind::SetBackground(Srgb::new([0.0; 3])),
         }
     }
 

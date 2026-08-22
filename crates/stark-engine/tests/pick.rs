@@ -25,6 +25,7 @@ mod common;
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{Engine, PickOptions, PickSource};
+use stark_model::Srgb;
 use stark_model::document::{LayerId, Place};
 use stark_model::geom::Vec2;
 
@@ -157,7 +158,7 @@ fn over_the_substrate_answers_with_the_canvas_color() {
         return;
     };
     const GROUND: [f32; 3] = [0.2, 0.55, 0.35];
-    engine.process(DocCommand::SetBackground(GROUND));
+    engine.process(DocCommand::SetBackground(Srgb::new(GROUND)));
 
     assert_near(
         pick(&mut engine, Vec2::ZERO, over_substrate(0)),
@@ -568,7 +569,7 @@ fn the_below_source_cuts_the_stack_above_the_layer() {
         return;
     };
     const GROUND: [f32; 3] = [0.2, 0.55, 0.35];
-    engine.process(DocCommand::SetBackground(GROUND));
+    engine.process(DocCommand::SetBackground(Srgb::new(GROUND)));
     let (l0, _l1, m1, _m2) = scoped_doc(&mut engine);
     let below = |layer| source(PickSource::Below(layer));
 

@@ -62,11 +62,11 @@ fn a_trace_across_two_paints_ends_on_each() {
         let start = g.sample(0.0);
         let end = g.sample(1.0);
         assert!(
-            near(start, RED, 0.06),
+            near((start).get(), RED, 0.06),
             "{space:?}: the trace starts on red, got {start:?}"
         );
         assert!(
-            near(end, BLUE, 0.06),
+            near((end).get(), BLUE, 0.06),
             "{space:?}: the trace ends on blue, got {end:?}"
         );
 
@@ -81,7 +81,7 @@ fn a_trace_across_two_paints_ends_on_each() {
         ))
         .expect("paint at the trace's start");
         assert!(
-            near(start, [picked[0], picked[1], picked[2], 1.0], 0.02),
+            near((start).get(), [picked[0], picked[1], picked[2], 1.0], 0.02),
             "{space:?}: capture start {start:?} vs pick {picked:?}"
         );
     }
@@ -146,10 +146,10 @@ fn a_gap_in_the_paint_does_not_join_the_ramp() {
         let l = stark_model::color::srgb_to_oklab([c[0], c[1], c[2], 1.0]);
         [l[0], l[1], l[2]]
     };
-    let a = lab(g.sample(0.0));
-    let b = lab(g.sample(1.0));
+    let a = lab((g.sample(0.0)).get());
+    let b = lab((g.sample(1.0)).get());
     for i in 0..=32 {
-        let p = lab(g.sample(i as f32 / 32.0));
+        let p = lab((g.sample(i as f32 / 32.0)).get());
         // Distance from p to the segment a–b.
         let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
         let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];

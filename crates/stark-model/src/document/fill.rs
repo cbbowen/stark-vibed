@@ -28,6 +28,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::selection::{SelectionMode, SelectionShape};
+use crate::Srgb;
 use crate::geom::{TILE_APRON, Vec2};
 use crate::gradient::Gradient;
 use crate::{at_least_zero, clamp01};
@@ -85,7 +86,7 @@ pub enum Parcel {
     /// One color everywhere. Straight sRGB, and **color only**: how strongly a
     /// fill covers is [`FillOp::opacity`], one number for the whole fill, so a
     /// parcel says *what* paint and never *how much* of it (§6.1).
-    Solid([f32; 3]),
+    Solid(Srgb),
     /// A color ramp read from canvas position (§22.4).
     Gradient(GradientParcel),
 }
@@ -110,14 +111,14 @@ impl Parcel {
     /// and it cannot make a `NaN`.
     pub fn sanitized(self) -> Self {
         match self {
-            Self::Solid(c) => Self::Solid(c.map(clamp01)),
-            Self::Gradient(GradientParcel { gradient, axis }) => {
-                let gradient = gradient.clamped();
-                match axis.usable() {
-                    true => Self::Gradient(GradientParcel { gradient, axis }),
-                    false => Self::Solid(gradient.sample(0.0)),
-                }
+            // Nothing to hold: an `Srgb` is inside the cube by construction, and a
+            // ramp's stops are `Srgb`s. What is left is the *axis*, which is the
+            // one thing here a type could not answer.
+            Self::Solid(_) => self,
+            Self::Gradient(GradientParcel { gradient, axis }) if axis.usable() => {
+                Self::Gradient(GradientParcel { gradient, axis })
             }
+            Self::Gradient(GradientParcel { gradient, .. }) => Self::Solid(gradient.sample(0.0)),
         }
     }
 }
@@ -214,7 +215,7 @@ pub struct FillOp {
 }
 
 impl FillOp {
-    pub fn new(shape: SelectionShape, feather: f32, color: [f32; 3], opacity: f32) -> Self {
+    pub fn new(shape: SelectionShape, feather: f32, color: Srgb, opacity: f32) -> Self {
         Self::with_paint(shape, feather, Parcel::Solid(color), opacity)
     }
 
@@ -245,7 +246,7 @@ impl FillOp {
     /// mask it comes through (§6.8): the Opacity slider dims the *selection*, and a
     /// fill that dimmed itself as well would apply it twice. Taking no opacity
     /// parameter is how that is said once.
-    pub fn of_selection(color: [f32; 3]) -> Self {
+    pub fn of_selection(color: Srgb) -> Self {
         Self::new(SelectionShape::All, 0.0, color, 1.0)
     }
 
@@ -357,37 +358,45 @@ mod tests {
             carbonite::from_slice_static::<FillOp>(&carbonite::to_vec_static(op).expect("encodes"))
                 .expect("decodes")
         };
+        // The **paint** is not among the hostile values here, and cannot be: a
+        // `Parcel::Solid` holds an `Srgb`, which has no constructor that admits one
+        // out of the cube. That half of this test moved to
+        // `color::tests::a_color_from_the_wire_is_inside_the_cube`, which asks it of
+        // the bytes rather than of a value — the only place it can still be asked.
         let hostile = FillOp {
             shape: SelectionShape::Rect {
                 min: Vec2::ZERO,
                 max: Vec2::splat(8.0),
             },
             feather: -3.0,
-            paint: Parcel::Solid([-1.0, 2.0, f32::NAN]),
+            paint: Parcel::Solid(Srgb::new([0.25, 0.5, 0.75])),
             opacity: 40.0,
         };
         let landed = round(&hostile);
         assert_eq!(landed.opacity, 1.0);
         assert_eq!(landed.feather, 0.0);
-        let Parcel::Solid(c) = landed.paint else {
-            panic!("a solid stays solid")
-        };
-        assert_eq!([c[0], c[1]], [0.0, 1.0]);
-        // `f32::clamp` returns the NaN — both of its comparisons are false — so the
-        // bound this gate used to spell caught every hostile value except the one
-        // that matters most. `clamp01` is `max`-then-`min` for exactly this.
-        assert_eq!(c[2], 0.0, "a NaN channel must not reach a shader");
 
-        // …and the same for the opacity, which the shader inverts the coverage law
-        // through: a NaN there is a NaN mass on every texel of the region.
+        // A NaN opacity is the one `f32::clamp` would have let through — both of its
+        // comparisons against NaN are false — which is why this gate spells the
+        // bound `clamp01`. The shader inverts the coverage law through it, so a NaN
+        // there is a NaN mass on every texel of the region.
         let nan_strength = FillOp {
             opacity: f32::NAN,
             ..hostile.clone()
         };
         assert_eq!(round(&nan_strength).opacity, 0.0);
 
+        // An infinite feather is the other half of that: `max(0.0)` floors a NaN and
+        // passes an infinity, and an infinitely wide coverage ramp is a
+        // half-selected plane (`crate::at_least_zero`).
+        let wide = FillOp {
+            feather: f32::INFINITY,
+            ..hostile.clone()
+        };
+        assert_eq!(round(&wide).feather, 0.0);
+
         // Idempotent on anything this engine wrote.
-        let clean = FillOp::new(SelectionShape::All, 2.0, [0.25, 0.5, 0.75], 0.6);
+        let clean = FillOp::new(SelectionShape::All, 2.0, Srgb::new([0.25, 0.5, 0.75]), 0.6);
         assert_eq!(round(&clean), clean);
     }
 
@@ -407,7 +416,7 @@ mod tests {
                 max: Vec2::new(3.0, 4.0),
             },
             1.5,
-            [0.1, 0.2, 0.3],
+            Srgb::new([0.1, 0.2, 0.3]),
             0.25,
         );
         let bytes = carbonite::to_vec_static(&op).expect("encodes as its representation");

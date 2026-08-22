@@ -41,6 +41,7 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_engine::command::Tool;
+use stark_model::Srgb;
 
 use stark_engine::ViewTransform;
 use stark_engine::command::{DocCommand, ViewCommand};
@@ -269,7 +270,7 @@ async fn generate(state: AppState, w: Wearable) -> bool {
             // The document opened on the donor's ground (`Engine::new_sharing`),
             // so the surface is set back explicitly.
             engine.process(DocCommand::SetSurface(SurfaceId::default()));
-            engine.process(DocCommand::SetBackground([1.0, 1.0, 1.0]));
+            engine.process(DocCommand::SetBackground(Srgb::new([1.0, 1.0, 1.0])));
             engine.process(ViewCommand::SetEnvironment(EnvironmentId::default()));
             engine.process(ViewCommand::SetMediaParams(MediaParams::default()));
             *guard = Some(Rig {
@@ -298,7 +299,7 @@ async fn generate(state: AppState, w: Wearable) -> bool {
                         Vec2::new(max_x, over_y),
                     ),
                     0.0,
-                    color,
+                    Srgb::new(color),
                     1.0,
                 ),
             });

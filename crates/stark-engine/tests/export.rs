@@ -13,6 +13,7 @@ use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered, RgbaImage};
+use stark_model::Srgb;
 use stark_model::document::LayerId;
 use stark_model::document::{MattePaint, MatteRegion, Place, SelectionOp};
 use stark_model::geom::Vec2;
@@ -35,7 +36,7 @@ fn add_frame(engine: &mut Engine) -> LayerId {
         carrier: None,
         at: Place::Top,
         region: FRAME,
-        paint: MattePaint::Solid(BLACK),
+        paint: MattePaint::Solid(Srgb::new(BLACK)),
     });
     engine.observe().layers.last().expect("matte").id
 }
@@ -241,7 +242,7 @@ fn export_uses_the_documents_ground() {
     .expect("the readback completes");
     assert!(!is_dark(paper.pixel(4, 4)), "default ground is near-white");
 
-    engine.process(DocCommand::SetBackground([0.02, 0.02, 0.03]));
+    engine.process(DocCommand::SetBackground(Srgb::new([0.02, 0.02, 0.03])));
     let ink = pollster::block_on(
         engine
             .export(
@@ -869,7 +870,9 @@ fn doc_revision_tracks_commits_and_not_gestures() {
 
     // Panning is not, and neither is an unlogged preview drag — but an undo is.
     engine.process(ViewCommand::CenterOn(Vec2::new(500.0, -250.0)));
-    engine.process(ViewCommand::PreviewBackground(Some([0.1, 0.1, 0.1])));
+    engine.process(ViewCommand::PreviewBackground(Some(Srgb::new([
+        0.1, 0.1, 0.1,
+    ]))));
     assert_eq!(engine.observe().doc_revision, committed);
     engine.process(DocCommand::Undo);
     assert_ne!(engine.observe().doc_revision, committed);

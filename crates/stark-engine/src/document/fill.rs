@@ -73,6 +73,7 @@ pub(crate) fn plan(op: &FillOp, gate: &Selection) -> Option<Vec<TileCoord>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stark_model::Srgb;
     use stark_model::document::SelectionShape;
     use stark_model::geom::Vec2;
 
@@ -82,27 +83,32 @@ mod tests {
 
     #[test]
     fn filling_the_selection_needs_a_selection() {
-        let op = FillOp::of_selection([1.0; 3]);
+        let op = FillOp::of_selection(Srgb::new([1.0; 3]));
         // Nothing selected: unbounded, and refused rather than guessed at.
         assert!(plan(&op, &Selection::everything()).is_none());
     }
 
     #[test]
     fn a_bounded_shape_fills_without_a_selection() {
-        let op = FillOp::new(rect(0.0, 10.0), 0.0, [1.0; 3], 1.0);
+        let op = FillOp::new(rect(0.0, 10.0), 0.0, Srgb::new([1.0; 3]), 1.0);
         let coords = plan(&op, &Selection::everything()).expect("bounded");
         assert!(!coords.is_empty());
     }
 
     #[test]
     fn an_empty_lasso_fills_nothing_rather_than_failing() {
-        let op = FillOp::new(SelectionShape::Lasso(Vec::new()), 0.0, [1.0; 3], 1.0);
+        let op = FillOp::new(
+            SelectionShape::Lasso(Vec::new()),
+            0.0,
+            Srgb::new([1.0; 3]),
+            1.0,
+        );
         assert_eq!(plan(&op, &Selection::everything()), Some(Vec::new()));
     }
 
     #[test]
     fn an_enormous_fill_is_refused() {
-        let op = FillOp::new(rect(0.0, 1.0e6), 0.0, [1.0; 3], 1.0);
+        let op = FillOp::new(rect(0.0, 1.0e6), 0.0, Srgb::new([1.0; 3]), 1.0);
         assert!(plan(&op, &Selection::everything()).is_none());
     }
 
@@ -133,7 +139,7 @@ mod tests {
                 let op = FillOp::new(
                     SelectionShape::rect_from_corners(Vec2::splat(at), Vec2::splat(at + 40.0)),
                     feather,
-                    [1.0; 3],
+                    Srgb::new([1.0; 3]),
                     1.0,
                 );
                 let declared = fill_rect(&op);
@@ -156,8 +162,8 @@ mod tests {
 
     #[test]
     fn feather_widens_the_written_region_by_half_its_ramp() {
-        let hard = FillOp::new(rect(0.0, 10.0), 0.0, [1.0; 3], 1.0);
-        let soft = FillOp::new(rect(0.0, 10.0), 512.0, [1.0; 3], 1.0);
+        let hard = FillOp::new(rect(0.0, 10.0), 0.0, Srgb::new([1.0; 3]), 1.0);
+        let soft = FillOp::new(rect(0.0, 10.0), 512.0, Srgb::new([1.0; 3]), 1.0);
         let n = |op| plan(op, &Selection::everything()).expect("bounded").len();
         assert!(n(&soft) > n(&hard));
     }

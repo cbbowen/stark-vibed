@@ -38,6 +38,7 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::half::f32_to_f16;
 use crate::gpu::tile::{AllocSource, TileMap, TilePool};
 use stark_assetid::Picture;
+use stark_model::Srgb;
 use stark_model::document::image_tiles;
 use stark_model::geom::{IVec2, TILE_APRON, TILE_SIZE, TILE_TEX};
 
@@ -188,11 +189,13 @@ fn texel(space: &dyn ColorSpace, rgba: [u8; 4]) -> Texel {
     if rgba[3] == 0 {
         return Texel::NOTHING;
     }
-    let rgb = [
+    // In the cube by construction — `u8 / 255` cannot leave it — so the constructor
+    // here is a statement of what these bytes are, not a repair.
+    let rgb = Srgb::new([
         rgba[0] as f32 / 255.0,
         rgba[1] as f32 / 255.0,
         rgba[2] as f32 / 255.0,
-    ];
+    ]);
     let channels = space.rgb_to_channels(rgb);
     let res = space.rgb_to_resid(rgb);
 

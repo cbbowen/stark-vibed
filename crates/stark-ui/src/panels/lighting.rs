@@ -2,6 +2,7 @@
 //! surface (§6.3, §6.4).
 
 use dioxus::prelude::*;
+use stark_model::Srgb;
 
 use crate::panels::color::OklabPicker;
 use crate::preview;
@@ -106,13 +107,13 @@ pub fn LightingPanel() -> Element {
         if show_bg_picker() {
             div { class: "color-inline",
                 OklabPicker {
-                    init: c,
+                    init: (c).get(),
                     // Previewed while the pointer is down, committed once on release:
                     // the substrate color is document state, so one drag has to cost
                     // one undo step (and one replicated action) rather than one per
                     // pointer sample — the same bargain the frame drag makes.
-                    onchange: move |rgb: [f32; 3]| preview::BACKGROUND.show(state, rgb),
-                    oncommit: move |rgb: [f32; 3]| preview::BACKGROUND.commit(state, rgb),
+                    onchange: move |rgb: [f32; 3]| preview::BACKGROUND.show(state, Srgb::new(rgb)),
+                    oncommit: move |rgb: [f32; 3]| preview::BACKGROUND.commit(state, Srgb::new(rgb)),
                 }
             }
         }

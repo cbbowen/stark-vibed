@@ -31,6 +31,7 @@ mod render;
 
 use crate::command::Tool;
 use stark_model::DocError;
+use stark_model::Srgb;
 use std::sync::Arc;
 
 pub use collab::PresenceTick;
@@ -479,7 +480,7 @@ pub struct ObservableState {
     /// The canvas substrate color, straight sRGB (§15.5). Document
     /// state, not a view setting — projected here so the frontend shows what the
     /// document says rather than a copy of its own that goes stale.
-    pub background: [f32; 3],
+    pub background: Srgb,
 
     /// Set once the GPU has failed — a lost device, an out-of-memory, an error no
     /// scope caught (§5). `None` for a healthy device, which is every ordinary

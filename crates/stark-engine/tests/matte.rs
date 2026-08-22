@@ -18,6 +18,7 @@ mod common;
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_engine::{Engine, RgbaImage};
+use stark_model::Srgb;
 use stark_model::document::{LayerId, MattePaint, MatteRegion, Place};
 use stark_model::geom::Vec2;
 
@@ -50,7 +51,7 @@ fn add_frame(engine: &mut Engine) {
         carrier: None,
         at: Place::Top,
         region: HOLE,
-        paint: MattePaint::Solid(BLACK),
+        paint: MattePaint::Solid(Srgb::new(BLACK)),
     });
 }
 
@@ -361,7 +362,7 @@ fn dragging_the_canvas_color_previews_without_logging() {
 
     // Three "pointer moves" of a drag towards a dark ground.
     for v in [0.5f32, 0.3, 0.1] {
-        engine.process(ViewCommand::PreviewBackground(Some([v, v, v])));
+        engine.process(ViewCommand::PreviewBackground(Some(Srgb::new([v, v, v]))));
     }
     let dragging = engine.render_to_image();
     assert!(
@@ -370,7 +371,7 @@ fn dragging_the_canvas_color_previews_without_logging() {
     );
     // `observe` reports the previewed color, so the panel's swatch agrees with the
     // canvas it controls instead of trailing a commit behind it.
-    assert_eq!(engine.observe().background, [0.1, 0.1, 0.1]);
+    assert_eq!(engine.observe().background, Srgb::new([0.1, 0.1, 0.1]));
 
     // Undoing now must take back the *stroke*, not a drag step, and drop the
     // preview with it — landing on the untouched document, because nothing about
@@ -383,7 +384,7 @@ fn dragging_the_canvas_color_previews_without_logging() {
     engine.process(DocCommand::Redo);
 
     // Releasing commits exactly one action, and drops the preview.
-    engine.process(DocCommand::SetBackground([0.1, 0.1, 0.1]));
+    engine.process(DocCommand::SetBackground(Srgb::new([0.1, 0.1, 0.1])));
     let committed = engine.render_to_image();
     assert!(
         images_match(&dragging, &committed, 2),
@@ -421,7 +422,7 @@ fn picking_a_frame_color_previews_without_logging() {
     for v in [0.3f32, 0.6, 0.9] {
         engine.process(ViewCommand::PreviewMattePaint(Some((
             matte_id,
-            MattePaint::Solid([v, v, v]),
+            MattePaint::Solid(Srgb::new([v, v, v])),
         ))));
     }
     let picking = engine.render_to_image();
@@ -434,7 +435,7 @@ fn picking_a_frame_color_previews_without_logging() {
     let previewed = engine.observe().layers.last().and_then(|l| l.matte.clone());
     assert_eq!(
         previewed.map(|m| m.paint),
-        Some(MattePaint::Solid([0.9, 0.9, 0.9]))
+        Some(MattePaint::Solid(Srgb::new([0.9, 0.9, 0.9])))
     );
 
     // A history step during the pick drops the preview and finds nothing of it
@@ -450,12 +451,12 @@ fn picking_a_frame_color_previews_without_logging() {
     for v in [0.3f32, 0.6, 0.9] {
         engine.process(ViewCommand::PreviewMattePaint(Some((
             matte_id,
-            MattePaint::Solid([v, v, v]),
+            MattePaint::Solid(Srgb::new([v, v, v])),
         ))));
     }
     engine.process(DocCommand::SetMattePaint(
         matte_id,
-        MattePaint::Solid([0.9, 0.9, 0.9]),
+        MattePaint::Solid(Srgb::new([0.9, 0.9, 0.9])),
     ));
     assert!(
         images_match(&picking, &engine.render_to_image(), 2),
@@ -485,12 +486,12 @@ fn a_frame_color_pick_that_changes_nothing_logs_nothing() {
     for v in [0.3f32, 0.6, 0.0] {
         engine.process(ViewCommand::PreviewMattePaint(Some((
             matte_id,
-            MattePaint::Solid([v, v, v]),
+            MattePaint::Solid(Srgb::new([v, v, v])),
         ))));
     }
     engine.process(DocCommand::SetMattePaint(
         matte_id,
-        MattePaint::Solid(BLACK),
+        MattePaint::Solid(Srgb::new(BLACK)),
     ));
     assert!(
         images_match(&black, &engine.render_to_image(), 2),
@@ -540,11 +541,11 @@ fn red_blue() -> Gradient {
     Gradient::new(vec![
         GradientStop {
             t: 0.0,
-            color: [0.85, 0.1, 0.1],
+            color: Srgb::new([0.85, 0.1, 0.1]),
         },
         GradientStop {
             t: 1.0,
-            color: [0.1, 0.2, 0.85],
+            color: Srgb::new([0.1, 0.2, 0.85]),
         },
     ])
     .expect("two stops")
@@ -563,7 +564,7 @@ fn an_everything_matte_grounds_the_whole_view_beneath_the_paint() {
         carrier: None,
         at: Place::Bottom,
         region: MatteRegion::Everything,
-        paint: MattePaint::Solid([0.1, 0.5, 0.15]),
+        paint: MattePaint::Solid(Srgb::new([0.1, 0.5, 0.15])),
     });
     let img = engine.render_to_image();
     // Green everywhere the paint is not…
@@ -682,7 +683,7 @@ fn an_everything_matte_defines_no_export_frame() {
         carrier: None,
         at: Place::Bottom,
         region: MatteRegion::Everything,
-        paint: MattePaint::Solid([0.9, 0.9, 0.85]),
+        paint: MattePaint::Solid(Srgb::new([0.9, 0.9, 0.85])),
     });
     let ground = engine
         .observe()

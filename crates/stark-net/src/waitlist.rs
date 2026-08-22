@@ -247,6 +247,7 @@ impl Waitlist {
 mod tests {
     use stark_model::AssetId;
     use stark_model::DocumentFile;
+    use stark_model::Srgb;
     use stark_model::document::{ActionId, ActionKind, ActorId};
 
     use super::*;
@@ -270,7 +271,7 @@ mod tests {
                 lamport,
                 actor: ActorId(1),
             },
-            kind: ActionKind::SetBackground([0.0; 3]),
+            kind: ActionKind::SetBackground(Srgb::new([0.0; 3])),
         }
     }
 

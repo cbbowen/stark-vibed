@@ -36,7 +36,7 @@ use stark_model::document::{
 use stark_model::geom::{Affine2, IVec2, Vec2};
 use stark_model::gradient::{Gradient, GradientStop};
 use stark_model::path::ControlPoint;
-use stark_model::{AssetId, SurfaceId};
+use stark_model::{AssetId, Srgb, SurfaceId};
 
 // ---------------------------------------------------------------------------
 // The vocabulary
@@ -115,11 +115,11 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
         Gradient::new(vec![
             GradientStop {
                 t: 0.0,
-                color: [n, 0.5, 0.25],
+                color: Srgb::new([n, 0.5, 0.25]),
             },
             GradientStop {
                 t: 1.0,
-                color: [0.75, n, 1.0],
+                color: Srgb::new([0.75, n, 1.0]),
             },
         ])
         // A ramp whose stops are not finite is not a ramp at all, and `new` says so
@@ -129,11 +129,11 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             Gradient::new(vec![
                 GradientStop {
                     t: 0.0,
-                    color: [0.0; 3],
+                    color: Srgb::BLACK,
                 },
                 GradientStop {
                     t: 1.0,
-                    color: [1.0; 3],
+                    color: Srgb::WHITE,
                 },
             ])
             .expect("a two-stop ramp")
@@ -202,8 +202,8 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             },
         },
         ActionKind::SetMatteRect(id, v, v),
-        ActionKind::SetMattePaint(id, MattePaint::Solid([n, 0.5, 0.75])),
-        ActionKind::SetBackground([n, 0.25, 0.75]),
+        ActionKind::SetMattePaint(id, MattePaint::Solid(Srgb::new([n, 0.5, 0.75]))),
+        ActionKind::SetBackground(Srgb::new([n, 0.25, 0.75])),
         ActionKind::Transform {
             layer: id,
             affine: Affine2::from_scale(v),
@@ -412,16 +412,16 @@ fn every_default_is_already_sanitized() {
         assert_eq!(neutral.clone().sanitized(), neutral, "a neutral moved");
     }
     for paint in [
-        MattePaint::Solid([0.25, 0.5, 0.75]),
+        MattePaint::Solid(Srgb::new([0.25, 0.5, 0.75])),
         MattePaint::Gradient {
             gradient: Gradient::new(vec![
                 GradientStop {
                     t: 0.0,
-                    color: [0.0; 3],
+                    color: Srgb::BLACK,
                 },
                 GradientStop {
                     t: 1.0,
-                    color: [1.0; 3],
+                    color: Srgb::WHITE,
                 },
             ])
             .expect("a two-stop ramp"),

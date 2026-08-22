@@ -14,6 +14,7 @@ use stark_engine::RgbaImage;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_model::Srgb;
 use stark_model::document::{
     BrushDynamics, BrushParams, FillOp, SelectionMode, SelectionOp, SelectionShape, ShapeAction,
 };
@@ -83,7 +84,7 @@ fn fill_rect(
         op: FillOp::new(
             SelectionShape::rect_from_corners(min, max),
             feather,
-            color,
+            Srgb::new(color),
             opacity,
         ),
     });
@@ -192,7 +193,7 @@ fn filling_the_selection_needs_one_and_is_otherwise_refused() {
     let before = engine.render_to_image();
     engine.process(DocCommand::Fill {
         layer,
-        op: FillOp::of_selection(RED),
+        op: FillOp::of_selection(Srgb::new(RED)),
     });
     let after = engine.render_to_image();
     assert!(
@@ -210,7 +211,7 @@ fn filling_the_selection_needs_one_and_is_otherwise_refused() {
     );
     engine.process(DocCommand::Fill {
         layer,
-        op: FillOp::of_selection(RED),
+        op: FillOp::of_selection(Srgb::new(RED)),
     });
     let filled = engine.render_to_image();
     assert!(is_red(&filled, Vec2::ZERO));
@@ -590,7 +591,7 @@ fn fill_golden() {
         op: FillOp::new(
             SelectionShape::ellipse_from_corners(Vec2::new(-60.0, -60.0), Vec2::new(60.0, 60.0)),
             18.0,
-            [0.9, 0.2, 0.1],
+            Srgb::new([0.9, 0.2, 0.1]),
             0.7,
         ),
     });
@@ -609,10 +610,13 @@ const BLUE: [f32; 3] = [0.1, 0.2, 0.8];
 
 fn red_blue() -> Gradient {
     Gradient::new(vec![
-        GradientStop { t: 0.0, color: RED },
+        GradientStop {
+            t: 0.0,
+            color: Srgb::new(RED),
+        },
         GradientStop {
             t: 1.0,
-            color: BLUE,
+            color: Srgb::new(BLUE),
         },
     ])
     .expect("two stops")
@@ -859,15 +863,15 @@ fn a_gradient_fill_survives_save_and_load() {
     let gradient = Gradient::new(vec![
         GradientStop {
             t: 0.0,
-            color: [0.9, 0.1, 0.1],
+            color: Srgb::new([0.9, 0.1, 0.1]),
         },
         GradientStop {
             t: 0.3,
-            color: [0.9, 0.8, 0.1],
+            color: Srgb::new([0.9, 0.8, 0.1]),
         },
         GradientStop {
             t: 1.0,
-            color: [0.1, 0.2, 0.8],
+            color: Srgb::new([0.1, 0.2, 0.8]),
         },
     ])
     .expect("three stops");

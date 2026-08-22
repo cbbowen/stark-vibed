@@ -23,6 +23,10 @@ use common::*;
 use stark_engine::command::DocCommand;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::ColorSpaceId;
+// Both users of this are `#[cfg(feature = "mixbox")]`, so the import is too —
+// the second configuration is the only gate that catches one that is not (§6.7).
+#[cfg(feature = "mixbox")]
+use stark_model::Srgb;
 use stark_model::document::{
     BlendMode, BrushDynamics, BrushParams, BrushShape, DRAGO_K, DRAGO_K_RANGE, LayerId,
 };
@@ -742,7 +746,7 @@ fn golden_multiply_layer() {
 fn black_is_black_in_the_pigment_space() {
     let black_in = |space| -> Option<([u8; 4], [u8; 4])> {
         let mut engine = engine_or_skip_with(space)?;
-        engine.process(DocCommand::SetBackground([0.0, 0.0, 0.0]));
+        engine.process(DocCommand::SetBackground(Srgb::new([0.0, 0.0, 0.0])));
         let ground = center(&engine.render_to_image());
         paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 70.0, H_STROKE);
         Some((ground, center(&engine.render_to_image())))
@@ -797,7 +801,7 @@ fn carrying_brush() -> BrushParams {
 #[cfg(feature = "mixbox")]
 fn carried_onto(space: ColorSpaceId, bg: [f32; 3]) -> Option<[u8; 4]> {
     let mut engine = engine_or_skip_with(space)?;
-    engine.process(DocCommand::SetBackground(bg));
+    engine.process(DocCommand::SetBackground(Srgb::new(bg)));
     paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 30.0, BLACK_BAND);
     stroke_with(&mut engine, carrying_brush(), CARRY_DRAG);
     Some(center(&engine.render_to_image()))

@@ -21,6 +21,7 @@
 //! engine work, and because a position-varying `FillOp` will embed it when the
 //! gradient fill lands at the seam §18.0.4 names.
 
+use crate::Srgb;
 use crate::color::{oklab_to_srgb, srgb_to_oklab};
 use crate::geom::Vec2;
 
@@ -31,10 +32,10 @@ use crate::geom::Vec2;
 pub struct GradientStop {
     /// Position in `[0,1]` along the ramp.
     pub t: f32,
-    /// Straight sRGB in `[0,1]` — the CPU boundary convention (§6.5). No alpha:
-    /// a captured ramp is made of paint the canvas actually holds, and what a
-    /// fill does with coverage is the fill's parameter, not the gradient's.
-    pub color: [f32; 3],
+    /// The color there. No alpha: a captured ramp is made of paint the canvas
+    /// actually holds, and what a fill does with coverage is the fill's parameter,
+    /// not the gradient's.
+    pub color: Srgb,
 }
 
 /// A color ramp: at least two stops, positions ascending, endpoints at 0 and 1.
@@ -79,9 +80,16 @@ pub struct Gradient {
 impl Gradient {
     /// Build a gradient from stops, normalizing to the invariants: sorted by
     /// `t`, at most [`MAX_STOPS`] of them, positions rescaled so the first sits
-    /// at 0 and the last at 1. `None` if fewer than two stops arrive, if any
-    /// component is non-finite, or if every stop sits at one position (there is
+    /// at 0 and the last at 1. `None` if fewer than two stops arrive, if a
+    /// position is non-finite, or if every stop sits at one position (there is
     /// no ramp to rescale).
+    ///
+    /// **Only the positions are checked**, because only the positions can be wrong:
+    /// a [`Srgb`] is inside the cube by construction, so the color half of what this
+    /// used to refuse cannot be handed to it. That is also why `Gradient::clamped`
+    /// is gone — it was this branch's stepping stone to the newtype, three callers
+    /// clamping a ramp on the way into a document, and the type now does it on the
+    /// way into a *stop*.
     ///
     /// The only door, and it refuses: a caller that traced a line expecting a ramp
     /// needs to hear "these samples do not describe one" (§22.2), and so does a file
@@ -96,8 +104,7 @@ impl Gradient {
         if stops.len() < 2 {
             return None;
         }
-        let finite = |s: &GradientStop| s.t.is_finite() && s.color.iter().all(|c| c.is_finite());
-        if !stops.iter().all(finite) {
+        if !stops.iter().all(|s| s.t.is_finite()) {
             return None;
         }
         stops.sort_by(|a, b| a.t.total_cmp(&b.t));
@@ -117,30 +124,10 @@ impl Gradient {
         &self.stops
     }
 
-    /// The same ramp with every stop color inside the sRGB cube — the *range* half
-    /// of a ramp's sanitizing, which [`new`](Self::new) deliberately does not do.
-    ///
-    /// `new` holds what makes a list a *ramp*: two stops, finite, ascending,
-    /// spanning. A stop color of `1e30` passes all of that and is still a value that
-    /// reaches every texel of a fill, a matte or a filter — so it is held here, at
-    /// the funnels that know the color is straight sRGB (§6.5).
-    ///
-    /// Direct construction rather than `new`, for [`reversed`](Self::reversed)'s
-    /// reason: clamping touches no position and no count, and `clamp01` maps finite
-    /// to finite and NaN to 0, so every invariant survives it and the funnel would
-    /// have nothing to refuse. That it *cannot* fail is why this returns `Self` where
-    /// the three call sites it replaces each had an `Option` to explain away.
-    pub fn clamped(mut self) -> Self {
-        for s in &mut self.stops {
-            s.color = s.color.map(crate::clamp01);
-        }
-        self
-    }
-
     /// The color at `t` (clamped to `[0,1]`), interpolated **in Oklab** between
     /// the surrounding stops — the same interpolation CSS's `in oklab` performs,
     /// so a frontend strip previews exactly what this returns. Straight sRGB out.
-    pub fn sample(&self, t: f32) -> [f32; 3] {
+    pub fn sample(&self, t: f32) -> Srgb {
         let t = t.clamp(0.0, 1.0);
         let after = self.stops.partition_point(|s| s.t <= t);
         let (a, b) = match after {
@@ -163,8 +150,8 @@ impl Gradient {
         if f >= 1.0 {
             return b.color;
         }
-        let la = to_lab(a.color);
-        let lb = to_lab(b.color);
+        let la = to_lab(a.color.get());
+        let lb = to_lab(b.color.get());
         from_lab([
             la[0] + (lb[0] - la[0]) * f,
             la[1] + (lb[1] - la[1]) * f,
@@ -237,15 +224,12 @@ fn to_lab(srgb: [f32; 3]) -> [f32; 3] {
     [l[0], l[1], l[2]]
 }
 
-fn from_lab(lab: [f32; 3]) -> [f32; 3] {
+fn from_lab(lab: [f32; 3]) -> Srgb {
     let s = oklab_to_srgb([lab[0], lab[1], lab[2], 1.0]);
-    // A lerp between in-gamut colors can leave the sRGB cube (Oklab is wider);
-    // clamping per channel is what CSS does for the same strip.
-    [
-        s[0].clamp(0.0, 1.0),
-        s[1].clamp(0.0, 1.0),
-        s[2].clamp(0.0, 1.0),
-    ]
+    // A lerp between in-gamut colors can leave the sRGB cube (Oklab is wider), and
+    // the constructor is where that is held — which is the third clamp `Srgb` has
+    // absorbed rather than the first it has added.
+    Srgb::new([s[0], s[1], s[2]])
 }
 
 /// How far apart, in canvas px, the capture samples a traced path (§22.2).
@@ -419,7 +403,10 @@ mod tests {
     use super::*;
 
     fn stop(t: f32, color: [f32; 3]) -> GradientStop {
-        GradientStop { t, color }
+        GradientStop {
+            t,
+            color: Srgb::new(color),
+        }
     }
 
     #[test]
@@ -431,7 +418,7 @@ mod tests {
 
         let g = Gradient::new(vec![stop(0.9, [1.0; 3]), stop(0.1, [0.0; 3])]).unwrap();
         assert_eq!(g.stops()[0].t, 0.0);
-        assert_eq!(g.stops()[0].color, [0.0; 3]);
+        assert_eq!(g.stops()[0].color, Srgb::BLACK);
         assert_eq!(g.stops()[1].t, 1.0);
     }
 
@@ -440,8 +427,8 @@ mod tests {
         let a = [0.8, 0.2, 0.1];
         let b = [0.1, 0.3, 0.9];
         let g = Gradient::new(vec![stop(0.0, a), stop(1.0, b)]).unwrap();
-        assert_eq!(g.sample(-1.0), a);
-        assert_eq!(g.sample(2.0), b);
+        assert_eq!(g.sample(-1.0), Srgb::new(a));
+        assert_eq!(g.sample(2.0), Srgb::new(b));
 
         // Midpoint = the Oklab midpoint, not the sRGB one.
         let la = srgb_to_oklab([a[0], a[1], a[2], 1.0]);
@@ -472,8 +459,8 @@ mod tests {
         assert_eq!(r.stops()[2].t, 1.0);
         // Stops land bit-exact — a color must not pick up dust by being turned
         // around — and interior positions mirror.
-        assert_eq!(r.stops()[0].color, [0.2, 0.8, 0.6]);
-        assert_eq!(r.stops()[2].color, [0.1, 0.2, 0.3]);
+        assert_eq!(r.stops()[0].color, Srgb::new([0.2, 0.8, 0.6]));
+        assert_eq!(r.stops()[2].color, Srgb::new([0.1, 0.2, 0.3]));
         assert!((r.stops()[1].t - 0.7).abs() < 1e-6);
         // And the ramp between them is the same ramp: r(t) == g(1 - t).
         for i in 0..=10 {
@@ -615,7 +602,7 @@ mod tests {
                     a[1] + (b[1] - a[1]) * t,
                     a[2] + (b[2] - a[2]) * t,
                 ];
-                (t, from_lab(lab))
+                (t, from_lab(lab).get())
             })
             .collect();
         let g = fit(&samples).unwrap();
@@ -654,7 +641,7 @@ mod tests {
                         ya[2] + (wa[2] - ya[2]) * f,
                     ]
                 };
-                (t, from_lab(lab))
+                (t, from_lab(lab).get())
             })
             .collect();
         let g = fit(&samples).unwrap();
@@ -670,7 +657,7 @@ mod tests {
         }
         // And the fitted ramp reproduces the trace everywhere, not just at stops.
         for (t, c) in &samples {
-            let got = to_lab(g.sample(*t));
+            let got = to_lab(g.sample(*t).get());
             let want = to_lab(*c);
             let d = ((got[0] - want[0]).powi(2)
                 + (got[1] - want[1]).powi(2)

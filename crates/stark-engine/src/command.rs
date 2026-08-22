@@ -75,6 +75,7 @@ impl Tool {
 
 use crate::gpu::{EnvironmentId, MediaParams};
 use stark_model::AssetId;
+use stark_model::Srgb;
 use stark_model::SurfaceId;
 use stark_model::document::{
     BlendMode, BrushParams, FillOp, Filter, GuideId, LayerId, MattePaint, MatteRegion,
@@ -409,7 +410,7 @@ pub enum DocCommand {
     /// Set the canvas substrate color — the ground under everything, straight
     /// sRGB (§15.5). A document property, not a view setting: it is
     /// what the piece was painted on, and it is saved.
-    SetBackground([f32; 3]),
+    SetBackground(Srgb),
 
     /// Transform this client's selected paint on `layer` — affine, perspective
     /// or warp (§16, §16.8, §16.9) — carrying the selection along with it. A
@@ -672,7 +673,7 @@ pub enum ViewCommand {
     /// committing each one would spend an undo step — and, in a shared session, a
     /// replicated log entry — on every sample of a single drag. The frontend knows
     /// where the drag ends and commits one [`DocCommand::SetBackground`] there.
-    PreviewBackground(Option<[f32; 3]>),
+    PreviewBackground(Option<Srgb>),
 
     /// Show a layer at `opacity` **without logging it** — the in-flight half of an
     /// opacity-slider drag (§14.6). `None` drops the preview.
