@@ -23,7 +23,7 @@ that moved a rule into a type. Both then found things reading had missed.
 | **D6** | doc block on the wrong item | **done** — `e653851` |
 | **D7** | an infinite feather | **done** — `f7639e5`; found in the doing, see below |
 | **D8** | a peer's live brush skips the funnel | **done**; found in the doing, see below |
-| **A1** | the funnel belongs in the payloads | **done** — `f7639e5` |
+| **A1** | the funnel belongs in the payloads | **done** — `f7639e5`, and the newtype in `82dbd5f` |
 | **A2** | perspective footprint's honesty | **done** — `e653851` |
 | **A3** | no `tests/` in the crate that owns §12.6 | **done** — `f7639e5` |
 | **A4** | `Tool` is session state | **done** — `e653851` |
@@ -34,7 +34,7 @@ that moved a rule into a type. Both then found things reading had missed.
 | **S4** | `Action` clone carries stroke paths | **open** |
 
 Everything here is on `model-cleanup`, checked against every gate the project
-names — both clippy configurations, `cargo nextest run --workspace` (1115 tests,
+names — both clippy configurations, `cargo nextest run --workspace` (1118 tests,
 all passing), the doctests, and the wasm build.
 
 The line numbers below are from the review and are **not** updated as the fixes
@@ -364,6 +364,42 @@ Note the wire cost is nil: a newtype over `[f32; 3]` with `#[carbonite(as = ...)
 is the same columns under the same names, the device `FillOp` and `SelectionOp`
 already use.
 
+**As built, first half** (`f7639e5`): `Parcel`, `MattePaint` and `SelectionShape`
+hold their own invariants, and both funnels are down to the scalars that are
+genuinely theirs — so the match arm decides nothing and the "nothing to hold" list
+states a rule rather than an example of one.
+
+**As built, the newtype** (`82dbd5f`): taken by all four colors a document carries.
+What it removes is not the four `map(clamp01)` calls but the *obligation* — no
+`sanitized` in the crate mentions color any more. Three things were deleted rather
+than moved, which is the whole argument for it:
+
+- `Gradient::clamped` and its three callers. Added earlier on this very branch as the
+  one definition of the ramp clamp; a stop's color is an `Srgb` now, so there is
+  nothing left to clamp on the way into a document.
+- `Gradient::new`'s color finiteness check. Only a *position* can be wrong.
+- `from_lab`'s per-channel clamp for the out-of-gamut lerp — the constructor is where
+  that lives, so this is the third clamp the type absorbed rather than the first it
+  added.
+
+`ColorSpace::rgb_to_channels`/`rgb_to_resid` take one too: their doc already said
+"straight display RGB", and now the parameter does, so neither implementation has to
+wonder whether it was handed one that is not.
+
+**It is not a format change**, which was the stated reason for deferring it and
+turned out to be cheap to settle rather than expensive.
+`io::tests::a_document_written_before_the_color_newtype_still_loads` reads a document
+written against the four *old* shapes — including a color outside the cube, which
+loads clamped rather than being refused (§19) — and `color::tests` pins that the
+encoded bytes are identical to the bare array's.
+
+`BrushParams::color` stayed a bare RGBA, as predicted, and the reason is sharper than
+"it has four channels": the frontend writes it a component at a time — an opacity
+slider assigns `color[3]`, a picker copies into `color[..3]` — so a wrapper there
+would need setters that re-clamp, which is a different design (a value you may mutate
+carefully) from this one (a value that cannot be built wrong). Its RGB half becomes
+an `Srgb` at the conversion boundary instead, which is where the claim belongs.
+
 ### A2. The perspective footprint's honesty rests on a refusal in another file
 
 ```rust
@@ -388,6 +424,13 @@ footprint comment refuses to accept:
 Give `PerspectiveMap::image_aabb` the warp's `Option` return and the two arms say
 the same thing for the same reason. One line each side, and it removes a standing
 invitation to reuse `image_aabb` somewhere that has no `apply` behind it.
+
+**As built** (`e653851`): one line each side plus two call sites, and the call sites
+are the interesting part. The engine's `gated_geometry` takes it with `?` rather than
+an unwrap — `usable()` already implies finite corners, so the `None` is unreachable
+there, and saying it with `?` keeps the two tied instead of asserting they are. The
+frontend's transform chrome takes the warp's own fallback, the source rect, which it
+was already spelling one line below.
 
 ### A3. The crate that owns §12.6 has no `tests/` directory
 
@@ -603,7 +646,7 @@ Recorded so the next reader does not re-derive it:
 Every gate the project names, after the last commit on this branch: `cargo fmt
 --all --check`; `cargo clippy --workspace --all-targets -D warnings` in **both**
 configurations, the default and `--no-default-features --features
-stark-net/webrtc`; `cargo nextest run --workspace` — 1115 tests, all passing;
+stark-net/webrtc`; `cargo nextest run --workspace` — 1118 tests, all passing;
 `cargo test --workspace --doc`; and `cargo check -p stark-ui --target
 wasm32-unknown-unknown`.
 
@@ -643,23 +686,19 @@ assigned them, and that is the part still taken on reading.
 
 ## What is left
 
-Three things, in the order I would take them:
+**S4**, and only S4 — measured in the app rather than in a test, and worth doing
+after a session that has felt slow rather than on spec. What it turns on is how often
+`history` clones a `Logged`, which is a fact about the other crate and about a real
+editing session, so it is the one item here that cannot be closed from inside the
+model.
 
-1. **A1's newtype** — `Srgb([f32; 3])`, which turns four `map(clamp01)` calls into
-   a type that cannot hold an out-of-range color. Deferred deliberately: it changes
-   the wire representation of four payloads at once, so it wants its own commit and
-   its own older-shape test rather than the tail of a correctness commit. Note it
-   covers four of the five sites, not five — `BrushParams::color` is RGBA and would
-   need its own newtype or to stay as it is, which is worth deciding before starting
-   rather than discovering halfway.
-
-   **`MattePaint` and `Parcel` merging rides with it.** They are word-for-word the
-   same type — a solid or a ramp on an axis, both reaching `ramp_common` — with two
-   wire shapes written at different times, which is now said at
-   `MattePaint::sanitized` rather than only noticed here. Their two `sanitized`
-   implementations are the same fifteen lines twice.
-
-2. **S4** — measured in the app, not in a test, and only after a session that has
-   felt slow.
-
-Nothing else is outstanding.
+**`MattePaint` and `Parcel` merging is withdrawn**, and that is the newtype's doing
+rather than a change of mind. They are still the same idea with two wire shapes, and
+an earlier draft of this section said the merge "rides with" `Srgb`. It does not, and
+the case for it did not survive: with the colors holding themselves, the two
+`sanitized` implementations shrank from fifteen lines each to *six*, and what is left
+duplicated between them is one `axis.usable()` test. Merging means changing the type
+a saved `AddMatte` names — carbonite reconciles by type name, so `MattePaint` against
+`Parcel` is a break rather than a rename — and alpha license or not, that is a real
+cost for six lines. The time to revisit it is when a *third* thing wants to be a
+parcel.
