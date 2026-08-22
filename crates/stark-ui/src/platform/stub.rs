@@ -194,6 +194,10 @@ pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), St
     Ok((bytes, false))
 }
 
+pub async fn normalize_ground_image(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    Ok(bytes)
+}
+
 pub async fn decode_image(_bytes: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String> {
     Err("no image decoder off the web".to_string())
 }

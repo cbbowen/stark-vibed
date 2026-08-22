@@ -1157,7 +1157,7 @@ It is `DocState.background`, sitting beside `DocState.surface`, on precisely the
 argument §6.4 makes for the weave — which canvas a piece was painted on is part
 of what the document *is*. (It used to be view state owned by the frontend, so
 the ground you painted on was not saved with your painting.) Both exist and both
-make sense: `background` is the gesso; a `MatteRegion::Everything` matte — now
+make sense: `background` is the primed canvas; a `MatteRegion::Everything` matte — now
 built, the frame bar's "Add background" — is an opaque underpainting brushed
 over it. Born at the **bottom** of the stack (`AddMatte` takes the full `Place`
 anchor for exactly this), it wears either `MattePaint`: a flat paper tone, or a

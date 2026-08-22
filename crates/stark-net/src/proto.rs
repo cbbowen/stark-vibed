@@ -7,7 +7,7 @@
 //!   travelling with the message ([`codec`](crate::codec) says why). Actions are
 //!   small (fitted control points, ids, params); pixels and image bytes never ride
 //!   gossip, whatever kind of content names them.
-//! - **The `stark/collab/9` ALPN** answers [`Request`]s over one bi-stream per
+//! - **The `stark/collab/10` ALPN** answers [`Request`]s over one bi-stream per
 //!   request: the full session [`Snapshot`](Request::Snapshot) (the save-format
 //!   container, assets bundled) for joins. Every response opens with a one-byte
 //!   [tag](Tag) saying whether what follows is an answer at all.
@@ -55,8 +55,11 @@ use crate::mirror::{Mirror, Served};
 /// rendering differently, which is the meaning rule above and not the shape one;
 /// 9: the drawing guides became document state, so `ActionKind` gained five
 /// variants, §20.5 — the plainest kind of shape change, and one an older peer
-/// would decode as some other action entirely).
-pub(crate) const ALPN: &[u8] = b"stark/collab/9";
+/// would decode as some other action entirely;
+/// 10: how large the canvas weave is laid became document state, so `ActionKind`
+/// gained `SetSurfaceScale` — and *inserted*, beside the `SetSurface` it is the other
+/// half of, which shifts the index of every variant after it, §6.4).
+pub(crate) const ALPN: &[u8] = b"stark/collab/10";
 
 /// The first byte of every response.
 ///

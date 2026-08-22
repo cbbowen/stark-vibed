@@ -57,6 +57,7 @@ mod images;
 mod input;
 mod layer_thumbs;
 mod layout;
+mod library;
 mod modes;
 mod navigator;
 mod overlays;
@@ -283,6 +284,12 @@ fn app() -> Element {
             // preset's stamp id back into bytes: a library that had not arrived yet
             // would put those brushes silently on the round tip.
             shapes::load(state).await;
+
+            // And the custom surface library, on the same footing and for a sharper
+            // version of the same reason: a document opened from a file may name a
+            // weave this browser holds, and a library that had not arrived yet would
+            // leave the gallery unable to say so (§6.4).
+            grounds::load(state).await;
 
             // The app's own presets join the library now rather than at
             // `presets::load`: they name bundled brush shapes, and a stamp is

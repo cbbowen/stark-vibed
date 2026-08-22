@@ -174,9 +174,9 @@ loading populates both stores before replaying a single action.
 **Both are replay inputs, and the ground took a bug to see it.** A brush mask
 obviously decides pixels. So does a height map, once the deposition tooth gates
 how much paint lands on it (§6.4) — but the ground was a *label* (`Linen`,
-`Gesso`) resolved against whatever the reader happened to hold, so a file
+`Rough`) resolved against whatever the reader happened to hold, so a file
 recorded the name and left the image to chance. Open it on a build whose
-`Gesso.png` had been re-authored and the strokes came back different, silently;
+`Rough.png` had been re-authored and the strokes came back different, silently;
 hand the log to a peer who had never fetched that ground and it replayed on the
 flat stand-in, diverging. Naming a ground by the hash of its image and shipping
 the image with the log is what makes a file mean one thing. **Every** ground the
@@ -214,7 +214,7 @@ one crate that already reaches into `stark-ui/assets` (§2).
 
 This walks back part of the paragraph above, so it is worth being exact about
 what changed. That bug was a ground named by a *label*, resolved against whatever
-table the reader held — re-author `Gesso.png` and the pixels changed with nothing
+table the reader held — re-author `Rough.png` and the pixels changed with nothing
 able to notice. A lean file still names the ground by the hash of its image;
 content that does not hash to it is refused rather than substituted. So the
 failure mode of a re-authored asset is a document that **will not open**, not one
@@ -378,7 +378,7 @@ last of the three would still be a break today, which is the whole point of the 
 |---|---|---|
 | 2 | Layer groups (§14): `AddLayer`, `AddMatte`, `MoveLayer` each grew a `carrier` | field inserted |
 | 3 | Brush modulation (§6.2) and the deposition tooth (§6.4) on `BrushParams` | appended, but a reader still runs off the end of a brush and into the path behind it |
-| 4 | The ground became content-addressed (§6.4): `SurfaceId` went from `Flat \| Linen \| Gesso` to `Flat \| Image(AssetId)`, and `surfaces` joined `assets` | variant reshaped |
+| 4 | The ground became content-addressed (§6.4): `SurfaceId` went from `Flat \| Linen \| Rough` to `Flat \| Image(AssetId)`, and `surfaces` joined `assets` | variant reshaped |
 | 5 | `StrokeRecord` dropped its `tool` | field removed — and worst placed, sitting second, so every number after it slid along |
 | 6 | The bundle may be incomplete (§8, §12.4) | **meaning only** |
 | 7 | `FillOp::color` became `paint: Parcel` (§22.4) | variant reshaped |
@@ -394,7 +394,7 @@ Five of them are worth more than a row.
 
 **4 — why a ground is a hash and not a name.** The tooth reads the ground, so a
 document's pixels depend on a height map the file did not carry and named only
-by a label. Open it on a build whose `Gesso.png` had been re-authored and the
+by a label. Open it on a build whose `Rough.png` had been re-authored and the
 strokes came back different, silently, with nothing in the file able to notice. A
 file that bundles the ground it was painted on is a file that means one thing.
 

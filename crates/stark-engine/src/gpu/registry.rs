@@ -13,6 +13,15 @@
 //! surfaces, the procedural `Neutral` for environments — which is also the fallback
 //! when an id's bytes have not arrived yet.
 //!
+//! # What is registered and what is built are two keys
+//!
+//! Usually the same one. The canvas surface is why they are separate: a ground is
+//! baked *per scale* (§6.4) — the rise a tip meets is measured over a reach in canvas
+//! px, so how large the weave is laid changes the map that gets built from it — while
+//! the height map those bakes come from is one PNG whatever scale it is laid at. So
+//! bytes are filed under [`Resource::Content`] and built objects under the resource
+//! itself, and registering a ground's bytes readies every scale of it at once.
+//!
 //! # The store is shared; the *choice* is not
 //!
 //! The bytes and the built objects live behind an `Arc`, and `Clone` hands out a
@@ -40,6 +49,14 @@ pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
     /// scalars, so a clone is a handful of atomic bumps.
     type Gpu: Clone;
 
+    /// **What the frontend registers bytes under** — see the module note. The
+    /// lighting environment is its own content and says so; a ground is its
+    /// `SurfaceId`, so every scale it may be laid at shares one registration.
+    type Content: Copy + Eq + Hash + std::fmt::Debug;
+
+    /// The registered bytes this id builds from.
+    fn content(self) -> Self::Content;
+
     /// Whether this id needs no registered bytes — the procedural default, which is
     /// also what an id with missing bytes falls back to.
     fn is_builtin(self) -> bool;
@@ -51,7 +68,7 @@ pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
 
 /// The shared half: registered bytes and the objects built from them, one map each.
 struct Store<R: Resource> {
-    bytes: HashMap<R, Vec<u8>>,
+    bytes: HashMap<R::Content, Vec<u8>>,
     /// Everything built, keyed by id; the id in use is always present.
     ///
     /// A **cache**, not a set of live resources, and it exists for the canvas
@@ -60,8 +77,9 @@ struct Store<R: Resource> {
     /// actually painted on rather than the one in use now — so [`Registry::get`]
     /// can be asked for any id at any time, and re-decoding a multi-megabyte PNG
     /// every time the log crosses that boundary is not a thing to do on an undo
-    /// step. Bounded by the number of distinct ids a document ever names, which is
-    /// the size of the id enum.
+    /// step. Bounded by the number of distinct ids a document ever names — for a
+    /// ground, by the number of *(weave, scale)* pairs it ever names, which is what
+    /// `SurfaceScale`'s ladder is there to keep small.
     built: HashMap<R, R::Gpu>,
 }
 
@@ -71,7 +89,7 @@ impl<R: Resource> Store<R> {
         if let Some(built) = self.built.get(&id) {
             return built.clone();
         }
-        let bytes = self.bytes.get(&id);
+        let bytes = self.bytes.get(&id.content());
         if bytes.is_none() && !id.is_builtin() {
             tracing::warn!(id = ?id, "no registered bytes; falling back to the builtin");
         }
@@ -154,33 +172,37 @@ impl<R: Resource> Registry<R> {
     /// Whether `id` is ready to use: builtins always are, everything else once its
     /// bytes have been [`register`](Self::register)ed.
     pub fn is_loaded(&self, id: R) -> bool {
-        id.is_builtin() || self.store().bytes.contains_key(&id)
+        id.is_builtin() || self.store().bytes.contains_key(&id.content())
     }
 
-    /// The registered bytes for `id`, if any — what a save file bundles and what a
-    /// peer is served (§8, §12.4). `None` for a builtin, which has none by
-    /// definition, and for an id whose image has not arrived.
-    pub fn bytes(&self, id: R) -> Option<Vec<u8>> {
-        self.store().bytes.get(&id).cloned()
+    /// The registered bytes for `content`, if any — what a save file bundles and what
+    /// a peer is served (§8, §12.4). `None` for a builtin, which has none by
+    /// definition, and for content whose image has not arrived.
+    pub fn bytes(&self, content: R::Content) -> Option<Vec<u8>> {
+        self.store().bytes.get(&content).cloned()
     }
 
-    /// Provide bytes for `id`. Returns `true` if the live object was rebuilt, which
-    /// happens exactly when `id` is the one in use — the caller then has to rebind
-    /// it wherever it is sampled.
+    /// Provide bytes for `content`. Returns `true` if the live object was rebuilt,
+    /// which happens exactly when the id in use is built from that content — the
+    /// caller then has to rebind it wherever it is sampled.
     ///
-    /// A sibling whose current id is also `id` keeps its stale binding until it next
+    /// A sibling standing on the same content keeps its stale binding until it next
     /// rebinds — exactly the exposure two independent registries had, since neither
     /// saw the other's bytes arrive at all.
-    pub fn register(&self, gpu: &GpuContext, id: R, bytes: Vec<u8>) -> bool {
+    pub fn register(&self, gpu: &GpuContext, content: R::Content, bytes: Vec<u8>) -> bool {
         let mut store = self.store();
-        store.bytes.insert(id, bytes);
-        // Whatever was built for this id was built from the *old* bytes — usually the
-        // builtin fallback, standing in while the fetch was in flight. Dropping it is
-        // what makes `get` return the real thing from now on.
-        store.built.remove(&id);
-        if id != self.id {
+        store.bytes.insert(content, bytes);
+        // Whatever was built from this content was built from the *old* bytes —
+        // usually the builtin fallback, standing in while the fetch was in flight.
+        // Dropping it is what makes `get` return the real thing from now on. Every
+        // build of it, since one height map bakes a ground per scale (see the module
+        // note): a `retain` rather than a `remove`, because the bytes are one key and
+        // the objects are another.
+        store.built.retain(|id, _| id.content() != content);
+        if self.id.content() != content {
             return false;
         }
+        let id = self.id;
         store.get(gpu, id);
         true
     }

@@ -11,7 +11,7 @@ use crate::widgets::Slider;
 use dioxus::dioxus_core::spawn_forever;
 use stark_engine::command::ViewCommand;
 use stark_engine::{EnvironmentId, MediaParams};
-use stark_model::SurfaceId;
+use stark_model::{SurfaceId, SurfaceScale};
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
 /// stay out of the wasm binary (§6.6). The engine is handed the bytes.
@@ -62,19 +62,28 @@ pub fn LightingPanel() -> Element {
     // an Oklab picker. Read from the projection rather than a local signal for the
     // same reason as the rest: it is document state now (§15.5), so a copy here
     // would go stale the moment an undo or a document load moved it (§4).
-    let scene = use_obs(state, |o| (o.media, o.surface, o.environment, o.background));
-    let (p, surf, env, c) = scene().unwrap_or_else(|| {
+    let scene = use_obs(state, |o| {
+        (
+            o.media,
+            o.surface,
+            o.surface_scale,
+            o.environment,
+            o.background,
+        )
+    });
+    let (p, surf, scale, env, c) = scene().unwrap_or_else(|| {
         (
             MediaParams::default(),
             SurfaceId::default(),
+            SurfaceScale::NATURAL,
             EnvironmentId::default(),
             stark_engine::document::DEFAULT_BACKGROUND,
         )
     });
-    // Each catalog ground with the id it resolved to — `None` while its height map
-    // is still unfetched. `read`, so a row settles the moment a fetch lands.
-    let catalog = crate::grounds::resolved(state);
     let mut show_bg_picker = use_signal(|| false);
+    // What a release would lay down (`preview::SURFACE_SCALE`). Held rather than read
+    // back off `scale` at commit time, which reports the *preview* mid-drag.
+    let laying = use_signal(|| None::<SurfaceScale>);
     let swatch = format!(
         "background: rgb({:.1}% {:.1}% {:.1}%);",
         c[0] * 100.0,
@@ -117,25 +126,47 @@ pub fn LightingPanel() -> Element {
                 }
             }
         }
+        // Every ground the app ships with, every one the artist imported, and the
+        // import card — the brush editor's shape gallery with weaves in it, because a
+        // weave a user brings is the same kind of thing as a bundled one all the way
+        // down (`crate::grounds`). A `select` stood here, which could offer a list but
+        // not a picture, and a canvas ground is judged by looking at it.
+        // The dialogs' group heading, borrowed: a small caption over a set of things
+        // is the same object in a panel as it is in a modal, and the alternative was
+        // a second class with the same four declarations.
+        div { class: "modal-section-label", "SURFACE" }
+        crate::grounds::SurfaceGallery {}
+        // How large the weave is laid (§6.4). A raw range rather than `Slider`,
+        // because this one is document state: it previews per sample and commits
+        // once, which needs the three drag-ending events `Slider` does not carry
+        // (`preview::SURFACE_SCALE`, and `Preview::settle` for why there are three).
+        //
+        // The percentage is in the label because it is the one number here worth
+        // reading back — a weave is judged by eye, but "the same as last time" is
+        // judged by the figure.
         div { class: "slider-row",
-            div { class: "slider-label", "Surface" }
-            select {
-                class: "select",
-                onchange: move |e| {
-                    if let Some(g) = crate::grounds::GROUNDS.iter().find(|g| g.name == e.value()) {
-                        crate::grounds::select(state, g.name);
+            div { class: "slider-label", "Weave {scale.percent()}%" }
+            input {
+                class: "slider",
+                r#type: "range",
+                min: "{SurfaceScale::MIN}",
+                max: "{SurfaceScale::MAX}",
+                // The control steps on the same ladder the value does, so the track
+                // cannot offer a position `SurfaceScale::new` would move the handle
+                // off (§6.4).
+                step: "{SurfaceScale::STEP}",
+                value: "{scale.percent()}",
+                // Inert on `Smooth`, whose height is a constant: there is no weave to
+                // size, and a live slider would claim otherwise.
+                disabled: surf == SurfaceId::Flat,
+                oninput: move |e| {
+                    if let Ok(v) = e.value().parse::<u16>() {
+                        preview::SURFACE_SCALE.during(state, laying, SurfaceScale::new(v));
                     }
                 },
-                // A ground the catalog doesn't list — one a peer brought — still has
-                // to be *shown*, or the picker would claim the document is on
-                // whichever row happened to sort first. It leads, selected, and
-                // switching away from it is a normal pick.
-                if !catalog.iter().any(|(_, id)| *id == Some(surf)) {
-                    option { value: "", selected: true, "Custom" }
-                }
-                for (g, id) in catalog.iter() {
-                    option { value: "{g.name}", selected: *id == Some(surf), "{g.name}" }
-                }
+                onchange: move |_| preview::SURFACE_SCALE.settle(state, laying),
+                onpointerup: move |_| preview::SURFACE_SCALE.settle(state, laying),
+                onpointercancel: move |_| preview::SURFACE_SCALE.settle(state, laying),
             }
         }
         div { class: "slider-row",

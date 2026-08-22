@@ -19,6 +19,7 @@ use crate::Result;
 use crate::colorspace::ColorSpace;
 use crate::document::{DocState, LinearTimeline, effective_actions};
 use crate::gpu::EnvironmentId;
+use crate::gpu::surface::Ground;
 use stark_model::AssetId;
 use stark_model::AssetNeed;
 use stark_model::ColorSpaceId;
@@ -87,7 +88,7 @@ impl Engine {
     /// of the assets it ships with (§8, §12.4).
     ///
     /// Worth it because the bundle dominates the file: a log is fitted paths and
-    /// a canvas ground is megabytes, so a doodle on the built-in gesso weighs 2.8
+    /// a canvas ground is megabytes, so a doodle on the built-in rough ground weighs 2.8
     /// MB of which almost none is the painting. The id stays in the file either
     /// way, so what is left out is looked up rather than guessed at, and bytes
     /// that do not hash to it are refused rather than substituted.
@@ -387,11 +388,20 @@ impl Engine {
     /// *along the travel*, which makes the curve a property of the weave and the
     /// direction crossing it together. Builds the surface if this is the first time
     /// it has been asked for.
+    ///
+    /// At the **document's** scale, since that is the ground a stroke would actually
+    /// bite right now (§6.4) — the same pair `apply` resolves. Asking for a bearing
+    /// against a differently-sized weave than the one in force would be asking about
+    /// a ground nothing is painting on.
     pub fn surface_bearing(&self, id: SurfaceId, tooth: f32, dir: stark_model::geom::Vec2) -> f32 {
+        let ground = Ground {
+            id,
+            scale: self.document().surface_scale,
+        };
         self.shared
             .apply
             .surfaces
-            .get(&self.shared.gpu, id)
+            .get(&self.shared.gpu, ground)
             .bearing(tooth, dir.to_array())
     }
 
@@ -495,14 +505,22 @@ impl Engine {
     }
 
     /// Bring the GPU-side surface in line with the document's, rebuilding it if the
-    /// document moved to a different one — after a commit, an undo, a load, or a
-    /// remote merge. A no-op when unchanged, which is the common case.
+    /// document moved to a different one **or laid the same one at a different size**
+    /// — after a commit, an undo, a load, or a remote merge. A no-op when unchanged,
+    /// which is the common case.
+    ///
+    /// The pair, through [`DocState::ground`], because the pair is what a `Surface` is
+    /// built from (§6.4): a scale change with the weave unmoved has to rebind the
+    /// media pass exactly as a weave change does, and asking with the id alone was
+    /// how it would silently not.
     ///
     /// There is deliberately no public `set_surface`: the surface is document state
     /// (§6.4), so it changes by logging an action like anything else.
+    ///
+    /// [`DocState::ground`]: crate::document::DocState::ground
     pub(super) fn apply_document_surface(&mut self) {
-        let id = self.document().surface;
-        if self.shared.apply.surfaces.set(&self.shared.gpu, id) {
+        let ground = self.document().ground();
+        if self.shared.apply.surfaces.set(&self.shared.gpu, ground) {
             self.apply_surface();
         }
     }

@@ -369,6 +369,9 @@ impl Engine {
         let scene = CompositeScene {
             background: bg_channels,
             background_resid: bg_resid,
+            // Off `doc`, which is the *previewed* document when one is up — so an
+            // unlogged scale drag re-lights the weave at pointer rate (§6.4).
+            grain_uv: doc.ground().uv_scale(),
             groups,
             outlines: &outlines,
             transparent: background == Background::Transparent,

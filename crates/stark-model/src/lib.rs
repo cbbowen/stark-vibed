@@ -64,7 +64,7 @@ pub use peer::{GestureFrame, PeerFrame, StrokeHead};
 /// an id, which is what lets the frontend know a bundled asset's id before fetching
 /// it. This crate is the same argument one level up, and has no reason to restate it.
 pub use stark_assetid::{AssetId, MAX_SHAPE_DIM};
-pub use surface::SurfaceId;
+pub use surface::{SurfaceId, SurfaceScale};
 
 /// `x` into [0, 1], with NaN landing on 0 — **the crate's NaN policy**, in one
 /// place because it is one policy.

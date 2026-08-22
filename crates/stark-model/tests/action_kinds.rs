@@ -36,7 +36,7 @@ use stark_model::document::{
 use stark_model::geom::{Affine2, IVec2, Vec2};
 use stark_model::gradient::{Gradient, GradientStop};
 use stark_model::path::ControlPoint;
-use stark_model::{AssetId, Srgb, SurfaceId};
+use stark_model::{AssetId, Srgb, SurfaceId, SurfaceScale};
 
 // ---------------------------------------------------------------------------
 // The vocabulary
@@ -58,33 +58,34 @@ fn slot(kind: &ActionKind) -> usize {
         ActionKind::MoveLayer { .. } => 6,
         ActionKind::Undo(_) => 7,
         ActionKind::SetSurface(_) => 8,
-        ActionKind::Select(_) => 9,
-        ActionKind::InvertSelection => 10,
-        ActionKind::AddMatte { .. } => 11,
-        ActionKind::SetMatteRect(..) => 12,
-        ActionKind::SetMattePaint(..) => 13,
-        ActionKind::SetBackground(_) => 14,
-        ActionKind::Transform { .. } => 15,
-        ActionKind::SetLayerName(..) => 16,
-        ActionKind::Fill { .. } => 17,
-        ActionKind::SetLayerClip(..) => 18,
-        ActionKind::TransformPerspective { .. } => 19,
-        ActionKind::TransformWarp { .. } => 20,
-        ActionKind::DuplicateLayer { .. } => 21,
-        ActionKind::AddFilter { .. } => 22,
-        ActionKind::SetFilter(..) => 23,
-        ActionKind::MergeLayerDown { .. } => 24,
-        ActionKind::PlaceImage { .. } => 25,
-        ActionKind::AddGuide { .. } => 26,
-        ActionKind::SetGuide(..) => 27,
-        ActionKind::SetGuideName(..) => 28,
-        ActionKind::MoveGuide { .. } => 29,
-        ActionKind::RemoveGuide(_) => 30,
+        ActionKind::SetSurfaceScale(_) => 9,
+        ActionKind::Select(_) => 10,
+        ActionKind::InvertSelection => 11,
+        ActionKind::AddMatte { .. } => 12,
+        ActionKind::SetMatteRect(..) => 13,
+        ActionKind::SetMattePaint(..) => 14,
+        ActionKind::SetBackground(_) => 15,
+        ActionKind::Transform { .. } => 16,
+        ActionKind::SetLayerName(..) => 17,
+        ActionKind::Fill { .. } => 18,
+        ActionKind::SetLayerClip(..) => 19,
+        ActionKind::TransformPerspective { .. } => 20,
+        ActionKind::TransformWarp { .. } => 21,
+        ActionKind::DuplicateLayer { .. } => 22,
+        ActionKind::AddFilter { .. } => 23,
+        ActionKind::SetFilter(..) => 24,
+        ActionKind::MergeLayerDown { .. } => 25,
+        ActionKind::PlaceImage { .. } => 26,
+        ActionKind::AddGuide { .. } => 27,
+        ActionKind::SetGuide(..) => 28,
+        ActionKind::SetGuideName(..) => 29,
+        ActionKind::MoveGuide { .. } => 30,
+        ActionKind::RemoveGuide(_) => 31,
     }
 }
 
 /// How many kinds there are — [`slot`]'s range, bumped with its last arm.
-const KINDS: usize = 31;
+const KINDS: usize = 32;
 
 // ---------------------------------------------------------------------------
 // One of each
@@ -173,6 +174,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
         },
         ActionKind::Undo(action),
         ActionKind::SetSurface(SurfaceId::Flat),
+        ActionKind::SetSurfaceScale(SurfaceScale::new(140)),
         // A **measurable** shape with poisoned scalars, for the reason `AddMatte`
         // below carries a usable region with poisoned paint: a shape's coordinates
         // are gated by `SelectionShape::bounds` refusing them rather than clamped,

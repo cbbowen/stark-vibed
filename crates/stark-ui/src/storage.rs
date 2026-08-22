@@ -66,10 +66,10 @@
 //! [`Store`] is the whole authority on where a record lives and what a warning calls
 //! it. Both facts sit on one row, so a new record is one row, one serde type and the
 //! one-line impl that pairs them — never a `const KEY` beside a matching string at each
-//! call site, which is what the ten keys used to be (§25.6).
+//! call site, which is what the eleven keys used to be (§25.6).
 //!
 //! The impls name a variant rather than restating its strings, which is what keeps the
-//! map readable in one place: ten impls each spelling their own key would scatter the
+//! map readable in one place: eleven impls each spelling their own key would scatter the
 //! answer to "what does this browser keep?" across ten modules, and nothing would
 //! notice two of them colliding. `every_record_claims_one_store` does.
 //!
@@ -136,6 +136,12 @@ pub enum Store {
     Tutor,
     /// The custom brush-shape library (§6.6, `crate::shapes`).
     Shapes,
+    /// The custom canvas-ground library (§6.4, `crate::grounds`) — [`Shapes`]'s
+    /// sibling in every respect, rows here and height maps in the blob store beside
+    /// them (`crate::library`).
+    ///
+    /// [`Shapes`]: Self::Shapes
+    Grounds,
     /// The user's own brush presets (`crate::presets`).
     Presets,
     /// The ten brushes under the hand (§18.1.8, `crate::slots`).
@@ -146,7 +152,7 @@ pub enum Store {
 
 impl Store {
     /// The key, and the name a warning calls this record by — "the gradient library",
-    /// "the settings" — so a full quota says which of the ten ran out of room.
+    /// "the settings" — so a full quota says which of the eleven ran out of room.
     ///
     /// One key, both stores: a record that keeps bytes as well as rows spells its blob
     /// keys `stark.shapes/<hex>` (see [`Blob`]), so there is still exactly one place
@@ -168,6 +174,7 @@ impl Store {
             Store::Visible => ("stark.visible", "what is on screen"),
             Store::Tutor => ("stark.tutor", "the tips you have seen"),
             Store::Shapes => ("stark.shapes", "the shape library"),
+            Store::Grounds => ("stark.grounds", "the surface library"),
             Store::Presets => ("stark.presets", "the brush presets"),
             Store::Slots => ("stark.slots", "the quick brushes"),
             Store::Gradients => ("stark.gradients", "the gradient library"),
@@ -193,7 +200,7 @@ pub trait Record {
 ///
 /// A second trait rather than a flag on [`Record`], because the two are read
 /// differently and the difference is not one a caller should be able to get wrong:
-/// eight of the ten records are lists, and `load::<StoredVisible>()` under one trait
+/// nine of the eleven records are lists, and `load::<StoredVisible>()` under one trait
 /// would compile and quietly answer `None` — an array is not an object — leaving a
 /// screen that silently forgot itself. A type is one or the other, and the
 /// compiler says which functions it is for.

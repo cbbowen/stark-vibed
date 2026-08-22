@@ -35,7 +35,7 @@ pub(crate) const DOC_EXT: &str = "stark";
 ///
 /// Lean: content this build ships with is named but not carried, because the
 /// bundle is what a `.stark` file weighs. A log is fitted paths; a canvas ground is
-/// megabytes, so carrying one puts a doodle on the built-in gesso at 2.8 MB of which
+/// megabytes, so carrying one puts a doodle on the built-in rough ground at 2.8 MB of which
 /// almost none is the painting. Opening one resolves those ids out of the app's
 /// own files (`crate::builtin_ids`), and the catalog is append-only so that keeps
 /// working.

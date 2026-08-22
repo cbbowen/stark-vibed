@@ -114,6 +114,9 @@ pub fn action_content(action: &Action) -> Option<AssetNeed> {
         | ActionKind::SetMatteRect(..)
         | ActionKind::SetMattePaint(..)
         | ActionKind::SetBackground(_)
+        // The *ground* names content; the scale it is laid at is a number, and lands
+        // here beside the rest of the log's plain numbers.
+        | ActionKind::SetSurfaceScale(_)
         | ActionKind::Select(_)
         | ActionKind::InvertSelection
         | ActionKind::Transform { .. }

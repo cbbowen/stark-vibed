@@ -843,9 +843,9 @@ checklist:
 
 The third registry, and the one added last because it was learned the hard way.
 `Store` (`stark-ui/src/storage.rs`) enumerates every record this browser keeps —
-ten of them: the four libraries (shapes, presets, gradients, quick brushes), the
-⚙ dialog's settings, the chord table, the drag table, what is on screen, what the
-tour has seen, and this client's identity.
+eleven of them: the five libraries (brush shapes, canvas surfaces, presets,
+gradients, quick brushes), the ⚙ dialog's settings, the chord table, the drag
+table, what is on screen, what the tour has seen, and this client's identity.
 
 One law, the same one: **one authority, and callers hand it typed values rather
 than spelling a format.** Here that is enforced by the type system — a type
@@ -868,11 +868,11 @@ no untyped door, so there is nowhere for another format to come from.
 
 The registry row still carries both facts about a record — its `localStorage`
 key and the name a quota warning calls it by — and the impls name a *variant*
-rather than restating those strings. Ten impls each spelling their own key
-would scatter the answer to "what does this browser keep?" across ten modules,
+rather than restating those strings. Eleven impls each spelling their own key
+would scatter the answer to "what does this browser keep?" across eleven modules,
 and nothing would notice two of them colliding.
 
-**Two traits, not one, because eight of the ten records are lists.** `Record` is
+**Two traits, not one, because nine of the eleven records are lists.** `Record` is
 the whole of what a key holds (`load`/`save`); `Entry` is one item of a library
 (`load_list`/`save_list`). Under a single trait, `load::<StoredPanel>()` would
 compile and quietly answer `None` — an array is not an object — leaving a panel

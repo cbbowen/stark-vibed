@@ -715,18 +715,6 @@ fn curve_plot(m: Modulation) -> Element {
     }
 }
 
-/// A shape card's `background-image` declaration — written out as `none` when there
-/// is no picture yet (a built-in still fetching, bytes that would not decode) rather
-/// than omitted. An inline style merges per property, so a declaration left off a
-/// reused node is stranded at its last value instead of cleared, which would leave
-/// one shape's card wearing another's picture.
-fn thumb_style(url: Option<&str>) -> String {
-    match url {
-        Some(url) => format!("background-image: url({url});"),
-        None => "background-image: none;".to_string(),
-    }
-}
-
 /// The Tip section's shape gallery: the procedural round tip, every shape
 /// bundled with the app (`crate::builtins`), every shape in the user's library
 /// (thumbnail + name, with a hover ✕ to remove), and an import card. Images can
@@ -782,16 +770,16 @@ fn ShapeGallery() -> Element {
 
     let card = |active: bool| {
         if active {
-            "shape-card selected"
+            "asset-card selected"
         } else {
-            "shape-card"
+            "asset-card"
         }
     };
     let is_round = matches!(brush_shape, BrushShape::Round { .. });
 
     rsx! {
         div {
-            class: if dropping() { "be-shapes dropping" } else { "be-shapes" },
+            class: if dropping() { "asset-grid dropping" } else { "asset-grid" },
             // `preventDefault` on dragover is what makes the element a drop
             // target at all; the class is just the highlight.
             //
@@ -816,16 +804,16 @@ fn ShapeGallery() -> Element {
 
             div { class: card(is_round),
                 onclick: move |_| set_shape(state, BrushShape::default()),
-                div { class: "shape-thumb round" }
-                div { class: "shape-name", "Round" }
+                div { class: "asset-thumb round" }
+                div { class: "asset-name", "Round" }
             }
             for (name, url, active) in builtins {
                 div {
                     key: "{name}",
                     class: card(active),
                     onclick: move |_| crate::builtins::select(state, name),
-                    div { class: "shape-thumb", style: thumb_style(url.as_deref()) }
-                    div { class: "shape-name", title: "{name}", "{name}" }
+                    div { class: "asset-thumb", style: crate::library::thumb_style(url.as_deref()) }
+                    div { class: "asset-name", title: "{name}", "{name}" }
                 }
             }
             for (id, key, name, url) in thumbs() {
@@ -833,12 +821,12 @@ fn ShapeGallery() -> Element {
                     key: "{key}",
                     class: card(brush_shape == BrushShape::Stamp(id)),
                     onclick: move |_| crate::shapes::select(state, id),
-                    div { class: "shape-thumb", style: thumb_style(url.as_deref()) }
-                    div { class: "shape-name", title: "{name}", "{name}" }
+                    div { class: "asset-thumb", style: crate::library::thumb_style(url.as_deref()) }
+                    div { class: "asset-name", title: "{name}", "{name}" }
                     // `icons::REMOVE`, as on every other row the application lets you
                     // take something out of — the library of stamps is one more roster.
                     button {
-                        class: "shape-remove",
+                        class: "asset-remove",
                         title: "Remove from library",
                         onclick: move |e| {
                             e.stop_propagation();
@@ -848,21 +836,21 @@ fn ShapeGallery() -> Element {
                     }
                 }
             }
-            div { class: "shape-card import",
+            div { class: "asset-card import",
                 // `pick_file` must run inside the click gesture — no task hop.
                 onclick: move |_| {
                     pick_file("image/*", move |name, bytes| {
                         crate::shapes::import_file(state, name, bytes);
                     });
                 },
-                div { class: "shape-thumb plus", {icon(icons::ADD)} }
-                div { class: "shape-name", "Import\u{2026}" }
+                div { class: "asset-thumb plus", {icon(icons::ADD)} }
+                div { class: "asset-name", "Import\u{2026}" }
             }
         }
         if let Some(notice) = (state.shapes.notice)() {
-            div { class: "be-shape-notice", "{notice}" }
+            div { class: "asset-notice", "{notice}" }
         }
-        div { class: "be-shape-hint",
+        div { class: "asset-hint",
             "Import any image or drop one on the grid — white paints, black doesn't, transparency counts."
         }
     }

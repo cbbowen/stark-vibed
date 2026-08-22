@@ -12,13 +12,13 @@ use rpds::{HashTrieMap, Vector};
 use super::layer::{CompositeParams, Layer, LayerContent};
 use super::selection::Selection;
 use stark_model::Srgb;
-use stark_model::SurfaceId;
 use stark_model::document::ActorId;
 use stark_model::document::Filter;
 use stark_model::document::{
     BlendMode, GuideId, LayerId, MattePaint, MatteRegion, PerspectiveGuide, Place,
 };
 use stark_model::geom::{TileCoord, Vec2};
+use stark_model::{SurfaceId, SurfaceScale};
 
 /// Inclusive tile-coordinate bounding box of all populated tiles (§6),
 /// i.e. the explored extent of the infinite canvas.
@@ -132,6 +132,14 @@ pub struct DocState {
     /// deposits against the ground the log stood on when it was made, on replay and
     /// on a peer alike, and no history rule had to be invented to say so.
     pub surface: SurfaceId,
+    /// **How large that weave is laid** (§6.4) — the other half of the same fact.
+    ///
+    /// Document state on `surface`'s own argument, and it is not a view setting for
+    /// the reason `surface` is not: the tooth reads the ground's rise over a reach in
+    /// canvas px, so the scale decides what a stroke *deposits*, and a deposit is
+    /// stored. A stroke replayed from before a change bites the weave at the size it
+    /// was laid at when it was made.
+    pub surface_scale: SurfaceScale,
     /// The canvas substrate color — the ground the paint sits on — as straight
     /// sRGB (§15.5).
     ///
@@ -225,6 +233,7 @@ impl DocState {
             bounds: CanvasBounds::default(),
             selections: HashTrieMap::new(),
             surface: DEFAULT_SURFACE,
+            surface_scale: SurfaceScale::NATURAL,
             background: DEFAULT_BACKGROUND,
             guides: Vector::new(),
         }
@@ -252,6 +261,28 @@ impl DocState {
     pub fn with_surface(&self, surface: SurfaceId) -> Self {
         Self {
             surface,
+            ..self.clone()
+        }
+    }
+
+    /// **The canvas surface as the renderer asks for it** (§6.4): the weave and the
+    /// size it is laid at, together.
+    ///
+    /// The two are one fact and are read as one everywhere downstream — the deposit,
+    /// the media pass, the registry's key — so putting them together happens here and
+    /// not at each of them. A `surface` read without its scale beside it is the shape
+    /// of the bug this method exists to make hard to write.
+    pub fn ground(&self) -> crate::gpu::surface::Ground {
+        crate::gpu::surface::Ground {
+            id: self.surface,
+            scale: self.surface_scale,
+        }
+    }
+
+    /// The same document with its weave laid at a different size (§6.4).
+    pub fn with_surface_scale(&self, surface_scale: SurfaceScale) -> Self {
+        Self {
+            surface_scale,
             ..self.clone()
         }
     }
@@ -947,6 +978,7 @@ impl DocState {
             bounds,
             selections: self.selections.clone(),
             surface: self.surface,
+            surface_scale: self.surface_scale,
             background: self.background,
             guides: self.guides.clone(),
         }

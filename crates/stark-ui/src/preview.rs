@@ -7,11 +7,11 @@
 //! each of them previews per sample through a [`ViewCommand`] that logs nothing,
 //! and commits once through a [`DocCommand`] when the gesture settles. One undo
 //! step per adjustment, and one replicated action, rather than one per pointer
-//! move (§14.6, §15.7, §16.6, §21.6, §22.4).
+//! move (§6.4, §14.6, §15.7, §16.6, §21.6, §22.4).
 //!
 //! # The pair is data, not control flow
 //!
-//! Look at the eight commands in [`ViewCommand`] that do this: every one is
+//! Look at the ten commands in [`ViewCommand`] that do this: every one is
 //! `PreviewX(Option<T>)`, and for every one there is a commit taking exactly that
 //! `T`. The preview and the commit are not two decisions a control makes; they are
 //! **one fact about the control**, and [`Preview<T>`] is that fact — a pair of
@@ -37,7 +37,7 @@
 //! that is why the method is idempotent — see its own note.
 
 use dioxus::prelude::*;
-use stark_model::Srgb;
+use stark_model::{Srgb, SurfaceScale};
 
 use crate::state::{AppState, dispatch};
 use stark_engine::command::{DocCommand, ViewCommand};
@@ -165,6 +165,20 @@ pub const MATTE_PAINT: Preview<(LayerId, MattePaint)> =
 pub const BACKGROUND: Preview<Srgb> =
     Preview::new(ViewCommand::PreviewBackground, DocCommand::SetBackground);
 
+/// How large the canvas weave is laid — the Lighting panel's scale slider (§6.4).
+///
+/// The row where the bargain buys the most. Every other pair here spends an undo step
+/// per pointer sample if it is got wrong; this one would also **bake a ground** per
+/// sample, since a `Surface` is built from the weave and its scale together
+/// (`stark-engine`'s `gpu::surface::Ground`). The preview costs one number in the
+/// media pass's uniform, because the height field a light reads is the same field
+/// however large it is laid — only the deposit's rise channels move with the scale,
+/// and nothing deposits while a slider is under the hand.
+pub const SURFACE_SCALE: Preview<SurfaceScale> = Preview::new(
+    ViewCommand::PreviewSurfaceScale,
+    DocCommand::SetSurfaceScale,
+);
+
 /// A gradient fill of the selection — the gradient bar's composing axis (§22.4).
 pub const FILL: Preview<(LayerId, FillOp)> =
     Preview::new(ViewCommand::PreviewFill, |(layer, op)| DocCommand::Fill {
@@ -230,7 +244,7 @@ mod tests {
     ///
     /// One call per row, in the table's own order. Adding a row to the table
     /// without adding one here still compiles — nothing can make it not — but
-    /// the omission is now a hole in a column of nine, not a missing paragraph.
+    /// the omission is now a hole in a column of ten, not a missing paragraph.
     #[test]
     fn a_pair_shows_and_lays_the_same_value() {
         let id = LayerId(7);
@@ -270,6 +284,12 @@ mod tests {
             Srgb::new([0.93, 0.91, 0.86]),
             ViewCommand::PreviewBackground(Some(shown)),
             DocCommand::SetBackground(laid) => (shown, laid)
+        );
+        check_pair!(
+            SURFACE_SCALE,
+            SurfaceScale::new(160),
+            ViewCommand::PreviewSurfaceScale(Some(shown)),
+            DocCommand::SetSurfaceScale(laid) => (shown, laid)
         );
         check_pair!(
             FILL,
@@ -325,6 +345,10 @@ mod tests {
         assert!(matches!(
             (GUIDE.show)(None),
             ViewCommand::PreviewGuide(None)
+        ));
+        assert!(matches!(
+            (SURFACE_SCALE.show)(None),
+            ViewCommand::PreviewSurfaceScale(None)
         ));
     }
 }

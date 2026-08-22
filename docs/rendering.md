@@ -390,8 +390,8 @@ change rather than a history one.
 everything else identified by the BLAKE3 hash of its canonical decoded height
 field — the same bargain brush shapes make (§6.6), and for a sharper reason. A
 label is only as good as the table the reader holds. When grounds were
-`{ Flat, Linen, Gesso }`, a peer who received `SetSurface(Gesso)` without ever
-having fetched gesso fell back to the flat stand-in *silently*, and from then on
+`{ Flat, Linen, Rough }`, a peer who received `SetSurface(Rough)` without ever
+having fetched it fell back to the flat stand-in *silently*, and from then on
 deposited every stroke with no tooth at all; the two canvases diverged and
 neither screen could say why. Unlike the media pass — which re-reads the ground
 each frame and rights itself the moment an image lands — a deposit is **stored**,
@@ -410,9 +410,49 @@ limit (preserving tileability), hashes, and returns the id — so an id is only
 knowable once the bytes are in hand. And `DEFAULT_SURFACE` is `Flat`, because
 core naming linen would be core naming an image it cannot produce; the frontend
 holds a catalog (`stark-ui/src/grounds.rs`, the analogue of `builtins.rs` for
-shapes) and opens a fresh document on linen once its map has landed.
+shapes) and opens a fresh document on a ground once its map has landed.
 
-The bundled grounds: linen, a regular woven grid; and gesso, a brushed acrylic
+**And a user brings one the same way.** This is the payoff of the paragraph above
+rather than a feature beside it: because a ground *is* its bytes, "built-in" is a
+fact about the frontend's asset list and about nothing downstream, so an imported
+weave is saved, bundled, replayed and fetched by a peer through the machinery
+`Linen` already uses. There is no second path — only a second place the bytes come
+from. The frontend keeps the library the way it keeps imported brush stamps
+(§25.6): a name and an id in `localStorage`, the height map in the blob store
+beside it, and the parts both libraries share in `stark-ui/src/library.rs`. The
+one real difference between importing a stamp and importing a weave is polarity.
+A stamp's is a *spelling* — white paints, and a scan of ink on paper means the
+opposite — so the import inverts a dark-on-light image; a ground's polarity **is
+the ground**, so nothing inverts it, and the import's whole job is to make the
+image grey (`normalize_ground_image`).
+
+**How large the weave is laid** is document state too:
+`SurfaceScale`, a percentage of the map's natural size, moved by a logged
+`ActionKind::SetSurfaceScale`. It is not a view setting for the reason the ground
+is not — the tooth's reach is a distance in *canvas px* (below), so laying the
+weave larger means a tip crosses fewer threads per px, bridges further and rides
+fewer faces. It decides what a stroke deposits, and a deposit is stored.
+
+Two consequences worth naming. First, the renderer's ground is built from the
+**pair** — `gpu::surface::Ground { id, scale }` is the registry's key, while the
+*bytes* stay keyed by the `SurfaceId` alone, so one height map bakes a map per
+scale it is laid at. Scaling one bake's lookup instead would report the rise over
+the old span under a new name, which is the compensating fudge §1 rules out.
+Second, the scale is a **quantized integer** (5% steps, 25–400%) rather than an
+`f32`: it has to be `Eq`/`Hash` to be that key, it has to be exact for two peers
+to bake the same ground, and each distinct value a document names is a texture
+held for as long as the log can be replayed across it. The ladder is what keeps a
+slider dragged end to end from naming three hundred of them.
+
+That last cost is also why the slider *previews*. A scale is shown per pointer
+sample and committed once on release (§25.4's bargain, `stark-ui/src/preview.rs`)
+— and here the preview is genuinely free, because the map's **height** channel is
+the same field however large it is laid. All of a bake's scale-dependence is in
+its rise channels, which only the deposit reads. So the light follows the slider
+instantly while the tooth waits for the commit, and nothing filters a whole image
+under the hand.
+
+The bundled grounds: linen, a regular woven grid; and rough, a brushed acrylic
 ground, irregular, whose height histogram is a broad spread rather than a
 periodic peak — which is what makes it the interesting one for the tooth below,
 since a periodic weave prints a periodic mark and reads as a screen. `Flat` is a
@@ -420,7 +460,7 @@ since a periodic weave prints a periodic mark and reads as a screen. `Flat` is a
 equivalent to having no surface. That orthogonality is deliberate: most goldens
 run on `Flat` to test other features in isolation, and a dedicated golden
 (`linen_surface`) exercises the weave. One bump tile spans `SURFACE_TILE_PX`
-canvas px.
+canvas px at natural scale, and `SurfaceScale` multiplies it.
 
 **The deposition tooth.** Paint lands where the tip touches the ground — and
 what a *dragged* tip touches is not a level set of the ground's height. A stamp
@@ -448,9 +488,9 @@ is infinite, the tip tracks any fall and the surface is ignored, exactly — the
 solid default; at ½ there is no give left going down, so the tip holds its level
 — it touches whatever is flat or rising and bridges every fall, which on the
 bundled grounds is almost exactly half the ground (`Surface::bearing` measures
-0.50 on gesso, 0.51 on linen); at 1 the tip *demands* ground rising at the
+0.50 on rough, 0.51 on linen); at 1 the tip *demands* ground rising at the
 contact scale (`TOOTH_RISE`, ~the grounds' own mean |rise|) before it presses,
-and only the leading faces print — 13% of gesso, 25% of linen: the dry mark,
+and only the leading faces print — 13% of rough, 25% of linen: the dry mark,
 still a mark. The transition is softened over a band (`TOOTH_SOFTNESS`, sized to
 the grounds' interquartile rise) because a hard threshold is a binary indicator
 per texel: correct in the mean, and at canvas resolution it aliases into speckle
@@ -466,7 +506,7 @@ rather than as a gain on a pointwise slope:
   doing, which on a nearest-sampled, ~2:1-minified height map is largely Nyquist
   noise — a dither that flips with the stroke instead of a face to catch on. A
   difference over a span is self-limiting (it saturates once the reach clears a
-  feature's width — measured, 0.038 → 0.056 → 0.069 → 0.078 on gesso at 1.5, 2,
+  feature's width — measured, 0.038 → 0.056 → 0.069 → 0.078 on rough at 1.5, 2,
   3, 4 px) and inherently blind to anything repeating faster than the span. The
   reach is set on the shoulder of that curve — past a feature's own width there
   is no more face to climb, and a longer reach only translates the mark. Only the

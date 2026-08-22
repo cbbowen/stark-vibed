@@ -1234,7 +1234,7 @@ hr {
 .preset-remove .icon svg,
 .slot-clear .icon svg,
 .gradient-remove .icon svg,
-.shape-remove .icon svg {
+.asset-remove .icon svg {
   width: 11px;
   height: 11px;
 }
@@ -3290,7 +3290,16 @@ button.layer-remove:hover {
 
 /* The grid doubles as a drop target; the dashed border is the standing
    invitation, lit while a drag hovers. */
-.be-shapes {
+/* --- the asset galleries ---
+   One grid, two libraries: the brush editor's stamps (`ShapeGallery`) and the
+   Lighting panel's canvas weaves (`SurfaceGallery`). They are the same object twice
+   over (`stark-ui/src/library.rs`), so they are the same picture — which is also why
+   these classes are `asset-` and not `shape-`: the grid was the brush editor's alone
+   once, and `.be-shapes` said so.
+
+   The card is the same; what a thumbnail is a picture *of* is each library's, and is
+   drawn into the data URL rather than expressed here. */
+.asset-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(82px, 1fr));
   gap: 8px;
@@ -3301,12 +3310,12 @@ button.layer-remove:hover {
   transition: border-color 80ms, background 80ms;
 }
 
-.be-shapes.dropping {
+.asset-grid.dropping {
   border-color: #3a6ea5;
   background: #3a6ea51a;
 }
 
-.shape-card {
+.asset-card {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -3320,11 +3329,11 @@ button.layer-remove:hover {
   transition: border-color 80ms, background 80ms;
 }
 
-.shape-card:hover {
+.asset-card:hover {
   border-color: #ffffff40;
 }
 
-.shape-card.selected {
+.asset-card.selected {
   border-color: #3a6ea5;
   background: #3a6ea524;
 }
@@ -3333,7 +3342,7 @@ button.layer-remove:hover {
    the coverage in alpha (`shapes::thumbnail`). Nothing paints the ground, so the
    card shows through wherever the shape does not cover — which a mask authored as
    white on opaque black used not to do, arriving here as a black tile. */
-.shape-thumb {
+.asset-thumb {
   width: 52px;
   height: 52px;
   background-size: contain;
@@ -3341,26 +3350,35 @@ button.layer-remove:hover {
   background-repeat: no-repeat;
 }
 
+/* The procedural `Smooth` ground has no height map, so its card has no picture: a
+   plain even field, drawn in CSS, which is exactly what the ground is. The tile is
+   what the other surface cards are showing, so an absence has to look like a surface
+   and not like a card that failed to load. */
+.asset-thumb.flat {
+  background: linear-gradient(#ffffff1f, #ffffff12);
+  border-radius: 3px;
+}
+
 /* The procedural round tip has no image: a soft disc, drawn in CSS. */
-.shape-thumb.round {
+.asset-thumb.round {
   background: radial-gradient(circle, var(--panel-color) 0%, var(--panel-color) 52%, transparent 71%);
 }
 
 /* The import tile's plus, drawn rather than typed — and big, because it stands in a
    thumbnail slot instead of beside a word. */
-.shape-thumb.plus {
+.asset-thumb.plus {
   display: flex;
   align-items: center;
   justify-content: center;
   opacity: 0.55;
 }
 
-.shape-thumb.plus .icon svg {
+.asset-thumb.plus .icon svg {
   width: 22px;
   height: 22px;
 }
 
-.shape-name {
+.asset-name {
   font-size: 11px;
   opacity: 0.7;
   max-width: 100%;
@@ -3370,7 +3388,7 @@ button.layer-remove:hover {
 }
 
 /* Hover-revealed removal; small enough to not shadow the thumbnail. */
-.shape-remove {
+.asset-remove {
   position: absolute;
   top: 3px;
   right: 3px;
@@ -3390,27 +3408,27 @@ button.layer-remove:hover {
   transition: opacity 120ms, background 80ms;
 }
 
-.shape-card:hover .shape-remove {
+.asset-card:hover .asset-remove {
   opacity: 1;
 }
 
-.shape-remove:hover {
+.asset-remove:hover {
   background: #a53a3a;
 }
 
-.shape-card.import {
+.asset-card.import {
   border-style: dashed;
   background: none;
 }
 
 /* Import errors and the "inverted a dark-on-light image" explanation. */
-.be-shape-notice {
+.asset-notice {
   font-size: 12px;
   color: #e8c07a;
   margin-bottom: 6px;
 }
 
-.be-shape-hint {
+.asset-hint {
   font-size: 11px;
   opacity: 0.55;
 }

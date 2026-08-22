@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use stark_model::SurfaceId;
+use crate::gpu::surface::Ground;
 use stark_model::document::ActorId;
 use stark_model::document::{Action, ActionKind, GuideId, Materialize};
 
@@ -56,24 +56,24 @@ pub struct ApplyCtx {
     /// It lives here, rather than beside the compositor it also feeds, because the
     /// **deposit reads it**: the tooth gates the paint a stroke lays by the ground
     /// under it, so which surface a stroke sees is part of applying that stroke.
-    /// Asked with [`DocState::surface`](super::state::DocState) *as the log stood at
-    /// that action*, which is the whole reason `SetSurface` was made a logged action
-    /// rather than a view setting — a stroke from before a mid-document switch
-    /// deposits against the ground it was actually painted on, on replay and on a
-    /// peer alike.
-    pub surfaces: crate::gpu::registry::Registry<SurfaceId>,
+    /// Asked with [`DocState::surface`](super::state::DocState) and its scale *as the
+    /// log stood at that action*, which is the whole reason `SetSurface` was made a
+    /// logged action rather than a view setting — a stroke from before a mid-document
+    /// switch deposits against the ground it was actually painted on, at the size it
+    /// was laid at, on replay and on a peer alike.
+    pub surfaces: crate::gpu::registry::Registry<Ground>,
 }
 
 impl ApplyCtx {
-    /// The canvas surface `id` names, built on demand ([`Registry::get`]).
+    /// The canvas surface `ground` names, built on demand ([`Registry::get`]).
     ///
     /// Returns an owned handle rather than a borrow — `Surface` is a pair of
     /// reference-counted wgpu objects, so the clone is two atomic bumps — because
     /// the caller then borrows other fields of `self` to build the scene around it.
     ///
     /// [`Registry::get`]: crate::gpu::registry::Registry::get
-    pub fn surface(&self, id: SurfaceId) -> crate::gpu::surface::Surface {
-        self.surfaces.get(&self.gpu, id)
+    pub fn surface(&self, ground: Ground) -> crate::gpu::surface::Surface {
+        self.surfaces.get(&self.gpu, ground)
     }
 }
 
@@ -271,7 +271,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             // not as it stands now (§6.4). The tooth gates the deposit by it,
             // so a mid-document `SetSurface` changes what comes *after* it and
             // nothing before, on replay exactly as it did live.
-            let surface = ctx.surface(state.surface);
+            let surface = ctx.surface(state.ground());
             let tiles = ctx.stroke.render(
                 crate::gpu::stroke::StrokeScene {
                     pool: &ctx.pool,
@@ -369,6 +369,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             state.with_selection(action.id.actor, selection)
         }
         ActionKind::SetSurface(id) => state.with_surface(*id),
+        ActionKind::SetSurfaceScale(scale) => state.with_surface_scale(*scale),
         ActionKind::AddMatte {
             id,
             carrier,
@@ -543,6 +544,7 @@ pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState) -> bool {
         }
         ActionKind::SetBackground(rgb) => state.background == *rgb,
         ActionKind::SetSurface(id) => state.surface == *id,
+        ActionKind::SetSurfaceScale(scale) => state.surface_scale == *scale,
         // A guide edit that changes nothing, asked of the guide as it stands —
         // and answering `false` for one that is not there, on this function's
         // general rule: inert here, live on a peer whose roster is a step ahead.

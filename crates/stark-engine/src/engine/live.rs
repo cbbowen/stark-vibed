@@ -617,15 +617,17 @@ fn render_span_range(
     // `CommitStroke`'s apply will resolve, which is what `preview == committed`
     // needs of the tooth.
     //
-    // The registry's *in-use* surface, not a lookup by `base.surface`, and the two
+    // The registry's *in-use* surface, not a lookup by `base.ground()`, and the two
     // are the same thing here rather than nearly so: `apply_document_surface`
-    // holds `current()` equal to `document().surface` after every commit, undo,
-    // load and merge, and a live gesture cannot straddle a `SetSurface` because a
-    // gesture is not a logged action — any merge that switched the surface bumped
-    // the preview's epoch and threw every frozen head away with it. Asserted rather
-    // than only argued, since it is a `&self` path that cannot build one on demand.
+    // holds `current()` equal to `document().ground()` after every commit, undo,
+    // load and merge, and a live gesture cannot straddle a `SetSurface` (or a
+    // `SetSurfaceScale`) because a gesture is not a logged action — any merge that
+    // moved the surface bumped the preview's epoch and threw every frozen head away
+    // with it. Asserted rather than only argued, since it is a `&self` path that
+    // cannot build one on demand — and asserted on the *pair*, since the pair is what
+    // a `Surface` is built from.
     debug_assert_eq!(
-        base.surface,
+        base.ground(),
         ctx.surfaces.id(),
         "a live stroke is being drawn against a surface the document is not on",
     );

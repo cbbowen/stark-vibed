@@ -165,6 +165,19 @@ impl MediaPass {
 pub(super) struct MediaScene<'a> {
     pub(super) params: MediaParams,
     pub(super) environment: &'a Environment,
+    /// Canvas px → surface-tile uv for the ground **the document is on**
+    /// ([`Ground::uv_scale`](crate::gpu::Ground::uv_scale)) — how large the weave is
+    /// laid, as this frame is showing it.
+    ///
+    /// Off the document rather than off the bound map, and that is not a shortcut:
+    /// the map's *height* channel — the only one this pass reads — is what the ground
+    /// is, and is the same field however large it is laid. All the scale-dependence
+    /// of a bake is in the rise channels, which only the deposit reads. So the light
+    /// can follow a scale the instant it changes, while the tooth waits for the bake
+    /// the commit triggers — which is exactly what makes the slider previewable
+    /// (`ViewCommand::PreviewSurfaceScale`) instead of costing a whole-image filter
+    /// per pointer sample.
+    pub(super) grain_uv: f32,
     /// The **supersampled** view, so the weave and the relief are measured in the
     /// texels this pass is actually shading (§6.4).
     pub(super) view: ViewTransform,
@@ -202,7 +215,7 @@ impl MediaScene<'_> {
                 canvas_origin.x,
                 canvas_origin.y,
                 1.0 / self.view.zoom,
-                1.0 / crate::gpu::surface::SURFACE_TILE_PX,
+                self.grain_uv,
             ],
             surf_b: [
                 m.surface_strength,

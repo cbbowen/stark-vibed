@@ -35,13 +35,12 @@
 //! put that coverage — in alpha, or in the value over a black ground — stops
 //! being something the app has to be careful about.
 
-use std::sync::Mutex;
-
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_model::AssetId;
 use stark_model::document::BrushShape;
 
+use crate::library::{self, Thumbs};
 use crate::platform::{base64_encode, normalize_shape_image};
 use crate::state::{AppState, update_brush};
 use crate::storage::{self, Store};
@@ -87,21 +86,9 @@ impl storage::Blob for ShapeEntry {
     const STORE: Store = Store::Shapes;
 }
 
-/// The longest edge of a gallery thumbnail, in texels: 2× the 52-px card that
-/// shows it, so it stays crisp on a dense display, and two orders of magnitude
-/// off the [`MAX_SHAPE_DIM`](stark_assetid::MAX_SHAPE_DIM) the mask itself may
-/// run to. That difference is the whole reason the reduction exists — a full-size
-/// mask rides into the DOM as half a megabyte of base64, per card, for a picture
-/// the size of a fingernail.
-const THUMB_DIM: u32 = 128;
-
-/// Gallery thumbnails, keyed by the content id each one is a picture of.
-///
-/// An id *names* a coverage field (§19), so a thumbnail is a pure function of the
-/// id: there is no invalidation to get wrong and nothing to evict. Scanned by
-/// `PartialEq` over a `Vec` rather than hashed, like `Renderer::builtins` and
-/// `crate::thumbs::lookup` — the list is as long as the user has shapes.
-static THUMBS: Mutex<Vec<(AssetId, String)>> = Mutex::new(Vec::new());
+/// This library's gallery thumbnails ([`Thumbs`]) — the *coverage* each id names,
+/// which is not the picture `crate::grounds` draws for the same id.
+static THUMBS: Thumbs = Thumbs::new();
 
 /// A `background-image` data URL showing what the shape `id` names **covers**,
 /// whichever way its source encoded that.
@@ -128,7 +115,7 @@ static THUMBS: Mutex<Vec<(AssetId, String)>> = Mutex::new(Vec::new());
 /// picked. `None` while a built-in's fetch is still in flight (the same moment its
 /// card is not yet clickable), or if the bytes do not decode.
 pub fn thumbnail(state: AppState, id: AssetId) -> Option<String> {
-    if let Some(url) = cached(id) {
+    if let Some(url) = THUMBS.get(id) {
         return Some(url);
     }
     let bytes = {
@@ -146,20 +133,8 @@ pub fn thumbnail(state: AppState, id: AssetId) -> Option<String> {
             .map(|e| e.png.clone())
     })?;
     let url = encode_thumb(&bytes)?;
-    if let Ok(mut thumbs) = THUMBS.lock() {
-        thumbs.push((id, url.clone()));
-    }
+    THUMBS.put(id, url.clone());
     Some(url)
-}
-
-/// [`THUMBS`] under its lock, as a value — so the miss path below is not holding it
-/// while it decodes.
-fn cached(id: AssetId) -> Option<String> {
-    let thumbs = THUMBS.lock().ok()?;
-    thumbs
-        .iter()
-        .find(|(k, _)| *k == id)
-        .map(|(_, u)| u.clone())
 }
 
 /// Decode `png` to its coverage, reduce it to a thumbnail, and encode that as white
@@ -175,7 +150,7 @@ fn encode_thumb(png: &[u8]) -> Option<String> {
         width,
         height,
         texels,
-    } = reduce(stark_assetid::coverage(png).ok()?);
+    } = library::reduce(stark_assetid::coverage(png).ok()?);
     let mut out = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut out, width, height);
@@ -187,42 +162,6 @@ fn encode_thumb(png: &[u8]) -> Option<String> {
         writer.write_image_data(&pixels).ok()?;
     }
     Some(format!("data:image/png;base64,{}", base64_encode(&out)))
-}
-
-/// Box-average a coverage field down by the smallest integer factor that brings both
-/// edges within [`THUMB_DIM`]; `factor == 1` returns it unchanged.
-///
-/// The same reduction `stark_assetid` applies at the identity cap, written again here
-/// rather than reached for: that one is part of what an id *means* (§19) and is
-/// frozen at its own limit, and this one is a picture for a 52-px card. Sharing the
-/// function would tie a stylesheet's idea of a thumbnail to the file format's idea of
-/// an asset.
-fn reduce(cov: stark_assetid::Canonical) -> stark_assetid::Canonical {
-    let (w, h) = (cov.width, cov.height);
-    let factor = w.div_ceil(THUMB_DIM).max(h.div_ceil(THUMB_DIM)).max(1);
-    if factor == 1 {
-        return cov;
-    }
-    let (nw, nh) = (w / factor, h / factor);
-    let area = factor * factor;
-    let mut texels = vec![0u8; (nw * nh) as usize];
-    for y in 0..nh {
-        for x in 0..nw {
-            let mut sum = 0u32;
-            for dy in 0..factor {
-                for dx in 0..factor {
-                    let i = ((y * factor + dy) * w + (x * factor + dx)) as usize;
-                    sum += cov.texels[i] as u32;
-                }
-            }
-            texels[(y * nw + x) as usize] = (sum / area) as u8;
-        }
-    }
-    stark_assetid::Canonical {
-        width: nw,
-        height: nh,
-        texels,
-    }
 }
 
 /// Populate the library signal from storage. Called once at app start.
@@ -297,7 +236,7 @@ pub fn import_file(state: AppState, file_name: String, bytes: Vec<u8>) {
             }
         };
 
-        let name = display_name(&file_name);
+        let name = library::display_name(&file_name, "Imported shape");
         let mut entries = state.shapes.entries;
         let known = entries.read().iter().any(|e| e.id == id);
         if !known {
@@ -456,20 +395,6 @@ fn seed_session(state: AppState, id: AssetId, bytes: Vec<u8>) {
     }
 }
 
-/// A human name from a picked file's name: the stem, tidied.
-fn display_name(file_name: &str) -> String {
-    let stem = file_name
-        .rsplit_once('.')
-        .map(|(stem, _)| stem)
-        .unwrap_or(file_name)
-        .trim();
-    if stem.is_empty() {
-        "Imported shape".to_string()
-    } else {
-        stem.to_string()
-    }
-}
-
 // --- persistence ----------------------------------------------------------
 //
 // The library is kept in two stores and this is the seam between them: the rows here,
@@ -566,24 +491,6 @@ mod tests {
         assert!(
             at(info.width / 2, info.height / 2) > 240,
             "the centre covers"
-        );
-    }
-
-    /// A mask arrives capped at the identity contract's `MAX_SHAPE_DIM` and leaves
-    /// here at a card's size — the reduction is what keeps a data URL out of the DOM
-    /// at a hundred times the size the picture is shown at.
-    #[test]
-    fn a_thumbnail_is_reduced_to_the_size_the_card_shows_it_at() {
-        let full = stark_assetid::Canonical {
-            width: 1024,
-            height: 512,
-            texels: vec![128; 1024 * 512],
-        };
-        let small = reduce(full);
-        assert_eq!((small.width, small.height), (128, 64));
-        assert!(
-            small.texels.iter().all(|&t| t == 128),
-            "a flat field stays flat"
         );
     }
 }

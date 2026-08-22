@@ -413,20 +413,20 @@ async fn a_peer_paints_on_a_ground_it_has_never_seen() {
 
     // The host takes up a ground mid-session. The peer has never held these bytes:
     // it joined a document that was on `Flat`, and nothing has offered it since.
-    let gesso = host
-        .import_surface(&stark_testdata::assets::gesso())
-        .expect("the gesso height map imports");
+    let rough = host
+        .import_surface(&stark_testdata::assets::rough())
+        .expect("the rough height map imports");
     host_session.add_content(
-        AssetNeed::ground(gesso).expect("the gesso ground is an image"),
-        host.surface_bytes(gesso).expect("canonical bytes"),
+        AssetNeed::ground(rough).expect("the rough ground is an image"),
+        host.surface_bytes(rough).expect("canonical bytes"),
     );
-    host.process(DocCommand::SetSurface(gesso));
+    host.process(DocCommand::SetSurface(rough));
     flush_outbox(&mut host, &host_session).await;
     wait_for_actions(&mut peer_events, &mut peer, 1).await;
 
     assert_eq!(
         peer.surface(),
-        gesso,
+        rough,
         "the peer's document must move to the host's ground"
     );
 
@@ -626,7 +626,7 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
 /// a copy over the network into an install that shipped with it.
 ///
 /// The hazard the omission introduces is *replay*, not live painting. The snapshot
-/// here already contains a toothed stroke made on the gesso ground, so the joiner
+/// here already contains a toothed stroke made on the rough ground, so the joiner
 /// has to have those bytes registered **before** `join_collaboration` replays the
 /// log — otherwise the stroke re-deposits through the flat stand-in and the result
 /// is stored (§6.4). A toothed brush on an irregular ground is the only
@@ -639,9 +639,9 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
 
     // Painted *before* sharing, so the stroke is in the snapshot's log and the
     // joiner reaches it by replay rather than by gossip.
-    let gesso_bytes = stark_testdata::assets::gesso();
-    let gesso = host.import_surface(&gesso_bytes).expect("import ground");
-    host.process(DocCommand::SetSurface(gesso));
+    let rough_bytes = stark_testdata::assets::rough();
+    let rough = host.import_surface(&rough_bytes).expect("import ground");
+    host.process(DocCommand::SetSurface(rough));
     paint_with(
         &mut host,
         BrushParams {
@@ -673,9 +673,9 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
         .parse()
         .expect("ticket text");
 
-    // The joiner says it can resolve the gesso ground itself — which, being a
+    // The joiner says it can resolve the rough ground itself — which, being a
     // ground that ships with the app, it can.
-    let stark_model::SurfaceId::Image(promised) = gesso else {
+    let stark_model::SurfaceId::Image(promised) = rough else {
         panic!("an imported ground is an image");
     };
     let Joined {
@@ -704,7 +704,7 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
     // Settle the bill the way the frontend does: install, *then* replay.
     for need in &owed {
         let id = need.surface().expect("a ground need names a surface");
-        peer.accept_surface(id, &gesso_bytes)
+        peer.accept_surface(id, &rough_bytes)
             .expect("install the promised ground");
     }
     peer.join_collaboration(&snapshot, peer_session.actor_id());
@@ -756,12 +756,12 @@ async fn a_promised_ground_is_asked_of_the_frontend_mid_session() {
         .parse()
         .expect("ticket text");
 
-    // The peer promises the gesso ground before it has any reason to want it.
-    let gesso_bytes = stark_testdata::assets::gesso();
+    // The peer promises the rough ground before it has any reason to want it.
+    let rough_bytes = stark_testdata::assets::rough();
     // Derived without a GPU, exactly as `stark-ui`'s build script derives the ids
     // of the assets it bundles — and the `assert_eq!` below is what checks that
     // this route and the engine's `import_surface` agree on the name.
-    let probe = stark_assetid::height(&gesso_bytes)
+    let probe = stark_assetid::height(&rough_bytes)
         .expect("decode the ground")
         .id();
     let Joined {
@@ -776,12 +776,12 @@ async fn a_promised_ground_is_asked_of_the_frontend_mid_session() {
 
     // The host takes it up mid-session and paints through a dry, toothed brush,
     // whose mark *is* the ground.
-    let gesso = host.import_surface(&gesso_bytes).expect("import ground");
+    let rough = host.import_surface(&rough_bytes).expect("import ground");
     host_session.add_content(
-        AssetNeed::ground(gesso).expect("an image ground"),
-        host.surface_bytes(gesso).expect("canonical bytes"),
+        AssetNeed::ground(rough).expect("an image ground"),
+        host.surface_bytes(rough).expect("canonical bytes"),
     );
-    host.process(DocCommand::SetSurface(gesso));
+    host.process(DocCommand::SetSurface(rough));
     paint_with(
         &mut host,
         BrushParams {
@@ -817,13 +817,13 @@ async fn a_promised_ground_is_asked_of_the_frontend_mid_session() {
     })
     .await
     .expect("timed out waiting to be asked for the promised ground");
-    assert_eq!(asked, AssetNeed::ground(gesso).expect("an image ground"));
+    assert_eq!(asked, AssetNeed::ground(rough).expect("an image ground"));
 
     // Supply it the way `supply_locally` does: into the engine, then the session,
     // which releases the `SetSurface` parked on it.
-    peer.accept_surface(asked.surface().expect("a ground"), &gesso_bytes)
+    peer.accept_surface(asked.surface().expect("a ground"), &rough_bytes)
         .expect("install locally");
-    peer_session.add_content(asked, gesso_bytes.clone());
+    peer_session.add_content(asked, rough_bytes.clone());
 
     // The `SetSurface` and the stroke, less whatever landed before we were asked.
     wait_for_actions(&mut peer_events, &mut peer, 2 - merged).await;

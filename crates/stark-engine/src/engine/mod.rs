@@ -49,20 +49,20 @@ use crate::gpu::MediaParams;
 use crate::gpu::desc::Zeroes;
 use crate::gpu::{
     BlendPass, Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer,
-    FilterPass, GpuContext, MergeRenderer, Registry, SelectionRenderer, StrokeRenderer, Surface,
-    TilePool, TransformRenderer,
+    FilterPass, GpuContext, Ground, MergeRenderer, Registry, SelectionRenderer, StrokeRenderer,
+    Surface, TilePool, TransformRenderer,
 };
 use crate::peer::Peers;
 use crate::session::ShapeResult;
 use crate::view::ViewTransform;
 use stark_model::AssetId;
 use stark_model::ColorSpaceId;
-use stark_model::SurfaceId;
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, BrushParams, GuideId, LayerId, PerspectiveGuide,
     Scaffold, ShapeAction,
 };
 use stark_model::geom::Extent2;
+use stark_model::{SurfaceId, SurfaceScale};
 
 /// The starting layer present in every new document.
 const ROOT_LAYER: LayerId = LayerId(0);
@@ -477,6 +477,9 @@ pub struct ObservableState {
     pub color_space: ColorSpaceId,
     /// The physical canvas surface (§6.4).
     pub surface: SurfaceId,
+    /// How large that weave is laid (§6.4) — what the Lighting panel's scale slider
+    /// reads and what it commits against.
+    pub surface_scale: SurfaceScale,
     /// The canvas substrate color, straight sRGB (§15.5). Document
     /// state, not a view setting — projected here so the frontend shows what the
     /// document says rather than a copy of its own that goes stale.
@@ -771,7 +774,7 @@ impl Engine {
         // ground is named by the hash of its height map (§6.4), so an engine with no
         // bytes has exactly one ground it can truthfully name, and a frontend that
         // wants another opens a document on it.
-        let surfaces = Registry::<SurfaceId>::new(&gpu, SurfaceId::default());
+        let surfaces = Registry::<Ground>::new(&gpu, Ground::default());
         // Lighting starts on the procedural neutral environment; image HDRs are
         // registered later by the frontend (§6.3).
         let environments = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
@@ -872,9 +875,12 @@ impl Engine {
     /// The document opens on `shared`'s current ground, so a preview needs no
     /// `SetSurface` step — and no ground bytes handed across, which is the point.
     pub fn on_shared(shared: EngineShared, viewport: Extent2) -> Self {
-        let initial_surface = shared.apply.surfaces.id();
+        let ground = shared.apply.surfaces.id();
+        let initial_surface = ground.id;
         let timeline: Box<dyn Timeline> = Box::new(LinearTimeline::new(
-            DocState::with_layer(ROOT_LAYER).with_surface(initial_surface),
+            DocState::with_layer(ROOT_LAYER)
+                .with_surface(initial_surface)
+                .with_surface_scale(ground.scale),
         ));
         let session = crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER);
         // Its own three view settings over the shared passes — the whole of what a
@@ -1118,6 +1124,14 @@ impl Engine {
                 // Unconditional, and a no-op when the ground did not move: the
                 // registry is brought level with the document rather than with what
                 // this command asked for.
+                self.apply_document_surface();
+            }
+            DocCommand::SetSurfaceScale(scale) => {
+                self.settle(ActionKind::SetSurfaceScale(scale));
+                // The same call for the same reason, and it is the same *state*: a
+                // `Surface` is built from the weave and its scale together, so laying
+                // the weave larger invalidates the bound ground exactly as switching
+                // it does (`gpu::surface::Ground`).
                 self.apply_document_surface();
             }
             DocCommand::AddLayer { carrier, above } => {
@@ -1385,6 +1399,17 @@ impl Engine {
             }
             ViewCommand::PreviewBackground(rgb) => {
                 let preview = rgb.map(|rgb| self.timeline.current().with_background(rgb));
+                self.set_doc_preview(preview);
+            }
+            // The preview moves the *document* the compositor reads, and stops there:
+            // no `apply_document_surface`, so nothing is baked while the hand is on
+            // the slider. What that costs is honest and worth stating — a preview
+            // shows the scale in the **light**, since the media pass re-reads the
+            // weave every frame off one uniform, and not in the **tooth**, whose
+            // ground is a stored bake. Paint already down looks right immediately;
+            // what the next stroke will bite is right from the commit.
+            ViewCommand::PreviewSurfaceScale(scale) => {
+                let preview = scale.map(|s| self.timeline.current().with_surface_scale(s));
                 self.set_doc_preview(preview);
             }
             ViewCommand::PreviewMattePaint(pick) => {
@@ -1785,6 +1810,7 @@ impl Engine {
             environment: self.shared.environment.id(),
             color_space: self.shared.color_space.id(),
             surface: doc.surface,
+            surface_scale: doc.surface_scale,
             background: shown.background,
             gpu_failure: self.shared.gpu.health().failure().map(Arc::new),
         }
@@ -1895,7 +1921,8 @@ impl Engine {
             step(self.timeline.as_mut(), &mut self.shared.apply);
             self.committed_changed();
         }
-        // A step across a `SetSurface` moves the document's ground (§6.4).
+        // A step across a `SetSurface` — or a `SetSurfaceScale` — moves the
+        // document's ground (§6.4).
         self.apply_document_surface();
     }
 
@@ -2123,8 +2150,10 @@ struct GpuKeep {
     /// color-space independent and is handed back in rather than rebuilt (§6.8).
     selection: SelectionRenderer,
     /// The canvas grounds and their registered bytes: a height map, likewise
-    /// nothing to do with how color is represented (§6.4).
-    surfaces: Registry<SurfaceId>,
+    /// nothing to do with how color is represented (§6.4). Keyed by the weave *and
+    /// the scale it is laid at*, since that is what a ground is baked from
+    /// (`gpu::surface::Ground`).
+    surfaces: Registry<Ground>,
     /// The lighting environments and their registered bytes — a *view* setting, and
     /// color-space independent, so a rebuild carries it rather than re-decoding the
     /// HDR and its whole mip chain (§6.3).

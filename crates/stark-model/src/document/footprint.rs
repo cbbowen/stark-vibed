@@ -117,7 +117,15 @@ pub enum Resource {
     Layer(LayerId),
     /// An actor's selection mask (§17.3).
     Selection(ActorId),
-    /// The canvas surface (§6.4).
+    /// The canvas surface (§6.4): **which ground, and the scale it is laid at.**
+    ///
+    /// One resource for the two, on [`StackOrder`](Self::StackOrder)'s argument. They
+    /// are one fact about the substrate — the tooth reads the ground's rise over a
+    /// reach in canvas px, so the weave and how large it is laid decide the deposit
+    /// together — and both are chosen between passages rather than during one. What a
+    /// finer split would buy is the commutation fast path between two collaborators
+    /// who happened to pick a ground and a scale at the same moment; §12.6 permits a
+    /// footprint to claim too much, and this is what that permission is for.
     Surface,
     /// The substrate color (§15.5).
     Background,
@@ -398,7 +406,7 @@ pub fn footprint(action: &Action) -> Footprint {
             reads: Vec::new(),
             writes: vec![Resource::Selection(actor)],
         },
-        ActionKind::SetSurface(_) => Footprint {
+        ActionKind::SetSurface(_) | ActionKind::SetSurfaceScale(_) => Footprint {
             reads: Vec::new(),
             writes: vec![Resource::Surface],
         },

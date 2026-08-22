@@ -135,13 +135,19 @@ mod tests {
 
     /// **The catalog is append-only.** Every id here has been shipped, so a saved
     /// document may reference one and rely on this build to supply it (§8's
-    /// version 6). Re-authoring `Gesso.png` or dropping a shape does not break a
+    /// version 6). Re-authoring a bundled image, or dropping one, does not break a
     /// picker — it strands every painting made on it, which will then refuse to
     /// open rather than open wrong.
     ///
     /// Adding a row is free. Changing or removing one is a decision about other
     /// people's files, so it fails here first: add the new asset alongside, and
     /// retire the old one only when nothing can still be pointing at it.
+    ///
+    /// **Keyed on the id, not the path**, because the id is the whole of what a
+    /// document holds (§19). A file may be renamed — `Gesso.png` became
+    /// `Rough.png` — and every painting made on it still opens, while re-authoring
+    /// it under the same name strands them all. The path beside each hash says
+    /// which asset it was, and nothing looks it up.
     #[test]
     fn the_shipped_catalog_is_append_only() {
         // Shipped ids, oldest first. Append; do not edit.
@@ -155,7 +161,7 @@ mod tests {
                 "62b76803f7c06460854d3268cd41d868f271ba1cf54ecc53b7387cb81d83979e",
             ),
             (
-                "surface/Gesso.png",
+                "surface/Rough.png",
                 "0b88d740a6b3f35f57b5f1d6e4064ac7b4ace0d2c2abab417bbcce762602deb6",
             ),
             (
@@ -164,15 +170,11 @@ mod tests {
             ),
         ];
         for (path, want) in SHIPPED {
-            let got = BUILTIN_IDS
-                .iter()
-                .find(|(p, _)| p == path)
-                .unwrap_or_else(|| panic!("{path} has shipped and is no longer bundled"));
-            assert_eq!(
-                got.1.to_hex(),
-                *want,
-                "{path} has shipped and its content changed; documents painted on the \
-                 old one can no longer be opened. Add the new asset as a new row."
+            assert!(
+                BUILTIN_IDS.iter().any(|(_, id)| id.to_hex() == *want),
+                "{path} shipped as {want} and this build bundles no such content; \
+                 documents painted on it can no longer be opened. Add the new asset \
+                 as a new row rather than re-authoring the old one."
             );
         }
     }

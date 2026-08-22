@@ -317,6 +317,14 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 impl crate::gpu::registry::Resource for EnvironmentId {
     type Gpu = Environment;
 
+    /// A light is built from its own bytes and nothing else, so the two keys the
+    /// registry distinguishes are one here (`gpu::registry`).
+    type Content = Self;
+
+    fn content(self) -> Self {
+        self
+    }
+
     /// `Neutral` is procedural — a soft overhead key over an ambient dome — so the
     /// canvas is lit before any HDR arrives (§6.3).
     fn is_builtin(self) -> bool {

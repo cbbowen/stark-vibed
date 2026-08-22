@@ -317,7 +317,7 @@ impl StrokeRenderer {
         StrokeConstants {
             channels: [ch[0], ch[1], ch[2], rec.brush.color[3]],
             resid: [res[0], res[1], res[2], 0.0],
-            grain_uv: surface.relief * crate::gpu::surface::grain_uv_scale(),
+            grain_uv: surface.relief * surface.uv_scale,
             nfreq,
             namp,
             noff,

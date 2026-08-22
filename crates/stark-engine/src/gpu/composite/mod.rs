@@ -123,6 +123,15 @@ pub struct CompositeScene<'a> {
     /// finally reads black, since Mixbox's polynomial renders those concentrations
     /// `#383838` on their own.
     pub background_resid: [f32; 4],
+    /// How large the canvas weave is laid, as canvas px → surface-tile uv
+    /// ([`Ground::uv_scale`]).
+    ///
+    /// Travels with the scene beside `background`, and for that field's reason: both
+    /// are document state the media pass reads (§6.4, §15.5), so both follow an
+    /// unlogged preview without anything having to be rebuilt.
+    ///
+    /// [`Ground::uv_scale`]: crate::gpu::Ground::uv_scale
+    pub grain_uv: f32,
     /// The visible layers, bottom-to-top, cut into blend groups.
     pub groups: &'a [CompositeGroup],
     /// Selection outlines to draw over the lit result: the local actor's and each
@@ -888,6 +897,7 @@ impl Compositor {
         let CompositeScene {
             background: bg_channels,
             background_resid: bg_resid,
+            grain_uv,
             groups,
             outlines,
             transparent,
@@ -963,6 +973,7 @@ impl Compositor {
             media::MediaScene {
                 params: p.media_params,
                 environment: &p.environment,
+                grain_uv,
                 view,
                 background: bg_channels,
                 background_resid: bg_resid,

@@ -326,6 +326,8 @@ pub struct Signals {
     pub timeline: TimelineState,
     /// The custom brush-shape library (§6.6; `crate::shapes`).
     pub shapes: ShapesState,
+    /// The custom canvas-ground library (§6.4; `crate::grounds`).
+    pub grounds: GroundsState,
     /// The brush preset library (`crate::presets`), loaded from `localStorage`
     /// at startup like the shape library.
     pub presets: Signal<Vec<crate::presets::PresetEntry>>,
@@ -599,6 +601,28 @@ pub struct TowUi {
     pub rope: f32,
 }
 
+/// The custom canvas-ground library's signals (`crate::grounds`) — [`ShapesState`]'s
+/// sibling, and root-owned for its reason.
+#[derive(Clone, Copy)]
+pub struct GroundsState {
+    /// Library entries, read at startup from the browser's two stores (§25.6). Empty
+    /// until that read lands, which is why `grounds::load` is awaited ahead of the
+    /// first thing that could resolve one.
+    pub entries: Signal<Vec<crate::grounds::GroundEntry>>,
+    /// A transient line under the surface gallery: import errors, or the "already in
+    /// your library" note. `None` when quiet.
+    pub notice: Signal<Option<String>>,
+}
+
+impl GroundsState {
+    fn new() -> Self {
+        Self {
+            entries: root_signal(Vec::new),
+            notice: root_signal(|| None),
+        }
+    }
+}
+
 /// The custom brush-shape library's signals (`crate::shapes`). Root-owned:
 /// imports are started from the brush editor's modal scope but must survive
 /// its close.
@@ -655,6 +679,7 @@ impl AppState {
             collab: CollabState::new(),
             timeline: TimelineState::new(),
             shapes: ShapesState::new(),
+            grounds: GroundsState::new(),
             presets: root_signal(Vec::new),
             thumbs: crate::thumbs::ThumbState::new(),
             layer_thumbs: crate::layer_thumbs::LayerThumbState::new(),

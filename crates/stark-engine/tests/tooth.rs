@@ -18,7 +18,7 @@
 //! every feature ([`a_stroke_catches_on_the_faces_it_meets`]), which is precisely
 //! what a height threshold cannot do.
 //!
-//! Everything here paints on **Gesso**: an irregular ground, whose rise distribution
+//! Everything here paints on **Rough**: an irregular ground, whose rise distribution
 //! is a smooth spread rather than the handful of discrete slopes a regular weave
 //! gives, so a level-set claim about it says something.
 //!
@@ -62,22 +62,22 @@ fn run() -> [Vec2; 2] {
     [Vec2::new(-140.0, 0.0), Vec2::new(140.0, 0.0)]
 }
 
-/// The gesso ground imported into `engine`, and the id that names it.
+/// The rough ground imported into `engine`, and the id that names it.
 ///
 /// The id comes *out of* the height map (§6.4), so it cannot be named before the
 /// bytes are in hand — which is the property that stops a ground going quietly
 /// missing, and the reason every test here imports rather than asserting a name.
-fn gesso(engine: &mut stark_engine::Engine) -> SurfaceId {
+fn rough(engine: &mut stark_engine::Engine) -> SurfaceId {
     engine
-        .import_surface(&stark_testdata::assets::gesso())
-        .expect("the gesso height map imports")
+        .import_surface(&stark_testdata::assets::rough())
+        .expect("the rough height map imports")
 }
 
-/// An engine on the gesso ground. Without a real height map a ground is `Flat`,
+/// An engine on the rough ground. Without a real height map a ground is `Flat`,
 /// whose relief is 0, and every test here would silently be testing nothing.
-fn gesso_engine() -> Option<stark_engine::Engine> {
+fn rough_engine() -> Option<stark_engine::Engine> {
     let mut engine = engine_or_skip()?;
-    let id = gesso(&mut engine);
+    let id = rough(&mut engine);
     engine.process(DocCommand::SetSurface(id));
     Some(engine)
 }
@@ -125,7 +125,7 @@ fn one_mark(engine: &mut stark_engine::Engine, b: BrushParams) -> (Vec<bool>, f6
 /// round.
 #[test]
 fn no_tooth_leaves_a_ground_that_has_tooth_alone() {
-    let Some(mut engine) = gesso_engine() else {
+    let Some(mut engine) = rough_engine() else {
         return;
     };
     let (solid, solid_ink) = one_mark(&mut engine, toothed(0.0));
@@ -174,7 +174,7 @@ fn a_smooth_canvas_has_no_tooth_whatever_the_brush_says() {
 /// takes more of it away.
 #[test]
 fn a_ground_with_tooth_breaks_the_mark_up() {
-    let Some(mut engine) = gesso_engine() else {
+    let Some(mut engine) = rough_engine() else {
         return;
     };
     let (solid, solid_ink) = one_mark(&mut engine, toothed(0.0));
@@ -255,7 +255,7 @@ fn apart(a: &[f64], b: &[f64]) -> f64 {
 /// arrived from.
 #[test]
 fn a_stroke_catches_on_the_faces_it_meets() {
-    let Some(mut engine) = gesso_engine() else {
+    let Some(mut engine) = rough_engine() else {
         return;
     };
     let there = one_run(&mut engine, toothed(0.55), 1.0);
@@ -302,7 +302,7 @@ fn a_stroke_catches_on_the_faces_it_meets() {
 /// and it is two orders below what the anticipation moves.
 #[test]
 fn with_no_tooth_the_direction_stops_mattering() {
-    let Some(mut engine) = gesso_engine() else {
+    let Some(mut engine) = rough_engine() else {
         return;
     };
     let there = one_run(&mut engine, toothed(0.0), 1.0);
@@ -331,7 +331,7 @@ fn with_no_tooth_the_direction_stops_mattering() {
 /// 95% agreement across thousands of texels.
 #[test]
 fn turning_the_tooth_up_takes_a_level_set_away() {
-    let Some(mut engine) = gesso_engine() else {
+    let Some(mut engine) = rough_engine() else {
         return;
     };
     let (shallow, _) = one_mark(&mut engine, toothed(0.35));
@@ -379,7 +379,7 @@ fn turning_the_tooth_up_takes_a_level_set_away() {
 /// twentieth of it is bare.
 #[test]
 fn the_tooth_reads_the_same_on_both_render_paths() {
-    let Some(mut engine) = gesso_engine() else {
+    let Some(mut engine) = rough_engine() else {
         return;
     };
     // `lift` is what decides the path (`dynamics_setup`), and a lift with nothing to
@@ -449,7 +449,7 @@ fn the_tooth_reads_the_same_on_both_render_paths() {
 /// read it.
 #[test]
 fn a_stroke_keeps_the_ground_it_was_painted_on() {
-    let Some(mut engine) = gesso_engine() else {
+    let Some(mut engine) = rough_engine() else {
         return;
     };
     let before = engine.render_to_image();
@@ -512,7 +512,7 @@ fn a_stroke_keeps_the_ground_it_was_painted_on() {
 /// was.
 #[test]
 fn a_toothed_transfer_delivers_the_whole_glob() {
-    let Some(mut engine) = gesso_engine() else {
+    let Some(mut engine) = rough_engine() else {
         return;
     };
     // **Lighting flat.** The measure below is a stand-in for mass, and a lit render is
@@ -632,7 +632,7 @@ fn the_bearing_fraction_tracks_the_ground() {
     let flat = engine.surface_bearing(SurfaceId::Flat, 0.5, east);
     assert_eq!(flat, 1.0, "a smooth ground is full contact at any tooth");
 
-    let ground = gesso(&mut engine);
+    let ground = rough(&mut engine);
     let at = |t| engine.surface_bearing(ground, t, east);
     assert_eq!(at(0.0), 1.0, "no tooth is full contact, exactly");
     let (a, b, c) = (at(0.25), at(0.5), at(0.75));
@@ -655,7 +655,7 @@ fn the_bearing_curve_is_continuous_in_the_direction() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let ground = gesso(&mut engine);
+    let ground = rough(&mut engine);
     // A full turn in fine steps: no adjacent pair may jump by more than a small
     // fraction of the curve's own value, and the walk must close on itself.
     let at = |engine: &mut stark_engine::Engine, turns: f32| {
@@ -690,7 +690,7 @@ fn the_bearing_curve_is_continuous_in_the_direction() {
 /// suite's existing split-preview test runs on a ground with no relief.
 #[test]
 fn a_toothed_live_preview_matches_the_commit() {
-    let Some(mut engine) = gesso_engine() else {
+    let Some(mut engine) = rough_engine() else {
         return;
     };
     engine.process(stark_engine::command::ViewCommand::SetBrush(toothed(0.55)));
@@ -730,7 +730,7 @@ fn a_toothed_live_preview_matches_the_commit() {
 /// commit runs the whole stroke from an empty tool in one go.
 #[test]
 fn a_toothed_smear_previews_as_it_commits() {
-    let Some(mut engine) = gesso_engine() else {
+    let Some(mut engine) = rough_engine() else {
         return;
     };
     // Something to smear, so the tool has a load to carry across the cut.

@@ -33,13 +33,13 @@ use stark_engine::Engine;
 use stark_engine::command::{DocCommand, InputCommand};
 use stark_engine::document::{DocState, Layer, LayerContent, Selection};
 use stark_model::AssetId;
-use stark_model::SurfaceId;
 use stark_model::document::{
     ActionId, ActionKind, ActorId, BlendMode, ColorAdjust, FillOp, Filter, LayerId, MattePaint,
     MatteRegion, PerspectiveGuide, PerspectiveMap, Place, Prop, Resource, SelectionMode,
     SelectionOp, SelectionShape, TransformMap, WarpMap, footprint, rect_corners,
 };
 use stark_model::geom::{Affine2, IVec2, TileCoord, Vec2};
+use stark_model::{SurfaceId, SurfaceScale};
 
 // ---------------------------------------------------------------------------
 // The state diff
@@ -230,35 +230,36 @@ fn slot(kind: &ActionKind) -> usize {
         ActionKind::MoveLayer { .. } => 6,
         ActionKind::Undo(_) => 7,
         ActionKind::SetSurface(_) => 8,
-        ActionKind::Select(_) => 9,
-        ActionKind::InvertSelection => 10,
-        ActionKind::AddMatte { .. } => 11,
-        ActionKind::SetMatteRect(..) => 12,
-        ActionKind::SetMattePaint(..) => 13,
-        ActionKind::SetBackground(_) => 14,
-        ActionKind::Transform { .. } => 15,
-        ActionKind::SetLayerName(..) => 16,
-        ActionKind::Fill { .. } => 17,
-        ActionKind::SetLayerClip(..) => 18,
-        ActionKind::TransformPerspective { .. } => 19,
-        ActionKind::TransformWarp { .. } => 20,
-        ActionKind::DuplicateLayer { .. } => 21,
-        ActionKind::AddFilter { .. } => 22,
-        ActionKind::SetFilter(..) => 23,
-        ActionKind::MergeLayerDown { .. } => 24,
-        ActionKind::PlaceImage { .. } => 25,
-        ActionKind::AddGuide { .. } => 26,
-        ActionKind::SetGuide(..) => 27,
-        ActionKind::SetGuideName(..) => 28,
-        ActionKind::MoveGuide { .. } => 29,
-        ActionKind::RemoveGuide(_) => 30,
+        ActionKind::SetSurfaceScale(_) => 9,
+        ActionKind::Select(_) => 10,
+        ActionKind::InvertSelection => 11,
+        ActionKind::AddMatte { .. } => 12,
+        ActionKind::SetMatteRect(..) => 13,
+        ActionKind::SetMattePaint(..) => 14,
+        ActionKind::SetBackground(_) => 15,
+        ActionKind::Transform { .. } => 16,
+        ActionKind::SetLayerName(..) => 17,
+        ActionKind::Fill { .. } => 18,
+        ActionKind::SetLayerClip(..) => 19,
+        ActionKind::TransformPerspective { .. } => 20,
+        ActionKind::TransformWarp { .. } => 21,
+        ActionKind::DuplicateLayer { .. } => 22,
+        ActionKind::AddFilter { .. } => 23,
+        ActionKind::SetFilter(..) => 24,
+        ActionKind::MergeLayerDown { .. } => 25,
+        ActionKind::PlaceImage { .. } => 26,
+        ActionKind::AddGuide { .. } => 27,
+        ActionKind::SetGuide(..) => 28,
+        ActionKind::SetGuideName(..) => 29,
+        ActionKind::MoveGuide { .. } => 30,
+        ActionKind::RemoveGuide(_) => 31,
     }
 }
 
 /// How many kinds there are — `slot`'s range, bumped with its last arm. [`NAMES`]
 /// is indexed by slot and its length is held to this by the type, so a slot added
 /// without a name is a compile error rather than a worse failure message.
-const KINDS: usize = 31;
+const KINDS: usize = 32;
 
 /// What to call each slot when the run has missed one. `ActionKind::label`'s own
 /// captions, which is what a reader of the failure will go looking for.
@@ -272,6 +273,7 @@ const NAMES: [&str; KINDS] = [
     "Reorder layer",
     "Undo",
     "Canvas surface",
+    "Surface scale",
     "Select",
     "Invert selection",
     "Add matte",
@@ -574,6 +576,15 @@ fn every_action_touches_only_what_it_declares() {
         seen,
         "switch the canvas surface",
         DocCommand::SetSurface(SurfaceId::Image(AssetId([7; 32]))),
+    );
+
+    // And laying it at a different size, which the same resource claims (§6.4): the
+    // weave and how large it is are one fact about what a stroke bites.
+    step(
+        &mut engine,
+        seen,
+        "lay the canvas surface larger",
+        DocCommand::SetSurfaceScale(SurfaceScale::new(200)),
     );
 
     // Selection, and the tools that act through it.

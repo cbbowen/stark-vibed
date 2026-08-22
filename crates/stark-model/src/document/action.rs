@@ -14,8 +14,8 @@ use super::guide::{GuideId, PerspectiveGuide};
 use super::layer::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
 use super::selection::SelectionOp;
 use crate::Srgb;
-use crate::SurfaceId;
 use crate::geom::Vec2;
+use crate::{SurfaceId, SurfaceScale};
 
 /// Identifies the author of an action: one local user, or a peer (§4).
 /// Maps to an iroh `NodeId` when collaborating; a fixed value when solo.
@@ -207,6 +207,17 @@ pub enum ActionKind {
     /// replay has to reconstruct it. A document saved before this existed contains
     /// none, and keeps the surface from `CanvasMeta`.
     SetSurface(SurfaceId),
+
+    /// Lay the canvas surface at a different scale (§6.4).
+    ///
+    /// Logged for exactly the reason [`SetSurface`](Self::SetSurface) is, and it is
+    /// the same fact in two halves: the tooth reads the ground's rise over a reach
+    /// measured in **canvas px**, so how large the weave is laid decides what a tip
+    /// bites as surely as which weave it is. A stroke replayed from before this
+    /// deposits at the scale it was painted at. A document saved before this existed
+    /// contains none and stands at [`SurfaceScale::NATURAL`].
+    SetSurfaceScale(SurfaceScale),
+
     /// Edit the selection mask (§6.8). Historized because a stroke's
     /// pixels depend on the mask in force when it was drawn — replaying the log has
     /// to put the same mask back. Only the **op** travels (a few floats, or a
@@ -559,6 +570,7 @@ impl ActionKind {
             | ActionKind::MergeLayerDown { .. }
             | ActionKind::Undo(_)
             | ActionKind::SetSurface(_)
+            | ActionKind::SetSurfaceScale(_)
             | ActionKind::Select(_)
             | ActionKind::InvertSelection
             | ActionKind::SetMatteRect(..)
@@ -720,6 +732,10 @@ impl ActionKind {
             // — the shape the comment above describes.
             | ActionKind::SetBackground(_)
             | ActionKind::SetSurface(_)
+            // And the scale it is laid at, which holds itself the same way: a
+            // `SurfaceScale` off the ladder or outside the range cannot be built, so
+            // there is nothing here to hold it to.
+            | ActionKind::SetSurfaceScale(_)
             | ActionKind::InvertSelection
             | ActionKind::Transform { .. }
             | ActionKind::TransformPerspective { .. }
@@ -767,6 +783,7 @@ impl ActionKind {
             ActionKind::SetMattePaint(..) => "Matte paint",
             ActionKind::SetBackground(_) => "Canvas color",
             ActionKind::SetSurface(_) => "Canvas surface",
+            ActionKind::SetSurfaceScale(_) => "Surface scale",
             ActionKind::AddGuide { .. } => "Add guide",
             ActionKind::RemoveGuide(_) => "Remove guide",
             ActionKind::SetGuide(..) => "Perspective guide",

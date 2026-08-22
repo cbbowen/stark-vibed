@@ -76,12 +76,12 @@ impl Tool {
 use crate::gpu::{EnvironmentId, MediaParams};
 use stark_model::AssetId;
 use stark_model::Srgb;
-use stark_model::SurfaceId;
 use stark_model::document::{
     BlendMode, BrushParams, FillOp, Filter, GuideId, LayerId, MattePaint, MatteRegion,
     PerspectiveGuide, Place, SelectionOp, ShapeAction, TransformMap,
 };
 use stark_model::geom::{Extent2, IVec2, Vec2};
+use stark_model::{SurfaceId, SurfaceScale};
 
 /// One pen/mouse sample in canvas space.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -434,6 +434,15 @@ pub enum DocCommand {
     /// rather than a history one, exactly as this note anticipated.
     SetSurface(SurfaceId),
 
+    /// Lay the canvas surface at a different size (§6.4).
+    ///
+    /// Document state on [`SetSurface`](Self::SetSurface)'s argument, and the same
+    /// gate: the tooth reads the ground's rise over a reach in canvas px, so the size
+    /// the weave is laid at decides what a stroke deposits as surely as which weave
+    /// it is. One action per slider drag, committed on release
+    /// (`ViewCommand::PreviewSurfaceScale`).
+    SetSurfaceScale(SurfaceScale),
+
     /// Add a **drawing guide** — a perspective grid to construct through
     /// (§20.5), directly after `after` in the roster or at its head.
     ///
@@ -674,6 +683,17 @@ pub enum ViewCommand {
     /// replicated log entry — on every sample of a single drag. The frontend knows
     /// where the drag ends and commits one [`DocCommand::SetBackground`] there.
     PreviewBackground(Option<Srgb>),
+
+    /// Show the weave laid at `scale` **without logging it** — the in-flight half of
+    /// a surface-scale slider drag (§6.4). `None` drops the preview.
+    ///
+    /// The same bargain as [`PreviewBackground`](Self::PreviewBackground), and it
+    /// buys more here than an undo step: a *committed* scale is a ground the engine
+    /// bakes and holds (`gpu::surface::Ground`), so a drag that logged every value it
+    /// crossed would leave a texture behind for each one. A preview costs neither —
+    /// only the compositor reads a preview, and what it reads of the scale is one
+    /// number in a uniform.
+    PreviewSurfaceScale(Option<SurfaceScale>),
 
     /// Show a layer at `opacity` **without logging it** — the in-flight half of an
     /// opacity-slider drag (§14.6). `None` drops the preview.

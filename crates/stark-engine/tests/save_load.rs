@@ -285,13 +285,13 @@ fn a_document_bundles_every_ground_it_names() {
     let linen = engine
         .import_surface(&stark_testdata::assets::linen())
         .expect("the linen height map imports");
-    let gesso = engine
-        .import_surface(&stark_testdata::assets::gesso())
-        .expect("the gesso height map imports");
-    assert_ne!(linen, gesso, "two grounds, two content ids");
+    let rough = engine
+        .import_surface(&stark_testdata::assets::rough())
+        .expect("the rough height map imports");
+    assert_ne!(linen, rough, "two grounds, two content ids");
 
     // Paint across a switch, so the log names both and ends on neither of them
-    // first: linen, then gesso, then back to smooth.
+    // first: linen, then rough, then back to smooth.
     engine.process(DocCommand::SetSurface(linen));
     paint(
         &mut engine,
@@ -299,7 +299,7 @@ fn a_document_bundles_every_ground_it_names() {
         20.0,
         &[Vec2::new(-40.0, -20.0), Vec2::new(40.0, -20.0)],
     );
-    engine.process(DocCommand::SetSurface(gesso));
+    engine.process(DocCommand::SetSurface(rough));
     paint(
         &mut engine,
         RED,
@@ -311,7 +311,7 @@ fn a_document_bundles_every_ground_it_names() {
     let file = engine.document_file();
     let bundled: Vec<SurfaceId> = file.surfaces.iter().map(|(id, _)| *id).collect();
     assert!(
-        bundled.contains(&linen) && bundled.contains(&gesso),
+        bundled.contains(&linen) && bundled.contains(&rough),
         "both grounds the log names must ride with it, got {bundled:?}"
     );
     assert!(
@@ -348,9 +348,9 @@ fn a_ground_that_is_not_what_it_claims_is_refused() {
         .expect("the linen height map imports");
     assert!(
         engine
-            .accept_surface(linen, &stark_testdata::assets::gesso())
+            .accept_surface(linen, &stark_testdata::assets::rough())
             .is_err(),
-        "gesso's bytes must not install themselves as linen"
+        "rough's bytes must not install themselves as linen"
     );
     // The honest pairing still works, and is idempotent.
     assert_eq!(
@@ -369,7 +369,7 @@ fn a_ground_that_is_not_what_it_claims_is_refused() {
 /// carried a copy of it for nothing. The id stays in the file; only the bytes go.
 ///
 /// What has to hold is that resolving the id back and installing it **before the
-/// replay** lands on the identical picture. A toothed brush on the irregular gesso
+/// replay** lands on the identical picture. A toothed brush on the irregular rough ground
 /// ground is the only configuration where getting that wrong shows up at all:
 /// without the height map the deposition gate is 1.0 everywhere and the stroke
 /// comes back smooth, into stored pixels that no later arrival un-bakes (§6.4).
@@ -378,17 +378,17 @@ fn a_lean_file_replays_identically_once_its_content_is_resolved() {
     let Some(mut original) = engine_or_skip_blue() else {
         return;
     };
-    let gesso_bytes = stark_testdata::assets::gesso();
-    let gesso = original
-        .import_surface(&gesso_bytes)
+    let rough_bytes = stark_testdata::assets::rough();
+    let rough = original
+        .import_surface(&rough_bytes)
         .expect("import ground");
-    original.process(DocCommand::SetSurface(gesso));
+    original.process(DocCommand::SetSurface(rough));
     paint_toothed(&mut original);
     let expected = original.render_to_image();
 
     // Saved twice: once bundling everything, once leaving out the ground on the
     // promise that whoever opens it can produce that id.
-    let SurfaceId::Image(ground_id) = gesso else {
+    let SurfaceId::Image(ground_id) = rough else {
         panic!("an imported ground is an image");
     };
     let fat = original.save_bytes().expect("serialize");
@@ -418,7 +418,7 @@ fn a_lean_file_replays_identically_once_its_content_is_resolved() {
     );
     for need in &owed {
         loaded
-            .accept_surface(need.surface().expect("a ground"), &gesso_bytes)
+            .accept_surface(need.surface().expect("a ground"), &rough_bytes)
             .expect("resolve locally");
     }
     loaded
@@ -438,10 +438,10 @@ fn a_complete_file_owes_nothing() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
-    let gesso = engine
-        .import_surface(&stark_testdata::assets::gesso())
+    let rough = engine
+        .import_surface(&stark_testdata::assets::rough())
         .expect("import ground");
-    engine.process(DocCommand::SetSurface(gesso));
+    engine.process(DocCommand::SetSurface(rough));
     paint_toothed(&mut engine);
 
     let file = stark_model::DocumentFile::from_bytes(&engine.save_bytes().expect("serialize"))
@@ -476,19 +476,19 @@ fn an_unsettled_lean_file_is_refused_and_changes_nothing() {
     let Some(mut original) = engine_or_skip_blue() else {
         return;
     };
-    let gesso = original
-        .import_surface(&stark_testdata::assets::gesso())
+    let rough = original
+        .import_surface(&stark_testdata::assets::rough())
         .expect("import ground");
-    original.process(DocCommand::SetSurface(gesso));
+    original.process(DocCommand::SetSurface(rough));
     paint_toothed(&mut original);
-    let SurfaceId::Image(ground_id) = gesso else {
+    let SurfaceId::Image(ground_id) = rough else {
         panic!("an imported ground is an image");
     };
     let lean = original
         .save_bytes_resolvable(&[ground_id])
         .expect("serialize lean");
 
-    // A second engine with a painting of its own already open, and no gesso.
+    // A second engine with a painting of its own already open, and no rough ground.
     let mut opener = engine_or_skip_blue().expect("adapter");
     paint(&mut opener, GREEN, 30.0, STROKE_B);
     let before = opener.render_to_image();
@@ -528,7 +528,7 @@ fn the_bundled_asset_table_agrees_with_the_engine_on_every_id() {
         return;
     };
     let SurfaceId::Image(ground) = engine
-        .import_surface(&stark_testdata::assets::gesso())
+        .import_surface(&stark_testdata::assets::rough())
         .expect("import ground")
     else {
         panic!("an imported ground is an image");
