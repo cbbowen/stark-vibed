@@ -776,16 +776,57 @@ impl Renderer {
     }
 }
 
+/// Why the app could not start (§5, `crate::failure`).
+///
+/// **A different fact from `ObservableState::gpu_failure`**, and the difference is
+/// what earns it a type of its own: that one is a device that *died*, with a
+/// document behind it that outlives it and is worth saving. This is a device that
+/// never arrived — there is no engine, no document and nothing to offer. What the
+/// two share is that the canvas will never take a mark, which is why both reports
+/// are the same surface.
+///
+/// It was `expect` on all three arms until the review that named it. That is
+/// defensible for `create_surface`, which fails only if the element is not a
+/// canvas, and indefensible for the other two: a browser without WebGPU is the
+/// single most likely way this app fails for a first-time visitor — Safari before
+/// 26, Firefox without the flag, a blocklisted driver, any headless browser — and
+/// a panic inside the startup task killed the task and nothing else, leaving the
+/// chrome up over a blank canvas with the explanation in the console.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StartupFailure {
+    /// The page's `<canvas>` would not give a WebGPU surface.
+    Surface(String),
+    /// No adapter answered — what a browser with no WebGPU at all looks like
+    /// from here, and the common case by a wide margin.
+    Adapter,
+    /// An adapter answered but would not give a device at the limits the engine
+    /// needs ([`GpuContext::minimum_required_limits`]).
+    Device(String),
+}
+
+impl std::fmt::Display for StartupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StartupFailure::Surface(why) => write!(f, "no WebGPU surface: {why}"),
+            StartupFailure::Adapter => write!(f, "no WebGPU adapter"),
+            StartupFailure::Device(why) => write!(f, "no WebGPU device: {why}"),
+        }
+    }
+}
+
 /// Asynchronously create the WebGPU device, configure the surface to the
 /// canvas's current size, and build the engine (§7).
-pub async fn init(canvas: Canvas) -> Renderer {
+///
+/// Fallible on all three of the browser's answers rather than panicking on them
+/// — see [`StartupFailure`] for why that is not merely tidiness.
+pub async fn init(canvas: Canvas) -> Result<Renderer, StartupFailure> {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = wgpu::Backends::BROWSER_WEBGPU;
     let instance = wgpu::Instance::new(desc);
 
     let surface: wgpu::Surface<'static> = instance
         .create_surface(canvas.surface_target())
-        .expect("create canvas surface");
+        .map_err(|e| StartupFailure::Surface(e.to_string()))?;
 
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -794,7 +835,7 @@ pub async fn init(canvas: Canvas) -> Renderer {
             ..Default::default()
         })
         .await
-        .expect("request adapter (WebGPU unavailable?)");
+        .map_err(|_| StartupFailure::Adapter)?;
 
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
@@ -807,10 +848,10 @@ pub async fn init(canvas: Canvas) -> Renderer {
             trace: wgpu::Trace::Off,
         })
         .await
-        .expect("request device");
+        .map_err(|e| StartupFailure::Device(e.to_string()))?;
 
     let gpu = GpuContext::from_parts(instance, adapter, device, queue);
-    finish_init(canvas, surface, gpu).await
+    Ok(finish_init(canvas, surface, gpu).await)
 }
 
 impl Renderer {

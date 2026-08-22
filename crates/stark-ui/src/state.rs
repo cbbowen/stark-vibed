@@ -145,6 +145,19 @@ pub struct Signals {
     /// UI-facing engine projection, refreshed after each command — by
     /// [`with_engine`], which is the only thing that can write it.
     pub obs: ReadOnly<Option<ObservableState>>,
+    /// Why the app could not start, if it could not (§5, `crate::failure`).
+    ///
+    /// **The other half of [`obs`](Self::obs)'s `gpu_failure`, and deliberately
+    /// not the same field.** That one is a device that died with a document
+    /// behind it, so the report offers to save; this is a device that never
+    /// arrived, so there is no engine, no document, and nothing to offer but the
+    /// explanation. Keeping them apart is what lets each report say the true
+    /// thing — and it has to be a signal of its own besides, because a
+    /// projection is something only an engine can publish.
+    ///
+    /// Set once by the startup task and never cleared: the browser does not grow
+    /// a GPU while the page is open.
+    pub startup_failure: Signal<Option<crate::render::StartupFailure>>,
     /// Whether WebGPU init has finished and [`publish_renderer`] has handed the
     /// engine over. Set once, never cleared.
     ///
@@ -609,6 +622,7 @@ impl AppState {
         AppState(Box::leak(Box::new(Signals {
             renderer: ReadOnly(root_signal(|| None)),
             obs: ReadOnly(root_signal(|| None)),
+            startup_failure: root_signal(|| None),
             renderer_ready: root_signal(|| false),
             space_down: root_signal(|| false),
             held_mods: root_signal(Default::default),
@@ -1058,24 +1072,31 @@ pub fn request_paint(state: AppState) {
     schedule_paint(state);
 }
 
-/// Whether the GPU has died and the app has therefore stopped painting and
-/// dispatching (§5).
+/// Whether the canvas can no longer take a mark, so the app has stopped painting
+/// and dispatching (§5).
 ///
-/// **Asked of the projection, not of the engine**, though both can answer
-/// ([`Renderer::gpu_healthy`]). The projection is what the report is mounted on
-/// (`crate::failure`), so keying the shutdown on the same field makes "the app has
-/// stopped" and "the artist has been told" one fact rather than two that could
-/// disagree — a stop with no dialog is a frozen canvas, and a dialog over a running
-/// app is a lie.
+/// **Asked of exactly what the report is mounted on**, which is the whole design:
+/// keying the shutdown on the same fields `crate::failure` reads makes "the app
+/// has stopped" and "the artist has been told" one fact rather than two that
+/// could disagree — a stop with no dialog is a frozen canvas, and a dialog over a
+/// running app is a lie. So this asks the *projection* rather than the engine,
+/// though both can answer ([`Renderer::gpu_healthy`]).
+///
+/// Two fields, because there are two ways to get here and only one of them has a
+/// projection to carry it: a device that died mid-session, and a device that
+/// never arrived ([`AppState::startup_failure`]). The second changes nothing on
+/// its own — with no renderer the doors below already answer `None` — and is
+/// asked anyway, so that the sentence above stays true of both.
 ///
 /// `peek`: called from the doors below, which are not renders, and from event
 /// handlers. Nothing here should widen what a pointer move wakes.
 pub fn gpu_lost(state: AppState) -> bool {
-    state
-        .obs
-        .peek()
-        .as_ref()
-        .is_some_and(|o| o.gpu_failure.is_some())
+    state.startup_failure.peek().is_some()
+        || state
+            .obs
+            .peek()
+            .as_ref()
+            .is_some_and(|o| o.gpu_failure.is_some())
 }
 
 /// One animation-frame hop of [`request_paint`]: paint, unless the GPU has

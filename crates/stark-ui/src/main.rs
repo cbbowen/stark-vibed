@@ -204,7 +204,23 @@ fn app() -> Element {
 
     use_hook(|| {
         spawn(async move {
-            let mut r = render::init(canvas_by_id(CANVAS_ID)).await;
+            // The browser's three answers about WebGPU, all of which used to be
+            // `expect` (`render::StartupFailure`). A browser that has none is the
+            // most likely way this app fails a first-time visitor, and it failed
+            // it by killing this task and leaving the chrome standing over a
+            // canvas that would never take a mark. Now it says so, on the same
+            // surface a device that dies mid-session says it on
+            // (`crate::failure`) — and nothing below runs, which is what it
+            // already did.
+            let mut r = match render::init(canvas_by_id(CANVAS_ID)).await {
+                Ok(r) => r,
+                Err(why) => {
+                    tracing::error!(%why, "the canvas cannot be drawn on");
+                    let mut failed = state.startup_failure;
+                    failed.set(Some(why));
+                    return;
+                }
+            };
             // Fetch the bundled brush shapes at runtime (kept out of the wasm
             // binary) and import them once, so the gallery's built-in cards are
             // ready — and so the default presets have ids to name

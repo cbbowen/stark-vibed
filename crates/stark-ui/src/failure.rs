@@ -1,4 +1,4 @@
-//! What the app does when the GPU dies (§5).
+//! What the app does when the GPU dies (§5) — or never arrives at all.
 //!
 //! `stark-engine` projects [`ObservableState::gpu_failure`] rather than panicking,
 //! and states the contract this module is the other half of: *stop dispatching and
@@ -17,6 +17,23 @@
 //! ([`crate::state::gpu_lost`]): the doors in `state` stop moving the engine, and
 //! this mounts. A stop with no dialog is a frozen canvas; a dialog over an app that
 //! is still dispatching is a lie.
+//!
+//! # The device that never arrived
+//!
+//! [`AppState::startup_failure`](crate::state::AppState) is the other way the
+//! canvas ends up unable to take a mark, and it is not the same fact
+//! ([`StartupFailure`](crate::render::StartupFailure)): there is no engine, so
+//! there is no projection to carry it and no document to offer to save. It is
+//! the **more likely** of the two by a wide margin — a browser without WebGPU is
+//! Safari before 26, Firefox without the flag, a blocklisted driver, any
+//! headless browser — and until it was given this surface it was three `expect`s
+//! in `render::init`, which killed the startup task and left the chrome standing
+//! over a blank canvas with the explanation in the console.
+//!
+//! One component for both, with two arms, because they are one thing from the
+//! artist's side: the canvas will not take a mark, here is why, and here is
+//! whatever can still be done about it. What differs is that arm's last
+//! sentence, and whether there is a button under it.
 //!
 //! [`ObservableState::gpu_failure`]: stark_engine::ObservableState::gpu_failure
 
@@ -40,6 +57,11 @@ use crate::widgets::Modal;
 #[component]
 pub fn GpuFailureModal() -> Element {
     let state = use_context::<AppState>();
+    // The app never started, which is asked first: it is the arm that means there
+    // is no projection for the read below to find.
+    if let Some(why) = (state.startup_failure)() {
+        return rsx! { NoGpu { why } };
+    }
     // Cloned out of the projection rather than held across the render: `Arc`, so
     // this is a refcount bump, and the guard must not be live when Save reads the
     // renderer.
@@ -85,6 +107,43 @@ pub fn GpuFailureModal() -> Element {
                     if saved() { "Save again" } else { "Save the painting" }
                 }
             }
+        }
+    }
+}
+
+/// The report for a browser that never gave us a GPU
+/// ([`StartupFailure`](crate::render::StartupFailure)).
+///
+/// **No Save**, unlike its sibling above, and that is the honest difference
+/// between the two: a device that dies takes the picture on screen and leaves
+/// the action log that made it, which is a file worth writing. A device that
+/// never arrived leaves an empty document, and a button offering to save it
+/// would hand the artist a file with nothing in it.
+///
+/// What it offers instead is the one thing that can help: which browsers can run
+/// this. Named rather than described, because "a browser with WebGPU" is not
+/// something anybody can go and check.
+///
+/// Not dismissible, for the sibling's reason and more strongly: there is not
+/// merely nothing behind this dialog, there is nothing behind it *yet* —
+/// dismissing it would leave a canvas that has never been able to take a mark.
+#[component]
+fn NoGpu(why: crate::render::StartupFailure) -> Element {
+    rsx! {
+        Modal {
+            div { class: "modal-title", "This browser can\u{2019}t run Stark" }
+            div { class: "modal-subtitle",
+                "Stark paints on the GPU through WebGPU, and this browser either \
+                 doesn\u{2019}t have it or isn\u{2019}t allowed to use it. Nothing \
+                 has been lost \u{2014} the canvas never opened. Chrome, Edge and \
+                 Safari 26 have WebGPU on by default; Firefox needs \
+                 dom.webgpu.enabled set in about:config."
+            }
+
+            // What the browser said, in the same small dim line the lost-device
+            // report uses. Nothing branches on it and most people will not read
+            // it, but a bug report about this is unactionable without it.
+            div { class: "failure-detail", "{why}" }
         }
     }
 }
