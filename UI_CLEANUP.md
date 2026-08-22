@@ -15,16 +15,20 @@ structural changes and two sweeps, each with the file and line that shows it.
 | **A1** | `AppState` handle | **done** — `54af4e6` |
 | **A2** | `state.rs` coupling | **done** — `5c09438` |
 | **A3** | one mode signal | **done** — `1784c86` |
-| **A4** | command registry table | **open** |
-| **A5** | `platform.rs` cfg twins | **open** |
-| **A6** | module grouping | **open** |
+| **A4** | command registry table | **part** — `ALL` is checked by the build (`11c8902`); the metadata table deliberately not done, see the item |
+| **A5** | `platform.rs` cfg twins | **done** — `5148096` |
+| **A6** | module grouping | **done** — `0303909`, `eac9f7d`, `e67b009` |
 | **S1** | `use_obs` sweep | **done** — `86ee0fe` |
 | **S2** | untested geometry | **done** — `f784fdb` |
 
-The three left open are the three that are large and mechanical rather than
-load-bearing, and each says at its own entry what it would cost. Nothing about
-them changed in the doing of the rest; **A4** in particular is still exactly the
-gap §25.2 step 5 admits to.
+Eleven done, two part. Both partials stopped at a line that is worth knowing
+about rather than at the end of the budget, and each says where and why at its
+own entry: **D3** has the half that can be reasoned about and not the half that
+needs a browser, and **A4** has the half that is data and not the half that is
+an argument.
+
+Every gate green after the last commit — see "What the fixes were checked
+against" at the foot.
 
 The line numbers below are from the review and are **not** updated as the fixes
 land — they are what the finding was found at. Follow the named function, not
@@ -273,6 +277,19 @@ what the existing tests `every_panel_has_a_toggle_row` and
 code, not data, and §25.2's whole argument about where a gate lives is an
 argument for keeping them visible as code.
 
+**As built** (`11c8902`), the `ALL` half only — and the table half should not be
+done. Half those `match` arms carry a sentence saying why *that* one is spelled
+the way it is: a search result stands alone, so a panel toggle says "panel" out
+loud; the visibility menu is a picture of the stack, so its rows wear the
+title-bar labels. A table has nowhere to put that, and the arms would lose it.
+The list is data; the descriptions are an argument.
+
+The list is checked now. `commands::tests::all_lists_every_command` counts the
+enum's variants at compile time (`variant_count`, under `cfg_attr(test, …)` so no
+shipped build carries it), and was verified by adding a variant and watching it
+fail rather than only by watching it pass. §25.2 step 5 and CLAUDE.md's note on
+why the workspace is on nightly are both amended rather than quietly falsified.
+
 ### A5. `platform.rs` is ~60 hand-paired `#[cfg]` twins in one file
 
 1722 lines in which every function is written twice, and only the `wasm32` half
@@ -282,6 +299,15 @@ carries the doc comment — so the host build, which is what `cargo doc`,
 `platform/web.rs` + `platform/stub.rs` behind one module-level `#[cfg]`, with the
 docs on a `platform/mod.rs` façade, gives one file per target and one place the
 API surface is stated.
+
+**As built** (`5148096`), with the split drawn one notch differently and better:
+`platform/mod.rs` keeps the browser calls *and* their docs *and* the items that
+are shared by both targets, and only the sixty stand-ins moved to
+`platform/stub.rs`. A façade of pure re-exports would have made the file a reader
+wants — the implementation — one indirection away for no gain, and would have
+had nowhere to put `ElementBox`, which is not part of the boundary at all.
+Verified by count as well as by compiler: 93 public items before, 49 + 44
+after.
 
 Worth stating plainly while this is open, because the module's own header does
 not: the host build **links the stubs**, so the ~118 `target_arch` sites are all
@@ -306,6 +332,24 @@ cannot rot; it does not buy coverage, and the two are easy to conflate.
 
 All three are mechanical, and each makes ownership the docs already describe
 visible in the tree.
+
+**As built**: `main.rs` split into `canvas.rs` / `overlays.rs` / `rail.rs`
+(`0303909`, 1715 lines to 569), with `NewDocumentModal` going to `grounds.rs`
+rather than to the rail that mounts it — which makes the rail's seven dialog
+mounts uniform, each coming from the module that owns its subject. `input.rs`
+split into `input/` with a file per gesture (`eac9f7d`), where the only thing
+that had to move rather than be carried along was `TOUCH_SLOP`: `Nav` and
+`Landing` both read it, and the test that they agree cannot be written if there
+are two of it.
+
+The third bullet — renaming `panels/` — was **declined** (`e67b009`), and this is
+the one place the review's own recommendation was overruled. It is 110 references
+across 43 files and seven lines of `docs/` for a label, and what a reader
+actually lacks is not a better directory name but the *classification*: which of
+the three registers a given export is in. That fits in the module doc, and is
+there now — along with why a module is not renamed for whichever register it
+holds most of, since `gradient_bar` owns a bar and the catcher it fronts because
+they are one composition.
 
 ## Sweeps
 
@@ -419,3 +463,9 @@ looking at before this is relied on:
   the one park-and-resume in the app;
 - the **pop-out flag** (**D3**), where the thing to check is that a bar going
   away takes its pop-out with it.
+
+Three of the changes are pure code motion and are not on that list, deliberately:
+**A5** and both halves of **A6** move items between files without touching a
+line of logic, and the compiler checks the move in all three configurations. The
+one thing motion *can* break that a compiler will not catch is a doc link, and
+the links that pointed at moved items were re-pointed by hand.
