@@ -45,7 +45,22 @@ const TRACE_MIN_STEP_PX: f32 = 2.0;
 /// Either face is a button and the click is the same: the library flies up.
 #[component]
 pub fn GradientWell(strip: Option<String>, title: &'static str) -> Element {
-    let mut open = use_signal(|| false);
+    let state = use_context::<AppState>();
+    // App state rather than the local this was, so Escape can put the library
+    // down (`widgets::PopoutId`, §25.7). One id for every well, which is sound
+    // because at most one is ever mounted: the filter bar's two are the arms of
+    // one match, and it stands down while the gradient bar's mode composes.
+    let open = crate::widgets::popout_open(state, crate::widgets::PopoutId::GradientLibrary);
+    // And the library goes when the well does — a pop-out is drawn inside the bar
+    // that owns it, so a bar that unmounts would leave the flag standing and the
+    // list open on whatever came up next.
+    use_drop(move || {
+        if crate::widgets::popout_open(state, crate::widgets::PopoutId::GradientLibrary) {
+            crate::widgets::close_popout(state);
+        }
+    });
+    let flip =
+        move |_| crate::widgets::toggle_popout(state, crate::widgets::PopoutId::GradientLibrary);
     rsx! {
         span { class: "gradient-well",
             if let Some(strip) = strip {
@@ -53,18 +68,18 @@ pub fn GradientWell(strip: Option<String>, title: &'static str) -> Element {
                     class: "bar-gradient-strip",
                     title: "{title}",
                     style: "background: {strip};",
-                    onclick: move |_| open.set(!open()),
+                    onclick: flip,
                 }
             } else {
                 button {
                     class: "bar-gradient-strip empty",
                     title: "{title}",
-                    onclick: move |_| open.set(!open()),
+                    onclick: flip,
                     {icon(icons::GRADIENT)}
                 }
             }
-            if open() {
-                GradientPopout { open }
+            if open {
+                GradientPopout {}
             }
         }
     }
@@ -81,8 +96,7 @@ pub fn GradientWell(strip: Option<String>, title: &'static str) -> Element {
 /// (`gradient_bar::suspend`), and stands back up when the trace ends, wearing
 /// the ramp the trace just captured.
 #[component]
-fn GradientPopout(open: Signal<bool>) -> Element {
-    let mut open = open;
+fn GradientPopout() -> Element {
     let state = use_context::<AppState>();
     let entries = (state.gradients.entries)();
     let armed = gradients::armed(state);
@@ -113,7 +127,7 @@ fn GradientPopout(open: Signal<bool>) -> Element {
                             // its capture already in hand on the strip, so
                             // reopening the list over the fresh preview would
                             // cover the answer with the question.
-                            open.set(false);
+                            crate::widgets::close_popout(state);
                         }
                         gradients::set_armed(state, arm);
                     },

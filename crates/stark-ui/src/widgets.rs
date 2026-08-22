@@ -161,3 +161,70 @@ pub fn Modal(
         }
     }
 }
+
+/// The pop-outs a bar can fly open, and the one place a surface that is neither
+/// a panel nor a dialog is named (§25.7).
+///
+/// **One at a time, in one signal** ([`AppState::popout`](crate::state::AppState)),
+/// on `modes::Composing`'s argument: two open at once is a state nothing wants
+/// and nothing should have to prevent. They were `use_signal(|| false)` locals of
+/// the bars that draw them, which made them invisible to the app — and in
+/// particular to Escape, whose ladder knows the dialogs, the composing modes, the
+/// composing layers and Timeline mode, and could not see a pop-out standing over
+/// all of them (`commands::escape`).
+///
+/// **Not a [`Dialogs`](crate::state::Dialogs) flag**, though the machinery would
+/// have fitted: that list is also what stands `FinishMode` down
+/// (`commands::dialog_open`), and the gradient library is opened *from* the
+/// gradient bar while a fill is composing — so a pop-out on that list would take
+/// Enter's "Done" away for as long as the library was open. It gets a rung of its
+/// own, above the dialogs, and nothing else changes.
+///
+/// # What is still owed
+///
+/// **Light dismiss.** A press outside a pop-out should close it and two of these
+/// have never done so. The fix is not a component: the catcher has to be
+/// root-mounted the way [`Modal`]'s backdrop is, because `.bottom-bars` carries a
+/// `transform` and every bar a `backdrop-filter`, and each of those makes a
+/// containing block that a `position: fixed` catcher rendered inside the bar
+/// cannot escape. It is also the one part of this that cannot be got right by
+/// reading — where the catcher sits among the z-indices decides which presses it
+/// eats, and eating a canvas press would be worse than the bug — so it wants a
+/// browser rather than an argument.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PopoutId {
+    /// The frame bar's matte-colour picker (§15.4).
+    MattePaint,
+    /// The gradient library, flown out of a bar's ramp well (§22.3).
+    GradientLibrary,
+}
+
+/// Whether `id` is the pop-out currently open. Subscribing — the caller is the
+/// bar that mounts it.
+pub fn popout_open(state: AppState, id: PopoutId) -> bool {
+    *state.popout.read() == Some(id)
+}
+
+/// Open `id`, closing whichever pop-out was open. Toggles, since every one of
+/// these is opened by a press on the well it flies out of.
+pub fn toggle_popout(state: AppState, id: PopoutId) {
+    let mut open = state.popout;
+    let was = *open.peek();
+    open.set(if was == Some(id) { None } else { Some(id) });
+}
+
+/// Close whatever is open; `true` if anything was — what Escape's first rung
+/// asks (`commands::escape`).
+///
+/// Also what a bar calls on its way out: a pop-out is drawn inside the bar that
+/// owns it, so a bar that unmounts takes the pop-out off the screen without
+/// clearing the flag, and the next time that bar came up the library would be
+/// standing open on it.
+pub fn close_popout(state: AppState) -> bool {
+    let mut open = state.popout;
+    let was = open.peek().is_some();
+    if was {
+        open.set(None);
+    }
+    was
+}

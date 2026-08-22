@@ -1499,6 +1499,14 @@ fn may_edit(state: AppState) -> bool {
 /// dioxus-vs-window handler ordering that a second actor would hang on never
 /// gets asked.
 fn escape(state: AppState) {
+    // A pop-out flown out of a bar stands over everything below, so it is the
+    // first thing Escape puts down (`widgets::PopoutId`, §25.7). Above the
+    // dialogs because it is the innermost surface, and kept off the dialog list
+    // for a reason of its own: that list is what stands `FinishMode` down, and a
+    // library opened from a composing bar must not take Enter's "Done" away.
+    if crate::widgets::close_popout(state) {
+        return;
+    }
     if close_dialogs(state) {
         return;
     }

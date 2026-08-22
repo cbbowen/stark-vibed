@@ -360,6 +360,15 @@ pub struct Signals {
     /// [`dispatch`] — the seam every command passes through — which is free
     /// function code belonging to no component's scope.
     pub tutor: crate::tutor::TutorState,
+    /// The pop-out a bar has flown open, if any (`widgets::PopoutId`, §25.7).
+    ///
+    /// **One signal for all of them**, on `modes::Composing`'s argument: two open
+    /// at once is a state nothing wants and nothing should have to prevent. And
+    /// app state rather than the locals these were, so Escape can see them —
+    /// deliberately *not* a [`Dialogs`] flag, which is also the list that stands
+    /// `FinishMode` down, because the gradient library is opened from a bar while
+    /// a fill is composing and must not take Enter's "Done" away.
+    pub popout: Signal<Option<crate::widgets::PopoutId>>,
     /// The root-mounted dialogs' visibility, one flag per modal (see [`Dialogs`]).
     pub dialogs: Dialogs,
     /// The floating panel stack: order, which are open, and the in-flight
@@ -659,6 +668,7 @@ impl AppState {
                 crate::visibility::stored_showing(VisibilityToggle::Navigator)
             }),
             tutor: crate::tutor::TutorState::new(),
+            popout: root_signal(|| None),
             dialogs: Dialogs::new(),
             panels: crate::layout::PanelLayout::new(),
             bindings: root_signal(Default::default),

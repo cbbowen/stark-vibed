@@ -265,9 +265,19 @@ fn add_background(state: AppState) {
 #[component]
 pub fn FrameBar() -> Element {
     let state = use_context::<AppState>();
-    // Whether the color pop-out is open. **Before** the early return, because a hook
-    // that runs only when a frame is selected is a hook that runs sometimes.
-    let mut show_picker = use_signal(|| false);
+    // Whether the color pop-out is open — app state now rather than a local, so
+    // Escape can put it down (`widgets::PopoutId`, §25.7). A subscribing read, so
+    // the well's pop-out appears and goes with the flag.
+    let show_picker = crate::widgets::popout_open(state, crate::widgets::PopoutId::MattePaint);
+    // And it goes when this bar does. A pop-out is drawn inside the bar that owns
+    // it, so a bar that unmounts — the frame deselected, a mode taking the bottom
+    // edge — takes the picker off the screen without clearing the flag, and the
+    // next time a frame was selected the picker would be standing open on it.
+    use_drop(move || {
+        if crate::widgets::popout_open(state, crate::widgets::PopoutId::MattePaint) {
+            crate::widgets::close_popout(state);
+        }
+    });
     // Both of these are hooks and both are here for that same reason — the bar has
     // two early returns below, and a hook that runs only sometimes is not a hook.
     let frame = use_selected_frame(state);
@@ -419,12 +429,15 @@ pub fn FrameBar() -> Element {
                     // Picking a color on a gradient matte solidifies it — that
                     // is what the control says it does, and undo takes it back.
                     title: if is_gradient { "Solid color (replaces the gradient)" } else { "Matte color" },
-                    onclick: move |_| show_picker.set(!show_picker()),
+                    onclick: move |_| crate::widgets::toggle_popout(
+                        state,
+                        crate::widgets::PopoutId::MattePaint,
+                    ),
                 }
                 // Mounted only while open, so the picker re-seeds from the matte's
                 // current color each time — and flies *up*, since the bar it hangs
                 // off sits at the bottom of the screen.
-                if show_picker() {
+                if show_picker {
                     div { class: "color-popout",
                         OklabPicker {
                             init: c,
