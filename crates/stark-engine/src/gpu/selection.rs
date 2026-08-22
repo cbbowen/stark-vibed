@@ -24,8 +24,30 @@ use crate::document::selection::Selection;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
+use crate::gpu::{MASK_TEX, mask_tex_origin};
 use stark_model::document::{SelectionOp, SelectionShape};
-use stark_model::geom::{MASK_TEX, TileCoord, Vec2, lasso_edges, mask_tex_origin};
+use stark_model::geom::{TileCoord, Vec2};
+
+/// The lasso's closed edge list, as `selection.wesl` reads it: one texel per edge
+/// holding `(a.xy, b.xy)` in canvas px. Empty for a polygon that cannot enclose area.
+///
+/// Here rather than in `stark_model::geom`, where it grew up: it is a statement about
+/// this pass's buffer layout and nothing in the model ever read it. What the *document*
+/// says about a lasso is its vertex list and the bound on how long that may be
+/// (`SelectionShape`, `MAX_LASSO_POINTS`); turning one into edge texels is the
+/// shader's own business.
+fn lasso_edges(points: &[Vec2]) -> Vec<[f32; 4]> {
+    if points.len() < 3 {
+        return Vec::new();
+    }
+    (0..points.len())
+        .map(|i| {
+            let a = points[i];
+            let b = points[(i + 1) % points.len()];
+            [a.x, a.y, b.x, b.y]
+        })
+        .collect()
+}
 use stark_shaders::mirror::mask_region::decl as mrd;
 use stark_shaders::mirror::selection::binding as sb;
 use stark_shaders::mirror::selection::decl as sd;
@@ -575,4 +597,31 @@ pub(crate) fn shader_params(op: &SelectionOp, edges: usize) -> ([f32; 4], [f32; 
         b,
         [kind as f32, mode_code(op.mode), edges as f32, op.opacity],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The edge list closes the polygon, which is what makes it a *region* rather
+    /// than a polyline — `selection.wesl` counts crossings, so a loop that did not
+    /// return to its start would leave the winding open and the coverage undefined.
+    ///
+    /// Moved here with [`lasso_edges`] from `stark_model::geom`, where it was the
+    /// only test of a function the model never called.
+    #[test]
+    fn lasso_edges_close_the_loop() {
+        let pts = vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)];
+        let edges = lasso_edges(&pts);
+        assert_eq!(edges.len(), 3);
+        assert_eq!(
+            edges[2],
+            [0.0, 1.0, 0.0, 0.0],
+            "last edge returns to the start"
+        );
+        assert!(
+            lasso_edges(&pts[..2]).is_empty(),
+            "a segment encloses nothing"
+        );
+    }
 }

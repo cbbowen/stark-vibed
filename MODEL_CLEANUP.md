@@ -24,7 +24,7 @@ crate could not check itself.
 | **A2** | perspective footprint's honesty | **done** — `e653851` |
 | **A3** | no `tests/` in the crate that owns §12.6 | **done** — `f7639e5` |
 | **A4** | `Tool` is session state | **done** — `e653851` |
-| **A5** | `geom.rs` is two modules | **part** — the stale claim fixed (`e653851`); the move still owed, see the item |
+| **A5** | `geom.rs` is two modules | **done** — `e653851`, and the move; the review was a third wrong, see the item |
 | **S1** | unused `tracing` dependency | **done** — `e653851` |
 | **S2** | two allocations per logged action | **closed** — measured, not worth it; see the item |
 | **S3** | `to_bytes` copies three times | **done** — `e653851` |
@@ -440,13 +440,19 @@ conic (§20.7), which is fifteen uses in `document/guide.rs`. The review repeate
 their doc comments instead of checking them — the same class of defect as **D6**,
 found the same way. The comments now say what is true, and the two types stay.
 
-What is left of the item is real and still owed: the five genuinely shader-facing
-items — `INTERIOR_UV_SCALE`, `INTERIOR_UV_BIAS`, `MASK_TEX`, `mask_tex_origin`,
-`lasso_edges` — have **zero** callers in `stark-model` outside `geom.rs` itself, and
-belong with `gpu`. `TILE_APRON`, `TILE_TEX` and `TILE_SIZE` stay: the model's own
-quantization is written against them (`fill_bounds`' reach, `image_tiles`,
-`tile_box`), and `TILE_SIZE` is *derived* from `TILE_TEX`, so the tile constants are
-one thing and cannot be split down the middle.
+The rest of the item was real and is done. The five genuinely shader-facing items
+had **zero** callers in `stark-model` outside `geom.rs` itself and are with `gpu`
+now: the interior UVs, `MASK_TEX` and `mask_tex_origin` in `gpu::tile`, which is
+already the module about tile textures, and `lasso_edges` in `gpu::selection`
+beside the shader that reads its layout — along with the only test it had, which
+the model was running for a function the model never called.
+
+`TILE_APRON`, `TILE_TEX` and `TILE_SIZE` stay, and `geom`'s header now says why
+rather than leaving it to look like an oversight: the model's own quantization is
+written against them (`fill_bounds`' reach, `image_tiles`, `tile_box`), because a
+box has to be padded by what a pass reads past it before anyone can ask which tiles
+it touches — and `TILE_SIZE` is *derived* from `TILE_TEX`, so the three are one fact
+and cannot be split down the middle.
 
 ## Sweeps
 
@@ -609,14 +615,21 @@ assigned them, and that is the part still taken on reading.
 
 Three things, in the order I would take them:
 
-1. **A5's move** — the five shader-facing items out of `geom.rs`. Mechanical, and
-   the item says exactly which five and why the tile constants are not among them.
-2. **A1's newtype** — `Srgb([f32; 3])`, which turns four `map(clamp01)` calls into a
-   type that cannot hold an out-of-range color. A save-format change to five
-   payloads, so it wants its own commit and its own older-shape test.
-3. **S4** — measured in the app, not in a test, and only after a session that has
+1. **A1's newtype** — `Srgb([f32; 3])`, which turns four `map(clamp01)` calls into
+   a type that cannot hold an out-of-range color. Deferred deliberately: it changes
+   the wire representation of four payloads at once, so it wants its own commit and
+   its own older-shape test rather than the tail of a correctness commit. Note it
+   covers four of the five sites, not five — `BrushParams::color` is RGBA and would
+   need its own newtype or to stay as it is, which is worth deciding before starting
+   rather than discovering halfway.
+
+   **`MattePaint` and `Parcel` merging rides with it.** They are word-for-word the
+   same type — a solid or a ramp on an axis, both reaching `ramp_common` — with two
+   wire shapes written at different times, which is now said at
+   `MattePaint::sanitized` rather than only noticed here. Their two `sanitized`
+   implementations are the same fifteen lines twice.
+
+2. **S4** — measured in the app, not in a test, and only after a session that has
    felt slow.
 
-`MattePaint` and `Parcel` merging is the same change as (2) and would ride with it:
-they are the same type with two wire shapes, which is now written down at
-`MattePaint::sanitized` rather than only noticed here.
+Nothing else is outstanding.

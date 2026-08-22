@@ -250,7 +250,8 @@ mod tests {
     /// integer arithmetic would look like caution rather than a fix.
     #[test]
     fn a_distant_tile_addresses_the_image_exactly() {
-        use stark_model::geom::{TileCoord, mask_tex_origin};
+        use crate::gpu::mask_tex_origin;
+        use stark_model::geom::TileCoord;
 
         // Far enough out that a tile origin needs more than the 24 bits of mantissa an
         // `f32` has, and well inside what a `TileRect` addresses.

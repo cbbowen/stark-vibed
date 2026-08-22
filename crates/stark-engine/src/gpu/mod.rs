@@ -45,5 +45,8 @@ pub use registry::{Registry, Resource};
 pub use selection::SelectionRenderer;
 pub use stroke::{StrokeRenderer, StrokeSpans, ToolState};
 pub use surface::Surface;
-pub use tile::{AllocSource, MaskHandle, TilePairHandle, TilePool};
+pub use tile::{
+    AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, MASK_TEX, MaskHandle, TilePairHandle,
+    TilePool, mask_tex_origin,
+};
 pub use transform::TransformRenderer;

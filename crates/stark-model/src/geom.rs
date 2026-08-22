@@ -7,6 +7,25 @@
 //! quantizes against `TILE_SIZE` (§12.6) and an apron sits one texel inside it
 //! (§6.4).
 //!
+//! # Where the line falls, and why the constants are on this side of it
+//!
+//! A tile's *texture* geometry is the engine's — the interior UV scale and bias, a
+//! mask tile's edge length and where its texture starts, the edge-texel layout a
+//! lasso is uploaded in. All of those lived here and none of them had a caller in
+//! this crate; they are in `gpu::tile` and `gpu::selection` now, on the argument
+//! [`io`](crate::io) already makes about not recording the stride in a save file:
+//! *an implementation detail is not a fact about a painting.*
+//!
+//! [`TILE_SIZE`], [`TILE_APRON`] and [`TILE_TEX`] do not follow them out, and it is
+//! worth saying why rather than leaving it to look like an oversight. The model's
+//! own quantization is written against them — `fill_bounds`' reach, `image_tiles`,
+//! [`tile_box`] — because a *box* has to be padded by what a pass will read past it
+//! before anyone can ask which tiles it touches. And `TILE_SIZE` is derived from
+//! `TILE_TEX`, so the three are one fact and cannot be split down the middle. What
+//! makes that harmless is the thing `io` establishes: nothing in a log is expressed
+//! in tile units, so the stride reaches only *derived* answers and a document whose
+//! pixels come back slightly differently is exactly what §19 permits.
+//!
 //! Canvas space is in pixels with x to the right and y downward. Tile `(i, j)`
 //! covers the square `[i*TILE_SIZE, (i+1)*TILE_SIZE) × [j*TILE_SIZE, ...)`.
 //! The infinite canvas (§6) is realized by tiles being sparse and
@@ -97,13 +116,6 @@ pub const TILE_TEX: u32 = 256;
 /// `[i*TILE_SIZE, (i+1)*TILE_SIZE)` — aprons (below) overlap neighbors and are
 /// not owned.
 pub const TILE_SIZE: u32 = TILE_TEX - 2 * TILE_APRON;
-
-/// Maps a tile's interior quad corner (`∈ [0, 1]`) to a UV coordinate in the
-/// apron'd texture: `uv = corner * INTERIOR_UV_SCALE + INTERIOR_UV_BIAS`. The
-/// compositor and presenter sample only the interior sub-rect; bilinear taps at
-/// the interior edge then fall into the apron (neighbor content), not a clamp.
-pub const INTERIOR_UV_SCALE: f32 = TILE_SIZE as f32 / TILE_TEX as f32;
-pub const INTERIOR_UV_BIAS: f32 = TILE_APRON as f32 / TILE_TEX as f32;
 
 /// Integer address of a tile on the infinite canvas.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -448,30 +460,6 @@ pub fn tiles_of(rect: TileRect, budget: usize) -> Option<Vec<TileCoord>> {
     Some(out)
 }
 
-/// The lasso's closed edge list, as `selection.wesl` reads it: one texel per edge
-/// holding `(a.xy, b.xy)` in canvas px. Empty for a polygon that cannot enclose area.
-pub fn lasso_edges(points: &[Vec2]) -> Vec<[f32; 4]> {
-    if points.len() < 3 {
-        return Vec::new();
-    }
-    (0..points.len())
-        .map(|i| {
-            let a = points[i];
-            let b = points[(i + 1) % points.len()];
-            [a.x, a.y, b.x, b.y]
-        })
-        .collect()
-}
-
-/// The tile geometry a mask tile is rasterized over: its texture's top-left in canvas
-/// px (the interior origin, shifted out by the apron — §6.4).
-pub fn mask_tex_origin(coord: TileCoord) -> Vec2 {
-    coord.origin() - Vec2::splat(TILE_APRON as f32)
-}
-
-/// The mask tile's edge length, for the shaders that place it in a region.
-pub const MASK_TEX: u32 = TILE_TEX;
-
 #[cfg(test)]
 mod cover_tests {
     use super::*;
@@ -492,22 +480,6 @@ mod cover_tests {
         assert_eq!(
             tile_box(Vec2::splat(-far), Vec2::splat(-far + 1.0), 0),
             None
-        );
-    }
-
-    #[test]
-    fn lasso_edges_close_the_loop() {
-        let pts = vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)];
-        let edges = lasso_edges(&pts);
-        assert_eq!(edges.len(), 3);
-        assert_eq!(
-            edges[2],
-            [0.0, 1.0, 0.0, 0.0],
-            "last edge returns to the start"
-        );
-        assert!(
-            lasso_edges(&pts[..2]).is_empty(),
-            "a segment encloses nothing"
         );
     }
 }

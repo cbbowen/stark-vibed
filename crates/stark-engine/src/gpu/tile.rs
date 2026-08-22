@@ -27,7 +27,34 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::gpu::context::GpuContext;
 use crate::unpoisoned;
-use stark_model::geom::TILE_TEX;
+use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
+
+// —— the tile texture's geometry, as the shaders address it ——————————————————
+//
+// These are the engine's, not the document's, and they moved here from
+// `stark_model::geom` for the reason `io.rs` gives for not recording `TILE_SIZE` in
+// a save file: *an implementation detail is not a fact about a painting*. Nothing in
+// the model reads any of them — a footprint quantizes against `TILE_SIZE` and pads
+// by `TILE_APRON`, which is the whole of what a *log* is addressed in — while a
+// UV bias, a mask tile's edge length and where its texture starts are all questions
+// about how a pass samples a texture, which is this crate's business and nobody
+// else's.
+
+/// Maps a tile's interior quad corner (`∈ [0, 1]`) to a UV coordinate in the
+/// apron'd texture: `uv = corner * INTERIOR_UV_SCALE + INTERIOR_UV_BIAS`. The
+/// compositor and presenter sample only the interior sub-rect; bilinear taps at
+/// the interior edge then fall into the apron (neighbor content), not a clamp.
+pub const INTERIOR_UV_SCALE: f32 = TILE_SIZE as f32 / TILE_TEX as f32;
+pub const INTERIOR_UV_BIAS: f32 = TILE_APRON as f32 / TILE_TEX as f32;
+
+/// The mask tile's edge length, for the shaders that place it in a region.
+pub const MASK_TEX: u32 = TILE_TEX;
+
+/// The tile geometry a mask tile is rasterized over: its texture's top-left in canvas
+/// px (the interior origin, shifted out by the apron — §6.4).
+pub fn mask_tex_origin(coord: TileCoord) -> Vec2 {
+    coord.origin() - Vec2::splat(TILE_APRON as f32)
+}
 
 const CHANNEL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
     .union(wgpu::TextureUsages::RENDER_ATTACHMENT)
