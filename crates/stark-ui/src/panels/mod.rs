@@ -1,5 +1,37 @@
-//! The floating tool panels (§11). One module per panel; the chrome that
-//! frames them and the order they stack in belong to [`crate::layout`].
+//! The chrome a feature puts on screen (§11). The frame a panel floats in and
+//! the order the stack keeps belong to [`crate::layout`].
+//!
+//! # Three registers, one directory
+//!
+//! The name says *panels* and the directory holds more than panels, which is
+//! worth stating rather than leaving to be worked out from the exports. §11
+//! treats these as three registers with different rules, and a module here may
+//! own one, two or all three of them for the same feature:
+//!
+//! - a **panel** stacks in the right-hand column, wears a title bar, is dragged
+//!   and folded and closed, and is remembered between visits ([`BrushPanel`],
+//!   [`ColorPanel`], [`SelectPanel`], [`LayerPanel`], [`GuidesPanel`],
+//!   [`LightingPanel`] — the six of [`PanelId`](crate::layout::PanelId), and
+//!   the only six there will be without an edit to that enum);
+//! - a **bar** mounts at the bottom with the thing it acts on and dissolves with
+//!   it, so it doubles as the indicator that the thing exists ([`SelectionBar`],
+//!   [`FrameBar`], [`FilterBar`], [`TimelineBar`], [`PickBar`]) — or wears the
+//!   composing register (`mode-bar`) and stands the others down
+//!   ([`TransformBar`], [`GradientBar`], [`TraceBar`], [`PerspectiveGuideBar`]);
+//! - an **overlay** is a full-viewport catcher that takes the pointer away from
+//!   painting for a mode's duration ([`TransformOverlay`],
+//!   [`GuideEditOverlay`], [`GradientBarOverlay`], [`GradientTraceOverlay`]) —
+//!   or, like [`FrameOverlay`], sits over the canvas and passes presses through
+//!   it. `crate::modes` is what keeps at most one catcher live.
+//!
+//! **The feature is the module and the register is the item**, which is why a
+//! module is not renamed for whichever of the three it happens to hold most of:
+//! `gradient_bar` owns a bar and the catcher it fronts because they are one
+//! composition, and splitting them by register would put the two halves of one
+//! gesture in two files.
+//!
+//! Two modules here are neither, and say so at their own declaration: they are
+//! the arithmetic a panel hides, split out so that it can be tested.
 
 pub mod brush;
 pub mod color;
