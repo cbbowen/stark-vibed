@@ -32,7 +32,9 @@ use stark_engine::command::DocCommand;
 use stark_model::SurfaceId;
 
 use crate::render::Renderer;
-use crate::state::{AppState, dispatch};
+use crate::state::{AppState, dispatch, use_obs};
+use crate::widgets::Modal;
+use stark_model::ColorSpaceId;
 
 /// One ground selectable in the UI.
 pub struct BuiltinGround {
@@ -236,4 +238,137 @@ pub fn resolved(state: AppState) -> Vec<(&'static BuiltinGround, Option<SurfaceI
             (g, id)
         })
         .collect()
+}
+
+/// Modal for starting a fresh document. Today it carries the color-space choice
+/// (§6.7); it's a dialog so more document settings can join it later.
+#[component]
+pub fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
+    let state = use_context::<AppState>();
+    // Off the projection, not off the renderer. Both facts are in `obs`, and
+    // reading the renderer signal in a render body subscribes the dialog to every
+    // engine write — so it re-rendered on every command for the whole time it was
+    // open, to re-seed two `use_signal`s that are seeded once (U9, and `PeerCursors`
+    // carries the same warning).
+    let document = use_obs(state, |o| (o.color_space, o.surface));
+    let (current, current_surface) = match document() {
+        Some((space, surface)) => (space, Some(surface)),
+        None => (ColorSpaceId::Oklab, None),
+    };
+    let choice = use_signal(|| current);
+
+    // The ground is chosen by catalog *name*, not by id: an id is the hash of a
+    // height map, so it is not knowable until that map has been fetched — and this
+    // dialog runs before any of them have (§6.4, `crate::grounds`). The name is
+    // resolved to an id at Create, once the bytes are in hand.
+    let current_ground = resolved(state)
+        .into_iter()
+        .find(|(_, id)| *id == current_surface)
+        .map(|(g, _)| g.name)
+        .unwrap_or(DEFAULT_GROUND);
+    let surf_choice = use_signal(|| current_ground);
+
+    // One selectable color-space card; `selected` toggles the highlight.
+    let card = |id: ColorSpaceId, title: &str, desc: &str| {
+        let class = if choice() == id {
+            "space-card selected"
+        } else {
+            "space-card"
+        };
+        rsx! {
+            div {
+                class,
+                onclick: move |_| { let mut choice = choice; choice.set(id); },
+                div { class: "space-card-title", "{title}" }
+                div { class: "space-card-desc", "{desc}" }
+            }
+        }
+    };
+
+    // Same card, for the canvas ground choice — one row per catalog entry, so
+    // adding a ground is still a file plus a row in `GROUNDS`.
+    let scard = |g: &'static BuiltinGround| {
+        let class = if surf_choice() == g.name {
+            "space-card selected"
+        } else {
+            "space-card"
+        };
+        rsx! {
+            div {
+                class,
+                onclick: move |_| { let mut c = surf_choice; c.set(g.name); },
+                div { class: "space-card-title", "{g.name}" }
+                div { class: "space-card-desc", "{g.blurb}" }
+            }
+        }
+    };
+
+    rsx! {
+        Modal { on_close,
+            div { class: "modal-title", "New Document" }
+            div { class: "modal-subtitle", "Starting a new document replaces the current canvas." }
+
+            div { class: "modal-section-label", "COLOR SPACE" }
+            {card(ColorSpaceId::Oklab, "Oklab", "Perceptual color with smooth, predictable blending. The standard choice for digital painting.")}
+            // Offered only where the engine carries it. `ColorSpaceId::Mixbox` is
+            // a variant in every build — the save format's enum indices cannot
+            // depend on a feature (§8) — so the id below still compiles; what a
+            // build without the `mixbox` feature lacks is the space behind it, and
+            // `ColorSpaceId::available` is the same question this asks.
+            {cfg!(feature = "mixbox").then(|| card(ColorSpaceId::Mixbox, "Mixbox", "Realistic pigment mixing (Mixbox): blue + yellow makes green, like real paint. For natural media."))}
+
+            div { class: "modal-section-label", "SURFACE" }
+            for g in GROUNDS.iter() {
+                {scard(g)}
+            }
+
+            div { class: "modal-actions",
+                button {
+                    class: "btn btn-secondary",
+                    onclick: move |_| on_close.call(()),
+                    "Cancel"
+                }
+                button {
+                    class: "btn btn-primary",
+                    onclick: move |_| new_document(state, choice(), surf_choice(), on_close),
+                    "Create"
+                }
+            }
+        }
+    }
+}
+
+/// Replace the document with a fresh one in the chosen color space, on the chosen
+/// ground, then repaint. The ground's height map is fetched on first use (the large
+/// bump maps stay out of the wasm binary — §6.6), so this runs async: `ground` is a
+/// catalog name and the id `new_document` needs is the hash of the image behind it.
+///
+/// It owns closing the modal (`on_close`), calling it only once the work is done.
+/// `spawn_forever`, not `spawn`: a plain spawn would tie the task to the
+/// modal's scope, and the backdrop/Cancel still work during the fetch — a
+/// dismissal would cancel it mid-flight *after* `collab::leave` already ran
+/// (session gone, document never replaced). The task must outlive the modal;
+/// calling `on_close` after it unmounted is harmless (the callback lives in
+/// CommandRail's scope, which persists).
+fn new_document(
+    state: AppState,
+    color: ColorSpaceId,
+    ground: &'static str,
+    on_close: EventHandler<()>,
+) {
+    // Replacing the document abandons any shared session (and clears the
+    // ticket from the URL) — the fresh canvas is private until re-shared.
+    crate::collab::leave(state);
+    spawn_forever(async move {
+        // A ground that will not fetch opens the document smooth rather than
+        // refusing to open it — and the document then honestly *says* it is smooth
+        // instead of claiming a weave it hasn't got.
+        let surface = resolve_signal(state, ground).await;
+        crate::state::with_engine(state, |r| {
+            r.new_document(color, surface);
+            r.paint();
+        });
+        tracing::info!(?color, ground, ?surface, "new document ready");
+        on_close.call(());
+    });
 }
