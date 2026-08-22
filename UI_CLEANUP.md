@@ -3,6 +3,33 @@
 A review of `crates/stark-ui` as of 2026-08-21 (`f64f874`): five defects, six
 structural changes and two sweeps, each with the file and line that shows it.
 
+## Status
+
+| | | |
+|---|---|---|
+| **D1** | peer cursor / view | **done** — `88ed008` |
+| **D2** | no WebGPU | **done** — `56785a5` |
+| **D3** | pop-out dismissal | **part** — Escape reaches them (`e9bb2cc`); light dismiss still owed, see the item |
+| **D4** | `preview.rs` pair test | **done** — `88ed008` |
+| **D5** | stale comments | **done** — `88ed008` |
+| **A1** | `AppState` handle | **done** — `54af4e6` |
+| **A2** | `state.rs` coupling | **done** — `5c09438` |
+| **A3** | one mode signal | **done** — `1784c86` |
+| **A4** | command registry table | **open** |
+| **A5** | `platform.rs` cfg twins | **open** |
+| **A6** | module grouping | **open** |
+| **S1** | `use_obs` sweep | **done** — `86ee0fe` |
+| **S2** | untested geometry | **done** — `f784fdb` |
+
+The three left open are the three that are large and mechanical rather than
+load-bearing, and each says at its own entry what it would cost. Nothing about
+them changed in the doing of the rest; **A4** in particular is still exactly the
+gap §25.2 step 5 admits to.
+
+The line numbers below are from the review and are **not** updated as the fixes
+land — they are what the finding was found at. Follow the named function, not
+the number.
+
 Nothing here is a redesign. The frontend's spine — one dispatch seam, `ReadOnly`
 handles that make `&mut Renderer` unspellable outside `state.rs`, the
 `Preview<T>` pair table, the command and drag registries — holds up, and every
@@ -82,6 +109,23 @@ inherits nothing. The fix is that component — anchor, light dismiss, and a way
 for the Esc ladder to see it — plus a line in §25.7 saying a pop-out owes the
 same three things a dialog does.
 
+**As built** (`e9bb2cc`), the Esc half only. `widgets::PopoutId` is one signal on
+the app state for every pop-out — so two open at once is unexpressible, on
+`Composing`'s argument — and Escape's first rung puts it down. It is deliberately
+*not* a `Dialogs` flag: that list also stands `FinishMode` down, and the gradient
+library opens from a bar while a fill composes, so a pop-out on it would take
+Enter's "Done" away. Each well closes its pop-out on unmount, which the locals
+got for free and app state does not.
+
+**Light dismiss is still owed**, and the reason it is not a component: the
+catcher has to be root-mounted the way `Modal`'s backdrop is, because
+`.bottom-bars` carries a `transform` and every bar a `backdrop-filter`, each of
+which makes a containing block a `position: fixed` catcher rendered inside the
+bar cannot escape. Where it then sits among the z-indices decides which presses
+it eats, and eating a canvas press would be worse than the bug — so it wants a
+browser (`dx serve` + CDP) rather than an argument. `CommandSearch` and
+`AddFilterButton` keep their own bespoke dismissal until then.
+
 ### D4. `preview.rs`'s central test covers 6 of 9 rows
 
 `preview.rs:211` (`a_pair_shows_and_lays_the_same_value`) checks
@@ -98,6 +142,11 @@ Worth considering while there: the test is written per-pair because "what has to
 be compared is the payload inside two different enums, which only a `match` can
 reach". True — but a `match` that is *not* exhaustive over the table is the same
 by-hand list `ALL` is (see **A4**), and it has already fallen three rows behind.
+
+**As built** (`88ed008`): all nine rows, each one call against a `check_pair!`
+macro. Still by hand — nothing can make it not be, short of the table itself
+being generated — but a missing row is now a hole in a column of nine rather
+than a missing paragraph among six.
 
 ### D5. Two stale comments
 
@@ -145,6 +194,12 @@ elides much of the copy after inlining, so the win is in stack frames and
 non-inlined edges rather than in a number a profile will hand over. But the
 change is ~30 lines and the type is the hottest in the crate.
 
+**As built** (`54af4e6`): measured first, and the estimate held — `Signals` is
+**2752 bytes** on the host, `AppState` **8**. The six mutation sites were exactly
+the six predicted. `state::tests::the_handle_is_one_pointer` pins it, and is
+written so that a field added to `Signals` cannot fail it while a field added to
+`AppState` — which is what reaching for one more flag would do — does.
+
 ### A2. `state.rs` names 22 other modules
 
 More than any other file in the crate, `commands.rs` (18) included. The field
@@ -186,6 +241,17 @@ crate's own standing preference —
 `gradient_resume` stays a separate signal: it is deliberately *not* a live mode
 (nothing previews off it, and `modes` never sees it), and that distinction
 survives the change intact.
+
+**As built** (`1784c86`), with three things the sketch did not have:
+`modes::advance` — the writer a drag sample uses — refuses to change *which* mode
+is live, since doing so silently is the very swap the enum removes;
+`modes::leave_settled` for a "Done" that has already committed, because dropping
+the preview after a commit shows the document without what was just laid;
+and `gradients::armed` became a question put to `modes` rather than a second flag
+recording that a trace is live. Two orderings turned out to be load-bearing and
+are kept explicit rather than left to the `enter` inside `open` — `begin_matte`
+still leaves before it reads the projection for its default axis, and `set_armed`
+takes the parked bar out of `leave`'s reach before disarming.
 
 ### A4. The command registry pays for its metadata six times
 
@@ -268,6 +334,22 @@ compile. This is the same move `ReadOnly` already made for the renderer, and for
 the same failure — a component asserting something the engine has moved past, or
 waking for something it does not read.
 
+**As built** (`86ee0fe`), the sweep but **not** that structural half, and the
+reason is worth recording because it is not effort. A subscribing read is
+legitimate in a plain helper called from a render body — `commands::armed`,
+`panels::guides::guides_of` — and only a *hook* can narrow, which a helper called
+per row inside a loop cannot be. `Command::active` is exactly such a helper. So
+"no `read` outside `state.rs`" would have forced `Command::active` to stop being
+a function, which is out of proportion to what it buys. Four subscribing reads
+therefore remain on purpose; every other render-body read is a memo.
+
+What did come out of it: `use_obs_opt` for readers with their own answer to
+there being no engine yet, and two components split so that a memo could exist
+without paying for itself when nobody is looking — `PaletteRow`, so a palette row
+narrows the way the rail's menu rows already did, and `SlotRack`, because
+`SlotOverlay` claims in a comment to read nothing at all while the rack is away
+and a hook above that early return would have made it false.
+
 ### S2. Untested pure geometry, where the split pattern already exists
 
 `panels/layer_tree.rs` and `panels/reorder.rs` were split out as "the half that
@@ -282,6 +364,13 @@ places still hold pure arithmetic inside a panel that has none:
 - `navigator.rs`: `viewport_style` and the press-to-canvas mapping.
 
 Three small extractions on a pattern the crate already runs twice.
+
+**As built** (`f784fdb`), the tests were added in place rather than by extracting
+the functions, which turned out to be the cheaper half of the same benefit: what
+was missing was the pinning, not the file boundary. Seventeen tests over the four
+mappings, and two of them check a *property* rather than a number — the fringe
+pad spends equal area per unit of spread, the dial is warm at the top — so the
+constants may move and the claims the docs make cannot.
 
 ## What was checked and found sound
 
@@ -304,3 +393,29 @@ Recorded so the next reader does not re-derive it:
 - **The touch ladder** (`Landing`, `tap_of`, `TOUCH_SLOP`) is coherent: one
   constant behind the tap and the paint threshold, and a test that pins the two
   cannot drift apart.
+
+## What the fixes were checked against
+
+Every gate the project names, after the last commit on this branch: `cargo fmt
+--all --check`; `cargo clippy --workspace --all-targets -D warnings` in **both**
+configurations, the default and `--no-default-features --features
+stark-net/webrtc`; `cargo nextest run --workspace` — 1105 tests, all passing;
+`cargo test --workspace --doc`; and `cargo check -p stark-ui --target
+wasm32-unknown-unknown`.
+
+**What none of that covers is a browser.** Nothing in this crate's suite mounts a
+component, so every change to what a surface *shows* — the memos in **S1**, the
+new report arm in **D2**, the pop-out flag in **D3** — is checked by construction
+and by the compiler, and not by having been looked at. Three of them are worth
+looking at before this is relied on:
+
+- the **no-WebGPU report** (`failure::NoGpu`), which by its nature only appears
+  on a browser that cannot run the app at all — the way to see it is to make
+  `render::init` return `Err(StartupFailure::Adapter)` unconditionally and load
+  the page;
+- the **mode refactor** (**A3**), where the thing to exercise is each way out of
+  each mode: Done, Escape, and reaching for another mode mid-composition — and in
+  particular arming a trace from the gradient bar and coming back to it, which is
+  the one park-and-resume in the app;
+- the **pop-out flag** (**D3**), where the thing to check is that a bar going
+  away takes its pop-out with it.
