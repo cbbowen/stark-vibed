@@ -76,6 +76,16 @@ mem_forget = "warn"
 # `x == 1.0` against a *literal*. The general `float_cmp` is deliberately absent:
 # all 14 of its sites are exactness guards that mean it (MORE_LINTS.md).
 float_cmp_const = "warn"
+# `#[expect]` over `#[allow]`, and a `reason` on both. An `allow` is permanent by
+# construction: it goes silent the moment the thing it suppressed disappears, and
+# so nothing ever removes it. An `expect` is the same suppression that reports
+# itself once it is unnecessary — which is what "do not add inert scaffolding"
+# (CLAUDE.md) asks of everything else in the tree, applied to the suppressions.
+#
+# It earned its place immediately: one of the eight `allow`s it found had already
+# gone stale, and this is what said so.
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
 
 # Single source of truth for shared dependency versions (CLAUDE.md).
 [workspace.dependencies]

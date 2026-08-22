@@ -255,7 +255,10 @@ impl Preview {
     ///
     /// Uses the same entry point a commit does (`StrokeRenderer::render_range`), so
     /// the live preview and the `Action::apply` that replaces it draw the same pixels.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the live tail's state; each is a distinct type"
+    )]
     fn render_live_stroke(
         &self,
         ctx: &ApplyCtx,

@@ -138,7 +138,10 @@ pub struct Binding {
 /// The lint waiver is what "generated" means here rather than a suppression: WESL
 /// writes `const PI: f32 = 3.14159265359`, and `approx_constant` is advice to an
 /// author about a literal this module has no author for.
-#[allow(clippy::approx_constant)]
+#[expect(
+    clippy::approx_constant,
+    reason = "the literal is WESL's, in generated code with no author to advise"
+)]
 pub mod mirror {
     include!(concat!(env!("OUT_DIR"), "/mirror.rs"));
 }

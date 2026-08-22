@@ -810,7 +810,10 @@ impl BrushParams {
     /// `min`-then-`max` rather than `clamp`, for `clamp01`'s reason and with more
     /// riding on it: `clamp` returns the NaN where these return the other operand, and
     /// the NaN would reach a lane the shaders divide by.
-    #[allow(clippy::manual_clamp)]
+    #[expect(
+        clippy::manual_clamp,
+        reason = "min-then-max is the NaN policy; `clamp` returns the NaN these reject"
+    )]
     pub fn elongation(stretch: f32) -> f32 {
         // Bounded before the divide rather than clamped after it, so a knob past 1 —
         // or a negative one, which is not a squash but no stretch at all — lands on a

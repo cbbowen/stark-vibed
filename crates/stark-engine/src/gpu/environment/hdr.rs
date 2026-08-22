@@ -97,7 +97,10 @@ fn read_scanline(
     // Four channel planes (R, G, B, E), each run-length encoded across the row.
     // `ch` indexes the *inner* `[u8; 4]` of `scan[x]`, not `scan` itself, so there is
     // no slice for clippy's iterator rewrite to walk.
-    #[allow(clippy::needless_range_loop)]
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "`ch` indexes the inner [u8; 4] of each pixel, not a slice to walk"
+    )]
     for ch in 0..4 {
         let mut x = 0usize;
         while x < w {

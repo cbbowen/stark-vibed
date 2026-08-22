@@ -256,7 +256,10 @@ impl Engine {
     /// one type, silently transposed — cannot be written. If a *second* `Option<LayerId>`
     /// ever arrives (a frame and a layer are both one), these stop being independent
     /// choices and become a "what to draw" value worth naming.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every argument is a distinct type, so the transposition the lint guards cannot be written"
+    )]
     fn render_view(
         &mut self,
         target: &wgpu::TextureView,

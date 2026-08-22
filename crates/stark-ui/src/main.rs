@@ -26,7 +26,10 @@
 // format and suggests `.to_string()`. The suggestion applies to the expansion,
 // not to anything writable in the source: plain interpolation *is* the idiom
 // here. Suppressed crate-wide because it fires wherever rsx! does.
-#![allow(clippy::useless_format)]
+#![expect(
+    clippy::useless_format,
+    reason = "rsx! expands plain interpolation through format!; the suggestion applies to the expansion"
+)]
 // `std::mem::variant_count`, for `commands::tests::all_lists_every_command` and
 // nothing else — which is why it is `cfg_attr(test, …)` rather than a feature
 // this crate carries. §25.2 step 5 says of the registry's list that it is kept

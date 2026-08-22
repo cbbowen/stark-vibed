@@ -83,7 +83,6 @@ pub use surface::SurfaceId;
 /// `Gradient::clamped`), and each of them at some point spelled it `clamp` instead
 /// — passing a `NaN` opacity through the very funnel that exists to stop one. One
 /// definition, so the policy cannot be half-remembered at the next gate.
-#[allow(clippy::manual_clamp)]
 pub(crate) const fn clamp01(x: f32) -> f32 {
     x.max(0.0).min(1.0)
 }

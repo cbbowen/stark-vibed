@@ -1,7 +1,7 @@
 //! Shared test harness: headless engine setup and golden-image comparison
 //! (§9). Included by integration tests via `mod common;`.
 
-#![allow(dead_code)] // not every test binary uses every helper
+#![expect(dead_code, reason = "not every test binary uses every helper")]
 
 pub mod corpus;
 

@@ -419,7 +419,6 @@ impl CollabSession {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn finish(
         bound: Bound,
         served: Served,

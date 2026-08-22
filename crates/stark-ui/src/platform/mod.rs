@@ -1556,7 +1556,13 @@ pub fn base64_encode(data: &[u8]) -> String {
 }
 
 /// Standard-alphabet base64 → bytes, the inverse of [`base64_encode`].
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[cfg_attr(
+    all(not(target_arch = "wasm32"), not(test)),
+    expect(
+        dead_code,
+        reason = "the only callers are the wasm-gated shape normalizer and a test"
+    )
+)]
 pub fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(text.len() / 4 * 3);
     let (mut acc, mut bits) = (0u32, 0u32);
