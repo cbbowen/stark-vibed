@@ -553,9 +553,9 @@ fn red_blue() -> Gradient {
     .expect("two stops")
 }
 
-/// A substrate: an `Everything` matte born at the bottom of the stack covers the
+/// A backing: an `Everything` matte born at the bottom of the stack covers the
 /// whole view — and stays *under* the paint, which is the §15.5 claim that a
-/// substrate is an underpainting, not a wash over the picture.
+/// backing is an underpainting, not a wash over the picture.
 #[test]
 fn an_everything_matte_backs_the_whole_view_beneath_the_paint() {
     let Some(mut engine) = engine_or_skip() else {
@@ -573,12 +573,12 @@ fn an_everything_matte_backs_the_whole_view_beneath_the_paint() {
     let corner = at(&img, 6, 6);
     assert!(
         corner[1] > corner[0] + 30 && corner[1] > corner[2] + 30,
-        "the substrate should cover bare canvas, got {corner:?}"
+        "the backing should cover bare canvas, got {corner:?}"
     );
     // …and the stroke still on top of it.
     assert!(
         red_dominant(outside(&img)),
-        "a substrate at the bottom must not cover the paint"
+        "a backing at the bottom must not cover the paint"
     );
 }
 
@@ -687,20 +687,20 @@ fn an_everything_matte_defines_no_export_frame() {
         region: MatteRegion::Everything,
         paint: MattePaint::Solid(Srgb::new([0.9, 0.9, 0.85])),
     });
-    let substrate = engine
+    let backing = engine
         .observe()
         .layers
         .first()
-        .expect("the substrate is at the bottom")
+        .expect("the backing is at the bottom")
         .id;
-    let with_substrate = engine
-        .export_plan(Some(substrate), stark_engine::ExportScale::Factor(1.0))
+    let with_backing = engine
+        .export_plan(Some(backing), stark_engine::ExportScale::Factor(1.0))
         .expect("plan");
     let without = engine
         .export_plan(None, stark_engine::ExportScale::Factor(1.0))
         .expect("plan");
     assert_eq!(
-        (with_substrate.min, with_substrate.max),
+        (with_backing.min, with_backing.max),
         (without.min, without.max),
         "a rect-less matte must fall back to the painted bounds"
     );

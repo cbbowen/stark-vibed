@@ -5,6 +5,7 @@ browser-local library — §22.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 22. Gradients
 
@@ -268,7 +269,7 @@ must fail to meet rather than decode each other wrong).
 **The matte is the second consumer** (§15.4, §15.5): `MattePaint::Gradient`
 carries the same `Gradient` + `GradientAxis` pair the fill's parcel does, laid
 by the same `ramp_position` leaf the two shaders share — so where `t = 0.5`
-falls cannot drift between a filled region and a graded ground. It is composed
+falls cannot drift between a filled region and a graded backing. It is composed
 through the **same gradient bar**: the frame bar's Gradient chip enters the
 mode with a matte target instead of a fill target, the drag is still the axis,
 and Done commits one `SetMattePaint`. One interface for laying a ramp, wherever

@@ -4,6 +4,7 @@ The third kind of layer: one that is a *function of what is beneath it* rather t
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 21. Filters
 
@@ -646,7 +647,7 @@ document states `spread` and `angle` on the canvas, and the encoder carries them
 through the view's full canvas→screen linear map — zoom, supersample, rotation and
 mirror alike — into a dispersion vector written into the uniform each frame
 (`chromatic_disp`, beside the slot writes). The fringes therefore stay attached to
-the artwork exactly as the canvas weave does, and an export disperses the same
+the artwork exactly as the canvas substrate does, and an export disperses the same
 canvas distance the screen showed. The pass buys taps in proportion to that
 on-screen dispersion — enough that bilinear filtering closes the gap between
 neighbours — floored so a sub-texel spread still integrates over a few spectral

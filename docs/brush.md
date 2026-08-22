@@ -4,6 +4,7 @@ Tiles and channels, the fitted-path swept-segment stroke renderer, the wet-mixin
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 6.1 Tiles and channels
 
@@ -27,7 +28,7 @@ chroma axes, and keeps blends perceptually uniform. Alpha is premultiplied.
 > a material property (how opaque the pigment is per unit of thickness). It says
 > **nothing** about how much paint is on the canvas, nor even whether any is
 > present. **The amount (and presence) of paint is the `height` channel**
-> (precisely, `height − surface_height`, the paint *thickness*). The two combine
+> (precisely, `height − substrate_height`, the paint *thickness*). The two combine
 > only at display time in the translucent-slab law
 > `visible = 1 − exp(−K · opacity · thickness)`.
 >
@@ -87,8 +88,8 @@ Both growth thresholds are denominated in an **input tolerance** the frontend
 supplies with `GestureCommand::Start`, in canvas px (the error one as its square,
 since it is compared against a mean square). Canvas px are the wrong unit to fix
 them in: the same hand movement covers 64× as many zoomed in as out, and a pen
-digitizer, a touchscreen and a mouse each report at a different grain through the
-same pointer API. Only the frontend knows either fact, so it states the grain and
+digitizer, a touchscreen and a mouse each report at a different tolerance through the
+same pointer API. Only the frontend knows either fact, so it states the tolerance and
 the fit becomes invariant to zoom. This is a *fitting* knob and reaches nothing
 else — flattening's budget is an error against the curve, in the canvas px it
 will actually be drawn in.
@@ -104,7 +105,7 @@ A stroke that begins after a watched hover takes its window as a **run-up**
 (`PathFitter::seed_runup`; §18.1.10 is where the window comes from). The entry
 is otherwise the fit's blind spot: the clamped ends squash the first span into a
 fraction of a pixel of arc, so its heading is decided by where one control point
-lands against grain-quantized samples. The run-up's reports are adopted as real
+lands against tolerance-quantized samples. The run-up's reports are adopted as real
 leading samples — **the fitted curve extends back through them** — and the
 record marks where on that curve the press really happened
 (`StrokeRecord::start`, a span-unit parameter, `#[serde(default)]` so a file
@@ -221,7 +222,7 @@ Two places the obvious implementation is wrong:
   `|r₁ − r₀| < r₁ + r₀`.
 
   **The deposit has to agree at that knot too, and for a while it did not.** A
-  point's exposure to a segment is the footprint integrated over the offsets it
+  point's exposure to a segment is the extent integrated over the offsets it
   occupied relative to the tip — and an offset is measured in whatever tip was in
   force at the moment, `r_start` when the sweep opens and `r_end` when it closes.
   Denominating both ends in the reference radius instead is right only to first
@@ -263,7 +264,7 @@ Two places the obvious implementation is wrong:
   Away from the point the sagitta bound has already made it small.
 
   One consequence worth knowing: a segment's sweep is rasterized over a strip
-  built on its *widest* tip, which puts real fragments outside the footprint's
+  built on its *widest* tip, which puts real fragments outside the extent's
   own `|y| ≤ 1` square. The prefix-τ lookup returns zero out there explicitly —
   it must not clamp to the mask's border row, which is small but not zero, or
   every ramping segment prints a faint hard-edged rectangle the size of its quad.
@@ -338,14 +339,14 @@ a live tail and the commit that replaces it must draw the same pixels: whether
 the stroke runs the stamp loop at all. It is decided from the **brush alone** —
 the strongest form of that guarantee, since there is nothing about the piece, or
 about how long the stroke has grown, for it to disagree over — and what it asks
-is the floor no subdivision gets under: whether one segment's own footprint fits
+is the floor no subdivision gets under: whether one segment's own extent fits
 a region, since the reservoir pickup reduces over the whole tip at once. See
 `gpu::stroke::dynamics::dynamics_setup`.
 
 **Continuous stamping (swept segments).** Discrete dabs are visible with hard
 tips. The fix: stamp each short *segment* of the flattened curve as one quad
 whose coverage is the brush **swept** along it — the path integral of the
-footprint, instead of point samples. The enabling identity: alpha-"over" is
+extent, instead of point samples. The enabling identity: alpha-"over" is
 multiplicative in `(1−α)`, hence additive in **optical depth** `τ = −ln(1−α)`. So:
 
 - Precompute, per brush, the **prefix integral of `τ` along the travel axis**.
@@ -366,7 +367,7 @@ multiplicative in `(1−α)`, hence additive in **optical depth** `τ = −ln(1�
 
   The same argument is made once more on the host side. Which path a brush takes is
   decided from axes that have nothing to do with color or flow, so everything the
-  two share — the brush's channels in the working space, the canvas → weave scale,
+  two share — the brush's channels in the working space, the canvas → substrate scale,
   the color-dynamics lookup — is resolved once into a `StrokeConstants` and read by
   both, rather than derived twice from the same record. Two derivations agreeing is
   a coincidence to maintain; one derivation is a fact.
@@ -425,7 +426,7 @@ ago), which the parallel swept pass cannot express. The loop embraces the
 sequence *without giving up definite-integral rendering*: the canvas-side
 exchange is **swept per flattened segment through the same prefix-τ integral as
 the plain deposit**, so a dynamics stroke has the identical continuous, dab-free
-footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
+extent. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
 `dynamics.wesl`):
 
 1. **Region composite.** The base tiles under the stroke (the affected set plus a
@@ -452,11 +453,11 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      thread per reservoir texel, which also carries the **snapshot** — the copy of
      the segment quad's region texels into an `under` scratch that lets the deposit
      read-modify-write — in the tail of its own grid) and **deposit**, one thread
-     per footprint texel. The snapshot rides along because it depends on nothing
+     per extent texel. The snapshot rides along because it depends on nothing
      the exchange writes, so the barrier that used to separate them bought no
      ordering: three serialized dispatches per segment where there were four. The
      range that ends the stroke closes with a standalone `snapshot` + `bake` +
-     **settle** over the final footprint (see *The pen-up* below) — standalone
+     **settle** over the final extent (see *The pen-up* below) — standalone
      because there the settle *reads* what the snapshot and the bake write. A texel's **exposure** to the
      segment is the prefix-τ difference `e(x) = prefix(u) − prefix(u−d)`, and
      exposures add across overlapping quads of consecutive segments, so what the
@@ -626,9 +627,9 @@ bilinear form, which agree texel for paired texel), so with `add = 0` total heig
 (canvas + tool) is conserved up to resampling error, whatever the segment length.
 
 *The pen-up.* A stroke stops with the tip still in contact and the transfer still
-in flight. Everywhere else on the trail a point sees the whole footprint pass over
+in flight. Everywhere else on the trail a point sees the whole extent pass over
 it and leave by the trailing rim, where `τ` has fallen back to 0; the **last**
-footprint never gets that, so what is in flight there is stranded — and since the
+extent never gets that, so what is in flight there is stranded — and since the
 reservoir is per-stroke, stranded means gone. It shows both ways round: a carrying
 stroke ends a tip-shaped disc short of its own trail, and an eraser leaves a
 tip-shaped patch of the paint it was standing on.
@@ -648,15 +649,15 @@ bound the settle steps against untouched canvas a radius *ahead* of the pen-up
 an eraser). `owed` is what it still had to give — a point it had all but finished
 with has nothing left to hand over, and without that bound the settle steps against
 the *trail*, which got no settle at all, right where the two meet. They vanish on
-the footprint's rim (`owed` at the trailing edge, `received` at the leading one,
+the extent's rim (`owed` at the trailing edge, `received` at the leading one,
 the row total itself laterally), so the settle fades to nothing all the way round.
 
 **They are combined with a soft minimum rather than a `min`, and that is not
 cosmetic.** The two cross at the tip centre, where `owed = received`; a `min` is
 continuous there and its *slope* is not, and everything the settle does is
 exponential in this exposure, so the corner lands in the height field as a corner
-— which is a **step in the surface normal**, and the media pass (§6.3) prints it
-as a hard line straight across the middle of the last footprint, perpendicular to
+— which is a **step in the relief normal**, and the media pass (§6.3) prints it
+as a hard line straight across the middle of the last extent, perpendicular to
 the travel. Measured on a smear into thick paint under a structured sky, the
 specular stepped 107 levels across one texel at exactly `l = 0`, against 2
 anywhere along the trail. The p-norm above is `≤ min` everywhere, so both bounds
@@ -676,7 +677,7 @@ carries paint lifted hundreds of px back and pays it out slowly. That slow payou
 is what the visible trail is *made of*, so a settle that pairs each canvas texel
 with the cell that happens to sit above it lays almost nothing exactly where the
 continued pass would have slid the loaded trailing cells over every interior
-point — the whole footprint printed as a tip-shaped disc of missing paint, stepped
+point — the whole extent printed as a tip-shaped disc of missing paint, stepped
 where the kernel saturates (`golden_lift_end_regression` pins all three lengths).
 So the settle walks the delivery integral instead — per texel, along the row of a
 pen-up `bake` whose free channel carries the bare exposure prefix:
@@ -688,14 +689,14 @@ delivered(l) = k_dep · ∫ R·dτ · exp(−k_dep·τ(u)·(l−u)) · exp(−k_
 The first exponential is the cell **spending itself en route** — what it lays on
 the points between its pen-up position and this one comes out of the same load —
 which confines a saturated interior cell to its own neighbourhood while letting a
-shoulder cell carry its payout the whole way across the footprint; summed over
+shoulder cell carry its payout the whole way across the extent; summed over
 every point a cell serves, it telescopes to at most the cell's own load, so the
 settle cannot mint for any pair of rates. The second is the parcel's **survival**
 under the lift of the cells that serve after it — the same change of variable the
 sliding kernel's conservation argument runs on. The `min(owed, received)` bound
 lands as the smooth ratio `dep(e)/dep(owed)` scaling the whole delivery — cutting
 the pass where the truncation falls was tried and prints a fresh cliff mid-
-footprint, because the ring serves last and drops out all at once. The en-route
+extent, because the ring serves last and drops out all at once. The en-route
 factor couples cell to served point, so no single baked prefix carries it; the
 settle runs once per stroke, which is what makes O(`BAKE_RES`) taps per texel the
 right trade where the per-segment deposit could never afford it.
@@ -821,7 +822,7 @@ Clamping the load at 1 is what keeps the two paths drawing the same start cap.
   re-stored at all. Measured on the repro, the guard alone took a 28-level
   directional ghost to bit-exact zero. **The guard is not the whole answer,
   though, because it only fires on exactly-zero rates.** A brush that is merely
-  *nearly* inert stores every texel of every segment's footprint, and `h·keep`
+  *nearly* inert stores every texel of every segment's extent, and `h·keep`
   with `keep` a whisker under 1 is below `h` by far less than an ULP, so
   truncation takes the whole ULP every single time — a drift with no random half
   to cancel it. What decides how far it goes is the number of segments whose sweep
@@ -839,10 +840,10 @@ Clamping the load at 1 is what keeps the two paths drawing the same start cap.
   The stencil's taps sit at three scales per direction — 1 px, a
   `BLEED_MID_DIVISOR`-th of the reach, the reach — with the reach solved per
   firing and arriving in the slot, so every thread of a flux pair derives one set
-  of integers from one uniform. Its ceiling is the footprint (`BLEED_REACH_MAX`):
+  of integers from one uniform. Its ceiling is the extent (`BLEED_REACH_MAX`):
   a tap leaving the sweep has `w_n = 0` and carries nothing, so past about half
   the radius the long tap is truncated over most of the tip and `D` falls short
-  *unevenly across the footprint*, which is worse than falling short at all. Past
+  *unevenly across the extent*, which is worse than falling short at all. Past
   that the honest way to diffuse further is a finer cadence — more firings, not
   longer taps. The three shares are declared one scalar apiece and **generated**
   into the host (§6.10), because the host computes `Σ(share·d²)` to solve for the
@@ -861,7 +862,7 @@ That is the whole set. `drag`, `ridge`, `load_pressure` and
 carried. Each remains a local change to reintroduce when built (the loop already
 carries per-dispatch state): a forward deposit offset for the bow-wave drag, edge
 displacement for ridge. (`bleed` was on that list, and its reintroduction as the
-footprint-local blur above is the pattern working as intended; `load_pressure`
+extent-local blur above is the pattern working as intended; `load_pressure`
 and `deposit_tilt` came back as the general mapping below, which is the same
 pattern again — the two specific knobs turned out to be one general one.)
 Likewise `BrushParams` no longer carries
@@ -879,7 +880,7 @@ params are stored, never per-segment data. Note that the bleed's cadence is keye
 on **absolute arc length**, not accumulated across the loop, precisely so it
 carries no state across a range boundary: a live tail re-rendered from a span
 fires a stretch of stroke identically to the commit that replaces it.
-*Perf* — one footprint-sized dispatch per segment plus the exchange (which
+*Perf* — one extent-sized dispatch per segment plus the exchange (which
 carries the snapshot) and the bake, inside one pass; a live stroke re-renders only
 its tail, resuming the reservoir from the frozen head. What remains is per-segment
 dispatch overhead: a few hundred segments each costing three small serialized
@@ -944,13 +945,13 @@ clamped (`MIN_BIAS = 0.1`, so the slope tops out at 9) rather than left open. Th
 unmodulated brush and every plain linear mapping come out at exactly 1 and
 flatten on the budget they always had.
 
-The one thing the pen cannot reach is the **ground**: `tooth` is on the brush and
+The one thing the pen cannot reach is the **substrate**: `tooth` is on the brush and
 mappable like the rest, but the grain it bites into is the *canvas* (§6.4), so a
 pencil and a loaded brush drawn the same way across one paper break up on the
 same faces. Mapping tooth to pressure is the charcoal behaviour — bear down and
 the tip gains give, pressing after the falls it was bridging, so the grain fills
 in. Which faces they are is the stroke's own business, though: contact reads the
-ground's rise *along the travel*, so the same brush over the same paper the other
+substrate's rise *along the travel*, so the same brush over the same paper the other
 way catches the other sides (§6.4).
 
 **Resolution happens in one place**: `generate_segments_in`, alongside the taper,
@@ -1008,7 +1009,7 @@ a per-stroke translation derived from the stroke `seed`, where `lateral` is the
 signed offset from the centreline and `arc` the length along it, both in canvas
 px (brush-local y is in radius units, so it is scaled by the radius — the pattern
 keeps one scale whatever size the tip is). One axis varies color across the
-footprint, the other evolves it along the stroke. Anchoring to the stroke rather
+extent, the other evolves it along the stroke. Anchoring to the stroke rather
 than the canvas makes the variation belong to the *gesture*, and costs nothing in
 determinism: both coordinates are still functions of the fragment's canvas
 position and the segment, so the deposit stays a pure function of the two and
@@ -1035,7 +1036,7 @@ uniform slab.
 **The round tip is specified by the stroke it draws, not by its own silhouette.**
 What `hardness` names is the profile *across the stroke* — a full pass lays
 `1 − |y|^h` at `y` radii off the centreline, for `h = 1/(1 − hardness)` — and the
-footprint is then whatever produces it. The two are not the same shape, because
+extent is then whatever produces it. The two are not the same shape, because
 the deposit composes in optical depth: what the sweep integrates along the travel
 axis is `κ = −ln(1 − coverage)`, not coverage, so a mask carrying the profile's
 own falloff draws a very different one. Asking instead for the field whose row
@@ -1059,7 +1060,7 @@ pub enum BrushShape {
 // BrushParams gains:  shape: BrushShape, orientation: OrientationSource
 ```
 
-`orientation` (`FollowStroke` | `Pen`) sets how the swept footprint is angled:
+`orientation` (`FollowStroke` | `Pen`) sets how the swept extent is angled:
 `FollowStroke` keeps the shape's native axis on the stroke tangent (what makes a
 bristle brush read as a real stroke rather than a rubber stamp), while `Pen` pins
 it to the pen's tilt azimuth in canvas space, like a calligraphy nib.
@@ -1068,7 +1069,7 @@ it to the pen's tilt azimuth in canvas space, like a calligraphy nib.
 over brush-local `|x| ≤ 1, |y| ≤ 1`, so a shape may be opaque out to the corners
 of its own image; only the round tip, exactly zero outside its unit disc, stops
 at one radius. So the box that decides which tiles a segment is drawn into — and
-which rect the dynamics loop dispatches over its footprint — is the **rotated
+which rect the dynamics loop dispatches over its extent — is the **rotated
 square**, `√2 · radius` from the centreline for a stamp, not the radius. Measured
 against the radius alone the two answers agree at every axis-aligned angle and
 differ most at 45°, which is exactly the shape of the bug it caused: a diagonal
@@ -1076,7 +1077,7 @@ stroke sliced off along a tile boundary, with horizontal and vertical strokes
 looking perfect.
 
 **The two orientation sources are two bakes, not one bake read two ways.** The
-swept integral runs along the travel direction, so orienting the footprint means
+swept integral runs along the travel direction, so orienting the extent means
 turning the mask *inside the frame that integral is taken in* — and the two
 sources ask opposite amounts of that:
 
@@ -1108,7 +1109,7 @@ Only the tool side of the dynamics loop needs the conversion between the two
 (`frame_scale`, 1 for every unpadded volume). A prefix-τ difference is an
 absolute optical depth whatever box was baked around it, so the canvas side never
 asks; the reservoir, which has no prefix to difference and rebuilds its exposure
-from raw coverage, must, or it picks up from a footprint `√2` wider than the one
+from raw coverage, must, or it picks up from an extent `√2` wider than the one
 it lays. Today that correction changes almost nothing — the paint it misplaces
 lands in the padding, and the deposit reads the reservoir back through a
 τ-weighted prefix that is zero out there, so a zero-angle nib renders within two
@@ -1119,16 +1120,16 @@ consistent, not because a pixel currently depends on it.
 bigger circle onto the paper — it rolls the cone over, and the patch in contact
 *elongates along the lean*, growing along one axis and not the other. `stretch` is that
 axis: `BrushParams::stretch` in `[0, 1)` names the elongation `s = 1/(1 − stretch)`, the
-footprint is scaled by `s` along the brush's facing direction and left alone across it,
+extent is scaled by `s` along the brush's facing direction and left alone across it,
 and `Modulations::stretch` lets the pen drive it. Pointed at `Tilt` with
 `OrientationSource::Pen` that *is* the pencil — and the same knob held at a value with
 no mapping is a chisel nib, off a plain round tip with no shape asset at all.
 
 The axis is `orientation`'s, not a second direction to set, and that is what makes the
 whole of it free. Stretching by `s` along a canvas axis `û` is the linear map
-`A = R_û·diag(s, 1)·R_ûᵀ` on the footprint, so the deposit is that map's image dragged
+`A = R_û·diag(s, 1)·R_ûᵀ` on the extent, so the deposit is that map's image dragged
 along the travel `t̂`. Substituting `q = A⁻¹p` turns the integral into one of the
-**unstretched** footprint:
+**unstretched** extent:
 
 ```text
 τ(p) = (1/m) · ∫ mask, along v̂ = normalize(A⁻¹t̂), over a travel of m·L
@@ -1161,14 +1162,14 @@ renders bit for bit what it did before.
 
 It is applied **last and only into the lookup** (`stretch_look` in `stamp_common.wesl`,
 shared by both paths). Everything else a fragment reads out of its frame — the arc it
-sits at, the color-noise domain, the tip in force, the ground it is gated by, the canvas
+sits at, the color-noise domain, the tip in force, the substrate it is gated by, the canvas
 position a reservoir texel is dragged to — is a property of where the *tip* went, and
-the stretch is a property of the footprint the tip carries. Keeping the frame the tip's
+the stretch is a property of the extent the tip carries. Keeping the frame the tip's
 own the whole way down is what leaves `stroke_arc` measuring canvas px rather than the
 lookup frame's units, and the radius ramp applying to the tip that is actually there.
 
 Three things do have to grow with it, and each is the same bug in a different place — a
-footprint drawn outside the geometry drawn for it, cut off along a straight line:
+extent drawn outside the geometry drawn for it, cut off along a straight line:
 
 - **The sweep strip** and the dynamics loop's rim test, which work in the reference
   travel frame: `stretch_hull` reads the box `|y| ≤ 1/lateral`, `|x| ≤ (1 +
@@ -1177,7 +1178,7 @@ footprint drawn outside the geometry drawn for it, cut off along a straight line
   One factor and not two, because it grows an axis-aligned box in every direction at
   once, and `‖A‖ = s` bounds every angle at once.
 - **The arc cap.** `MAX_TIP_TURN` exists to keep the swept sector a simple polygon and
-  the reservoir's crescent seams away, both of which are about the footprint rather than
+  the reservoir's crescent seams away, both of which are about the extent rather than
   the number naming it — so a tip reaching `s` times as far may bend `s` times less.
   Charged against the *brush's* elongation, like every other bound here, since a
   modulation only ever scales the knob down.
@@ -1217,13 +1218,13 @@ resources**, not the action log: populated on import and on load, bundled into
 the save file (§8). Selecting a brush is session state, not a historized edit.
 
 **Stamp rendering.** `stamp.wesl` carries a per-instance rotation (cos/sin) and
-samples the bound mask at the footprint's uv, so the mask's coverage is what the
+samples the bound mask at the extent's uv, so the mask's coverage is what the
 swept optical depth integrates and therefore modulates both opacity and the
 height `add` lays. `Round` is realized as a built-in generated mask under a
 reserved id, so the shader always samples a texture — one code path.
 
 **Assets are fetched at runtime, never embedded.** The engine is *given* image
-bytes; it embeds none. Built-in assets (brush shapes, surface bump maps, the HDR)
+bytes; it embeds none. Built-in assets (brush shapes, substrate height maps, the HDR)
 live as static files under `stark-ui/assets/`, bundled by `asset!` with
 cache-busting URLs; the frontend fetches them on demand with
 `dioxus::asset_resolver::read_asset_bytes` (HTTP on web, filesystem on native)
@@ -1235,8 +1236,8 @@ lands on the same `AssetId`, and a built-in is referenced downstream exactly lik
 a user's imported shape — a `BrushShape::Stamp`, with no notion of "built-in"
 anywhere. Adding a shape is a PNG plus a row. Brush *presets*
 (`stark-ui/src/presets.rs`) are the one thing that has to wait for the fetch,
-since a preset stores a content id. The large surface maps are fetched lazily,
-only when a surface is selected. This keeps multi-megabyte assets out of the wasm
+since a preset stores a content id. The large substrate maps are fetched lazily,
+only when a substrate is selected. This keeps multi-megabyte assets out of the wasm
 binary and is the path that scales as the libraries grow. (Headless tests, having
 no frontend, read the same files from disk and register them directly.)
 
@@ -1509,8 +1510,8 @@ rather than a fit.
 
 **So the grid is laid across the bend and no further.** The tip's offset from its
 straight asymptote is `2L·t/√(1+t²) ≤ 2L·t`, and the half-angle decays as
-`t = t₀·exp(−Δs/L)` with `t₀ ≤ 1`, so the bend is under the input's own grain —
-and therefore invisible to the fit that grain prices — after `L·ln(2L/grain)`.
+`t = t₀·exp(−Δs/L)` with `t₀ ≤ 1`, so the bend is under the input's own tolerance —
+and therefore invisible to the fit that tolerance prices — after `L·ln(2L/tolerance)`.
 Past that the tip is trailing dead astern on a straight line that two samples
 describe exactly, so the run's final emission is the only one left worth making.
 The tow is handed the same `tolerance` the fitter is built with, held to the same
@@ -1519,13 +1520,13 @@ bounds by the same function, because this is one more thing only the caller know
 Two properties follow, and both are why the bound is read off the tractrix rather
 than picked as a cap:
 
-- **A report costs `4·ln(2L/grain) + 1` emissions at worst** — under 30 across
+- **A report costs `4·ln(2L/tolerance) + 1` emissions at worst** — under 30 across
   the whole reachable range of the knob, at *any* zoom, since the string and the
-  grain are both carried through the view and only their ratio survives. Bounded
+  tolerance are both carried through the view and only their ratio survives. Bounded
   in the string rather than inverse in it. Counted up front rather than
   accumulated, so the loop is an integer one and cannot fail to terminate however
   degenerate the arithmetic.
-- **A string at or under half the grain reaches zero**, and the tow emits exactly
+- **A string at or under half the tolerance reaches zero**, and the tow emits exactly
   one sample per report — the untowed rate. The bottom of the knob *degrades* to
   the untowed path rather than falling off a cliff into it, so there is no
   threshold to discover and no dead region on the slider. The tip is still towed;
@@ -1639,9 +1640,9 @@ headless), and "smoothing" is its user-facing name.
 
 - **The fitter.** The live end now pins to the towed tip rather than the pointer
   — the preview ends at the tip, and the string explains the gap to the cursor.
-  A towed trace is smoother than the device grain, so the fit's error rule
+  A towed trace is smoother than the device tolerance, so the fit's error rule
   simply buys fewer control points; `tolerance` still declares the device's
-  grain, unchanged, because it states what position *differences* mean, which
+  tolerance, unchanged, because it states what position *differences* mean, which
   the tow does not alter.
 - **Shape assist (§6.9).** Recognition works on `PathFitter::trace`, which is
   now the towed trace — a rough loop drawn through a smoothing brush arrives

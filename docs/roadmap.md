@@ -4,6 +4,7 @@ Build order, the gap analysis against the prior art, and the file-format stabili
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 13. Build order & status
 
@@ -25,7 +26,7 @@ Status lives here and nowhere else.
 | 8c | Tile aprons (§6.4) | done — killed the lighting seams the media pass amplified |
 | 9 | Pluggable color spaces (§6.7) | done — Oklab + Mixbox |
 | 10 | Wet mixing & brush dynamics (§6.2) | done — GPU swept-exchange loop, no CPU readback |
-| — | Surface bump maps (§6.4) | done — relief, and the deposition tooth that gates what the brush lays, on the ground a moving tip is about to meet |
+| — | Substrate height maps (§6.4) | done — relief, and the deposition tooth that gates what the brush lays, on the substrate a moving tip is about to meet |
 | 11 | Brush file upload | done — custom shape library (rows in localStorage, images in the blob store, §25.6), mid-session peer replication |
 | 12 | Collaboration (§12) | done |
 | — | Selections (§6.8) | done |
@@ -52,12 +53,12 @@ Step 14, restated against what actually shipped: the Dry/Knife/Wet enum variants
 collapsed into **one tool** (`add`/`lift`/`deposit`/`charge`), every axis a flux
 on the single conserved quantity. What remains are the *horizontal*-flux axes —
 drag as conservative finite-volume advection, ridge as a zero-mean doublet, bleed
-as a footprint-local blur. They are the intended design when built and are no
+as an extent-local blur. They are the intended design when built and are no
 longer carried as inert fields. Nor is the `wet` *channel*: a real diffusion
 model would reintroduce it as a second aux component, an `R16Float → Rg16Float`
 format change plus the passes that carry it — cheap to redo, and cheaper than
 storing a zero until then. ("Tooth-revealed canvas" is now the deposition gate,
-§6.4 — built, though it does not yet *fill* as paint piles into the weave.)
+§6.4 — built, though it does not yet *fill* as paint piles into the grain.)
 
 Each step is independently testable through `stark-engine` before any UI exists,
 which is exactly the leverage the frontend/backend split was meant to provide.
@@ -67,7 +68,7 @@ which is exactly the leverage the frontend/backend split was meant to provide.
 - **Tile LOD / mipmaps** — sample minified tiles when zoomed far out, for
   *responsiveness* on huge canvases. The **aliasing** half of this is answered
   and no longer wants mips: presentation supersamples and resolves (§6.4),
-  which also covers the weave and the relief shading, neither of which a
+  which also covers the substrate and the relief shading, neither of which a
   prefiltered tile could have. What is left is the cost — supersampling pays
   more work to draw less picture, where a mip chain would pay less — so this
   stays unscheduled until profiling on a large document says otherwise.
@@ -123,7 +124,7 @@ what comes back is the paint's own channels — not a color that has been throug
 image-based lighting, a tonemap and an sRGB encode, and in a Mixbox document not
 a display color in place of the pigment mixture. Sharing pass A with rendering
 rather than reimplementing it is what keeps a sample and the screen from drifting
-apart. Bare canvas answers *nothing*: the substrate is the ground, not paint to
+apart. Bare canvas answers *nothing*: the substrate is the backdrop, not paint to
 pick up. Sample-layer(s) and sample-radius are `PickOptions`, in a floating bar
 mounted only while Alt arms the tool — the same present-or-absent argument the
 selection and frame bars make, and what makes a modifier binding discoverable
@@ -155,7 +156,7 @@ the picture, not about any group of paint: a group is sampled for what is *on*
 it, the document for what is *seen*. The over-substrate blend runs the same
 `over` the media pass runs, in the same latent channels, so it agrees with the
 screen rather than offering a second opinion about it. It is also the one place
-a sample stops being an opacity-weighted mean: with the ground behind it every
+a sample stops being an opacity-weighted mean: with the substrate behind it every
 texel is opaque, so a patch half-covered by a stroke reads as a mixture of paint
 and canvas instead of as the stroke alone.
 
@@ -252,7 +253,7 @@ the zoom.
 
 **The light stays in the room.** Relief shading is computed from the height field
 as it falls on the *screen*, so turning or mirroring the canvas changes how
-impasto and the weave catch the light — a real ~130-level difference on a woven
+impasto and the grain catch the light — a real ~130-level difference on a woven
 canvas, and the same thing that happens when you turn a real canvas under a fixed
 lamp. That is the behaviour painters use rotation for; the alternative (the light
 turning with the canvas, so a mirrored view is a pure mirror image) is a one-line
@@ -321,9 +322,9 @@ import/export does not.)
 
 #### 18.1.5 A mixing palette
 
-We have Mixbox and a mass-conserving wet-paint loop. Nobody's mixing surface is
+We have Mixbox and a mass-conserving wet-paint loop. Nobody's mixing palette is
 good — Painter's Mixer Pad is the state of the art and it is twenty years old. A
-scratch surface you genuinely mix on and then pick up from, running the *same*
+scratch palette you genuinely mix on and then pick up from, running the *same*
 dynamics loop and the *same* eyedropper, is a novel and defensible feature that
 falls directly out of what is already built.
 
@@ -731,7 +732,7 @@ press is early enough to say it.
 The circle every raster editor draws under the resting pointer: the live brush's
 radius through the view's zoom, centred on the hover, so the canvas says how
 much of itself the next stroke would take *before* the stroke is made. The
-crosshair stays — it is the hotspot, and the circle is the footprint. It also
+crosshair stays — it is the hotspot, and the circle is the extent. It also
 closes the loop §18.1.9 left open: Ctrl-drag the ring to a new size and the
 hover is wearing that size on the way back to the work.
 
@@ -770,7 +771,7 @@ press — and inherited rather than maintained, which is the whole design:
   `ViewCommand::PreviewHover` the newest sample (`input::hover_stroke`); the
   session appends it to a trailing window of recent reports and fits the
   window with the same `PathFitter` a gesture uses. The fit is the smoothing:
-  reports are quantized to the device grain, so the heading of two adjacent
+  reports are quantized to the device tolerance, so the heading of two adjacent
   reports snaps between the eight compass points — jitter in the *input*,
   which the fitter is precisely the machinery to price against detail, given
   redundancy a bare pair never had. But what renders is not the window's own
@@ -779,7 +780,7 @@ press — and inherited rather than maintained, which is the whole design:
   extrapolated heading, built through the fitter from two synthesized samples
   wearing the newest report's channels, so it is bit-for-bit the record a
   real gesture of them would commit. Straight deliberately — continuing the
-  trace's curvature would double down on the very quantity the grain makes
+  trace's curvature would double down on the very quantity the tolerance makes
   noisiest, and "from here, this way" is all a press this instant can
   honestly be said to do. The probe holds a heading the raw staircase cannot
   (`tests/hover.rs` fits a pixel-stepped shallow line to within a few degrees
@@ -797,13 +798,13 @@ press — and inherited rather than maintained, which is the whole design:
   canvas terms as the view zoomed out, promising more painting the less
   closely you looked. The circle over it already scales with the zoom, so the
   two halves of the cursor shrink and grow together. The smoothing does not
-  ride the reach: the estimator's window is **grain**-denominated inside the
+  ride the reach: the estimator's window is **tolerance**-denominated inside the
   engine (~40 tolerances of arc — how much history the estimator needs is a
-  fact about the grain, so its steadiness survives every device and every
+  fact about the tolerance, so its steadiness survives every device and every
   zoom), never pruned below the newest pair, with a count ceiling bounding
-  what a report's refit can cost where motion is dense at the grain. A report
-  within a grain of the last is dropped entirely — it carries nothing the fit
-  could use, and a resting pen's sub-grain drift would otherwise buy a refit
+  what a report's refit can cost where motion is dense at the tolerance. A report
+  within a tolerance of the last is dropped entirely — it carries nothing the fit
+  could use, and a resting pen's sub-tolerance drift would otherwise buy a refit
   and a refold per report.
 - **Folded as a gesture, outranked by one.** The fold receives the mark in
   the very `GestureView` shape a real gesture folds as
@@ -835,7 +836,7 @@ press — and inherited rather than maintained, which is the whole design:
   stroke's run-up** (§6.2, `PathFitter::seed_runup`). The stroke's entry is
   the fit's blind spot — the clamped ends squash the first span into a
   fraction of a pixel, so its heading is decided by sub-pixel control-point
-  placement against grain-quantized samples. The run-up's reports become real
+  placement against tolerance-quantized samples. The run-up's reports become real
   leading samples: **the fitted curve extends back through them**, and the
   record marks where on it the press happened (`StrokeRecord::start`, a
   span-unit parameter with `#[serde(default)]` — an older file's absent field
@@ -843,7 +844,7 @@ press — and inherited rather than maintained, which is the whole design:
   begins at the marker — the flattening funnel both render paths share trims
   before it and re-bases every distance-parameterized rate there — so the
   entry is *smoothed through* the press rather than pinned to one
-  grain-quantized report: measured on a staircase drag, the entry at the
+  tolerance-quantized report: measured on a staircase drag, the entry at the
   marker reads 14.4° on a 14.04° line, 0.2 px off the press, against 12.4°
   cold (`tests/hover.rs`). The marker rides presence per frame (it refines
   until the entry spans freeze, then is final before any cached head can bake
@@ -1051,10 +1052,10 @@ What alpha still means, then, is narrower and more honest than it was:
   rather than the one action. An action is retired by tombstoning it instead: the
   variant stays, its payload is hollowed out to what is still read, and it folds to
   nothing (§8).
-- **Content caps only rise.** `MAX_SHAPE_DIM`, `MAX_GROUND_DIM` and `MAX_PICTURE_DIM`
+- **Content caps only rise.** `MAX_SHAPE_DIM`, `MAX_SUBSTRATE_DIM` and `MAX_PICTURE_DIM`
   are enforced on the way in, so lowering one refuses content a bundle already carries
   — and a document whose content will not decode does not open at all.
-- **Content must be resolvable.** A lean file names its grounds and brush shapes by
+- **Content must be resolvable.** A lean file names its substrates and brush shapes by
   content id (§8, §12.4), and one whose content is neither bundled nor loaded refuses
   to replay rather than substituting a stand-in.
 

@@ -5,6 +5,7 @@ clipboard — §23.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 23. Placing an image
 
@@ -38,7 +39,7 @@ ActionKind::PlaceImage {
 
 **The same shape a custom brush shape has, and that is the whole design decision.**
 A stroke names the shape it stamps with by the BLAKE3 hash of its decoded canonical
-form, and a `SetSurface` names its ground the same way (§6.6, §6.4, §19); the log
+form, and a `SetSubstrate` names its substrate the same way (§6.6, §6.4, §19); the log
 carries the *name*, the bytes ride beside it in the bundle and over the wire as a
 blob, and `content.rs` is the one place that answers "what does this document need,
 and have I got it?". A placed picture is a third kind in exactly that mechanism —
@@ -85,9 +86,9 @@ layer they will work over.
 
 **A picture is never given up on.** `content.rs`'s retry policy already had the
 distinction this needs: a brush gives up after five rounds and the stroke draws with
-the round tip, while a ground never gives up because applying the action against the
+the round tip, while a substrate never gives up because applying the action against the
 flat stand-in bakes a wrong deposit into tiles no later arrival un-bakes (§6.4). A
-picture takes the ground's side, for a sharper reason than either — it has no degraded
+picture takes the substrate's side, for a sharper reason than either — it has no degraded
 form *at all*. A placement without its pixels is not a worse placement, it is an empty
 layer, so releasing it would be releasing an action that adds nothing and reports
 success.

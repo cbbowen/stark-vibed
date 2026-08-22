@@ -2,6 +2,10 @@
 
 One name per thing, and the file that owns it.
 
+> Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
+> This is the one doc with no section numbers — nothing cites it as `§n.m`,
+> because it settles vocabulary rather than design.
+
 This exists because several of these had three or four names each. The rule is
 the same one the rest of the docs follow: **a term means one thing, and the file
 in the "Defined in" column is where its meaning is settled.** If a name here is

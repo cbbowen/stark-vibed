@@ -5,6 +5,7 @@ What a stroke aligns to is in §20.6 and §20.7.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 20 Drawing guides
 
@@ -305,7 +306,7 @@ what a guide *is*. A perspective built over a drawing is part of the drawing's
 construction: it is what the artist reasons in, it takes as much care to set up
 as a layer takes to paint, and losing it on reload — or leaving a collaborator
 unable to see the scaffold the work is being built on — is losing work. It is
-the argument §6.4 makes for the canvas weave and §15.5 makes for the substrate
+the argument §6.4 makes for the canvas substrate and §15.5 makes for the substrate
 color, and the guides sat on the wrong side of it.
 
 **The one exception is the eye.** Whether a guide is *drawn* is per-client

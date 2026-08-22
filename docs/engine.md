@@ -5,6 +5,7 @@ The frontend that drives it all is §11, in [ui.md](ui.md).
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 7. The engine actor (async backend)
 
@@ -32,7 +33,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new_document(color_space: ColorSpaceId, surface: SurfaceId) -> Self;
+    pub fn new_document(color_space: ColorSpaceId, substrate: SubstrateId) -> Self;
     pub async fn run(self, rx: mpsc::Receiver<InputCommand>);
     pub fn render(&mut self, target: &wgpu::TextureView, view: ViewTransform);
     pub fn observe(&self) -> watch::Receiver<ObservableState>;
@@ -41,7 +42,7 @@ impl Engine {
 
 `ObservableState` is the cheap, UI-facing projection the frontend renders from —
 `can_undo`, `can_redo`, `active_tool`, `brush`, `view`, `doc_bounds`,
-`is_stroking`, `doc_revision`, the media/surface/environment/color-space view
+`is_stroking`, `doc_revision`, the media/substrate/environment/color-space view
 settings (§4), `selection_hull`, and the layer tree with *previewed* matte rects
 (§15.7). Published over a `watch`/signal so Dioxus re-renders reactively without
 polling pixels. **No pixel data crosses this boundary.**
@@ -53,7 +54,7 @@ moves. It is read through `Engine::peers()` into a signal of its own, so a remot
 cursor moving re-renders a cursor and not an application.
 
 Engine field count is kept down by grouping: `gpu::Registry<R: Resource>` absorbs
-the surface and environment clusters (registered bytes + current id + live GPU
+the substrate and environment clusters (registered bytes + current id + live GPU
 object, the same shape twice), and the four action subsystems live in a *stored*
 `ApplyCtx` rather than being rebuilt and cloned on every undo/redo/commit.
 (`history::Action::Context` is an owned associated type, so there is nothing to
@@ -146,10 +147,10 @@ The native format is **the serialized action log**:
 ```rust
 pub struct DocumentFile {
     pub app_build: BuildId,            // shaders/algorithm version for fidelity notes
-    pub canvas: CanvasMeta,            // color space, and the ground it starts on
+    pub canvas: CanvasMeta,            // color space, and the substrate it starts on
     pub actions: Vec<Action>,          // the full, replayable log (each id-tagged)
     pub assets: Vec<(AssetId, Bytes)>, // content-addressed brush images (§6.6)
-    pub surfaces: Vec<(SurfaceId, Bytes)>, // the canvas grounds it names (§6.4)
+    pub substrates: Vec<(SubstrateId, Bytes)>, // the canvas substrates it names (§6.4)
     pub pictures: Vec<(AssetId, Bytes)>,   // the images it places (§23)
     pub checkpoints: Vec<Checkpoint>,  // OPTIONAL cached rasters (see below)
 }
@@ -167,35 +168,35 @@ back a little differently is exactly what §19 permits. All the field bought was
 `TILE_SIZE` unchangeable for the life of the format, since the first change would
 orphan every file ever saved. An implementation detail is not a fact about a painting.
 
-`assets` bundles every brush image any stroke references and `surfaces` every
-canvas ground the log names, so the file is self-contained and replayable;
+`assets` bundles every brush image any stroke references and `substrates` every
+canvas substrate the log names, so the file is self-contained and replayable;
 loading populates both stores before replaying a single action.
 
-**Both are replay inputs, and the ground took a bug to see it.** A brush mask
+**Both are replay inputs, and the substrate took a bug to see it.** A brush mask
 obviously decides pixels. So does a height map, once the deposition tooth gates
-how much paint lands on it (§6.4) — but the ground was a *label* (`Linen`,
+how much paint lands on it (§6.4) — but the substrate was a *label* (`Linen`,
 `Rough`) resolved against whatever the reader happened to hold, so a file
 recorded the name and left the image to chance. Open it on a build whose
 `Rough.png` had been re-authored and the strokes came back different, silently;
-hand the log to a peer who had never fetched that ground and it replayed on the
-flat stand-in, diverging. Naming a ground by the hash of its image and shipping
-the image with the log is what makes a file mean one thing. **Every** ground the
+hand the log to a peer who had never fetched that substrate and it replayed on the
+flat stand-in, diverging. Naming a substrate by the hash of its image and shipping
+the image with the log is what makes a file mean one thing. **Every** substrate the
 log names is bundled, not just the one it ends on: the tooth reads whichever was
 in force when a stroke was made, so a document that switched part-way needs both
 to come back the same.
 
 **A bundle may be deliberately incomplete** (format version 6). The log is fitted
-paths and the bundle is megabytes — the built-in grounds canonicalize to 2.0 and
-2.8 MB — so a doodle painted on a ground the app ships with was almost entirely a
+paths and the bundle is megabytes — the built-in substrates canonicalize to 2.0 and
+2.8 MB — so a doodle painted on a substrate the app ships with was almost entirely a
 copy of a file the reader already had. `save_bytes_resolvable` leaves out content
 the opening app can produce itself, and `DocumentFile::unbundled_content` is the
-bill: **settle it before replaying**, since a `SetSurface` whose height map is not
+bill: **settle it before replaying**, since a `SetSubstrate` whose height map is not
 registered when its strokes replay deposits them through the flat stand-in.
 
 **And the replay refuses if it was not settled** —
 `EngineError::MissingContent`, from `load_document`, `load_bytes` and the
 timelapse alike, carrying the outstanding needs. That used to be a log line with
-`Ok(())` behind it, and the difference is not diligence: a missing ground does not
+`Ok(())` behind it, and the difference is not diligence: a missing substrate does not
 degrade the *view*, it bakes a smooth deposit into stored tiles, so there is
 nothing left afterwards to notice it by. A dev harness replayed a captured bug
 report perfectly smooth on that path, and the smoothness was the bug being
@@ -213,9 +214,9 @@ way the app opens it. That is a dev-only mirror of a frontend concern, kept in t
 one crate that already reaches into `stark-ui/assets` (§2).
 
 This walks back part of the paragraph above, so it is worth being exact about
-what changed. That bug was a ground named by a *label*, resolved against whatever
+what changed. That bug was a substrate named by a *label*, resolved against whatever
 table the reader held — re-author `Rough.png` and the pixels changed with nothing
-able to notice. A lean file still names the ground by the hash of its image;
+able to notice. A lean file still names the substrate by the hash of its image;
 content that does not hash to it is refused rather than substituted. So the
 failure mode of a re-authored asset is a document that **will not open**, not one
 that opens wrong, and the frontend's shipped catalog is append-only (a test) so
@@ -378,7 +379,7 @@ last of the three would still be a break today, which is the whole point of the 
 |---|---|---|
 | 2 | Layer groups (§14): `AddLayer`, `AddMatte`, `MoveLayer` each grew a `carrier` | field inserted |
 | 3 | Brush modulation (§6.2) and the deposition tooth (§6.4) on `BrushParams` | appended, but a reader still runs off the end of a brush and into the path behind it |
-| 4 | The ground became content-addressed (§6.4): `SurfaceId` went from `Flat \| Linen \| Rough` to `Flat \| Image(AssetId)`, and `surfaces` joined `assets` | variant reshaped |
+| 4 | The substrate became content-addressed (§6.4): `SubstrateId` went from `Flat \| Linen \| Rough` to `Flat \| Image(AssetId)`, and `substrates` joined `assets` | variant reshaped |
 | 5 | `StrokeRecord` dropped its `tool` | field removed — and worst placed, sitting second, so every number after it slid along |
 | 6 | The bundle may be incomplete (§8, §12.4) | **meaning only** |
 | 7 | `FillOp::color` became `paint: Parcel` (§22.4) | variant reshaped |
@@ -392,11 +393,11 @@ last of the three would still be a break today, which is the whole point of the 
 
 Five of them are worth more than a row.
 
-**4 — why a ground is a hash and not a name.** The tooth reads the ground, so a
+**4 — why a substrate is a hash and not a name.** The tooth reads the substrate, so a
 document's pixels depend on a height map the file did not carry and named only
 by a label. Open it on a build whose `Rough.png` had been re-authored and the
 strokes came back different, silently, with nothing in the file able to notice. A
-file that bundles the ground it was painted on is a file that means one thing.
+file that bundles the substrate it was painted on is a file that means one thing.
 
 **5 — why a removal is allowed to be this cheap.** The `tool` field could only
 ever hold `Brush` (the selection tools produce a `SelectionOp`, never a stroke)
@@ -407,8 +408,8 @@ meaning something just as much as to one that never did.
 **6 — walking part of 4 back, and what did not change.** A lean file needs the
 app that wrote it, where a version-5 file needed nothing; that is a real cost,
 and the reason `save_bytes` still writes everything unless told what may be left
-out. But version 4's problem was that a ground was a *label* resolved through a
-table. A ground is a content id now, the id stays in the file, and content that
+out. But version 4's problem was that a substrate was a *label* resolved through a
+table. A substrate is a content id now, the id stays in the file, and content that
 does not hash to it is refused rather than substituted — so the failure mode of a
 re-authored asset is a document that will not open, not one that opens wrong.
 
@@ -424,7 +425,7 @@ half, and leaves a fill only one control to disagree with.
 so a version-13 reader ran off the end of it. Today that field is a `#[serde(default)]`
 away from costing nothing — an empty bag is exactly what a document with no placed
 images means. The entry is worth keeping for what it says about §23: a placed image is
-*content* named by the log and carried beside it, exactly as a brush shape and a ground
+*content* named by the log and carried beside it, exactly as a brush shape and a substrate
 are, so the third kind cost a third bag and no new mechanism.
 
 **11 — the most dangerous shape on the list, and the clearest argument for the
@@ -508,7 +509,7 @@ The suite files, roughly by subject: `golden`, `seam`, `stroke`, `dynamics`,
 | A different frontend (native, CLI exporter) | a new consumer of `Engine`; core untouched |
 | Another selection producer (by color, quick-mask, imported alpha) | a `SelectionShape` variant + an arm in `selection.wesl`; representation, ops, history and masking sites unchanged (§6.8) — and it becomes a *fill* producer in the same move |
 | Another position-varying fill (noise, pattern) | a `Parcel` variant + an arm in `fill.wesl`'s parcel branch; region, gate, stacking law, action and footprint unchanged — the gradient landed exactly this way (§22.4) |
-| A richer frame / comic gutters | a `MatteRegion` variant + an arm in `matte.wesl`; `LayerContent::Matte` and its compositing unchanged (§15) — the solid ground landed exactly this way (`Everything`, §15.5) |
+| A richer frame / comic gutters | a `MatteRegion` variant + an arm in `matte.wesl`; `LayerContent::Matte` and its compositing unchanged (§15) — the solid backing landed exactly this way (`Everything`, §15.5) |
 | Text | a new `ActionKind` + optionally new channels; transforms landed exactly this way (§16) |
 | A wider-gamut / spectral color pipeline | `color.rs` + a `CanvasMeta.color_space` variant; storage stays float, present picks the transform |
 | Multi-user collaboration | swap `LinearTimeline` → `ReplicatedTimeline`; add `stark-net`; engine/GPU untouched (§12) |

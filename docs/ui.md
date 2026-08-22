@@ -6,6 +6,7 @@ dialog, which a new UI feature joins and how — §25.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 11. Frontend (Dioxus)
 
@@ -25,12 +26,12 @@ which the engine draws into directly. DOM chrome surrounds it.
   name. That is a type where a convention was: twice, a panel reached the engine
   through the signal, moved state the chrome reads back, and left the chrome
   asserting the old value until an unrelated command refreshed it — once for the
-  canvas ground, once for the lighting environment. Neither spelling compiles.
+  canvas substrate, once for the lighting environment. Neither spelling compiles.
   Pointer events
   become `GestureCommand::Start`/`To`/`End`, with element coordinates mapped via
   `ViewTransform::screen_to_canvas`. `Start` also carries the **input tolerance**
   (§6.2): `devicePixelRatio` and the event's `pointerType` give the device's
-  grain in CSS px, and the same view transform carries it into canvas px. A
+  tolerance in CSS px, and the same view transform carries it into canvas px. A
   fourth, `Hold`, is sent by the dwell watcher when the pointer stops moving
   mid-stroke — the drawing assist (§6.9). It is the frontend that has the clock,
   and the moves after it are still plain `To`s.
@@ -359,14 +360,14 @@ which the engine draws into directly. DOM chrome surrounds it.
   the pipelines, layouts and pigment LUT, immutable once built and therefore
   shareable across engines (`Engine::new_sharing`); a `Compositor` holds one
   target's offscreen attachments, blend scratch and instance streams.
-  The surface keeps one across frames; anything rendered beside it brings its own
+  The screen keeps one across frames; anything rendered beside it brings its own
   through an `Offscreen` slot, so an off-screen render never resizes the screen's
   attachments out from under it. Whether a slot outlives its call is the
   *caller's* to state, because only the caller knows whether the render repeats:
   the navigator holds one for the app's life, while a file export uses a local
   one so a 4× export of a large frame does not park its several-hundred-megabyte
   pair for the session. View settings stay per-pipeline behind a process-wide
-  generation stamp, so a swapped weave or light — or a whole rebuilt pipeline, as
+  generation stamp, so a swapped substrate or light — or a whole rebuilt pipeline, as
   a color-space change makes — reaches every consumer by being *noticed* rather
   than by a notification a new consumer could be left out of.
 - **A preview engine is a sibling, not a second boot.** The brush editor's test
@@ -374,14 +375,14 @@ which the engine draws into directly. DOM chrome surrounds it.
   *exactly* as the main canvas would — which is an argument for sharing the
   machinery, not merely an economy. `Engine::new_sharing` builds one around a
   fresh document, sharing everything expensive and un-disagreeable: the compiled
-  pipelines (immutable), the content-addressed brush assets and the ground /
+  pipelines (immutable), the content-addressed brush assets and the substrate /
   environment byte-and-build caches (a `Registry`'s store is `Arc`-shared while
   each sibling keeps its own *current* id), and the tile pool (an allocator).
   What an engine can set stays its own. So the editor's preview
-  (`Renderer::shared`) opens on the canvas's ground under its lighting with
+  (`Renderer::shared`) opens on the canvas's substrate under its lighting with
   nothing fetched and nothing decoded, and the thumbnails' engine
   (`Renderer::shared_engine`, `thumbs.rs`) deliberately pins the opposite look —
-  flat ground, neutral light — so a thumbnail is the *brush's* identity card and
+  flat substrate, neutral light — so a thumbnail is the *brush's* identity card and
   its cache key is the brush snapshot alone. The snapshot *as the picture paints
   it*, which is the same thing minus the painting color: the stroke is laid in
   the thumbnail's own red whatever RGB it is handed, so keying on the raw
@@ -391,7 +392,7 @@ which the engine draws into directly. DOM chrome surrounds it.
   duplicate but the row of the slot you just filled, blank while it waits on a
   byte-for-byte copy of the thumbnail beside it. The brush's own opacity does
   stay in the key: the stroke really is laid with it (§6.1). Each row's picture is two
-  half-canvas fills (the ground is all paint, so smearing and lifting read), one
+  half-canvas fills (the substrate is all paint, so smearing and lifting read), one
   replayed stroke and one small `Engine::export_view` readback on that one kept
   engine, generated in the background and cached per session. The key being the
   brush is what lets the cache have two viewers for the price of one: the preset
@@ -499,9 +500,9 @@ which the engine draws into directly. DOM chrome surrounds it.
   through, so the collaboration transport (§12.4) and any partial fetch are
   untouched.
   - This matters more here than for a typical app because the heavy assets are
-    deliberately *not* in the wasm binary: the brush stamps (§6.6), the ground
+    deliberately *not* in the wasm binary: the brush stamps (§6.6), the substrate
     height maps (§6.4) and the environment HDR (§6.3) are all fetched after boot
-    by `builtins::import_all` / `grounds::open_default`. Without the worker that
+    by `builtins::import_all` / `substrates::open_default`. Without the worker that
     is a fresh multi-megabyte download every start, and offline it is a document
     that opens smooth and unlit.
   - The custom `index.html` costs one thing: `dx serve`'s "rebuilding" toast,
@@ -843,7 +844,7 @@ checklist:
 
 The third registry, and the one added last because it was learned the hard way.
 `Store` (`stark-ui/src/storage.rs`) enumerates every record this browser keeps —
-eleven of them: the five libraries (brush shapes, canvas surfaces, presets,
+eleven of them: the five libraries (brush shapes, canvas substrates, presets,
 gradients, quick brushes), the ⚙ dialog's settings, the chord table, the drag
 table, what is on screen, what the tour has seen, and this client's identity.
 

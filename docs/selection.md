@@ -4,6 +4,7 @@ The soft-mask coverage field every tool acts through, the fifth shape action, an
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 6.8 Selections — a soft mask, not a shape
 
@@ -46,7 +47,7 @@ polygon: even-odd crossing for the sign, nearest-edge distance for the magnitude
 with the edge list uploaded as an `N×1` texture.
 
 **Where it applies to the brush.** At the *end* of each stroke path, never by
-clipping the footprint:
+clipping the extent:
 
 - The swept fast path masks in the **integrate** pass: `out = mix(base, merged, m)`
   (`integrate.wesl`).

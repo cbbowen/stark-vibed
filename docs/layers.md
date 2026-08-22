@@ -4,6 +4,7 @@ One mechanism for groups and clipping; the matte layer that answers "what rectan
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 The third kind of layer content — the **filter**, which is a function of what is
 composited beneath it — is [filters.md](filters.md), §21. It leans on §14 rather than
@@ -78,7 +79,7 @@ out.a   = cs.a + 0.0 · (1 − cs.a)              = cs.a
 ```
 
 — bit-for-bit the `Normal` result, which is deliberate and which `tests/blend.rs`
-already asserts to the byte. The substrate does not rescue it either: the ground
+already asserts to the byte. The substrate does not rescue it either: it
 is composited in pass B, after all blending, so the bottom of a stack genuinely
 has nothing underneath. So the bottom layer of any stack carries a blend-mode
 slot that **cannot express anything**. We are not overloading a control; we are
@@ -335,7 +336,7 @@ already taken elsewhere.
   layer's only paint is in must not be the part that gets cut.
 - **It is a cut-out**, not a picture of the layer sitting on the canvas
   (`Background::Transparent`). A row's job is to say *where this layer has paint*, and
-  a ground under it fills all twenty pixels and hides exactly that.
+  a backing under it fills all twenty pixels and hides exactly that.
 
 `LayerInfo::content_revision` is what tells the row which of the three it is drawing:
 it is `None` for a matte and a filter, and it is the same field that would have keyed
@@ -605,7 +606,7 @@ resource is already coarse.
   `MoveLayer`'s `above: Option<LayerId>` is therefore a `Place { Top,
   Above(LayerId), Bottom }`. That mattered the moment the panel could drop a layer
   anywhere it could draw one (§14.6) — "put this behind everything" is where a
-  background goes, not an exotic move. It cost no format break, though it took care at
+  backing goes, not an exotic move. It cost no format break, though it took care at
   the time: the encoding was positional, so `Top` and `Above` had to keep the `None` and
   `Some` discriminants they replaced and `Bottom` could only be appended. Variants are
   matched by name now (§8), so a fourth place would go wherever it reads best — and the
@@ -868,7 +869,7 @@ merge treating its slider as a sibling's.
   nothing in the pixels able to say which had run.
 - **Cost is the overlap, not the document.** A tile only one side has passes through
   by handle, and within a shared tile the shader has an exact passthrough branch on
-  each side — so merging a small stroke layer onto a canvas-spanning background
+  each side — so merging a small stroke layer onto a canvas-spanning backing
   rewrites the tiles the stroke covers and leaves the rest bit-identical, which
   `tests/merge.rs` asserts to the byte rather than to a tolerance.
 
@@ -999,7 +1000,7 @@ then gives three features:
 |---|---|---|
 | everywhere **except** a rect | top | the frame / mat board — **built** |
 | everywhere **except** N panels | top | comic gutters |
-| everywhere | bottom | an opaque ground / underpainting — **built** (`Everything`, §15.5) |
+| everywhere | bottom | an opaque backing / underpainting — **built** (`Everything`, §15.5) |
 
 No `invert` flag and no separate scrim concept: `Invert` is already a
 constant-cost operation on this representation.
@@ -1008,7 +1009,7 @@ constant-cost operation on this representation.
 pub enum MatteRegion {
     /// Everything outside this canvas-space rect — the frame.
     OutsideRect { min: Vec2, max: Vec2 },
-    /// The whole plane — the ground (§15.5). No rect: it frames nothing,
+    /// The whole plane — the backing (§15.5). No rect: it frames nothing,
     /// so export, the aspect readout and the handles all stand down
     /// (`MatteRegion::rect()` is an `Option`, and every consumer answers None).
     Everything,
@@ -1028,7 +1029,7 @@ straight-sRGB color like `BrushParams::color`, or a gradient — a §22.1
 bar. Either converts to working-space channels at composite time, so the log
 says the same thing whether the document is Oklab or Mixbox; a gradient's stops
 convert once per frame build and interpolate per fragment in the working space,
-so a Mixbox ground is a *pigment* wash. A matte has no alpha of its own in
+so a Mixbox backing is a *pigment* wash. A matte has no alpha of its own in
 either variant — its transparency *is* its layer opacity, which is the whole
 point of it being a layer — and a gradient varies only the color, never the
 slab's thickness: a graded wash is a transition in color, not in relief.
@@ -1045,7 +1046,7 @@ the table's first and third rows. It is still the seam where the `SelectionOp`
 algebra lands (§15.9 P4), at which point gutters, lasso mattes and
 frame-from-selection arrive together. Per this codebase's own precedent, no
 variant appears here before it does something — `Everything` arrived with the
-ground it draws, not ahead of it.
+backing it draws, not ahead of it.
 
 ### 15.3 Why a layer, and what that buys
 
@@ -1070,16 +1071,16 @@ those is already solved for layers.
 #### 15.4.1 A matte must write the aux target
 
 `media_common.wesl` derives a texel's visible alpha from the translucent-slab
-law, `vis = 1 − exp(−OPACITY_K · color.a · (aux.x − surface_height))`. Visibility
+law, `vis = 1 − exp(−OPACITY_K · color.a · (aux.x − substrate_height))`. Visibility
 comes from **per-unit opacity × thickness**, not from composited alpha. A matte
 writing only color would be perfectly invisible. So a matte writes `color.a = 1`
 and a thickness `MATTE_THICKNESS`, chosen so the slab reads solid: with
-`OPACITY_K = 1.0`, a thickness of 8 gives `vis > 0.999` even after the surface
+`OPACITY_K = 1.0`, a thickness of 8 gives `vis > 0.999` even after the substrate
 height (≤ ~0.6) is subtracted.
 
 The physical reading is honest rather than a workaround: **a matte is a flat,
 opaque coat of paint.** Its interior has constant height, so its gradient is
-zero, so it lights flat — no weave, and no *varying* gloss: being opaque paint it
+zero, so it lights flat — no grain, and no *varying* gloss: being opaque paint it
 carries the film's uniform sheen (§6.3), but with a flat normal that sheen is an
 even wash rather than a glint. That is what a mat board looks like. Its boundary
 is a height cliff and therefore catches light, the same way every paint stroke's
@@ -1150,14 +1151,14 @@ the overlay pass's separate `VERTEX_FRAGMENT` layout.
 ### 15.5 What a matte is *not*: the substrate
 
 A matte is a slab of opaque paint. The **substrate** — the color of the canvas
-itself — is a different thing: it is *under* everything, it is lit, and the weave
+itself — is a different thing: it is *under* everything, it is lit, and the grain
 shows through it. The media pass handles it as `m.bg`.
 
-It is `DocState.background`, sitting beside `DocState.surface`, on precisely the
-argument §6.4 makes for the weave — which canvas a piece was painted on is part
+It is `DocState.substrate_color`, sitting beside `DocState.substrate`, on precisely the
+argument §6.4 makes for the substrate — which canvas a piece was painted on is part
 of what the document *is*. (It used to be view state owned by the frontend, so
-the ground you painted on was not saved with your painting.) Both exist and both
-make sense: `background` is the primed canvas; a `MatteRegion::Everything` matte — now
+the substrate you painted on was not saved with your painting.) Both exist and both
+make sense: `substrate_color` is the primed canvas; a `MatteRegion::Everything` matte — now
 built, the frame bar's "Add background" — is an opaque underpainting brushed
 over it. Born at the **bottom** of the stack (`AddMatte` takes the full `Place`
 anchor for exactly this), it wears either `MattePaint`: a flat paper tone, or a
@@ -1165,17 +1166,17 @@ graded wash (§22.4). It defines no export rect and mounts no handles — its ba
 is its paint and its Done — and, having no rect, it can never masquerade as the
 frame the export dialog or the navigator picks.
 
-Making it is **not** a button in the Layers panel's header, though the ground is
+Making it is **not** a button in the Layers panel's header, though the backing is
 a layer like the frame beside it. A header button is a standing cost: it is on
 screen for the whole session, and it earns that only if it is reached for
-repeatedly. A ground is made once per painting at most — the second would have
+repeatedly. A backing is made once per painting at most — the second would have
 nothing to be, since "the whole plane" admits no second — so it is a chip in the
-frame bar instead, mounted exactly while there is no ground and gone once there
+frame bar instead, mounted exactly while there is no backing and gone once there
 is one. That is the same argument the bar itself is built on (§15.7): a control
 meaningless in the current state is absent rather than greyed out. The cost is
-that the ground is reached through a frame, since the bar mounts only while a
-matte is selected; the answer is that a piece wanting a ground almost always
-wants a frame, and once the ground exists it is an ordinary row in the Layers
+that the backing is reached through a frame, since the bar mounts only while a
+matte is selected; the answer is that a piece wanting a backing almost always
+wants a frame, and once the backing exists it is an ordinary row in the Layers
 panel like everything else.
 
 ### 15.6 Export
@@ -1195,7 +1196,7 @@ layer into the frame's rect and the right thing happens by construction:
 
 - the frame matte covers only *outside* the rect, which is clipped away, so it
   contributes nothing to its own export;
-- a ground matte is inside and contributes exactly what it should;
+- a backing matte is inside and contributes exactly what it should;
 - a matte whose visibility is off still defines the rect, because geometry and
   presentation are separate properties of the same layer.
 
@@ -1227,8 +1228,8 @@ Two deliberate differences, both about where the **last resort** is:
 The easel is also straightened: `ViewTransform::show_rect` fits upright and
 unmirrored, on the same reading that has `ExportPlan::view` write a file upright at
 whatever angle the canvas is being worked at (§18.1.2). It is a different question
-at an angle in any case, since the rect's screen footprint is then a larger, turned
-box.
+at an angle in any case, since the rect covers a larger, turned
+box on screen.
 
 Export renders through an **explicit view**: centred on the frame, at
 `zoom = scale`, into a target sized `frame.rect × scale`. That view-taking entry
@@ -1458,10 +1459,10 @@ check in two keys.
 - **P1 — the matte layer. Done.** `LayerContent` enum; `MatteRegion::OutsideRect`;
   `matte.wesl` and its pipeline; `CompositeItem` ordering in pass A; `AddMatte` /
   `SetMatteRect` / `SetMattePaint`; strokes refuse matte layers; `bounds` ignores
-  them. Since extended with `MatteRegion::Everything` (the ground, §15.5) and
+  them. Since extended with `MatteRegion::Everything` (the backing, §15.5) and
   the gradient `MattePaint` (§22.4) — each with the UI that makes it real.
 - **P2 — export. Done.** `export(frame, scale, background)` and `export_plan`;
-  `RgbaImage::to_png`; `DocState.background` + `SetBackground`;
+  `RgbaImage::to_png`; `DocState.substrate_color` + `SetSubstrateColor`;
   `Background::Transparent` as a real branch; the Open / Save / Export menu
   items, the export dialog, and the browser file plumbing.
 - **P3 — the composition tool. Mostly done** (taken before P2, since export needs

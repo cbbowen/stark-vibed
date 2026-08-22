@@ -4,6 +4,7 @@ The CRDT over the action log, the iroh transport, owned selections, and the pres
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 12. Collaboration (peer-to-peer)
 
@@ -89,10 +90,10 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   a mismatch fail to meet rather than decode wrong — see `stark-net`'s `codec` for why a
   flooded channel cannot afford to carry one.
 - **Join / catch-up:** a joining peer connects over the `stark/collab/1` ALPN and
-  requests a **snapshot** — the save-format container (§8), assets and grounds
+  requests a **snapshot** — the save-format container (§8), assets and substrates
   bundled — then rides the gossip tail. It joins the topic *before* fetching, so
   the snapshot/gossip overlap covers the seam (dedup by id). Every member serves
-  snapshots from a session **mirror** (log + assets + grounds, CPU-side), so
+  snapshots from a session **mirror** (log + assets + substrates, CPU-side), so
   sessions survive the original sharer leaving, and any member can mint a **ticket**
   (`stark…`: a version byte, then a few members' `EndpointAddr`s + the topic,
   deflated and spelled in base64url — a link is pasted by a person, and carbonite's
@@ -104,9 +105,9 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   live name in it is enough.
 - **What the joiner already has** is left out of that bundle. Content-addressing
   makes provenance irrelevant to correctness, which is what it is for — but it
-  also means the app cannot tell that a ground it is being sent is the one it
+  also means the app cannot tell that a substrate it is being sent is the one it
   ships with. So the joiner *says*: it sends the ids of its bundled assets and the
-  host omits them. The app's own grounds canonicalize to 2.0 and 2.8 MB — against
+  host omits them. The app's own substrates canonicalize to 2.0 and 2.8 MB — against
   a log that is a handful of fitted paths — and they were moving into installs that
   already had them.
 
@@ -115,7 +116,7 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   hashes its bundle at build time, which is what `stark-assetid` exists to make
   possible without linking a renderer. The promise is called in twice: `owed`
   comes back from the join and must be installed **before the log is replayed**
-  (a `SetSurface` whose height map is not registered when its strokes replay
+  (a `SetSubstrate` whose height map is not registered when its strokes replay
   deposits them through the flat stand-in, and those pixels are stored, §6.4);
   and for the rest of the session a need whose id was promised raises a
   local-resolution request instead of a dial.
@@ -143,21 +144,21 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   - a **brush shape** an unknown `AssetId` names. A miss degrades to the round
     tip and the stroke is still visibly a stroke, so after a few rounds the fetch
     gives up and lets the action through.
-  - a **canvas ground** a `SetSurface` names (§6.4). A miss is not cosmetic: the
-    deposition tooth reads the ground, an absent one falls back to the flat
+  - a **canvas substrate** a `SetSubstrate` names (§6.4). A miss is not cosmetic: the
+    deposition tooth reads the substrate, an absent one falls back to the flat
     stand-in, and the resulting deposit is *stored* — so a peer that applied the
     switch before the height map landed diverged permanently, with nothing on
-    either screen to say so. That was the bug that made grounds content-addressed
+    either screen to say so. That was the bug that made substrates content-addressed
     in the first place; they were previously labels, and a label cannot be
-    fetched. So a ground is never given up on: the action waits indefinitely, and
-    the strokes that merged ahead of it are replayed against the real ground when
+    fetched. So a substrate is never given up on: the action waits indefinitely, and
+    the strokes that merged ahead of it are replayed against the real substrate when
     it lands. Parking is what makes that affordable — an unbounded wait costs
     nothing when nothing waits behind it.
 
   Content the receiver said it could produce itself is asked of the frontend
   before any of this: one request, a grace period, and only then a dial. What
   comes back arrives through the same `add_content` a local import uses, so a
-  locally-resolved ground is not a different kind of content — only a different
+  locally-resolved substrate is not a different kind of content — only a different
   way of getting hold of it.
 
   A mid-session import seeds the mirror at import time — before the action goes
@@ -171,7 +172,7 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   uses the same code path the native loopback tests exercise. The UI glue is two
   pumps: `dispatch` drains the engine outbox into `CollabSession::broadcast`, and
   a spawned task feeds `RemoteEvent`s into
-  `merge_remote`/`import_brush`/`accept_surface` and repaints. **The page URL is the invitation:** a live session's ticket rides the
+  `merge_remote`/`import_brush`/`accept_substrate` and repaints. **The page URL is the invitation:** a live session's ticket rides the
   URL fragment (`…#stark…`, via `replaceState`; cleared on leave), and opening a
   link with one auto-joins on load — the fragment never leaves the browser, so no
   server sees the ticket. The fragment is re-minted on the link-poll cadence
@@ -204,7 +205,7 @@ exactly the pixels already on screen — so the timeline does not run it.
   (`Prop::Blend`, `Prop::Clip`, … — separate variants, because actions written by
   different commands must commute with each other), the stack order (one coarse
   resource — concurrent reorders genuinely do not commute, and nesting rides on
-  it unchanged), the author's selection, the surface, the background. Two actions
+  it unchanged), the author's selection, the substrate, the substrate color. Two actions
   commute when no write overlaps the other's read or write set. This encodes the
   intuitive cases structurally: strokes on different layers commute; same-layer
   strokes commute when they share no tile (tile granularity is honest, not lazy:
@@ -278,7 +279,7 @@ Three separate things, only one a missing feature:
 |  | **private** — this client only | **published** — every client reads |
 |---|---|---|
 | **not logged** | **view state** — pan/zoom, tool, brush, media params, environment, viewport | **presence** — cursor, selected layer, live gesture, display name |
-| **logged** | *(empty — the log is shared by construction)* | **document state** — either **shared** (layers, paint, surface, background) or **owned** (the selection) |
+| **logged** | *(empty — the log is shared by construction)* | **document state** — either **shared** (layers, paint, substrate, substrate color) or **owned** (the selection) |
 
 The discriminator is the one this codebase already uses: **does replay need it to
 reproduce pixels?**

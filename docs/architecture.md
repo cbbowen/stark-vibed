@@ -4,6 +4,7 @@ Principles, crate layout, the command/action boundary, and the history model —
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 1. Guiding principles
 
@@ -80,7 +81,7 @@ stark/
 │   │       ├── path.rs         # ControlPoint: the stored form of a stroke (§6.2)
 │   │       ├── color.rs        # Oklab working space, conversions (§6.5)
 │   │       ├── colorspace.rs   # ColorSpaceId — the id, not the space (§6.7)
-│   │       ├── surface.rs      # SurfaceId — the id, not the ground (§6.4)
+│   │       ├── substrate.rs    # SubstrateId — the id, not the map (§6.4)
 │   │       └── gradient.rs     # Gradient + the fit through a traced line (§22)
 │   ├── stark-engine/           # the derived view — no UI, no windowing
 │   │   ├── src/
@@ -94,7 +95,7 @@ stark/
 │   │   │   ├── filters.rs      # the filter passes' host-side numbers (§6.10, §21)
 │   │   │   ├── document/       # the state the log folds into
 │   │   │   │   ├── apply.rs     # impl Materialize for DocState — the fold (§4)
-│   │   │   │   ├── state.rs     # DocState: layers, selections, surface, guides
+│   │   │   │   ├── state.rs     # DocState: layers, selections, substrate, guides
 │   │   │   │   ├── timeline.rs  # Timeline trait; Linear + Replicated impls
 │   │   │   │   ├── layer.rs     # Layer, LayerContent, PaintTiles (§14)
 │   │   │   │   ├── selection.rs # the mask the op produces (§6.8)
@@ -113,7 +114,7 @@ stark/
 │   │   │   │   ├── stroke/      # the brush engine / stroke rasterizer (§6.2)
 │   │   │   │   ├── composite/   # compositing + the media/lighting pass (§6.3)
 │   │   │   │   ├── environment/ # HDR environment maps for IBL (§6.3)
-│   │   │   │   ├── surface/     # canvas surface: the weave's relief (§6.4)
+│   │   │   │   ├── substrate/   # canvas substrate: the grain's relief (§6.4)
 │   │   │   │   ├── selection.rs # selection-mask rasterization (§6.8)
 │   │   │   │   ├── fill.rs      # region fill: a paint parcel through a mask (§6.8)
 │   │   │   │   ├── transform.rs # the parcel / combine / mask passes (§16.5)
@@ -174,7 +175,7 @@ the log, so the log does not know what a pixel is.
 
 **The boundary is visible in the type names, and was before the crates existed**: an
 **id** is in the log and a **resource** is in the engine. `AssetId`/`AssetStore`,
-`SurfaceId`/`Surface`, `ColorSpaceId`/`ColorSpace`, `LayerId`/`Layer`,
+`SubstrateId`/`SubstrateMap`, `ColorSpaceId`/`ColorSpace`, `LayerId`/`Layer`,
 `SelectionOp`/`Selection`, `Action`/`DocState`. A new pair follows the same rule, and
 the mechanical form of it is `#[derive(Serialize)]`: if a type is serializable it is
 a fact about the document and belongs left of the line; if it holds a tile it is a
@@ -222,7 +223,7 @@ before fetching it (§19).
 
 Two caveats, stated rather than hidden:
 
-- The large image assets (studio HDR, linen weave, bristle brush — 11 MB
+- The large image assets (studio HDR, linen substrate, bristle brush — 11 MB
   together) live in `crates/stark-ui/assets/`, because Dioxus's `asset!` macro
   rejects any path outside its own crate. stark-engine's *tests* want the same
   bytes, so they read them from there. That is a path pointing the wrong way; it
@@ -281,7 +282,7 @@ decides almost everything about it — whether it is logged, whether peers see i
 whether undo reaches it. The split is in the type, not in a comment:
 
 - **Document state** — historized, replicated, reproduced by replay. Layers,
-  paint, the canvas surface, the background. The selection is document state too,
+  paint, the canvas substrate, the substrate color. The selection is document state too,
   but **owned**: one mask per actor, so a collaborator's lasso never clips your
   brush (§17.3).
 - **View state** — per-client, transient, never logged *and never sent*. Tool,
@@ -327,8 +328,8 @@ pub enum DocCommand {              // each becomes an Action
     SetMatteRect(..), SetMatteColor(..),
     Select(SelectionOp),
     InvertSelection,
-    SetSurface(SurfaceId),         // which canvas the piece is painted on (§6.4)
-    SetBackground([f32; 3]),       // the substrate (§15.5)
+    SetSubstrate(SubstrateId),         // which canvas the piece is painted on (§6.4)
+    SetSubstrateColor([f32; 3]),       // the substrate (§15.5)
     AddGuide { guide, after, name },  // a perspective to construct through (§20.5)
     RemoveGuide(GuideId),
     SetGuide(GuideId, PerspectiveGuide),   // the whole camera, per settled gesture
@@ -386,7 +387,7 @@ sent.
 
 Reads therefore go through `Engine::observe()`, which projects *both* classes of
 state (§7). It deliberately includes the view settings a frontend would otherwise
-read back off the engine — media params, surface, environment, color space —
+read back off the engine — media params, substrate, environment, color space —
 because a frontend that cannot observe them keeps its own copy, and a copy seeded
 from `Default` goes stale the moment anything else changes them.
 
@@ -396,11 +397,11 @@ answer.
 ```rust
 // assets — the frontend fetches bytes the engine cannot reach for itself (§6.6)
 fn import_brush(&self, png: &[u8]) -> Result<AssetId>;
-// grounds are content-addressed, so the id comes *out of* the image (§6.4);
-// `accept_surface` takes one that arrives already named — from a file's bundle
+// substrates are content-addressed, so the id comes *out of* the image (§6.4);
+// `accept_substrate` takes one that arrives already named — from a file's bundle
 // or a peer — and refuses bytes that don't hash to the id that asked for them.
-fn import_surface(&mut self, png: &[u8]) -> Result<SurfaceId>;
-fn accept_surface(&mut self, id: SurfaceId, png: &[u8]) -> Result<SurfaceId>;
+fn import_substrate(&mut self, png: &[u8]) -> Result<SubstrateId>;
+fn accept_substrate(&mut self, id: SubstrateId, png: &[u8]) -> Result<SubstrateId>;
 fn register_environment(&mut self, id: EnvironmentId, hdr: Vec<u8>);
 // persistence (§8)
 fn save_bytes(&self) -> Result<Vec<u8>>;
@@ -427,7 +428,7 @@ method that mutates state and returns nothing is a bug — it should be a comman
 One thing is neither: the **color space**. Channel layouts differ between
 spaces, so changing it cannot preserve a document — every caller asking to "set"
 it was really asking for a new document. It is fixed at document creation
-(`Engine::new_document(color_space, surface)`) and there is no setter (§6.7).
+(`Engine::new_document(color_space, substrate)`) and there is no setter (§6.7).
 
 ### Actions
 
@@ -452,7 +453,7 @@ pub enum ActionKind {
     AddMatte { .. }, SetMatteRect(..), SetMatteColor(..),   // §15
     SetLayerBlend(LayerId, BlendMode), SetLayerClip(LayerId, bool), ...
     Select(SelectionOp), InvertSelection,
-    SetSurface(SurfaceId), SetBackground([f32; 3]),
+    SetSubstrate(SubstrateId), SetSubstrateColor([f32; 3]),
     AddGuide { .. }, RemoveGuide(GuideId), SetGuide(..), SetGuideName(..),
     MoveGuide { .. },           // the drawing guides (§20.5)
     Undo(ActionId),             // undo-as-an-action (§5.4 / §12.3)
@@ -538,8 +539,8 @@ pub struct DocState {
     pub layers: rpds::Vector<Layer>,   // persistent (structural sharing)
     pub bounds: CanvasBounds,          // union of populated tiles (infinite)
     pub selections: rpds::HashTrieMap<ActorId, Selection>,  // owned, §17.3
-    pub surface: SurfaceId,
-    pub background: [f32; 3],
+    pub substrate: SubstrateId,
+    pub substrate_color: [f32; 3],
 }
 
 #[derive(Clone)]
@@ -557,7 +558,7 @@ pub struct Layer {
 pub enum LayerContent {
     /// sparse map: only populated tiles exist (the infinite canvas)
     Paint(rpds::HashTrieMap<TileCoord, TileHandle>),
-    /// a procedural region + a flat fill — the frame, grounds, later gutters (§15)
+    /// a procedural region + a flat fill — the frame, backings, later gutters (§15)
     Matte { region: MatteRegion, color: [f32; 3] },
 }
 

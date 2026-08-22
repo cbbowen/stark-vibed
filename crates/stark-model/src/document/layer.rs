@@ -427,7 +427,7 @@ impl BlendMode {
 /// canvas position — satisfies the §6.4 seam invariant for free.
 ///
 /// Two variants, because two are built — the frame, and the §15.2 table's third
-/// row, the whole-plane substrate ([`Everything`](Self::Everything), §15.5's
+/// row, the whole-plane backing ([`Everything`](Self::Everything), §15.5's
 /// "opaque underpainting"). This is still the seam where the `SelectionOp`
 /// algebra lands (§15.9, P4), bringing comic gutters, lasso mattes and
 /// frame-from-selection at once. Per this codebase's own precedent (§1 —
@@ -438,7 +438,7 @@ impl BlendMode {
 pub enum MatteRegion {
     /// Everything *outside* this canvas-space rect — the frame / mat board.
     OutsideRect { min: Vec2, max: Vec2 },
-    /// The whole plane — a substrate / underpainting, made to sit at the bottom of
+    /// The whole plane — a backing / underpainting, made to sit at the bottom of
     /// the stack (§15.5). It has no rect: it frames nothing, so it
     /// defines no export rect and mounts no handles — the coverage is the whole
     /// of what it says.

@@ -4,6 +4,7 @@ Lessons that arrive once the artist has earned them — §24.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 24. The guided tour
 

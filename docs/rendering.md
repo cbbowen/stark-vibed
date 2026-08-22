@@ -1,9 +1,10 @@
 # Compositing, media, and color
 
-The three passes, blend modes, presentation and the canvas surface, Oklab, pluggable color spaces, and the generated CPU↔shader mirrors — §6.3, §6.4, §6.5, §6.7, §6.10.
+The three passes, blend modes, presentation and the canvas substrate, Oklab, pluggable color spaces, and the generated CPU↔shader mirrors — §6.3, §6.4, §6.5, §6.7, §6.10.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
+> One name per thing: [glossary.md](glossary.md).
 
 ## 6.3 Compositing and the media pass
 
@@ -53,7 +54,7 @@ Scratch pairs are allocated on first use, so an ordinary painting never pays.
 painterly result, and it is where the "old masters" look lives:
 
 - **Normals from height.** The gradient of the height field — impasto thickness
-  plus the canvas weave scaled by `surface_strength` — tilted by
+  plus the canvas substrate scaled by `substrate_strength` — tilted by
   `height_strength`, so ridges catch the light.
 - **Image-based lighting.** The scene is lit by an `Environment`: an HDR decoded
   to a linear-RGB equirectangular texture with a full mip chain. Diffuse
@@ -71,7 +72,7 @@ painterly result, and it is where the "old masters" look lives:
   Cook–Torrance term. It is a **uniform property of paint**, not a stored
   channel: the roughness ramp is the paint's own *visible alpha*, so paint is
   equally glossy everywhere it is, a thin glaze reads nearly as matte as the
-  ground it barely covers, and bare canvas stays rough, so matte. (There was once
+  substrate it barely covers, and bare canvas stays rough, so matte. (There was once
   a per-texel `wet` channel here; nothing could source it after
   `BrushParams::wetness` was removed, so it was a stored zero every pass carried.)
 - **Present.** The working channels are converted to the surface's display space
@@ -208,13 +209,13 @@ new machinery.
 
 One thing is *not* free: a glaze sees the layer stack but not the substrate,
 which pass B composites underneath afterwards, so multiply over bare paper leaves
-the paper alone. Correct on white paper (its identity), wrong on a toned ground;
+the paper alone. Correct on white paper (its identity), wrong on a toned substrate;
 the fix is to make the substrate the bottom of the stack.
 
 **C — selection outline.** One instanced quad per mask tile, drawn over the lit
 result in the same canvas→NDC frame as pass A (§6.8). Suppressed on export (§15.6).
 
-`MediaParams` (`height_strength`, `specular`, `surface_strength`) is a **view
+`MediaParams` (`height_strength`, `specular`, `substrate_strength`) is a **view
 setting** — per-client, never historized, changed by
 `ViewCommand::SetMediaParams`. So is the choice of environment: switching it
 re-lights the canvas and touches no stored pixel. Exposure is neither: it is not
@@ -275,7 +276,7 @@ The canvas→screen linear map is therefore a 2×2 rather than a scale pair
 than a free matrix: that keeps it a rigid motion by construction, makes its
 transpose its inverse, and leaves nothing that can drift into a skew. Four
 shaders consume it — the composite's canvas→NDC, the matte's inverse of the same,
-the media pass's screen→canvas for the weave, and the overlay — and upright and
+the media pass's screen→canvas for the substrate, and the overlay — and upright and
 unmirrored it is diagonal and computes bit-for-bit what the scale pair did, which
 keeps the goldens blessed against it valid. Rotation and mirroring are view state
 exactly as predicted: never logged, never sent, invisible to replay, absent from
@@ -299,7 +300,7 @@ texture-filtering problem:
 
 - **The paint.** `composite.wesl` takes one bilinear tap per fragment from a tile
   texture with no mip chain, so at zoom *z* it reads one texel in every 1/*z*².
-- **The weave.** `media_common.wesl::surface_at` samples a periodic height field
+- **The substrate.** `media_common.wesl::substrate_height_at` samples a periodic height field
   in canvas space at LOD 0, which moirés as soon as a screen pixel spans more
   than one period.
 - **The relief shading.** The normal is a finite difference of the height field
@@ -368,79 +369,79 @@ than the problem warrants. The translation invariance the apron restores is
 locked by `tests/seam.rs`: a stroke across the 4-tile corner must render
 identically to the same stroke shifted half a tile into one tile's interior.
 
-**The canvas surface.** Paint sits on a physical surface — a tileable ground
-(`gpu/surface.rs`), an `Rgba8Unorm` texture sampled in *canvas* space (so the
-weave is fixed to the canvas and pans/zooms with it). It is read twice: the
+**The canvas substrate.** Paint sits on a physical substrate — a tileable height map
+(`gpu/substrate/`), an `Rgba8Unorm` texture sampled in *canvas* space (so the
+grain is fixed to the canvas and pans/zooms with it). It is read twice: the
 deposition tooth gates what a brush lays through it (below), and it feeds the
-normal everywhere (`height_at` = impasto + `surface_strength·(h−½)`), so the weave
-catches light across the whole viewport — including the bare substrate, whose
-shading is *normalized* so a flat surface leaves it unchanged. `surface_strength`
+normal everywhere (`height_at` = impasto + `substrate_strength·(h−½)`), so the grain
+catches light across the whole viewport — including bare canvas, whose
+shading is *normalized* so a flat substrate leaves it unchanged. `substrate_strength`
 is a view setting; it does not touch stored pixels.
 
-The surface is **document state**: which canvas a piece was painted on is part of
-what the document *is*, it is saved, and reopening on a different weave would be
-a different painting. `CanvasMeta` records the surface the log *starts* from; a
-mid-document switch is a logged `ActionKind::SetSurface`, so it undoes, replays
+The substrate is **document state**: which canvas a piece was painted on is part of
+what the document *is*, it is saved, and reopening on a different substrate would be
+a different painting. `CanvasMeta` records the substrate the log *starts* from; a
+mid-document switch is a logged `ActionKind::SetSubstrate`, so it undoes, replays
 and replicates like any other edit. The deposition tooth reads it, so a switch
 changes the strokes made after it — logging it is what made that a rendering
 change rather than a history one.
 
-**A ground is named by its image, not by a label.** `SurfaceId` is
-`Flat | Image(AssetId)`: one procedural ground that needs no bytes, and
+**A substrate is named by its image, not by a label.** `SubstrateId` is
+`Flat | Image(AssetId)`: one procedural substrate that needs no bytes, and
 everything else identified by the BLAKE3 hash of its canonical decoded height
 field — the same bargain brush shapes make (§6.6), and for a sharper reason. A
-label is only as good as the table the reader holds. When grounds were
-`{ Flat, Linen, Rough }`, a peer who received `SetSurface(Rough)` without ever
+label is only as good as the table the reader holds. When substrates were
+`{ Flat, Linen, Rough }`, a peer who received `SetSubstrate(Rough)` without ever
 having fetched it fell back to the flat stand-in *silently*, and from then on
 deposited every stroke with no tooth at all; the two canvases diverged and
-neither screen could say why. Unlike the media pass — which re-reads the ground
+neither screen could say why. Unlike the media pass — which re-reads the substrate
 each frame and rights itself the moment an image lands — a deposit is **stored**,
 so nothing un-bakes it. A content id removes the failure rather than reporting
 it: the holder either has those exact bytes or knows precisely what to ask a peer
-for, and what comes back is verified against the id that asked (`accept_surface`
-refuses a mismatch). The same mechanism carries a ground a *user* brings, which a
+for, and what comes back is verified against the id that asked (`accept_substrate`
+refuses a mismatch). The same mechanism carries a substrate a *user* brings, which a
 closed enum could never have named.
 
-Three consequences follow. A save file **bundles every ground its log names**,
+Three consequences follow. A save file **bundles every substrate its log names**,
 not just the one it ends on (§8) — a height map is a replay input exactly as a
 coverage mask is, and a document that switched part-way needs both. The engine
-**embeds no image bytes**: grounds are fetched at runtime and handed to
-`import_surface`, which decodes, downsamples by an integer factor to fit the 2048
+**embeds no image bytes**: substrates are fetched at runtime and handed to
+`import_substrate`, which decodes, downsamples by an integer factor to fit the 2048
 limit (preserving tileability), hashes, and returns the id — so an id is only
-knowable once the bytes are in hand. And `DEFAULT_SURFACE` is `Flat`, because
+knowable once the bytes are in hand. And `DEFAULT_SUBSTRATE` is `Flat`, because
 core naming linen would be core naming an image it cannot produce; the frontend
-holds a catalog (`stark-ui/src/grounds.rs`, the analogue of `builtins.rs` for
-shapes) and opens a fresh document on a ground once its map has landed.
+holds a catalog (`stark-ui/src/substrates.rs`, the analogue of `builtins.rs` for
+shapes) and opens a fresh document on a substrate once its map has landed.
 
 **And a user brings one the same way.** This is the payoff of the paragraph above
-rather than a feature beside it: because a ground *is* its bytes, "built-in" is a
+rather than a feature beside it: because a substrate *is* its bytes, "built-in" is a
 fact about the frontend's asset list and about nothing downstream, so an imported
-weave is saved, bundled, replayed and fetched by a peer through the machinery
+substrate is saved, bundled, replayed and fetched by a peer through the machinery
 `Linen` already uses. There is no second path — only a second place the bytes come
 from. The frontend keeps the library the way it keeps imported brush stamps
 (§25.6): a name and an id in `localStorage`, the height map in the blob store
 beside it, and the parts both libraries share in `stark-ui/src/library.rs`. The
-one real difference between importing a stamp and importing a weave is polarity.
+one real difference between importing a stamp and importing a substrate is polarity.
 A stamp's is a *spelling* — white paints, and a scan of ink on paper means the
-opposite — so the import inverts a dark-on-light image; a ground's polarity **is
-the ground**, so nothing inverts it, and the import's whole job is to make the
-image grey (`normalize_ground_image`).
+opposite — so the import inverts a dark-on-light image; a substrate's polarity **is
+the substrate**, so nothing inverts it, and the import's whole job is to make the
+image grey (`normalize_substrate_image`).
 
-**How large the weave is laid** is document state too:
-`SurfaceScale`, a percentage of the map's natural size, moved by a logged
-`ActionKind::SetSurfaceScale`. It is not a view setting for the reason the ground
+**How large the substrate is laid** is document state too:
+`SubstrateScale`, a percentage of the map's natural size, moved by a logged
+`ActionKind::SetSubstrateScale`. It is not a view setting for the reason the substrate
 is not — the tooth's reach is a distance in *canvas px* (below), so laying the
-weave larger means a tip crosses fewer threads per px, bridges further and rides
+substrate larger means a tip crosses fewer threads per px, bridges further and rides
 fewer faces. It decides what a stroke deposits, and a deposit is stored.
 
-Two consequences worth naming. First, the renderer's ground is built from the
-**pair** — `gpu::surface::Ground { id, scale }` is the registry's key, while the
-*bytes* stay keyed by the `SurfaceId` alone, so one height map bakes a map per
+Two consequences worth naming. First, the renderer's substrate is built from the
+**pair** — `gpu::substrate::Substrate { id, scale }` is the registry's key, while the
+*bytes* stay keyed by the `SubstrateId` alone, so one height map bakes a map per
 scale it is laid at. Scaling one bake's lookup instead would report the rise over
 the old span under a new name, which is the compensating fudge §1 rules out.
 Second, the scale is a **quantized integer** (5% steps, 25–400%) rather than an
 `f32`: it has to be `Eq`/`Hash` to be that key, it has to be exact for two peers
-to bake the same ground, and each distinct value a document names is a texture
+to bake the same substrate, and each distinct value a document names is a texture
 held for as long as the log can be replayed across it. The ladder is what keeps a
 slider dragged end to end from naming three hundred of them.
 
@@ -452,21 +453,21 @@ its rise channels, which only the deposit reads. So the light follows the slider
 instantly while the tooth waits for the commit, and nothing filters a whole image
 under the hand.
 
-The bundled grounds: linen, a regular woven grid; and rough, a brushed acrylic
-ground, irregular, whose height histogram is a broad spread rather than a
+The bundled substrates: linen, a regular woven grid; and rough, a brushed acrylic
+substrate, irregular, whose height histogram is a broad spread rather than a
 periodic peak — which is what makes it the interesting one for the tooth below,
-since a periodic weave prints a periodic mark and reads as a screen. `Flat` is a
+since a periodic substrate prints a periodic mark and reads as a screen. `Flat` is a
 1×1 *zero-height* texel — a constant height has zero gradient, so it is *exactly*
-equivalent to having no surface. That orthogonality is deliberate: most goldens
+equivalent to having no substrate. That orthogonality is deliberate: most goldens
 run on `Flat` to test other features in isolation, and a dedicated golden
-(`linen_surface`) exercises the weave. One bump tile spans `SURFACE_TILE_PX`
-canvas px at natural scale, and `SurfaceScale` multiplies it.
+(`linen_substrate`) exercises the substrate. One bump tile spans `SUBSTRATE_TILE_PX`
+canvas px at natural scale, and `SubstrateScale` multiplies it.
 
-**The deposition tooth.** Paint lands where the tip touches the ground — and
-what a *dragged* tip touches is not a level set of the ground's height. A stamp
+**The deposition tooth.** Paint lands where the tip touches the substrate — and
+what a *dragged* tip touches is not a level set of the substrate's height. A stamp
 pressed straight down contacts the summits; a stroke is dragged, and a dragged
-tip has **give**: it sinks after ground that falls away beneath it and is
-pressed up by ground that rises to meet it, so it bears on the near face of
+tip has **give**: it sinks after substrate that falls away beneath it and is
+pressed up by substrate that rises to meet it, so it bears on the near face of
 every bump and bridges the lee side behind it. That is why a dry brush prints
 the leading edges of the grain rather than a speckle of its high points, and it
 is the difference between a mark that looks brushed and one that looks screened
@@ -478,21 +479,21 @@ height's derivative along the tip's own travel, taken across the contact's reach
 d(x, d̂) = ahead(x)·d̂
 ```
 
-where `d̂` is the tip's travel *at that texel* and `ahead` is the rise the ground
+where `d̂` is the tip's travel *at that texel* and `ahead` is the rise the substrate
 makes over one `TOOTH_REACH` (3 canvas px) along each axis.
 
 `BrushParams::tooth` is the give, inverted — the gate thresholds the rise
 against the steepest fall the tip can still follow, and the knob walks that
 limit through three stations (`tooth_level`, a `2 − 1/tooth` map): at 0 the give
-is infinite, the tip tracks any fall and the surface is ignored, exactly — the
+is infinite, the tip tracks any fall and the substrate is ignored, exactly — the
 solid default; at ½ there is no give left going down, so the tip holds its level
 — it touches whatever is flat or rising and bridges every fall, which on the
-bundled grounds is almost exactly half the ground (`Surface::bearing` measures
-0.50 on rough, 0.51 on linen); at 1 the tip *demands* ground rising at the
-contact scale (`TOOTH_RISE`, ~the grounds' own mean |rise|) before it presses,
+bundled substrates is almost exactly half the substrate (`SubstrateMap::bearing` measures
+0.50 on rough, 0.51 on linen); at 1 the tip *demands* substrate rising at the
+contact scale (`TOOTH_RISE`, ~the substrates' own mean |rise|) before it presses,
 and only the leading faces print — 13% of rough, 25% of linen: the dry mark,
 still a mark. The transition is softened over a band (`TOOTH_SOFTNESS`, sized to
-the grounds' interquartile rise) because a hard threshold is a binary indicator
+the substrates' interquartile rise) because a hard threshold is a binary indicator
 per texel: correct in the mean, and at canvas resolution it aliases into speckle
 that reads as dither. A cubic smoothstep, for the reason `taper_profile` is a
 polynomial.
@@ -511,13 +512,13 @@ rather than as a gain on a pointwise slope:
   reach is set on the shoulder of that curve — past a feature's own width there
   is no more face to climb, and a longer reach only translates the mark. Only the
   sampling grid is left to answer for, and a half-px blur does that.
-- **The reach is a distance in canvas px**, so the same weave reads
+- **The reach is a distance in canvas px**, so the same substrate reads
   identically however finely it was stored — the span in texels follows the map's
   resolution, which is what keeps the integer downsample invisible to the mark.
-- **It is baked into the ground texture**, which is `Rgba8Unorm`: height in `R`
+- **It is baked into the substrate texture**, which is `Rgba8Unorm`: height in `R`
   (the media pass's relief), the two rise components in `GB`, each byte spanning
   ±`RISE_LIMIT` — a quarter of the height range, because a filtered difference
-  across a few px *is* small (the grounds' 99th percentile is under 0.26) and
+  across a few px *is* small (the substrates' 99th percentile is under 0.26) and
   spending the byte where the rises live is what keeps the gate's transition
   tonal rather than stepped. The deposit costs *one* texture tap, so the whole
   axis adds a dot product and nothing else to either render path — and, more to
@@ -527,7 +528,7 @@ rather than as a gain on a pointwise slope:
 `d̂` is the tip's tangent carried round its own arc (`sweep_at`), not the
 segment's start tangent, so a curve's tooth does not depend on where the
 flattener cut it. `tooth = 0` still gates at `1.0` to the bit however steep the
-weave — which is what every golden in the suite paints at — twice over: the
+substrate — which is what every golden in the suite paints at — twice over: the
 shaders guard it before the map is read, and the follow limit dives past any
 encodable fall well before the knob reaches zero, so a pen mapping sweeping
 through 0 meets the guard continuously.
@@ -536,8 +537,8 @@ Three decisions do most of the work, and each is about *where* it is applied
 rather than what it computes:
 
 - **The grain is the canvas's, not the brush's.** A pencil and a loaded brush on
-  one ground see one weave; the brush says only how much give it meets it with.
-  That is why `SurfaceId` is where the texture lives and `tooth` is the only
+  one substrate see one grain; the brush says only how much give it meets it with.
+  That is why `SubstrateId` is where the texture lives and `tooth` is the only
   thing on `BrushParams`. Painter and Procreate put the grain on the brush, which
   is why switching brushes there changes the paper under a half-finished
   painting.
@@ -552,30 +553,30 @@ rather than what it computes:
   the segment's frame at that same position — so tile aprons stay bit-consistent
   with no copy pass, the gate still factors out of the sum over a segment's
   overlapping quads, and — the reason the mark reads as paper rather than as noise
-  — successive strokes the same way over the same ground catch on the same faces
+  — successive strokes the same way over the same substrate catch on the same faces
   and register with each other. A stroke run the *other* way deliberately does not:
   that is the physics, and `tests/tooth.rs` measures it — the two runs lay their
   ink on opposite sides of the grain.
 - **It gates height, never the per-unit opacity** (§6.1). The tooth decides how
   much paint arrives, not what the pigment is. Both render paths call the same
   `tooth_gate` in `paint_common.wesl`, so nudging `lift` off zero cannot change
-  what the ground does.
-- **The tool books against the ground's mean, and that is what conserves paint.**
+  what the substrate does.
+- **The tool books against the substrate's mean, and that is what conserves paint.**
   A transfer has two halves in two dispatches — the canvas gives up `1 − keep` and
   takes `dep` of the tool's load, the tool takes and gives the exact complements
   (`dynamics.wesl::Exchange`). Gate one half and not the other and the books stop
   closing. Scaling the *exposure* keeps them complementary, because `exchange_at`
   is solved once at `g·e` and its four shares still sum to what went in. But a
-  reservoir cell has no ground of its own — it is dragged over fresh canvas at
-  every sub-step — so where a canvas texel scales by the ground beneath it, the
+  reservoir cell has no substrate of its own — it is dragged over fresh canvas at
+  every sub-step — so where a canvas texel scales by the substrate beneath it, the
   cell scales by the **bearing fraction**: the mean of the gate over the whole
-  map, which `Surface::bearing` computes from the map's own distribution. The
-  two agree in expectation over any footprint spanning many grain features, which
+  map, which `SubstrateMap::bearing` computes from the map's own distribution. The
+  two agree in expectation over any extent spanning many grain features, which
   is every usable tip, and the residual is the same order as the mean-field freeze
   either side of the kernel already carries.
 - **…and the mean is a curve in two variables.** The rise is directional, so the
   distribution the tool books against depends on which way it is going: a tip
-  crossing a weave along the warp meets a different population of faces than one
+  crossing a substrate along the warp meets a different population of faces than one
   crossing it diagonally, and one running the stroke backwards meets the mirrored
   field outright. So `bearing_hist` is a table — one 256-bin row per each of 16
   directions, built by one pass over the map apiece and read with linear
@@ -585,51 +586,51 @@ rather than what it computes:
   direction against a single mean would leak paint at exactly the rate the
   direction matters.
 
-That last point is why the ground is read with **nearest** rather than bilinear.
+That last point is why the substrate is read with **nearest** rather than bilinear.
 Filtering would average away the faces the tooth exists to catch on, and — worse —
 it would draw from a narrower distribution than the one the CPU integrates, so the
 two halves of the transfer would disagree systematically. It also sidesteps the
 reduced-precision filter weights `prefix_slice` documents, so the tap is
 bit-reproducible. The histogram's bins are the byte lattice of the encoding
 itself, so a projection that hovers a rounding error either side of flat — every
-texel of a weave crossed at right angles — bins identically from both directions
+texel of a substrate crossed at right angles — bins identically from both directions
 instead of straddling an edge. What is *not* exact is the direction: the row grid
 quantizes it and the bins quantize the diagonal projections, both far under the
 mean-field freeze the loop already carries.
 
 The gate stops at deposition, which is where `add` and `deposit` put paint on the
-canvas. **`bleed` is never gated by the weave**, and that is not an omission:
+canvas. **`bleed` is never gated by the substrate**, and that is not an omission:
 bleed is wet paint spreading sideways *on* the canvas rather than a tip dragged
-over it, so there is no travel to read the ground's rise along. Structurally,
+over it, so there is no travel to read the substrate's rise along. Structurally,
 bleed slots carry `tooth = 0` (`bleed_fires`), which short-circuits the gate to
 exactly `1.0` before any of this is consulted — which also keeps the lateral flux
-antisymmetric, since the two threads of a pair stand over different ground and
+antisymmetric, since the two threads of a pair stand over different substrate and
 would otherwise disagree about their shared edge.
 
-Orthogonality is structural rather than checked. `Surface::relief` is 0 on `Flat`
-and on any surface whose bytes have not arrived, which zeroes the uv scale the
+Orthogonality is structural rather than checked. `SubstrateMap::relief` is 0 on `Flat`
+and on any substrate whose bytes have not arrived, which zeroes the uv scale the
 shaders gate on before the brush's number is consulted — so every golden that
 paints on `Flat` is untouched by the axis existing, exactly as it is by the media
-pass's weave.
+pass's substrate.
 
-Because deposition reads the surface, **which** surface is a question about the
+Because deposition reads the substrate, **which** substrate is a question about the
 action being applied rather than about what the compositor is showing: the
-registry lives on `ApplyCtx`, and `CommitStroke` asks it for `DocState::surface`
+registry lives on `ApplyCtx`, and `CommitStroke` asks it for `DocState::substrate`
 *as the log stood at that action*. A switch part-way through a document changes
 the strokes after it and none before, on replay and on a peer alike. That is what
-logging `SetSurface` bought, long before there was anything to spend it on — the
-note this paragraph replaced said as much. It also means the ground a document
+logging `SetSubstrate` bought, long before there was anything to spend it on — the
+note this paragraph replaced said as much. It also means the substrate a document
 names has to be registered before its log is replayed, or its strokes bake with
 no tooth and stay that way; the frontend fetches and re-replays when it finds it
-has opened a file whose ground had not arrived.
+has opened a file whose substrate had not arrived.
 
 > **Still open: the tooth does not fill.** The gate reads the substrate's rise
-> alone, so overpainting never uses the weave up — the same grain prints through
+> alone, so overpainting never uses the substrate up — the same grain prints through
 > every layer, which is the tell that gives a static grain multiply away. The fix
-> is to read the rise of the *effective* surface, `max(R·s(x), paint_height(x))`
+> is to read the rise of the *effective* relief, `max(R·s(x), paint_height(x))`
 > — the media pass's own `height_at` — so a face buried in paint stops presenting
 > a face. It needs two things this version does not have: a relief scale `R` in
-> paint-height units (today `surface_strength` is a *view* setting, and
+> paint-height units (today `substrate_strength` is a *view* setting, and
 > deposition cannot read one without making stored pixels depend on the
 > viewport), and an answer to associativity — the commit renders a whole stroke
 > in one range against the committed base while the live path renders
@@ -751,7 +752,7 @@ space whose channels are already the whole color.
 One cost the channel does carry, stated rather than hidden:
 
 - **The device limit.** The stamp loop's `exchange` wrote four storage textures — the
-  footprint snapshot's color and aux, which ride in the tail of that dispatch (§6.2),
+  extent snapshot's color and aux, which ride in the tail of that dispatch (§6.2),
   and the reservoir's color and aux — which is exactly WebGPU's guaranteed
   `maxStorageTexturesPerShaderStage`. The residual's two put it at six, so
   `minimum_required_limits` now asks for six. See `gpu/context.rs` for what that costs
@@ -854,7 +855,7 @@ module is named for the file, since `lib` is a placement rule — binding-free l
 A constant that disagrees is worse-behaved than a struct that does. A struct
 usually surfaces as a wgpu validation error; a constant leaves both sides rendering
 perfectly plausible pixels that no longer add up. The tooth's three are the sharpest
-case — the CPU averages the gate over the ground's rise distribution for the
+case — the CPU averages the gate over the substrate's rise distribution for the
 *tool's* half of a transfer while the shader evaluates it per texel for the
 *canvas* half, so drift is a conservation leak proportional to how far they moved
 (§6.4).
