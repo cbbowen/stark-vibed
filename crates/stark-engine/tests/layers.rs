@@ -32,7 +32,11 @@ fn two_layers(engine: &mut Engine) {
         above: None,
     });
     // AddLayer makes the new layer active.
-    assert_eq!(engine.observe().active_layer, TOP);
+    assert_eq!(
+        engine.observe().active_layer,
+        TOP,
+        "AddLayer makes the new layer active"
+    );
     paint(engine, GREEN, 40.0, V_STROKE);
 }
 

@@ -12,7 +12,11 @@ pub struct RgbaImage {
 
 impl RgbaImage {
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
-        debug_assert_eq!(pixels.len(), (width * height * 4) as usize);
+        debug_assert_eq!(
+            pixels.len(),
+            (width * height * 4) as usize,
+            "an RgbaImage is row-major with no padding: {width}x{height} needs four bytes a texel"
+        );
         Self {
             width,
             height,

@@ -76,7 +76,8 @@ fn tex(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
 // which holds it in `new`; this assert only keeps the number the same on both sides
 // of the seam.
 const _: () = assert!(
-    stark_shaders::mirror::fill::MAX_GRADIENT_STOPS as usize == stark_model::gradient::MAX_STOPS
+    stark_shaders::mirror::fill::MAX_GRADIENT_STOPS as usize == stark_model::gradient::MAX_STOPS,
+    "the shader's stop count and the model's have drifted apart across the seam"
 );
 
 #[derive(Clone)]

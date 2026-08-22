@@ -319,7 +319,11 @@ impl Engine {
         // The readback decodes four halves per texel. Both color spaces store the
         // color channels that way (§6.1); a new one that did not would
         // have to say so here rather than silently mis-decoding.
-        debug_assert_eq!(formats.color, wgpu::TextureFormat::Rgba16Float);
+        debug_assert_eq!(
+            formats.color,
+            wgpu::TextureFormat::Rgba16Float,
+            "the readback decodes four halves per texel; this space stores color otherwise"
+        );
 
         // **One draw list for the whole trace**, culled to the union of every patch
         // rather than to each in turn (§6.3).
@@ -562,7 +566,11 @@ impl Engine {
         let formats = self.compositor_pipeline.channel_formats();
         // Only the color target's alpha is read, and the readback decodes four
         // halves per texel — the same assumption `pick_colors` pins.
-        debug_assert_eq!(formats.color, wgpu::TextureFormat::Rgba16Float);
+        debug_assert_eq!(
+            formats.color,
+            wgpu::TextureFormat::Rgba16Float,
+            "only the color target's alpha is read, and the readback assumes four halves"
+        );
         let mut hits: Vec<(LayerId, wgpu::Texture)> = Vec::with_capacity(lists.len());
         for (id, groups) in &lists {
             let usage = wgpu::TextureUsages::RENDER_ATTACHMENT

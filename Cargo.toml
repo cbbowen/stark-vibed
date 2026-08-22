@@ -110,6 +110,10 @@ useless_let_if_seq = "warn"
 # the next capture, which terminates after N+1 entries. It would buy two
 # `#[expect]`s and no finding. MORE_LINTS.md.
 needless_collect = "warn"
+# An assert that fires should say which invariant broke. Every one of the nine
+# this found already had a comment above it explaining exactly that — the message
+# just moves it to where a failure will print it.
+missing_assert_message = "warn"
 
 # Single source of truth for shared dependency versions (CLAUDE.md).
 [workspace.dependencies]

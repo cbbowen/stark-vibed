@@ -52,7 +52,10 @@ const TAP_TIME: f64 = 0.3;
 /// for their own unrelated reasons, and neither definition would notice them
 /// crossing (§18.1.11). At compile time because it can be: this costs the built
 /// binary nothing and cannot be left un-run.
-const _: () = assert!(DWELL > TAP_TIME);
+const _: () = assert!(
+    DWELL > TAP_TIME,
+    "a hold-to-sample the hand lifted promptly would undo the stroke before it"
+);
 
 /// How far the accelerator+space drag has to travel to **double** the zoom, in page
 /// px (§18.1.9).

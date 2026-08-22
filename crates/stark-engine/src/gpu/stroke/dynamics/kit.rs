@@ -103,7 +103,11 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     let device = &ctx.device;
     // The loop's storage-texture declarations are `rgba16float`; both color
     // spaces use that tile color format (§6.7), so the region can hold either.
-    debug_assert_eq!(color_space.color_format(), wgpu::TextureFormat::Rgba16Float);
+    debug_assert_eq!(
+        color_space.color_format(),
+        wgpu::TextureFormat::Rgba16Float,
+        "the loop declares rgba16float storage; this space's tiles are not that"
+    );
     let frag = wgpu::ShaderStages::FRAGMENT;
     // Whether this space carries a **residual** (§6.7). It selects the `_resid` build
     // of every shader here that touches a tile's color, and adds the bindings and

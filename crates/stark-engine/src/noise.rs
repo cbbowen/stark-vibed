@@ -260,7 +260,10 @@ fn grad_at(i: i64, j: i64, k: i64, period: i32, seed: u32) -> [f32; 3] {
 fn periodic_simplex(p: [f32; 3], period: i32, seed: u32) -> f32 {
     const F3: f32 = 1.0 / 3.0;
     const G3: f32 = 1.0 / 6.0;
-    debug_assert!(period % 3 == 0);
+    debug_assert!(
+        period % 3 == 0,
+        "the simplex lattice only closes on a period that is a multiple of 3"
+    );
 
     let s = (p[0] + p[1] + p[2]) * F3;
     let i = (p[0] + s).floor();

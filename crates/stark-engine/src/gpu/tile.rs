@@ -478,7 +478,11 @@ impl TilePairHandle {
     ) {
         // The pairing is the color space's, decided once for tile and region alike
         // (§6.7) — a mismatch here means the two were built against different spaces.
-        debug_assert_eq!(self.0.resid.is_some(), resid.is_some());
+        debug_assert_eq!(
+            self.0.resid.is_some(),
+            resid.is_some(),
+            "tile and region were built against different color spaces"
+        );
         self.0.color.copy_into(encoder, color, origin);
         self.0.aux.copy_into(encoder, aux, origin);
         if let (Some(t), Some(src)) = (&self.0.resid, resid) {
