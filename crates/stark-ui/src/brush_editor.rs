@@ -30,13 +30,14 @@
 
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
+use stark_engine::command::Tool;
 
 use stark_engine::InputSample;
 use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
 use stark_model::document::{
     BrushParams, BrushShape, ModSource, Modulation, Modulations, NoiseKind, OrientationSource,
-    PenState, Tool,
+    PenState,
 };
 use stark_model::geom::Vec2;
 

@@ -61,6 +61,7 @@
 use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::{ReadableExt, Signal, WritableExt};
 use serde::{Deserialize, Serialize};
+use stark_engine::command::Tool;
 
 use crate::icons;
 use crate::input::accel;
@@ -71,7 +72,7 @@ use crate::state::{AppState, PickScope, dispatch, update_brush};
 use crate::storage::{Entry, Store};
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_model::document::{SelectionOp, Tool};
+use stark_model::document::SelectionOp;
 
 /// The key half of a binding: which modifiers, and which key.
 ///

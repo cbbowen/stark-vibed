@@ -24,8 +24,10 @@ pub use glam::{Affine2, IVec2, Mat2, Vec2};
 ///
 /// Here rather than beside either caller because both a scatter of samples and a conic
 /// are the same 2×2 question: `stark-engine`'s `assist` reads an ellipse off the second
-/// moments of a trace, and its `guides` reads one off the quadratic part of a conic
-/// (§20.7). Both callers are in the other crate, which is what makes this `pub`.
+/// moments of a trace, and `document::guide` reads one off the quadratic part of a
+/// conic (§20.7). One caller each side of the crate boundary now — `guide` is the
+/// module §20.5 keeps whole in the model — so this is `pub` for the engine's half and
+/// shared for both.
 pub fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Option<Vec2>) {
     let half_trace = 0.5 * (sxx + syy);
     let disc = (0.25 * (sxx - syy).powi(2) + sxy * sxy).max(0.0).sqrt();
@@ -45,10 +47,10 @@ pub fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Option<Vec2>) 
 ///
 /// Here beside [`principal_axis`] and for the same reason. Two modules arrive at an
 /// ellipse from opposite directions — `stark-engine`'s `assist` reads one off the
-/// second moments of a hand-drawn loop, its `guides` off the quadratic
-/// part of a conic (§20.7) — and both were passing it around as a bare
-/// `(Vec2, Vec2, f32)`, which says nothing about which `Vec2` is which and left the
-/// convergence test in `assist` comparing `a.0` against `b.1`.
+/// second moments of a hand-drawn loop, `document::guide` off the quadratic part of a
+/// conic (§20.7) — and both were passing it around as a bare `(Vec2, Vec2, f32)`,
+/// which says nothing about which `Vec2` is which and left the convergence test in
+/// `assist` comparing `a.0` against `b.1`.
 ///
 /// `radii` is **major first**, which the triple could not state and every producer
 /// had to promise in prose.

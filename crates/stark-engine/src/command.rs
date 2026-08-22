@@ -35,12 +35,50 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The tool a gesture drives. Tools become an open registry later (§10).
+///
+/// **Session state, not document state**, which is why it is here and not in
+/// `stark-model` (§2). Only [`Brush`](Self::Brush) ever reaches a `StrokeRecord`:
+/// the selection tools produce a `SelectionOp` instead (§6.8). They share the enum
+/// — and so the pointer-gesture plumbing — because from the frontend's point of
+/// view they are the same interaction: press, drag, release. But which of them was
+/// in hand is not part of what a document *is*; the stroke or the op it produced
+/// is, and that is what the log carries.
+///
+/// It is **not serializable**, and it spent a long time in the document crate on the
+/// strength of that: not being `Serialize` kept it from contradicting the placement
+/// rule *if a type is serializable it lives in the model*, which is a sufficient
+/// condition and not a partition. Nothing in `stark-model` ever read it — every
+/// caller was here or in `stark-ui` — so the rule that actually placed it was the
+/// one its own first paragraph states.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Tool {
+    #[default]
+    Brush,
+    /// Rectangular marquee.
+    SelectRect,
+    /// Elliptical marquee.
+    SelectEllipse,
+    /// Freehand lasso.
+    SelectLasso,
+}
+
+impl Tool {
+    /// Whether this tool edits the selection rather than the paint.
+    pub fn is_selection(self) -> bool {
+        matches!(
+            self,
+            Tool::SelectRect | Tool::SelectEllipse | Tool::SelectLasso
+        )
+    }
+}
+
 use crate::gpu::{EnvironmentId, MediaParams};
 use stark_model::AssetId;
 use stark_model::SurfaceId;
 use stark_model::document::{
     BlendMode, BrushParams, FillOp, Filter, GuideId, LayerId, MattePaint, MatteRegion,
-    PerspectiveGuide, Place, SelectionOp, ShapeAction, Tool, TransformMap,
+    PerspectiveGuide, Place, SelectionOp, ShapeAction, TransformMap,
 };
 use stark_model::geom::{Extent2, IVec2, Vec2};
 

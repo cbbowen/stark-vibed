@@ -434,10 +434,7 @@ pub fn footprint(action: &Action) -> Footprint {
         ActionKind::TransformPerspective { layer, map } => Footprint {
             reads: vec![Resource::Existence(*layer)],
             writes: vec![
-                Resource::Paint(
-                    *layer,
-                    gated_rect((map.min, map.max), Some(map.image_aabb())),
-                ),
+                Resource::Paint(*layer, gated_rect((map.min, map.max), map.image_aabb())),
                 Resource::Selection(actor),
             ],
         },

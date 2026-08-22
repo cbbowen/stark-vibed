@@ -13,10 +13,11 @@
 mod common;
 
 use common::{engine_or_skip, images_match, paint};
+use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
-use stark_model::document::{ActorId, LayerId, Tool};
+use stark_model::document::{ActorId, LayerId};
 use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
 use stark_model::geom::Vec2;
 use stark_model::peer::{GestureFrame, PeerFrame, StrokeHead};

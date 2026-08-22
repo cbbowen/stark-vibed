@@ -38,6 +38,7 @@
 //!
 //! Run with `cargo bench -p stark-engine --bench stroke`.
 
+use stark_engine::command::Tool;
 use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion_main};
@@ -47,7 +48,7 @@ use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand
 use stark_engine::engine::headless_engine;
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::timing;
-use stark_model::document::{BrushParams, Tool};
+use stark_model::document::BrushParams;
 use stark_model::geom::{Extent2, Vec2};
 
 const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;

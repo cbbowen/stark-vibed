@@ -18,10 +18,11 @@
 mod common;
 
 use common::*;
+use stark_engine::command::Tool;
 use stark_engine::command::{GestureCommand, HoverReport, InputSample, PeerCommand, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered};
-use stark_model::document::{MattePaint, MatteRegion, Place, Tool};
+use stark_model::document::{MattePaint, MatteRegion, Place};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];

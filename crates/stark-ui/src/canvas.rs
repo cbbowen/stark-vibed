@@ -91,7 +91,7 @@ pub fn Canvas() -> Element {
             .any(|l| l.id == o.active_layer && l.is_paintable());
         (paintable, o.tool)
     });
-    let (paintable, tool) = look().unwrap_or((false, stark_model::document::Tool::Brush));
+    let (paintable, tool) = look().unwrap_or((false, stark_engine::command::Tool::Brush));
     // The pick chord (Alt by default) arms the eyedropper over the brush, and the
     // cursor says so before it is used — the only thing that makes a modifier
     // binding discoverable. Asked of the drag table (`drags::armed`), the same

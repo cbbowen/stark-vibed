@@ -220,14 +220,17 @@ impl DocumentFile {
         // compressible — fitted paths are smooth, so the wins deflate finds here it
         // finds early. The bundled PNGs, which dominate a large file, are
         // incompressible either way.
-        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        //
+        // **The magic goes in the sink, not on the front afterwards.** The encoder
+        // appends to whatever `Vec` it is given and never rewinds it, so eight bytes
+        // put there first come out ahead of the deflate stream uncompressed — which
+        // is what the container wants — and the whole compressed body is spared a
+        // copy. Prepending instead cost a third full pass over the file on every
+        // save, on top of carbonite's buffer and deflate's: a document is dominated
+        // by the pictures it places (§23), and those are the bytes being moved.
+        let mut encoder = DeflateEncoder::new(Vec::from(&MAGIC[..]), Compression::default());
         encoder.write_all(&body)?;
-        let compressed = encoder.finish()?;
-
-        let mut out = Vec::with_capacity(MAGIC.len() + compressed.len());
-        out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&compressed);
-        Ok(out)
+        Ok(encoder.finish()?)
     }
 
     /// Decode a container produced by [`DocumentFile::to_bytes`] that **this user

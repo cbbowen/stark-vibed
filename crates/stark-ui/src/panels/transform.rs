@@ -236,7 +236,7 @@ fn switch_family(state: AppState, ui: TransformUi, to: Family) {
             let hi = corners.iter().fold(corners[0], |m, p| m.max(*p));
             (lo, hi)
         }
-        TransformMap::Perspective(p) => p.image_aabb(),
+        TransformMap::Perspective(p) => p.image_aabb().unwrap_or((p.min, p.max)),
         TransformMap::Warp(w) => w.image_aabb().unwrap_or((w.min, w.max)),
     };
     preview::TRANSFORM.commit(state, (layer, map));

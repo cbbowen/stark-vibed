@@ -102,11 +102,26 @@ impl PerspectiveMap {
     }
 
     /// A conservative bound on where the map carries paint: the target quad's
-    /// own bounding box (a homography maps the rect *onto* the quad).
-    pub fn image_aabb(&self) -> (Vec2, Vec2) {
-        let lo = self.corners.iter().fold(self.corners[0], |a, p| a.min(*p));
-        let hi = self.corners.iter().fold(self.corners[0], |a, p| a.max(*p));
-        (lo, hi)
+    /// own bounding box (a homography maps the rect *onto* the quad). `None` when
+    /// the quad cannot be measured.
+    ///
+    /// **An `Option` for [`WarpMap::image_aabb`](super::warp::WarpMap::image_aabb)'s
+    /// reason**, and it took the footprint to make that visible. The fold below is
+    /// `min`/`max`, which return the *non*-NaN operand, so a non-finite corner used
+    /// to step straight over the box and leave it looking tight — and
+    /// `footprint.rs` passed the result through as `Some(...)`, where the warp arm
+    /// beside it fell back to the whole layer. That was safe only because `usable`
+    /// refuses such a map at `apply`, which is honesty resting on a refusal in
+    /// another file — the very thing `MergeLayerDown`'s footprint declines to do.
+    /// Said this way the two arms are the same claim for the same reason, and a
+    /// caller with no `apply` behind it cannot get a tight box out of a map that
+    /// has none.
+    pub fn image_aabb(&self) -> Option<(Vec2, Vec2)> {
+        self.corners.iter().all(|c| c.is_finite()).then(|| {
+            let lo = self.corners.iter().fold(self.corners[0], |a, p| a.min(*p));
+            let hi = self.corners.iter().fold(self.corners[0], |a, p| a.max(*p));
+            (lo, hi)
+        })
     }
 
     /// Forward and inverse homographies, derived deterministically from the

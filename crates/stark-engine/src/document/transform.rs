@@ -181,7 +181,7 @@ pub(crate) fn gated_geometry(map: &TransformMap) -> Option<((Vec2, Vec2), GatedM
             Some((
                 (p.min, p.max),
                 GatedMap {
-                    image_aabb: p.image_aabb(),
+                    image_aabb: p.image_aabb()?,
                     kind: GatedKind::Persp { fwd, inv },
                 },
             ))

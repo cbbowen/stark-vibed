@@ -372,12 +372,12 @@ impl GestureRx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::InputSample;
+    use crate::command::{InputSample, Tool};
     use crate::path::DEFAULT_TOLERANCE;
     use crate::peer::Peers;
     use crate::session::Session;
     use crate::view::ViewTransform;
-    use stark_model::document::{ActorId, LayerId, Tool};
+    use stark_model::document::{ActorId, LayerId};
     use stark_model::geom::{Extent2, Vec2};
     use stark_model::peer::PeerFrame;
 

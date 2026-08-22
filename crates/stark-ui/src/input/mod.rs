@@ -29,6 +29,7 @@ use dioxus::html::geometry::ElementPoint;
 use dioxus::html::input_data::MouseButton;
 use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
+use stark_engine::command::Tool;
 
 use crate::collab::now_seconds;
 use crate::commands;
@@ -45,7 +46,7 @@ use stark_engine::InputSample;
 use stark_engine::ViewTransform;
 use stark_engine::command::{GestureCommand, HoverReport, PeerCommand, ViewCommand};
 use stark_engine::{PickOptions, PickSource};
-use stark_model::document::{LayerId, ShapeAction, Tool, TransformMap};
+use stark_model::document::{LayerId, ShapeAction, TransformMap};
 use stark_model::geom::{Affine2, Vec2};
 
 mod carry;

@@ -21,8 +21,9 @@
 //! to be read as a claim about coverage, not as a pile of pictures.
 
 use stark_engine::Engine;
+use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_model::document::{BrushParams, BrushShape, OrientationSource, Tool};
+use stark_model::document::{BrushParams, BrushShape, OrientationSource};
 use stark_model::geom::{Extent2, Vec2};
 
 use super::{SIZE, brush, engine_or_skip_sized, stroke_with};

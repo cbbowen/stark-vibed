@@ -11,10 +11,11 @@
 mod common;
 
 use common::*;
+use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::{
-    BrushDynamics, BrushParams, BrushShape, ModSource, Modulation, Modulations, Tool,
+    BrushDynamics, BrushParams, BrushShape, ModSource, Modulation, Modulations,
 };
 use stark_model::geom::Vec2;
 

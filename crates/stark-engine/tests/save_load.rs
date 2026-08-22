@@ -8,12 +8,13 @@ mod common;
 
 use common::*;
 use stark_engine::Engine;
+use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
-use stark_model::document::{BrushShape, Tool};
+use stark_model::document::BrushShape;
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];

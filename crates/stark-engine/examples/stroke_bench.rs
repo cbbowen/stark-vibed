@@ -43,13 +43,14 @@
 //! It is one run per scenario, so read the shares, which are stable, rather than the
 //! totals, which on this class of machine drift 15% between runs of identical code.
 
+use stark_engine::command::Tool;
 use std::time::Instant;
 
 use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
 use stark_engine::engine::headless_engine;
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::timing;
-use stark_model::document::{BrushParams, Tool};
+use stark_model::document::BrushParams;
 use stark_model::geom::{Extent2, Vec2};
 
 const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;

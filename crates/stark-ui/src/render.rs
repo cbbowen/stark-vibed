@@ -7,6 +7,7 @@
 //! [`request_paint`](crate::state::request_paint)), and calls
 //! [`Renderer::resize`] when the canvas (window) changes size.
 
+use stark_engine::command::Tool;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -17,7 +18,6 @@ use stark_engine::{Engine, EnvironmentId, GpuContext, InputCommand, InputSample,
 use stark_model::AssetNeed;
 use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
-use stark_model::document::Tool;
 use stark_model::geom::Extent2;
 
 pub const CANVAS_ID: &str = "stark-canvas";

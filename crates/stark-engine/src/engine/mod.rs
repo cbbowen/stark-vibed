@@ -29,6 +29,7 @@ mod live;
 mod pick;
 mod render;
 
+use crate::command::Tool;
 use stark_model::DocError;
 use std::sync::Arc;
 
@@ -58,7 +59,7 @@ use stark_model::ColorSpaceId;
 use stark_model::SurfaceId;
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, BrushParams, GuideId, LayerId, PerspectiveGuide,
-    Scaffold, ShapeAction, Tool,
+    Scaffold, ShapeAction,
 };
 use stark_model::geom::Extent2;
 
