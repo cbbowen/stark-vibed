@@ -38,6 +38,11 @@
 //!
 //! Run with `cargo bench -p stark-engine --bench stroke`.
 
+#![expect(
+    clippy::disallowed_types,
+    reason = "a criterion bench is native-only by construction; `quanta` is for the code that reaches a tab"
+)]
+
 use stark_engine::command::Tool;
 use std::time::{Duration, Instant};
 

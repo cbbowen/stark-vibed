@@ -15,6 +15,11 @@
 //! they had existed, and every one of them passed. The corpus centres its strokes from
 //! the data and `every_case_leaves_a_mark` makes an empty case a failure.
 
+#![expect(
+    clippy::disallowed_types,
+    reason = "a native-only test binary, timing GPU work against a real adapter"
+)]
+
 mod common;
 
 use common::*;

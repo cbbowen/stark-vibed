@@ -579,6 +579,14 @@ fn phase(name: &str, hist: &Histogram<u64>) -> Phase {
 
 #[cfg(test)]
 mod tests {
+    // These are the one place a real elapsed interval is the thing under test: a
+    // histogram cannot be checked against a clock that did not move. The suite is
+    // native, and the app never blocks the thread it draws on.
+    #![expect(
+        clippy::disallowed_methods,
+        reason = "a histogram test needs the clock to actually advance; native-only"
+    )]
+
     use std::sync::Mutex;
     use std::thread::sleep;
 

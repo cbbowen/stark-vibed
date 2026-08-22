@@ -43,6 +43,11 @@
 //! It is one run per scenario, so read the shares, which are stable, rather than the
 //! totals, which on this class of machine drift 15% between runs of identical code.
 
+#![expect(
+    clippy::disallowed_types,
+    reason = "a dev harness that only ever runs natively; the app's clock is `quanta` (§7.1)"
+)]
+
 use stark_engine::command::Tool;
 use std::time::Instant;
 

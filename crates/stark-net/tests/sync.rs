@@ -2,6 +2,11 @@
 //! (§12.4, build-order step 12) — no relays, no external services.
 //! This is the wire-level counterpart of stark-engine's `tests/collab.rs`.
 
+#![expect(
+    clippy::disallowed_types,
+    reason = "a native-only test binary; the deadline is wall-clock on purpose"
+)]
+
 use std::time::Duration;
 
 use stark_engine::command::Tool;
