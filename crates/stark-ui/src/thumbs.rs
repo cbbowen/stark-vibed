@@ -52,7 +52,7 @@ use stark_model::geom::{Extent2, Vec2};
 
 use crate::platform::base64_encode;
 use crate::presets::Wearable;
-use crate::state::AppState;
+use crate::state::{AppState, root_signal};
 
 /// Thumbnail pixel size: 2× the box a preset row shows it in (a full-bleed row,
 /// `.preset-row` — 36 px tall in a 300 px panel), so it stays crisp on a dense
@@ -96,6 +96,20 @@ pub struct ThumbState {
     pub shared: Signal<Option<stark_engine::EngineShared>>,
     /// Whether the generator task is running — at most one at a time.
     pub busy: Signal<bool>,
+}
+
+impl ThumbState {
+    /// Its signals, root-owned like every other group of them
+    /// (`state::root_signal`); built here rather than in `AppState::new` so the
+    /// fields and the values they open on stay in one place.
+    pub(crate) fn new() -> Self {
+        Self {
+            cache: root_signal(Vec::new),
+            rig: root_signal(|| None),
+            shared: root_signal(|| None),
+            busy: root_signal(|| false),
+        }
+    }
 }
 
 /// The offscreen renderer the thumbnails share: a document-less-looking engine

@@ -596,6 +596,15 @@ pub struct ShapesState {
 
 impl AppState {
     /// Build the app's state. Call once, from the root component.
+    ///
+    /// **Every group is built by the module that declares it.** This function
+    /// used to write out each one field by field, which made `state.rs` — the
+    /// module everything else depends on — the place that had to know what
+    /// `ThumbState`, `PanelLayout` and `TutorState` are *made of*, and made a
+    /// field added to any of them an edit here as well as there. The seeding
+    /// rules travelled with them: which panels this browser left open, which
+    /// preference a signal opens on, how wide the quick-brush rack is. What is
+    /// left is the list, which is what this was always for.
     pub fn new() -> Self {
         AppState(Box::leak(Box::new(Signals {
             renderer: ReadOnly(root_signal(|| None)),
@@ -609,126 +618,135 @@ impl AppState {
             brush_editor_open: root_signal(|| false),
             preset_save_open: root_signal(|| false),
             color_epoch: root_signal(|| 0),
-            pick: PickState {
-                scope: root_signal(PickScope::default),
-                group_only: root_signal(|| true),
-                radius: root_signal(|| 0),
-                busy: root_signal(|| false),
-                dragging: root_signal(|| false),
-                loupe: root_signal(|| None),
-            },
+            pick: PickState::new(),
             brush_ring: root_signal(|| None),
             brush_cursor: root_signal(|| None),
             smoothing: root_signal(|| 0.0),
             tow: root_signal(|| None),
-            assist: AssistState {
-                enabled: root_signal(|| Prefs::default().assist),
-                dwell: root_signal(|| None),
-                task: root_signal(|| None),
-            },
+            assist: AssistState::new(),
             // Seeded from the preference defaults rather than written out again here:
-            // `prefs::load` overwrites both of these at app start, so a default stated
-            // in this file would be the one that never applies (`crate::prefs`).
+            // `prefs::load` overwrites this at app start, so a default stated in
+            // this file would be the one that never applies (`crate::prefs`).
             minimal: root_signal(|| Prefs::default().minimal),
             transform: root_signal(|| None),
             gradient_bar: root_signal(|| None),
             gradient_resume: root_signal(|| None),
             guide_edit: root_signal(|| None),
             paint_queued: root_signal(|| false),
-            collab: CollabState {
-                session: root_signal(|| None),
-                ticket: root_signal(|| None),
-                phase: root_signal(collab::CollabPhase::default),
-                error: root_signal(|| None),
-                peers: root_signal(Vec::new),
-                links: root_signal(Vec::new),
-                pump: root_signal(|| None),
-                presence: root_signal(|| None),
-            },
-            timeline: TimelineState {
-                // Seeded from what this browser last had on screen, like the other
-                // three entries of that menu (`crate::visibility`, §25.6) — here
-                // rather than in a load hook, so the first render is already the
-                // screen the artist left.
-                open: root_signal(|| crate::visibility::stored_showing(VisibilityToggle::Timeline)),
-                playing: root_signal(|| false),
-                speed: root_signal(|| 1.0),
-                task: root_signal(|| None),
-            },
-            shapes: ShapesState {
-                entries: root_signal(Vec::new),
-                notice: root_signal(|| None),
-            },
+            collab: CollabState::new(),
+            timeline: TimelineState::new(),
+            shapes: ShapesState::new(),
             presets: root_signal(Vec::new),
-            thumbs: crate::thumbs::ThumbState {
-                cache: root_signal(Vec::new),
-                rig: root_signal(|| None),
-                shared: root_signal(|| None),
-                busy: root_signal(|| false),
-            },
-            layer_thumbs: crate::layer_thumbs::LayerThumbState {
-                cache: root_signal(Vec::new),
-                busy: root_signal(|| false),
-            },
-            gradients: crate::gradients::GradientsState {
-                entries: root_signal(Vec::new),
-                selected: root_signal(|| None),
-                armed: root_signal(|| false),
-                busy: root_signal(|| false),
-                notice: root_signal(|| None),
-            },
-            slots: SlotState {
-                brushes: root_signal(|| [None; crate::slots::COUNT]),
-                held: root_signal(|| None),
-                pinned: root_signal(|| {
-                    crate::visibility::stored_showing(VisibilityToggle::QuickBrushes)
-                }),
-            },
+            thumbs: crate::thumbs::ThumbState::new(),
+            layer_thumbs: crate::layer_thumbs::LayerThumbState::new(),
+            gradients: crate::gradients::GradientsState::new(),
+            slots: SlotState::new(),
+            // Seeded from what this browser last had on screen, like the other
+            // three entries of that menu (`crate::visibility`, §25.6) — here
+            // rather than in a load hook, so the first render is already the
+            // screen the artist left.
             navigator: root_signal(|| {
                 crate::visibility::stored_showing(VisibilityToggle::Navigator)
             }),
-            tutor: crate::tutor::TutorState {
-                ledger: root_signal(Default::default),
-                recent: root_signal(Default::default),
-                due: root_signal(|| None),
-                showing: root_signal(|| None),
-                // Off until startup is over, so the commands the app makes on the
-                // user's behalf are not read as things the user did
-                // (`tutor::begin`).
-                armed: root_signal(|| false),
-                // Seeded from the preference defaults, like `assist` and `minimal`
-                // above and for the same reason.
-                enabled: root_signal(|| Prefs::default().tips),
-                epoch: root_signal(|| 0),
-                not_reaching: root_signal(|| 0),
-            },
-            dialogs: Dialogs {
-                new_document: root_signal(|| false),
-                session: root_signal(|| false),
-                export: root_signal(|| false),
-                settings: root_signal(|| false),
-                timing: root_signal(|| false),
-                credits: root_signal(|| false),
-                drag_presets: root_signal(|| false),
-            },
-            panels: crate::layout::PanelLayout {
-                order: root_signal(|| crate::layout::PanelId::ALL.to_vec()),
-                // Every panel starts closed and what this browser last had open
-                // comes back — read here, before the first render, so the stack
-                // the artist left is the first one drawn rather than one that
-                // assembles itself a frame later.
-                hidden: root_signal(crate::visibility::stored_hidden),
-                collapsed: root_signal(crate::visibility::stored_collapsed),
-                drag: root_signal(|| None),
-                heights: root_signal(crate::layout::PanelLayout::default_heights),
-                resize: root_signal(|| None),
-                scroll: root_signal(Default::default),
-                thumb: root_signal(|| None),
-            },
+            tutor: crate::tutor::TutorState::new(),
+            dialogs: Dialogs::new(),
+            panels: crate::layout::PanelLayout::new(),
             bindings: root_signal(Default::default),
             drags: root_signal(Default::default),
             drag_offer: root_signal(Default::default),
         })))
+    }
+}
+
+impl PickState {
+    fn new() -> Self {
+        Self {
+            scope: root_signal(PickScope::default),
+            group_only: root_signal(|| true),
+            radius: root_signal(|| 0),
+            busy: root_signal(|| false),
+            dragging: root_signal(|| false),
+            loupe: root_signal(|| None),
+        }
+    }
+}
+
+impl AssistState {
+    fn new() -> Self {
+        Self {
+            // Seeded from the preference defaults rather than written out again:
+            // `prefs::load` overwrites it at app start (`crate::prefs`).
+            enabled: root_signal(|| Prefs::default().assist),
+            dwell: root_signal(|| None),
+            task: root_signal(|| None),
+        }
+    }
+}
+
+impl CollabState {
+    fn new() -> Self {
+        Self {
+            session: root_signal(|| None),
+            ticket: root_signal(|| None),
+            phase: root_signal(collab::CollabPhase::default),
+            error: root_signal(|| None),
+            peers: root_signal(Vec::new),
+            links: root_signal(Vec::new),
+            pump: root_signal(|| None),
+            presence: root_signal(|| None),
+        }
+    }
+}
+
+impl TimelineState {
+    fn new() -> Self {
+        Self {
+            // Seeded from what this browser last had on screen, like the other
+            // three entries of that menu (`crate::visibility`, §25.6) — here
+            // rather than in a load hook, so the first render is already the
+            // screen the artist left.
+            open: root_signal(|| crate::visibility::stored_showing(VisibilityToggle::Timeline)),
+            playing: root_signal(|| false),
+            speed: root_signal(|| 1.0),
+            task: root_signal(|| None),
+        }
+    }
+}
+
+impl ShapesState {
+    fn new() -> Self {
+        Self {
+            entries: root_signal(Vec::new),
+            notice: root_signal(|| None),
+        }
+    }
+}
+
+impl SlotState {
+    fn new() -> Self {
+        Self {
+            brushes: root_signal(|| [None; crate::slots::COUNT]),
+            held: root_signal(|| None),
+            // The rack's pin is one of the four entries of the visibility menu
+            // this browser remembers (`crate::visibility`, §25.6).
+            pinned: root_signal(|| {
+                crate::visibility::stored_showing(VisibilityToggle::QuickBrushes)
+            }),
+        }
+    }
+}
+
+impl Dialogs {
+    fn new() -> Self {
+        Self {
+            new_document: root_signal(|| false),
+            session: root_signal(|| false),
+            export: root_signal(|| false),
+            settings: root_signal(|| false),
+            timing: root_signal(|| false),
+            credits: root_signal(|| false),
+            drag_presets: root_signal(|| false),
+        }
     }
 }
 

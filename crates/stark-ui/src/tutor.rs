@@ -112,7 +112,7 @@ use crate::brush_editor::BrushPart;
 use crate::icons::{self, icon};
 use crate::layout::{ChromeHiding, PanelId, PanelLayout, chrome_class, open_panel, panel_key};
 use crate::platform::{self, ElementBox};
-use crate::state::AppState;
+use crate::state::{AppState, root_signal};
 use crate::storage::Store;
 use stark_engine::InputCommand;
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
@@ -372,6 +372,28 @@ pub struct TutorState {
     /// than the artist reaching for a control — see [`not_reaching`], which is the
     /// only thing that writes it.
     pub not_reaching: Signal<u32>,
+}
+
+impl TutorState {
+    /// Its signals, root-owned like every other group of them
+    /// (`state::root_signal`); built here rather than in `AppState::new` so the
+    /// fields and the values they open on stay in one place.
+    pub(crate) fn new() -> Self {
+        Self {
+            ledger: root_signal(Default::default),
+            recent: root_signal(Default::default),
+            due: root_signal(|| None),
+            showing: root_signal(|| None),
+            // Off until startup is over, so the commands the app makes on the
+            // user's behalf are not read as things the user did ([`begin`]).
+            armed: root_signal(|| false),
+            // Seeded from the preference defaults rather than written out again:
+            // `prefs::load` overwrites it at app start (`crate::prefs`).
+            enabled: root_signal(|| crate::prefs::Prefs::default().tips),
+            epoch: root_signal(|| 0),
+            not_reaching: root_signal(|| 0),
+        }
+    }
 }
 
 /// What a lesson points at. Each variant arrives with the lesson that needs it

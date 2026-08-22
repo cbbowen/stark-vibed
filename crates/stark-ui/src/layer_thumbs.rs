@@ -68,7 +68,7 @@ use stark_model::document::LayerId;
 use stark_model::geom::Extent2;
 
 use crate::platform::{base64_encode, sleep_ms};
-use crate::state::AppState;
+use crate::state::{AppState, root_signal};
 
 /// Thumbnail pixel size: 2× the box a row shows it in, so it stays crisp on a
 /// dense display. Square, because the document it frames may be any shape and
@@ -109,6 +109,18 @@ pub struct LayerThumbState {
     pub cache: Signal<Vec<Thumb>>,
     /// Whether the generator task is running — at most one at a time.
     pub busy: Signal<bool>,
+}
+
+impl LayerThumbState {
+    /// Its signals, root-owned like every other group of them
+    /// (`state::root_signal`); built here rather than in `AppState::new` so the
+    /// fields and the values they open on stay in one place.
+    pub(crate) fn new() -> Self {
+        Self {
+            cache: root_signal(Vec::new),
+            busy: root_signal(|| false),
+        }
+    }
 }
 
 /// One row's finished picture, and what it is a picture of.

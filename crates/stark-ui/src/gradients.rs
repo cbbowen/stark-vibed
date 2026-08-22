@@ -29,7 +29,7 @@ use stark_model::color::srgb_to_oklab;
 use stark_model::geom::Vec2;
 use stark_model::gradient::Gradient;
 
-use crate::state::AppState;
+use crate::state::{AppState, root_signal};
 use crate::storage::{self, Store};
 
 /// How wide a patch each trace sample averages, in canvas px (radius 2 = 5×5).
@@ -78,6 +78,21 @@ pub struct GradientsState {
     /// A transient line under the library: "the trace found no paint", storage
     /// trouble. `None` when quiet.
     pub notice: Signal<Option<String>>,
+}
+
+impl GradientsState {
+    /// Its signals, root-owned like every other group of them
+    /// (`state::root_signal`); built here rather than in `AppState::new` so the
+    /// fields and the values they open on stay in one place.
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: root_signal(Vec::new),
+            selected: root_signal(|| None),
+            armed: root_signal(|| false),
+            busy: root_signal(|| false),
+            notice: root_signal(|| None),
+        }
+    }
 }
 
 /// Make `name` the gradient the next fill uses, and re-preview a composing

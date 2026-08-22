@@ -50,7 +50,7 @@ use crate::icons::{self, icon};
 use crate::panels::reorder::{Grab, Motion, Slide};
 use crate::panels::{BrushPanel, ColorPanel, GuidesPanel, LayerPanel, LightingPanel, SelectPanel};
 use crate::platform;
-use crate::state::AppState;
+use crate::state::{AppState, root_signal};
 
 /// Identity of a floating tool panel. The set is fixed; `PanelLayout` tracks their
 /// order and which are open (§11).
@@ -182,6 +182,29 @@ pub struct PanelLayout {
     pub scroll: Signal<Scroll>,
     /// The in-flight drag of the rail's thumb, if any.
     pub thumb: Signal<Option<ThumbGrab>>,
+}
+
+impl PanelLayout {
+    /// Its signals, root-owned like every other group of them
+    /// (`state::root_signal`); built here rather than in `AppState::new` so that
+    /// what a stack opens as — the default order, the stored visibility, the
+    /// default heights — is stated beside the fields that hold it.
+    pub(crate) fn new() -> Self {
+        Self {
+            order: root_signal(|| PanelId::ALL.to_vec()),
+            // Every panel starts closed and what this browser last had open comes
+            // back — read here, before the first render, so the stack the artist
+            // left is the first one drawn rather than one that assembles itself a
+            // frame later (`crate::visibility`, §25.6).
+            hidden: root_signal(crate::visibility::stored_hidden),
+            collapsed: root_signal(crate::visibility::stored_collapsed),
+            drag: root_signal(|| None),
+            heights: root_signal(PanelLayout::default_heights),
+            resize: root_signal(|| None),
+            scroll: root_signal(Default::default),
+            thumb: root_signal(|| None),
+        }
+    }
 }
 
 /// The panel stack's scroll geometry, in CSS px: how far it is scrolled, how tall its
