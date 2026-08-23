@@ -16,7 +16,7 @@
      is meant to be would leave a stripe down the screen's edge that looks like the
      panels but does not answer. */
   --panel-column: 300px;
-  --panel-padding: 12px;
+  --panel-padding: 8px;
   --panel-inset: 4px;
   /* The strip the panel column keeps clear inside itself, for its shadows and its own
      scroll rail (`.panel-stack`). Named because a third rule needs it: a pop-out flown
@@ -622,7 +622,7 @@ hr {
 
 /* --- sliders --- */
 .slider-row {
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 /* Flex so the few sliders that carry a mark (`widgets::Slider`'s `glyph`) sit it
@@ -1094,7 +1094,7 @@ hr {
 .app-root.minimal .panel .slider-row.marked {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
 }
 
 .app-root.minimal .panel .slider-row.marked .slider-label {
