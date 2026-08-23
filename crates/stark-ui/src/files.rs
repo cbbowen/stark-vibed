@@ -168,12 +168,7 @@ pub(crate) fn open_bytes(state: AppState, bytes: Vec<u8>) {
 
 /// Scale presets for the export dialog. A multiplier is the honest unit here: the
 /// frame's canvas size is the piece, and everything else is a resampling of it.
-const SCALES: [(&str, f32); 4] = [
-    ("1\u{00D7}", 1.0),
-    ("2\u{00D7}", 2.0),
-    ("3\u{00D7}", 3.0),
-    ("4\u{00D7}", 4.0),
-];
+const SCALES: [(&str, f32); 4] = [("100%", 1.0), ("75%", 0.75), ("50%", 0.5), ("25%", 0.25)];
 
 /// The export dialog: pick a resolution and a substrate, see the pixel size you will
 /// get, and write the PNG.
