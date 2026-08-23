@@ -55,7 +55,12 @@
   outline: none;
 }
 
-/* Dropdown flies out to the right of the rail (rather than below). */
+/* Dropdown flies out to the right of the rail (rather than below).
+
+   `z-index: 1000` clears the rail's own buttons and nothing beyond them: `.dx-menubar`
+   carries a `backdrop-filter` and is therefore a stacking context, so this rung is
+   spent inside it. What puts an open menu over the rest of the chrome — the
+   quick-brush rack most of all — is `.command-rail`'s own z-index in `stark.css`. */
 .dx-menubar-content {
   position: absolute;
   z-index: 1000;

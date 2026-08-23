@@ -887,10 +887,12 @@ hr {
    tour's card cannot do and why its own placement has no vertical clamp at all
    (`tutor::Side::RightAtBottom`).
 
-   `z-index: 26` is the tour card's rung — one above the highest floating chrome (the
-   timeline bar, 25), because a pop-out has to stand over whatever it flew out of, and
-   below the dialogs (100). Level with the card and earlier in the DOM, so a lesson
-   pointing at the panel behind it is still readable. */
+   `z-index: 26` is the tour card's rung — one above the highest of the chrome that
+   stands in place (the timeline bar, 25), because a pop-out has to stand over
+   whatever it flew out of. Under the two things that cover everything they overlap:
+   an open menu (`.command-rail`, 30) and the dialogs (100). Level with the card and
+   earlier in the DOM, so a lesson pointing at the panel behind it is still
+   readable. */
 .stack-popout {
   position: absolute;
   right: calc(
@@ -1428,7 +1430,11 @@ hr {
 
    Under the command rail rather than starting at the top of the window: the rail is
    the third thing on this edge, and a column that floated up into it would collide on
-   exactly the short windows where there is least room to give.
+   exactly the short windows where there is least room to give. Under it by a hair
+   rather than clear of it — the rail runs to 158 and this starts at 148 — and the
+   sliver is the rail's, since it stands a rung higher (`.command-rail`). Which is the
+   right way round for the same reason the menus are: a control the artist can press
+   beats a picture of one they cannot.
 
    The container never takes the pointer, so the gaps between its two halves are never
    anything but painting; each half decides for itself. `justify-content` only matters
@@ -2463,12 +2469,26 @@ button.layer-remove:hover {
   box-shadow: inset 0 0 0 1.5px #8fb0e8;
 }
 
-/* --- command rail --- */
+/* --- command rail ---
+   The one piece of chrome that stands above the rest of it (30 rather than 20), and
+   the rail carries that rung on its menus' behalf because they cannot take it
+   themselves: a flyout is absolutely positioned inside this box, and `.dx-menubar`'s
+   `backdrop-filter` makes a stacking context, so the `z-index: 1000` the dropdown and
+   the palette declare is a rung *within* the rail and nothing they can say lifts them
+   over a sibling of it. Level with the chrome the rail would lose to everything
+   mounted after it — the quick-brush rack above all, which is how the rack came to
+   cover the very menu that puts it away.
+
+   Hoisting the whole rail costs nothing, which is why it is the fix: this is a 52px
+   column in the corner, nothing else is placed against it, and the only thing ever
+   drawn over it was one of its own flyouts. Above the tour card and the panel
+   pop-outs (26), below the dialogs (100) — an open menu stands over everything except
+   the one surface that takes the window whole. */
 .command-rail {
   position: absolute;
   left: 14px;
   top: 14px;
-  z-index: 20;
+  z-index: 30;
 }
 
 /* A rail entry that runs a command instead of opening a menu (the ⚙). Matches
@@ -2514,6 +2534,9 @@ button.layer-remove:hover {
   position: relative;
 }
 
+/* `z-index: 1000` is a rung *inside* the rail and reads larger than it is: it clears
+   the rail's own buttons and nothing else, because `.dx-menubar` is a stacking
+   context. What puts this palette over the rest of the chrome is `.command-rail`. */
 .command-palette {
   position: absolute;
   z-index: 1000;
@@ -5664,9 +5687,13 @@ label.setting-text {
    here.
 
    `z-index: 26` is one above the timeline bar, which is the highest of the
-   floating chrome (25) — the card has to sit over whatever it points at, and
-   what it points at includes that bar. Still below the dialogs (100), which are
-   the one thing that should cover it.
+   chrome that stands in place (25) — the card has to sit over whatever it
+   points at, and what it points at includes that bar. Below the two surfaces a
+   card never points *at*: an open menu (`.command-rail`, 30), which the artist
+   has just asked for and which covers whatever it lands on, and the dialogs
+   (100). A lesson about the visibility menu is therefore covered for as long as
+   that menu is up and is back the moment it closes, which is the right way
+   round — the card is about where the menu lives, and the menu is the answer.
 
    **The card declines the pointer and its two buttons take it back** — the
    `.slot-overlay` bargain, and for the same reason: this stands over the painting

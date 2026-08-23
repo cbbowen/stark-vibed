@@ -309,7 +309,29 @@ which the engine draws into directly. DOM chrome surrounds it.
   (frame handles, transform widget) sits at `z-index: 10`; every piece of
   floating chrome is 20+. `.panel-stack` must declare its `z-index` explicitly —
   with none it sits at auto level and any positioned sibling with a `z-index`
-  beats it regardless of DOM order.
+  beats it regardless of DOM order. The whole ladder, since one rung is only ever
+  right relative to the others:
+
+  | Rung | What is on it |
+  |---|---|
+  | 20 | the chrome that stands in place: the panel stack, the bottom bars, the quick-brush rack and the navigator (`.left-chrome`) |
+  | 25 | Timeline mode's bar, which spans the window rather than hugging its contents |
+  | 26 | what flies out of that chrome and must cover it: a panel's pop-out, the tour's card |
+  | 30 | an open menu — the command rail and its flyouts |
+  | 100 | a dialog and its backdrop |
+  | 101 | a tour card pointing *into* a dialog, the one card the backdrop must not cover |
+
+  Two of those are worth the sentence they cost. **A menu covers everything it
+  overlaps except a dialog**, because it is the surface the artist asked for a
+  moment ago and closes the moment they are done with it — and the rung is on
+  `.command-rail` rather than on the flyouts themselves, which cannot take it: a
+  dropdown is absolutely positioned inside the rail and `.dx-menubar`'s
+  `backdrop-filter` makes a stacking context, so its own `z-index: 1000` is spent
+  clearing the rail's buttons. Left level with the chrome, the rail lost to
+  everything mounted after it in `main.rs` — the quick-brush rack covering the
+  menu that puts the rack away. **Anything sharing a rung is ordered by the DOM**,
+  so a tie there is a statement about the order in `main.rs` and is commented as
+  one where it matters (the pop-out and the card at 26).
 - **The navigator's miniature is a second surface, not an image the UI carries.**
   An overview is the one piece of chrome that cannot be derived from
   `ObservableState` — it is pixels — so `panels/navigator.rs` mounts its own
