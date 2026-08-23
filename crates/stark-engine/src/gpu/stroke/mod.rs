@@ -215,8 +215,10 @@ impl StrokeRenderer {
     ) -> (TileMap, StrokeCarry) {
         // Every stroke render, live tail or commit, on either path — the row the two
         // path rows below are read against. Its *count* is the one number that says
-        // how much of this is the live preview: a commit renders once, a gesture
-        // renders its tail on every frame it survives.
+        // how much of this is the live preview: a gesture renders its tail on every
+        // frame it survives, and its commit then takes that render rather than
+        // adding one (`document::PreparedStroke`) — so a replay, a redo or a peer's
+        // action is what a commit's entry here means.
         crate::timing::span!("stroke.range");
         // Which path the stroke takes — and how finely it flattens — is decided from
         // the record, never from the piece in hand. A live tail and the commit that

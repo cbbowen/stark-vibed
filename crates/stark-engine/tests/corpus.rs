@@ -111,10 +111,15 @@ fn run(name: &str) {
     };
     let mut report = Report::new(case);
 
+    // Two pictures of the one stroke run through the battery. `committed` is what
+    // landed at pen-up — the live preview's own head-plus-tail render, since a commit
+    // takes the preview's tiles (`PreparedStroke`, §6.2). `rendered` is the same
+    // action folded again in one pass: the picture a replay, a file and a peer each
+    // make of it, and the one the two renders' seam is measured against.
     let committed = check_the_stroke_as_it_is_drawn(case, &mut engine, brush, &mut report);
     check_repeat_render(&mut engine, &committed, &mut report);
-    check_undo_redo(&mut engine, &committed, &mut report);
-    check_save_load(case, &engine, &committed, &mut report);
+    let rendered = check_undo_redo(case, &mut engine, &committed, &mut report);
+    check_save_load(case, &engine, &rendered, &mut report);
     check_refinement(case, brush, &committed, &mut report);
     check_lift_off(case, brush, &mut report);
     check_translation(case, brush, &committed, &mut report);
@@ -124,8 +129,10 @@ fn run(name: &str) {
     // Last, and deliberately: the golden is a *description* of a correct render, and
     // describing one that has already been shown to break an invariant is noise. If
     // the run gets this far the stroke is internally consistent, and the only question
-    // left is whether it still looks like what was blessed.
-    assert_golden(&format!("corpus_{name}"), &committed, case.tol.golden);
+    // left is whether it still looks like what was blessed. The whole render, because
+    // that is what every consumer but the hand that drew it sees — and the live commit
+    // is held to it by the seam above.
+    assert_golden(&format!("corpus_{name}"), &rendered, case.tol.golden);
 }
 
 // --- the checks ---------------------------------------------------------------
@@ -140,8 +147,11 @@ fn run(name: &str) {
 ///   is a frozen head kept from earlier moves plus a live tail over it; re-setting the
 ///   brush (to the brush it is already using, so nothing about the stroke changes)
 ///   drops the head, so the very next repaint renders the whole stroke in one pass.
-/// * *Preview == commit*, at the release. The last frame previewed is what lands, or
-///   the stroke visibly changes at the moment the pointer comes up (§1.3).
+/// * *Preview == commit*, at the release. The last frame previewed is what lands —
+///   literally, since the commit takes the preview's tiles rather than drawing the
+///   stroke again (`PreparedStroke`, §6.2) — so what is asked here is that it *did*
+///   take them, and [`check_undo_redo`] is where that picture is held against the
+///   stroke drawn in one pass.
 ///
 /// For the swept path this is nearly free — a segment's deposit is a definite integral
 /// that composes by summing optical depth, so the cut genuinely cannot matter. For the
@@ -157,6 +167,8 @@ fn check_the_stroke_as_it_is_drawn(
 ) -> RgbaImage {
     let samples = case.samples();
     let (first, rest) = samples.split_first().expect("a case draws something");
+    // Relative, because a case's undercoat is painted the same way and counts too.
+    let reused_before = engine.strokes_reused();
 
     engine.process(ViewCommand::SetBrush(brush));
     engine.process(GestureCommand::Start {
@@ -186,18 +198,16 @@ fn check_the_stroke_as_it_is_drawn(
         );
     }
 
-    let preview = engine.render_to_image();
     engine.process(GestureCommand::End);
-    let committed = engine.render_to_image();
-    if !cfg!(feature = "debug-unfrozen") {
-        report.check(
-            "the last previewed frame vs what committed",
-            &preview,
-            &committed,
-            case.tol.seam,
+    // Under `debug-unfrozen` the previewed tail is a render of a tinted record, which
+    // is exactly the one render a commit must not take.
+    if !cfg!(feature = "debug-unfrozen") && engine.strokes_reused() != reused_before + 1 {
+        report.note(
+            "the commit rendered the stroke again instead of taking the last previewed \
+             frame's tiles - the record or the base moved between the two",
         );
     }
-    committed
+    engine.render_to_image()
 }
 
 /// Rendering the same document twice gives the same pixels.
@@ -215,24 +225,44 @@ fn check_repeat_render(
     report.check("a second render of the same document", committed, &again, 0);
 }
 
-/// Undo then redo restores the exact pixels.
+/// Undo then redo restores the stroke — and returns the redone picture, which is
+/// the stroke **rendered whole**: the redo folds the action again through `apply`,
+/// which has no preview to take, so this is the one-pass render that a replay, a
+/// file and a peer all produce, where `committed` is the preview's head-plus-tail.
 ///
-/// History retention is what drives GPU tile reclamation (§1), so this is where a tile
-/// recycled while a history entry still refers to it shows up — as the *next* stroke's
-/// paint appearing inside this one.
-fn check_undo_redo(engine: &mut stark_engine::Engine, committed: &RgbaImage, report: &mut Report) {
+/// So this is where *the stroke drawn in pieces is held against the stroke drawn in
+/// one pass*, within the case's `seam`. A frozen head is never redrawn, and the
+/// checkpoints above catch a head handed over wrong mid-stroke; this catches the
+/// cut the release itself made, and the reservoir carried across it.
+///
+/// History retention is what drives GPU tile reclamation (§1), so it is also where a
+/// tile recycled while a history entry still refers to it shows up — as the *next*
+/// stroke's paint appearing inside this one.
+fn check_undo_redo(
+    case: &Case,
+    engine: &mut stark_engine::Engine,
+    committed: &RgbaImage,
+    report: &mut Report,
+) -> RgbaImage {
     engine.process(DocCommand::Undo);
     let undone = engine.render_to_image();
     engine.process(DocCommand::Redo);
     let redone = engine.render_to_image();
-    report.check("undo then redo", committed, &redone, 0);
+    report.check(
+        "what committed vs the stroke rendered whole on redo",
+        committed,
+        &redone,
+        case.tol.seam,
+    );
     if images_match(committed, &undone, 0) {
         report.note("undo left the stroke on the canvas");
     }
+    redone
 }
 
 /// The document round-trips through its file (§8): saved, loaded into an engine that
-/// has never seen this stroke, and replayed to the same pixels **exactly**.
+/// has never seen this stroke, and replayed to the same pixels **exactly** — the same
+/// pixels as `rendered`, the stroke folded whole, which is what a replay is.
 ///
 /// This is the one idea the whole design rests on — pixels are a cached view of a
 /// replayable action log — stated as a test, and it is a stronger claim than it looks:
@@ -242,7 +272,7 @@ fn check_undo_redo(engine: &mut stark_engine::Engine, committed: &RgbaImage, rep
 fn check_save_load(
     case: &Case,
     engine: &stark_engine::Engine,
-    committed: &RgbaImage,
+    rendered: &RgbaImage,
     report: &mut Report,
 ) {
     let bytes = match engine.save_bytes() {
@@ -261,7 +291,7 @@ fn check_save_load(
     }
     report.check(
         "save → load → replay",
-        committed,
+        rendered,
         &loaded.render_to_image(),
         0,
     );

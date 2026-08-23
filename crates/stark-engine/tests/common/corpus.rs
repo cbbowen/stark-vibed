@@ -26,7 +26,7 @@ use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand
 use stark_model::document::{BrushParams, BrushShape, OrientationSource};
 use stark_model::geom::{Extent2, Vec2};
 
-use super::{SIZE, brush, engine_or_skip_sized, stroke_with};
+use super::{SIZE, brush, engine_or_skip_sized, replay_with};
 
 const RED: [f32; 4] = [0.86, 0.16, 0.12, 1.0];
 
@@ -199,6 +199,11 @@ pub fn smear_brush(radius: f32) -> BrushParams {
 ///
 /// Laid at `at`, like everything else the case puts down, so that a translated case
 /// smears the *same* field rather than a field that stayed where it was.
+///
+/// Replayed rather than gestured, so it is the same whole render in the engine that
+/// draws the case and in the one that loads its file: scenery a live commit had
+/// painted would carry its own seam (§6.2) into every check made *over* it, and the
+/// battery's exact round-trip would be measuring the undercoat rather than the case.
 fn undercoat(engine: &mut Engine, at: Vec2) {
     for (color, from, to) in [
         ([0.1, 0.9, 0.2, 1.0], (-110.0, -40.0), (110.0, -10.0)),
@@ -206,7 +211,7 @@ fn undercoat(engine: &mut Engine, at: Vec2) {
     ] {
         let mut b = brush(color, 26.0);
         b.drain = 0.0;
-        stroke_with(
+        replay_with(
             engine,
             b,
             &[at + Vec2::new(from.0, from.1), at + Vec2::new(to.0, to.1)],
@@ -734,10 +739,11 @@ pub const CASES: &[Case] = &[
         prepare: |e, at| {
             // A thick field to smear, laid flat so the smear's own structure is what
             // shows. Wider than the tip that will work it, so the mark stays inside it.
+            // Replayed, as `undercoat` is and for its reason.
             let mut lay = brush([0.0, 0.0, 0.0, 1.0], 260.0);
             lay.dynamics.flow = 1.5;
             lay.drain = 0.0;
-            stroke_with(
+            replay_with(
                 e,
                 lay,
                 &[at + Vec2::new(-260.0, 0.0), at + Vec2::new(260.0, 0.0)],
@@ -786,7 +792,8 @@ pub const CASES: &[Case] = &[
                     at + Vec2::new(t * 2560.0 - 2000.0, (t * 26.0).sin() * 40.0)
                 })
                 .collect();
-            stroke_with(e, lay, &band);
+            // Replayed, as `undercoat` is and for its reason.
+            replay_with(e, lay, &band);
             smear_brush(15.0)
         },
         path: || {

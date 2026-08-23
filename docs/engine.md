@@ -105,8 +105,10 @@ Consequences worth stating, because they are what the numbers mean:
   not. The two end-to-end rates fall straight out: `frame`'s count is the frame
   rate achieved, `input.sample`'s is how many pointer reports a second actually
   reached the engine.
-- **The names are a taxonomy, not a call tree.** `stroke.range` is entered from a
-  commit *and* from the live fold, and its histogram aggregates both.
+- **The names are a taxonomy, not a call tree.** `stroke.range` is entered from
+  the live fold *and* from a commit that has to render — a replay, a redo, a
+  peer's action; this client's own pen-up takes the fold's tiles instead (§6.2) —
+  and its histogram aggregates both.
 - **Every row is CPU time to prepare work.** WebGPU offers no timestamp query on
   the web, so nothing here says what the GPU then spent executing it. The signals
   for that are the frame-skip counter (`frame.skipped`, from `Renderer::gpu_behind`)

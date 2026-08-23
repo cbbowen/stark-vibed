@@ -62,6 +62,67 @@ pub struct ApplyCtx {
     /// switch deposits against the substrate it was actually painted on, at the size it
     /// was laid at, on replay and on a peer alike.
     pub substrates: crate::gpu::registry::Registry<Substrate>,
+    /// A stroke the live preview has already drawn, for the `CommitStroke` fold to
+    /// take rather than render again — see [`PreparedStroke`].
+    ///
+    /// Transient: the engine fills it immediately before the push that commits the
+    /// stroke and empties it immediately after, so at every other moment — and in
+    /// every clone handed to a sibling engine — it is `None`. The fold empties it
+    /// only by *taking* it, which is how the engine learns whether the offer was
+    /// accepted: a slot still full after the push was declined.
+    pub prepared: Option<PreparedStroke>,
+}
+
+/// A stroke whose tiles the live preview has already rendered, offered to the fold
+/// so that its `CommitStroke` takes them instead of rendering the whole stroke again
+/// at pen-up (§6.2, §17.6).
+///
+/// The preview *is* the commit, drawn early: `preview == committed` (§1.3) is the
+/// claim that the fold's frozen head plus its live tail and one whole-stroke render
+/// are the same picture, and everything in `engine::live` exists to keep it so.
+/// Rendering the stroke a second time when the pointer lifts therefore buys nothing
+/// and costs the stroke's whole length in one hitch — at exactly the moment the
+/// incremental repaint was built to stop paying for it. What lands in the document
+/// is then the picture the artist watched being painted, to the bit.
+///
+/// **What the fold checks, and what it cannot.** Two things are verifiable from
+/// inside the fold and are verified there, so that no caller can hand it tiles for
+/// the wrong stroke: the record is this action's (`rec`), and the tiles were drawn
+/// over this state's own layer — `base`, compared by *identity*, which is exact for
+/// a persistent map (one is replaced, never edited, so the same root is the same
+/// tiles). What the fold cannot see is the rest of the scene the render read — the
+/// author's selection and the canvas substrate — and those are the engine's to
+/// vouch for: an offer is only made while nothing has replaced the document since
+/// the tiles were drawn, which is the same epoch rule the preview's own cached heads
+/// are trusted by (`Preview::invalidate`).
+///
+/// Kept for one push rather than cached: the tiles share structure with the
+/// committed document's and hold every fresh tile the stroke wrote, so a slot that
+/// outlived its commit would pin a stroke's worth of GPU memory for nothing.
+#[derive(Clone)]
+pub struct PreparedStroke {
+    /// The record the tiles are a render of — compared whole, because the commit
+    /// re-derives its record from the fitter at pen-up and sanitizes it on the way
+    /// in, and either step disagreeing with what was previewed means the preview was
+    /// of a different stroke.
+    pub rec: stark_model::document::StrokeRecord,
+    /// The layer's tiles the render read as its base.
+    pub base: crate::gpu::tile::TileMap,
+    /// The layer's tiles with the stroke on them: `base` with a fresh handle at
+    /// every tile the stroke reached.
+    pub tiles: crate::gpu::tile::TileMap,
+}
+
+impl PreparedStroke {
+    /// Whether these tiles are the render of `rec` over `base` — the fold's half of
+    /// the check described on the type.
+    fn is_render_of(
+        &self,
+        rec: &stark_model::document::StrokeRecord,
+        base: &crate::gpu::tile::TileMap,
+    ) -> bool {
+        self.base.ptr_eq(base) && self.rec == *rec
+    }
 }
 
 impl ApplyCtx {
@@ -262,26 +323,35 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             let Some(base) = paint_base(&state, rec.layer) else {
                 return state;
             };
-            // The **author's** selection, as it stood at this point in the
-            // log, gates the stroke (§6.8, §17.3). Read from the state being
-            // folded over, so replay reproduces it exactly; keyed by the
-            // author, so a collaborator's lasso never clips this stroke.
-            let selection = state.selection_of(action.id.actor);
-            // The substrate this stroke was painted on, as the log stood here —
-            // not as it stands now (§6.4). The tooth gates the deposit by it,
-            // so a mid-document `SetSubstrate` changes what comes *after* it and
-            // nothing before, on replay exactly as it did live.
-            let substrate = ctx.substrate(state.substrate());
-            let tiles = ctx.stroke.render(
-                crate::gpu::stroke::StrokeScene {
-                    pool: &ctx.pool,
-                    assets: &ctx.assets,
-                    base: &base,
-                    selection: &selection,
-                    substrate: &substrate,
-                },
-                rec,
-            );
+            // The preview's tiles, where the preview drew this very stroke over this
+            // very base — see `PreparedStroke`. Otherwise the stroke is rendered here,
+            // which is every replay, every peer's copy and every redo: the log carries
+            // the stroke, never its pixels.
+            let tiles = match ctx.prepared.take_if(|p| p.is_render_of(rec, &base)) {
+                Some(prepared) => prepared.tiles,
+                None => {
+                    // The **author's** selection, as it stood at this point in the
+                    // log, gates the stroke (§6.8, §17.3). Read from the state being
+                    // folded over, so replay reproduces it exactly; keyed by the
+                    // author, so a collaborator's lasso never clips this stroke.
+                    let selection = state.selection_of(action.id.actor);
+                    // The substrate this stroke was painted on, as the log stood here —
+                    // not as it stands now (§6.4). The tooth gates the deposit by it,
+                    // so a mid-document `SetSubstrate` changes what comes *after* it and
+                    // nothing before, on replay exactly as it did live.
+                    let substrate = ctx.substrate(state.substrate());
+                    ctx.stroke.render(
+                        crate::gpu::stroke::StrokeScene {
+                            pool: &ctx.pool,
+                            assets: &ctx.assets,
+                            base: &base,
+                            selection: &selection,
+                            substrate: &substrate,
+                        },
+                        rec,
+                    )
+                }
+            };
             state.map_layer(rec.layer, |l| l.with_tiles(tiles))
         }
         ActionKind::AddLayer { id, carrier, above } => state.insert_layer(*id, *carrier, *above),

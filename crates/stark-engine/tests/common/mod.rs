@@ -11,7 +11,7 @@ use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
-use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
+use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::ColorSpaceId;
@@ -242,6 +242,43 @@ pub fn stroke_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
 pub fn paint(engine: &mut Engine, color: [f32; 4], radius: f32, points: &[Vec2]) {
     stroke_with(engine, brush(color, radius), points);
 }
+
+/// Commit a stroke through `points` as a **replay** rather than a gesture: one
+/// commit, rendered whole at the fold.
+///
+/// That is the canonical render — what a file, a redo and a peer each produce —
+/// where [`stroke_with`] lands the live preview's own tiles (`PreparedStroke`,
+/// §6.2), which sit within [`SEAM_LEVELS`] of it. A test whose claim is about
+/// replay fidelity draws the reference side with this, so the claim stays exact.
+pub fn replay_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
+    engine.process(ViewCommand::SetBrush(b));
+    let samples: Vec<InputSample> = points.iter().copied().map(InputSample::at).collect();
+    engine.replay_stroke(Tool::Brush, &samples);
+}
+
+/// The committed document rendered again **whole**: undo and redo re-fold the last
+/// action through `apply`, which has no preview to take, so a stroke committed from
+/// its live preview (`PreparedStroke`, §6.2) comes back as the one-pass render a
+/// replay, a file or a peer would make of it.
+///
+/// What every `preview == committed` claim is held against. A live commit *is* its
+/// preview now, so "the cut between head and tail does not matter" is a claim
+/// about this render, not about the frame after pen-up. Solo engines only: a
+/// shared session logs its undo rather than navigating.
+pub fn whole_render(engine: &mut Engine) -> RgbaImage {
+    engine.process(DocCommand::Undo);
+    engine.process(DocCommand::Redo);
+    engine.render_to_image()
+}
+
+/// Per-channel levels a stroke committed from its live preview may sit from the
+/// same stroke rendered whole (§6.2). The preview is a frozen head with the tail
+/// drawn over it, and the head is stored in f16 at the cut where one pass carries
+/// f32 through — a level or two on a plain deposit. The corpus measures the bound
+/// per stroke (`corpus::Tol::seam`: 4 on the swept path, up to 12 through a wide
+/// reservoir); this is the swept figure, for the tests outside it that hold a live
+/// commit against a replay.
+pub const SEAM_LEVELS: u8 = 4;
 
 /// The centre pixel — where the suites' standard stroke crosses.
 pub fn center(img: &RgbaImage) -> [u8; 4] {

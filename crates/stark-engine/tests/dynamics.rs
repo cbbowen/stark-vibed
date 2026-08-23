@@ -1479,17 +1479,25 @@ fn a_bleeding_stroke_previews_as_it_commits() {
             sample: InputSample::at(p),
         });
     }
-    let preview = engine.render_to_image();
     engine.process(GestureCommand::End);
+    assert_eq!(
+        engine.strokes_reused(),
+        1,
+        "the commit did not take the preview"
+    );
     let committed = engine.render_to_image();
+    // What landed is the preview's head-plus-tail render (`PreparedStroke`, §6.2);
+    // the whole render is the commit's replay, in one range from zero.
+    let rendered = whole_render(&mut engine);
 
     // The same bound the untoothed split-preview test uses: a level or two of
     // accumulated float rounding at the seam is fine, a visible discontinuity is not.
     assert_eq!(
-        frac_exceeding(&preview, &committed, 11),
+        frac_exceeding(&committed, &rendered, 11),
         0.0,
-        "a bleeding live preview visibly differs from its commit ({:.4}% of px over 2)",
-        frac_exceeding(&preview, &committed, 2) * 100.0,
+        "a bleeding live preview visibly differs from the stroke rendered whole \
+         ({:.4}% of px over 2)",
+        frac_exceeding(&committed, &rendered, 2) * 100.0,
     );
 }
 
@@ -1868,13 +1876,15 @@ fn a_bleeding_strokes_preview_is_its_commit() {
     for s in rest {
         engine.process(GestureCommand::To { sample: *s });
     }
-    let preview = engine.render_to_image();
     engine.process(GestureCommand::End);
     let committed = engine.render_to_image();
+    let rendered = whole_render(&mut engine);
 
     assert!(
-        images_match(&preview, &committed, 2),
-        "the bleeding stroke's preview differs from its commit — a firing's window \
-         is being clipped at a range or piece boundary the accounting missed",
+        images_match(&committed, &rendered, 2),
+        "the bleeding stroke's preview differs from the stroke rendered whole — a \
+         firing's window is being clipped at a range or piece boundary the \
+         accounting missed: worst {} levels",
+        diff_fraction(&committed, &rendered).1,
     );
 }

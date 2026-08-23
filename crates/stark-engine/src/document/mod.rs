@@ -22,7 +22,7 @@ pub(crate) mod state;
 pub(crate) mod timeline;
 pub(crate) mod transform;
 
-pub use apply::ApplyCtx;
+pub use apply::{ApplyCtx, PreparedStroke};
 pub use layer::{CompositeParams, Layer, LayerContent, PaintTiles};
 /// Merging a layer down onto the one beneath it (§14.11) — the rule for when that
 /// leaves the document looking the same, which is the whole of what a merge promises.

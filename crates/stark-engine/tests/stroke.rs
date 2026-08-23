@@ -116,11 +116,18 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
     let preview = engine.render_to_image();
     engine.process(GestureCommand::End);
     let committed = engine.render_to_image();
-    // Mid-stroke the tail is magenta, so the preview differs from what lands — which
-    // also rules out the commit having simply kept the preview's pixels.
+    // Mid-stroke the tail is magenta, so the preview differs from what lands. A
+    // commit ordinarily *takes* the preview's tiles (`PreparedStroke`, §6.2), and
+    // this is the one render it must not take — it is a render of a different
+    // record — so the commit has to have drawn the stroke itself.
     assert!(
         !images_match(&preview, &committed, 8),
         "tint had no visible effect on the preview"
+    );
+    assert_eq!(
+        engine.strokes_reused(),
+        0,
+        "the commit took a preview whose tail was painted in the diagnostic's color"
     );
     // And what landed is the stroke's own color: a tint that reached the stroke
     // *record* would repaint the whole stroke magenta in the single commit pass.
@@ -417,6 +424,87 @@ fn a_click_paints_nothing_and_commits_nothing() {
             "a click left an undo step with nothing under it"
         );
     }
+}
+
+/// A long stroke, drawn with a frame between samples the way the app draws one.
+/// Long enough that the fitter freezes spans behind the pointer, so the preview is
+/// a kept head plus a live tail rather than one range — the case a commit that
+/// re-rendered the stroke would pay for in full.
+fn draw_long_stroke(engine: &mut Engine) {
+    engine.process(ViewCommand::SetBrush(brush(RED, 14.0)));
+    let mut it = long_wave().into_iter();
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    for p in it {
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(p),
+        });
+        let _ = engine.render_to_image();
+    }
+}
+
+fn long_wave() -> Vec<Vec2> {
+    (0..200)
+        .map(|i| {
+            let t = i as f32 / 200.0;
+            Vec2::new(t * 230.0 - 115.0, (t * 9.0).sin() * 40.0)
+        })
+        .collect()
+}
+
+/// **The commit is the preview** (`PreparedStroke`, §6.2). Releasing the pointer
+/// takes the tiles the last fold drew rather than rendering the stroke again, so the
+/// hitch at pen-up costs the live tail and not the stroke's length.
+///
+/// Held against a fresh engine *replaying* the same samples, which is the path that
+/// folds no preview and so renders the whole stroke in one range at commit: what
+/// lands live is the head-plus-tail render, and the two must agree to within the
+/// corpus's seam bound (`corpus.rs`) — the cut is an f16 store of the head, not a
+/// different stroke. Both engines seed the stroke from the same clock, so the
+/// comparison is of the render paths alone.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn a_stroke_commits_the_tiles_it_previewed() {
+    let (Some(mut live), Some(mut replayed)) = (engine_or_skip_blue(), engine_or_skip_blue())
+    else {
+        return;
+    };
+    draw_long_stroke(&mut live);
+    assert!(
+        live.live_head_count() == 1,
+        "the stroke should have a kept head before it is released"
+    );
+    let preview = live.render_to_image();
+    live.process(GestureCommand::End);
+    assert_eq!(
+        live.strokes_reused(),
+        1,
+        "the commit rendered the stroke again instead of taking the preview's tiles"
+    );
+    let committed = live.render_to_image();
+    assert!(
+        images_match(&preview, &committed, 0),
+        "what landed is not, to the bit, what was previewed"
+    );
+
+    replayed.process(ViewCommand::SetBrush(brush(RED, 14.0)));
+    let samples: Vec<InputSample> = long_wave().into_iter().map(InputSample::at).collect();
+    replayed.replay_stroke(Tool::Brush, &samples);
+    assert_eq!(
+        replayed.strokes_reused(),
+        0,
+        "a replay folds no preview, so there is nothing for its commit to take"
+    );
+    let fresh = replayed.render_to_image();
+    assert!(
+        images_match(&committed, &fresh, 4),
+        "the previewed render and a whole render of the same stroke disagree by          more than the seam bound: worst {} levels",
+        diff_fraction(&committed, &fresh).1
+    );
 }
 
 #[test]

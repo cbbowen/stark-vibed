@@ -701,10 +701,11 @@ fn the_bearing_curve_is_continuous_in_the_direction() {
 }
 
 /// **`preview == committed` with a tooth** (§1.3). The live path renders a frozen
-/// head and then a tail over it; the commit renders the whole stroke in one range.
-/// A gate that is a pure function of canvas position factors out of the sum over
-/// segments, so the two must agree — this is where that claim is checked, since the
-/// suite's existing split-preview test runs on a substrate with no relief.
+/// head and then a tail over it, and that is what the commit lands (`PreparedStroke`,
+/// §6.2); a replay renders the whole stroke in one range. A gate that is a pure
+/// function of canvas position factors out of the sum over segments, so the two must
+/// agree — this is where that claim is checked, since the suite's existing
+/// split-preview test runs on a substrate with no relief.
 #[test]
 fn a_toothed_live_preview_matches_the_commit() {
     let Some(mut engine) = rough_engine() else {
@@ -729,22 +730,28 @@ fn a_toothed_live_preview_matches_the_commit() {
             sample: stark_engine::command::InputSample::at(p),
         });
     }
-    let preview = engine.render_to_image();
     engine.process(stark_engine::command::GestureCommand::End);
+    assert_eq!(
+        engine.strokes_reused(),
+        1,
+        "the commit did not take the preview"
+    );
     let committed = engine.render_to_image();
+    let rendered = whole_render(&mut engine);
 
     assert_eq!(
-        frac_exceeding(&preview, &committed, 11),
+        frac_exceeding(&committed, &rendered, 11),
         0.0,
-        "a toothed live preview visibly differs from its commit ({:.4}% of px over 2)",
-        frac_exceeding(&preview, &committed, 2) * 100.0,
+        "a toothed live preview visibly differs from the stroke rendered whole \
+         ({:.4}% of px over 2)",
+        frac_exceeding(&committed, &rendered, 2) * 100.0,
     );
 }
 
 /// The same, on the **stamp loop** — which is the path the shipped presets take
 /// (`Hard Round` lifts and deposits), and the one where a live tail carries state:
 /// the tool reservoir is threaded from the frozen head into the tail, while the
-/// commit runs the whole stroke from an empty tool in one go.
+/// whole render runs the stroke from an empty tool in one go.
 #[test]
 fn a_toothed_smear_previews_as_it_commits() {
     let Some(mut engine) = rough_engine() else {
@@ -795,14 +802,20 @@ fn a_toothed_smear_previews_as_it_commits() {
             sample: stark_engine::command::InputSample::at(p),
         });
     }
-    let preview = engine.render_to_image();
     engine.process(stark_engine::command::GestureCommand::End);
+    assert_eq!(
+        engine.strokes_reused(),
+        2,
+        "the commit did not take the preview"
+    );
     let committed = engine.render_to_image();
+    let rendered = whole_render(&mut engine);
 
     assert_eq!(
-        frac_exceeding(&preview, &committed, 11),
+        frac_exceeding(&committed, &rendered, 11),
         0.0,
-        "a toothed smear previews differently from its commit ({:.4}% of px over 2)",
-        frac_exceeding(&preview, &committed, 2) * 100.0,
+        "a toothed smear previews differently from the stroke rendered whole \
+         ({:.4}% of px over 2)",
+        frac_exceeding(&committed, &rendered, 2) * 100.0,
     );
 }

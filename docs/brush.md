@@ -277,6 +277,24 @@ Two places the obvious implementation is wrong:
   which under-estimate arc length, so what they admit is genuinely final; and an
   admitted prefix stays admitted however the stroke continues
   (`gpu::stroke::incremental::safe_frozen`).
+- **The commit is the preview.** Releasing the pointer does not render the
+  stroke again: the fold runs once more so the last few samples are drawn, and
+  the `CommitStroke` that follows *takes* the tiles that fold produced
+  (`document::PreparedStroke`). `preview == committed` is the claim that the
+  head-plus-tail render and one whole-stroke render are the same picture, and
+  with the claim held there is nothing for a second render to add — only the
+  whole stroke's length to pay for in one hitch, at exactly the moment the
+  incremental repaint exists to avoid paying it. The offer is sound on two
+  checks split by who can make them: the fold verifies that the tiles are a
+  render of *this* record over *this* layer's tiles (the persistent map by
+  identity), and the engine offers them only while nothing has replaced the
+  document since they were drawn — the same epoch a cached head is trusted by
+  (§17.6). Everything else still renders at the fold: a replay, a redo, a peer's
+  copy, a file — the log carries the stroke and never its pixels. What lands
+  live therefore differs from those by whatever a cut costs, which is an f16
+  store of the head (the corpus's `seam` column); `Engine::strokes_reused`
+  counts the commits that took the offer, because pixels cannot say which
+  path ran.
 
 **Running dry.** `drain` fades what the brush lays, linearly with distance
 travelled, until the stroke is bone dry. It is quoted **per brush radius** for the

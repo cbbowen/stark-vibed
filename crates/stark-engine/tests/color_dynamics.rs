@@ -154,13 +154,15 @@ fn jitter_is_deterministic_and_effective() {
 
 /// Save → load replays the jittered stroke bit-for-bit (the dynamics live in the
 /// historized `BrushParams`; the lookup offset derives from the recorded seed).
+/// Drawn as a replay on the saving side, so both pictures are whole renders and the
+/// claim is about the file alone.
 #[test]
 fn jitter_survives_save_load() {
     let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
         return;
     };
     let jb = jitter_brush(NoiseKind::White, [4.0, 2.0], [0.15, 0.1, 0.1]);
-    stroke_with(&mut a, jb, &S_CURVE);
+    replay_with(&mut a, jb, &S_CURVE);
     let bytes = a.save_bytes().expect("save");
     b.load_bytes(&bytes).expect("load");
     let (ia, ib) = (a.render_to_image(), b.render_to_image());
@@ -198,8 +200,12 @@ fn jitter_applies_in_dynamics_loop() {
     );
 }
 
-/// Live preview == committed: replaying the samples one-by-one (the live path)
-/// then committing renders the same pixels as a single replayed commit.
+/// Live preview == committed: feeding the samples one-by-one (the live path) and
+/// releasing lands the pixels of a single replayed commit — to within the seam, since
+/// what lands live *is* the preview's head-plus-tail render (`PreparedStroke`, §6.2)
+/// and the replay renders the stroke in one pass. The jitter reads arc length and
+/// the stroke's seed, so a tail resumed at the wrong distance or a replay seeded
+/// differently both show here.
 #[test]
 fn jittered_live_preview_matches_commit() {
     let (Some(mut live), Some(mut replayed)) = (engine_or_skip(), engine_or_skip()) else {
@@ -221,11 +227,18 @@ fn jittered_live_preview_matches_commit() {
         });
     }
     live.process(GestureCommand::End);
+    assert_eq!(
+        live.strokes_reused(),
+        1,
+        "the commit did not take the preview"
+    );
 
-    replayed.process(ViewCommand::SetBrush(jb));
-    let samples: Vec<InputSample> = S_CURVE.iter().map(|&p| InputSample::at(p)).collect();
-    replayed.replay_stroke(Tool::Brush, &samples);
+    replay_with(&mut replayed, jb, &S_CURVE);
 
     let (il, ir) = (live.render_to_image(), replayed.render_to_image());
-    assert!(images_match(&il, &ir, 0), "live jitter != committed jitter");
+    assert!(
+        images_match(&il, &ir, SEAM_LEVELS),
+        "live jitter != committed jitter: worst {} levels",
+        diff_fraction(&il, &ir).1
+    );
 }

@@ -22,7 +22,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::Engine;
-use crate::document::{ApplyCtx, DocState};
+use crate::document::{ApplyCtx, DocState, PreparedStroke};
 use crate::gpu::StrokeSpans;
 use crate::peer::{GestureView, LiveGesture, Peer};
 use stark_model::document::{ActorId, LayerId, StrokeRecord};
@@ -78,6 +78,12 @@ pub(super) struct Preview {
     /// pointer sample, every peer gesture frame) into one fold per frame actually
     /// painted.
     stale: bool,
+    /// This client's own stroke as the last fold drew it, kept for its commit to
+    /// take rather than render again ([`PreparedStroke`], §6.2). Filled by every
+    /// fold that draws that stroke over the committed document alone, and emptied
+    /// by every fold that does not — and by [`invalidate`](Self::invalidate), so it
+    /// cannot outlive the base it was drawn over any more than a cached head can.
+    prepared: Option<PreparedStroke>,
 }
 
 impl Preview {
@@ -87,6 +93,7 @@ impl Preview {
     /// routes through here rather than restating it.
     pub(super) fn invalidate(&mut self) {
         self.epoch += 1;
+        self.prepared = None;
     }
 
     /// Install (or, with `None`, drop) the stand-in document for an unlogged edit in
@@ -133,6 +140,13 @@ impl Preview {
         self.epoch
     }
 
+    /// This client's stroke as the last fold drew it, for its commit to take — see
+    /// [`prepared`](Self::prepared). Taken, not read: the tiles are the commit's
+    /// now, and the next fold has no stroke in flight to draw again.
+    pub(super) fn take_prepared(&mut self) -> Option<PreparedStroke> {
+        self.prepared.take()
+    }
+
     /// How many times the fold has been rebuilt — see [`fold`](Self::fold).
     pub(super) fn fold(&self) -> u64 {
         self.fold
@@ -167,11 +181,21 @@ impl Preview {
     /// while another goes on painting leaves its head behind, and with it a whole
     /// `DocState`'s worth of `Arc<GpuTile>` handles the pool cannot reclaim. Exactly
     /// while two people are painting, which is when there is least to spare.
-    fn rebuild(&mut self, ctx: &ApplyCtx, committed: &DocState, gestures: Vec<GestureView>) {
+    fn rebuild(
+        &mut self,
+        ctx: &ApplyCtx,
+        committed: &DocState,
+        local: ActorId,
+        gestures: Vec<GestureView>,
+    ) {
         // Before the early return as much as after it: dropping the fold is a change
         // to what is shown exactly as building one is, and it is the transition a
         // pen-up makes.
         self.fold += 1;
+        // Whatever the last fold prepared described the last fold's stroke. This one
+        // either draws the stroke again and prepares it afresh below, or has no such
+        // stroke — and either way the old tiles are not the ones to commit.
+        self.prepared = None;
         if gestures.is_empty() {
             self.live = None;
             self.heads.clear();
@@ -243,6 +267,26 @@ impl Preview {
                     );
                     out = overlay_tiles(&out, rec.layer, &tail_state, &head.dirty);
                     heads.insert(actor, head);
+                    // The tail state is the committed document with this stroke on
+                    // it — the document its commit will produce, provided it is this
+                    // client's stroke to commit and was drawn over the committed
+                    // document and nothing else: not over a drag's stand-in, not over
+                    // another stroke's paint, and in the stroke's own color rather
+                    // than the diagnostic's.
+                    let lands_at_commit = actor == local
+                        && !contested
+                        && self.doc.is_none()
+                        && !cfg!(feature = "debug-unfrozen");
+                    if lands_at_commit
+                        && let Some(base) = base.layer(rec.layer).and_then(|l| l.tiles())
+                        && let Some(tiles) = tail_state.layer(rec.layer).and_then(|l| l.tiles())
+                    {
+                        self.prepared = Some(PreparedStroke {
+                            rec,
+                            base: base.clone(),
+                            tiles: tiles.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -478,8 +522,12 @@ impl Engine {
         let gestures = self.live_gestures();
         // Disjoint fields, so the fold reads the context and the committed document
         // while holding the preview mutably.
-        self.preview
-            .rebuild(&self.shared.apply, self.timeline.current(), gestures);
+        self.preview.rebuild(
+            &self.shared.apply,
+            self.timeline.current(),
+            self.actor(),
+            gestures,
+        );
     }
 
     /// Every gesture in flight, in ascending [`ActorId`] order.

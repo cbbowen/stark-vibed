@@ -68,7 +68,7 @@ pub struct ActionId {
 /// held one value for every stroke of every document and no reader ever asked it
 /// (§8, wire version 5). A tool worth recording would be recorded by whatever
 /// distinguishes it, which this enum does not.
-#[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct StrokeRecord {
     pub layer: LayerId,
     pub brush: BrushParams,

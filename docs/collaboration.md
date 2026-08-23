@@ -604,6 +604,14 @@ cannot reclaim. Only a second painter can reach it — with nobody drawing the f
 clears the cache wholesale — so the leak was one peer lifting while another
 painted on, which is exactly when there is least GPU memory to spare.
 
+**The local stroke's commit takes the fold's tiles** (§6.2). A fold that draws
+this client's own stroke over the committed document — and over nothing else:
+not a drag's stand-in, not a contested tile already carrying another peer's
+paint — keeps that render in a slot the next `CommitStroke` is offered, and the
+slot follows the epoch rule above exactly as a head does: whatever replaces the
+base drops it. A peer's stroke is never offered this way; its commit arrives as
+an action and renders at the fold, like every replay.
+
 ### 17.7 Commands and transport
 
 §4's own principle — *the class is in the type, not in a comment* — is why

@@ -200,6 +200,18 @@ impl Engine {
         self.preview.head_count()
     }
 
+    /// How many of this client's stroke commits have taken the preview's tiles
+    /// rather than rendering the stroke again at pen-up (`PreparedStroke`, §6.2).
+    ///
+    /// For tests and diagnostics, beside [`live_head_count`](Self::live_head_count)
+    /// and for its reason: the two ways a commit can land are the same pixels by
+    /// design, so only a count can say which one ran — and a commit that quietly
+    /// fell back to the whole render is the hitch this path exists to remove,
+    /// reported by nothing else.
+    pub fn strokes_reused(&self) -> u64 {
+        self.strokes_reused
+    }
+
     /// The preview's invalidation epoch (§17.6): a counter that advances whenever the
     /// document the in-flight gestures are composited onto is replaced — by a commit,
     /// an undo, a remote merge, a load, or an unlogged drag preview being installed or

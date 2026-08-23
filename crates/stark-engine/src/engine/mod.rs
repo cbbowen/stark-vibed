@@ -59,7 +59,7 @@ use stark_model::AssetId;
 use stark_model::ColorSpaceId;
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, BrushParams, GuideId, LayerId, PerspectiveGuide,
-    Scaffold, ShapeAction,
+    Scaffold, ShapeAction, StrokeRecord,
 };
 use stark_model::geom::Extent2;
 use stark_model::{SubstrateId, SubstrateScale};
@@ -674,6 +674,11 @@ pub struct Engine {
     /// so a watcher keyed on the epoch would re-render for every sample of one. The
     /// two advance together through [`Engine::committed_changed`].
     doc_revision: u64,
+    /// How many of this client's stroke commits took the preview's tiles instead of
+    /// rendering the stroke again (`PreparedStroke`, §6.2). For tests and
+    /// diagnostics, on `live_head_count`'s terms: the two paths are the same pixels
+    /// by design, so only a count can say which one ran.
+    strokes_reused: u64,
     /// Raw pointer reports of the in-flight stroke, dumped on release under the
     /// `debug-unfrozen` feature so a misfit stroke can be replayed as a test.
     #[cfg(feature = "debug-unfrozen")]
@@ -817,6 +822,7 @@ impl Engine {
             guide_cache: std::cell::RefCell::new(None),
             guide_epoch: 0,
             history_budget: DEFAULT_HISTORY_BUDGET,
+            strokes_reused: 0,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
             authoring: Authoring::solo(),
@@ -909,6 +915,7 @@ impl Engine {
             guide_cache: std::cell::RefCell::new(None),
             guide_epoch: 0,
             history_budget: DEFAULT_HISTORY_BUDGET,
+            strokes_reused: 0,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
             authoring: Authoring::solo(),
@@ -1021,9 +1028,16 @@ impl Engine {
                         }),
                         None => {}
                     }
-                } else if let Some(rec) = self.session.end_stroke() {
-                    self.log_debug_samples();
-                    self.commit(ActionKind::CommitStroke(rec));
+                } else {
+                    // Fold first, so what is offered to the commit is the stroke as
+                    // it stands at the release — the frame that would have shown the
+                    // last few samples, drawn now instead of never. A fold costs the
+                    // live tail; the render it saves the commit costs the stroke.
+                    self.flush_live();
+                    if let Some(rec) = self.session.end_stroke() {
+                        self.log_debug_samples();
+                        self.commit_stroke(rec);
+                    }
                 }
                 self.mark_live_stale();
             }
@@ -1940,8 +1954,9 @@ impl Engine {
         // layer move. One row rather than one per `ActionKind`, because what a
         // profile is being asked here is "is a commit the hitch the artist felt",
         // and the answer is read against `input.fit` and `frame` beside it. Which
-        // *kind* of commit was slow is a question the phases underneath it
-        // (`stroke.range` and its parts) already answer.
+        // *kind* of commit was slow is a question the phases underneath it already
+        // answer — `stroke.range` and its parts for a stroke that had to render,
+        // where one that took its preview's tiles (`commit_stroke`) has none.
         crate::timing::span!("doc.commit");
         self.preview.set_doc(None);
         let action = Action {
@@ -1979,6 +1994,23 @@ impl Engine {
         // `committed_changed`, which an undo also comes through — giving up undo
         // depth *while the user is undoing* is the one moment it would be felt.
         self.trim_history();
+    }
+
+    /// Log and apply a stroke, offering the fold the tiles the preview already drew
+    /// for it (`PreparedStroke`, §6.2) — what makes pen-up cost a tail rather than a
+    /// stroke.
+    ///
+    /// The offer rides the context for exactly the one push, and the fold accepts it
+    /// by taking it: a slot still full afterwards was declined — the record moved
+    /// between the last fold and the release, or the base did — and is dropped here
+    /// rather than left for a later fold to find.
+    fn commit_stroke(&mut self, rec: StrokeRecord) {
+        self.shared.apply.prepared = self.preview.take_prepared();
+        let offered = self.shared.apply.prepared.is_some();
+        self.commit(ActionKind::CommitStroke(rec));
+        if offered && self.shared.apply.prepared.take().is_none() {
+            self.strokes_reused += 1;
+        }
     }
 
     /// Give up the oldest undo steps if history retention is holding more tile
@@ -2257,6 +2289,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
             pictures,
             gpu,
             substrates,
+            prepared: None,
         },
     };
     GpuBuilt {
