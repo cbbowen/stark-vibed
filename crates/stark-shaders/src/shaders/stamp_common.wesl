@@ -29,12 +29,15 @@ struct TileXform {
     // does not allocate.
     resid: vec4<f32>,
     // The `drain` falloff per canvas px in .x (`BrushParams::drain_px` — the brush's
-    // own knob is quoted per *radius*, and the host divides), and the canvas →
+    // own knob is quoted per *radius*, and the host divides), the canvas →
     // substrate-tile uv scale (1/SUBSTRATE_TILE_PX, zero when the substrate has no relief
-    // to gate with) in .y; .zw unused. Both stroke constants in the only sense that
-    // matters — each is a function of something the fragment already knows, so it is
-    // evaluated there (`stroke_drain`, `substrate_tooth`). `add` is not among them: it
-    // is pen-driven (§6.2) and rides the segment instance, like the radius.
+    // to gate with) in .y, and the **width of the tooth's contact transition** in the
+    // rise's own units in .z (`BrushParams::tooth_softness`, §6.4); .w unused. All
+    // three stroke constants in the only sense that matters — each is a function of
+    // something the fragment already knows, so it is evaluated there (`stroke_drain`,
+    // `substrate_tooth`). The tooth's *depth* is not among them, and neither is `add`:
+    // both are pen-driven (§6.2) and ride the segment instance, like the radius. What
+    // the tip is made of does not change under the hand; how hard it is pressed does.
     paint: vec4<f32>,
     // Color dynamics (§6.2): noise frequency per lookup axis
     // (across the stroke, along it) in .xy with 1/NOISE_TILE_PX pre-folded into
@@ -90,10 +93,12 @@ struct VsOut {
     // segment's signed curvature (1/canvas px); and the `add` source rate — height
     // per unit swept optical depth, as the pen asked for it here (§6.2).
     @location(4) @interpolate(flat) extra: vec4<f32>,
-    // How little give this segment's tip has (§6.4) — the tooth. Per segment, not per
-    // stroke, because the pen can drive it — bearing down presses the tip after the
-    // falls it was bridging, so the grain fills in: the charcoal behaviour.
-    @location(5) @interpolate(flat) tooth: f32,
+    // How much give this segment's tip has against the substrate (§6.4). Per segment,
+    // not per stroke, because the pen can drive it — bearing down gives the tip the
+    // give to press past the falls it was bridging, so the grain fills in: the charcoal
+    // behaviour. 1 is all of it, and the gate short-circuits. The band the contact is
+    // soft over is the *stroke's* (`xf.paint.z`), for the reason given there.
+    @location(5) @interpolate(flat) tooth_give: f32,
     // **The stretch of the tip's travel this point is swept by**, in radius units:
     // where the point sits in the tip frame when the segment ends .x, and where when it
     // starts .y — the tip advancing carries the point backwards through its own
@@ -444,7 +449,7 @@ fn sweep_vertex(
     dir: vec2<f32>,   // unit tangent at the segment start
     geom: vec3<f32>,  // reference radius, arc length, radius ramp
     extra: vec4<f32>, // orientation (turns ∈ [0,1)), arc length at start, curvature, `add`
-    tooth: f32,       // how deep this tip bites into the substrate (§6.4)
+    tooth_give: f32, // how far this tip settles into the substrate (§6.4)
     stretch: vec3<f32>, // the tip drawn out along its facing axis (§6.6)
 ) -> VsOut {
     let radius = geom.x;
@@ -530,7 +535,7 @@ fn sweep_vertex(
     out.dir = dir;
     out.geom = geom;
     out.extra = extra;
-    out.tooth = tooth;
+    out.tooth_give = tooth_give;
     out.range = vec2<f32>(sw.local.x - sw.lr, sw.local.x);
     out.frame = vec3<f32>(sw.local.y, sw.warp, sw.turn);
     out.stretch = stretch;
@@ -645,12 +650,12 @@ fn stroke_drain(arc: f32) -> f32 {
 // what it always did whatever the brush's tooth says.
 fn substrate_tooth(in: VsOut, sw: Sweep) -> f32 {
     let uv_scale = xf.paint.y;
-    if uv_scale <= 0.0 || in.tooth <= 0.0 {
+    if uv_scale <= 0.0 || in.tooth_give >= 1.0 {
         return 1.0;
     }
     let dims = textureDimensions(substrate_tex);
     let g = textureLoad(substrate_tex, substrate_texel_at(in.canvas * uv_scale, dims), 0);
-    return tooth_gate(rise_ahead(g, sweep_tangent(in.dir, sw.turn)), in.tooth);
+    return tooth_gate(rise_ahead(g, sweep_tangent(in.dir, sw.turn)), in.tooth_give, xf.paint.z);
 }
 
 // Bilinear lookup of one orientation slice `zi` at brush-local (xl, yl) ∈ [-1,1]: 0

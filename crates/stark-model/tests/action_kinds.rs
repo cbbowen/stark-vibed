@@ -147,7 +147,8 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             layer: id,
             brush: BrushParams {
                 radius: n,
-                tooth: n,
+                tooth_give: n,
+                tooth_softness: n,
                 stretch: n,
                 drain: n,
                 start_taper_length: n,

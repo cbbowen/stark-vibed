@@ -410,7 +410,8 @@ mod tests {
         let mut rx = GestureRx::default();
         let hostile = BrushParams {
             radius: f32::NAN,
-            tooth: 9.0,
+            tooth_give: -3.0,
+            tooth_softness: f32::NEG_INFINITY,
             dynamics: stark_model::document::BrushDynamics {
                 lift: f32::INFINITY,
                 ..Default::default()
@@ -439,12 +440,21 @@ mod tests {
             .head
             .brush;
         assert!(brush.radius.is_finite(), "a NaN radius sizes a dispatch");
-        assert_eq!(brush.tooth, 1.0, "the tooth is quoted in [0, 1]");
+        assert_eq!(
+            brush.tooth_give, 0.0,
+            "the tooth's give is quoted in [0, 1]"
+        );
+        assert_eq!(
+            brush.tooth_softness,
+            BrushParams::DEFAULT_TOOTH_SOFTNESS,
+            "a contact transition of minus infinity is no width the shader can divide by",
+        );
         // An *infinite* lift falls back to the field's own default rather than to
         // the clamp's ceiling — `finite_or` runs before `clamp01`, on the argument
         // that a value which is not a number says nothing about which end was meant
-        // (`crate::clamp01`'s neighbours). The tooth above is clamped because 9.0 is
-        // a number, just not one in range.
+        // (`crate::clamp01`'s neighbours). The give above is clamped because −3.0 is
+        // a number, just not one in range — and it is poisoned at *that* end because
+        // the knob's other end is its default, where a clamp would prove nothing.
         assert_eq!(brush.dynamics.lift, BrushParams::default().dynamics.lift);
         // …and an ordinary brush is untouched, so a peer's stroke still draws as the
         // peer drew it.

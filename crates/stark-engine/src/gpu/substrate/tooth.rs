@@ -27,7 +27,12 @@ use std::sync::Arc;
 // paint that no longer adds up — a conservation leak proportional to how far they
 // drifted, which `tests/dynamics.rs` would eventually notice and no golden would
 // localize.
-use stark_shaders::mirror::paint_common::{RISE_LIMIT, TOOTH_RISE, TOOTH_SOFTNESS};
+//
+// The transition's *width* used to be a fourth. It is a brush parameter now
+// (`BrushParams::tooth_softness`), so it arrives as an argument and neither side
+// declares it — the shader keeps only the floor under the division, which is a
+// property of the arithmetic rather than a number to agree on.
+use stark_shaders::mirror::paint_common::{RISE_LIMIT, TOOTH_RISE, TOOTH_SOFTNESS_FLOOR};
 
 /// The span the rise is measured across — how far ahead of itself a moving tip reads
 /// the substrate, in **canvas px** (§6.4).
@@ -82,17 +87,18 @@ const SUBSTRATE_ANTIALIAS: f32 = 0.5;
 const BEARING_DIRS: usize = 16;
 
 /// The steepest fall the tip can still follow, negated — the level the gate
-/// thresholds the rise against, from the `tooth` knob (see
-/// `paint_common.wesl::tooth_level`, which explains the `2 − 1/tooth` map and the
-/// inert floor under the division).
-fn tooth_level(tooth: f32) -> f32 {
-    TOOTH_RISE * (2.0 - 1.0 / tooth.max(0.01))
+/// thresholds the rise against, from the `tooth_give` knob (see
+/// `paint_common.wesl::tooth_level`, which explains the `2 − 1/(1 − give)` map, why the
+/// knob is the give rather than its inverse, and the inert floor under the division).
+fn tooth_level(give: f32) -> f32 {
+    TOOTH_RISE * (2.0 - 1.0 / (1.0 - give).max(0.01))
 }
 
 /// The share of its paint a texel receives, given the rise `d` of the substrate along
-/// the tip's travel there (`paint_common.wesl::tooth_gate`).
-fn tooth_gate(d: f32, tooth: f32) -> f32 {
-    let t = ((d - tooth_level(tooth)) / TOOTH_SOFTNESS + 0.5).clamp(0.0, 1.0);
+/// the tip's travel there (`paint_common.wesl::tooth_gate`) — the give the tip settles
+/// with, and the width of the band it comes into contact over.
+fn tooth_gate(d: f32, give: f32, softness: f32) -> f32 {
+    let t = ((d - tooth_level(give)) / softness.max(TOOTH_SOFTNESS_FLOOR) + 0.5).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
@@ -320,8 +326,8 @@ impl Bearing {
         Self(Arc::new(tabulate_bearing(substrate)))
     }
 
-    pub(super) fn at(&self, tooth: f32, dir: [f32; 2]) -> f32 {
-        if tooth <= 0.0 {
+    pub(super) fn at(&self, give: f32, softness: f32, dir: [f32; 2]) -> f32 {
+        if give >= 1.0 {
             return 1.0;
         }
         let turns = dir[1].atan2(dir[0]) / std::f32::consts::TAU * BEARING_DIRS as f32;
@@ -329,18 +335,18 @@ impl Bearing {
         let f = turns - lo;
         let i0 = (lo as i32).rem_euclid(BEARING_DIRS as i32) as usize;
         let i1 = (i0 + 1) % BEARING_DIRS;
-        let b0 = self.row_mean(i0, tooth);
-        let b1 = self.row_mean(i1, tooth);
+        let b0 = self.row_mean(i0, give, softness);
+        let b1 = self.row_mean(i1, give, softness);
         b0 + (b1 - b0) * f
     }
 
     /// The mean gate over one tabulated direction's rise distribution. Bins are the
     /// encode lattice itself ([`tabulate_bearing`]), so [`decode_rise`] is what turns
     /// one back into the rise the gate reads.
-    fn row_mean(&self, dir: usize, tooth: f32) -> f32 {
+    fn row_mean(&self, dir: usize, give: f32, softness: f32) -> f32 {
         let mut mean = 0.0;
         for (bin, share) in self.0[dir].iter().enumerate() {
-            mean += share * tooth_gate(decode_rise(bin as u8), tooth);
+            mean += share * tooth_gate(decode_rise(bin as u8), give, softness);
         }
         mean
     }
@@ -350,6 +356,7 @@ impl Bearing {
 mod tests {
     use super::*;
     use crate::gpu::substrate::SUBSTRATE_TILE_PX;
+    use stark_model::document::BrushParams;
 
     // `the_host_and_the_shader_agree_on_the_tooths_constants` stood here, reading all
     // three out of the linked `stamp()` and comparing them against this module's own
@@ -386,12 +393,19 @@ mod tests {
     /// The mean gate over one tabulated direction, off a table rather than a `SubstrateMap`
     /// — everything under test here is the model's arithmetic, and none of it needs a
     /// GPU to be wrong.
-    fn row_mean(hist: &[[f32; 256]; BEARING_DIRS], dir: usize, tooth: f32) -> f32 {
+    fn row_mean_at(hist: &[[f32; 256]; BEARING_DIRS], dir: usize, give: f32, softness: f32) -> f32 {
         hist[dir]
             .iter()
             .enumerate()
-            .map(|(bin, share)| share * tooth_gate(decode_rise(bin as u8), tooth))
+            .map(|(bin, share)| share * tooth_gate(decode_rise(bin as u8), give, softness))
             .sum()
+    }
+
+    /// [`row_mean_at`] at the contact transition a brush gets when it does not say —
+    /// the width every test below the softness pair reads through, so each of them is
+    /// still a statement about the *give* alone.
+    fn row_mean(hist: &[[f32; 256]; BEARING_DIRS], dir: usize, give: f32) -> f32 {
+        row_mean_at(hist, dir, give, BrushParams::DEFAULT_TOOTH_SOFTNESS)
     }
 
     /// **The sign of the whole model.** Dragged up the near faces of a ramped substrate a
@@ -407,12 +421,12 @@ mod tests {
     fn a_tip_dragged_up_the_faces_contacts_more_than_one_dragged_down_them() {
         let (w, h) = (256, 256);
         let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, SUBSTRATE_TILE_PX));
-        for tooth in [0.3, 0.5, 0.7] {
-            let up = row_mean(&hist, 0, tooth);
-            let down = row_mean(&hist, BEARING_DIRS / 2, tooth);
+        for give in [0.3, 0.5, 0.7] {
+            let up = row_mean(&hist, 0, give);
+            let down = row_mean(&hist, BEARING_DIRS / 2, give);
             assert!(
                 up > down * 1.05,
-                "at tooth {tooth} a tip going up the ramps bore on {up} of the substrate \
+                "at give {give} a tip going up the ramps bore on {up} of the substrate \
                  and one going down them on {down} — the anticipation has no sign, or \
                  the wrong one"
             );
@@ -428,38 +442,35 @@ mod tests {
         let (w, h) = (256, 256);
         let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, SUBSTRATE_TILE_PX));
         let (quarter, three) = (BEARING_DIRS / 4, 3 * BEARING_DIRS / 4);
-        for tooth in [0.3, 0.5, 0.7] {
-            let (a, b) = (
-                row_mean(&hist, quarter, tooth),
-                row_mean(&hist, three, tooth),
-            );
+        for give in [0.3, 0.5, 0.7] {
+            let (a, b) = (row_mean(&hist, quarter, give), row_mean(&hist, three, give));
             assert!(
                 (a - b).abs() < 1e-6,
-                "at tooth {tooth} the two crossings of a substrate with no slope along \
+                "at give {give} the two crossings of a substrate with no slope along \
                  them disagreed: {a} vs {b}"
             );
         }
     }
 
-    /// **A brush with no tooth is full contact, exactly, on any substrate** — flat or as
-    /// steep as the encoding can carry — and this is where that is pinned without a
-    /// GPU. It is not the callers' `tooth <= 0` guard being retested: the point is
-    /// the *approach* to zero, [`tooth_level`] diving far past any encodable fall as
-    /// the give grows, so the gate is 1.0 over the whole rise range well before the
-    /// knob reaches zero and a pen mapping that sweeps through it lands on the
-    /// guard's value continuously rather than with a pop.
+    /// **A brush with full give is full contact, exactly, on any substrate** — flat or
+    /// as steep as the encoding can carry — and this is where that is pinned without a
+    /// GPU. It is not the callers' `give >= 1` guard being retested: the point is the
+    /// *approach* to the top, [`tooth_level`] diving far past any encodable fall as the
+    /// give grows, so the gate is 1.0 over the whole rise range well before the knob
+    /// reaches 1 and a pen mapping that sweeps through it lands on the guard's value
+    /// continuously rather than with a pop.
     #[test]
-    fn a_brush_with_no_tooth_is_full_contact_on_any_substrate() {
+    fn a_brush_with_full_give_is_full_contact_on_any_substrate() {
         let (w, h) = (64, 64);
         for substrate in [vec![90u8; (w * h) as usize], ramps(w, h, 8)] {
             let hist = tabulate_bearing(&pack_substrate(&substrate, w, h, SUBSTRATE_TILE_PX));
             for dir in 0..BEARING_DIRS {
                 assert_eq!(
-                    row_mean(&hist, dir, 0.0),
+                    row_mean(&hist, dir, BrushParams::DEFAULT_TOOTH_GIVE),
                     1.0,
-                    "direction {dir} gated a brush with no tooth at less than full \
+                    "direction {dir} gated a brush with full give at less than full \
                      contact — the follow limit is not outrunning the encodable falls \
-                     as the knob closes"
+                     as the knob opens"
                 );
             }
         }
@@ -492,30 +503,30 @@ mod tests {
         // One canvas px per texel, then four: the reach spans 2 texels and then 6.
         let coarse = tabulate_bearing(&pack_substrate(&ramps, w, h, 256.0));
         let fine = tabulate_bearing(&pack_substrate(&ramps, w, h, 64.0));
-        for tooth in [0.6, 0.8, 1.0] {
-            let (c, f) = (row_mean(&coarse, 0, tooth), row_mean(&fine, 0, tooth));
+        for give in [0.4, 0.2, 0.0] {
+            let (c, f) = (row_mean(&coarse, 0, give), row_mean(&fine, 0, give));
             assert!(
                 c > f * 1.05,
-                "at tooth {tooth} the substrate laid coarser bore on {c} of the substrate and                  the finer one on {f} — the scale is not reaching the bake"
+                "at give {give} the substrate laid coarser bore on {c} of the substrate and                  the finer one on {f} — the scale is not reaching the bake"
             );
         }
     }
 
-    /// **The top of the knob still lays paint** — the reason the gate reads the
-    /// substrate's slope and not its height. A full-tooth tip demands rising substrate, and
-    /// a real substrate *has* rising substrate: dragged up the ramps it bears on the long
-    /// climb faces (most of the area), dragged down them on the short steep ones
-    /// (little, but strictly some). A height threshold at the top of its range gated
-    /// everything to nothing, which made `tooth = 1` a knob position with no use.
+    /// **The bottom of the knob still lays paint** — the reason the gate reads the
+    /// substrate's slope and not its height. A tip with no give demands rising substrate,
+    /// and a real substrate *has* rising substrate: dragged up the ramps it bears on the
+    /// long climb faces (most of the area), dragged down them on the short steep ones
+    /// (little, but strictly some). A height threshold at the end of its range gated
+    /// everything to nothing, which made `give = 0` a knob position with no use.
     #[test]
-    fn full_tooth_still_bears_on_the_faces_that_rise_to_meet_it() {
+    fn a_tip_with_no_give_still_bears_on_the_faces_that_rise_to_meet_it() {
         let (w, h) = (256, 256);
         let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, SUBSTRATE_TILE_PX));
-        let up = row_mean(&hist, 0, 1.0);
-        let down = row_mean(&hist, BEARING_DIRS / 2, 1.0);
+        let up = row_mean(&hist, 0, 0.0);
+        let down = row_mean(&hist, BEARING_DIRS / 2, 0.0);
         assert!(
             up > 0.5,
-            "dragged up the ramps at full tooth the tip bears on only {up} of the \
+            "dragged up the ramps with no give the tip bears on only {up} of the \
              substrate — the climb faces should carry it"
         );
         assert!(
@@ -525,7 +536,67 @@ mod tests {
         );
         assert!(
             up < 1.0 && down < 1.0,
-            "full tooth gated nothing at all: {up}, {down}"
+            "a tip with no give gated nothing at all: {up}, {down}"
         );
+    }
+
+    /// **Softening the contact moves the bearing towards a half**, from whichever side
+    /// it started — which is what says the second knob is a *width* and not a second
+    /// depth. A narrow band is nearly an indicator of "does this texel clear the
+    /// follow limit", so the bearing is the share of the substrate that does; widening
+    /// it takes from the faces that bore fully and gives to the ones that were bridged
+    /// entirely, and in the limit every texel takes the same half share. That is the
+    /// charcoal: the stick crumbles into the valleys instead of spanning them, so the
+    /// mark stops being a level set of the grain and becomes a tone across it.
+    ///
+    /// Two depths, one either side of the half, so the claim is about the *direction*
+    /// of the move and cannot be satisfied by a gate that merely got smaller.
+    #[test]
+    fn a_softer_contact_bears_on_the_substrate_more_evenly() {
+        let (w, h) = (256, 256);
+        let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, SUBSTRATE_TILE_PX));
+        for (dir, give) in [(0, 0.0), (BEARING_DIRS / 2, 0.0), (0, 0.6)] {
+            let hard = row_mean_at(&hist, dir, give, BrushParams::DEFAULT_TOOTH_SOFTNESS);
+            let soft = row_mean_at(&hist, dir, give, 8.0 * BrushParams::DEFAULT_TOOTH_SOFTNESS);
+            assert!(
+                (soft - 0.5).abs() < (hard - 0.5).abs(),
+                "direction {dir} at give {give} bore on {hard} of the substrate through the \
+                 default band and {soft} through one eight times as wide — widening the \
+                 transition is not evening the contact out"
+            );
+        }
+    }
+
+    /// **The floor under the division is inert.** A brush asking for no softness at all
+    /// asks for a hard threshold, and `TOOTH_SOFTNESS_FLOOR` has to hand it one rather
+    /// than a band of its own: the floor is two orders under the encode lattice's step,
+    /// so no rise the map can carry lands inside it.
+    ///
+    /// Checked on the gate rather than through a bearing, because what is being pinned
+    /// is that the two are the *same function* on every value the lattice produces —
+    /// which a mean over them could hide by averaging. The premise is asserted beside
+    /// the conclusion: a rise landing *inside* the floor's band would gate to something
+    /// between 0 and 1 legitimately, so the test says that none does rather than
+    /// leaving that to luck.
+    #[test]
+    fn no_softness_at_all_is_the_hard_threshold_it_asks_for() {
+        for give in [0.7, 0.4, 0.0] {
+            let level = tooth_level(give);
+            for bin in 0..=u8::MAX {
+                let d = decode_rise(bin);
+                assert!(
+                    (d - level).abs() > TOOTH_SOFTNESS_FLOOR,
+                    "the encode lattice puts a rise ({d}) inside the floor's own band \
+                     at give {give} (level {level}) — the floor is no longer inert"
+                );
+                let gate = tooth_gate(d, give, 0.0);
+                let hard = f32::from(d >= level);
+                assert_eq!(
+                    gate, hard,
+                    "at give {give} a rise of {d} gated to {gate} with no softness \
+                     asked for, where the threshold it straddles says {hard}"
+                );
+            }
+        }
     }
 }

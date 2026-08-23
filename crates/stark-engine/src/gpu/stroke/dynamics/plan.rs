@@ -115,6 +115,11 @@ impl SlotCommon<'_> {
             resid: self.k.resid,
             substrate_uv_scale: self.substrate[0],
             substrate_uv_bias: Vec2::new(self.substrate[1], self.substrate[2]),
+            // A stroke constant like the color above it, and off `k` for the same
+            // reason: it is the one number the tooth needs that the pen never moves,
+            // so every slot kind carries the same width and the swept path's
+            // `TileXform` is demonstrably reading the same resolution of it.
+            tooth_softness: self.k.tooth_softness,
             ..Slot::default()
         }
     }
@@ -206,15 +211,17 @@ struct Slot {
     noise_off: [f32; 2],
     /// Arc length at the slot's start (canvas px) — the noise's third axis.
     dist: f32,
-    /// The tooth's bearing fraction: the share of the substrate a tip with this `tooth`,
+    /// The tooth's bearing fraction: the share of the substrate a tip with this tooth,
     /// going this way, stands on (§6.4). What the *tool* books its half of the
     /// transfer against, having no substrate of its own. 1 where there is nothing to bite.
     bearing: f32,
     /// The lateral canvas diffusion rate (≤ 0) — nonzero **only** on a bleed slot.
     lambda_bleed: f32,
-    /// How little give this slot's tip has (0 = the substrate gates nothing), over the
-    /// region texel → substrate map `uv = rt · substrate_uv_scale + substrate_uv_bias` (§6.4).
-    tooth: f32,
+    /// How little give this slot's tip has (0 = the substrate gates nothing), how wide
+    /// the transition around that is, and the region texel → substrate map
+    /// `uv = rt · substrate_uv_scale + substrate_uv_bias` (§6.4).
+    tooth_give: f32,
+    tooth_softness: f32,
     substrate_uv_scale: f32,
     substrate_uv_bias: Vec2,
     /// The extent cell's edge in texels (§6.2) — 1 is the exact per-texel deposit,
@@ -248,13 +255,20 @@ struct Slot {
 }
 
 impl Default for Slot {
-    /// Zero everywhere except the three fields whose neutral value is **1**, each for
-    /// the same reason: they are *scales*, and a zeroed scale does not mean "none of
-    /// this" but "none of the thing it multiplies". `bearing` is the share of the
+    /// Zero everywhere except the four fields whose neutral value is **1**. Three are
+    /// there for one reason: they are *scales*, and a zeroed scale does not mean "none
+    /// of this" but "none of the thing it multiplies". `bearing` is the share of the
     /// substrate a tip stands on where there is nothing to bite — zeroed it would book the
     /// tool's half of every transfer against no substrate at all, which is not "no tooth"
     /// but "infinite tooth". `cell` at 1 is the exact per-texel deposit. `frame_scale`
     /// at 1 is an unpadded volume, where the frame and the tip are one thing.
+    ///
+    /// The fourth, `tooth_give`, is there for a reason of its own: the knob runs the
+    /// other way (`BrushParams::tooth_give`), so a zeroed lane is not "no tooth" but
+    /// the driest tip there is. 1 is a tip that follows every fall, which is what a
+    /// bleed slot needs — it is the only lane keeping the lateral flux clear of the
+    /// substrate (`dynamics.wesl::substrate_tooth`) — and what a slot kind that never
+    /// heard of the tooth ought to get.
     fn default() -> Self {
         Self {
             start: Vec2::ZERO,
@@ -278,7 +292,11 @@ impl Default for Slot {
             dist: 0.0,
             bearing: 1.0,
             lambda_bleed: 0.0,
-            tooth: 0.0,
+            tooth_give: 1.0,
+            // Never read where `tooth_give` is 1, so the value is free; zero rather
+            // than the brush's default because a slot that reads it is a slot
+            // `SlotCommon` filled, and this is what an unfilled one looks like.
+            tooth_softness: 0.0,
             substrate_uv_scale: 0.0,
             substrate_uv_bias: Vec2::ZERO,
             cell: 1.0,
@@ -334,7 +352,8 @@ impl Slot {
             substrate_uv_bias: self.substrate_uv_bias.to_array(),
             rect_origin: [self.rect_origin.x as i32, self.rect_origin.y as i32],
             cell_anchor: [self.cell_anchor.x as i32, self.cell_anchor.y as i32],
-            tooth: self.tooth,
+            tooth_give: self.tooth_give,
+            tooth_softness: self.tooth_softness,
             tooth_bearing: self.bearing,
             substrate_uv_scale: self.substrate_uv_scale,
             cell_px: self.cell as i32,
@@ -599,16 +618,21 @@ pub(super) fn dynamics_plan(
     // which is what keeps it the same number the swept path writes.
     let substrate_uv_bias = region_origin * consts.substrate_uv_scale;
     // What share of the substrate a tip with this tooth, going this way, stands on — per
-    // segment because the tooth is modulated per segment (§6.2) and because the
-    // direction is the segment's own. The canvas side of the exchange asks the substrate
+    // segment because the tooth's *give* is modulated per segment (§6.2) and because
+    // the direction is the segment's own. The canvas side of the exchange asks the substrate
     // ahead of each texel; the tool has none of its own and books against this mean,
     // which is what makes a toothed smear conserve (`SubstrateMap::bearing`).
+    //
+    // The width of the transition is the brush's outright, so it closes over rather
+    // than being passed in: it is the same number on every segment, and the mean has
+    // to be taken through the very gate the canvas side evaluates or the two halves
+    // of the transfer stop agreeing.
     //
     // At the segment's **midpoint** tangent, the same second-order choice `mid` is
     // sampled at below: a curved segment's canvas side reads a tangent that turns
     // across the sweep, and the midpoint is the representative of that whose error is
     // second order where either endpoint's would be first.
-    let bearing = |tooth: f32, dir: Vec2| substrate.bearing(tooth, dir.to_array());
+    let bearing = |give: f32, dir: Vec2| substrate.bearing(give, b.tooth_softness, dir.to_array());
     // λ per axis is [`lambda`](super::super::budget::lambda) — one definition, the
     // same clamp the flattening budget prices. Taken **per segment**, off the rates
     // the segment generator resolved from the pen (§6.2), rather than once for the
@@ -723,14 +747,14 @@ pub(super) fn dynamics_plan(
                         // number the swept path now reads off its instance.
                         add: paint.add,
                         curvature: sw.curvature,
-                        tooth: paint.tooth,
+                        tooth_give: paint.tooth_give,
                         cell: cell as f32,
                         cell_anchor,
                         // No `bleed_reach` and no `lambda_bleed`: the lateral flux runs
                         // only on the dedicated firings, so a painting segment takes
                         // the no-bleed path bit-for-bit (§6.2). Both are
                         // `Slot::default`'s zero.
-                        ..common.painting(sw.dist, bearing(paint.tooth, mid_dir))
+                        ..common.painting(sw.dist, bearing(paint.tooth_give, mid_dir))
                     }
                     .pack(),
                 }
@@ -832,7 +856,7 @@ pub(super) fn dynamics_plan(
                         // was laying through. What the valleys do not take stays on the
                         // tool, which is discarded — a knife lifted off a canvas keeps
                         // what it did not reach (§6.4).
-                        tooth: paint.tooth,
+                        tooth_give: paint.tooth_give,
                         // No `add`: the source is a rate per unit of travel, and there
                         // is none. No curvature, for the same reason — the frame is a
                         // standing tip. No bleed reach: a settle is not a firing. And no
@@ -1209,7 +1233,8 @@ mod tests {
             dist: 29.0,
             bearing: 30.0,
             lambda_bleed: 31.0,
-            tooth: 32.0,
+            tooth_give: 32.0,
+            tooth_softness: 48.0,
             substrate_uv_scale: 33.0,
             substrate_uv_bias: Vec2::new(34.0, 35.0),
             resid: [36.0, 37.0, 38.0, 39.0],
@@ -1256,7 +1281,8 @@ mod tests {
         assert_eq!(packed.drain, 16.0);
         assert_eq!(packed.noise_amp, [24.0, 25.0, 26.0]);
         assert_eq!(packed.noise_off, [27.0, 28.0]);
-        assert_eq!(packed.tooth, 32.0);
+        assert_eq!(packed.tooth_give, 32.0);
+        assert_eq!(packed.tooth_softness, 48.0);
         assert_eq!(
             packed.stretch,
             [45.0, 46.0, 47.0],
@@ -1264,15 +1290,18 @@ mod tests {
         );
     }
 
-    /// The neutral slot is neutral *in the shader's terms*, which for five fields is
-    /// not zero. Each of them is a **scale**, and a zeroed scale does not say "none of
+    /// The neutral slot is neutral *in the shader's terms*, which for six fields is
+    /// not zero. Five are **scales**, and a zeroed scale does not say "none of
     /// this" but "none of the thing it multiplies": a `bearing` of 0 books the tool's
     /// half of every transfer against no substrate at all — infinite tooth, not absent
     /// tooth; a `cell` of 0 is no deposit grid rather than the exact one; a
     /// `frame_scale` of 0 is a tip of no width rather than an unpadded volume; and a
     /// zeroed stretch is a tip of no width whose every prefix difference is divided by
-    /// it (§6.6). A derived `Default` would make every slot kind that leaves one alone
-    /// quietly wrong, and this is the list that says which they are.
+    /// it (§6.6). The sixth, `tooth_give`, is not a scale but a knob that runs the
+    /// other way (`BrushParams::tooth_give`): zeroed it is the driest tip there is,
+    /// where 1 is the short-circuit a slot with no tooth wants. A derived `Default`
+    /// would make every slot kind that leaves one alone quietly wrong, and this is the
+    /// list that says which they are.
     #[test]
     fn the_default_slot_is_neutral_rather_than_zeroed() {
         let d = Slot::default().pack();
@@ -1283,24 +1312,29 @@ mod tests {
             "the default frame scale must be 1 — unpadded — not 0"
         );
         assert_eq!(
+            d.tooth_give, 1.0,
+            "the default give must be 1 — full contact — not 0, which is the dry mark"
+        );
+        assert_eq!(
             d.stretch,
             [1.0, 0.0, 1.0],
             "the default stretch must be the identity map, not zeroes"
         );
         // And everything else is zero, which for the rest of the slot *is* neutral —
-        // stated as the complement of the four above so a new member has to be
+        // stated as the complement of the five above so a new member has to be
         // classified rather than silently joining whichever list it was written near.
         let z = Stamp {
             tooth_bearing: 1.0,
             cell_px: 1,
             frame_scale: 1.0,
+            tooth_give: 1.0,
             stretch: [1.0, 0.0, 1.0],
             ..Default::default()
         };
         assert_eq!(
             bytemuck::bytes_of(&d),
             bytemuck::bytes_of(&z),
-            "a member of the default slot is neither zero nor one of the four scales",
+            "a member of the default slot is neither zero nor one of the five neutrals",
         );
     }
 

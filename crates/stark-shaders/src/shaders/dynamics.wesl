@@ -227,11 +227,23 @@ struct Stamp {
     // happens to put around them, without the shader ever learning a canvas coordinate
     // too large for an f32 to hold exactly.
     cell_anchor: vec2<i32>,
-    // The deposition tooth (§6.4): how little give this segment's tip has. 0 means the
-    // substrate does not gate anything.
-    tooth: f32,
+    // The deposition tooth (§6.4): how much give this segment's tip has against the
+    // substrate. 1 is all of it, and means the substrate does not gate anything.
+    //
+    // Neutral at 1 rather than 0, like `tooth_bearing` and `cell_px`, and for a reason
+    // of its own: this knob runs the other way (`BrushParams::tooth_give`), so a zeroed
+    // lane is not "no tooth" but the driest tip there is.
+    tooth_give: f32,
+    // How wide the contact transition around that level is, in the rise's own units
+    // (`BrushParams::tooth_softness`, §6.4) — how gradually a texel goes from taking
+    // none of the tip's paint to taking all of it. A stroke constant, unlike the give
+    // beside it: what the tip is made of does not change under the hand. It is a
+    // member here rather than a second uniform for `drain`'s reason — this loop's
+    // uniform is per *slot*, so a stroke constant simply rides every slot.
+    tooth_softness: f32,
     // The tooth's **bearing fraction** — the share of the substrate a tip with this
-    // `tooth` stands on, averaged over the whole substrate, along **this segment's own
+    // `tooth_give` and `tooth_softness` stands on, averaged over the whole substrate,
+    // along **this segment's own
     // direction of travel** (`Surface::bearing`, §6.4). It is what the *tool* books its
     // half of the transfer against: a canvas texel scales its exposure by the substrate
     // under itself, and a reservoir cell, which has no substrate of its own, scales by
@@ -607,19 +619,19 @@ fn stroke_drain(arc: f32) -> f32 {
 //
 // Both guards return exactly 1.0: a brush with no tooth, or a substrate with no relief,
 // leaves every rate below the float it always was. The first is also what keeps the
-// **bleed slots** clear of all of this — they carry `tooth = 0` (`bleed_fires`), so a
+// **bleed slots** clear of all of this — they carry `tooth_give = 1` (`bleed_fires`), so a
 // lateral flux is never gated by the substrate and never reads a direction. That is not
 // bookkeeping: bleed is wet paint spreading sideways on the canvas, not a tip dragged
 // over it, so there is no travel to read the substrate's rise along, and gating it would
 // break the flux's antisymmetry (the two threads of a pair sit over different substrate).
 fn substrate_tooth(rt: vec2<i32>, turn: f32) -> f32 {
-    if st.substrate_uv_scale <= 0.0 || st.tooth <= 0.0 {
+    if st.substrate_uv_scale <= 0.0 || st.tooth_give >= 1.0 {
         return 1.0;
     }
     let uv = vec2<f32>(rt) * st.substrate_uv_scale + st.substrate_uv_bias;
     let dims = textureDimensions(substrate_tex);
     let g = textureLoad(substrate_tex, substrate_texel_at(uv, dims), 0);
-    return tooth_gate(rise_ahead(g, sweep_tangent(st.dir, turn)), st.tooth);
+    return tooth_gate(rise_ahead(g, sweep_tangent(st.dir, turn)), st.tooth_give, st.tooth_softness);
 }
 
 // The extent's **optical depth** for a given coverage — the currency every
@@ -1343,7 +1355,7 @@ const BLEED_OFFS = array<vec2<i32>, 4>(
 // each and store the exact zero they would have computed.
 //
 // The gate is deliberately not here. `w` is the *un-toothed* weight — a firing carries
-// `tooth = 0` by construction (`bleed_fires`), because bleed is wet paint spreading
+// `tooth_give = 1` by construction (`bleed_fires`), because bleed is wet paint spreading
 // sideways rather than a tip dragged over grain, and gating it would break the
 // antisymmetry outright: the two threads of a pair sit over different substrate. Computing
 // it once, here, is what enforces that, where the deposit's own `w_t` used to be free to

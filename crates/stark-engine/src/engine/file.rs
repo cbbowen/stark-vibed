@@ -377,7 +377,8 @@ impl Engine {
         self.shared.apply.substrates.bytes(id)
     }
 
-    /// What share of a substrate a tip with this `tooth`, travelling along `dir`, stands
+    /// What share of a substrate a tip with this tooth — the `give` it settles with
+    /// and the `softness` of its contact transition — travelling along `dir`, stands
     /// on (§6.4) — the bearing fraction the tool books its half of a toothed transfer
     /// against.
     ///
@@ -396,7 +397,8 @@ impl Engine {
     pub fn substrate_bearing(
         &self,
         id: SubstrateId,
-        tooth: f32,
+        give: f32,
+        softness: f32,
         dir: stark_model::geom::Vec2,
     ) -> f32 {
         let substrate = Substrate {
@@ -407,7 +409,7 @@ impl Engine {
             .apply
             .substrates
             .get(&self.shared.gpu, substrate)
-            .bearing(tooth, dir.to_array())
+            .bearing(give, softness, dir.to_array())
     }
 
     /// Import a canvas substrate from a height-map PNG, returning the id that names it

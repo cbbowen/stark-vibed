@@ -482,21 +482,59 @@ d(x, d̂) = ahead(x)·d̂
 where `d̂` is the tip's travel *at that texel* and `ahead` is the rise the substrate
 makes over one `TOOTH_REACH` (3 canvas px) along each axis.
 
-`BrushParams::tooth` is the give, inverted — the gate thresholds the rise
+**The tooth is two knobs, and they are different questions.** Where the
+threshold sits, and how wide the band around it is.
+
+`BrushParams::tooth_give` is the give itself — the gate thresholds the rise
 against the steepest fall the tip can still follow, and the knob walks that
-limit through three stations (`tooth_level`, a `2 − 1/tooth` map): at 0 the give
-is infinite, the tip tracks any fall and the substrate is ignored, exactly — the
-solid default; at ½ there is no give left going down, so the tip holds its level
-— it touches whatever is flat or rising and bridges every fall, which on the
-bundled substrates is almost exactly half the substrate (`SubstrateMap::bearing` measures
-0.50 on rough, 0.51 on linen); at 1 the tip *demands* substrate rising at the
-contact scale (`TOOTH_RISE`, ~the substrates' own mean |rise|) before it presses,
-and only the leading faces print — 13% of rough, 25% of linen: the dry mark,
-still a mark. The transition is softened over a band (`TOOTH_SOFTNESS`, sized to
-the substrates' interquartile rise) because a hard threshold is a binary indicator
-per texel: correct in the mean, and at canvas resolution it aliases into speckle
-that reads as dither. A cubic smoothstep, for the reason `taper_profile` is a
-polynomial.
+limit through three stations (`tooth_level`, a `2 − 1/(1 − give)` map): at 1 the
+give is infinite, the tip tracks any fall and the substrate is ignored, exactly
+— the solid default; at ½ there is no give left going down, so the tip holds its
+level — it touches whatever is flat or rising and bridges every fall, which on
+the bundled substrates is almost exactly half the substrate (`SubstrateMap::bearing`
+measures 0.50 on rough, 0.51 on linen); at 0 the tip *demands* substrate rising
+at the contact scale (`TOOTH_RISE`, ~the substrates' own mean |rise|) before it
+presses, and only the leading faces print — 13% of rough, 25% of linen: the dry
+mark, still a mark.
+
+**The knob is the give and not the bite, and that is a fact about the pen rather
+than about the substrate.** A `Modulation` only ever scales a parameter *down*
+(§6.2), so which way this knob runs decides which way pressure reads. Quoted as
+the depth of the bite, a pressure mapping made a light touch solid and a hard
+press dry — backwards for the one mapping the axis exists for. Quoted as the
+give, `Modulations::tooth_give` on pressure *is* the charcoal: barely touching
+the paper the tip has no give and prints the peaks alone, borne down it presses
+past the falls it was bridging and the grain fills in. The cost is that the
+slider's interesting end is its left one, and the mapping is worth more than the
+habit.
+
+`BrushParams::tooth_softness` is the width of the transition around that level,
+in the rise's own units, and it is what the tip is *made of* rather than how hard
+it is pressed. A hard threshold is a binary indicator per texel: correct in the
+mean, and at canvas resolution it aliases into speckle that reads as dither — so
+the default (0.06, the bundled substrates' interquartile rise) spans the grain's
+natural variation and the mark reads as a level set of it, which is paint sitting
+on the substrate. A charcoal or a soft graphite does not sit on it: the stick
+crumbles into the valleys instead of spanning them, its contact comes on over
+several times that width, and the grain reads as a tone across the mark rather
+than a pattern in it. Widening the band moves the bearing towards a half from
+whichever side it started — it takes from the faces that bore fully and gives to
+the ones that were bridged entirely — which
+`a_softer_contact_bears_on_the_substrate_more_evenly` measures. Past about `2·RISE_LIMIT` every rise the map can encode
+is inside the band and the gate is a flat scale on the deposit, which is where
+the frontend's slider stops. A cubic smoothstep, for the reason `taper_profile`
+is a polynomial.
+
+The *give* is a modulation target and the *softness* is not, and that split is
+the model: pressure changes how hard a tip is pressed, but no amount of it makes
+a charcoal stick out of graphite. So the give rides the segment instance
+(`SegmentInstance::tooth_give`, `Stamp::tooth_give`) and the softness rides the
+stroke (`TileXform::paint.z`, and `Stamp::tooth_softness` because that loop's
+uniform is per slot). The softness default lives on the brush and nowhere else —
+the shader declares no constant for it, only the inert floor that keeps a
+softness of zero from being a division by zero. Both lanes are **neutral at 1**
+rather than at zero: `tooth_give = 1` is the short-circuit every bleed slot and
+every untoothed brush takes, and a zeroed lane would be the driest tip there is.
 
 Three things follow from writing `ahead` as a difference across a distance
 rather than as a gain on a pointwise slope:
@@ -527,19 +565,19 @@ rather than as a gain on a pointwise slope:
 
 `d̂` is the tip's tangent carried round its own arc (`sweep_at`), not the
 segment's start tangent, so a curve's tooth does not depend on where the
-flattener cut it. `tooth = 0` still gates at `1.0` to the bit however steep the
+flattener cut it. `tooth_give = 1` still gates at `1.0` to the bit however steep the
 substrate — which is what every golden in the suite paints at — twice over: the
 shaders guard it before the map is read, and the follow limit dives past any
-encodable fall well before the knob reaches zero, so a pen mapping sweeping
-through 0 meets the guard continuously.
+encodable fall well before the knob reaches 1, so a pen mapping sweeping
+through it meets the guard continuously.
 
 Three decisions do most of the work, and each is about *where* it is applied
 rather than what it computes:
 
 - **The grain is the canvas's, not the brush's.** A pencil and a loaded brush on
   one substrate see one grain; the brush says only how much give it meets it with.
-  That is why `SubstrateId` is where the texture lives and `tooth` is the only
-  thing on `BrushParams`. Painter and Procreate put the grain on the brush, which
+  That is why `SubstrateId` is where the texture lives and the tooth's two knobs
+  are the only thing on `BrushParams`. Painter and Procreate put the grain on the brush, which
   is why switching brushes there changes the paper under a half-finished
   painting.
 - **It scales the exposure, not the transfer**, and that one choice is what makes
@@ -602,7 +640,7 @@ The gate stops at deposition, which is where `add` and `deposit` put paint on th
 canvas. **`bleed` is never gated by the substrate**, and that is not an omission:
 bleed is wet paint spreading sideways *on* the canvas rather than a tip dragged
 over it, so there is no travel to read the substrate's rise along. Structurally,
-bleed slots carry `tooth = 0` (`bleed_fires`), which short-circuits the gate to
+bleed slots carry `tooth_give = 1` (`bleed_fires`), which short-circuits the gate to
 exactly `1.0` before any of this is consulted — which also keeps the lateral flux
 antisymmetric, since the two threads of a pair stand over different substrate and
 would otherwise disagree about their shared edge.
@@ -854,7 +892,7 @@ module is named for the file, since `lib` is a placement rule — binding-free l
 
 A constant that disagrees is worse-behaved than a struct that does. A struct
 usually surfaces as a wgpu validation error; a constant leaves both sides rendering
-perfectly plausible pixels that no longer add up. The tooth's three are the sharpest
+perfectly plausible pixels that no longer add up. The tooth's two are the sharpest
 case — the CPU averages the gate over the substrate's rise distribution for the
 *tool's* half of a transfer while the shader evaluates it per texel for the
 *canvas* half, so drift is a conservation leak proportional to how far they moved

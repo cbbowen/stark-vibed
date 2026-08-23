@@ -156,7 +156,7 @@ impl Sweep {
 
 /// The brush's paint rates **as the pen asked for them here** (§6.2): the four axes of
 /// [`BrushDynamics`](stark_model::document::BrushDynamics) scaled by whatever
-/// [`Modulations`](stark_model::document::Modulations) maps onto each, plus the tooth.
+/// [`Modulations`](stark_model::document::Modulations) maps onto each, plus the tooth's depth.
 ///
 /// They live on the segment rather than on the stroke because that is now what they
 /// are — the pen attributes they follow are interpolated per segment, and the
@@ -167,16 +167,43 @@ impl Sweep {
 ///
 /// `charge` is absent on purpose: it is the tool's *initial* load, one number for the
 /// whole stroke, and there is no per-segment version of it to carry.
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone)]
 pub(super) struct Paint {
     pub(super) add: f32,
     pub(super) lift: f32,
     pub(super) deposit: f32,
     pub(super) bleed: f32,
-    /// How deep this segment's tip bites into the canvas substrate (§6.4) — the brush's
-    /// `tooth`, likewise modulated. Not a paint rate: it gates `add` per *texel* from
-    /// the substrate under it, in the shader.
-    pub(super) tooth: f32,
+    /// How much give this segment's tip has against the canvas substrate (§6.4) — the
+    /// brush's `tooth_give`, likewise modulated. Not a paint rate: it gates `add` per
+    /// *texel* from the substrate under it, in the shader.
+    ///
+    /// The give alone. How wide the transition around it is is `tooth_softness`, and
+    /// that one is not modulated and not here — it rides `StrokeConstants` with the
+    /// other per-stroke numbers both paths read.
+    ///
+    /// **A modulation scales this down towards the driest tip**, which is the whole
+    /// reason the knob is quoted as the give: it is what makes a pressure mapping the
+    /// charcoal rather than its opposite (`Modulations::tooth_give`).
+    pub(super) tooth_give: f32,
+}
+
+impl Default for Paint {
+    /// Every rate at zero — a tool doing nothing — and the tooth at **full give**,
+    /// which is the same statement about the substrate: a tip that follows every fall
+    /// deposits exactly what it would with no substrate under it at all.
+    ///
+    /// Written out rather than derived, because the knob runs the other way
+    /// (`BrushParams::tooth_give`) and a derived zero here would be the *driest* tip
+    /// there is — a default that gates paint away rather than one that does nothing.
+    fn default() -> Self {
+        Self {
+            add: 0.0,
+            lift: 0.0,
+            deposit: 0.0,
+            bleed: 0.0,
+            tooth_give: stark_model::document::BrushParams::DEFAULT_TOOTH_GIVE,
+        }
+    }
 }
 
 /// One swept segment of the stroke: where the tip went, and what it was doing.
@@ -724,7 +751,7 @@ pub(super) fn generate_segments_in(
                 lift: d.lift * m.lift(pen),
                 deposit: d.deposit * m.deposit(pen),
                 bleed: d.bleed * m.bleed(pen),
-                tooth: b.tooth * m.tooth(pen),
+                tooth_give: b.tooth_give * m.tooth_give(pen),
             },
         }
     };

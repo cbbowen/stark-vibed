@@ -624,7 +624,7 @@ pub const CASES: &[Case] = &[
             linen_substrate(e);
             let mut b = smear_brush(45.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
-            b.tooth = 0.9;
+            b.tooth_give = 0.1;
             b
         },
         path: half_turn_arc,

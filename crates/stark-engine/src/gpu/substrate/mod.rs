@@ -119,15 +119,19 @@ impl SubstrateMap {
         }
     }
 
-    /// The **bearing fraction** at a given tooth and direction of travel (§6.4) —
+    /// The **bearing fraction** at a given tooth — the tip's give and the width of its
+    /// contact transition ([`BrushParams::tooth_give`](stark_model::document::BrushParams::tooth_give),
+    /// [`tooth_softness`](stark_model::document::BrushParams::tooth_softness)) — and
+    /// direction of travel (§6.4).
+    ///
     /// [`Bearing::at`], with the one thing that is the *substrate's* business rather
     /// than the model's: a substrate with no relief has nothing to bite, whatever the
     /// tooth, and answers exactly 1.
-    pub fn bearing(&self, tooth: f32, dir: [f32; 2]) -> f32 {
+    pub fn bearing(&self, give: f32, softness: f32, dir: [f32; 2]) -> f32 {
         if self.relief <= 0.0 {
             return 1.0;
         }
-        self.bearing.at(tooth, dir)
+        self.bearing.at(give, softness, dir)
     }
 
     /// Build from a height-map PNG. The bytes reached the registry through

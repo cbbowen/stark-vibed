@@ -31,7 +31,7 @@ fn paint_toothed(engine: &mut Engine) {
         stark_model::document::BrushParams {
             color: RED,
             radius: 30.0,
-            tooth: 0.55,
+            tooth_give: 0.45,
             drain: 0.15,
             ..Default::default()
         },

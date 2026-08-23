@@ -824,7 +824,7 @@ mod tests {
             layer: LayerId(0),
             brush: BrushParams {
                 radius: bad,
-                tooth: 9.0,
+                tooth_give: 9.0,
                 ..BrushParams::default()
             },
             path: Vec::new(),
@@ -837,7 +837,7 @@ mod tests {
             panic!("a stroke stays a stroke")
         };
         assert!(rec.brush.radius.is_finite());
-        assert_eq!(rec.brush.tooth, 1.0);
+        assert_eq!(rec.brush.tooth_give, 1.0);
         assert_eq!(rec.start, 0.0);
 
         let fill = ActionKind::Fill {

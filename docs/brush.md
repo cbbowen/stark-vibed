@@ -945,19 +945,22 @@ clamped (`MIN_BIAS = 0.1`, so the slope tops out at 9) rather than left open. Th
 unmodulated brush and every plain linear mapping come out at exactly 1 and
 flatten on the budget they always had.
 
-The one thing the pen cannot reach is the **substrate**: `tooth` is on the brush and
-mappable like the rest, but the grain it bites into is the *canvas* (§6.4), so a
+The one thing the pen cannot reach is the **substrate**: `tooth_give` is on the brush
+and mappable like the rest, but the grain it bites into is the *canvas* (§6.4), so a
 pencil and a loaded brush drawn the same way across one paper break up on the
-same faces. Mapping tooth to pressure is the charcoal behaviour — bear down and
-the tip gains give, pressing after the falls it was bridging, so the grain fills
-in. Which faces they are is the stroke's own business, though: contact reads the
+same faces. Mapping the give to pressure is the charcoal behaviour — bear down and
+the tip gains the give to press past the falls it was bridging, so the grain fills
+in. **That mapping is why the knob is the give rather than the bite**: a modulation
+only scales down, so the other parameterization would have made a light touch solid
+and a hard press dry (§6.4). Its neighbour `tooth_softness` is deliberately *not* a
+target: what the tip is made of does not change under the hand. Which faces they are is the stroke's own business, though: contact reads the
 substrate's rise *along the travel*, so the same brush over the same paper the other
 way catches the other sides (§6.4).
 
 **Resolution happens in one place**: `generate_segments_in`, alongside the taper,
 where the pen attributes are already interpolated per segment. Both render paths
 flatten through it, so a live tail and the commit that replaces it cannot read
-the pen differently. Downstream, the four rates and the tooth ride the
+the pen differently. Downstream, the four rates and the tooth's give ride the
 `Segment` — the stamp loop already carried its λs per dispatch and needed no
 change at all, and the swept path moved `add` off the per-tile uniform onto the
 segment instance (`extra.w`), leaving `drain` behind because `drain` is a

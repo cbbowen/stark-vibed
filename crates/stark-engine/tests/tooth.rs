@@ -3,7 +3,7 @@
 //!
 //! Two claims, and neither is "the mark gets patchy" — dither would do that.
 //!
-//! The first is that the patches are a **level set of one field**: turn the tooth up
+//! The first is that the patches are a **level set of one field**: take the tip's give away
 //! and the texels that still take paint are the ones that already took it, because
 //! both are reading the substrate's rise along the travel through a rising threshold
 //! (the follow limit, `paint_common.wesl`). That is what makes successive strokes in
@@ -36,13 +36,15 @@ use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
-/// A brush with a given tooth, and nothing else that varies along a stroke: no
-/// drain, no taper, and — deliberately — **no size mapping**, so every stroke here
-/// covers exactly the same substrate and only the gate differs.
-fn toothed(tooth: f32) -> BrushParams {
+/// A brush with a given tooth — the tip's **give** against the substrate, so 1 is the
+/// solid mark and 0 the driest (`BrushParams::tooth_give`) — and nothing else that
+/// varies along a stroke: no drain, no taper, and — deliberately — **no size
+/// mapping**, so every stroke here covers exactly the same substrate and only the
+/// gate differs.
+fn toothed(give: f32) -> BrushParams {
     BrushParams {
         drain: 0.0,
-        tooth,
+        tooth_give: give,
         shape: BrushShape::Round { hardness: 0.9 },
         modulation: Default::default(),
         dynamics: BrushDynamics {
@@ -128,8 +130,8 @@ fn no_tooth_leaves_a_substrate_that_has_tooth_alone() {
     let Some(mut engine) = rough_engine() else {
         return;
     };
-    let (solid, solid_ink) = one_mark(&mut engine, toothed(0.0));
-    let (broken, _) = one_mark(&mut engine, toothed(0.55));
+    let (solid, solid_ink) = one_mark(&mut engine, toothed(1.0));
+    let (broken, _) = one_mark(&mut engine, toothed(0.45));
 
     assert!(solid_ink > 0.0, "the test drew nothing");
     let missed = broken
@@ -156,10 +158,10 @@ fn a_smooth_canvas_has_no_tooth_whatever_the_brush_says() {
         return;
     };
     let before = engine.render_to_image();
-    stroke_with(&mut engine, toothed(0.0), &run());
+    stroke_with(&mut engine, toothed(1.0), &run());
     let smooth = engine.render_to_image();
     engine.process(DocCommand::Undo);
-    stroke_with(&mut engine, toothed(0.9), &run());
+    stroke_with(&mut engine, toothed(0.1), &run());
     let toothy = engine.render_to_image();
 
     assert_eq!(
@@ -177,8 +179,8 @@ fn a_substrate_with_tooth_breaks_the_mark_up() {
     let Some(mut engine) = rough_engine() else {
         return;
     };
-    let (solid, solid_ink) = one_mark(&mut engine, toothed(0.0));
-    let (broken, broken_ink) = one_mark(&mut engine, toothed(0.55));
+    let (solid, solid_ink) = one_mark(&mut engine, toothed(1.0));
+    let (broken, broken_ink) = one_mark(&mut engine, toothed(0.45));
 
     let solid_n = solid.iter().filter(|h| **h).count();
     let broken_n = broken.iter().filter(|h| **h).count();
@@ -258,8 +260,8 @@ fn a_stroke_catches_on_the_faces_it_meets() {
     let Some(mut engine) = rough_engine() else {
         return;
     };
-    let there = one_run(&mut engine, toothed(0.55), 1.0);
-    let back = one_run(&mut engine, toothed(0.55), -1.0);
+    let there = one_run(&mut engine, toothed(0.45), 1.0);
+    let back = one_run(&mut engine, toothed(0.45), -1.0);
     let (there_ink, back_ink) = (there.iter().sum::<f64>(), back.iter().sum::<f64>());
     assert!(
         there_ink > 0.0 && back_ink > 0.0,
@@ -288,7 +290,7 @@ fn a_stroke_catches_on_the_faces_it_meets() {
     );
 }
 
-/// …and with no tooth there is no slope to read, so the direction stops mattering.
+/// …and at full give there is no slope to read, so the direction stops mattering.
 /// The guard that makes it so is structural — the shaders return a gate of exactly
 /// 1.0 at `tooth = 0` before the map is read, and the follow limit dives past any
 /// encodable fall well before the knob gets there, so the approach is continuous —
@@ -305,8 +307,8 @@ fn with_no_tooth_the_direction_stops_mattering() {
     let Some(mut engine) = rough_engine() else {
         return;
     };
-    let there = one_run(&mut engine, toothed(0.0), 1.0);
-    let back = one_run(&mut engine, toothed(0.0), -1.0);
+    let there = one_run(&mut engine, toothed(1.0), 1.0);
+    let back = one_run(&mut engine, toothed(1.0), -1.0);
 
     assert!(there.iter().sum::<f64>() > 0.0, "the test drew nothing");
     let moved = apart(&there, &back);
@@ -325,7 +327,7 @@ fn with_no_tooth_the_direction_stops_mattering() {
 /// overpainting registers: two strokes the same way at the same tooth catch on the
 /// same faces, so the second one lands *on* the first rather than filling its gaps.
 ///
-/// The tolerance is for the soft transition band (`TOOTH_SOFTNESS`) and for the 12-
+/// The tolerance is for the soft transition band (`BrushParams::tooth_softness`) and for the 12-
 /// level threshold `mark` reads coverage at: a texel sitting inside the band at both
 /// settings can land either side of that line. What cannot survive by accident is
 /// 95% agreement across thousands of texels.
@@ -334,8 +336,8 @@ fn turning_the_tooth_up_takes_a_level_set_away() {
     let Some(mut engine) = rough_engine() else {
         return;
     };
-    let (shallow, _) = one_mark(&mut engine, toothed(0.35));
-    let (deep, _) = one_mark(&mut engine, toothed(0.6));
+    let (shallow, _) = one_mark(&mut engine, toothed(0.65));
+    let (deep, _) = one_mark(&mut engine, toothed(0.4));
 
     let deep_n = deep.iter().filter(|h| **h).count();
     let escaped = deep
@@ -457,13 +459,13 @@ fn a_stroke_keeps_the_substrate_it_was_painted_on() {
     // second is laid across the other half.
     stroke_with(
         &mut engine,
-        toothed(0.55),
+        toothed(0.45),
         &[Vec2::new(-140.0, -40.0), Vec2::new(140.0, -40.0)],
     );
     engine.process(DocCommand::SetSubstrate(SubstrateId::Flat));
     stroke_with(
         &mut engine,
-        toothed(0.55),
+        toothed(0.45),
         &[Vec2::new(-140.0, 40.0), Vec2::new(140.0, 40.0)],
     );
     let live = engine.render_to_image();
@@ -532,8 +534,8 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
     // place it can go is the canvas. A long stroke at a brisk deposit rate, so the
     // tool is empty well before the end either way and the total delivered is the
     // whole charge rather than however far each got.
-    let glob = |tooth: f32| BrushParams {
-        tooth,
+    let glob = |give: f32| BrushParams {
+        tooth_give: give,
         dynamics: BrushDynamics {
             add: 0.0,
             lift: 0.0,
@@ -551,10 +553,10 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
     let path = [Vec2::new(-150.0, 0.0), Vec2::new(150.0, 0.0)];
 
     let bare = engine.render_to_image();
-    stroke_with(&mut engine, glob(0.0), &path);
+    stroke_with(&mut engine, glob(1.0), &path);
     let (plain, plain_ink) = far_share(&bare, &engine.render_to_image());
     engine.process(DocCommand::Undo);
-    stroke_with(&mut engine, glob(0.6), &path);
+    stroke_with(&mut engine, glob(0.4), &path);
     let (toothed, toothed_ink) = far_share(&bare, &engine.render_to_image());
 
     assert!(
@@ -629,16 +631,17 @@ fn the_bearing_fraction_tracks_the_substrate() {
         return;
     };
     let east = Vec2::new(1.0, 0.0);
-    let flat = engine.substrate_bearing(SubstrateId::Flat, 0.5, east);
+    let soft = BrushParams::DEFAULT_TOOTH_SOFTNESS;
+    let flat = engine.substrate_bearing(SubstrateId::Flat, 0.5, soft, east);
     assert_eq!(flat, 1.0, "a smooth substrate is full contact at any tooth");
 
     let substrate = rough(&mut engine);
-    let at = |t| engine.substrate_bearing(substrate, t, east);
-    assert_eq!(at(0.0), 1.0, "no tooth is full contact, exactly");
-    let (a, b, c) = (at(0.25), at(0.5), at(0.75));
+    let at = |g| engine.substrate_bearing(substrate, g, soft, east);
+    assert_eq!(at(1.0), 1.0, "full give is full contact, exactly");
+    let (a, b, c) = (at(0.75), at(0.5), at(0.25));
     assert!(
         1.0 > a && a > b && b > c && c > 0.0,
-        "contact must fall as the tip reaches for higher substrate: {a} {b} {c}"
+        "contact must fall as the tip loses the give to follow the substrate: {a} {b} {c}"
     );
 }
 
@@ -660,7 +663,12 @@ fn the_bearing_curve_is_continuous_in_the_direction() {
     // fraction of the curve's own value, and the walk must close on itself.
     let at = |engine: &mut stark_engine::Engine, turns: f32| {
         let a = turns * std::f32::consts::TAU;
-        engine.substrate_bearing(substrate, 0.55, Vec2::new(a.cos(), a.sin()))
+        engine.substrate_bearing(
+            substrate,
+            0.45,
+            BrushParams::DEFAULT_TOOTH_SOFTNESS,
+            Vec2::new(a.cos(), a.sin()),
+        )
     };
     let samples: Vec<f32> = (0..=128)
         .map(|i| at(&mut engine, i as f32 / 128.0))
@@ -693,7 +701,7 @@ fn a_toothed_live_preview_matches_the_commit() {
     let Some(mut engine) = rough_engine() else {
         return;
     };
-    engine.process(stark_engine::command::ViewCommand::SetBrush(toothed(0.55)));
+    engine.process(stark_engine::command::ViewCommand::SetBrush(toothed(0.45)));
     let path: Vec<Vec2> = (0..120)
         .map(|i| {
             let t = i as f32 * 0.05;
@@ -744,7 +752,7 @@ fn a_toothed_smear_previews_as_it_commits() {
         &[Vec2::new(-140.0, 0.0), Vec2::new(0.0, 0.0)],
     );
     let smear = BrushParams {
-        tooth: 0.5,
+        tooth_give: 0.5,
         dynamics: BrushDynamics {
             add: 0.6,
             lift: 0.6,

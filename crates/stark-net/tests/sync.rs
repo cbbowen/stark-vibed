@@ -375,7 +375,7 @@ async fn custom_shapes_replicate_mid_session() {
 /// perfectly plausible painting, just not the same one.
 ///
 /// It has to be a *toothed* brush on an irregular substrate, because that is the only
-/// thing the fallback changes: with `tooth: 0.0` the gate is 1.0 everywhere and a
+/// thing the fallback changes: at full `tooth_give` the gate is 1.0 everywhere and a
 /// missing substrate is invisible.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_peer_paints_on_a_substrate_it_has_never_seen() {
@@ -434,7 +434,7 @@ async fn a_peer_paints_on_a_substrate_it_has_never_seen() {
     let dry = BrushParams {
         color: [0.85, 0.15, 0.1, 1.0],
         radius: 30.0,
-        tooth: 0.55,
+        tooth_give: 0.45,
         drain: 0.15,
         ..Default::default()
     };
@@ -649,7 +649,7 @@ async fn a_promised_substrate_is_left_out_of_the_snapshot_and_still_replays() {
         BrushParams {
             color: [0.85, 0.15, 0.1, 1.0],
             radius: 30.0,
-            tooth: 0.55,
+            tooth_give: 0.45,
             drain: 0.15,
             ..Default::default()
         },
@@ -793,7 +793,7 @@ async fn a_promised_substrate_is_asked_of_the_frontend_mid_session() {
         BrushParams {
             color: [0.85, 0.15, 0.1, 1.0],
             radius: 30.0,
-            tooth: 0.55,
+            tooth_give: 0.45,
             drain: 0.15,
             ..Default::default()
         },

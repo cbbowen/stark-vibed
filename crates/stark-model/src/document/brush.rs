@@ -446,10 +446,29 @@ pub struct Modulations {
     pub deposit: Option<Modulation>,
     /// Scales [`BrushDynamics::bleed`].
     pub bleed: Option<Modulation>,
-    /// Scales [`BrushParams::tooth`] — how deep the tool bites into the canvas's
-    /// substrate (§6.4). Mapped to pressure this is the charcoal behaviour: bear down and
-    /// the tip flattens into the valleys, so the grain fills in.
-    pub tooth: Option<Modulation>,
+    /// Scales [`BrushParams::tooth_give`] — how far the tool settles into the canvas's
+    /// substrate (§6.4). Mapped to pressure this is the charcoal behaviour: barely
+    /// touching the paper the tip has no give and prints the peaks alone, and borne
+    /// down it presses past the falls it was bridging, so the grain fills in.
+    ///
+    /// **This is the mapping the axis is quoted for.** A modulation only ever scales
+    /// down, so which way the knob runs decides which way the pen reads — see
+    /// [`BrushParams::tooth_give`], which is the give and not the bite for exactly
+    /// this reason.
+    ///
+    /// The give alone. [`BrushParams::tooth_softness`] is not a target and is not
+    /// missing: it is a property of what the tip is made of, and a charcoal stick does
+    /// not go harder because the hand does.
+    ///
+    /// The alias is for the field's old name, and it is a *pointer* that survives the
+    /// rename rather than a value: what a mapping says is "the pen drives the tooth",
+    /// and that is still true of a file written when the knob ran the other way. What
+    /// it did on that file it does not do now — it used to make a hard press dry —
+    /// which is the whole reason the knob was turned round. The alias is here because
+    /// the alternative is refusing the file outright (§8), not because the pixels
+    /// carry over.
+    #[serde(alias = "tooth")]
+    pub tooth_give: Option<Modulation>,
     /// Scales [`BrushParams::stretch`] — how far the extent elongates along the
     /// brush's facing axis (§6.6). Mapped to [`ModSource::Tilt`] with
     /// [`OrientationSource::Pen`] this is the pencil behaviour: lean the pen over and
@@ -471,7 +490,7 @@ impl Modulations {
         lift: None,
         deposit: None,
         bleed: None,
-        tooth: None,
+        tooth_give: None,
         stretch: None,
     };
 
@@ -501,8 +520,8 @@ impl Modulations {
     pub fn bleed(&self, pen: PenState) -> f32 {
         Self::factor(self.bleed, pen)
     }
-    pub fn tooth(&self, pen: PenState) -> f32 {
-        Self::factor(self.tooth, pen)
+    pub fn tooth_give(&self, pen: PenState) -> f32 {
+        Self::factor(self.tooth_give, pen)
     }
     pub fn stretch(&self, pen: PenState) -> f32 {
         Self::factor(self.stretch, pen)
@@ -523,10 +542,10 @@ impl Modulations {
             lift,
             deposit,
             bleed,
-            tooth,
+            tooth_give,
             stretch,
         } = *self;
-        [size, flow, lift, deposit, bleed, tooth, stretch]
+        [size, flow, lift, deposit, bleed, tooth_give, stretch]
     }
 
     /// Whether any target is mapped.
@@ -541,7 +560,7 @@ impl Modulations {
     /// silently skipped — the same bargain `all` makes for
     /// [`max_slope`](Self::max_slope).
     pub fn sanitized(self) -> Self {
-        let [size, flow, lift, deposit, bleed, tooth, stretch] =
+        let [size, flow, lift, deposit, bleed, tooth_give, stretch] =
             self.all().map(|m| m.map(Modulation::sanitized));
         Self {
             size,
@@ -549,7 +568,7 @@ impl Modulations {
             lift,
             deposit,
             bleed,
-            tooth,
+            tooth_give,
             stretch,
         }
     }
@@ -634,22 +653,72 @@ pub struct BrushParams {
     /// scaling, held here as data so a preset can drop it or aim it elsewhere.
     #[serde(default = "Modulations::pressure_size")]
     pub modulation: Modulations,
-    /// How deeply this tool bites into the **canvas substrate's tooth** (§6.4), in
-    /// [0, 1]: 0 = the tip reaches everywhere and the substrate does not break the mark
-    /// up at all (the historical behaviour, and the default); 1 = it touches only the
-    /// very tops of the substrate, so the mark is what a dry brush leaves.
+    /// How much **give** this tool has against the canvas substrate's tooth (§6.4), in
+    /// [0, 1]: 1 = infinite give — the tip follows every fall, the substrate does not
+    /// break the mark up at all, and this is the historical behaviour and the default;
+    /// 0 = no give at all — it rides the very tops of the grain, so the mark is what a
+    /// dry brush leaves.
+    ///
+    /// **The give, not its inverse, and that is what makes the pen mapping mean
+    /// something.** A [`Modulation`] can only ever scale a parameter *down*, so a knob
+    /// quoted as the depth of the bite would have made light pressure the solid mark
+    /// and a hard press the dry one — backwards for the one mapping this axis exists
+    /// for. Quoted as the give, pressure reads the way a hand expects:
+    /// [`Modulations::tooth_give`] mapped to pressure is the charcoal, barely touching
+    /// the paper it prints the peaks alone, and borne down it presses past the falls
+    /// it was bridging and the grain fills in.
+    ///
+    /// It does cost the slider its usual direction — the *interesting* end of this one
+    /// is the left. That is the trade, and the mapping is worth more than the habit.
     ///
     /// The *substrate* is document state ([`SubstrateId`](crate::SubstrateId)) — a pencil and a loaded brush
     /// on the same canvas see the same tooth, which is why the grain lives there and
     /// only this knob lives on the brush. What it scales is the paint the brush lays
     /// per unit swept optical depth, gated per texel by whether the substrate clears the
-    /// level this tool presses to (`paint_common.wesl::tooth_gate`).
+    /// level this tool settles to (`paint_common.wesl::tooth_gate`).
     ///
-    /// Exactly 0 on a `Flat` canvas whatever this says, because `Surface::relief` is
+    /// **How far the tip settles, not how sharply it stops.** How abruptly a texel
+    /// goes from bridged to pressed on is the other half of contact, and it is
+    /// [`tooth_softness`](Self::tooth_softness).
+    ///
+    /// Inert on a `Flat` canvas whatever this says, because `Surface::relief` is
     /// 0 there — so the axis is orthogonal to every golden that paints on `Flat`, the
     /// same way the media pass's substrate already is.
-    #[serde(default)]
-    pub tooth: f32,
+    ///
+    /// `#[serde(default = "…")]` and not a bare `#[serde(default)]`: 0 is *maximum*
+    /// tooth at this end of the knob, so a file that does not mention the field has
+    /// to be told the full give it meant rather than handed a zero (§8).
+    #[serde(default = "BrushParams::default_tooth_give")]
+    pub tooth_give: f32,
+    /// The **width of the contact transition**, in the rise's own units — height per
+    /// reach of travel (§6.4). The band of rise, either side of the follow limit
+    /// [`tooth_give`](Self::tooth_give) sets, over which a texel goes from taking
+    /// none of the tip's paint to taking all of it.
+    ///
+    /// A hard threshold — 0 — is a binary indicator per texel: correct in the mean,
+    /// and at canvas resolution it aliases into hard-edged speckle that reads as
+    /// dither rather than as tooth. Too wide and the faces are smeared into a flat
+    /// grey and the grain stops reading at all.
+    /// [`DEFAULT_TOOTH_SOFTNESS`](Self::DEFAULT_TOOTH_SOFTNESS) is the bundled
+    /// substrates' own interquartile rise, so the transition spans the grain's natural
+    /// variation — which is what a paint that *sits on* the substrate wants, and it is
+    /// where this number lived when it was a constant in `paint_common.wesl`. A
+    /// charcoal or a soft graphite does not sit on the substrate: the stick crumbles
+    /// into the valleys instead of spanning them, so its contact comes on gradually
+    /// over several times that band, and a knob is the only way to say so.
+    ///
+    /// **A width, so it has no ceiling this crate owns** — the same reading as the
+    /// flow and the drain (see [`sanitized`](Self::sanitized)). Past about twice the
+    /// encodable rise range the whole distribution is inside the band and the gate is
+    /// a flat scale factor; that is where the frontend's slider stops, not where the
+    /// quantity stops meaning something.
+    ///
+    /// `#[serde(default = "…")]` rather than a bare `#[serde(default)]`, because a
+    /// file saved before this field meant the constant the shader used to carry —
+    /// and 0, which is what a plain default hands back, is the hard threshold and
+    /// not that (§8).
+    #[serde(default = "BrushParams::default_tooth_softness")]
+    pub tooth_softness: f32,
     /// How far the extent **elongates along the brush's facing axis** (§6.6), in
     /// `[0, 1)`: the tip is stretched by [`elongation`](Self::elongation)
     /// `s = 1/(1 − stretch)` along that axis and left alone across it, so 0 is the
@@ -689,13 +758,46 @@ impl Default for BrushParams {
             start_taper_length: 0.0,
             end_taper_length: 0.0,
             modulation: Modulations::PRESSURE_SIZE,
-            tooth: 0.0,
+            tooth_give: Self::DEFAULT_TOOTH_GIVE,
+            tooth_softness: Self::DEFAULT_TOOTH_SOFTNESS,
             stretch: 0.0,
         }
     }
 }
 
 impl BrushParams {
+    /// The give a brush has against the substrate when it does not say
+    /// ([`tooth_give`](Self::tooth_give)): all of it, so the tip follows every fall and
+    /// the substrate breaks nothing up — the mark a brush made before the tooth
+    /// existed, to the bit.
+    ///
+    /// Named rather than spelled `1.0` at the four places that need it, because *which*
+    /// end of this knob is the inert one is the fact worth being able to look up.
+    pub const DEFAULT_TOOTH_GIVE: f32 = 1.0;
+
+    /// [`DEFAULT_TOOTH_GIVE`](Self::DEFAULT_TOOTH_GIVE) as a function, for
+    /// `#[serde(default = "…")]`.
+    fn default_tooth_give() -> f32 {
+        Self::DEFAULT_TOOTH_GIVE
+    }
+
+    /// The contact transition a brush gets when it does not say
+    /// ([`tooth_softness`](Self::tooth_softness)) — the bundled substrates' own
+    /// interquartile rise, so the band spans the grain's natural variation.
+    ///
+    /// **The one place this number is written.** It was
+    /// `paint_common.wesl`'s `const TOOTH_SOFTNESS` until the knob existed; the shader
+    /// takes it as a uniform now and declares nothing, which is what keeps the default
+    /// from being a host transcription of a shader constant (§6.10).
+    pub const DEFAULT_TOOTH_SOFTNESS: f32 = 0.06;
+
+    /// [`DEFAULT_TOOTH_SOFTNESS`](Self::DEFAULT_TOOTH_SOFTNESS) as a function, for
+    /// `#[serde(default = "…")]` — which takes a path to call and cannot name a
+    /// constant.
+    fn default_tooth_softness() -> f32 {
+        Self::DEFAULT_TOOTH_SOFTNESS
+    }
+
     /// The two taper lengths in **canvas px**: the stored lengths (in radii) scaled
     /// by [`radius`](Self::radius). Negative or non-finite lengths read as 0 — the
     /// fields arrive from files, presets and peers, and a taper is a length.
@@ -760,10 +862,10 @@ impl BrushParams {
     /// is for a filter (§21.5) and for the same two reasons.
     ///
     /// **It clamps only where this crate already states a range.** The three pickup
-    /// axes, the tooth, the hardness and the color are quoted in `[0, 1]` by their
-    /// own field docs; the stretch saturates at [`MAX_STRETCH`](Self::MAX_STRETCH)
+    /// axes, the tooth's *give*, the hardness and the color are quoted in `[0, 1]` by
+    /// their own field docs; the stretch saturates at [`MAX_STRETCH`](Self::MAX_STRETCH)
     /// by construction. Everything else — the radius, the flow, the drain, the
-    /// charge, the tapers, the jitter — is required to be a finite, non-negative
+    /// charge, the tapers, the jitter, the tooth's *softness* — is required to be a finite, non-negative
     /// number and nothing more, because the ceilings those have are a *frontend's*
     /// slider ends rather than facts about the quantity, and clamping a document to
     /// one this crate does not own would rewrite brushes that were never wrong.
@@ -785,7 +887,11 @@ impl BrushParams {
             start_taper_length: at_least_zero(self.start_taper_length, d.start_taper_length),
             end_taper_length: at_least_zero(self.end_taper_length, d.end_taper_length),
             modulation: self.modulation.sanitized(),
-            tooth: clamp01(finite_or(self.tooth, d.tooth)),
+            tooth_give: clamp01(finite_or(self.tooth_give, d.tooth_give)),
+            // Floored, never capped, for `add`'s reason: a transition width is a
+            // length in the rise's units rather than a fraction, and the only ceiling
+            // it has is a slider's.
+            tooth_softness: at_least_zero(self.tooth_softness, d.tooth_softness),
             // Bounded at the knob's own saturation point rather than at 1: past
             // `MAX_STRETCH` the reciprocal is already pinned, so a larger value
             // stored is a number that cannot mean what it says.
@@ -980,10 +1086,11 @@ mod tests {
     #[test]
     fn a_sanitized_brush_holds_no_number_a_shader_cannot_use() {
         type Poke = (&'static str, fn(&mut BrushParams, f32));
-        let pokes: [Poke; 16] = [
+        let pokes: [Poke; 17] = [
             ("radius", |b, f| b.radius = f),
             ("drain", |b, f| b.drain = f),
-            ("tooth", |b, f| b.tooth = f),
+            ("tooth_give", |b, f| b.tooth_give = f),
+            ("tooth_softness", |b, f| b.tooth_softness = f),
             ("stretch", |b, f| b.stretch = f),
             ("start_taper", |b, f| b.start_taper_length = f),
             ("end_taper", |b, f| b.end_taper_length = f),
@@ -1005,7 +1112,7 @@ mod tests {
                 b.dynamics.lift,
                 b.dynamics.deposit,
                 b.dynamics.bleed,
-                b.tooth,
+                b.tooth_give,
                 b.color[0],
                 b.color[3],
             ]
@@ -1019,7 +1126,8 @@ mod tests {
                 for v in [
                     clean.radius,
                     clean.drain,
-                    clean.tooth,
+                    clean.tooth_give,
+                    clean.tooth_softness,
                     clean.stretch,
                     clean.start_taper_length,
                     clean.end_taper_length,
@@ -1047,7 +1155,10 @@ mod tests {
         let ordinary = BrushParams {
             radius: 40.0,
             stretch: 0.5,
-            tooth: 0.25,
+            tooth_give: 0.25,
+            // Past the default band, and legitimately so: a soft stick spans the
+            // grain rather than sitting on it, and the ceiling is a slider's.
+            tooth_softness: 0.3,
             dynamics: BrushDynamics {
                 add: 2.5, // past the frontend's slider, and legitimately so
                 lift: 1.0,

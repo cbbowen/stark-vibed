@@ -143,7 +143,7 @@ pub struct StrokeScene<'a> {
     pub selection: &'a Selection,
     /// The canvas substrate the document was on when this stroke was made (§6.4) —
     /// the substrate whose tooth gates how much of the brush's own paint lands
-    /// (`BrushParams::tooth`).
+    /// (`BrushParams::tooth_give`).
     ///
     /// Handed in per call, like everything else here, rather than held on the
     /// renderer: it is *document* state, and a renderer that cached it would answer
@@ -318,6 +318,7 @@ impl StrokeRenderer {
             channels: [ch[0], ch[1], ch[2], rec.brush.color[3]],
             resid: [res[0], res[1], res[2], 0.0],
             substrate_uv_scale: substrate.relief * substrate.uv_scale,
+            tooth_softness: rec.brush.tooth_softness,
             nfreq,
             namp,
             noff,
@@ -354,6 +355,13 @@ struct StrokeConstants {
     /// canvas, or one whose bytes have not arrived — which sends the tooth to exactly
     /// 1 and leaves the deposit bit-for-bit what it was before the tooth existed.
     substrate_uv_scale: f32,
+    /// The width of the tooth's contact transition, in the rise's own units
+    /// (`BrushParams::tooth_softness`, §6.4).
+    ///
+    /// Here and not on the segment, unlike the tooth's *depth* beside it: the depth is
+    /// a modulation target, because bearing down presses the tip; the width is what
+    /// the tip is made of, and a charcoal stick does not go harder under the hand.
+    tooth_softness: f32,
     /// The color-dynamics lookup (§6.2): per-axis frequency (across the stroke, along
     /// it) + 1/NOISE_TILE_PX, per-channel amplitude, and the per-stroke translation.
     /// Inactive jitter zeroes frequency *and* amplitude, so with the zero volume bound

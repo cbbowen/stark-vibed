@@ -318,7 +318,7 @@ impl StrokeRenderer {
                     // fractional growth is the frame's ([`Sweep::ramp`]).
                     geom: [sweep.frame, sweep.length, sweep.ramp],
                     extra: [sweep.orient, sweep.dist, sweep.curvature, paint.add],
-                    tooth: paint.tooth,
+                    tooth_give: paint.tooth_give,
                     // The solved stretch map (§6.6). Unscaled by the frame for the
                     // ramp's reason: it acts on brush-local coordinates, which are
                     // already in the frame's units whatever the frame is.
@@ -374,7 +374,12 @@ impl StrokeRenderer {
                 ],
                 color: k.channels,
                 resid: k.resid,
-                paint: [rec.brush.drain_px(), k.substrate_uv_scale, 0.0, 0.0],
+                paint: [
+                    rec.brush.drain_px(),
+                    k.substrate_uv_scale,
+                    k.tooth_softness,
+                    0.0,
+                ],
                 noise_freq: k.nfreq,
                 noise_amp: k.namp,
                 noise_off: k.noff,

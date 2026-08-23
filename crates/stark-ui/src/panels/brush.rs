@@ -33,6 +33,21 @@ pub const MAX_FLOW: f32 = 3.0;
 /// rather than more.
 pub const MAX_TAPER: f32 = 20.0;
 
+/// The widest contact transition the editor offers, in the rise's own units
+/// (`BrushParams::tooth_softness`, §6.4).
+///
+/// A slider's end rather than a bound on the quantity, which is why it is here and
+/// not on the brush — but it is not arbitrary either. The rise a substrate map can
+/// carry spans ±`RISE_LIMIT` = 0.25, so a band of 0.5 already covers the whole of it:
+/// every texel is somewhere inside the transition, the gate is a flat scale on the
+/// deposit, and the grain has stopped reading. Past that the knob would only be
+/// walking towards a half.
+///
+/// The default (`BrushParams::DEFAULT_TOOTH_SOFTNESS`, 0.06) therefore sits about an
+/// eighth of the way along — a paint that sits on the substrate near the bottom, a
+/// charcoal well up it.
+pub const MAX_TOOTH_SOFTNESS: f32 = 0.5;
+
 /// The floating Brush panel: the everyday quick controls (size, amount).
 /// Everything else — the full grouped parameter set with a live test
 /// stroke — lives in the brush editor dialog ("Edit brush…").

@@ -45,7 +45,7 @@ use dioxus::html::HasFileData;
 
 use crate::icons::{self, icon};
 use crate::panels::brush::{
-    MAX_FLOW, MAX_RADIUS, MAX_TAPER, MIN_RADIUS, set_orientation, set_shape,
+    MAX_FLOW, MAX_RADIUS, MAX_TAPER, MAX_TOOTH_SOFTNESS, MIN_RADIUS, set_orientation, set_shape,
 };
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::render::Renderer;
@@ -93,7 +93,7 @@ enum ModRow {
     Size,
     Flow,
     Stretch,
-    Tooth,
+    ToothGive,
     Lift,
     Deposit,
     Bleed,
@@ -107,7 +107,7 @@ impl ModRow {
             Self::Size => "Size",
             Self::Flow => "Flow",
             Self::Stretch => "Stretch",
-            Self::Tooth => "Tooth",
+            Self::ToothGive => "Tooth give",
             Self::Lift => "Lift",
             Self::Deposit => "Deposit",
             Self::Bleed => "Bleed",
@@ -124,7 +124,10 @@ impl ModRow {
             // stop is where `BrushParams::elongation` saturates and the slider stops
             // meaning anything (§6.6).
             Self::Stretch => (0.0, 1.0 - 1.0 / BrushParams::MAX_ELONGATION),
-            Self::Tooth => (0.0, 1.0),
+            // Full range, and it reads right-to-left: 1 is all the give there is, so
+            // the substrate gates nothing, and 0 is the driest tip (§6.4). Quoted that
+            // way round for the pen's sake — see `BrushParams::tooth_give`.
+            Self::ToothGive => (0.0, 1.0),
             Self::Lift | Self::Deposit | Self::Bleed => (0.0, 0.95),
         }
     }
@@ -134,7 +137,7 @@ impl ModRow {
             Self::Size => b.radius,
             Self::Flow => b.dynamics.add,
             Self::Stretch => b.stretch,
-            Self::Tooth => b.tooth,
+            Self::ToothGive => b.tooth_give,
             Self::Lift => b.dynamics.lift,
             Self::Deposit => b.dynamics.deposit,
             Self::Bleed => b.dynamics.bleed,
@@ -146,7 +149,7 @@ impl ModRow {
             Self::Size => b.radius = v,
             Self::Flow => b.dynamics.add = v,
             Self::Stretch => b.stretch = v,
-            Self::Tooth => b.tooth = v,
+            Self::ToothGive => b.tooth_give = v,
             Self::Lift => b.dynamics.lift = v,
             Self::Deposit => b.dynamics.deposit = v,
             Self::Bleed => b.dynamics.bleed = v,
@@ -158,7 +161,7 @@ impl ModRow {
             Self::Size => &mut m.size,
             Self::Flow => &mut m.flow,
             Self::Stretch => &mut m.stretch,
-            Self::Tooth => &mut m.tooth,
+            Self::ToothGive => &mut m.tooth_give,
             Self::Lift => &mut m.lift,
             Self::Deposit => &mut m.deposit,
             Self::Bleed => &mut m.bleed,
@@ -170,7 +173,7 @@ impl ModRow {
             Self::Size => m.size,
             Self::Flow => m.flow,
             Self::Stretch => m.stretch,
-            Self::Tooth => m.tooth,
+            Self::ToothGive => m.tooth_give,
             Self::Lift => m.lift,
             Self::Deposit => m.deposit,
             Self::Bleed => m.bleed,
@@ -468,16 +471,35 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // `add` is the tool's only source term (§6.2) and its only amount
                     // knob: the paint height laid per unit swept optical depth.
                     {mod_slider(state, preview, mod_open, ModRow::Flow, brush)}
-                    // How deeply the tip bites into the canvas's own tooth
-                    // (§6.4): at 0 the substrate is irrelevant and the mark is solid,
-                    // and turned up the paint catches on the substrate's peaks and
-                    // skips its valleys, which is what a dry brush leaves.
-                    {mod_slider(state, preview, mod_open, ModRow::Tooth, brush)}
+                    // How far the tip settles into the canvas's own tooth (§6.4):
+                    // at 1 it follows every fall, the substrate is irrelevant and the
+                    // mark is solid; turned *down* the paint catches on the
+                    // substrate's peaks and skips its valleys, which is what a dry
+                    // brush leaves.
+                    //
+                    // The one slider here whose interesting end is the left, and that
+                    // is the model rather than an oversight: a modulation only scales
+                    // down, so quoting the knob as the give is what makes a pressure
+                    // mapping the charcoal — light touch dry, borne down solid —
+                    // instead of its opposite (`BrushParams::tooth_give`).
+                    {mod_slider(state, preview, mod_open, ModRow::ToothGive, brush)}
+                    // ...and how *abruptly* it meets the grain, which is the other
+                    // half of contact and a different question (§6.4). Narrow and the mark is
+                    // a level set of the grain — the faces print and the valleys do
+                    // not, which is paint sitting on the substrate. Wide and the tip
+                    // crumbles into the valleys instead of spanning them, so the grain
+                    // reads as a tone rather than a pattern: the charcoal.
+                    //
+                    // Not a `mod_slider`, and that is the model rather than an
+                    // omission: the pen presses a tip harder, it does not make it out
+                    // of something else (`Modulations::tooth_give`).
+                    Slider { label: "Tooth softness", min: 0.0, max: MAX_TOOTH_SOFTNESS, value: brush.tooth_softness,
+                        oninput: move |v| edit(state, preview, move |b| b.tooth_softness = v) }
                     // The substrate is the *document's*, not the brush's — a pencil
                     // and a loaded brush on one canvas see one tooth — so on a
                     // smooth canvas this knob has nothing to bite and says so,
                     // rather than moving and changing nothing.
-                    if brush.tooth > 0.0 && substrate == SubstrateId::Flat {
+                    if brush.tooth_give < 1.0 && substrate == SubstrateId::Flat {
                         div { class: "be-note",
                             "This canvas is smooth, so there is no tooth to catch on. \
                              Pick a substrate in the Lighting panel."

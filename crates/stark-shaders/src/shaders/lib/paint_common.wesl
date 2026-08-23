@@ -90,15 +90,18 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
 // tip there (`rise_ahead` — the height's derivative along the travel, taken across
 // the contact's own reach) and how much give the tool has left.
 //
-// **`tooth` is the give, inverted** (`tooth_level`). The gate thresholds the rise
-// against the steepest fall the tip can still follow, and the knob walks that limit
-// from infinite (tooth = 0: the tip tracks any fall — the substrate is ignored,
-// exactly) through zero (tooth = ½: the tip holds its level, touching whatever is
-// flat or rising and bridging every fall) to *demanding* substrate that rises at the
-// contact scale (tooth = 1: only the leading faces of the grain print — the dry
-// mark, still a mark). The field is directional outright: run the same stroke
-// backwards and the rise negates, so the mark moves to the other side of every
-// feature (tests/tooth.rs).
+// **The knob `tooth_level` reads *is* that give** (`BrushParams::tooth_give`). The
+// gate thresholds the rise against the steepest fall the tip can still follow, and the
+// knob walks that limit from *demanding* substrate that rises at the contact scale
+// (give = 0: only the leading faces of the grain print — the dry mark, still a mark)
+// through zero (give = ½: the tip holds its level, touching whatever is flat or rising
+// and bridging every fall) to infinite (give = 1: the tip tracks any fall — the
+// substrate is ignored, exactly, which is the default). Quoted as the give and not as
+// its inverse because a modulation only ever scales *down*, and the mapping this axis
+// exists for is pressure: a tip barely touching the paper has no give and prints the
+// peaks alone, and one borne down has all of it. The field is directional outright:
+// run the same stroke backwards and the rise negates, so the mark moves to the other
+// side of every feature (tests/tooth.rs).
 //
 // **It scales the exposure, not the transfer**, and that one choice is what makes it
 // compose and what makes it conserve. Every rate in this engine is a function of
@@ -133,18 +136,18 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
 // It gates **height, never the per-unit opacity** (§6.1): the tooth decides how much
 // paint arrives, not what the pigment is.
 
-// Width of the contact transition, in the rise's own units — height per reach of
-// travel.
+// The narrowest contact transition that is still a *number* rather than a division by
+// zero — the floor under `tooth_gate`'s band.
 //
-// A hard threshold is a binary indicator per texel: correct in the mean, and at
-// canvas resolution it aliases into hard-edged speckle that reads as dither rather
-// than as tooth. Too wide and the faces are smeared into a flat grey and the grain
-// stops reading at all. 0.06 is the bundled substrates' own interquartile rise, so the
-// transition spans the grain's natural variation.
-// **Must match `TOOTH_SOFTNESS` in `gpu::substrate`.**
-const TOOTH_SOFTNESS: f32 = 0.06;
+// Inert, not a tuning, in exactly `tooth_level`'s sense: the rise arrives decoded off
+// an 8-bit lattice whose step is `2·RISE_LIMIT/255 ≈ 0.002`, so any band an order of
+// magnitude under that already gates every texel the same way a hard threshold would.
+// A brush asking for 0 softness gets the hard threshold it asked for; what it does not
+// get is the `0/0` at the one rise that sits exactly on the limit, which WGSL does not
+// promise anything about.
+const TOOTH_SOFTNESS_FLOOR: f32 = 1e-4;
 
-// The contact scale: the rise, per reach of travel, that a full-tooth tip demands of
+// The contact scale: the rise, per reach of travel, that a tip with no give demands of
 // the substrate before it presses — and the unit `tooth_level`'s follow limit is
 // measured in. Measured against the bundled substrates (mean |rise| 0.037–0.090), not
 // picked; see `gpu::substrate::TOOTH_RISE`, which it **must match**.
@@ -212,23 +215,23 @@ fn rise_ahead(g: vec4<f32>, travel: vec2<f32>) -> f32 {
 }
 
 // The steepest fall the tip can still follow, negated — the level the gate
-// thresholds the rise against, from the `tooth` knob.
+// thresholds the rise against, from the `tooth_give` knob.
 //
-// `TOOTH_RISE · (2 − 1/tooth)`, and the three stations of that map are the model:
-// −∞ at `tooth = 0` (infinite give — the transition band runs out below any rise the
-// map can encode, so the knob's bottom meets the callers' `tooth <= 0` guard
-// *continuously*: a pen mapping sweeping through zero cannot pop), 0 at `tooth = ½`
-// (no give left going down: the tip holds its level, touches flat and rising substrate,
-// bridges every fall), +`TOOTH_RISE` at `tooth = 1` (contact demands a rise at the
-// contact scale — the leading faces alone). A `Flat` canvas never gets here: its
-// `relief` of 0 zeroes the uv scale upstream and the gate is exactly 1.
+// `TOOTH_RISE · (2 − 1/(1 − give))`, and the three stations of that map are the model:
+// +`TOOTH_RISE` at `give = 0` (no give at all: contact demands a rise at the contact
+// scale, so the leading faces alone print), 0 at `give = ½` (no give left going *down*:
+// the tip holds its level, touches flat and rising substrate, bridges every fall),
+// −∞ as `give → 1` (infinite give — the transition band runs out below any rise the
+// map can encode, so the knob's top meets the callers' `tooth_give >= 1` guard
+// *continuously*: a pen mapping sweeping through it cannot pop). A `Flat` canvas never
+// gets here: its `relief` of 0 zeroes the uv scale upstream and the gate is exactly 1.
 //
 // The floor under the division is inert, not a tuning: every level below −0.39 is
 // already past the steepest fall the encoding can express plus the whole transition
 // band, and the floor's level is −3.05 — it exists so the arithmetic stays finite,
 // which WGSL does not promise for a true 1/0.
-fn tooth_level(tooth: f32) -> f32 {
-    return TOOTH_RISE * (2.0 - 1.0 / max(tooth, 0.01));
+fn tooth_level(give: f32) -> f32 {
+    return TOOTH_RISE * (2.0 - 1.0 / max(1.0 - give, 0.01));
 }
 
 // The fraction of its paint a texel receives, given the rise `d` of the substrate along
@@ -236,11 +239,24 @@ fn tooth_level(tooth: f32) -> f32 {
 // `taper_profile` is a polynomial: this decides stored pixels, and replay, goldens
 // and peers have to agree on it to the last bit (§12.1).
 //
+// **Two knobs, and they are different questions.** `give` is where the threshold
+// sits — how steep a fall the tip still follows — and `softness` is how wide the band
+// around it is: how gradually a texel goes from taking none of the tip's paint to
+// taking all of it. A paint that sits on the substrate has a narrow band and prints
+// the faces; a charcoal or a soft graphite crumbles into the valleys instead of
+// spanning them, and its contact comes on over several times that width
+// (`BrushParams::tooth_softness`, which is where the band's default lives — the host
+// carries it, so this file declares no constant for it).
+//
 // **Mirrored on the CPU** in `gpu::substrate`, which averages it over the map's rise
 // distribution to get the bearing fraction the tool books against. The two must be
 // the same function or the two halves of a toothed transfer disagree; the
 // conservation pair in `tests/dynamics.rs` is what notices if they drift.
-fn tooth_gate(d: f32, tooth: f32) -> f32 {
-    let t = clamp((d - tooth_level(tooth)) / TOOTH_SOFTNESS + 0.5, 0.0, 1.0);
+fn tooth_gate(d: f32, give: f32, softness: f32) -> f32 {
+    let t = clamp(
+        (d - tooth_level(give)) / max(softness, TOOTH_SOFTNESS_FLOOR) + 0.5,
+        0.0,
+        1.0,
+    );
     return t * t * (3.0 - 2.0 * t);
 }

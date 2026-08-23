@@ -76,10 +76,14 @@ fn vs_main(
     // curvature, and the `add` source rate — the one paint rate the swept path
     // reads, here because a modulation can point at it (§6.2).
     @location(3) extra: vec4<f32>,
-    // How deep this segment's tip bites into the canvas substrate (§6.4). Its own
+    // How much give this segment's tip has against the canvas substrate (§6.4). Its own
     // attribute rather than a lane of `extra`, because `extra` is full and a
     // five-float vector would be three unused lanes to carry one number.
-    @location(4) tooth: f32,
+    //
+    // The give only. How wide the contact transition around it is
+    // (`BrushParams::tooth_softness`) does not vary segment to segment, so it rides
+    // the stroke uniform instead (`stamp_common::TileXform::paint`).
+    @location(4) tooth_give: f32,
     // The tip drawn out along its facing axis (§6.6): the travel scale, the shear and
     // the lateral scale that carry a point of the reference travel frame into the
     // frame the prefix-τ volume is read in (`stamp_common::stretch_look`).
@@ -91,7 +95,7 @@ fn vs_main(
     // dynamics loop beside it. The host solves it once (`segments::Stretch::solve`).
     @location(5) stretch: vec3<f32>,
 ) -> VsOut {
-    return sweep_vertex(vi, start, dir, geom, extra, tooth, stretch);
+    return sweep_vertex(vi, start, dir, geom, extra, tooth_give, stretch);
 }
 
 @fragment
