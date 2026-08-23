@@ -1117,9 +1117,19 @@ hr {
 }
 
 /* `min-width: 0` so the track may shrink below its intrinsic width — without it a
-   flex item refuses, and a narrow panel would push the row wider than the panel. */
+   flex item refuses, and a narrow panel would push the row wider than the panel.
+
+   The list is what a marked row may hold in the *panels*, which is now more than a
+   track: the Lighting panel's rows are a colour well, a surface well and a native
+   drop-down (`panels::lighting`). Each of them is `width: 100%` at rest — sized to a
+   row it had to itself — and 100% of a flex line it is now sharing with a glyph
+   overflows the panel by exactly the glyph. `flex: 1` is what replaces that width
+   once the row folds. */
 .app-root.minimal .panel .slider-row.marked .slider,
-.app-root.minimal .panel .slider-row.marked .blend-row {
+.app-root.minimal .panel .slider-row.marked .blend-row,
+.app-root.minimal .panel .slider-row.marked .select,
+.app-root.minimal .panel .slider-row.marked .swatch,
+.app-root.minimal .panel .slider-row.marked .surface-well {
   flex: 1;
   width: auto;
   min-width: 0;

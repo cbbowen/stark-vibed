@@ -4,6 +4,7 @@
 use dioxus::prelude::*;
 use stark_model::Srgb;
 
+use crate::icons::{self, icon, label};
 use crate::panels::color::OklabPicker;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, with_engine_quiet};
@@ -112,11 +113,11 @@ pub fn LightingPanel() -> Element {
         }
     });
     rsx! {
-        Slider { label: "Impasto", min: 0.0, max: 1.0, value: p.height_strength,
+        Slider { label: "Impasto", glyph: icons::IMPASTO, min: 0.0, max: 1.0, value: p.height_strength,
             oninput: move |v| update_media(state, move |m| m.height_strength = v) }
-        Slider { label: "Texture", min: 0.0, max: 1.0, value: p.substrate_strength,
+        Slider { label: "Texture", glyph: icons::TEXTURE, min: 0.0, max: 1.0, value: p.substrate_strength,
             oninput: move |v| update_media(state, move |m| m.substrate_strength = v) }
-        Slider { label: "Gloss", min: 0.0, max: 0.35, value: p.specular,
+        Slider { label: "Gloss", glyph: icons::GLOSS, min: 0.0, max: 0.35, value: p.specular,
             oninput: move |v| update_media(state, move |m| m.specular = v) }
         // The canvas colour, and the surface it is laid on: the two choices in this
         // panel that are made by *looking*, and so the two that want more room than a
@@ -124,19 +125,25 @@ pub fn LightingPanel() -> Element {
         // (`panels::popout::StackPopouts`); what stays here is the well that says
         // which one is in force.
         //
+        // `marked` by hand on these four, as `widgets::Slider` sets it on the three
+        // above: each holds a well, a native `select` or a range that previews and
+        // commits, so none of them can be the component — but each wears a glyph, and
+        // that is the whole of what `marked` claims. The panel folds as one column in
+        // minimal mode rather than three rows folding and four standing on (§11).
+        //
         // The `data-popout` attribute is on the **row**, not on the well inside it,
         // and it is what the pop-out is placed against — see `PopoutId::in_stack`
         // for why the row is the right box to measure.
-        div { class: "slider-row", "data-popout": "substrate-color",
-            div { class: "slider-label", "Canvas" }
+        div { class: "slider-row marked", "data-popout": "substrate-color",
+            div { class: "slider-label", {icon(icons::CANVAS)} {label("Canvas")} }
             button {
                 class: swatch_class,
                 style: "{swatch}",
                 onclick: move |_| crate::widgets::toggle_popout(state, PopoutId::SubstrateColor),
             }
         }
-        div { class: "slider-row", "data-popout": "substrate-gallery",
-            div { class: "slider-label", "Surface" }
+        div { class: "slider-row marked", "data-popout": "substrate-gallery",
+            div { class: "slider-label", {icon(icons::SURFACE)} {label("Surface")} }
             crate::substrates::SubstrateWell {}
         }
         // How large the substrate is laid (§6.4). A raw range rather than `Slider`,
@@ -146,9 +153,15 @@ pub fn LightingPanel() -> Element {
         //
         // The percentage is in the label because it is the one number here worth
         // reading back — a substrate is judged by eye, but "the same as last time" is
-        // judged by the figure.
-        div { class: "slider-row",
-            div { class: "slider-label", "Scale {scale.percent()}%" }
+        // judged by the figure. It sits *beside* the hideable word rather than inside
+        // it: minimal mode takes a control's name, never its value, so what is left is
+        // the mark and the figure — which is the pair that was worth keeping anyway.
+        div { class: "slider-row marked",
+            div { class: "slider-label",
+                {icon(icons::SUBSTRATE_SCALE)}
+                {label("Scale")}
+                "{scale.percent()}%"
+            }
             input {
                 class: "slider",
                 r#type: "range",
@@ -172,8 +185,8 @@ pub fn LightingPanel() -> Element {
                 onpointercancel: move |_| preview::SUBSTRATE_SCALE.settle(state, laying),
             }
         }
-        div { class: "slider-row",
-            div { class: "slider-label", "Light" }
+        div { class: "slider-row marked",
+            div { class: "slider-label", {icon(icons::LIGHT)} {label("Light")} }
             select {
                 class: "select",
                 onchange: move |e| {

@@ -380,6 +380,49 @@ icons! {
     SIZE => "ruler-bold",
     FLOW => "wind-bold",
     FEATHER => "feather-bold",
+    // The Lighting panel, whose every row is marked (§6.3, §6.4) — the three media
+    // sliders and, because they are the same column and fold on the same rule, the
+    // four hand-rolled rows under them. The panel's own [`LIGHTING`] sphere is the
+    // title's and cannot be spent on a row.
+    //
+    // Two of the sliders are one quantity — relief amplitude — asked of two different
+    // heights, so the marks differ in the *source* rather than in the act: peaks are
+    // paint standing off the canvas, a weave is the canvas coming up through it.
+    IMPASTO => "mountains-bold",
+    // The substrate's tooth, drawn as warp over weft, which is what a linen weave is
+    // at the magnification this slider decides. The transparency-checker reading that
+    // haunts this picture elsewhere needs a *field* of squares to land, and this is a
+    // 14px mark in a row beside the well that shows the actual cloth.
+    TEXTURE => "checkerboard-bold",
+    // Gloss, drawn as the quantity itself: a bead of paint with a highlight on it,
+    // which is the whole of what this slider adds (§6.3). The file is [`PICKUP`]'s
+    // drop *plus that highlight* — the two differ by exactly the thing the number
+    // sets, so the mark at 0 is the bare drop and the mark at 1 is this one. Near
+    // kin rather than a collision, on `PAINT`/`PAINT_BUCKET`'s argument.
+    //
+    // Deliberately not a sparkle, whichever way that glyph draws a shine: the
+    // four-point cluster is the contemporary mark for a machine writing something
+    // for you, and a painting application is the last place to promise that by
+    // accident.
+    GLOSS => "drop-bold",
+    // The ground's colour (§15.5). A roller, because what this lays is one flat tone
+    // under everything — not a brush's mark and not [`PAINT_BUCKET`]'s fill, which
+    // puts the *brush's* colour inside a selection. The swatch beside it says which
+    // colour; the mark is there to say what is being coloured.
+    CANVAS => "paint-roller-bold",
+    // Which surface the canvas is (§6.4): a fanned book of material samples, which is
+    // both what the well opens and what a substrate gallery is. Cards rather than
+    // [`COLOR`]'s palette, since the choice here is a cloth and not a colour — the row
+    // above it is the one about colour.
+    SURFACE => "swatches-bold",
+    // How large that surface is laid. The one row in the panel whose mark is about a
+    // size rather than a material, and drawn as the act: a square told to be bigger.
+    SUBSTRATE_SCALE => "resize-bold",
+    // The light the canvas is under (§6.3). A sun over a horizon rather than
+    // [`EXPOSURE`]'s bare disc, and the horizon is the whole difference: exposure
+    // counts stops of light, this picks the *sky* — which is literally what the
+    // image-backed environments are, a hill, an overcast noon, a dusk.
+    LIGHT => "sun-horizon-bold",
     // Two of the perspective bar's four group heads (§20.5). `LOCK` and "Show" label
     // three identical X/Y/Z chips each, so the word was carrying the whole difference
     // between two triplets that look the same; `DENSITY` draws a fan of lines from a
