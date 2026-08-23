@@ -390,6 +390,25 @@ mod tests {
             .collect()
     }
 
+    /// The contact transition every claim below about the *give* is read through.
+    ///
+    /// **The tests' own, deliberately not `BrushParams::DEFAULT_TOOTH_SOFTNESS`.** What
+    /// the shipped default is set to is taste — which tool the app opens on — and it
+    /// has been retuned once already; what is asserted here is the deposition model,
+    /// and a change of taste must not be able to fail a claim about the rise field. It
+    /// did: these read the default, the default widened to span the whole encodable
+    /// rise range, every bearing collapsed towards a half, and
+    /// [`a_tip_with_no_give_still_bears_on_the_faces_that_rise_to_meet_it`] failed
+    /// having found nothing wrong.
+    ///
+    /// 0.06 because that is a *narrow* band on these substrates — their own
+    /// interquartile rise, and the width the tooth shipped with when it was a shader
+    /// constant — so the gate is still recognisably a threshold on the rise and the
+    /// level-set language below means what it says. The one test that is about the
+    /// width itself names both of its bands
+    /// ([`a_softer_contact_bears_on_the_substrate_more_evenly`]).
+    const NARROW: f32 = 0.06;
+
     /// The mean gate over one tabulated direction, off a table rather than a `SubstrateMap`
     /// — everything under test here is the model's arithmetic, and none of it needs a
     /// GPU to be wrong.
@@ -405,7 +424,7 @@ mod tests {
     /// the width every test below the softness pair reads through, so each of them is
     /// still a statement about the *give* alone.
     fn row_mean(hist: &[[f32; 256]; BEARING_DIRS], dir: usize, give: f32) -> f32 {
-        row_mean_at(hist, dir, give, BrushParams::DEFAULT_TOOTH_SOFTNESS)
+        row_mean_at(hist, dir, give, NARROW)
     }
 
     /// **The sign of the whole model.** Dragged up the near faces of a ramped substrate a
@@ -549,19 +568,21 @@ mod tests {
     /// charcoal: the stick crumbles into the valleys instead of spanning them, so the
     /// mark stops being a level set of the grain and becomes a tone across it.
     ///
-    /// Two depths, one either side of the half, so the claim is about the *direction*
-    /// of the move and cannot be satisfied by a gate that merely got smaller.
+    /// Two gives, so the claim is about the *direction* of the move and cannot be
+    /// satisfied by a gate that merely got smaller. Both bands are named here rather
+    /// than taken from the brush's default, for [`NARROW`]'s reason: this is the one
+    /// test the width itself is the subject of, so the two it compares are its own.
     #[test]
     fn a_softer_contact_bears_on_the_substrate_more_evenly() {
         let (w, h) = (256, 256);
         let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, SUBSTRATE_TILE_PX));
         for (dir, give) in [(0, 0.0), (BEARING_DIRS / 2, 0.0), (0, 0.6)] {
-            let hard = row_mean_at(&hist, dir, give, BrushParams::DEFAULT_TOOTH_SOFTNESS);
-            let soft = row_mean_at(&hist, dir, give, 8.0 * BrushParams::DEFAULT_TOOTH_SOFTNESS);
+            let hard = row_mean_at(&hist, dir, give, NARROW);
+            let soft = row_mean_at(&hist, dir, give, 8.0 * NARROW);
             assert!(
                 (soft - 0.5).abs() < (hard - 0.5).abs(),
                 "direction {dir} at give {give} bore on {hard} of the substrate through the \
-                 default band and {soft} through one eight times as wide — widening the \
+                 narrow band and {soft} through one eight times as wide — widening the \
                  transition is not evening the contact out"
             );
         }

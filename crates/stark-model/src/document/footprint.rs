@@ -791,8 +791,7 @@ mod tests {
             };
             // What the renderer will draw into: the tip's own reach — a stamp may fill
             // its mask's corners — times how far the stretch draws it out.
-            let painted =
-                brush.size * std::f32::consts::SQRT_2 * BrushParams::elongation(stretch);
+            let painted = brush.size * std::f32::consts::SQRT_2 * BrushParams::elongation(stretch);
             assert!(
                 stroke_pad(&brush) >= painted,
                 "stretch {stretch}: the footprint pads {} where the tip paints {painted}",

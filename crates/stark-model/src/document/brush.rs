@@ -1180,7 +1180,10 @@ mod tests {
         // a NaN falloff — the same class the poison test above rules out for the
         // stored fields, asked of the derived one.
         for radius in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-            let b = BrushParams { size: radius, ..at(16.0) };
+            let b = BrushParams {
+                size: radius,
+                ..at(16.0)
+            };
             assert_eq!(b.drain_px(), 0.0, "radius {radius} must drain nothing");
         }
         // And zero stays zero at every size, so a brush that never heard of drain

@@ -374,6 +374,17 @@ fn sine_sweep(n: usize, span: f32, amp: f32, turns: f32) -> Vec<InputSample> {
 
 // --- the corpus ---------------------------------------------------------------
 
+/// The contact transition the toothed cases are drawn through — a **narrow** band, so
+/// the gate is still recognisably a threshold on the rise and the mark is a level set
+/// of the grain rather than a tone across it (§6.4).
+///
+/// Theirs rather than `BrushParams::DEFAULT_TOOTH_SOFTNESS`, for the reason
+/// `gpu::substrate::tooth`'s own tests keep a `NARROW` of their own: the shipped
+/// default is a taste that gets retuned, and a golden that moves with it detects
+/// nothing. 0.06 is the bundled substrates' interquartile rise, and the width the
+/// tooth shipped with when it was a shader constant.
+const TOOTH_BAND: f32 = 0.06;
+
 /// Every stroke the battery runs. Order is swept path first, then the stamp loop.
 pub const CASES: &[Case] = &[
     Case {
@@ -625,6 +636,12 @@ pub const CASES: &[Case] = &[
             let mut b = smear_brush(45.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
             b.tooth_give = 0.1;
+            // Named, not inherited: what the *default* softness is set to is taste —
+            // which tool the app opens on — and this golden is a claim about the tooth
+            // reading the substrate's gradient along the travel. Left on the default it
+            // re-blessed itself every time the default moved, which is a golden that has
+            // stopped detecting anything (§6.4).
+            b.tooth_softness = TOOTH_BAND;
             b
         },
         path: half_turn_arc,

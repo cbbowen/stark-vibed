@@ -36,6 +36,18 @@ use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
+/// The contact transition every brush here is drawn through, and every bearing here is
+/// asked at (§6.4).
+///
+/// **The tests' own, deliberately not `BrushParams::DEFAULT_TOOTH_SOFTNESS`.** What the
+/// shipped default is set to is taste — which tool the app opens on — and it gets
+/// retuned; what this file measures is the deposition model, and a change of taste must
+/// not be able to move a level-set claim about the grain. `gpu::substrate::tooth`'s unit
+/// tests keep a `NARROW` of their own for the same reason, and it is the same number:
+/// the bundled substrates' interquartile rise, which is what makes the gate a threshold
+/// on the rise rather than a tone across it.
+const BAND: f32 = 0.06;
+
 /// A brush with a given tooth — the tip's **give** against the substrate, so 1 is the
 /// solid mark and 0 the driest (`BrushParams::tooth_give`) — and nothing else that
 /// varies along a stroke: no drain, no taper, and — deliberately — **no size
@@ -45,6 +57,7 @@ fn toothed(give: f32) -> BrushParams {
     BrushParams {
         drain: 0.0,
         tooth_give: give,
+        tooth_softness: BAND,
         shape: BrushShape::Round { hardness: 0.9 },
         modulation: Default::default(),
         dynamics: BrushDynamics {
@@ -536,6 +549,7 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
     // whole charge rather than however far each got.
     let glob = |give: f32| BrushParams {
         tooth_give: give,
+        tooth_softness: BAND,
         dynamics: BrushDynamics {
             flow: 0.0,
             lift: 0.0,
@@ -631,7 +645,7 @@ fn the_bearing_fraction_tracks_the_substrate() {
         return;
     };
     let east = Vec2::new(1.0, 0.0);
-    let soft = BrushParams::DEFAULT_TOOTH_SOFTNESS;
+    let soft = BAND;
     let flat = engine.substrate_bearing(SubstrateId::Flat, 0.5, soft, east);
     assert_eq!(flat, 1.0, "a smooth substrate is full contact at any tooth");
 
@@ -663,12 +677,7 @@ fn the_bearing_curve_is_continuous_in_the_direction() {
     // fraction of the curve's own value, and the walk must close on itself.
     let at = |engine: &mut stark_engine::Engine, turns: f32| {
         let a = turns * std::f32::consts::TAU;
-        engine.substrate_bearing(
-            substrate,
-            0.45,
-            BrushParams::DEFAULT_TOOTH_SOFTNESS,
-            Vec2::new(a.cos(), a.sin()),
-        )
+        engine.substrate_bearing(substrate, 0.45, BAND, Vec2::new(a.cos(), a.sin()))
     };
     let samples: Vec<f32> = (0..=128)
         .map(|i| at(&mut engine, i as f32 / 128.0))
@@ -753,6 +762,7 @@ fn a_toothed_smear_previews_as_it_commits() {
     );
     let smear = BrushParams {
         tooth_give: 0.5,
+        tooth_softness: BAND,
         dynamics: BrushDynamics {
             flow: 0.6,
             lift: 0.6,
