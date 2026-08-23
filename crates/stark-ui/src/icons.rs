@@ -237,7 +237,7 @@ icons! {
     // this is the one act in the set drawn as its own outcome.
     //
     // The one tick left, and the menus want none: "am I in it?" rides the entry's own
-    // mark there (`main::CmdItem`), so a state and this verb cannot be confused for
+    // mark there (`rail::CmdItem`), so a state and this verb cannot be confused for
     // each other by sharing a glyph.
     DONE => "check-bold",
     // The Timing Stats dialog (§7.1), the command search's other row that does

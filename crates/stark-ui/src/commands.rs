@@ -20,7 +20,7 @@
 //! shipped chords are `(Chord, Command)` rows in [`defaults`]; this browser's
 //! rebindings lie over them as [`Bindings`] — a signal on the app state, stored
 //! like the preset library, edited from the palette's own rows
-//! (`main::CommandSearch`: click a row's chord, press the new one). The
+//! (`rail::CommandSearch`: click a row's chord, press the new one). The
 //! dispatch path asks [`find`] once (`input`'s keydown handler), and the chrome
 //! prints its advertisements — a row's shortcut column, a tooltip's parenthesis
 //! — from the same table through [`shortcut`](Command::shortcut). One
@@ -51,7 +51,7 @@
 //! drawn from the *chrome's* own closed set is different:
 //! [`TogglePanel`](Command::TogglePanel) carries a `PanelId`, and each of the
 //! six is still one act [`ALL`] lists by name. The registry holds the acts the
-//! search palette can offer (`main::CommandSearch`) and a chord can carry
+//! search palette can offer (`rail::CommandSearch`) and a chord can carry
 //! whole.
 //!
 //! The guard that precedes any binding at all — a keystroke in a text field is
@@ -531,7 +531,7 @@ pub fn load(state: AppState) {
 }
 
 /// Give `command` the captured chord, and persist the table — the palette's
-/// commit (`main::CommandSearch`), written through [`Bindings::rebind`] so a
+/// commit (`rail::CommandSearch`), written through [`Bindings::rebind`] so a
 /// stolen chord and its victim's row change in the same write.
 pub fn rebind(state: AppState, command: Command, chord: Chord) {
     edit(state, |b| b.rebind(command, chord));
@@ -563,7 +563,7 @@ fn edit(state: AppState, change: impl FnOnce(&mut Bindings)) {
     crate::storage::save_list(&stored);
 }
 
-/// What a keydown means to a rebinding capture (`main::CommandSearch`): the
+/// What a keydown means to a rebinding capture (`rail::CommandSearch`): the
 /// chord to commit, the capture called off, or nothing yet.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Capture {
@@ -754,11 +754,12 @@ pub const BASIC: &[Command] = &[
 /// never really a list of the panels anyway. It is the map of what is on screen.
 ///
 /// Which is what this enum is for. They arrive one at a time, and the first two
-/// came in as rows appended by hand, each with its roving-focus index counted
-/// off `PanelId::ALL.len()`: bookkeeping the loop beside them was already doing,
+/// came in as rows appended by hand, each with its focus index counted off
+/// `PanelId::ALL.len()`: bookkeeping the loop beside them was already doing,
 /// restated where nothing would catch it going wrong, and a third addition would
 /// have been a third copy of the arithmetic. [`ALL`](Self::ALL) is the map
-/// written down instead, and the menu is one loop over it (`main::CommandRail`).
+/// written down instead, and the menu is one loop over it
+/// (`rail::VisibilityMenu`).
 ///
 /// Deliberately thin. An entry's word, mark, lit state, greyed state and act are
 /// all the registry's — it knows only *which* command it is
@@ -817,7 +818,7 @@ impl VisibilityToggle {
     ];
 
     /// The act the entry's row runs — the whole of what the row *is*, since the
-    /// menu draws every other part of it from here too (`main::CmdItem`).
+    /// menu draws every other part of it from here too (`rail::CmdItem`).
     pub fn command(self) -> Command {
         match self {
             VisibilityToggle::Panel(id) => Command::TogglePanel(id),

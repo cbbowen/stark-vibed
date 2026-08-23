@@ -605,11 +605,8 @@ hr {
   height: 11px;
 }
 
-/* A menu entry's mark and its word, held together as the item's leading half — the
-   menubar item is `space-between`, so a shortcut still sits hard right while these
-   two stay a unit. Defined here rather than in the menubar's stylesheet because that
-   one is a css_module and hashes what it declares; this class is set on an element
-   the app builds, so it has to be global. */
+/* A row's mark and its word, held together as its leading half — `.palette-row` is
+   `space-between`, so a shortcut still sits hard right while these two stay a unit. */
 .menu-item {
   display: inline-flex;
   align-items: center;
@@ -2513,9 +2510,9 @@ button.layer-remove:hover {
 /* --- command rail ---
    The one piece of chrome that stands above the rest of it (30 rather than 20), and
    the rail carries that rung on its menus' behalf because they cannot take it
-   themselves: a flyout is absolutely positioned inside this box, and `.dx-menubar`'s
-   `backdrop-filter` makes a stacking context, so the `z-index: 1000` the dropdown and
-   the palette declare is a rung *within* the rail and nothing they can say lifts them
+   themselves: a flyout is absolutely positioned inside this box, whose own
+   `backdrop-filter` makes a stacking context, so the `z-index: 1000` the palette and
+   the menu declare is a rung *within* the rail and nothing they can say lifts them
    over a sibling of it. Level with the chrome the rail would lose to everything
    mounted after it — the quick-brush rack above all, which is how the rack came to
    cover the very menu that puts it away.
@@ -2530,12 +2527,21 @@ button.layer-remove:hover {
   left: 14px;
   top: 14px;
   z-index: 30;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--panel-background);
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
 }
 
-/* A rail entry that runs a command instead of opening a menu (the ⚙). Matches
-   `.dx-menubar-trigger` in the menubar's css_module — that stylesheet is scoped
-   to the vendored component, so the shape is restated here rather than shared;
-   the two must be changed together. */
+/* One rail entry: the ⚙, and the trigger of each flyout beside it. One class for
+   the three because they are one control three times over — the shape was a
+   css_module scoped to the vendored menubar and a copy of it here, kept in step by
+   hand, for exactly as long as one of the three was somebody else's component. */
 .rail-button {
   display: flex;
   align-items: center;
@@ -2559,6 +2565,15 @@ button.layer-remove:hover {
   outline: none;
 }
 
+/* The trigger of an open flyout. Not a hover state — it holds until the surface
+   is dismissed — so it wears the accent steadily, which is what says which of the
+   rail's entries the surface beside it belongs to. */
+.rail-button.open,
+.rail-button.open:hover {
+  background: #3a6ea5;
+  color: #fff;
+}
+
 /* Keyboard-shortcut hint trailing a menu item label. Translucent white stays
    legible on both the panel background and the blue hover/focus highlight. */
 .menu-shortcut {
@@ -2566,19 +2581,22 @@ button.layer-remove:hover {
   font-size: 12px;
 }
 
-/* --- command search (`main::CommandSearch`) ---
-   The rail's own dropdown, so its box restates the menubar css_module's
-   `.dx-menubar-menu` / `.dx-menubar-content` — that stylesheet is scoped to the
-   vendored component and cannot be shared; the two must be changed together
-   (`.rail-button`'s bargain). */
-.command-search {
+/* --- the rail's flyouts (`rail::CommandSearch`, `rail::VisibilityMenu`) ---
+   A trigger with a surface that flies out beside it. The wrapper is what the
+   surface is positioned against and what a `focusout` is measured against, so
+   both flyouts are the same element around the same two children. */
+.rail-flyout {
   position: relative;
 }
 
-/* `z-index: 1000` is a rung *inside* the rail and reads larger than it is: it clears
-   the rail's own buttons and nothing else, because `.dx-menubar` is a stacking
-   context. What puts this palette over the rest of the chrome is `.command-rail`. */
-.command-palette {
+/* Out to the right of the rail rather than below it, since the rail is a column.
+
+   `z-index: 1000` is a rung *inside* the rail and reads larger than it is: it clears
+   the rail's own buttons and nothing else, because `.command-rail`'s
+   `backdrop-filter` makes it a stacking context. What puts a flyout over the rest of
+   the chrome is `.command-rail`'s own rung. */
+.command-palette,
+.rail-menu {
   position: absolute;
   z-index: 1000;
   top: 0;
@@ -2586,13 +2604,39 @@ button.layer-remove:hover {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 250px;
   padding: 6px;
   margin-left: 10px;
   border-radius: 10px;
   background: var(--panel-background);
   box-shadow: var(--panel-shadow), inset 0 0 0 1px #ffffff14;
   backdrop-filter: blur(8px);
+  transform-origin: left top;
+  animation: rail-flyout-in 120ms ease-out;
+}
+
+/* Growing out of the trigger says where it came from. Only on the way in: a
+   flyout is unmounted when it closes rather than left in the tree to animate out,
+   which is the palette's bargain and now the menu's. */
+@keyframes rail-flyout-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateX(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1) translateX(0);
+  }
+}
+
+/* The palette is wider than the map: its rows carry full command names and a
+   shortcut chip, where the map's carry the terse word (`Command::word`). */
+.command-palette {
+  min-width: 250px;
+}
+
+.rail-menu {
+  min-width: 210px;
 }
 
 /* The field wears the row's own box so the palette reads as one column; the
@@ -2615,11 +2659,10 @@ button.layer-remove:hover {
   color: #ffffff8c;
 }
 
-/* A palette row is a menu item by another parent: same box, same highlight, so
-   a command found by searching looks like the same command picked from a menu
-   (`.dx-menubar-item` restated, the bargain above). `.selected` is the
-   keyboard's highlight and shares the hover's paint — the arrows and the
-   pointer are two hands on one list. */
+/* One row for both of the rail's flyouts, so a command found by searching looks
+   like the same command picked from the map (`rail::PaletteRow`, `rail::CmdItem`).
+   `.selected` is the keyboard's highlight, the palette's alone, and it shares the
+   hover's paint — the arrows and the pointer are two hands on one list. */
 .palette-row {
   display: flex;
   align-items: center;
@@ -2639,7 +2682,7 @@ button.layer-remove:hover {
 
 /* Greyed by attribute rather than by a native `disabled` — the trailing chip
    inside the row is the door to rebinding, and it stays clickable whatever the
-   document offers right now (`main::CommandSearch`). */
+   document offers right now (`rail::CommandSearch`). */
 .palette-row[data-disabled="true"] {
   color: #6a6a72;
   cursor: default;
@@ -2657,7 +2700,7 @@ button.layer-remove:hover {
    icon rather than a trailing tick because every row already has a mark and the eye
    is already on it, where a tick is a column of its own that only a row with such a
    state ever fills. The palette and the visibility menu both wear it, which is what
-   makes them one picture of one answer (`main::PaletteRow`, `main::CmdItem`). */
+   makes them one picture of one answer (`rail::PaletteRow`, `rail::CmdItem`). */
 .cmd-active .icon {
   color: #cdd9ed;
   filter: drop-shadow(0 0 4px #8fb0e8);
@@ -2668,14 +2711,9 @@ button.layer-remove:hover {
 }
 
 /* Lightened under a row's own blue highlight, where the resting accent would
-   disappear into it. The menu's half of that is keyed on `role` rather than on the
-   item's class: the menubar is a css_module and its class comes out hashed, so the
-   role — which the primitive writes and this stylesheet can name — is the only handle
-   on the element the highlight lives on. */
+   disappear into it. */
 .palette-row:hover .cmd-active .icon,
-.palette-row.selected .cmd-active .icon,
-[role="menuitem"]:hover .cmd-active .icon,
-[role="menuitem"]:focus-visible .cmd-active .icon {
+.palette-row.selected .cmd-active .icon {
   color: var(--panel-color);
   filter: none;
 }

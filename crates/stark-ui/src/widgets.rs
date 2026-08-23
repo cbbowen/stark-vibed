@@ -106,9 +106,9 @@ pub fn Slider(
 /// any more, and there is nothing behind it to go back to.
 ///
 /// **Why the rule cannot be a bare `onclick` on the backdrop.** A menu row acts on
-/// `pointerdown` (dioxus-primitives' `MenubarItem` does, deliberately — see
-/// `panels::filter::AddFilterButton` for the race it wins), so a dialog is mounted
-/// while the pointer that opened it is still down. A pen, like a touch, is a
+/// `pointerdown`, deliberately (see `panels::filter::AddFilterButton` for the race
+/// it wins), so a dialog is mounted while the pointer that opened it is still
+/// down. A pen, like a touch, is a
 /// *direct-manipulation* device: the browser withholds the whole compatibility
 /// mouse sequence for the gesture and hit-tests it fresh **at the release point** —
 /// so the `mousedown`, `mouseup` and `click` of the very press that opened the
@@ -168,10 +168,12 @@ pub fn Modal(
 /// **One at a time, in one signal** ([`AppState::popout`](crate::state::AppState)),
 /// on `modes::Composing`'s argument: two open at once is a state nothing wants
 /// and nothing should have to prevent. They were `use_signal(|| false)` locals of
-/// the bars that draw them, which made them invisible to the app — and in
+/// the surfaces that draw them, which made them invisible to the app — and in
 /// particular to Escape, whose ladder knows the dialogs, the composing modes, the
 /// composing layers and Timeline mode, and could not see a pop-out standing over
-/// all of them (`commands::escape`).
+/// all of them (`commands::escape`). That is why the rail's menu is on this list
+/// though no well opens it: reaching it from the ladder is the only way its
+/// Escape is not a *second* handler for a keystroke the window already hears.
 ///
 /// **Not a [`Dialogs`](crate::state::Dialogs) flag**, though the machinery would
 /// have fitted: that list is also what stands `FinishMode` down
@@ -182,12 +184,15 @@ pub fn Modal(
 ///
 /// # What is still owed
 ///
-/// **Light dismiss.** A press outside a pop-out should close it and none of these
-/// does. The fix is not a component: the catcher has to be root-mounted the way
-/// [`Modal`]'s backdrop is, because `.bottom-bars` carries a `transform` and every
-/// bar and panel a `backdrop-filter`, and each of those makes a containing block
-/// that a `position: fixed` catcher rendered inside them cannot escape. It is also
-/// the one part of this that cannot be got right by reading — where the catcher sits
+/// **Light dismiss, for the ones flown out of a bar or a panel.** A press outside
+/// a pop-out should close it and only the rail's does — which it can because it
+/// holds the keyboard, so `focusout` answers the question for it
+/// (`rail::VisibilityMenu`). Nothing in a bar does, and the fix there is not a
+/// component: the catcher has to be root-mounted the way [`Modal`]'s backdrop is,
+/// because `.bottom-bars` carries a `transform` and every bar and panel a
+/// `backdrop-filter`, and each of those makes a containing block that a
+/// `position: fixed` catcher rendered inside them cannot escape. It is also the
+/// one part of this that cannot be got right by reading — where the catcher sits
 /// among the z-indices decides which presses it eats, and eating a canvas press
 /// would be worse than the bug — so it wants a browser rather than an argument.
 ///
@@ -198,6 +203,11 @@ pub fn Modal(
 /// so the stroke that dismisses one also paints (`StackPopouts`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PopoutId {
+    /// The rail's map of what is on screen (§25.5). The one member that is not a
+    /// well's: it is here for the rung alone, since a menu that answered Escape
+    /// at the element level would be a second actor on a keystroke the window is
+    /// already hearing (`rail::VisibilityMenu`, `input::keys`).
+    VisibilityMenu,
     /// The frame bar's matte-colour picker (§15.4).
     MattePaint,
     /// The gradient library, flown out of a bar's ramp well (§22.3).
@@ -227,7 +237,7 @@ impl PopoutId {
     /// about which control in the row happened to be pressed.
     pub fn in_stack(self) -> Option<&'static str> {
         match self {
-            PopoutId::MattePaint | PopoutId::GradientLibrary => None,
+            PopoutId::VisibilityMenu | PopoutId::MattePaint | PopoutId::GradientLibrary => None,
             PopoutId::SubstrateColor => Some("[data-popout=\"substrate-color\"]"),
             PopoutId::SubstrateGallery => Some("[data-popout=\"substrate-gallery\"]"),
         }
@@ -246,6 +256,23 @@ pub fn toggle_popout(state: AppState, id: PopoutId) {
     let mut open = state.popout;
     let was = *open.peek();
     open.set(if was == Some(id) { None } else { Some(id) });
+}
+
+/// Close `id` if it is the one open — what a surface that light-dismisses calls
+/// when it hears the press leave it (`rail::VisibilityMenu`).
+///
+/// Guarded, where [`close_popout`] is not, because that press is often the one
+/// opening the *next* pop-out: the focus leaves before the new well's click
+/// lands, so an unguarded close would take down whatever had just come up.
+///
+/// `peek` rather than `read`, like [`toggle_popout`] above: this is called from a
+/// handler, and subscribing one to the signal it is in the middle of writing is
+/// how a read ends up live across a write of itself (`visibility::persist`).
+pub fn close_popout_of(state: AppState, id: PopoutId) {
+    let mut open = state.popout;
+    if *open.peek() == Some(id) {
+        open.set(None);
+    }
 }
 
 /// Close whatever is open; `true` if anything was — what Escape's first rung

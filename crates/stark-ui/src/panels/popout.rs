@@ -115,8 +115,11 @@ pub fn StackPopouts() -> Element {
             match id {
                 PopoutId::SubstrateColor => rsx! { super::lighting::SubstrateColorPicker {} },
                 PopoutId::SubstrateGallery => rsx! { crate::substrates::SubstrateGallery {} },
-                // The bars' own, which `in_stack` has already returned for above.
-                PopoutId::MattePaint | PopoutId::GradientLibrary => rsx! {},
+                // The ones drawn where they are opened — a bar's own, the rail's
+                // — which `in_stack` has already returned for above.
+                PopoutId::VisibilityMenu
+                | PopoutId::MattePaint
+                | PopoutId::GradientLibrary => rsx! {},
             }
         }
     }

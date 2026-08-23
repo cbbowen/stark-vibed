@@ -709,7 +709,7 @@ pub fn select_all(e: &Event<MountedData>) {
 }
 
 /// Focus the element `e` was mounted on — how the command search's field takes
-/// the keyboard the moment its palette opens (`main::CommandSearch`). The DOM
+/// the keyboard the moment its palette opens (`rail::CommandSearch`). The DOM
 /// node directly, for [`select_all`]'s reason.
 #[cfg(target_arch = "wasm32")]
 pub fn focus(e: &Event<MountedData>) {

@@ -79,7 +79,7 @@ which the engine draws into directly. DOM chrome surrounds it.
   different: `Command::TogglePanel(PanelId)` makes each panel's toggle one
   nameable act — the visibility menu draws its panel rows from it, a search for
   "panel" lists the whole stack, and any of the six can be given a chord.
-- **The rail's first entry is the registry, searchable.** `main::CommandSearch`
+- **The rail's first entry is the registry, searchable.** `rail::CommandSearch`
   is a field over `commands::search`: at rest it offers the file family
   (`commands::BASIC` — the acts with no muscle-memory home anywhere else), and a
   query narrows it over `commands::ALL`, prefix matches first and display names
@@ -91,12 +91,15 @@ which the engine draws into directly. DOM chrome surrounds it.
   Arrows move the highlight, Enter runs it, a row acts on `pointerdown`, and
   every row is drawn from the registry like the menus' own. It replaced the
   catch-all ☰ menu — Undo now advertises its Ctrl+Z in the row a query turns
-  up. Deliberately *not* a third `MenubarMenu`: the vendored trigger
-  light-dismisses its menu when DOM focus leaves it for anything but a menu
-  item, and this surface exists to hand focus to a text field — so it is the
-  filter picker's own-dropdown arrangement, plus one question that pattern
+  up. It is the flyout that had to be **our own** first: the vendored
+  `MenubarMenu`'s trigger light-dismisses when DOM focus leaves it for anything
+  but a menu item, and this surface exists to hand focus to a text field — so it
+  is the filter picker's own-dropdown arrangement, plus one question that pattern
   never had to ask: `platform::focus_stays_within`, so focus hopping from
-  trigger to field on open does not read as dismissal.
+  trigger to field on open does not read as dismissal. The menu beside it is that
+  same arrangement now, and the vendored menubar left the app with it — which is
+  what let the two stylesheets become one, a css_module having hashed the classes
+  the palette could until then only restate by hand.
 - **The rail's menu is a map of what is on screen, not a list of the panels.**
   It began as the panel stack's own — one row per `PanelId`, each wearing the
   mark its title bar wears, so the column is read at a glance rather than a word
@@ -107,15 +110,27 @@ which the engine draws into directly. DOM chrome surrounds it.
   reachable by name in the palette and nowhere else. What the menu holds is one
   list — `commands::VisibilityToggle::ALL`, whose entries are `Panel(PanelId)`,
   `Navigator`, `QuickBrushes` and `Timeline` — and the menu is one loop over it.
-  The three arrived one at a time before that, each as a row whose roving-focus
-  index was counted off `PanelId::ALL.len()` by hand: bookkeeping the loop beside
-  it was already doing, restated where nothing would catch it going wrong. The
-  enum is deliberately thin — an entry knows only *which* `Command` it is, and
+  The three arrived one at a time before that, each as a row whose focus index was
+  counted off `PanelId::ALL.len()` by hand: bookkeeping the loop beside it was
+  already doing, restated where nothing would catch it going wrong. The enum is
+  deliberately thin — an entry knows only *which* `Command` it is, and
   the word, mark, lit state and greyed state are the registry's — so it is a view of
   the registry rather than a second one, and nothing is reachable there that a
   search for its name would miss. And what the menu toggles, the browser keeps:
   one record over that same list, so every row of the map is remembered and a new
   row cannot be added without saying so (`crate::visibility`, §25.6).
+  **A row leaves the menu standing.** Showing the Layers panel and hiding the
+  navigator is one errand rather than two, and a map that closed on the first
+  answer sent the artist back to the trigger to give the second — while the mark
+  that has just changed under the pointer is the very thing they came to read.
+  Nobody chose that either: it is what the vendored `MenubarItem` does on its way
+  out of `on_select` and nothing outside that crate can decline, and it is the
+  second of the two reasons the rail draws its own flyouts. Escape still puts the
+  menu down, from the ladder rather than from the menu: the open flag is a
+  `widgets::PopoutId` (§25.7), which is what keeps this menu's Escape from being a
+  *second* actor on a keystroke the window is already hearing. The arrows and
+  Enter stay the palette's, where a text field withholds that window binding —
+  and every act in the map is in the palette by name.
 - **A chord names its key the way the binding means it.** A chord names the
   accelerator tier (Ctrl or Command, `input::accel`), the Shift bit, and a key
   that is either the *character* it types — a mnemonic follows the layout,
@@ -325,11 +340,11 @@ which the engine draws into directly. DOM chrome surrounds it.
   overlaps except a dialog**, because it is the surface the artist asked for a
   moment ago and closes the moment they are done with it — and the rung is on
   `.command-rail` rather than on the flyouts themselves, which cannot take it: a
-  dropdown is absolutely positioned inside the rail and `.dx-menubar`'s
-  `backdrop-filter` makes a stacking context, so its own `z-index: 1000` is spent
-  clearing the rail's buttons. Left level with the chrome, the rail lost to
-  everything mounted after it in `main.rs` — the quick-brush rack covering the
-  menu that puts the rack away. **Anything sharing a rung is ordered by the DOM**,
+  dropdown is absolutely positioned inside the rail, whose own `backdrop-filter`
+  makes a stacking context, so its `z-index: 1000` is spent clearing the rail's
+  buttons. Left level with the chrome, the rail lost to everything mounted after
+  it in `main.rs` — the quick-brush rack covering the menu that puts the rack
+  away. **Anything sharing a rung is ordered by the DOM**,
   so a tie there is a statement about the order in `main.rs` and is commented as
   one where it matters (the pop-out and the card at 26).
 - **The navigator's miniature is a second surface, not an image the UI carries.**
@@ -1045,10 +1060,10 @@ was a bug nobody could have found by reading the code.
 **A dialog dismisses on the press it heard, not on any click.** The obvious
 spelling — an `onclick` on the backdrop — is wrong, and wrong only under a pen,
 which is why it survived in nine dialogs for as long as it did. A menu row acts
-on `pointerdown` (dioxus-primitives' `MenubarItem`, deliberately: §11's dropdowns
-light-dismiss on blur, and acting on the press is how a row wins that race), so
-the dialog is mounted while the pointer that opened it is still down. A pen, like
-a touch, is a *direct-manipulation* device: the browser withholds the whole
+on `pointerdown`, deliberately: §11's dropdowns light-dismiss on blur, and acting
+on the press is how a row wins that race — so the dialog is mounted while the
+pointer that opened it is still down. A pen, like a touch, is a
+*direct-manipulation* device: the browser withholds the whole
 compatibility mouse sequence for the gesture and hit-tests it fresh **at the
 release point**. So `mousedown`, `mouseup` and `click` are all delivered to the
 backdrop the press itself created, and a dialog opened with a pen shut again
@@ -1106,15 +1121,17 @@ is a working surface rather than something to read and dismiss, and every pixel
 it takes goes to the preview or to a list that scrolls inside it.
 
 **And what a pop-out owes.** A pop-out is the third surface — neither a panel nor
-a dialog — and it is what a *well* opens: a choice made by looking rather than by
-reading, offered beside the control that holds it. There are four, and they are
-one list, `widgets::PopoutId`, because at most one may be open at a time and
-`modes::Composing`'s argument applies unchanged — two open at once is a state
+a dialog — and it is mostly what a *well* opens: a choice made by looking rather
+than by reading, offered beside the control that holds it. There are five, and
+they are one list, `widgets::PopoutId`, because at most one may be open at a time
+and `modes::Composing`'s argument applies unchanged — two open at once is a state
 nothing wants and nothing should have to prevent. They were `use_signal(|| false)`
 locals of the surfaces that drew them, which made them invisible to the app and in
 particular to Escape, whose ladder knew the dialogs, the composing modes, the
 composing layers and Timeline mode and could not see a pop-out standing over all
-of them.
+of them. That is also why the rail's visibility menu is on the list though no well
+opens it (§11): reaching it from the ladder is the only way its Escape is not a
+second handler for a keystroke the window already hears.
 
 Three things follow from being on that list rather than in a local:
 
@@ -1128,7 +1145,10 @@ Three things follow from being on that list rather than in a local:
   says the artist has gone back to painting is a stroke, not a dismissal, so the
   pop-out gets out of the way rather than catching it — a catcher over the canvas
   would eat the first stroke, which is worse than the bug it fixes. (General light
-  dismiss — a press anywhere outside — is still owed for all four.)
+  dismiss — a press anywhere outside — is still owed for the four a well opens.
+  The rail's menu has it already, and cheaply, because it holds the keyboard: a
+  `focusout` that landed outside the flyout answers the question with no catcher
+  at all.)
 
 **Where a pop-out is drawn splits on one fact: whether the thing it flew out of is
 clipped.** A bar's is drawn in the bar. Nothing clips `.bottom-bars`, so the frame

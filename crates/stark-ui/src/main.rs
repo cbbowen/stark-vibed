@@ -44,7 +44,6 @@ mod builtins;
 mod canvas;
 mod collab;
 mod commands;
-mod components;
 mod credits;
 mod drags;
 mod failure;
@@ -105,8 +104,7 @@ use state::{AppState, update_brush};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
 /// every component class referenced below. Linked once by [`app`] so the rsx!
-/// blocks carry class names, not inline styles. Custom properties are global, so
-/// the css_module menubar styles pick up `--panel-shadow` / `--panel-background` too.
+/// blocks carry class names, not inline styles.
 static STARK_CSS: Asset = asset!("/assets/stark.css");
 
 fn main() {

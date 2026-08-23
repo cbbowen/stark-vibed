@@ -8,19 +8,22 @@
 //! forget its gate. That is §25.2's rule, and this is the module with the most
 //! rows to keep it for.
 //!
-//! The palette is our own dropdown rather than a third `MenubarMenu`, and not
-//! for styling: the primitive light-dismisses the moment DOM focus leaves it for
-//! anything but a menu item, and the whole point of this surface is that focus
-//! lives in a text field the primitive has never heard of. [`CommandSearch`]
-//! carries the arrangement that replaces it.
+//! **Both flyouts are our own dropdowns**, and neither was always: they were
+//! `dioxus-primitives`' menubar, which fits a File/Edit bar and not this rail. Its
+//! item closes the menu on its way out of `on_select`, so a map of what is on
+//! screen could only ever be read once per opening ([`VisibilityMenu`]); its
+//! trigger light-dismisses the moment DOM focus leaves it for anything but a menu
+//! item, so a surface whose whole point is a text field could not be one at all
+//! ([`CommandSearch`]). One arrangement now covers both — a relative wrapper, a
+//! `.rail-button` trigger, rows that act on `pointerdown`, dismissal on
+//! `focusout` — which is also what let two stylesheets become one: a css_module
+//! hashes the classes it declares, so what the vendored menu wore could not be
+//! shared with what the palette wore, and the two were kept in step by hand.
 
 use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
 use crate::commands::{self, Command, VisibilityToggle};
-use crate::components::menubar::{
-    Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger,
-};
 use crate::credits::CreditsModal;
 use crate::icons::{self, icon, icon_large};
 use crate::input::accel;
@@ -29,14 +32,15 @@ use crate::platform;
 use crate::settings::SettingsModal;
 use crate::state::{AppState, use_obs_opt};
 use crate::substrates::NewDocumentModal;
+use crate::widgets::{self, PopoutId};
 use crate::{collab, drags, files, timings};
 
 /// A vertical rail on the far left (§11): the command search, the visibility
 /// menu — what is on screen, panel or not (`commands::VisibilityToggle`) — and
-/// the ⚙. The menu is the `menubar` component and its dropdown flies out to
-/// the right; the search is [`CommandSearch`], our own dropdown in the same
-/// spot, which is the way to every simple command by name — Undo advertises its
-/// Ctrl+Z there now, in the row a query for it turns up.
+/// the ⚙. The first two fly a surface out to the right and are the same
+/// arrangement twice ([`CommandSearch`], [`VisibilityMenu`]); the search is the
+/// way to every simple command by name — Undo advertises its Ctrl+Z there now, in
+/// the row a query for it turns up.
 ///
 /// The rail ends in a ⚙ that opens [`SettingsModal`] directly rather than dropping
 /// a menu: settings are a *destination*, not a list of commands to pick one from,
@@ -61,45 +65,25 @@ pub fn CommandRail() -> Element {
     let mut show_drag_presets = state.dialogs.drag_presets;
 
     rsx! {
-        div { class: chrome_class(state, "command-rail"),
-            Menubar {
-                // The way to every simple command by name, in the slot the
-                // catch-all ☰ menu held — the menu became a palette the day the
-                // registry could list itself (`commands::ALL`).
-                CommandSearch {}
-                MenubarMenu { index: 0usize,
-                    // What is on screen: the floating panels, and the chrome
-                    // that stands outside their stack. Each entry wears its own
-                    // mark — a panel's is the one its title bar wears — so the
-                    // menu is a picture of the window rather than a list of its
-                    // nouns (`PanelId::glyph`, `Command::icon`).
-                    MenubarTrigger { {icon_large(icons::PANELS)} }
-                    MenubarContent {
-                        // One loop over one list (`commands::VisibilityToggle`),
-                        // which is where what the menu holds — and in what order
-                        // — is written down. Every row is a registry command, so
-                        // the same act is reachable by search and by a chord of
-                        // the user's own, and the row adds nothing the registry
-                        // does not already carry.
-                        for (i, entry) in VisibilityToggle::ALL.into_iter().enumerate() {
-                            CmdItem { index: i, command: entry.command() }
-                        }
-                    }
-                }
-                // This client's preferences. A plain button inside the rail rather
-                // than a third `MenubarMenu`: it opens a dialog on the click, so
-                // there is no dropdown for the menubar to manage.
-                button {
-                    class: "rail-button",
-                    // The menubar's own triggers carry `role="menuitem"`; matching
-                    // it keeps the rail a well-formed menubar rather than a
-                    // menubar with a stray button in it.
-                    role: "menuitem",
-                    r#type: "button",
-                    title: Command::Settings.name(),
-                    onclick: move |_| Command::Settings.run(state),
-                    {icon_large(Command::Settings.icon())}
-                }
+        div {
+            class: chrome_class(state, "command-rail"),
+            // The rail is a menubar and its three entries are its items, which is
+            // what the two flyouts' triggers and the ⚙ below each say for
+            // themselves — a well-formed menubar rather than a column of buttons.
+            role: "menubar",
+            // The way to every simple command by name, in the slot the catch-all
+            // ☰ menu held — the menu became a palette the day the registry could
+            // list itself (`commands::ALL`).
+            CommandSearch {}
+            VisibilityMenu {}
+            // This client's preferences: a plain button, for the reason above.
+            button {
+                class: "rail-button",
+                role: "menuitem",
+                r#type: "button",
+                title: Command::Settings.name(),
+                onclick: move |_| Command::Settings.run(state),
+                {icon_large(Command::Settings.icon())}
             }
         }
         if show_new_doc() {
@@ -126,15 +110,89 @@ pub fn CommandRail() -> Element {
     }
 }
 
-/// One row of the rail's menus, rendered from the command it runs
+/// The map of what is on screen (§25.5): one row per `commands::VisibilityToggle`,
+/// flying out to the right of the rail. The floating panels, and the chrome that
+/// stands outside their stack. Each entry wears its own mark — a panel's is the one
+/// its title bar wears — so the menu is a picture of the window rather than a list
+/// of its nouns (`PanelId::glyph`, `Command::icon`).
+///
+/// **A row leaves the menu standing.** Showing the Layers panel and hiding the
+/// navigator is one errand rather than two, and a map that closed on the first
+/// answer made the artist reopen it to give the second — while the mark that has
+/// just changed under the pointer is the very thing they came to read
+/// ([`CmdItem`]). Nobody chose that: it is what `dioxus-primitives`' `MenubarItem`
+/// does on its way out of `on_select`, and nothing outside that crate can decline
+/// it. Hence a dropdown of our own, which is the palette's arrangement beside it
+/// ([`CommandSearch`]).
+///
+/// The open flag is a `widgets::PopoutId` rather than a local signal, so **Escape
+/// reaches it**: a menu that closed itself on a keydown would be a second actor on
+/// a keystroke the window is already hearing (`input::keys`), where this way the
+/// ladder already there puts the menu down and takes nothing else with it
+/// (`commands::escape`). The keyboard's route to these same acts is
+/// [`CommandSearch`], whose field withholds that window binding — which is what
+/// makes the arrows and Enter the palette's to spend and not this menu's.
+#[component]
+fn VisibilityMenu() -> Element {
+    let state = use_context::<AppState>();
+    let open = widgets::popout_open(state, PopoutId::VisibilityMenu);
+    // The flyout's own node, held for exactly one question: did that focusout
+    // land inside me ([`CommandSearch`], for why the question has to be asked).
+    let mut root: Signal<Option<Event<MountedData>>> = use_signal(|| None);
+    // The trigger's, so opening can hand it the keyboard. Something inside has to
+    // hold focus or there is no `focusout` to dismiss on at all — and a browser
+    // that focuses a clicked button is not something to rely on for it.
+    let mut trigger: Signal<Option<Event<MountedData>>> = use_signal(|| None);
+    rsx! {
+        div {
+            class: "rail-flyout",
+            onmounted: move |e| root.set(Some(e)),
+            onfocusout: move |e| {
+                if !platform::focus_stays_within(root.read().as_ref(), &e) {
+                    widgets::close_popout_of(state, PopoutId::VisibilityMenu);
+                }
+            },
+            button {
+                class: "rail-button",
+                class: if open { "open" },
+                // The rail's own entries carry `role="menuitem"` ([`CommandRail`]).
+                role: "menuitem",
+                r#type: "button",
+                title: "What is on screen",
+                "aria-expanded": "{open}",
+                onmounted: move |e| trigger.set(Some(e)),
+                onclick: move |_| {
+                    widgets::toggle_popout(state, PopoutId::VisibilityMenu);
+                    if let Some(t) = trigger.peek().as_ref() {
+                        platform::focus(t);
+                    }
+                },
+                {icon_large(icons::PANELS)}
+            }
+            if open {
+                div { class: "rail-menu",
+                    // One loop over one list (`commands::VisibilityToggle`), which
+                    // is where what the menu holds — and in what order — is
+                    // written down. Every row is a registry command, so the same
+                    // act is reachable by search and by a chord of the user's own,
+                    // and the row adds nothing the registry does not already carry.
+                    for entry in VisibilityToggle::ALL {
+                        CmdItem { key: "{entry:?}", command: entry.command() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One row of the visibility menu, rendered from the command it runs
 /// (`crate::commands`): the word, the mark, the shortcut column, the greyed
 /// state and the live-act tint — a mode you are in (§18.2.4), a panel that is
 /// up — are all the registry's, so what the menu shows and what a click does
 /// cannot drift, and a chord a command gains is advertised here without the row
-/// changing. The one prop left is the menu's own business: `index` is the
-/// menubar's roving-focus order.
+/// changing.
 #[component]
-fn CmdItem(index: usize, command: Command) -> Element {
+fn CmdItem(command: Command) -> Element {
     let state = use_context::<AppState>();
     // One memo per row, and rows are components, so each re-renders when its
     // own answer changes rather than on every commit (`state::use_obs`'s
@@ -148,14 +206,25 @@ fn CmdItem(index: usize, command: Command) -> Element {
     let look = use_obs_opt(state, move |o| (command.enabled(o), command.active(state)));
     let (enabled, active) = look();
     rsx! {
-        MenubarItem {
-            index,
-            value: format!("{command:?}"),
-            disabled: !enabled,
-            on_select: move |_| command.run(state),
-            // The terse word, not the full name: a menu's trigger already
-            // names the subject, which is `word`'s whole remit — the Panels
-            // menu says "Color" where the palette must say "Color panel".
+        button {
+            class: "palette-row",
+            // Greyed by attribute rather than by a native `disabled`, for
+            // [`PaletteRow`]'s reason — one look for the two surfaces, whose rows
+            // are one class — so the guard below is the whole of the refusal.
+            "data-disabled": !enabled,
+            // `pointerdown`, for [`PaletteRow`]'s reason — it beats the blur —
+            // and the press takes the focus with it, onto a row that is *inside*
+            // the flyout. Which is the whole of why the menu is still standing to
+            // be read afterwards: dismissal asks where focus went, not whether it
+            // moved ([`VisibilityMenu`]).
+            onpointerdown: move |_| {
+                if enabled {
+                    command.run(state);
+                }
+            },
+            // The terse word, not the full name: the menu's trigger already
+            // names the subject, which is `word`'s whole remit — this menu
+            // says "Color" where the palette must say "Color panel".
             //
             // "You are in it" rides the **mark**, the palette's arrangement
             // ([`PaletteRow`]) — one picture of `Command::active` on both
@@ -182,17 +251,22 @@ fn CmdItem(index: usize, command: Command) -> Element {
 /// same spot, but the keyboard goes to a **field**, resting on the file family
 /// (`commands::BASIC`) and narrowing to `commands::search` as the query grows.
 /// Arrows move the highlight, Enter runs it, Escape puts the palette away; a
-/// row is the same row the menus draw, printed from the same registry.
+/// row is the same row the menu draws, printed from the same registry.
 ///
-/// Our own dropdown rather than a third `MenubarMenu`, and not for styling: the
-/// primitive's trigger light-dismisses its menu the moment DOM focus leaves it
-/// for anything but a menu item, and the whole point of this surface is that
-/// focus lives in a text field the primitive has never heard of. So it is
+/// This is the flyout that had to be our own first, and not for styling: the
+/// vendored trigger light-dismissed its menu the moment DOM focus left it for
+/// anything but a menu item, and the whole point of this surface is that focus
+/// lives in a text field the primitive has never heard of. So it took
 /// `panels::filter::AddFilterButton`'s arrangement instead — rows act on
 /// `pointerdown`, dismissal is `onfocusout` — with one addition that pattern
 /// never needed: focus moving *within* the palette (the trigger handing the
 /// field the keyboard on open) must not read as leaving, so the handler asks
 /// the event where focus went (`platform::focus_stays_within`).
+///
+/// **The open flag stays a local signal**, where [`VisibilityMenu`]'s is app
+/// state: a surface holding the keyboard has to answer Escape itself, since the
+/// window binding is withheld from a text field (`input::keys`), and a flag
+/// Escape can also reach from outside would be two ways to close one thing.
 #[component]
 fn CommandSearch() -> Element {
     let state = use_context::<AppState>();
@@ -214,7 +288,7 @@ fn CommandSearch() -> Element {
 
     rsx! {
         div {
-            class: "command-search",
+            class: "rail-flyout",
             onmounted: move |e| root.set(Some(e)),
             onfocusout: move |e| {
                 if !platform::focus_stays_within(root.read().as_ref(), &e) {
