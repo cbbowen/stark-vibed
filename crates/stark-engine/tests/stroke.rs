@@ -507,6 +507,58 @@ fn a_stroke_commits_the_tiles_it_previewed() {
     );
 }
 
+/// **Fast commit off is bit-for-bit** (`DEFAULT_FAST_COMMIT`, §6.2). With the
+/// setting cleared the commit is offered nothing, so it renders the stroke the one
+/// way a replay, a file, an undo and a collaborator all render it — and *exactly*
+/// that way, which is the whole of what the setting buys and the reason the bound
+/// here is zero where its neighbour's is the seam.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn a_stroke_committed_without_fast_commit_is_the_replay() {
+    let (Some(mut live), Some(mut replayed)) = (engine_or_skip_blue(), engine_or_skip_blue())
+    else {
+        return;
+    };
+    live.process(ViewCommand::SetFastCommit(false));
+    draw_long_stroke(&mut live);
+    live.process(GestureCommand::End);
+    assert_eq!(
+        live.strokes_reused(),
+        0,
+        "the commit took the preview's tiles with fast commit switched off"
+    );
+    let committed = live.render_to_image();
+
+    replayed.process(ViewCommand::SetBrush(brush(RED, 14.0)));
+    let samples: Vec<InputSample> = long_wave().into_iter().map(InputSample::at).collect();
+    replayed.replay_stroke(Tool::Brush, &samples);
+
+    assert!(
+        images_match(&committed, &replayed.render_to_image(), 0),
+        "fast commit is off and the stroke still did not land the replay's pixels: \
+         worst {} levels",
+        diff_fraction(&committed, &replayed.render_to_image()).1
+    );
+}
+
+/// The setting reaches the frontend as the engine's own value, so a dialog reading
+/// it back cannot disagree with what the engine believes (§4).
+#[test]
+fn fast_commit_is_projected() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    assert_eq!(
+        engine.observe().fast_commit,
+        stark_engine::DEFAULT_FAST_COMMIT,
+        "a fresh engine does not report the default the frontend stores"
+    );
+    engine.process(ViewCommand::SetFastCommit(false));
+    assert!(!engine.observe().fast_commit);
+    engine.process(ViewCommand::SetFastCommit(true));
+    assert!(engine.observe().fast_commit);
+}
+
 #[test]
 fn stroke_commit_undo_redo() {
     let Some(mut engine) = engine_or_skip_blue() else {

@@ -119,9 +119,9 @@ pub use colorspace::ColorSpace;
 pub use command::{InputCommand, InputSample};
 pub use document::Selection;
 pub use engine::{
-    Background, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan, ExportScale, GuideInfo,
-    Guides, LayerInfo, Layers, MatteInfo, ObservableState, PickOptions, PickSource, PresenceTick,
-    Projected, Rendered,
+    Background, DEFAULT_FAST_COMMIT, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan,
+    ExportScale, GuideInfo, Guides, LayerInfo, Layers, MatteInfo, ObservableState, PickOptions,
+    PickSource, PresenceTick, Projected, Rendered,
 };
 pub use error::{EngineError, Result};
 pub use gpu::{

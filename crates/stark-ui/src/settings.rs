@@ -47,14 +47,20 @@ use stark_engine::command::ViewCommand;
 #[component]
 pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
-    // Both of the dialog's engine-owned rows in **one** memo, which is what
+    // Every engine-owned row of the dialog in **one** memo, which is what
     // `state::use_obs` asks for where the fields are read together: read straight,
     // as these were, the dialog re-rendered on every engine write for as long as
-    // it stood open. The two are the peer-outline switch and the history budget
-    // below; each is the engine's own value rather than a copy here, so neither
-    // can disagree with what the engine believes (§4).
-    let engine_owned = use_obs(state, |o| (o.show_peer_selections, o.history_budget));
-    let show_peers = engine_owned().is_some_and(|(show, _)| show);
+    // it stood open. The three are the peer-outline switch, the history budget and
+    // the fast-commit switch below; each is the engine's own value rather than a
+    // copy here, so none can disagree with what the engine believes (§4).
+    let engine_owned = use_obs(state, |o| {
+        (o.show_peer_selections, o.history_budget, o.fast_commit)
+    });
+    let show_peers = engine_owned().is_some_and(|(show, ..)| show);
+    // The engine's default rather than a second opinion about it, as the budget
+    // below is — and unreachable in practice for its reason: the dialog cannot be
+    // open before the renderer is up.
+    let fast_commit = engine_owned().map_or(stark_engine::DEFAULT_FAST_COMMIT, |(.., f)| f);
     let mut assist_enabled = state.assist.enabled;
     let assist = assist_enabled();
     let mut minimal_enabled = state.minimal;
@@ -66,7 +72,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
     // owns this and a copy here would be one that can disagree. Before the renderer
     // is up the dialog cannot be open, so the fallback is unreachable in practice
     // and is the engine's own default rather than a second opinion about it.
-    let budget = engine_owned().map_or(stark_engine::DEFAULT_HISTORY_BUDGET, |(_, b)| b);
+    let budget = engine_owned().map_or(stark_engine::DEFAULT_HISTORY_BUDGET, |(_, b, _)| b);
     // Keyed on the *session*, not on whether anyone is currently here, so the note
     // under the peer-outline row does not flicker as collaborators come and go.
     let shared = (state.collab.phase)() == CollabPhase::Shared;
@@ -101,6 +107,20 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 description: "Hold the pen still mid-stroke and a rough line or ellipse snaps to the perfect shape; the rest of the drag steers it. Anything else is left as you drew it.",
                 checked: assist,
                 onchange: move |v| assist_enabled.set(v),
+            }
+            SettingToggle {
+                id: "fast-commit",
+                label: "Finish strokes instantly",
+                // The label is what the artist feels; the sentence is the mechanism,
+                // because the row cannot be judged without it — both settings paint
+                // the same stroke, and what differs is when it is drawn (§6.2).
+                description: "Keep the stroke exactly as you watched it appear when you lift the pen, instead of drawing it over again. Turning this off puts a pause at the end of every long stroke.",
+                // The caveat the label cannot carry: what the slower road buys. Said
+                // in the terms somebody would want it in — saving, sharing, undo —
+                // rather than as the seam it is measured by.
+                note: Some("Off, every stroke is drawn the one way a saved file, an undo and a collaborator all draw it, so your canvas reproduces exactly. Either way the two differ by at most a level or two of color.".to_string()),
+                checked: fast_commit,
+                onchange: move |v| dispatch(state, ViewCommand::SetFastCommit(v)),
             }
             SettingToggle {
                 id: "show-peer-selections",

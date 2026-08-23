@@ -96,6 +96,25 @@ const ROOT_LAYER: LayerId = LayerId(0);
 /// [`Engine::trim_history`] for why that is what [`MIN_UNDO_DEPTH`] guards.
 pub const DEFAULT_HISTORY_BUDGET: u64 = 2 << 30;
 
+/// Whether a stroke's commit takes the tiles its live preview already drew, rather
+/// than rendering the stroke again at pen-up (`document::PreparedStroke`, §6.2).
+///
+/// **On**, because the two renders are the same picture to within a level or two and
+/// only one of them is paid for while the artist is waiting: a long stroke rendered
+/// a second time is a hitch at exactly the moment the incremental repaint exists to
+/// remove one. What the other setting buys is not a better picture but an *identical*
+/// one — the stroke drawn the single way a file, an undo and a collaborator all draw
+/// it, so the drawing reproduces bit for bit (§8, §9) rather than within the seam a
+/// cut costs. That is worth offering and not worth defaulting to.
+///
+/// The **default**, not the value — [`ViewCommand::SetFastCommit`] sets it, and
+/// Stark's own settings dialog offers it. Here rather than in the frontend's stored
+/// preferences for the reason [`DEFAULT_HISTORY_BUDGET`] is: two defaults for one
+/// behaviour is two answers to what Stark does out of the box, and this is a
+/// behaviour whose two paths are nearly indistinguishable in pixels — a disagreement
+/// would be invisible in everything but [`Engine::strokes_reused`].
+pub const DEFAULT_FAST_COMMIT: bool = true;
+
 /// Undo steps the engine will not trim below, however tight memory is.
 ///
 /// **The guard against trimming for nothing.** Resident tiles are held by the
@@ -451,6 +470,13 @@ pub struct ObservableState {
     /// it (§4). Stark's own settings dialog reads its slider off this, and its
     /// stored preference is captured from it.
     pub history_budget: u64,
+    /// Whether a stroke's commit takes the tiles its preview already drew (§6.2) —
+    /// what [`ViewCommand::SetFastCommit`](crate::command::ViewCommand) sets.
+    ///
+    /// Projected for `history_budget`'s reason: the settings dialog reads its switch
+    /// off the engine's own value rather than off a copy that can disagree, and its
+    /// stored preference is captured from it.
+    pub fast_commit: bool,
     /// The drawing guides (§20.5), **as this client sees them**: the document's
     /// roster with each row carrying whether this client's eye on it is open.
     ///
@@ -638,6 +664,15 @@ pub struct Engine {
     /// Per-client and never logged, for the reason the command's doc gives: how much
     /// history a machine can afford is a fact about the machine.
     history_budget: u64,
+    /// Whether a stroke's commit takes the tiles its live preview already drew
+    /// (§6.2) — [`ViewCommand::SetFastCommit`], defaulting to
+    /// [`DEFAULT_FAST_COMMIT`].
+    ///
+    /// Per-client and never logged, like the budget above and for a related reason:
+    /// what it changes is not the document but how *this* client spends the moment
+    /// the pointer comes up. A peer receives the stroke as an action either way and
+    /// renders it whole, so nothing here reaches anybody else's picture.
+    fast_commit: bool,
     /// The compositor's draw list and what it was built from (C4) — rebuilt only
     /// when something it is a function of has moved ([`render::DrawKey`]).
     ///
@@ -822,6 +857,7 @@ impl Engine {
             guide_cache: std::cell::RefCell::new(None),
             guide_epoch: 0,
             history_budget: DEFAULT_HISTORY_BUDGET,
+            fast_commit: DEFAULT_FAST_COMMIT,
             strokes_reused: 0,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
@@ -915,6 +951,7 @@ impl Engine {
             guide_cache: std::cell::RefCell::new(None),
             guide_epoch: 0,
             history_budget: DEFAULT_HISTORY_BUDGET,
+            fast_commit: DEFAULT_FAST_COMMIT,
             strokes_reused: 0,
             #[cfg(feature = "debug-unfrozen")]
             debug_samples: Vec::new(),
@@ -1479,6 +1516,7 @@ impl Engine {
             ViewCommand::SetMediaParams(params) => self.compositor_pipeline.set_media(params),
             ViewCommand::SetEnvironment(id) => self.set_environment(id),
             ViewCommand::SetHistoryBudget(bytes) => self.history_budget = bytes,
+            ViewCommand::SetFastCommit(on) => self.fast_commit = on,
         }
     }
 
@@ -1804,6 +1842,7 @@ impl Engine {
             shape_opacity: self.session.shape_opacity,
             show_peer_selections: self.session.show_peer_selections,
             history_budget: self.history_budget,
+            fast_commit: self.fast_commit,
             guides: self.projected_guides(|| {
                 // Off `shown` — the previewed document — for the reason the layer
                 // list and the substrate color are: a guide's drag previews
@@ -2004,8 +2043,18 @@ impl Engine {
     /// by taking it: a slot still full afterwards was declined — the record moved
     /// between the last fold and the release, or the base did — and is dropped here
     /// rather than left for a later fold to find.
+    ///
+    /// **This is the whole of what [`fast_commit`](Self::fast_commit) switches**, and
+    /// the reason the setting can be one line: with nothing offered, the fold below
+    /// renders the stroke exactly as a replay does, which is what makes the switched-
+    /// off path bit-for-bit rather than merely close (`DEFAULT_FAST_COMMIT`).
     fn commit_stroke(&mut self, rec: StrokeRecord) {
-        self.shared.apply.prepared = self.preview.take_prepared();
+        // Taken either way. The tiles describe a stroke that is being committed this
+        // instant, so they are no use to the next fold whichever path lands it, and
+        // holding them past here would pin a stroke's worth of tiles on the one
+        // setting that is about *not* using them.
+        let prepared = self.preview.take_prepared();
+        self.shared.apply.prepared = prepared.filter(|_| self.fast_commit);
         let offered = self.shared.apply.prepared.is_some();
         self.commit(ActionKind::CommitStroke(rec));
         if offered && self.shared.apply.prepared.take().is_none() {

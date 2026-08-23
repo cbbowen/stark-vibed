@@ -296,6 +296,16 @@ Two places the obvious implementation is wrong:
   counts the commits that took the offer, because pixels cannot say which
   path ran.
 
+  That difference is the one thing worth a **setting** rather than a decision
+  (`ViewCommand::SetFastCommit`, on by default — `DEFAULT_FAST_COMMIT`; a switch
+  in the ⚙ dialog, §25). Off, nothing is offered and the commit renders like
+  every other consumer of the log, so a client's canvas reproduces bit for bit
+  and not merely within the seam. It is per-client and never logged, like the
+  undo budget beside it: what it changes is how *this* machine spends the moment
+  of a release, and a peer receives the stroke as an action and renders it whole
+  whatever it says. The pause it buys back is the whole stroke's render, which
+  is why it is not the default.
+
 **Running dry.** `drain` fades what the brush lays, linearly with distance
 travelled, until the stroke is bone dry. It is quoted **per brush radius** for the
 taper's reason, and it is the stronger case of the two: `radius` is meant to read

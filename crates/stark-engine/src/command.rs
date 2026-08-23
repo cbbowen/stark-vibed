@@ -803,6 +803,23 @@ pub enum ViewCommand {
     /// floored at `MIN_UNDO_DEPTH` steps, because trimming below that frees nothing
     /// when the memory is held by the current document rather than by history.
     SetHistoryBudget(u64),
+
+    /// Whether a stroke's commit takes the tiles its live preview already drew,
+    /// rather than rendering the stroke again when the pointer comes up (§6.2).
+    ///
+    /// **View state, and per-client for `SetHistoryBudget`'s reason**: what it
+    /// changes is how this machine spends the moment of a release, not what the
+    /// drawing is. A peer receives the stroke as an action and renders it whole
+    /// whatever this says, so it reaches nobody else's picture — and neither
+    /// setting changes what a *file* means, only whether this client's own canvas
+    /// took the shorter road to the same place.
+    ///
+    /// Off is the exact answer: the stroke is drawn the single way a replay, an
+    /// undo and a collaborator all draw it, so what is on screen reproduces bit for
+    /// bit. On — the default ([`DEFAULT_FAST_COMMIT`](crate::DEFAULT_FAST_COMMIT))
+    /// — accepts the seam a cut costs (a level or two, `Tol::seam` in the corpus)
+    /// and gives back the hitch at the end of a long stroke.
+    SetFastCommit(bool),
 }
 
 /// Mutations of **presence**: per-client and never logged — undo does not reach

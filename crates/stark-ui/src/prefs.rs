@@ -42,10 +42,10 @@
 //! # Why loading happens twice
 //!
 //! Most preferences are frontend signals and can be applied the moment the app
-//! starts. One is not: whether peers' selections are drawn is *engine* session
-//! state, reached by a command, and there is no engine to take one until the
-//! renderer's async init finishes. So [`load`] runs at app start and
-//! [`load_engine`] once the renderer is up — the same split
+//! starts. Some are not: a preference the **engine** owns — the peer outlines,
+//! the undo budget, fast commit — is reached by a command, and there is no
+//! engine to take one until the renderer's async init finishes. So [`load`] runs
+//! at app start and [`load_engine`] once the renderer is up — the same split
 //! `presets::load`/`presets::apply_first` makes, and for the same reason.
 //! Applying the frontend half early is what keeps minimal mode from flashing
 //! its full-width chrome for the length of a WebGPU init.
@@ -86,6 +86,9 @@ pub struct Prefs {
     /// up, in bytes (§5) — the one preference that is about the *machine* rather
     /// than about how Stark behaves, which is why it is the one with a slider.
     pub history_budget: u64,
+    /// Whether a stroke's commit keeps the pixels its preview already drew, rather
+    /// than drawing the stroke again when the pen lifts (§6.2).
+    pub fast_commit: bool,
 }
 
 impl Record for Prefs {
@@ -123,6 +126,11 @@ impl Default for Prefs {
             // pushes this back in at startup, so the engine's constant has to be
             // what a browser that has never stored anything gets.
             history_budget: stark_engine::DEFAULT_HISTORY_BUDGET,
+            // The engine's own default, for the budget's reason above: two answers
+            // to what Stark does out of the box is one too many, and this is the
+            // pair where a disagreement would be near-invisible — both settings
+            // paint the same stroke.
+            fast_commit: stark_engine::DEFAULT_FAST_COMMIT,
         }
     }
 }
@@ -153,6 +161,11 @@ impl Prefs {
                 .peek()
                 .as_ref()
                 .map_or(stark_engine::DEFAULT_HISTORY_BUDGET, |o| o.history_budget),
+            fast_commit: state
+                .obs
+                .peek()
+                .as_ref()
+                .map_or(stark_engine::DEFAULT_FAST_COMMIT, |o| o.fast_commit),
         }
     }
 
@@ -176,6 +189,7 @@ impl Prefs {
             ViewCommand::SetShowPeerSelections(self.show_peer_selections),
         );
         dispatch(state, ViewCommand::SetHistoryBudget(self.history_budget));
+        dispatch(state, ViewCommand::SetFastCommit(self.fast_commit));
     }
 }
 
