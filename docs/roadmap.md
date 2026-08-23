@@ -716,12 +716,14 @@ existed, and neither the engine nor the panels learn anything.
   reference mark** where the ring carries the size it started from, and that is the
   same argument from the other side — the ring needs one because "it will be this
   big" is not an answer without "bigger than what", while a share of the whole
-  range has already said how much. *Beside* the press rather than on it, and
-  flipped rather than clamped near the window's edge (the held pick's rule,
-  §18.1.11): the travel this knob measures runs vertically through the press, so
-  above and below are where the hand is about to be. How long the bar is, is the
-  stylesheet's — unlike the ring there is no number to convert, only a choice to
-  make.
+  range has already said how much. **Centred on the press, exactly as the ring
+  is** — the readout has one anchor, and the moment the drag commits to a knob is
+  not a moment for the answer to jump sideways. It can sit on the point because
+  the same gesture takes the crosshair away, so nothing is drawn there to collide
+  with, and because it holds still while the pointer runs past both its ends,
+  which is what keeps a bar the drag travels along from reading as a track the
+  pointer is somewhere *on*. How large the bar is, is the stylesheet's — unlike
+  the ring there is no number to convert, only a choice to make.
 - **The crosshair goes for the whole drag** (`.paint-canvas.tuning`). A crosshair
   is a promise of paint at a point and this gesture is about a number: nothing will
   land where it is aimed, and one sitting in the middle of the size ring reads as

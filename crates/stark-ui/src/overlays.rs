@@ -195,8 +195,7 @@ fn size_ring(ring: BrushRing) -> Element {
     }
 }
 
-/// The flow half: a bar standing beside the press, filled to how much paint the brush
-/// is laying.
+/// The flow half: a bar on the press, filled to how much paint the brush is laying.
 ///
 /// A *level* rather than a picture of the mark, which is the honest shape for this
 /// knob: flow has no length on the canvas to be drawn at, so the bar says where in the
@@ -204,35 +203,24 @@ fn size_ring(ring: BrushRing) -> Element {
 /// it is the answer to a gesture the hand is in the middle of making, not a control,
 /// and the Brush panel's slider is moving in step with it either way.
 ///
-/// **How long the bar is, is the stylesheet's** (`state::FlowBar`), which is why the
-/// centring here is a transform where the ring's is arithmetic: half of a length this
-/// side does not have cannot be subtracted from anything.
+/// **Centred on the press, exactly as the ring is** — the readout has one anchor, and
+/// the moment the drag commits to a knob is not a moment for the answer to jump
+/// sideways. It can sit on the point because this drag takes the crosshair down
+/// (`canvas`), so there is nothing drawn there to collide with, and because the bar
+/// holds still while the pointer runs past both its ends — which is what keeps it from
+/// reading as a track the pointer is somewhere *on*.
+///
+/// **How large the bar is, is the stylesheet's** (`state::FlowBar`), which is why the
+/// centring is a transform where the ring's is arithmetic: half of a box this side
+/// does not have cannot be subtracted from the point it was handed.
 fn flow_bar(bar: FlowBar) -> Element {
-    // Beside the press, and flipped rather than clamped near the window's edge — the
-    // loupe's rule ([`PickLoupe`]) for the loupe's reason: clamping would slide the
-    // readout onto the point it exists to stand clear of. Sideways, because the travel
-    // this knob measures runs vertically through the press, so above and below are
-    // where the hand is about to be; left by default, because the hand and the arm come
-    // from the pointer and the majority of them come from the right.
-    let x = if bar.at.x < FLOW_BAR_GAP * 1.5 {
-        bar.at.x + FLOW_BAR_GAP
-    } else {
-        bar.at.x - FLOW_BAR_GAP
-    };
     let fill = bar.fill.clamp(0.0, 1.0) * 100.0;
     rsx! {
-        div { class: "flow-bar", style: "left:{x}px; top:{bar.at.y}px",
+        div { class: "flow-bar", style: "left:{bar.at.x}px; top:{bar.at.y}px",
             div { class: "flow-bar-fill", style: "height:{fill:.1}%" }
         }
     }
 }
-
-/// How far to the side of the press the flow bar's box sits, CSS px.
-///
-/// Clear of a pen's own barrel and of the cursor that was there a moment ago, and no
-/// further: the bar is this gesture's whole readout on the canvas, and a readout that
-/// has to be looked *for* is one the hand stops using.
-const FLOW_BAR_GAP: f32 = 34.0;
 
 /// The held touch pick's loupe (§18.1.11): the color the finger is standing on,
 /// drawn clear of the finger.

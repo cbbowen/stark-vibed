@@ -628,11 +628,10 @@ pub struct BrushRing {
 /// the brush is now carrying.
 #[derive(Copy, Clone, PartialEq)]
 pub struct FlowBar {
-    /// The press position in page px — what the bar stands beside. [`BrushRing::at`]
-    /// and for its reason: the one point a gesture agrees on however far it has
-    /// wandered since. *Beside*, not on, and which side is the overlay's call — the
-    /// travel this drag measures runs straight through the press, so a readout above
-    /// or below it is in the path of the hand.
+    /// The press position in page px — where the bar is centred. [`BrushRing::at`] and
+    /// for its reason, and centred on it for one more: the ring is, and a readout that
+    /// moved sideways at the moment the drag worked out which knob it was about would
+    /// look like a fault rather than an answer.
     pub at: Vec2,
     /// How full, 0..=1 — the flow as a share of the range the sliders allow.
     pub fill: f32,

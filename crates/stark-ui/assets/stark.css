@@ -4602,28 +4602,34 @@ button.layer-remove:hover {
   box-shadow: none;
 }
 
-/* The flow half of the readout: a track standing beside the press, filling from the
-   bottom with how much paint the brush is laying. **The length lives here**, not in
-   the gesture (`state::FlowBar`) — flow has no length on the canvas to be drawn at,
-   so unlike the ring there is no number to convert, only a choice to make. Tall
-   enough that a tenth of the range is a visible step and short enough to sit inside a
-   press near the top or bottom edge.
+/* The flow half of the readout: a track **on** the press, filling from the bottom
+   with how much paint the brush is laying. Centred on it in both axes, exactly as the
+   ring is — the readout has one anchor, and the moment the drag commits to a knob is
+   not a moment for the answer to jump sideways. It can afford to sit there because
+   the drag takes the crosshair down (`.paint-canvas.tuning`), so nothing is drawn
+   under the hand for it to collide with; and it holds still while the pointer runs up
+   and down past both its ends, which is what keeps it from reading as a track the
+   pointer is somewhere *on*.
 
-   `translateY(-50%)` for that same reason: the overlay is handed the press, and half
-   of a height it does not know cannot be subtracted from it. Centred rather than
-   grown from the press so that the readout holds still while the hand runs up and
-   down through it.
+   **Both of its lengths live here**, not in the gesture (`state::FlowBar`) — flow has
+   no length on the canvas to be drawn at, so unlike the ring there is no number to
+   convert, only a choice to make. That is also why the centring is a transform where
+   the ring's is arithmetic: half of a box the other side does not know cannot be
+   subtracted from the point it hands over. Tall enough that a tenth of the range is a
+   visible step, and no taller.
 
-   The ring's legibility trick (`.brush-ring-circle`), since it is over the same
-   unknown paint: a dark body with a light hairline just outside, so whichever one the
-   canvas matches, the other reads. */
+   Grey against a translucent grey, rather than the ring's dark-hairline-in-light
+   (`.brush-ring-circle`). The ring is one pixel wide and has to survive whatever it is
+   drawn over; this is a filled body, so it can be quiet instead — a mid grey is a
+   departure from bare canvas and from ink alike, and the soft halo is what carries its
+   edge across the few paints that match it. */
 .flow-bar {
   position: absolute;
   width: 10px;
   height: 150px;
-  transform: translateY(-50%);
+  transform: translate(-50%, -50%);
   border-radius: 5px;
-  background: #80808040;
+  background: rgb(var(--panel-ink) / 0.25);
   box-shadow: 0 0 2px #808080;
   overflow: hidden;
 }
@@ -4637,7 +4643,7 @@ button.layer-remove:hover {
   left: 0;
   right: 0;
   bottom: 0;
-  background: #e8e8ea80;
+  background: color-mix(in srgb, var(--panel-color) 50%, transparent);
 }
 
 /* --- the brush cursor (§18.1.10) ---
@@ -5712,7 +5718,7 @@ label.setting-text {
 .tutor-quiet {
   border: none;
   padding: 0;
-  color: #e8e8ea;
+  color: var(--panel-color);
   background: none;
   font: inherit;
   font-size: 11px;
