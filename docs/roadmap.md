@@ -653,25 +653,35 @@ existed, and neither the engine nor the panels learn anything.
 - **Accelerator + drag tunes the brush**: sideways is **Size**, up and down is
   **Flow** (`input::Tune`) — the Brush panel's own two knobs, which is what earns
   them the binding.
-- **The size is stated, not nudged.** The radius is a **quarter of how far the
-  drag has reached from the press**, in canvas px — so the gesture does not adjust
-  the size, it *describes* it, and the ring drawn at the press point is the picture
-  of what it says. Left and right are the same gesture, because the hand is
-  describing a circle and a circle has no side. A quarter, so the diameter is half
-  the drag: the cursor stays outside the circle it is drawing instead of sitting
-  in the middle of it. Since the canvas radius is the screen travel over the zoom,
-  the ring is a quarter of the drag *on screen at any zoom* — the gesture measures
-  the same in the hand, and what the zoom changes is the size in canvas px, which
-  is the thing being set. Being a function of where the pointer *is*, it cannot
-  drift over a long gesture, and it needs no read-modify-write of the brush.
-  The zoom is latched at the press, so a wheel notch mid-drag (the pointer is
-  captured; the wheel is not) cannot move the scale under a hand that is holding
-  still.
-- **Flow stays a rate** — linear, the whole 0..3 range over ~800 px — because
-  there is nothing for it to be a picture *of*: a size drag can be shown as the
+- **The size is a ratio on the size the press found** — **right is bigger, left
+  is smaller**, a doubling every ~100 page px. The hand keeps the brush it had
+  chosen and asks for *more* or *less* of it, which is the gesture every other
+  editor binds here and the one a hand already reaches for; the earlier mapping
+  stated the radius outright (a quarter of the reach, either way), and stating a
+  size is exactly what a hand at the canvas is not doing when it reaches for this.
+  That also gives the drag a **sign**, where the absolute one had none: a change
+  has a direction and a size does not. **Exponential** for the scrubby zoom's
+  reason — radius is felt proportionally, so a fixed step per pixel would crawl
+  on a wash and leap on a liner — which makes equal distances equal ratios and
+  the gesture exactly reversible: drag back to the press and the brush is the one
+  it started on. The rate is faster than the zoom's 180 px rather than matched to
+  it, and set from the range it covers: `MIN_RADIUS..MAX_RADIUS` is about nine
+  doublings, and a size drag spends its travel on *one* side of the press where a
+  zoom drag may run either way from it, so its budget is half a screen and not a
+  whole one.
+- **Still a function of where the pointer is**, not an accumulation of steps: the
+  radius at the press is latched and the ratio recomputed from the pointer's own
+  offset each move, so a long gesture cannot drift, the brush needs no
+  read-modify-write, and a drag run past the largest brush comes back down the
+  way it went up — the clamp is never folded into the base. What the zoom is
+  latched for is now only the *ring*: the size passes through no zoom at all,
+  since a ratio on the radius the drag began with is the same ratio at every
+  scale.
+- **Flow stays linear** — the whole 0..3 range over ~800 px — because its zero is
+  a value it has to be able to reach, and no number of halvings gets there. There
+  is also nothing for it to be a picture *of*: a size drag can be shown as the
   circle it asks for, while flow has no length on screen to be measured against,
-  so the honest mapping is every slider's. Its zero is also a value it must be
-  able to reach, and no number of halvings gets there.
+  so the honest mapping is every slider's.
 - **One knob per gesture.** The drag commits to an axis once it has travelled
   8 px — far enough for its direction to mean something — and keeps it. Both at
   once reads better on paper and is worse in the hand: flow's useful band is
@@ -679,9 +689,10 @@ existed, and neither the engine nor the panels learn anything.
   bury the brush, and there would be no way to ask for size *alone*.
 - **The size drag draws itself** (`state::BrushRing`, `BrushSizeRing`): a ring at
   the radius being asked for, with the radius it started from dashed behind it, at
-  the press point. Not decoration — the size is *defined* as a distance from that
-  point, so the circle is the readout, and the old size beside it is what turns "it
-  will be this big" into "it will be bigger than the last stroke". It comes up on
+  the press point. Not decoration — the size is *defined* as a ratio on the one the
+  press found, so the dashed circle is the reference the gesture is measured from
+  and not merely the frame before it, and the pair is what turns "it will be this
+  big" into "it will be bigger than the last stroke". It comes up on
   the press, before the drag has said which knob it is about, which is also the one
   thing that makes the binding discoverable: press with the accelerator held and
   the brush draws itself. It goes again the moment the gesture turns out to be

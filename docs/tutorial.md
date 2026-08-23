@@ -542,7 +542,7 @@ In table order, which is the order they are offered when two come due at once:
 | 40 | a brush stroke | Select panel | **ever** committing a selection | Drag a marquee and every tool acts only inside it; the chips combine one selection with the last (§6.8) |
 | 3 | a selection | Layers panel | **ever** adding a layer | A selection says *where*, the stack says *what* — and a group is also a clipping mask (§14) |
 | 1 | a panel closed | the command rail | the button | Nothing is lost: the rail's visibility menu lists every panel, and what you leave open is remembered (§11) |
-| 10 | size or flow moved *by a control* | Brush panel | the button | Ctrl (⌘) + drag on the canvas — sideways for size, up and down for flow (§18.1.9) |
+| 10 | size or flow moved *by a control* | Brush panel | the button | Ctrl (⌘) + drag on the canvas — right and left for size, up and down for flow (§18.1.9) |
 | 3 | a preset put on from the library | the quick-brush rack | the button | A held number is a brush you *borrow*; tuning under the hold keeps the change (§18.1.8) |
 | 10 | an undo | the canvas | **ever** a shape-assisted stroke | Draw a rough line or ellipse and *hold* — it snaps to what you meant, and the drag steers it (§6.9) |
 | 5 | a shape-assisted stroke | Drawing Guides panel | **ever** a guided line | Straight is one thing; straight *to somewhere* is another — add a perspective guide (§20) |

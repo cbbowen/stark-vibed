@@ -18,29 +18,33 @@ use super::*;
 /// must not arrive as Flow.
 const AXIS_DEADZONE: f32 = 8.0;
 
-/// The radius a tuning drag asks for, as a fraction of how far it has been dragged
-/// sideways **from the press** — in canvas px, so the answer is a size for the brush
-/// and not for the screen it is being set on.
+/// How far a tuning drag has to travel sideways to **double** the brush radius, in
+/// page px (§18.1.9).
 ///
-/// Absolute rather than a rate, which is what makes the gesture legible: the drag does
-/// not *nudge* the size, it states it, and the ring drawn at the press point
-/// ([`BrushRing`]) is the picture of that statement. Left and right are the same
-/// gesture (the travel is taken as a magnitude) because the hand is describing a
-/// circle's size, and a circle has no side.
+/// A ratio on the size the drag began with, not a size stated outright: the hand keeps
+/// whatever brush it had chosen and asks for *more* or *less* of it, which is the
+/// gesture every other editor binds here and the one a hand already reaches for. Right
+/// is bigger and left is smaller, so the two directions are no longer the same gesture
+/// — the drag has a sign now, because a change does and a size does not.
 ///
-/// A quarter, so the **diameter is half the drag**: the ring always fits inside the
-/// gesture that made it, and the cursor stays outside the circle it is describing
-/// instead of sitting in the middle of it. Since the canvas radius is the screen
-/// travel divided by the zoom, the ring's radius on screen is a quarter of the drag at
-/// *any* zoom — the gesture measures the same in the hand, and what changes with the
-/// zoom is the size in canvas px, which is the thing being set.
-const RADIUS_PER_DRAG: f32 = 0.25;
+/// **Exponential** for the scrubby zoom's reason (`nav::ZOOM_DRAG_DOUBLE`): radius is felt
+/// proportionally, so a fixed step per pixel would crawl on a wash and leap on a liner.
+/// Equal distances are equal ratios, which also makes the gesture exactly reversible —
+/// dragging back to the press restores the brush it started on.
+///
+/// Faster than the zoom's rate rather than matched to it, and set from the range it has
+/// to cover: `MIN_RADIUS..MAX_RADIUS` is about nine doublings, and a size drag spends
+/// its travel on *one* side of the press where a zoom drag may run either way from it,
+/// so the budget is half a screen and not a whole one. At this rate that half-screen
+/// carries the finest brush to the widest.
+const SIZE_DRAG_DOUBLE: f32 = 100.0;
 
 /// How far a tuning drag has to travel vertically to sweep the **whole** flow range,
 /// in page px.
 ///
-/// A *rate* where the radius is stated outright ([`RADIUS_PER_DRAG`]), because there
-/// is nothing for flow to be a picture of: a size drag can be shown as the circle it
+/// Linear where the radius is exponential ([`SIZE_DRAG_DOUBLE`]), because flow's zero
+/// is a value it has to be able to reach and no number of halvings gets there. There is
+/// also nothing for flow to be a picture of: a size drag can be shown as the circle it
 /// asks for, while flow has no length on screen to be measured against, so the honest
 /// mapping is the one every slider has — move the hand, move the number. Wider than a
 /// screen is tall on purpose: the everyday range is the narrow band around 1, and this
@@ -63,8 +67,9 @@ const FLOW_DRAG_SPAN: f32 = 800.0;
 /// so the drag tunes the slot, and the tail of the pen tunes the eraser (§18.1.8).
 ///
 /// A size drag also draws itself, in [`BrushRing`] — which is not decoration but the
-/// readout: the size is stated as a distance from the press, so the circle at the press
-/// point *is* what the gesture means, with the size it started from behind it.
+/// readout: the size is a ratio on the one the press found ([`SIZE_DRAG_DOUBLE`]), so
+/// the pair of circles at the press point *is* what the gesture means — the brush it
+/// started on, and the brush it is asking for.
 #[derive(Clone, Copy)]
 pub struct Tune {
     state: AppState,
@@ -80,22 +85,31 @@ struct TuneDrag {
     last: Vec2,
     /// Where the press was, page px. Both the axis and the **size** are measured from
     /// here rather than from the last move: which knob this gesture is about is a fact
-    /// about the whole gesture, and so is the radius it is asking for
-    /// ([`RADIUS_PER_DRAG`]).
+    /// about the whole gesture, and so is the ratio it is asking for
+    /// ([`SIZE_DRAG_DOUBLE`]).
     from: Vec2,
-    /// The radius the brush had at the press, canvas px — the ring's reference.
+    /// The radius the brush had at the press, canvas px — what the size drag is a ratio
+    /// **on**, and the ring's reference. One number doing both, which is why the ring
+    /// reads as before-and-after: the circle behind is the size the gesture is measured
+    /// against, not merely the size it happened to start at.
     ///
-    /// Kept here rather than read back off the ring so that every write to
+    /// Latching it is what makes the drag a function of where the pointer *is* rather
+    /// than an accumulation of steps — so a long gesture cannot drift, and a drag run
+    /// past `MAX_RADIUS` and back comes back down the way it went up, since the clamp
+    /// is never folded into the base. It is also why every write to
     /// [`AppState::brush_ring`] is a write and never a read-modify-write: the drag holds
-    /// everything the indicator shows, which is what keeps the picture from drifting
-    /// out of step with the gesture (and what keeps a `peek` out of an `if`).
+    /// everything the indicator shows, which keeps the picture from drifting out of step
+    /// with the gesture (and keeps a `peek` out of an `if`).
     was: f32,
-    /// The view's zoom when the drag began — what turns its travel into canvas px.
+    /// The view's zoom when the drag began — what turns a canvas radius into the ring's
+    /// radius on screen.
     ///
-    /// Latched rather than read each move, so the gesture measures against the view it
-    /// started in. A wheel notch mid-drag (the pointer is captured, but the wheel is
-    /// not) would otherwise move the scale under a hand that is holding still, and the
-    /// size would jump without the pointer going anywhere.
+    /// The size no longer passes through it: a ratio on the radius the drag began with
+    /// is the same ratio at every zoom, and that is one thing the exponential mapping
+    /// bought. What is left is the drawing, and it is latched so that a wheel notch
+    /// mid-drag (the pointer is captured, but the wheel is not) cannot rescale the ring
+    /// under a hand that is holding still — the readout would read as the size moving
+    /// when it has not.
     zoom: f32,
     /// The knob this drag has committed to, once it has travelled far enough to say
     /// ([`AXIS_DEADZONE`]); `None` until then.
@@ -167,9 +181,10 @@ impl Tune {
         // about it (§24.2). Closed by `stop`, which every release runs.
         crate::tutor::not_reaching(self.state, true);
         // Up from the press, before the drag has said what it is about, showing the brush
-        // at the size it already is. That is the reference the new size will be judged
-        // against, and it is also the one thing that makes this binding discoverable:
-        // press with the accelerator held and the brush draws itself.
+        // at the size it already is — which is the size every ratio this gesture asks for
+        // is a ratio *of*, so the circle is the reference and not merely the first frame.
+        // It is also the one thing that makes this binding discoverable: press with the
+        // accelerator held and the brush draws itself.
         self.show_ring(&in_flight, radius);
         true
     }
@@ -201,12 +216,15 @@ impl Tune {
         // the brush somewhere the panel is unable to show or take back.
         match knob {
             Some(Knob::Size) => {
-                // Set, not nudged: the radius is a function of where the pointer *is*,
-                // so it cannot drift over a long gesture, and dragging back to the press
-                // asks for the finest brush rather than for the one it started on.
-                let reach = (p.x - in_flight.from.x).abs();
-                let radius =
-                    (RADIUS_PER_DRAG * reach / in_flight.zoom).clamp(MIN_RADIUS, MAX_RADIUS);
+                // Right is bigger, left is smaller — a ratio on the size at the press
+                // rather than a size stated outright, so the hand asks for more or less
+                // of the brush it already chose. Still a function of where the pointer
+                // *is* and not of how it got there (`TuneDrag::was`): a long gesture
+                // cannot drift, and dragging back to the press restores the brush it
+                // started on exactly.
+                let travel = p.x - in_flight.from.x;
+                let radius = (in_flight.was * (travel / SIZE_DRAG_DOUBLE).exp2())
+                    .clamp(MIN_RADIUS, MAX_RADIUS);
                 update_brush(self.state, |b| b.radius = radius);
                 // The ring follows the *clamp* rather than the pointer, so a drag that
                 // has run past the largest brush stops growing where the brush did.

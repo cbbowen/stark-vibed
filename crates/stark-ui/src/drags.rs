@@ -490,7 +490,7 @@ impl DragAction {
     pub fn hint(self) -> &'static str {
         match self {
             DragAction::TuneBrush => {
-                "Drag sideways for size and up and down for flow, without leaving the painting."
+                "Drag right and left for size, up and down for flow, without leaving the painting."
             }
             DragAction::PickColor => {
                 "Sample the color under the pointer, and keep sampling as the drag moves."

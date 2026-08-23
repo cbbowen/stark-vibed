@@ -938,8 +938,8 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::Panel(PanelId::Brush),
         side: Side::LeftAtTop,
         title: "Size and flow, without leaving the painting",
-        body: "Hold Ctrl (\u{2318} on a Mac) and drag on the canvas: sideways sets Size, \
-               up and down sets Flow.",
+        body: "Hold Ctrl (\u{2318} on a Mac) and drag on the canvas: right and left change \
+               Size, up and down change Flow.",
     },
     Lesson {
         key: "quick-slots",
