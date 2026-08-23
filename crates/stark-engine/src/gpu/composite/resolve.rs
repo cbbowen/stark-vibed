@@ -198,7 +198,7 @@ impl ResolvePass {
 /// which is what returns the memory the moment the artist zooms back in to paint.
 pub(super) struct Supersampled {
     /// What passes B–D draw into, `n` times the caller's target on each axis.
-    pub(super) view: wgpu::TextureView,
+    target: super::Attachment,
     bg: wgpu::BindGroup,
     /// `n` itself. This consumer's, because the sample count is a function of *this*
     /// target's zoom — see [`ResolvePass`].
@@ -212,7 +212,7 @@ impl Supersampled {
         format: wgpu::TextureFormat,
         pass: &ResolvePass,
     ) -> Self {
-        let view = super::offscreen_view(device, size, format, "stark supersampled");
+        let target = super::Attachment::new(device, size, format, "stark supersampled");
         let buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stark resolve uniform"),
             size: std::mem::size_of::<ResolveUniform>() as u64,
@@ -227,11 +227,16 @@ impl Supersampled {
             false,
             |i| match i {
                 rb::R => buf.as_entire_binding(),
-                rb::SRC => wgpu::BindingResource::TextureView(&view),
+                rb::SRC => wgpu::BindingResource::TextureView(target.view()),
                 other => unreachable!("`RESOLVE_SLOTS` lists no binding {other}"),
             },
         );
-        Self { view, bg, buf }
+        Self { target, bg, buf }
+    }
+
+    /// What passes B–D attach — the caller's target, supersampled.
+    pub(super) fn view(&self) -> &wgpu::TextureView {
+        self.target.view()
     }
 }
 

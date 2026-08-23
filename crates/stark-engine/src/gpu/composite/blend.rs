@@ -260,9 +260,9 @@ impl Bounce<'_> {
 /// One set of channel targets — color, aux, and (in a space that has one) the
 /// residual — owned rather than borrowed, as [`Targets`] is the borrowed view of.
 struct Trio {
-    color: wgpu::TextureView,
-    aux: wgpu::TextureView,
-    resid: Option<wgpu::TextureView>,
+    color: super::Attachment,
+    aux: super::Attachment,
+    resid: Option<super::Attachment>,
 }
 
 impl Trio {
@@ -272,7 +272,7 @@ impl Trio {
         labels: (&str, &str, &str),
         formats: ChannelFormats,
     ) -> Self {
-        let make = |format, label| super::offscreen_view(device, size, format, label);
+        let make = |format, label| super::Attachment::new(device, size, format, label);
         Self {
             color: make(formats.color, labels.0),
             aux: make(formats.aux, labels.1),
@@ -286,9 +286,9 @@ impl Trio {
 
     fn targets(&self) -> Targets<'_> {
         Targets {
-            color: &self.color,
-            aux: &self.aux,
-            resid: self.resid.as_ref(),
+            color: self.color.view(),
+            aux: self.aux.view(),
+            resid: self.resid.as_ref().map(super::Attachment::view),
         }
     }
 }

@@ -1460,7 +1460,21 @@ pub fn dispatch_quiet(state: AppState, command: impl Into<InputCommand>) {
 
 /// Resize the surface/engine, then repaint — inline, not [`request_paint`]: the
 /// surface was just reconfigured, and a frame of the old size shown until the next
-/// rAF is a visible flash. Resize arrives at layout rate, which cannot flood.
+/// rAF is a visible flash.
+///
+/// **Inline, but not unconditional**, and that is the whole of what a resize may
+/// help itself to. A drag on the window edge reports a new size every animation
+/// frame for as long as the hand is moving, and this is the one paint in the app
+/// that does not pass [`schedule_paint`]'s back-pressure. Painting anyway submits a
+/// frame the GPU has not caught up with, once per frame, for the length of the drag
+/// — and each of those frames also rebuilds every compositing attachment, because
+/// they are sized by the target and the target just changed
+/// (`composite::Compositor::ensure_targets`). On a large window over a complex
+/// document that is hundreds of megabytes of fresh render targets per frame against
+/// a queue that is already behind: the device is lost, and the report reads as a GPU
+/// failure rather than as the flood that caused it. So the inline paint is offered
+/// only while the GPU is keeping up; when it is not, the frame queued below shows
+/// the new size an animation frame later, which is what a moment of stretch costs.
 ///
 /// A report that arrives before the renderer exists is *dropped*, and the app start
 /// is full of them — the canvas is laid out long before WebGPU init has finished
@@ -1477,7 +1491,9 @@ pub fn dispatch_quiet(state: AppState, command: impl Into<InputCommand>) {
 pub fn resize(state: AppState, width: u32, height: u32) {
     with_engine(state, |r| {
         r.resize(width, height);
-        r.paint();
+        if !r.gpu_behind() {
+            r.paint();
+        }
     });
 }
 

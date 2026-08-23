@@ -556,10 +556,18 @@ impl Compositor {
             self.size = size;
             self.ss = ss;
             self.generation = p.generation;
+            // Released *before* their replacements are built, never by the assignment
+            // that would drop them after ([`Attachment`] frees on drop, so the order is
+            // now the difference between one set resident and two). A resize drag is
+            // where that shows: it rebuilds every frame, and holding both sets across
+            // the build doubles the peak of the largest allocation the app makes.
             self.scratch = None;
+            self.accum = None;
+            self.ss_target = None;
             self.accum = Some(p.offscreen(self.size, &self.media_buf));
-            // Allocated only where it is written into. A 1:1 view drops it here, which
-            // is what returns the memory the moment the artist zooms back in to paint.
+            // Allocated only where it is written into. A 1:1 view leaves it `None`
+            // above, which is what returns the memory the moment the artist zooms back
+            // in to paint.
             self.ss_target = (ss > 1)
                 .then(|| Supersampled::new(&p.ctx.device, size, p.target_format, &p.resolve));
         }
@@ -949,7 +957,7 @@ impl Compositor {
         // goes through the same resolve as the paint, so the marching ants and the
         // perspective grid come out antialiased rather than as the stairs a
         // one-sample-per-pixel line draws at any angle but the axes.
-        let draw_target = self.ss_target.as_ref().map_or(target, |s| &s.view);
+        let draw_target = self.ss_target.as_ref().map_or(target, Supersampled::view);
 
         let mut encoder = p
             .ctx
@@ -1017,15 +1025,40 @@ impl Compositor {
     }
 }
 
-/// A viewport-sized offscreen render target, as pass A and the blend pass use.
-pub(super) fn offscreen_view(
-    device: &wgpu::Device,
-    size: Extent2,
-    format: wgpu::TextureFormat,
-    label: &str,
-) -> wgpu::TextureView {
-    device
-        .create_texture(&wgpu::TextureDescriptor {
+/// A viewport-sized offscreen render target — pass A's channels, the blend
+/// scratch, the supersampled target — that **returns its memory when it is
+/// replaced** rather than merely releasing its handle
+/// ([`ScopedResources`](crate::gpu::submit::ScopedResources)).
+///
+/// These are the largest allocations the application makes: a whole set is rebuilt
+/// whenever the target changes size or the zoom crosses a supersampling threshold
+/// ([`Compositor::ensure_targets`]), budgeted by `resolve`'s
+/// `MAX_SUPERSAMPLED_BYTES` at up to 224 MiB a set. On the web, dropping the view
+/// frees none of it: it releases the JS handle and leaves the texture to a collector
+/// that cannot see the GPU memory behind it, so nothing reclaims it until that
+/// collector happens to run. Survivable at a zoom notch, and fatal at a *rate* — a
+/// window-resize drag reports a new size every animation frame, so a second of
+/// dragging strands a second's worth of whole sets at once and the GPU process dies
+/// with every device on it.
+///
+/// So the texture is kept beside its view and `destroy()`d here, which is safe for
+/// the reason `gpu::submit` gives: WebGPU defers the real free until the in-flight
+/// work naming it completes. Handing back both halves would have let each call site
+/// arrange this by hand; a target that cannot be built without it is what keeps the
+/// next one from being the attachment that forgets.
+pub(super) struct Attachment {
+    tex: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+impl Attachment {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        size: Extent2,
+        format: wgpu::TextureFormat,
+        label: &str,
+    ) -> Self {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
                 width: size.width.max(1),
@@ -1038,6 +1071,19 @@ pub(super) fn offscreen_view(
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
-        })
-        .create_view(&wgpu::TextureViewDescriptor::default())
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        Self { tex, view }
+    }
+
+    /// What a pass attaches, and what a bind group naming this target reads.
+    pub(super) fn view(&self) -> &wgpu::TextureView {
+        &self.view
+    }
+}
+
+impl Drop for Attachment {
+    fn drop(&mut self) {
+        self.tex.destroy();
+    }
 }

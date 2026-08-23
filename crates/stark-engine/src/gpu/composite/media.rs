@@ -257,11 +257,11 @@ pub(super) struct OffscreenDesc<'a> {
 
 /// The offscreen targets pass A writes and the media bind group that reads them.
 pub(super) struct Offscreen {
-    pub(super) color: wgpu::TextureView,
-    pub(super) aux: wgpu::TextureView,
+    pub(super) color: super::Attachment,
+    pub(super) aux: super::Attachment,
     /// The residual accumulator, present exactly when the space has a residual — and
     /// then it is pass A's third attachment as well as the media pass's binding 7.
-    pub(super) resid: Option<wgpu::TextureView>,
+    pub(super) resid: Option<super::Attachment>,
     pub(super) bg: wgpu::BindGroup,
 }
 
@@ -270,9 +270,9 @@ impl Offscreen {
     /// group above reads, which is the invariant this type exists to hold together.
     pub(super) fn targets(&self) -> crate::gpu::channels::Targets<'_> {
         crate::gpu::channels::Targets {
-            color: &self.color,
-            aux: &self.aux,
-            resid: self.resid.as_ref(),
+            color: self.color.view(),
+            aux: self.aux.view(),
+            resid: self.resid.as_ref().map(super::Attachment::view),
         }
     }
 }
@@ -288,11 +288,11 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
         substrate,
         environment,
     } = d;
-    let color = super::offscreen_view(device, size, formats.color, "stark comp color");
-    let aux = super::offscreen_view(device, size, formats.aux, "stark comp aux");
+    let color = super::Attachment::new(device, size, formats.color, "stark comp color");
+    let aux = super::Attachment::new(device, size, formats.aux, "stark comp aux");
     let resid = formats
         .resid
-        .map(|f| super::offscreen_view(device, size, f, "stark comp resid"));
+        .map(|f| super::Attachment::new(device, size, f, "stark comp resid"));
 
     let bg = desc::bind_group_for(
         device,
@@ -302,15 +302,16 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
         resid.is_some(),
         |i| match i {
             mc::M => media_buf.as_entire_binding(),
-            mc::COMP_COLOR => tex(&color),
-            mc::COMP_AUX => tex(&aux),
+            mc::COMP_COLOR => tex(color.view()),
+            mc::COMP_AUX => tex(aux.view()),
             mc::SUBSTRATE => tex(&substrate.view),
             mc::SUBSTRATE_SAMP => wgpu::BindingResource::Sampler(&substrate.sampler),
             mc::ENV => tex(&environment.view),
             mc::ENV_SAMP => wgpu::BindingResource::Sampler(&environment.sampler),
             mm::COMP_RESID => tex(resid
                 .as_ref()
-                .expect("a residual build has a composited residual")),
+                .expect("a residual build has a composited residual")
+                .view()),
             other => unreachable!("`MEDIA_SLOTS` lists no binding {other}"),
         },
     );
