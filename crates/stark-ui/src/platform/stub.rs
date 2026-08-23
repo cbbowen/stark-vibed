@@ -96,6 +96,10 @@ pub fn anchor_box(_selector: &str) -> Option<ElementBox> {
     None
 }
 
+pub fn viewport_height() -> f32 {
+    0.0
+}
+
 pub fn on_window_key(_kind: &str, _handler: impl FnMut(KeyEvent) + 'static) {}
 
 pub fn on_window_event(_kind: &str, _handler: impl FnMut(WindowEvent) + 'static) {}

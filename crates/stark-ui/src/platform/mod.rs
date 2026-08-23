@@ -375,6 +375,21 @@ pub fn anchor_box(selector: &str) -> Option<ElementBox> {
     })
 }
 
+/// The window's inner height in CSS px — `0.0` where there is no window.
+///
+/// The one viewport figure a placement asks Rust for rather than the stylesheet.
+/// Everything else about staying on screen is a `max-width` or a `max-height`, and
+/// `calc` knows `100vh` without being told (`anchor::room_below`); what a declaration
+/// cannot do is *branch*, and choosing whether a pop-out hangs from its row or rises
+/// from it is a branch (`panels::popout`).
+#[cfg(target_arch = "wasm32")]
+pub fn viewport_height() -> f32 {
+    web_sys::window()
+        .and_then(|w| w.inner_height().ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as f32
+}
+
 /// Route the window's `kind` events ("keydown" / "keyup") to `handler`.
 ///
 /// The shortcuts hang off the **window** rather than off an element, so they keep

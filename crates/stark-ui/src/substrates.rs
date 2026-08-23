@@ -615,6 +615,113 @@ fn persist(entries: &[SubstrateEntry]) {
 
 // --- the pickers ------------------------------------------------------------
 
+/// **Fetch the bundled substrates' height maps, once, on the way in.**
+///
+/// A substrate's map is several megabytes and is deliberately not fetched at startup
+/// (§6.6) — but a card with no picture is a `select` with extra steps, and a surface
+/// being *looked at* is exactly the moment the maps are wanted. So the lazy fetch is
+/// kept and its trigger moved to the first moment it pays for itself.
+///
+/// `use_hook`, so it runs once per mount, and cheap on every mount after the first —
+/// [`resolve_signal`] answers from the id already cached. `spawn_forever` because the
+/// panel can be closed mid-fetch and the substrate it readies is worth keeping.
+/// Whoever asked redraws when a map lands without being told to: [`resolved`] and
+/// [`thumbnail`] both read the renderer signal, and the quiet import writes it.
+///
+/// **Two callers, and they are not the same moment.** [`SubstrateGallery`] asks
+/// because it is about to draw every card; [`SubstrateWell`] asks because it cannot
+/// so much as *name* the substrate the document is on without it — a built-in is
+/// known by content id and its id is the hash of a file that may not be here yet
+/// (see [`Pick`]). The well is what the Lighting panel shows at rest, so this is
+/// where the fetch now happens for most artists, which is no later than before: the
+/// gallery used to stand open in that panel.
+fn use_bundled(state: AppState) {
+    use_hook(|| {
+        spawn_forever(async move {
+            for g in SUBSTRATES {
+                resolve_signal(state, Pick::Builtin(g.name)).await;
+            }
+        });
+    });
+}
+
+/// What the document's substrate is called, for the one control that has room for a
+/// name and not for a grid.
+///
+/// Three places to look, in the order a substrate can be known: this build's catalog,
+/// this browser's library, and neither — a substrate a peer brought or that came in
+/// with a file, which [`SubstrateGallery`] draws as its own card and names the same
+/// way here. `None` while a built-in's map is still in flight, which is the one
+/// moment the app genuinely does not know the answer.
+fn current_name(state: AppState, current: SubstrateId) -> Option<String> {
+    if let Some((g, _)) = resolved(state).iter().find(|(_, id)| *id == Some(current)) {
+        return Some(g.name.to_string());
+    }
+    if let SubstrateId::Image(asset) = current
+        && let Some(entry) = state
+            .substrates
+            .entries
+            .read()
+            .iter()
+            .find(|e| e.id == asset)
+    {
+        return Some(entry.name.clone());
+    }
+    matches!(current, SubstrateId::Image(_)).then(|| "From the document".to_string())
+}
+
+/// The Lighting panel's surface **well**: the substrate the document is on, as a
+/// picture and a name, and the press that flies [`SubstrateGallery`] out beside the
+/// panel (`widgets::PopoutId::SubstrateGallery`).
+///
+/// The gallery used to stand open in that panel, which made choosing a surface cost
+/// the artist a grid's worth of column for as long as the panel was open — and the
+/// grid is the *rarest* thing in it, chosen between passages rather than during one.
+/// A well says which surface is in force in one row and asks for the grid only when
+/// somebody wants to change it.
+#[component]
+pub fn SubstrateWell() -> Element {
+    let state = use_context::<AppState>();
+    // The well names a built-in, so it needs what names one — see [`use_bundled`].
+    use_bundled(state);
+    // Through a memo (`state::use_obs`), like the gallery's own highlight: the well
+    // moves when a substrate is chosen and at no other time.
+    let current = use_obs(state, |o| o.substrate)().unwrap_or_default();
+    let name = current_name(state, current).unwrap_or_default();
+    let thumb = match current {
+        SubstrateId::Image(id) => thumbnail(state, id),
+        SubstrateId::Flat => None,
+    };
+    // Lit while the gallery it opened is standing beside the panel, for the swatch
+    // above it's reason (`panels::lighting`).
+    let well = match crate::widgets::popout_open(state, crate::widgets::PopoutId::SubstrateGallery)
+    {
+        true => "surface-well open",
+        false => "surface-well",
+    };
+    rsx! {
+        button {
+            class: well,
+            title: "Choose the canvas surface",
+            onclick: move |_| crate::widgets::toggle_popout(
+                state,
+                crate::widgets::PopoutId::SubstrateGallery,
+            ),
+            // `Smooth` has no height map and so no picture; the class draws the
+            // absence rather than leaving an empty box, exactly as its card does.
+            div {
+                class: if thumb.is_some() { "asset-thumb" } else { "asset-thumb flat" },
+                style: library::thumb_style(thumb.as_deref()),
+            }
+            // The name is blank for the one moment it is unknown rather than
+            // guessed at: a built-in whose map has not landed is a substrate this
+            // browser cannot yet name, and "Smooth" would be a lie about the
+            // picture beside it.
+            div { class: "asset-name", "{name}" }
+        }
+    }
+}
+
 /// The Lighting panel's surface picker: every bundled substrate, every substrate in the
 /// user's library (thumbnail + name, with a hover ✕ to remove), the substrate the
 /// document is on when it is in neither list, and an import card. Images can also be
@@ -629,26 +736,7 @@ pub fn SubstrateGallery() -> Element {
     let state = use_context::<AppState>();
     let mut dropping = use_signal(|| false);
 
-    // **Fetch the bundled substrates' height maps, once, on the way in.**
-    //
-    // A substrate's map is several megabytes and is deliberately not fetched at startup
-    // (§6.6) — but a card with no picture is a `select` with extra steps, and opening
-    // this gallery is exactly the moment the maps are wanted: the artist is here to
-    // choose one *by looking at it*. So the lazy fetch is kept and its trigger moved
-    // to the first moment it pays for itself.
-    //
-    // `use_hook`, so it runs once per mount, and cheap on every mount after the first
-    // — `resolve_signal` answers from the id already cached. `spawn_forever` because
-    // the panel can be closed mid-fetch and the substrate it readies is worth keeping.
-    // The gallery redraws when a map lands without being told to: `resolved` and
-    // `thumbnail` both read the renderer signal, and the quiet import writes it.
-    use_hook(|| {
-        spawn_forever(async move {
-            for g in SUBSTRATES {
-                resolve_signal(state, Pick::Builtin(g.name)).await;
-            }
-        });
-    });
+    use_bundled(state);
 
     // Which card wears the selected ring, through a memo (`state::use_obs`): it moves
     // when a substrate is chosen and at no other time, while the projection behind it
@@ -778,9 +866,6 @@ pub fn SubstrateGallery() -> Element {
         }
         if let Some(notice) = (state.substrates.notice)() {
             div { class: "asset-notice", "{notice}" }
-        }
-        div { class: "asset-hint",
-            "Import any image or drop one on the grid — light is high substrate, dark is low."
         }
     }
 }

@@ -108,6 +108,7 @@ use std::collections::HashSet;
 
 use dioxus::prelude::*;
 
+use crate::anchor::{self, GAP};
 use crate::brush_editor::BrushPart;
 use crate::icons::{self, icon};
 use crate::layout::{ChromeHiding, PanelId, PanelLayout, chrome_class, open_panel, panel_key};
@@ -140,14 +141,6 @@ const COALESCE: f64 = 0.5;
 /// travelling once, and a two-finger pan on a tablet counts the same as a
 /// space-drag because both arrive here as view commands rather than as gestures.
 const LONG_PAN: f32 = 1200.0;
-
-/// How far the card sits from the thing it points at, in CSS px — the arrow lives
-/// in this gap.
-const GAP: f32 = 14.0;
-
-/// How close to the window's edge a card may come, in CSS px. The panel column's own
-/// inset, so a card beside the stack stops where the stack does.
-const EDGE: f32 = 14.0;
 
 /// A thing the user has done, described the way a person would describe it.
 ///
@@ -608,9 +601,9 @@ enum Side {
     /// for a box pinned to the bottom that is the bottom one. Centring on the middle
     /// instead — which is what the navigator's lesson did when the miniature left the
     /// panel stack — hangs half a card below the anchor's middle, and the corner has
-    /// no room for it: the miniature stands [`EDGE`] off the foot of the window, so
+    /// no room for it: the miniature stands [`anchor::EDGE`] off the foot of the window, so
     /// everything below its middle is over the edge. Nothing catches that later,
-    /// either. Sideways a card narrows to fit ([`room_left`]); there is no vertical
+    /// either. Sideways a card narrows to fit ([`anchor::room_left`]); there is no vertical
     /// equivalent, because a card narrowed to fit its width is a card that has grown
     /// *taller*. Which is why the placement is the whole of the fix, and why
     /// [`tests::a_card_is_never_hung_into_the_edge_it_stands_on`] is the guard.
@@ -1704,87 +1697,6 @@ fn save(state: AppState) {
     crate::storage::save_list(&rows);
 }
 
-/// How wide a card whose **right** edge is pinned at `x` may be, as a declaration.
-///
-/// The card is placed from the anchor's edge and given no width to work with, so on
-/// a narrow window it would otherwise run off the side. This is the answer, and it
-/// is a *narrowing* rather than a nudge: a card that shifted to stay on screen would
-/// leave its arrow pointing at nothing, and the arrow is the half that says which
-/// thing is being talked about.
-///
-/// Written as a declaration and not measured, because it does not have to be: the
-/// stylesheet already gives the card a width, this is a `max-width` over the top of
-/// it, and `calc` knows the viewport where Rust would have to ask for it.
-fn room_left(x: f32) -> String {
-    format!("max-width: {:.1}px;", (x - EDGE).max(0.0))
-}
-
-/// [`room_left`] for a card whose **left** edge is pinned at `x`.
-fn room_right(x: f32) -> String {
-    format!("max-width: calc(100vw - {x:.1}px - {EDGE}px);")
-}
-
-/// [`room_left`] for a card **centred** on `x`, which is constrained by whichever
-/// side of it has less room — hence the `min`, and the doubling: the card grows both
-/// ways from the middle, so it may only be twice the narrower half.
-fn room_about(x: f32) -> String {
-    format!(
-        "max-width: calc(min({x:.1}px, 100vw - {x:.1}px) * 2 - {:.1}px);",
-        2.0 * EDGE
-    )
-}
-
-/// How many animation frames [`measure`] will wait for its anchor before giving up.
-///
-/// Eight is about an eighth of a second, which is far longer than a render and a
-/// layout and far shorter than anybody notices a card arriving. It is a *bound*
-/// rather than a duration: the ordinary case answers on the first or second frame,
-/// and this only decides how long an anchor that is never coming keeps being asked
-/// for.
-const TRIES: u32 = 8;
-
-/// Measure whatever `selector` finds and hand it to the card, asking again on the
-/// next few frames if it finds nothing yet.
-///
-/// **The retry is not defensive, it is the ordinary path.** A card is placed by the
-/// very effect that *revealed* what it points at — the panel it opened, the rack it
-/// pinned — and a reveal is a signal write whose render has not happened, let alone
-/// been laid out. So the first look routinely finds nothing, and a single animation
-/// frame is a race against Dioxus's own patch rather than a guarantee.
-///
-/// Losing that race used to be silent and strange: the card was armed and correct
-/// and simply never drew, until something *else* this effect follows moved and
-/// measured it again. Since `canvas_active` is one of those, the symptom was a tip
-/// that appeared when the artist next painted a stroke — nowhere near the click that
-/// earned it.
-///
-/// `for_lesson` is the card the chain was started for. A chain still in flight when
-/// the card changes is answering a question nobody asked any more, and must not write
-/// the new card's box away.
-fn measure(
-    state: AppState,
-    mut anchored: Signal<Option<ElementBox>>,
-    selector: String,
-    for_lesson: usize,
-    tries: u32,
-) {
-    if *state.tutor.showing.peek() != Some(for_lesson) {
-        return;
-    }
-    if let Some(found) = platform::anchor_box(&selector) {
-        anchored.set(Some(found));
-        return;
-    }
-    // Out of frames: the anchor is not there, and saying so is what takes a card down
-    // that is pointing at something gone. `on_screen` is the half that decides whether
-    // the *lesson* survives that (`abandon`); this only stops it being drawn.
-    if tries == 0 {
-        anchored.set(None);
-        return;
-    }
-    platform::on_animation_frame(move || measure(state, anchored, selector, for_lesson, tries - 1));
-}
-
 /// The lesson card: one at a time, floating beside the thing it points at.
 ///
 /// Mounted at the app root for the life of the page and empty whenever no lesson
@@ -1895,7 +1807,14 @@ pub fn TutorCard() -> Element {
             anchored.set(None);
             return;
         };
-        measure(state, anchored, selector, i, TRIES);
+        // The retry, and the guard that stops a chain in flight writing a box that
+        // belongs to the lesson *this* one was replaced by (`anchor::measure`).
+        anchor::measure(
+            selector,
+            anchored,
+            move || *state.tutor.showing.peek() == Some(i),
+            anchor::TRIES,
+        );
     });
 
     let Some(i) = (state.tutor.showing)() else {
@@ -1931,7 +1850,7 @@ pub fn TutorCard() -> Element {
                 "left: {:.1}px; top: {:.1}px; transform: translateX(-100%); {}",
                 at.left - GAP,
                 at.top,
-                room_left(at.left - GAP),
+                anchor::room_left(at.left - GAP),
             ),
         ),
         Side::LeftAtMiddle => (
@@ -1940,7 +1859,7 @@ pub fn TutorCard() -> Element {
                 "left: {:.1}px; top: {:.1}px; transform: translate(-100%, -50%); {}",
                 at.left - GAP,
                 at.mid_y(),
-                room_left(at.left - GAP),
+                anchor::room_left(at.left - GAP),
             ),
         ),
         Side::RightAtTop => (
@@ -1949,7 +1868,7 @@ pub fn TutorCard() -> Element {
                 "left: {:.1}px; top: {:.1}px; {}",
                 at.right() + GAP,
                 at.top,
-                room_right(at.right() + GAP),
+                anchor::room_right(at.right() + GAP),
             ),
         ),
         Side::RightAtMiddle => (
@@ -1958,7 +1877,7 @@ pub fn TutorCard() -> Element {
                 "left: {:.1}px; top: {:.1}px; transform: translateY(-50%); {}",
                 at.right() + GAP,
                 at.mid_y(),
-                room_right(at.right() + GAP),
+                anchor::room_right(at.right() + GAP),
             ),
         ),
         Side::Inside => (
@@ -1967,7 +1886,7 @@ pub fn TutorCard() -> Element {
                 "left: {:.1}px; top: {:.1}px; transform: translateX(-50%); {}",
                 at.mid_x(),
                 at.top + at.height * INSIDE_DEPTH,
-                room_about(at.mid_x()),
+                anchor::room_about(at.mid_x()),
             ),
         ),
         // The one placement that hands the stylesheet a measurement as well as a
@@ -1987,7 +1906,7 @@ pub fn TutorCard() -> Element {
                 at.right() + GAP,
                 at.bottom(),
                 at.height * 0.5,
-                room_right(at.right() + GAP),
+                anchor::room_right(at.right() + GAP),
             ),
         ),
         Side::Above => (
@@ -1996,7 +1915,7 @@ pub fn TutorCard() -> Element {
                 "left: {:.1}px; top: {:.1}px; transform: translate(-50%, -100%); {}",
                 at.mid_x(),
                 at.top - GAP,
-                room_about(at.mid_x()),
+                anchor::room_about(at.mid_x()),
             ),
         ),
     };
@@ -2109,13 +2028,13 @@ mod tests {
     ///
     /// The only thing about a placement that can be checked without a browser, and it
     /// is worth checking because nothing at runtime does. A card too *wide* narrows to
-    /// fit ([`room_left`]); a card too *tall* has no equivalent — narrowing one only
+    /// fit ([`anchor::room_left`]); a card too *tall* has no equivalent — narrowing one only
     /// makes it taller — so a placement that hangs a card into an edge is simply a
     /// card half off the screen.
     ///
     /// The regression it exists for happened: the navigator's lesson kept
     /// [`Side::RightAtMiddle`] when the miniature moved out of the panel stack into
-    /// the bottom-left corner, and a card centred on a box that stands [`EDGE`] off
+    /// the bottom-left corner, and a card centred on a box that stands [`anchor::EDGE`] off
     /// the foot of the window hangs its lower half over the edge.
     #[test]
     fn a_card_is_never_hung_into_the_edge_it_stands_on() {

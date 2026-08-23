@@ -7,7 +7,7 @@ use stark_model::Srgb;
 use crate::panels::color::OklabPicker;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, with_engine_quiet};
-use crate::widgets::Slider;
+use crate::widgets::{PopoutId, Slider};
 use dioxus::dioxus_core::spawn_forever;
 use stark_engine::command::ViewCommand;
 use stark_engine::{EnvironmentId, MediaParams};
@@ -58,10 +58,11 @@ pub fn LightingPanel() -> Element {
     // (`state::use_obs`). These are the slowest-moving values in it — a light and a
     // substrate are chosen between passages, not during one.
     //
-    // The canvas substrate color (straight sRGB) is shown as a swatch that pops out
-    // an Oklab picker. Read from the projection rather than a local signal for the
-    // same reason as the rest: it is document state now (§15.5), so a copy here
-    // would go stale the moment an undo or a document load moved it (§4).
+    // The canvas substrate color (straight sRGB) is shown as a swatch that flies out
+    // an Oklab picker ([`SubstrateColorPicker`]). Read from the projection rather than
+    // a local signal for the same reason as the rest: it is document state now
+    // (§15.5), so a copy here would go stale the moment an undo or a document load
+    // moved it (§4).
     let scene = use_obs(state, |o| {
         (
             o.media,
@@ -80,7 +81,6 @@ pub fn LightingPanel() -> Element {
             stark_engine::document::DEFAULT_SUBSTRATE_COLOR,
         )
     });
-    let mut show_bg_picker = use_signal(|| false);
     // What a release would lay down (`preview::SUBSTRATE_SCALE`). Held rather than read
     // back off `scale` at commit time, which reports the *preview* mid-drag.
     let laying = use_signal(|| None::<SubstrateScale>);
@@ -90,6 +90,27 @@ pub fn LightingPanel() -> Element {
         c[1] * 100.0,
         c[2] * 100.0
     );
+    // Lit while its pop-out is open — the well is a column away from what it opened,
+    // and nothing else says which press put that surface there.
+    let swatch_class = if crate::widgets::popout_open(state, PopoutId::SubstrateColor) {
+        "swatch open"
+    } else {
+        "swatch"
+    };
+    // Both of this panel's pop-outs go when the panel does. They are mounted at the
+    // app root rather than in here (`panels::popout`), so nothing takes one off the
+    // screen on the way out — and the next time the panel was opened the picker
+    // would be standing beside a row nobody had pressed. The frame bar's own
+    // pop-out makes the same promise for the same reason (`panels::frame`).
+    use_drop(move || {
+        let mine = matches!(
+            *state.popout.peek(),
+            Some(PopoutId::SubstrateColor | PopoutId::SubstrateGallery)
+        );
+        if mine {
+            crate::widgets::close_popout(state);
+        }
+    });
     rsx! {
         Slider { label: "Impasto", min: 0.0, max: 1.0, value: p.height_strength,
             oninput: move |v| update_media(state, move |m| m.height_strength = v) }
@@ -97,45 +118,27 @@ pub fn LightingPanel() -> Element {
             oninput: move |v| update_media(state, move |m| m.substrate_strength = v) }
         Slider { label: "Gloss", min: 0.0, max: 0.35, value: p.specular,
             oninput: move |v| update_media(state, move |m| m.specular = v) }
-        div { class: "slider-row",
+        // The canvas colour, and the surface it is laid on: the two choices in this
+        // panel that are made by *looking*, and so the two that want more room than a
+        // 300px column has. Both fly out beside the panel now
+        // (`panels::popout::StackPopouts`); what stays here is the well that says
+        // which one is in force.
+        //
+        // The `data-popout` attribute is on the **row**, not on the well inside it,
+        // and it is what the pop-out is placed against — see `PopoutId::in_stack`
+        // for why the row is the right box to measure.
+        div { class: "slider-row", "data-popout": "substrate-color",
             div { class: "slider-label", "Canvas" }
             button {
-                class: "swatch",
+                class: swatch_class,
                 style: "{swatch}",
-                onclick: move |_| show_bg_picker.set(!show_bg_picker()),
+                onclick: move |_| crate::widgets::toggle_popout(state, PopoutId::SubstrateColor),
             }
         }
-        // Mounted only while open, so the picker re-seeds from the current color each
-        // time, and placed directly under the well that opens it — where in flow it
-        // reads as that row opening rather than as something the row below grew.
-        //
-        // It opens *in* the panel rather than flying out beside it: the stack is a
-        // scroll container (`overflow-x: clip`), so a pop-out would be clipped at its
-        // edge, and a column that scrolls can simply be taller. The frame bar's copy
-        // of this control does fly out (`.color-popout`), because a bar cannot grow.
-        if show_bg_picker() {
-            div { class: "color-inline",
-                OklabPicker {
-                    init: (c).get(),
-                    // Previewed while the pointer is down, committed once on release:
-                    // the substrate color is document state, so one drag has to cost
-                    // one undo step (and one replicated action) rather than one per
-                    // pointer sample — the same bargain the frame drag makes.
-                    onchange: move |rgb: [f32; 3]| preview::BACKGROUND.show(state, Srgb::new(rgb)),
-                    oncommit: move |rgb: [f32; 3]| preview::BACKGROUND.commit(state, Srgb::new(rgb)),
-                }
-            }
+        div { class: "slider-row", "data-popout": "substrate-gallery",
+            div { class: "slider-label", "Surface" }
+            crate::substrates::SubstrateWell {}
         }
-        // Every substrate the app ships with, every one the artist imported, and the
-        // import card — the brush editor's shape gallery with substrates in it, because a
-        // substrate a user brings is the same kind of thing as a bundled one all the way
-        // down (`crate::substrates`). A `select` stood here, which could offer a list but
-        // not a picture, and a canvas substrate is judged by looking at it.
-        // The dialogs' group heading, borrowed: a small caption over a set of things
-        // is the same object in a panel as it is in a modal, and the alternative was
-        // a second class with the same four declarations.
-        div { class: "modal-section-label", "SURFACE" }
-        crate::substrates::SubstrateGallery {}
         // How large the substrate is laid (§6.4). A raw range rather than `Slider`,
         // because this one is document state: it previews per sample and commits
         // once, which needs the three drag-ending events `Slider` does not carry
@@ -145,7 +148,7 @@ pub fn LightingPanel() -> Element {
         // reading back — a substrate is judged by eye, but "the same as last time" is
         // judged by the figure.
         div { class: "slider-row",
-            div { class: "slider-label", "Substrate {scale.percent()}%" }
+            div { class: "slider-label", "Scale {scale.percent()}%" }
             input {
                 class: "slider",
                 r#type: "range",
@@ -182,6 +185,37 @@ pub fn LightingPanel() -> Element {
                     option { value: "{id:?}", selected: env == id, "{name}" }
                 }
             }
+        }
+    }
+}
+
+/// The canvas colour's picker, as flown out beside the Lighting panel
+/// (`widgets::PopoutId::SubstrateColor`).
+///
+/// It stood *in* the panel until the column it grew by turned out to be the whole
+/// complaint: a picker is 220px of wheel plus a track and a field, which is most of a
+/// screen's worth of stack, and it pushed the light and the substrate scale below the
+/// fold for as long as it was open. Beside the panel it costs the column nothing.
+///
+/// Mounted only while open — by the layer that places it, which is what makes this a
+/// component rather than a block of markup — so the picker re-seeds from the current
+/// colour each time it is opened, the same bargain the frame bar's copy makes.
+#[component]
+pub fn SubstrateColorPicker() -> Element {
+    let state = use_context::<AppState>();
+    // The colour the picker opens on, off the projection like the swatch that opened
+    // it: document state, so a local copy would go stale under an undo (§4, §15.5).
+    let c = use_obs(state, |o| o.substrate_color)()
+        .unwrap_or(stark_engine::document::DEFAULT_SUBSTRATE_COLOR);
+    rsx! {
+        OklabPicker {
+            init: (c).get(),
+            // Previewed while the pointer is down, committed once on release:
+            // the substrate color is document state, so one drag has to cost
+            // one undo step (and one replicated action) rather than one per
+            // pointer sample — the same bargain the frame drag makes.
+            onchange: move |rgb: [f32; 3]| preview::BACKGROUND.show(state, Srgb::new(rgb)),
+            oncommit: move |rgb: [f32; 3]| preview::BACKGROUND.commit(state, Srgb::new(rgb)),
         }
     }
 }

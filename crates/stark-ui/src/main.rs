@@ -37,6 +37,7 @@
 // nightly feature in the test profile to have one.
 #![cfg_attr(test, feature(variant_count))]
 
+mod anchor;
 mod brush_editor;
 mod builtin_ids;
 mod builtins;
@@ -92,8 +93,8 @@ use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
 use panels::{
     FilterBar, FrameBar, FrameOverlay, GradientBar, GradientBarOverlay, GradientTraceOverlay,
-    GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar, TimelineBar, TraceBar,
-    TransformBar, TransformOverlay,
+    GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar, StackPopouts, TimelineBar,
+    TraceBar, TransformBar, TransformOverlay,
 };
 use platform::canvas_by_id;
 use rail::CommandRail;
@@ -485,6 +486,14 @@ fn app() -> Element {
 
             // Floating tool panels, stacked top-right — order + visibility are data-driven.
             PanelStack {}
+
+            // Whatever a panel has flown out beside itself: the canvas colour's
+            // picker, the surface gallery (§25.7). Here rather than in the panel
+            // because the column clips, so a pop-out has to be placed against its
+            // row's measured box instead of drawn in it (`panels::popout`). After
+            // the stack in the DOM for the tour card's reason — it stands *over*
+            // the panel it flew out of — and empty whenever none is open.
+            StackPopouts {}
 
             // The guided tour's card, beside whichever panel or bar the lesson on
             // screen is about (§24). After the stack in the DOM, which is what puts

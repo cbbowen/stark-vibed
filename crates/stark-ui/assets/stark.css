@@ -18,6 +18,12 @@
   --panel-column: 300px;
   --panel-padding: 12px;
   --panel-inset: 4px;
+  /* The strip the panel column keeps clear inside itself, for its shadows and its own
+     scroll rail (`.panel-stack`). Named because a third rule needs it: a pop-out flown
+     out of a panel is placed from the right-hand edge of the window and has to land
+     clear of the *panel*, which is this much inside the column it is measured from
+     (`.stack-popout`). */
+  --panel-stack-pad: 10px;
   --panel-shadow: 0px 0px 8px 0px black;
   --panel-color: #e8e8ea;
   /* The two the chrome is built from, named so the opaque variant below is the same
@@ -209,7 +215,7 @@ hr {
      foot. */
   box-sizing: border-box;
   right: var(--panel-inset);
-  padding: 10px;
+  padding: var(--panel-stack-pad);
   width: var(--panel-column);
   max-height: 100%;
   overflow-y: auto;
@@ -658,11 +664,10 @@ hr {
 
 /* The picker bleeds to its panel's edges — but only in the panel that is *only*
    the picker. Scoped rather than said of `.color-pick` once, because the same
-   control has two other homes where the bleed is wrong: in the Lighting panel it
-   is a row among rows, and a negative bottom margin there collapses out through
-   `.color-inline` and drags the next row up over the hex field; in the frame
-   bar's `.color-popout` nothing clips the corners, so a bled field's square ones
-   stand out past the radius. Both keep their inset and stay inside it. */
+   control has two other homes where the bleed is wrong: in a pop-out — the frame
+   bar's `.color-popout`, the Lighting panel's `.stack-popout` — nothing clips the
+   corners, so a bled field's square ones stand out past the radius. Both keep
+   their inset and stay inside it. */
 .panel[data-panel="Color"] .color-pick {
   margin-left: calc(-1 * var(--panel-padding));
   margin-right: calc(-1 * var(--panel-padding));
@@ -820,19 +825,25 @@ hr {
   border-color: #ffffff66;
 }
 
-/* The color selector opened by a `.swatch`, in the two places a swatch lives.
+/* A well whose pop-out is open wears the same lit border that pop-out's own selected
+   card does, so the row a surface belongs to is findable *from* the surface — it is
+   standing a column away by then, and nothing else says which press opened it.
 
-   A **panel** grows to hold it: the stack is a scroll container (`overflow-y: auto`,
-   `overflow-x: clip`), so anything that flew out beside a panel would be clipped at
-   the stack's padding box — and a column that scrolls has somewhere to put the extra
-   height anyway. The picker takes the panel's content width — the wheel sits at its
-   base size and the track and field below fill the rest — so it needs no surface of
-   its own and takes none: it is already inside one. */
-.color-inline {
-  margin-top: 8px;
+   Qualified by `.panel` to out-specify the two `:hover` rules rather than to scope
+   the idea: open and hovered are both lit, one of them means something, and a well
+   still under the pointer that opened it matches both. Order alone would settle it
+   for the swatch and lose it for the well, whose hover rule is written further down
+   — which is the sort of thing that reads as correct until the two rules are moved
+   (`.panel-scroll.chrome.dimmed` is the same trick for the same reason). */
+.panel .swatch.open,
+.panel .surface-well.open {
+  border-color: #3a6ea5;
 }
 
-/* A **bar** cannot grow, so its picker flies up out of the well that opened it,
+/* The color selector a `.swatch` opens flies *out* of the well in both of the places
+   a swatch lives, and the two differ only in where there is room for it to go.
+
+   A **bar** cannot grow, so its picker flies up out of the well that opened it,
    styled as a small sibling panel. Up rather than sideways because the frame bar
    sits at the foot of the window; centred on the well by `.frame-color`, not on the
    bar, so it tracks the swatch rather than the middle of a bar whose width changes
@@ -848,6 +859,125 @@ hr {
   box-shadow: var(--panel-shadow);
   backdrop-filter: blur(8px);
   z-index: 40;
+}
+
+/* A **panel's** pop-out (`panels::popout::StackPopouts`, §25.7). Same surface as the
+   bar's above, placed the other way round and for the opposite reason: a bar has no
+   height to give and a panel has no *width*, so this flies sideways out of the column
+   rather than up out of a well.
+
+   It is a sibling of `.panel-stack` rather than a child of the panel that opened it,
+   and it has to be: the stack is a scroll container that clips (`overflow-x: clip`)
+   and every panel carries a `backdrop-filter`, which makes a containing block — so
+   inside the column there is no `position` that escapes, `fixed` included. Mounted at
+   the app root, it is placed instead, and the two axes are placed by different hands:
+
+   - **Horizontally, here**, because the column's geometry is the stylesheet's own and
+     measuring it would be asking the browser for numbers three lines above already
+     state. The right edge lands one `--panel-inset` plus one column in from the
+     window's edge, back out by the strip the stack keeps clear inside itself, and
+     then the 14px a floating surface stands off the thing it belongs to
+     (`anchor::GAP` — the same gap the tour's card leaves for its arrow).
+   - **Vertically, from Rust** (`top`, and a `max-height` under it), because which row
+     it belongs to is a measurement and which way it grows out of that row is a
+     branch. `calc` can do neither.
+
+   `overflow-y: auto` is what makes that cap safe rather than a crop: a pop-out is a
+   gallery or a picker and both scroll perfectly well, which is exactly what the
+   tour's card cannot do and why its own placement has no vertical clamp at all
+   (`tutor::Side::RightAtBottom`).
+
+   `z-index: 26` is the tour card's rung — one above the highest floating chrome (the
+   timeline bar, 25), because a pop-out has to stand over whatever it flew out of, and
+   below the dialogs (100). Level with the card and earlier in the DOM, so a lesson
+   pointing at the panel behind it is still readable. */
+.stack-popout {
+  position: absolute;
+  right: calc(
+    var(--panel-inset) + var(--panel-column) - var(--panel-stack-pad) + 14px);
+  z-index: 26;
+  box-sizing: border-box;
+  width: 320px;
+  /* Never past the far edge of the window: the right edge is pinned to the column,
+     so on a narrow screen it is the left one that would run off. Narrowing rather
+     than shifting, for `anchor::room_left`'s reason — a surface that moved would
+     stop reading as belonging to the row it came out of. */
+  max-width: calc(
+    100vw - var(--panel-inset) - var(--panel-column) + var(--panel-stack-pad) - 28px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px;
+  border-radius: 12px;
+  color: var(--panel-color);
+  background: var(--panel-background);
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
+  scrollbar-width: thin;
+  scrollbar-color: #ffffff26 transparent;
+}
+
+/* The gallery is the pop-out's whole content, so the dashed drop target it draws
+   would be a second border a few pixels inside the surface's own. The margin under it
+   goes for the same reason — the hint below it is the last thing in the box, and the
+   box has padding. */
+.stack-popout .asset-grid {
+  padding: 0;
+  border: none;
+  margin-bottom: 6px;
+}
+
+/* Except while something is being dragged over it, when the dashed edge is the whole
+   signal that this is where it would land. Inset so it does not fight the radius. */
+.stack-popout .asset-grid.dropping {
+  border: 1.5px dashed #3a6ea5;
+  padding: 6px;
+  margin: -6px -6px 0;
+}
+
+/* The Lighting panel's surface well: which canvas surface is in force, as the picture
+   it is judged by and the name it is asked for by, in one row of the column
+   (`substrates::SubstrateWell`).
+
+   The gallery stood open in that panel and cost it a grid's worth of height for as
+   long as it was open — for the rarest choice in the panel. This is what stayed
+   behind, and it is a `.swatch` for surfaces: the same well, the same border, the
+   same lit state while its pop-out is open. */
+.surface-well {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px;
+  border: 1px solid #ffffff2e;
+  border-radius: 6px;
+  background: #ffffff08;
+  color: var(--panel-color);
+  cursor: pointer;
+  text-align: left;
+}
+
+.surface-well:hover {
+  border-color: #ffffff66;
+}
+
+/* The gallery card's thumbnail at the size a row has for it — the one rule this home
+   restates, exactly as the pop-outs restate `.color-wheel`'s. Everything else about
+   what a surface looks like, the flat ground included, is `.asset-thumb`'s. */
+.surface-well .asset-thumb {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+}
+
+/* Left-aligned, unlike the card's centred caption: a name under a picture is a
+   label, and a name beside one is a value. */
+.surface-well .asset-name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font-size: 12px;
+  opacity: 0.85;
 }
 
 /* --- brush panel --- */

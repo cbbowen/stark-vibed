@@ -1006,7 +1006,7 @@ stroke carries and the shape's bytes are embedded **by value** in the action
 (§8, §22.4), so a document stays self-contained and the library stays personal.
 If a record would change what a peer sees, it is not this registry's.
 
-### 25.7 What a dialog owes
+### 25.7 What a dialog owes, and what a pop-out owes
 
 A dialog joins no table. It is here because it is the other thing a feature adds
 to the chrome — §11 says which of them exist and why each is a dialog rather than
@@ -1082,6 +1082,78 @@ Three consequences worth knowing before adding one:
 The one deliberate exception is `.be-dialog`, which takes more than the 80%: it
 is a working surface rather than something to read and dismiss, and every pixel
 it takes goes to the preview or to a list that scrolls inside it.
+
+**And what a pop-out owes.** A pop-out is the third surface — neither a panel nor
+a dialog — and it is what a *well* opens: a choice made by looking rather than by
+reading, offered beside the control that holds it. There are four, and they are
+one list, `widgets::PopoutId`, because at most one may be open at a time and
+`modes::Composing`'s argument applies unchanged — two open at once is a state
+nothing wants and nothing should have to prevent. They were `use_signal(|| false)`
+locals of the surfaces that drew them, which made them invisible to the app and in
+particular to Escape, whose ladder knew the dialogs, the composing modes, the
+composing layers and Timeline mode and could not see a pop-out standing over all
+of them.
+
+Three things follow from being on that list rather than in a local:
+
+- **Escape puts one down**, on its own rung above the dialogs — deliberately not a
+  `Dialogs` flag, since that list is also what stands `FinishMode` down and the
+  gradient library is opened *from* a bar while a fill is composing.
+- **Whoever owns the well takes the pop-out with it.** A bar that unmounts, a panel
+  that is closed: each clears the flag on the way out, or the next time that
+  surface came up the pop-out would be standing open on it.
+- **A canvas gesture closes the ones that float over the canvas.** The press that
+  says the artist has gone back to painting is a stroke, not a dismissal, so the
+  pop-out gets out of the way rather than catching it — a catcher over the canvas
+  would eat the first stroke, which is worse than the bug it fixes. (General light
+  dismiss — a press anywhere outside — is still owed for all four.)
+
+**Where a pop-out is drawn splits on one fact: whether the thing it flew out of is
+clipped.** A bar's is drawn in the bar. Nothing clips `.bottom-bars`, so the frame
+bar's colour picker hangs off the well in the markup, hangs *upward* because the
+bar is on the floor of the window, and needs no coordinates at all.
+
+A panel's cannot be. The stack is a scroll container that clips (`overflow-y:
+auto`, `overflow-x: clip`) and every panel in it carries a `backdrop-filter`,
+which makes a containing block — so a surface flown out of a panel row is cut off
+at the column's edge whether it is `absolute` or `fixed`. There is no arrangement
+of the markup that gets it out. It is mounted at the app root instead
+(`panels::popout::StackPopouts`) and *placed*, against the row's own measured box —
+the machinery the guided tour's card is placed with, which is why both now read
+from one module (`stark-ui/src/anchor.rs`, §24.3).
+
+Placing it is three answers, and only the middle one was a surprise:
+
+- **Which row.** `PopoutId::in_stack` carries a selector per pop-out, and it names
+  the *row* rather than the well inside it — a row spans the panel's content width,
+  so its left edge is the panel's own and the pop-out's distance from the column is
+  a fact about the column rather than about which control was pressed. Horizontally
+  nothing is measured at all: the column is a fixed width at a fixed inset, so
+  `.stack-popout` states its own right edge in `calc` and only `top` comes from
+  Rust.
+- **How it stays there.** A row moves without anything happening to the pop-out —
+  the column scrolls, the window resizes, a panel above it opens or folds or is
+  dragged. Those causes do not share an event shape (a scroll does not bubble; a
+  fold is not an event at all), so a listener per cause is a list that is wrong
+  again the next time somebody adds a way to move a panel. `anchor::follow` asks
+  every animation frame instead and writes only when the answer changed: one
+  `getBoundingClientRect` per frame for the seconds a pop-out is open, and the class
+  ruled out rather than enumerated. It also answers **`None` while the row is
+  scrolled out of the column**, so a pop-out is on screen exactly while the row it
+  belongs to is, and comes back with it.
+- **Which way it grows.** Down from the row's top or up from its bottom, whichever
+  the window has more of, capped to what is left and scrolling inside the cap. Not
+  centred on the row, which is the obvious third answer and the wrong one: centred,
+  a surface may only be twice the room on its narrower side, so a pop-out beside the
+  second row of the column would be capped at a couple of hundred pixels in exactly
+  the case where the whole screen below it was free.
+
+The Lighting panel is why this exists. Its canvas colour and its surface gallery
+both stood *open in the column* — a 220px wheel and a grid of cards, for the two
+choices in that panel made least often — and between them they pushed the light and
+the substrate scale below the fold. What stayed behind is a swatch and a well, one
+row each, saying which colour and which surface are in force; the wheel and the grid
+are a press away and cost the column nothing.
 
 ### 25.8 Rebinding a drag, and the one time we ask
 

@@ -162,8 +162,8 @@ pub fn Modal(
     }
 }
 
-/// The pop-outs a bar can fly open, and the one place a surface that is neither
-/// a panel nor a dialog is named (§25.7).
+/// The pop-outs the chrome can fly open, and the one place a surface that is
+/// neither a panel nor a dialog is named (§25.7).
 ///
 /// **One at a time, in one signal** ([`AppState::popout`](crate::state::AppState)),
 /// on `modes::Composing`'s argument: two open at once is a state nothing wants
@@ -182,21 +182,56 @@ pub fn Modal(
 ///
 /// # What is still owed
 ///
-/// **Light dismiss.** A press outside a pop-out should close it and two of these
-/// have never done so. The fix is not a component: the catcher has to be
-/// root-mounted the way [`Modal`]'s backdrop is, because `.bottom-bars` carries a
-/// `transform` and every bar a `backdrop-filter`, and each of those makes a
-/// containing block that a `position: fixed` catcher rendered inside the bar
-/// cannot escape. It is also the one part of this that cannot be got right by
-/// reading — where the catcher sits among the z-indices decides which presses it
-/// eats, and eating a canvas press would be worse than the bug — so it wants a
-/// browser rather than an argument.
+/// **Light dismiss.** A press outside a pop-out should close it and none of these
+/// does. The fix is not a component: the catcher has to be root-mounted the way
+/// [`Modal`]'s backdrop is, because `.bottom-bars` carries a `transform` and every
+/// bar and panel a `backdrop-filter`, and each of those makes a containing block
+/// that a `position: fixed` catcher rendered inside them cannot escape. It is also
+/// the one part of this that cannot be got right by reading — where the catcher sits
+/// among the z-indices decides which presses it eats, and eating a canvas press
+/// would be worse than the bug — so it wants a browser rather than an argument.
+///
+/// **The one press it would eat is already handled**, which is what makes the rest
+/// of it merely owed rather than urgent: a pop-out flown out of the stack stands over
+/// the painting, and the press that matters there is the artist going back to
+/// painting. `panels::popout` closes on the *gesture* instead of catching the press,
+/// so the stroke that dismisses one also paints (`StackPopouts`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PopoutId {
     /// The frame bar's matte-colour picker (§15.4).
     MattePaint,
     /// The gradient library, flown out of a bar's ramp well (§22.3).
     GradientLibrary,
+    /// The Lighting panel's canvas-colour picker (§6.4).
+    SubstrateColor,
+    /// The Lighting panel's surface gallery (§6.4).
+    SubstrateGallery,
+}
+
+impl PopoutId {
+    /// The control this pop-out flies out of, as a selector — and `None` for one
+    /// that is drawn in place inside the bar that owns it.
+    ///
+    /// **The answer is where the pop-out is mounted**, which is the whole of the
+    /// difference between the two kinds. A bar can draw its own: nothing clips
+    /// `.bottom-bars`, so the picker hangs off the well in the markup and needs no
+    /// coordinates. A panel cannot: the stack is a scroll container that clips, and
+    /// every panel in it carries a `backdrop-filter`, so a surface flown out of a
+    /// panel row has to be mounted at the app root and *placed* — which means being
+    /// told which row, and that is what this selector is for
+    /// (`panels::popout::StackPopouts`, `crate::anchor`).
+    ///
+    /// The row rather than the well inside it, deliberately: the row spans the
+    /// panel's whole content width, so its left edge is the panel's own and the
+    /// pop-out's distance from the column is a fact about the column rather than
+    /// about which control in the row happened to be pressed.
+    pub fn in_stack(self) -> Option<&'static str> {
+        match self {
+            PopoutId::MattePaint | PopoutId::GradientLibrary => None,
+            PopoutId::SubstrateColor => Some("[data-popout=\"substrate-color\"]"),
+            PopoutId::SubstrateGallery => Some("[data-popout=\"substrate-gallery\"]"),
+        }
+    }
 }
 
 /// Whether `id` is the pop-out currently open. Subscribing — the caller is the

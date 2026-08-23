@@ -367,7 +367,8 @@ pub struct Signals {
     /// [`dispatch`] — the seam every command passes through — which is free
     /// function code belonging to no component's scope.
     pub tutor: crate::tutor::TutorState,
-    /// The pop-out a bar has flown open, if any (`widgets::PopoutId`, §25.7).
+    /// The pop-out a bar or a panel has flown open, if any (`widgets::PopoutId`,
+    /// §25.7).
     ///
     /// **One signal for all of them**, on `modes::Composing`'s argument: two open
     /// at once is a state nothing wants and nothing should have to prevent. And

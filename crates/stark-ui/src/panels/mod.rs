@@ -22,7 +22,13 @@
 //!   painting for a mode's duration ([`TransformOverlay`],
 //!   [`GuideEditOverlay`], [`GradientBarOverlay`], [`GradientTraceOverlay`]) —
 //!   or, like [`FrameOverlay`], sits over the canvas and passes presses through
-//!   it. `crate::modes` is what keeps at most one catcher live.
+//!   it. `crate::modes` is what keeps at most one catcher live;
+//! - a **pop-out** is a surface flown open beside the well that opened it, for a
+//!   choice made by looking rather than by reading — a colour, a ramp, a canvas
+//!   surface. `widgets::PopoutId` names every one and keeps at most one open, and
+//!   where each is *drawn* turns on a single fact: a bar draws its own in place,
+//!   while a panel's is clipped by the column it lives in and so is mounted at the
+//!   app root and placed ([`StackPopouts`]).
 //!
 //! **The feature is the module and the register is the item**, which is why a
 //! module is not renamed for whichever of the three it happens to hold most of:
@@ -46,6 +52,9 @@ pub mod layer;
 pub mod layer_tree;
 pub mod lighting;
 pub mod pick;
+/// Where a panel's pop-out is drawn — the one register in this directory that
+/// cannot be drawn where it belongs, and so is mounted at the app root and placed.
+pub mod popout;
 /// The drag that moves a row of a list — shared by the two panels that are
 /// rosters of a stack the artist arranges (the layer tree and the guide list).
 pub mod reorder;
@@ -63,6 +72,7 @@ pub use guides::{GuideEditOverlay, GuidesPanel, PerspectiveGuideBar};
 pub use layer::LayerPanel;
 pub use lighting::LightingPanel;
 pub use pick::PickBar;
+pub use popout::StackPopouts;
 pub use select::{SelectPanel, SelectionBar};
 pub use timeline::TimelineBar;
 pub use transform::{TransformBar, TransformOverlay};
