@@ -760,8 +760,8 @@ pub const BASIC: &[Command] = &[
 /// have been a third copy of the arithmetic. [`ALL`](Self::ALL) is the map
 /// written down instead, and the menu is one loop over it (`main::CommandRail`).
 ///
-/// Deliberately thin. An entry's word, mark, tick, greyed state and act are all
-/// the registry's — it knows only *which* command it is
+/// Deliberately thin. An entry's word, mark, lit state, greyed state and act are
+/// all the registry's — it knows only *which* command it is
 /// ([`command`](Self::command)) — so this is a **view** of the registry rather
 /// than a second one, and nothing reachable here is a thing a search for its
 /// name would miss.
@@ -1215,8 +1215,8 @@ impl Command {
 
     /// Whether this command's act is live right now.
     ///
-    /// Three surfaces read it, and they are three pictures of one fact: a menu
-    /// row's tick, the select blue on a palette row's mark, and a
+    /// Three surfaces read it, and they are two pictures of one fact: the select
+    /// blue on the mark, which a menu row and a palette row draw alike, and a
     /// [`CommandButton`](crate::widgets::CommandButton)'s lit chip. That last
     /// one is why the shape tools answer here rather than the Select panel
     /// computing `tool == t` for its own chips — a chip lit by the registry

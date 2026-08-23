@@ -62,8 +62,8 @@ which the engine draws into directly. DOM chrome surrounds it.
   display name, terse chip word (`Command::word`, the abbreviation a control in
   a narrow column wears — "Rect" for "Rectangle select"), mark, tooltip,
   availability (`Command::enabled`, what a row greys on), whether the act is
-  live right now (`Command::active`, drawn three ways from one answer: a menu
-  row's tick, the select blue on a palette row's mark, and a lit
+  live right now (`Command::active`, drawn two ways from one answer: the select
+  blue on the mark, which a menu row and a palette row draw alike, and a lit
   `CommandButton` — the armed shape tool, Share while a session runs),
   the advertised shortcut (`Command::shortcut`), the gate its act must ask
   (`Command::run`), and the chord that reaches it from the keyboard
@@ -111,7 +111,7 @@ which the engine draws into directly. DOM chrome surrounds it.
   index was counted off `PanelId::ALL.len()` by hand: bookkeeping the loop beside
   it was already doing, restated where nothing would catch it going wrong. The
   enum is deliberately thin — an entry knows only *which* `Command` it is, and
-  the word, mark, tick and greyed state are the registry's — so it is a view of
+  the word, mark, lit state and greyed state are the registry's — so it is a view of
   the registry rather than a second one, and nothing is reachable there that a
   search for its name would miss. And what the menu toggles, the browser keeps:
   one record over that same list, so every row of the map is remembered and a new
@@ -222,7 +222,7 @@ which the engine draws into directly. DOM chrome surrounds it.
   release that ends it. It answers what it does take: the first press or wheel in
   a sleeping column brings the panels back rather than being lost, which is also
   the only way a touch-only hand can ask for them. Opening a panel wakes the
-  stack too (`layout::open_panel`, the one door), or the command would tick a
+  stack too (`layout::open_panel`, the one door), or the command would light a
   menu entry and show nothing. Nothing else sleeps: the rail and a mode's bars
   and handles live elsewhere on screen, and latching those off until the pointer
   had visited the right edge would be controls you cannot reach by reaching for
@@ -283,7 +283,7 @@ which the engine draws into directly. DOM chrome surrounds it.
     a rule about a descendant, whatever its specificity. It is remembered with which panels are open, as a
     second *field* on the same stored line, so the two states cross a version in
     either direction without a migration. Opening a panel unfolds it: a panel that
-    came back as a bare title bar would be a menu entry that ticks itself and shows
+    came back as a bare title bar would be a menu entry that lights itself and shows
     nothing.
   - **Nothing in the stack is selectable text** (`user-select: none` on
     `.panel-stack`, form fields excepted). Leaving it selectable cost the reorder

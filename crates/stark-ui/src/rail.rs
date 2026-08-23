@@ -3,10 +3,10 @@
 //!
 //! Everything here **renders a command rather than restating one**
 //! (`crate::commands`): a row's word, mark, shortcut column, greyed state and
-//! tick are all the registry's, so the three ways to the same act — a menu row,
-//! a palette row, a chord — cannot describe it differently or forget its gate.
-//! That is §25.2's rule, and this is the module with the most rows to keep it
-//! for.
+//! whether its act is live are all the registry's, so the three ways to the same
+//! act — a menu row, a palette row, a chord — cannot describe it differently or
+//! forget its gate. That is §25.2's rule, and this is the module with the most
+//! rows to keep it for.
 //!
 //! The palette is our own dropdown rather than a third `MenubarMenu`, and not
 //! for styling: the primitive light-dismisses the moment DOM focus leaves it for
@@ -128,10 +128,11 @@ pub fn CommandRail() -> Element {
 
 /// One row of the rail's menus, rendered from the command it runs
 /// (`crate::commands`): the word, the mark, the shortcut column, the greyed
-/// state and the mode tick (§18.2.4) are all the registry's, so what the menu
-/// shows and what a click does cannot drift — and a chord a command gains is
-/// advertised here without the row changing. The one prop left is the menu's
-/// own business: `index` is the menubar's roving-focus order.
+/// state and the live-act tint — a mode you are in (§18.2.4), a panel that is
+/// up — are all the registry's, so what the menu shows and what a click does
+/// cannot drift, and a chord a command gains is advertised here without the row
+/// changing. The one prop left is the menu's own business: `index` is the
+/// menubar's roving-focus order.
 #[component]
 fn CmdItem(index: usize, command: Command) -> Element {
     let state = use_context::<AppState>();
@@ -140,7 +141,7 @@ fn CmdItem(index: usize, command: Command) -> Element {
     // argument, one field per component instead of a shared tuple).
     //
     // Both facts in the **one** memo, which is what that argument asks for: the
-    // tick was read straight out of the registry in the body below, and
+    // lit state was read straight out of the registry in the body below, and
     // `Command::active` asks the projection for the three shape tools
     // (`commands::armed`) — so a row for one of those was subscribed to every
     // engine write however narrow its `enabled` memo was.
@@ -155,14 +156,22 @@ fn CmdItem(index: usize, command: Command) -> Element {
             // The terse word, not the full name: a menu's trigger already
             // names the subject, which is `word`'s whole remit — the Panels
             // menu says "Color" where the palette must say "Color panel".
-            span { class: "menu-item", {icon(command.icon())} {command.word()} }
+            //
+            // "You are in it" rides the **mark**, the palette's arrangement
+            // ([`PaletteRow`]) — one picture of `Command::active` on both
+            // surfaces rather than a trailing ✓ here and a lit glyph there.
+            // Every row already has a mark and the eye is already on it, where
+            // the ✓ was a column of its own that only a row with such a state
+            // ever filled.
+            span {
+                class: "menu-item",
+                class: if active == Some(true) { "cmd-active" },
+                class: if active == Some(false) { "cmd-inactive" },
+                {icon(command.icon())}
+                {command.word()}
+            }
             if let Some(chord) = command.shortcut(&state.bindings.read()) {
                 span { class: "menu-shortcut", {chord} }
-            }
-            if let Some(on) = active {
-                span { class: "menu-check",
-                    if on { {icon(icons::CHECK)} }
-                }
             }
         }
     }
@@ -364,8 +373,9 @@ fn PaletteRow(
             // beats the blur that would fold the palette away under the pointer.
             onpointerdown: move |_| run_from_palette(state, open, command),
             // A live act wears the select blue on its mark (`Command::active`) —
-            // Share while a session runs — where a toggle's "you are in it" is
-            // the tick the menu draws.
+            // Share while a session runs — and the visibility menu draws a
+            // toggle's "you are in it" the same way ([`CmdItem`]), so the two
+            // surfaces are one picture of one answer.
             span {
                 class: "menu-item",
                 class: if active == Some(true) { "cmd-active" },

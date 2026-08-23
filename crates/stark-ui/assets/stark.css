@@ -606,26 +606,14 @@ hr {
 }
 
 /* A menu entry's mark and its word, held together as the item's leading half — the
-   menubar item is `space-between`, so a shortcut or a ✓ still sits hard right while
-   these two stay a unit. Defined here rather than in the menubar's stylesheet
-   because that one is a css_module and hashes what it declares; this class is set on
-   an element the app builds, so it has to be global. */
+   menubar item is `space-between`, so a shortcut still sits hard right while these
+   two stay a unit. Defined here rather than in the menubar's stylesheet because that
+   one is a css_module and hashes what it declares; this class is set on an element
+   the app builds, so it has to be global. */
 .menu-item {
   display: inline-flex;
   align-items: center;
   gap: 9px;
-}
-
-/* Trailing ✓ on a menu item for a panel that is shown, or a mode you are in. */
-.menu-check {
-  display: flex;
-  justify-content: flex-end;
-  width: 14px;
-}
-
-.menu-check .icon svg {
-  width: 12px;
-  height: 12px;
 }
 
 /* --- generic flex row --- */
@@ -2664,10 +2652,12 @@ button.layer-remove:hover {
   color: #fff;
 }
 
-/* A live act's mark takes the select blue (`Command::active` — Share while a
-   session runs): the state rides the icon rather than a trailing tick, which is
-   the mode toggles' claim ("am I in it?"). Lightened under the row's own blue
-   highlight, where the resting accent would disappear into it. */
+/* A live act's mark takes the select blue — `Command::active`, whether that is Share
+   while a session runs, a mode you are in or a panel that is up. The state rides the
+   icon rather than a trailing tick because every row already has a mark and the eye
+   is already on it, where a tick is a column of its own that only a row with such a
+   state ever fills. The palette and the visibility menu both wear it, which is what
+   makes them one picture of one answer (`main::PaletteRow`, `main::CmdItem`). */
 .cmd-active .icon {
   color: #cdd9ed;
   filter: drop-shadow(0 0 4px #8fb0e8);
@@ -2677,8 +2667,15 @@ button.layer-remove:hover {
   color: #6a6a72;
 }
 
+/* Lightened under a row's own blue highlight, where the resting accent would
+   disappear into it. The menu's half of that is keyed on `role` rather than on the
+   item's class: the menubar is a css_module and its class comes out hashed, so the
+   role — which the primitive writes and this stylesheet can name — is the only handle
+   on the element the highlight lives on. */
 .palette-row:hover .cmd-active .icon,
-.palette-row.selected .cmd-active .icon {
+.palette-row.selected .cmd-active .icon,
+[role="menuitem"]:hover .cmd-active .icon,
+[role="menuitem"]:focus-visible .cmd-active .icon {
   color: var(--panel-color);
   filter: none;
 }

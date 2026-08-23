@@ -22,9 +22,9 @@ use crate::state::AppState;
 /// [`Command::active`] rather than from a prop: a chip showing that its act is
 /// live right now — the armed shape tool (§6.8) — is saying something about
 /// the act, and a call site that computed it would be the second copy of an
-/// answer the menu tick and the palette's blue mark already read from the
-/// registry. A command with no such state (`None`) is never lit, which is
-/// every act on a bar today.
+/// answer the blue mark a menu row and a palette row both wear already reads
+/// from the registry. A command with no such state (`None`) is never lit,
+/// which is every act on a bar today.
 #[component]
 pub fn CommandButton(
     command: Command,

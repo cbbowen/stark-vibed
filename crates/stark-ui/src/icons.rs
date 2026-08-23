@@ -152,7 +152,7 @@ icons! {
     // [`FLIP_H`] — a mirroring about the vertical axis — and a second name
     // because the control is a different one: the flip moves the selected
     // *paint*, this turns the whole view and moves nothing. The same argument
-    // [`DONE`] and [`CHECK`] are two names for one tick.
+    // [`RESET`] and [`UNDO`] are two names for one arrow.
     MIRROR_VIEW => "flip-horizontal-bold",
     // Per-row visibility. Unlike every other icon here this one is a *state* rather
     // than an act: the row shows the eye it currently is, not the one clicking would
@@ -232,19 +232,13 @@ icons! {
     TIMELINE => "slideshow-bold",
     PLAY => "play-bold",
     PAUSE => "pause-bold",
-    // A menu entry that is a *mode* carries a tick (§18.2.4). Like [`VISIBLE`] and
-    // unlike everything else here, it answers "am I in it?" rather than naming an act
-    // — which is why it is a state where its neighbours in the menu are verbs.
-    CHECK => "check-bold",
-    // The same file, and a second name because the *control* is a different one: every
-    // "Done" in the application — the transform, guide and frame bars, and the dialogs
-    // that have nothing to cancel. A tick is what it means to be finished, so this is
-    // the one act in the set drawn as its own outcome.
+    // Every "Done" in the application — the transform, guide and frame bars, and the
+    // dialogs that have nothing to cancel. A tick is what it means to be finished, so
+    // this is the one act in the set drawn as its own outcome.
     //
-    // Not `CHECK` at the call sites, even though the bytes are identical: a Done button
-    // is a verb and a menu tick is a state, and reading `icons::CHECK` on a button
-    // would invite someone to "unify" the two the next time either wants to change.
-    // The same argument [`RESET`] and [`UNDO`] are two names for one arrow.
+    // The one tick left, and the menus want none: "am I in it?" rides the entry's own
+    // mark there (`main::CmdItem`), so a state and this verb cannot be confused for
+    // each other by sharing a glyph.
     DONE => "check-bold",
     // The Timing Stats dialog (§7.1), the command search's other row that does
     // nothing to the drawing. A speedometer rather than a chart or a stopwatch: what
@@ -324,7 +318,7 @@ icons! {
     // user's rows carry their trash ([`REMOVE`]). The same file as [`LOCK`], and a
     // second name because the *control* is a different one — the perspective bar's
     // locks are chips that toggle an axis, this is a state a row is in. (The same
-    // argument [`DONE`] and [`CHECK`] are two names for one tick.)
+    // argument [`FLIP_H`] and [`MIRROR_VIEW`] are two names for one mirroring.)
     //
     // A padlock rather than, say, a badge, because what it has to say is not "this
     // one is special" but "this one is not yours to remove" — and the reason it is
