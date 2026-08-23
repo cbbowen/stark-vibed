@@ -1501,9 +1501,13 @@ hr {
    down. Which also means a pinned rack stops taking clicks mid-stroke, as faded
    chrome everywhere does.
 
-   Appearing is a key press, so it is instant: the transition `.chrome` carries fires
-   on the dim and the return, not on the insert, which is the right way round for a
-   thing summoned by a finger that is already down. */
+   Appearing is a key press, so it is instant: the transitions here — `.chrome`'s, and
+   the rows' own — fire on a change and never on the insert, so a transient rack arrives
+   with its held row already opaque and already out (`.slot-row.held`) instead of
+   growing into it. Which is the right way round for a thing summoned by a finger that
+   is already down. A *pinned* rack does animate the same move, and that is right for
+   the same reason turned over: there the rack is already on screen, and the hold is a
+   change to something the eye is on rather than an arrival. */
 .slot-overlay {
   flex: 1;
   min-height: 0;
@@ -1518,10 +1522,30 @@ hr {
 /* Wide enough for the thumbnail's own aspect (520x72) to land close to uncropped
    under `cover`, and no wider: this stands over the painting rather than inside a
    panel, so every pixel of it is canvas the artist cannot see. The shadow is what
-   separates it from the paint, in place of the panel background it hasn't got. */
+   separates it from the paint, in place of the panel background it hasn't got.
+
+   And **transparent until it is held**. The rack is asked one thing at a time — which
+   digit is under the finger — so one row answers at full strength and the others sink
+   back into the painting they stand on. The whole row ghosts, digit and name with it,
+   rather than the held row taking some further mark of its own: a mark has to be found
+   among nine rows shouting as loudly as it does, while the one row still standing is
+   found without being looked for.
+
+   Pinned and idle nothing is held and the rack rests here entire, which is the right
+   resting state for a strip over a painting nobody is asking it about. A hover brings
+   a row back — pinned is where a row is a control, and the pointer arriving on it is
+   the question being asked. */
 .slot-row {
   width: 250px;
   box-shadow: 0 2px 8px #0006;
+  opacity: 0.4;
+  /* The way back to rest, and slower than the way out of it below — `.chrome`'s
+     bargain the other way round, because these two moves are not the same move. The
+     rise answers a key that is already down; the fall is only the rack tidying itself
+     up after the hand has gone somewhere else. */
+  transition:
+    opacity 160ms ease-out,
+    width 180ms ease-out;
 }
 
 /* Kept up by the Panels menu, where the rows are controls rather than a picture:
@@ -1536,6 +1560,9 @@ hr {
 
 .slot-overlay.pinned .slot-row:hover {
   filter: brightness(1.12);
+  /* Out of the ghost above: a row under the pointer is one being reached for, and the
+     trash revealed on this same hover has to be legible to be worth pressing. */
+  opacity: 1;
 }
 
 /* The slot the live brush still is, color aside — the same test and the same blue
@@ -1552,11 +1579,27 @@ hr {
 /* Held right now — the same ring the chips wore, and it means the same thing: this
    is the brush in hand, for as long as the key is down. It wins over the blue above
    (a held slot is nearly always also the live one, and the two would otherwise fight
-   over the same edge): held is what the user is *doing*, not a state they are in. */
+   over the same edge): held is what the user is *doing*, not a state they are in.
+
+   The ring is the least of what it wears, though. It is opaque where the rest of the
+   rack is a ghost, and it reaches further out from the edge than any of them — two
+   answers rather than one because the two carry at different distances: the opacity
+   is what the eye reading the rack sees, and the reach is what the eye on the
+   *painting* catches at the corner of it, which is where that eye is for the gesture
+   this belongs to (hold-and-draw). It grows rather than sliding out, the rack being
+   anchored to the window's edge (`.left-chrome`): the digits stay in one column and
+   it is the picture that moves, so the index the hand is reading does not shift
+   under it. */
 .slot-row.held {
   box-shadow:
     0 0 0 2px #eee,
     0 2px 8px #0006;
+  opacity: 1;
+  width: 300px;
+  /* The arrival, quicker than the departure declared above: the key is already down. */
+  transition:
+    opacity 70ms ease-out,
+    width 100ms ease-out;
 }
 
 /* A digit nobody has filled, shown only when it is the one being held: an outline

@@ -549,13 +549,23 @@ exactly as opening a panel is. The container declines the pointer either way, so
 the gaps between rows and the column below the last one are never anything but
 painting.
 
-**Two marks, two questions.** The held row is ringed; the row the live brush
-still *is* (color aside) is lit in the preset rows' own blue, on the same test —
-so a slot and a preset holding one brush light together and say they are two ways
-to it. They only look like one question while a key is down. Pinned and idle, the
-lit row is the only thing saying which of the ten is in hand, which is what the
-chips' `active` used to be for. Held wins where both apply: it is what the user is
-doing, not a state they are in.
+**Two marks, two questions.** The held row is the only one at full strength —
+opaque and reaching further out from the window's edge, where the rest of the rack
+is a ghost of itself. That is deliberately not a badge added to one row: a badge
+has to be found among nine rows shouting as loudly as it does, while the one row
+still standing is found without being looked for, and the reach is the half of the
+answer that carries to an eye on the painting rather than on the rack — which is
+where that eye is during hold-and-draw. It grows rather than sliding out, the rack
+being anchored to that edge, so the digits stay in one column and only the picture
+moves.
+
+The second mark answers the second question: the row the live brush still *is*
+(color aside) is lit in the preset rows' own blue, on the same test — so a slot and
+a preset holding one brush light together and say they are two ways to it. They
+only look like one question while a key is down. Pinned and idle, nothing is held,
+the whole rack rests transparent, and the lit row is the only thing saying which of
+the ten is in hand — which is what the chips' `active` used to be for. Held wins
+where both apply: it is what the user is doing, not a state they are in.
 
 Reading the live brush costs nothing per stroke, and that is not an accident of
 this component: a sample dispatches *quietly* and never refreshes the observable,
@@ -568,9 +578,13 @@ bars, and while a stroke is being laid the screen goes back to being the
 painting. What makes that safe on a thing this momentary is that **the hold
 outlives the stroke**: the key is still down when the pen lifts, so the rack
 returns and the answer is there whenever the hand wants it, not only before the
-first mark. Appearing, though, is instant — the transition fires on the dim and
-the return, not on the insert, which is the right way round for something
-summoned by a finger that is already down.
+first mark. Appearing, though, is instant — every transition here fires on a
+change and never on the insert, so a transient rack arrives with its held row
+already opaque and already out rather than growing into it, which is the right way
+round for something summoned by a finger that is already down. A *pinned* rack
+does animate that move, which is the same rule turned over: it is already on
+screen, so the hold is a change to something the eye is on rather than an
+arrival.
 
 Tapping the key deliberately does not apply a slot, because a tap and a hold are
 one keystroke told apart by how long it lasted, and binding them to different

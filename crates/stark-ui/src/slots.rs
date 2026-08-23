@@ -305,10 +305,14 @@ pub fn release_all(state: AppState) {
 /// down when the pen lifts, so the rack comes straight back and the answer is
 /// there whenever the hand wants it rather than only before the first mark.
 ///
-/// The **held** row is ringed and the row the live brush *is* (color aside) is
-/// lit, which are two different questions and only look like one while a key is
-/// down: pinned and idle, the lit row is the only thing saying which slot is in
-/// hand, and it is the same test and the same light the preset rows use. Reading
+/// The **held** row is the only one at full strength: the rest of the rack is a
+/// ghost of itself, while the held one is opaque and reaches further out from the
+/// edge than any of them, so the digit under the finger is found rather than
+/// looked for (`.slot-row.held`). The row the live brush *is* (color aside) is
+/// separately lit, which is a different question and only looks like the same one
+/// while a key is down: pinned and idle nothing is held, and the lit row is then
+/// the only thing saying which slot is in hand — the same test and the same light
+/// the preset rows use. Reading
 /// the live brush costs nothing per stroke — a sample dispatches quietly and
 /// never refreshes the observable (`state::dispatch_sample`), so this re-renders
 /// when the brush *changes*, not while one is painting.
