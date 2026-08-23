@@ -55,11 +55,6 @@ path is in [brush.md](docs/brush.md), the compositing path in
 [rendering.md](docs/rendering.md), and the mask every tool acts through in
 [selection.md](docs/selection.md). A bare `§6` citation means the chapter.
 
-These absorbed the former `DESIGN.md`, `GOALS.md`, `BLEND_MODES.md`,
-`CLEANUP.md`, `FRAME_DESIGN.md`, `GROUP_DESIGN.md`, `MISSING_FEATURES.md`,
-`PANEL_UI_DESIGN.md`, `PEER_DESIGN.md`, `STABILITY.md` and
-`TRANSFORM_DESIGN.md`. §1–§13 keep `DESIGN.md`'s original numbering; the feature
-docs became §14–§19.
 
 ## Where things live
 
@@ -150,13 +145,6 @@ reports `ok` and would take the whole golden/seam/dynamics suite green having
 rendered nothing. `STARK_SKIP_GOLDEN=1` renders without comparing pixels (what CI
 uses, since goldens are adapter-specific). Deleting a golden re-blesses it.
 
-The workspace is on **nightly** for exactly one reason: `history`'s
-`associated_type_defaults`. One nightly feature is used *besides* that, and only
-in the test profile: `stark-ui` turns on `variant_count` under
-`cfg_attr(test, …)`, which is what lets `commands::tests::all_lists_every_command`
-fail the build when a command is added without a row in the registry's list
-(§25.2). Nothing in a shipped build depends on it.
-
 ## Rules that are easy to break silently
 
 - **Every `apply` must touch only what its `Footprint` declares** (§12.6). A
@@ -244,15 +232,7 @@ fail the build when a command is added without a row in the registry's list
   a comment.
 - **When a model is wrong, fix the model and re-bless the goldens.** No
   compensating fudge constants.
-- **Do not add inert scaffolding.** If a field, slider or shader hook cannot yet
-  change a pixel, leave it out and add it with the implementation. `tooth`,
-  `drag`, `wetness` and the `wet` channel were all deleted rather than
-  carried; each is a local change to reintroduce when built — `bleed` came back
-  that way as the real lateral-diffusion axis, and `tooth` as the deposition gate
-  (§6.4), each with the model its placeholder never had.
 - **Rule out a class rather than enumerate its instances.** Where a guarantee can
   be made structural — ownership derived from the action id, a representation
   that cannot express the wrong thing — it is, instead of a check a call site
   could forget.
-- **Line endings are pinned** (`.gitattributes`, `text=auto eol=lf`); tooling has
-  silently rewritten files to CRLF here before.
