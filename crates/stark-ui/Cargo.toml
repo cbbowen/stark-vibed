@@ -72,6 +72,11 @@ web-sys = { version = "0.3", features = [
     # search's palette holds a text field, so "a child blurred" is not yet "the
     # pointer went elsewhere" — only the event's relatedTarget can tell the two apart.
     "FocusEvent",
+    # Objecting to the page going away with a painting still only in this tab
+    # (platform::on_before_unload). The subclass is needed for `returnValue`, which
+    # the base `Event` does not carry — and which is the half of the request older
+    # engines read.
+    "BeforeUnloadEvent",
     # The presence clock (collab.rs). Monotonic, unlike `Date.now()`, which is what
     # peer timeouts and heartbeats need.
     "Performance",

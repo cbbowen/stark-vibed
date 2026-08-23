@@ -562,6 +562,37 @@ which the engine draws into directly. DOM chrome surrounds it.
     `stark-ui/tools/make-icons.py`, run by hand; the PNGs are checked in. Not a
     build step — a logo is not a build product, and nothing keys off its bytes
     the way `stark-assetid` keys off an asset's (§19).
+- **The painting lives in the tab, so the tab asks before it goes.** There is no
+  autosave and no server here: a reload, a closed tab, a followed link and the back
+  button are all the end of anything neither Save nor Export has taken out, and
+  `beforeunload` is the one place a page may object to that. `files::guard_unload`
+  takes it. Bound in the root's body rather than at the end of the startup task,
+  unlike the launch queue above — it is a predicate over the signals, so it wants no
+  engine and cannot be left unbound by a start that fails before there is one. The
+  prompt itself is entirely the browser's: its wording, its buttons, and whether it
+  appears at all, which is why `platform::on_before_unload` takes a predicate and
+  returns nothing.
+  - **The question needs both sides of §2 to answer it, and neither alone.** The
+    engine says whether the committed document has moved since it *arrived*
+    (`ObservableState::edited`, against a baseline `Engine::doc_origin` takes in
+    `reset_document` and takes again at the end of a load, after the replay that
+    moved the counter). That is the half that would otherwise be a list of
+    document-replacing call sites kept by hand in the frontend — a new document, an
+    open, a launched file, a dropped one, a collaboration join — with the next one
+    silently missing from it. The frontend says which revision it last *wrote to a
+    file* (`AppState::written_revision`), which is not a thing a document has any way
+    to notice happening to it. "Unsaved" is the conjunction, and `files::unsaved` is
+    where the two meet.
+  - **Committed only.** A stroke in flight and an unlogged drag preview both move
+    what is on screen without moving `doc_revision`, which is the same narrowness the
+    navigator's miniature is keyed on — and a gesture is over long before a hand
+    reaches the tab strip.
+  - **An Export counts, though an export is not a save.** A picture is not the
+    document and nothing can be recovered from it (§15.6), so an artist who exports
+    and closes still loses the editable painting; keeping those two words apart is
+    the menu's job and stays the menu's job. What the guard asks is narrower — is
+    any of this work *gone* — and that is the difference between an alarm worth
+    reading and one raised over a copy the artist has just watched download.
 
 Because the engine is frontend-agnostic, this layer stays thin. (An earlier
 interim cut ran on Dioxus *desktop* and bridged the canvas by reading the frame

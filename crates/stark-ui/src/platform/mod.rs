@@ -618,6 +618,48 @@ pub fn on_window_blur(mut handler: impl FnMut() + 'static) {
     cb.forget();
 }
 
+/// Ask the browser to confirm before the page goes away, whenever `confirm`
+/// answers true.
+///
+/// The one browser affordance for a document that lives in a tab: a reload, a closed
+/// tab, a followed link and the back button all reach the same `beforeunload`, and
+/// taking it is how an unsaved painting survives a mis-click.
+///
+/// **Everything about the prompt is the browser's** — its wording, its buttons, and
+/// whether it appears at all. All a page can say is *that* it objects, which is why
+/// this takes a predicate and returns nothing. It says it twice, because engines
+/// disagree about which way counts: `preventDefault` is what the current spec reads,
+/// a non-empty `returnValue` what older ones read. The string itself has not been
+/// shown to a user by any major browser in years — it was a phishing surface — and
+/// what matters about it is only that it is *not empty*. It is a sentence anyway, on
+/// the chance some engine somewhere still prints one.
+///
+/// A browser also declines to prompt at all until the page has been interacted with,
+/// which is a condition this app meets by the time it has anything to lose.
+///
+/// Registered once for the life of the page, so the closure is `forget`ten like the
+/// listeners above.
+#[cfg(target_arch = "wasm32")]
+pub fn on_before_unload(confirm: impl Fn() -> bool + 'static) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let cb = Closure::<dyn FnMut(web_sys::BeforeUnloadEvent)>::new(
+        move |e: web_sys::BeforeUnloadEvent| {
+            if !confirm() {
+                return;
+            }
+            e.prevent_default();
+            e.set_return_value("This painting has changes that are not in a file yet.");
+        },
+    );
+    let _ = window.add_event_listener_with_callback("beforeunload", cb.as_ref().unchecked_ref());
+    cb.forget();
+}
+
 /// Run `handler` **inside** the next animation-frame callback.
 ///
 /// This is not the same as a task awaiting a promise the rAF resolves

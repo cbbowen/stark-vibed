@@ -210,6 +210,9 @@ impl Engine {
         self.resync_counters(&file.actions);
         // Whatever the replayed log left the document on.
         self.apply_document_substrate();
+        // The loaded document *is* this file, unedited — so the baseline is where the
+        // replay ended, not where `reset_document` set it before the replay began.
+        self.doc_origin = self.doc_revision;
         Ok(())
     }
 
@@ -636,6 +639,15 @@ impl Engine {
         self.preview.clear();
         self.peers.clear();
         self.committed_changed();
+        // The document that just arrived is what later edits are measured against
+        // (`Engine::doc_origin`). After `committed_changed`, which moved the counter
+        // this is a copy of — a reset is itself a committed change, and the empty
+        // document it leaves has not been edited.
+        //
+        // A load re-states this once its replay is done, since every action of that
+        // replay moves the counter again; a join does not, because actions reaching a
+        // joiner over the wire *are* edits to a document no file of theirs holds.
+        self.doc_origin = self.doc_revision;
         // One assignment: who this client is and what it owes the wire go back to
         // what a fresh engine starts with, which is the same statement the two
         // constructors make rather than a fourth list of fields to keep level.

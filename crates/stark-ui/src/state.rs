@@ -169,6 +169,21 @@ pub struct Signals {
     /// false → true wakes its readers exactly when they asked to be woken, and it
     /// says what it means at the site that reads it.
     pub renderer_ready: Signal<bool>,
+    /// The `doc_revision` this document was last **written out** at — by Save, which
+    /// wrote the log, or by Export, which drew the picture. Zero until one of them
+    /// has happened (`crate::files`).
+    ///
+    /// The frontend's half of "is there work only this tab holds", which is what the
+    /// unload guard asks. The engine holds the other half and cannot hold this one:
+    /// what it knows is whether the document has moved since it arrived
+    /// (`ObservableState::edited`), and a file leaving the browser is not an event a
+    /// document has any way to notice.
+    ///
+    /// Zero is safe as "never", not merely conventional: `doc_revision` counts up
+    /// across the whole life of the page and is past zero before the opening document
+    /// exists, so no live revision can collide with the initial value — and `edited`
+    /// gates the comparison in any case.
+    pub written_revision: Signal<u64>,
     /// Whether the user is holding space.
     pub space_down: Signal<bool>,
     /// The modifiers currently held, tracked off the window's key events
@@ -711,6 +726,7 @@ impl AppState {
             obs: ReadOnly(root_signal(|| None)),
             startup_failure: root_signal(|| None),
             renderer_ready: root_signal(|| false),
+            written_revision: root_signal(|| 0),
             space_down: root_signal(|| false),
             held_mods: root_signal(Default::default),
             canvas_active: root_signal(|| false),

@@ -167,6 +167,13 @@ fn app() -> Element {
     // still is this app's own gesture (§6.9), and Windows reads the same hold as
     // a right-click.
     use_hook(bind_context_menu);
+    // And the way out: the browser asks before the tab goes, if there is committed
+    // work here that neither Save nor Export has taken out (`files::guard_unload`).
+    // In the root's body rather than at the end of the startup task, unlike the
+    // launch queue and the paste hook below — this one binds a predicate over the
+    // signals, so it wants no engine and cannot be left unbound by a start that
+    // fails before there is one.
+    use_hook(|| files::guard_unload(state));
 
     // Before anything reads the browser's store: drop the keys the old formats were
     // kept under, so their bytes are not still spending this origin's quota

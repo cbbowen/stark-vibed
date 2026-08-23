@@ -439,6 +439,17 @@ pub struct ObservableState {
     /// the miniature per pointer sample to say something the canvas is saying
     /// better. Compare `is_stroking`, which is exactly the in-flight question.
     pub doc_revision: u64,
+    /// Whether the committed document has moved since it arrived — since the reset
+    /// that made a new one, or since the last action of a load. False for a document
+    /// that still stands exactly as the file it came out of, and for the empty one
+    /// the app opens on.
+    ///
+    /// **Not "unsaved".** A frontend that asks before throwing the page away wants
+    /// this *and* something only it knows — whether the revision on screen is one it
+    /// has since written to a file (`stark-ui`'s `files::unsaved`). The engine
+    /// supplies the half that would otherwise be a list of document-replacing call
+    /// sites kept by hand (`Engine::doc_origin`).
+    pub edited: bool,
     pub active_layer: LayerId,
     /// Layers bottom-to-top. Shared rather than copied — see [`Layers`].
     pub layers: Layers,
@@ -709,6 +720,18 @@ pub struct Engine {
     /// so a watcher keyed on the epoch would re-render for every sample of one. The
     /// two advance together through [`Engine::committed_changed`].
     doc_revision: u64,
+    /// What [`doc_revision`](Self::doc_revision) read when the document now open
+    /// *arrived* — the reset that made a new one, or the last action of a load.
+    /// Projected as [`ObservableState::edited`], which is the comparison.
+    ///
+    /// A baseline the engine keeps rather than one a frontend keeps for it, because
+    /// the engine is where the list of ways a document can be replaced is complete:
+    /// `new_document`, `load_document` and a collaboration join all reach
+    /// [`reset_document`](Self::reset_document), and a frontend tracking the same
+    /// thing would be enumerating those call sites and missing the next one. What
+    /// a frontend does own is the other half of "unsaved" — which revision it last
+    /// wrote to a file — and that is a question no engine can answer.
+    doc_origin: u64,
     /// How many of this client's stroke commits took the preview's tiles instead of
     /// rendering the stroke again (`PreparedStroke`, §6.2). For tests and
     /// diagnostics, on `live_head_count`'s terms: the two paths are the same pixels
@@ -852,6 +875,7 @@ impl Engine {
             now: 0.0,
             preview: Default::default(),
             doc_revision: 0,
+            doc_origin: 0,
             draw_cache: None,
             layer_cache: std::cell::RefCell::new(None),
             guide_cache: std::cell::RefCell::new(None),
@@ -946,6 +970,7 @@ impl Engine {
             now: 0.0,
             preview: Default::default(),
             doc_revision: 0,
+            doc_origin: 0,
             draw_cache: None,
             layer_cache: std::cell::RefCell::new(None),
             guide_cache: std::cell::RefCell::new(None),
@@ -1833,6 +1858,7 @@ impl Engine {
             view: self.session.view,
             bounds: doc.bounds(),
             doc_revision: self.doc_revision,
+            edited: self.doc_revision != self.doc_origin,
             active_layer: self.session.active_layer,
             layers,
             has_selection: doc.has_selection(self.actor()),

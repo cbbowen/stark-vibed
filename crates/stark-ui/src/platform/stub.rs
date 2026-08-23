@@ -120,6 +120,8 @@ pub fn coalesced(_e: &Event<PointerData>) -> Option<Vec<Coalesced>> {
 
 pub fn on_window_blur(_handler: impl FnMut() + 'static) {}
 
+pub fn on_before_unload(_confirm: impl Fn() -> bool + 'static) {}
+
 pub fn on_animation_frame(_handler: impl FnOnce() + 'static) {}
 
 pub fn capture_pointer(_e: &Event<PointerData>) {}

@@ -12,6 +12,10 @@
 //!
 //! Naming them apart in the menu matters more than it looks: an artist who
 //! "exports" thinking they saved has lost the painting.
+//!
+//! And the third thing, which is neither: **the guard on the way out**. A painting
+//! lives in a tab until one of the two above puts it somewhere else, so closing the
+//! tab is a way to lose it, and [`guard_unload`] is what makes the browser ask first.
 
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
@@ -31,6 +35,69 @@ use stark_model::document::LayerId;
 /// dropped picture (§23.4) and must not do it with a second spelling of this.
 pub(crate) const DOC_EXT: &str = "stark";
 
+/// Object before the page goes away, if the document on screen holds work this
+/// browser is the only copy of. Bound once by `main`, for the life of the page.
+///
+/// This app keeps the painting in the tab: there is no autosave and no server, so a
+/// reload or a closed tab is the end of anything neither Save nor Export has taken
+/// out. The browser's own confirmation is the only thing standing in front of that,
+/// and taking it costs a predicate.
+///
+/// **Only when there is something to lose**, which is the whole design of
+/// [`unsaved`] — a guard that objects to closing an untouched canvas is one the user
+/// learns to dismiss without reading, and it would then be no guard at all on the
+/// day it was right.
+pub fn guard_unload(state: AppState) {
+    crate::platform::on_before_unload(move || unsaved(state));
+}
+
+/// Whether the document holds committed work that no file does.
+///
+/// Two halves, one from each side of the boundary, because neither side can answer
+/// it alone:
+///
+/// - the engine says whether the committed document has moved since it *arrived*
+///   ([`ObservableState::edited`]) — which is how a fresh canvas and a
+///   just-opened file both come out clean without this module having to know every
+///   way a document can be replaced;
+/// - this browser says which revision it last wrote to a file
+///   ([`AppState::written_revision`]), which is not a thing a document can notice
+///   happening to it.
+///
+/// Committed only, deliberately. A stroke in flight and an uncommitted drag preview
+/// both move what is on screen without moving `doc_revision`, and a gesture is over
+/// before a hand can reach the tab strip.
+///
+/// [`ObservableState::edited`]: stark_engine::ObservableState::edited
+pub fn unsaved(state: AppState) -> bool {
+    let written = *state.written_revision.peek();
+    state
+        .obs
+        .peek()
+        .as_ref()
+        .is_some_and(|o| o.edited && o.doc_revision != written)
+}
+
+/// The committed revision the chrome is being shown — what a file written now would
+/// hold. `None` before the engine exists.
+fn shown_revision(state: AppState) -> Option<u64> {
+    state.obs.peek().as_ref().map(|o| o.doc_revision)
+}
+
+/// Record that the document at `revision` has left the browser as a file.
+///
+/// Called by both writers below and by nothing else — a *picture* is not the
+/// document, but it is a copy of the work, and the question this answers is whether
+/// closing the tab loses any.
+///
+/// The revision is passed rather than read here, because the two writers hold it at
+/// different moments, and for one of them reading it at this point would be reading
+/// it too late — see [`export_png`].
+fn mark_written(state: AppState, revision: u64) {
+    let mut written = state.written_revision;
+    written.set(revision);
+}
+
 /// Write the document — the action log, not the pixels (§8).
 ///
 /// Lean: content this build ships with is named but not carried, because the
@@ -46,14 +113,22 @@ pub fn save_document(state: AppState) {
         .read()
         .as_ref()
         .map(|r| r.save_bytes_resolvable(&resolvable));
+    // The revision those bytes are of. Nothing between here and the write is
+    // asynchronous, so it is still the one on screen when the file lands.
+    let written = shown_revision(state);
     match bytes {
         Some(Ok(bytes)) => {
-            if let Err(e) = download_bytes(
+            match download_bytes(
                 &bytes,
                 &format!("painting.{DOC_EXT}"),
                 "application/octet-stream",
             ) {
-                tracing::error!("save failed: {e}");
+                Ok(()) => {
+                    if let Some(revision) = written {
+                        mark_written(state, revision);
+                    }
+                }
+                Err(e) => tracing::error!("save failed: {e}"),
             }
         }
         Some(Err(e)) => tracing::error!("could not serialize the document: {e}"),
@@ -310,6 +385,14 @@ async fn export_png(
     } else {
         Background::Substrate
     };
+    // The revision this picture will be of, taken **before** the readback rather
+    // than after it. The render below is encoded synchronously; the await that
+    // follows it is a full-resolution copy off the GPU and is not instant, and a
+    // commit landing during that copy is work the PNG does not show. Recording the
+    // later revision as written would leave the unload guard silent about exactly
+    // that work; recording this one costs at worst a prompt over a change already
+    // in the file.
+    let rendered = shown_revision(state);
     // Render, then **drop the guard before awaiting**. The readback future owns
     // everything it needs, so nothing holds the renderer while the browser's event
     // loop runs the copy — which it must be free to do, since the UI re-renders
@@ -336,5 +419,9 @@ async fn export_png(
         .map_err(|e| e.to_string())?
         .to_png()
         .map_err(|e| e.to_string())?;
-    download_bytes(&png, "painting.png", "image/png")
+    download_bytes(&png, "painting.png", "image/png")?;
+    if let Some(revision) = rendered {
+        mark_written(state, revision);
+    }
+    Ok(())
 }

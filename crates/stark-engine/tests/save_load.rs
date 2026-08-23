@@ -65,6 +65,55 @@ fn save_load_roundtrip_is_lossless() {
     assert!(loaded.observe().can_undo);
 }
 
+/// `ObservableState::edited` is the baseline half of "there is unsaved work here":
+/// it says the committed document has moved since it *arrived*, whichever way it
+/// arrived. A frontend that asks before the page unloads (`stark-ui`'s
+/// `files::unsaved`, §11) is built on it, and what it must never do is object to
+/// closing a canvas nobody has touched — a warning raised when there is nothing to
+/// lose is one the user learns to click through before the day it is right.
+///
+/// The load is the case worth a test rather than the fresh document: `reset_document`
+/// takes the baseline before the replay, and every action of that replay moves the
+/// counter again, so a load that did not re-take it afterwards would report a
+/// just-opened file as edited work.
+#[test]
+fn a_document_is_edited_only_once_it_moves_from_what_arrived() {
+    // Not `engine_or_skip_blue`, whose substrate color is itself a committed change:
+    // the claim here is about a document nothing has been done to at all.
+    let Some(mut original) = engine_or_skip() else {
+        return;
+    };
+    assert!(
+        !original.observe().edited,
+        "a document nobody has touched has not been edited"
+    );
+    paint_two(&mut original);
+    assert!(original.observe().edited, "two strokes are two edits");
+    let bytes = original.save_bytes().expect("serialize");
+
+    let mut loaded = engine_or_skip().expect("adapter available (original built)");
+    loaded.load_bytes(&bytes).expect("deserialize + replay");
+    assert!(
+        !loaded.observe().edited,
+        "a document just loaded stands exactly as the file it came out of"
+    );
+
+    paint(&mut loaded, RED, 30.0, STROKE_A);
+    assert!(
+        loaded.observe().edited,
+        "a stroke after the load is work that file does not hold"
+    );
+
+    // And a new document is a fresh baseline, not the loaded one carried over.
+    loaded
+        .new_document(loaded.observe().color_space, SubstrateId::Flat)
+        .expect("a new document on the flat substrate");
+    assert!(
+        !loaded.observe().edited,
+        "replacing the document starts the count again"
+    );
+}
+
 #[test]
 fn undo_after_load_drops_last_stroke() {
     let Some(mut original) = engine_or_skip_blue() else {
