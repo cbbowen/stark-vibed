@@ -341,6 +341,37 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 ..BrushParams::default()
             },
         ),
+        shipped(
+            "Blender",
+            Some(5),
+            0.1,
+            BrushParams {
+                size: 100.0,
+                tooth_give: 0.5,
+                shape: BrushShape::Round { hardness: 0.8 },
+                dynamics: BrushDynamics {
+                    flow: 0.0,
+                    lift: 0.25,
+                    deposit: 0.75,
+                    bleed: 0.25,
+                    ..BrushDynamics::default()
+                },
+                modulation: Modulations {
+                    lift: Some(Modulation {
+                        source: ModSource::Pressure,
+                        floor: 0.8,
+                        curve: 0.0,
+                    }),
+                    bleed: Some(Modulation {
+                        source: ModSource::Pressure,
+                        floor: 0.0,
+                        curve: 0.0,
+                    }),
+                    ..Modulations::default()
+                },
+                ..BrushParams::default()
+            },
+        ),
         // The eraser the pen's other end starts life holding (§18.1.8).
         shipped(
             "Soft Eraser",
