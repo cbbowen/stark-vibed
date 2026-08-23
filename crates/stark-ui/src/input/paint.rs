@@ -35,7 +35,7 @@ use super::*;
 ///
 /// The signals that stay in [`AppState`] stay there for stated reasons and are
 /// unaffected: `pick.dragging` because the eyedropper's options bar reads it,
-/// `brush_ring` and `tow` because sibling overlays draw them, `canvas_active`
+/// `tune_readout` and `tow` because sibling overlays draw them, `canvas_active`
 /// because the whole chrome fades on it.
 #[derive(Clone, Copy)]
 pub struct Paint {

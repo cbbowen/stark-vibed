@@ -1,5 +1,5 @@
 //! The chrome that rides the canvas: collaborators' pointers, the brush cursor,
-//! the size ring a tuning drag draws, the held pick's swatch, and the tow string
+//! the readout a tuning drag draws, the held pick's swatch, and the tow string
 //! (§17.4, §18.1.8-§18.1.11, §6.11).
 //!
 //! **DOM rather than a compositor pass, every one of them**, and always for the
@@ -13,14 +13,14 @@
 //! is the same question asked five times: *what wakes this at pointer rate?* The
 //! answers are worth reading together. Two of them are pure layout, converting
 //! to screen px on the way in so they read no view at all
-//! (`state::BrushRing`, `state::TowUi`); one reads the view through a memo
+//! (`state::TuneReadout`, `state::TowUi`); one reads the view through a memo
 //! ([`PeerCursors`]); one splits its position from its size so only the position
 //! moves per report ([`BrushCursor`]).
 
 use dioxus::prelude::*;
 
 use crate::drags::{self, DragAction};
-use crate::state::{AppState, use_obs};
+use crate::state::{AppState, BrushRing, FlowBar, TuneReadout, use_obs};
 
 /// Collaborators' pointers, drawn in each peer's own color (§17.4).
 ///
@@ -142,24 +142,42 @@ pub fn BrushCursor() -> Element {
     }
 }
 
-/// The brush-tuning drag's size indicator (§18.1.9): a ring at the radius being asked
-/// for, with the radius it started from behind it.
+/// The brush-tuning drag's indicator (§18.1.9): the size ring, or the flow bar, or
+/// nothing at all — whichever the gesture in flight is asking for.
 ///
 /// DOM rather than a compositor pass, for [`PeerCursors`]'s reason — it is chrome, and
 /// the one thing it must never do is reach an export. It is also pure layout: the
-/// gesture converts to screen px on its way in (`state::BrushRing`), so this reads no
-/// view and re-renders on nothing but the ring itself.
+/// gesture converts to screen px on its way in (`state::TuneReadout`), so this reads no
+/// view and re-renders on nothing but the readout itself.
+///
+/// **One component for both knobs**, because the state is one value: the drag commits
+/// to a single knob, so a second mounted overlay would exist to draw the thing the
+/// first one is not drawing, and would have to be told when to keep quiet. Here that is
+/// a `match` with no third arm.
+#[component]
+pub fn TuneReadoutOverlay() -> Element {
+    let state = use_context::<AppState>();
+    let Some(readout) = (state.tune_readout)() else {
+        return rsx! {};
+    };
+    rsx! {
+        div { class: "tune-readout",
+            match readout {
+                TuneReadout::Size(ring) => size_ring(ring),
+                TuneReadout::Flow(bar) => flow_bar(bar),
+            }
+        }
+    }
+}
+
+/// The size half: a ring at the radius being asked for, with the radius it started
+/// from behind it.
 ///
 /// A circle, though the brush may be any shape (§6.6). Deliberately, for now: what the
 /// drag sets is one number, and a ring is the honest picture of one number — an outline
 /// of the actual tip would be a picture of the *shape*, which this gesture cannot
 /// change, and would say the mark is that crisp when a soft brush's is not.
-#[component]
-pub fn BrushSizeRing() -> Element {
-    let state = use_context::<AppState>();
-    let Some(ring) = (state.brush_ring)() else {
-        return rsx! {};
-    };
+fn size_ring(ring: BrushRing) -> Element {
     // Both circles are laid out the same way: a box of the diameter, pulled back onto
     // the centre. `left`/`top` rather than a transform, like the peer cursors.
     let circle = |class: &'static str, r: f32| {
@@ -171,13 +189,50 @@ pub fn BrushSizeRing() -> Element {
         }
     };
     rsx! {
-        div { class: "brush-ring",
-            // The old size first, so the one being asked for draws over it.
-            {circle("brush-ring-circle was", ring.was)}
-            {circle("brush-ring-circle", ring.now)}
+        // The old size first, so the one being asked for draws over it.
+        {circle("brush-ring-circle was", ring.was)}
+        {circle("brush-ring-circle", ring.now)}
+    }
+}
+
+/// The flow half: a bar standing beside the press, filled to how much paint the brush
+/// is laying.
+///
+/// A *level* rather than a picture of the mark, which is the honest shape for this
+/// knob: flow has no length on the canvas to be drawn at, so the bar says where in the
+/// range the brush sits and claims nothing about how the stroke will look. Quiet, too —
+/// it is the answer to a gesture the hand is in the middle of making, not a control,
+/// and the Brush panel's slider is moving in step with it either way.
+///
+/// **How long the bar is, is the stylesheet's** (`state::FlowBar`), which is why the
+/// centring here is a transform where the ring's is arithmetic: half of a length this
+/// side does not have cannot be subtracted from anything.
+fn flow_bar(bar: FlowBar) -> Element {
+    // Beside the press, and flipped rather than clamped near the window's edge — the
+    // loupe's rule ([`PickLoupe`]) for the loupe's reason: clamping would slide the
+    // readout onto the point it exists to stand clear of. Sideways, because the travel
+    // this knob measures runs vertically through the press, so above and below are
+    // where the hand is about to be; left by default, because the hand and the arm come
+    // from the pointer and the majority of them come from the right.
+    let x = if bar.at.x < FLOW_BAR_GAP * 1.5 {
+        bar.at.x + FLOW_BAR_GAP
+    } else {
+        bar.at.x - FLOW_BAR_GAP
+    };
+    let fill = bar.fill.clamp(0.0, 1.0) * 100.0;
+    rsx! {
+        div { class: "flow-bar", style: "left:{x}px; top:{bar.at.y}px",
+            div { class: "flow-bar-fill", style: "height:{fill:.1}%" }
         }
     }
 }
+
+/// How far to the side of the press the flow bar's box sits, CSS px.
+///
+/// Clear of a pen's own barrel and of the cursor that was there a moment ago, and no
+/// further: the bar is this gesture's whole readout on the canvas, and a readout that
+/// has to be looked *for* is one the hand stops using.
+const FLOW_BAR_GAP: f32 = 34.0;
 
 /// The held touch pick's loupe (§18.1.11): the color the finger is standing on,
 /// drawn clear of the finger.

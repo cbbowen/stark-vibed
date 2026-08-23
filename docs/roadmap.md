@@ -43,7 +43,7 @@ Status lives here and nowhere else.
 | — | Drag-and-hold drawing assist (§6.9) | done — line + ellipse; the shape-assist half of §18.1.3 |
 | — | Stroke smoothing — the towed tip (§6.11) | done — the tow, the per-brush amount, the string overlay; the pursuit-mode soft rope stays in reserve |
 | — | Brush parameter mapping (§6.2, §18.1.4) | done — pressure/tilt → size/flow/stretch/lift/deposit/bleed; more sources and targets are variants away |
-| — | Modifier drags — scrubby zoom, Size/Flow (§18.1.9) | done — with the size ring; a flow readout is not |
+| — | Modifier drags — scrubby zoom, Size/Flow (§18.1.9) | done — with the size ring and the flow bar; the number beside the ring is not |
 | — | Touch (§18.1.7, §18.1.11) | done — two fingers pan/zoom/turn, the held press, tap-to-undo/redo and hold-to-pick; thumb-sized hit targets remain |
 | — | Placed images (§23) | done — import, paste and drop, as one action that lands a layer of paint; placement onto an *existing* layer (§23.5) remains |
 | — | The guided tour (§24) | done — five lessons off the `dispatch` seam; a lesson is a row in one table |
@@ -687,24 +687,50 @@ existed, and neither the engine nor the panels learn anything.
   once reads better on paper and is worse in the hand: flow's useful band is
   narrow enough that the incidental drift of a long sideways drag would empty or
   bury the brush, and there would be no way to ask for size *alone*.
-- **The size drag draws itself** (`state::BrushRing`, `BrushSizeRing`): a ring at
-  the radius being asked for, with the radius it started from dashed behind it, at
-  the press point. Not decoration — the size is *defined* as a ratio on the one the
-  press found, so the dashed circle is the reference the gesture is measured from
-  and not merely the frame before it, and the pair is what turns "it will be this
-  big" into "it will be bigger than the last stroke". It comes up on
-  the press, before the drag has said which knob it is about, which is also the one
-  thing that makes the binding discoverable: press with the accelerator held and
-  the brush draws itself. It goes again the moment the gesture turns out to be
-  about flow, rather than sitting there advertising a number that is not moving.
-  A `<div>` like the peer cursors and for their reason — it is chrome, and must
-  never reach an export — which is affordable because a circle in canvas space is
-  still a circle on screen at any angle or handedness, so a radius through the zoom
-  is the whole of the transform. A **circle**, for now, though the brush may be any
-  shape (§6.6): what the drag sets is one number, and a ring is the honest picture
-  of one number, where an outline of the real tip would be a picture of the *shape*
-  — which this gesture cannot change — and would claim a soft brush's mark is that
-  crisp.
+- **Either knob draws itself, and only one of them can** (`state::TuneReadout`,
+  `TuneReadoutOverlay`). The readout is **one value, not two flags** — the drag
+  commits to a single knob, so "the ring is up and the bar is up at once" is made
+  a thing the state cannot say rather than a rule the flow branch has to keep by
+  taking the ring down. Putting the bar up *is* taking the ring down, and the
+  overlay is one component with a `match` that has no third arm.
+- **The size drag draws a ring** at the radius being asked for, with the radius it
+  started from dashed behind it, at the press point. Not decoration — the size is
+  *defined* as a ratio on the one the press found, so the dashed circle is the
+  reference the gesture is measured from and not merely the frame before it, and
+  the pair is what turns "it will be this big" into "it will be bigger than the
+  last stroke". It comes up on the press, before the drag has said which knob it is
+  about, which is also the one thing that makes the binding discoverable: press with
+  the accelerator held and the brush draws itself. A `<div>` like the peer cursors
+  and for their reason — it is chrome, and must never reach an export — which is
+  affordable because a circle in canvas space is still a circle on screen at any
+  angle or handedness, so a radius through the zoom is the whole of the transform.
+  A **circle**, for now, though the brush may be any shape (§6.6): what the drag
+  sets is one number, and a ring is the honest picture of one number, where an
+  outline of the real tip would be a picture of the *shape* — which this gesture
+  cannot change — and would claim a soft brush's mark is that crisp.
+- **The flow drag draws a bar** standing beside the press, filling from the bottom
+  with how much paint the brush is laying. A **level**, not a picture of the mark,
+  which is the honest shape for a knob with no length on the canvas to be drawn at:
+  the bar is the whole of `0..MAX_FLOW` and the fill says where in it the brush
+  sits, so it claims nothing about how the stroke will look. It carries **no
+  reference mark** where the ring carries the size it started from, and that is the
+  same argument from the other side — the ring needs one because "it will be this
+  big" is not an answer without "bigger than what", while a share of the whole
+  range has already said how much. *Beside* the press rather than on it, and
+  flipped rather than clamped near the window's edge (the held pick's rule,
+  §18.1.11): the travel this knob measures runs vertically through the press, so
+  above and below are where the hand is about to be. How long the bar is, is the
+  stylesheet's — unlike the ring there is no number to convert, only a choice to
+  make.
+- **The crosshair goes for the whole drag** (`.paint-canvas.tuning`). A crosshair
+  is a promise of paint at a point and this gesture is about a number: nothing will
+  land where it is aimed, and one sitting in the middle of the size ring reads as
+  the brush being *there* when the ring is the only thing on screen saying anything
+  true. It goes on the press, ahead of either knob, and beats every cursor a held
+  chord asks for — the pointer is captured, so no other binding can be what the
+  press is about. The canvas asks the readout whether one is in flight, through a
+  memo: the drag rewrites that signal per pointer report, and the surface a stroke
+  is made on must not re-render per move to be told the answer has not changed.
 - **The rack and the pen's tail come for free**, and that is the test of where
   this was put: it writes through the same `update_brush` the sliders do, so
   while a number is held the live brush is that slot's and the drag tunes the
@@ -730,13 +756,13 @@ existed, and neither the engine nor the panels learn anything.
   that insisted on Ctrl would be unreachable on the one platform where Ctrl+drag
   is how the browser reports a secondary click.
 
-**Still missing**: the number beside the ring, and an indicator for flow (which
-is why its drag is the one whose only readout is the panel). The ring under the
-resting cursor left this list when it was built — it is §18.1.10. Deliberately
-*no* cursor change while the accelerator is merely held, unlike Alt and the
-eyedropper: Ctrl is also the front half of Ctrl+Z, and flashing a resize cursor
-over the artwork on every undo would cost more than the hint is worth — the
-press is early enough to say it.
+**Still missing**: the number beside the ring. The flow indicator left this list
+when the bar was built, and the ring under the resting cursor left it before that
+— it is §18.1.10. Deliberately *no* cursor change while the accelerator is merely
+held, unlike Alt and the eyedropper: Ctrl is also the front half of Ctrl+Z, and
+flashing a resize cursor over the artwork on every undo would cost more than the
+hint is worth — the press is early enough to say it, and what the press says is
+to take the cursor away entirely.
 
 #### 18.1.10 The brush cursor — built
 

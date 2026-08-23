@@ -111,7 +111,22 @@ pub fn Canvas() -> Element {
     let over_paint = !(state.space_down)() && !tool.is_selection();
     let sampling = armed == Some(DragAction::PickColor) && over_paint;
     let carrying = armed == Some(DragAction::PickAndTranslate) && over_paint;
-    let canvas_class = if sampling {
+    // Whether a tuning drag is in flight (§18.1.9) — the crosshair goes while it is,
+    // because the crosshair is a promise of paint *at a point* and this gesture is
+    // about a number: nothing will land where it is pointing, and a crosshair sitting
+    // in the middle of the size ring reads as the brush being there when the ring is
+    // the only thing on screen saying anything true.
+    //
+    // Through a memo rather than off the signal, and that is the whole of why the
+    // readout is worth asking: the drag rewrites it per pointer report, and this is the
+    // surface a stroke is made on. A bare read would re-render the canvas per move to
+    // find the answer unchanged; the memo wakes it twice a gesture.
+    let tuning = use_memo(move || (state.tune_readout)().is_some());
+    let canvas_class = if tuning() {
+        // First in the ladder, over every cursor a held chord asks for: the pointer is
+        // captured, so no other binding can be what this press is about.
+        "paint-canvas tuning"
+    } else if sampling {
         "paint-canvas picking"
     } else if carrying {
         // Above `no-paint` for the pick's reason: a layer that takes no paint is
@@ -185,7 +200,8 @@ pub fn Canvas() -> Element {
                             landing.abandon();
                             // The ring at the press is the size's readout now
                             // (§18.1.9); a second circle under it would be two
-                            // sizes for one brush.
+                            // sizes for one brush. The class above takes the
+                            // crosshair down for the whole drag on top of that.
                             hover_gone(state);
                             return;
                         }

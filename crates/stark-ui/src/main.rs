@@ -87,7 +87,7 @@ use input::{bind_context_menu, bind_pen, bind_shortcuts};
 use layout::PanelStack;
 use layout::{resize_end, resize_move};
 use navigator::NavigatorOverlay;
-use overlays::{BrushCursor, BrushSizeRing, PeerCursors, PickLoupe, TowStringOverlay};
+use overlays::{BrushCursor, PeerCursors, PickLoupe, TowStringOverlay, TuneReadoutOverlay};
 use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
 use panels::{
@@ -445,9 +445,10 @@ fn app() -> Element {
             // and free while the pointer is off the canvas.
             BrushCursor {}
 
-            // The brush-tuning drag's size ring, in the same layer and mounted for
-            // the same reason (§18.1.9). Empty and free unless one is in flight.
-            BrushSizeRing {}
+            // The brush-tuning drag's readout — the size ring or the flow bar — in
+            // the same layer and mounted for the same reason (§18.1.9). Empty and
+            // free unless a tuning drag is in flight.
+            TuneReadoutOverlay {}
 
             // The tow string while a smoothing brush draws (§6.11), same layer
             // again. Empty and free unless a rope is in flight.

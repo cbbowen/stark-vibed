@@ -4437,6 +4437,16 @@ button.layer-remove:hover {
   border-color: #ffffff59;
 }
 
+/* The canvas while a brush-tuning drag is in flight (§18.1.9). The crosshair is a
+   promise of paint at a point, and this gesture is not about a point: nothing will
+   land where it is aimed, and a crosshair inside the size ring reads as the brush
+   sitting there. The readout is the ring or the bar, so the pointer gets out of its
+   way — the pointer is captured for the whole drag, so nothing else is asking for a
+   cursor while this holds. */
+.paint-canvas.tuning {
+  cursor: none;
+}
+
 /* The canvas while the selected layer takes no paint (a frame). Saying so in the
    cursor is why the gesture does not need blocking: the canvas explains itself
    before a stroke that would go nowhere. */
@@ -4557,12 +4567,12 @@ button.layer-remove:hover {
   white-space: nowrap;
 }
 
-/* --- the brush-tuning drag's size ring (§18.1.9) ---
-   Same layer as the peer cursors, over the canvas and under every panel, and it must
-   never swallow a pointer event either: the drag that draws it holds the pointer
-   capture, so an event cannot actually reach here, but a hairline the user can see is
-   a thing they will eventually try to grab. */
-.brush-ring {
+/* --- the brush-tuning drag's readout (§18.1.9) ---
+   The size ring or the flow bar, never both. Same layer as the peer cursors, over the
+   canvas and under every panel, and it must never swallow a pointer event either: the
+   drag that draws it holds the pointer capture, so an event cannot actually reach
+   here, but a hairline the user can see is a thing they will eventually try to grab. */
+.tune-readout {
   position: absolute;
   inset: 0;
   pointer-events: none;
@@ -4590,6 +4600,44 @@ button.layer-remove:hover {
   border-style: dashed;
   border-color: #00000073;
   box-shadow: none;
+}
+
+/* The flow half of the readout: a track standing beside the press, filling from the
+   bottom with how much paint the brush is laying. **The length lives here**, not in
+   the gesture (`state::FlowBar`) — flow has no length on the canvas to be drawn at,
+   so unlike the ring there is no number to convert, only a choice to make. Tall
+   enough that a tenth of the range is a visible step and short enough to sit inside a
+   press near the top or bottom edge.
+
+   `translateY(-50%)` for that same reason: the overlay is handed the press, and half
+   of a height it does not know cannot be subtracted from it. Centred rather than
+   grown from the press so that the readout holds still while the hand runs up and
+   down through it.
+
+   The ring's legibility trick (`.brush-ring-circle`), since it is over the same
+   unknown paint: a dark body with a light hairline just outside, so whichever one the
+   canvas matches, the other reads. */
+.flow-bar {
+  position: absolute;
+  width: 10px;
+  height: 150px;
+  transform: translateY(-50%);
+  border-radius: 5px;
+  background: #80808040;
+  box-shadow: 0 0 2px #808080;
+  overflow: hidden;
+}
+
+/* The level itself, from the bottom — up is more, the way the drag reads and the way
+   the Brush panel's slider does. Quiet on purpose: this is the answer to a gesture the
+   hand is in the middle of making, and the same number is moving on a slider a few
+   inches away. */
+.flow-bar-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #e8e8ea80;
 }
 
 /* --- the brush cursor (§18.1.10) ---

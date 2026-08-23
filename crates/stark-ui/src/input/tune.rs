@@ -3,9 +3,10 @@
 //!
 //! The canvas's own gesture rather than a shared one, unlike [`Nav`](super::Nav):
 //! it moves the *brush*, and the overlays that navigate have no brush. Its
-//! readout is the ring `overlays::BrushSizeRing` draws and the Brush panel's own
-//! sliders, which is why this is one of the two gestures that deliberately does
-//! **not** fade the chrome — the answer is on a panel.
+//! readout is what `overlays::TuneReadoutOverlay` draws — a ring for Size, a bar
+//! for Flow — and the Brush panel's own sliders, which is why this is one of the
+//! two gestures that deliberately does **not** fade the chrome: the answer is on
+//! a panel as well as under the hand.
 
 use super::*;
 
@@ -49,7 +50,7 @@ const SIZE_DRAG_DOUBLE: f32 = 100.0;
 /// mapping is the one every slider has — move the hand, move the number. Wider than a
 /// screen is tall on purpose: the everyday range is the narrow band around 1, and this
 /// is what makes a tenth of it a visible movement of the hand.
-const FLOW_DRAG_SPAN: f32 = 800.0;
+const FLOW_DRAG_SPAN: f32 = 200.0;
 
 /// The brush-tuning drag — sideways for **Size** and up-and-down for **Flow**,
 /// the Brush panel's two knobs under the hand that is already on the painting
@@ -66,10 +67,14 @@ const FLOW_DRAG_SPAN: f32 = 800.0;
 /// quick-brush rack for free: while a number is held the live brush *is* that slot's,
 /// so the drag tunes the slot, and the tail of the pen tunes the eraser (§18.1.8).
 ///
-/// A size drag also draws itself, in [`BrushRing`] — which is not decoration but the
-/// readout: the size is a ratio on the one the press found ([`SIZE_DRAG_DOUBLE`]), so
-/// the pair of circles at the press point *is* what the gesture means — the brush it
-/// started on, and the brush it is asking for.
+/// Either knob draws itself, in [`TuneReadout`] — which is not decoration but the
+/// readout. A size drag's ring is a ratio on the one the press found
+/// ([`SIZE_DRAG_DOUBLE`]), so the pair of circles at the press point *is* what the
+/// gesture means: the brush it started on, and the brush it is asking for. A flow
+/// drag's bar is a level, which is the only honest picture of a knob with no length on
+/// the canvas. And for as long as one of them is up the canvas takes the crosshair
+/// down (`canvas`): what the gesture is about is a number, so the pointer has stopped
+/// promising paint anywhere.
 #[derive(Clone, Copy)]
 pub struct Tune {
     state: AppState,
@@ -97,7 +102,7 @@ struct TuneDrag {
     /// than an accumulation of steps — so a long gesture cannot drift, and a drag run
     /// past `MAX_RADIUS` and back comes back down the way it went up, since the clamp
     /// is never folded into the base. It is also why every write to
-    /// [`AppState::brush_ring`] is a write and never a read-modify-write: the drag holds
+    /// [`AppState::tune_readout`] is a write and never a read-modify-write: the drag holds
     /// everything the indicator shows, which keeps the picture from drifting out of step
     /// with the gesture (and keeps a `peek` out of an `if`).
     was: f32,
@@ -233,21 +238,32 @@ impl Tune {
             // Up is more, because up is more on every slider in the app — and page y
             // grows downward, which is the whole of why this reads as a subtraction.
             Some(Knob::Flow) => {
+                // Carried out of the write rather than peeked back off the projection:
+                // this knob is a rate, so what the brush ends up carrying is only known
+                // inside that closure, and the publish it queues has not landed yet.
+                // `None` where there was no engine to read a brush from — which is also
+                // when nothing was set, so there is nothing to show.
+                let mut flow = None;
                 update_brush(self.state, |b| {
                     b.dynamics.add =
                         (b.dynamics.add - step.y * MAX_FLOW / FLOW_DRAG_SPAN).clamp(0.0, MAX_FLOW);
+                    flow = Some(b.dynamics.add);
                 });
-                // The ring is the *size* drag's readout. Once this gesture has turned out
-                // to be about flow, leaving it up would advertise a number that is not
-                // moving, so it goes.
-                self.hide_ring();
+                // The ring does not have to be taken down first. It was the *size*
+                // drag's readout and this is the flow drag's, and a gesture has one —
+                // which `TuneReadout` says by being one value, so putting the bar up
+                // *is* taking the ring down.
+                if let Some(flow) = flow {
+                    self.show_bar(&in_flight, flow);
+                }
             }
             None => {}
         }
         true
     }
 
-    /// End the tuning drag in flight. Harmless when there is none.
+    /// End the tuning drag in flight, taking the readout down with it — and, with the
+    /// readout, giving the canvas its crosshair back. Harmless when there is none.
     pub fn stop(self) {
         let mut drag = self.drag;
         if drag.peek().is_some() {
@@ -257,27 +273,39 @@ impl Tune {
             // never opened one would cancel somebody else's (§24.2).
             crate::tutor::not_reaching(self.state, false);
         }
-        self.hide_ring();
+        self.hide_readout();
     }
 
-    /// Draw the indicator for `drag`, asking for `radius` (canvas px). Converted to
+    /// Draw the size ring for `drag`, asking for `radius` (canvas px). Converted to
     /// screen px here, which is the one place that knows both numbers — see
     /// [`BrushRing`].
     fn show_ring(self, drag: &TuneDrag, radius: f32) {
-        let mut ring = self.state.brush_ring;
-        ring.set(Some(BrushRing {
+        let mut readout = self.state.tune_readout;
+        readout.set(Some(TuneReadout::Size(BrushRing {
             at: drag.from,
             was: drag.was * drag.zoom,
             now: radius * drag.zoom,
-        }));
+        })));
     }
 
-    /// Take the size ring down. Harmless when it is already down, and written only on a
-    /// change, since every write re-renders the overlay.
-    fn hide_ring(self) {
-        let mut ring = self.state.brush_ring;
-        if ring.peek().is_some() {
-            ring.set(None);
+    /// Draw the flow bar for `drag`, with the brush carrying `flow`. Divided by the
+    /// range here for [`FlowBar`]'s reason: the overlay is told how full, and decides
+    /// for itself how long a bar that is.
+    fn show_bar(self, drag: &TuneDrag, flow: f32) {
+        let mut readout = self.state.tune_readout;
+        readout.set(Some(TuneReadout::Flow(FlowBar {
+            at: drag.from,
+            fill: flow / MAX_FLOW,
+        })));
+    }
+
+    /// Take the readout down. Harmless when it is already down, and written only on a
+    /// change, since every write re-renders the overlay — and, through the memo the
+    /// canvas reads this with, hands the crosshair back.
+    fn hide_readout(self) {
+        let mut readout = self.state.tune_readout;
+        if readout.peek().is_some() {
+            readout.set(None);
         }
     }
 }

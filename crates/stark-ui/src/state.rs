@@ -237,20 +237,25 @@ pub struct Signals {
     pub color_epoch: Signal<u64>,
     /// The eyedropper (§18.0.2).
     pub pick: PickState,
-    /// The size ring a brush-tuning drag draws over the canvas (§18.1.9), or `None`
-    /// when no size drag is in flight.
+    /// What a brush-tuning drag is showing over the canvas (§18.1.9) — the size ring
+    /// or the flow bar — or `None` when no tuning drag is in flight.
     ///
     /// Shared state rather than the gesture's own, for [`PickState::dragging`]'s
-    /// reason: the drag is the canvas's, but the ring is a sibling overlay of it — a
-    /// `<div>` cannot be drawn from inside a `<canvas>`'s handler without somewhere
-    /// for both to read.
-    pub brush_ring: Signal<Option<BrushRing>>,
+    /// reason: the drag is the canvas's, but the readout is a sibling overlay of it — a
+    /// `<div>` cannot be drawn from inside a `<canvas>`'s handler without somewhere for
+    /// both to read.
+    ///
+    /// The canvas reads it back for one thing of its own: while this is up the
+    /// crosshair goes ([`TuneReadout`]), and *that* a drag is in flight is the whole of
+    /// what it asks — through a memo, so the surface a stroke is made on does not
+    /// re-render per move to find the answer unchanged.
+    pub tune_readout: Signal<Option<TuneReadout>>,
     /// Where the pointer hovers over the canvas, in the canvas element's own px —
     /// `None` while it is elsewhere, or while the gesture in hand is not paint (a
     /// pinch, a pan, a tuning drag). The brush cursor rides it (`BrushCursor`,
     /// §18.1.10): a circle of the live brush's size under the resting pointer.
     ///
-    /// Its own signal for [`brush_ring`](Self::brush_ring)'s reason: it moves per
+    /// Its own signal for [`tune_readout`](Self::tune_readout)'s reason: it moves per
     /// pointer report, and only the little overlay may re-render at that rate.
     /// **Position only** — the size half of the picture is the projection's
     /// (`brush.radius × view.zoom`), read in the overlay through a memo, so a
@@ -265,7 +270,7 @@ pub struct Signals {
     pub smoothing: Signal<f32>,
     /// The tow string on screen while a smoothing brush draws (§6.11), in the
     /// canvas element's own px — `None` when there is nothing to show. Its own
-    /// signal for the reason [`brush_ring`](Self::brush_ring) is: only the
+    /// signal for the reason [`tune_readout`](Self::tune_readout) is: only the
     /// little overlay re-renders at pointer rate, never the chrome.
     pub tow: Signal<Option<TowUi>>,
     /// The drag-and-hold drawing assist (§6.9; `crate::input`).
@@ -557,6 +562,29 @@ pub struct Dwell {
     pub fired: bool,
 }
 
+/// What a brush-tuning drag is showing (§18.1.9): the ring while it is about Size,
+/// the bar once it is about Flow.
+///
+/// **One value rather than two `Option`s**, which is what makes "the gesture shows one
+/// thing" a shape the state cannot break instead of a rule every write has to keep.
+/// The drag commits to a single knob and its readout has to say *which*; with a signal
+/// apiece, both being up at once would be expressible, and taking the ring down when
+/// the drag turns out to be about flow would be a step the flow branch remembers. Here
+/// it is not a step at all — it is what assigning the other variant already means.
+///
+/// It also answers the canvas's own question by being `Some` (`state::tune_readout`):
+/// a tuning drag hides the crosshair, and it does that from the press, before either
+/// knob has been chosen.
+#[derive(Copy, Clone, PartialEq)]
+pub enum TuneReadout {
+    /// Sideways: the ring. Also what the *press* raises, before the drag has said which
+    /// knob it is about — the brush at the size it already is, which is the size every
+    /// ratio the gesture goes on to ask for is a ratio of.
+    Size(BrushRing),
+    /// Up and down: the bar.
+    Flow(FlowBar),
+}
+
 /// What a brush-tuning drag's size indicator draws (§18.1.9): the size being asked
 /// for, and the size the drag started from, about the point it pressed on.
 ///
@@ -580,6 +608,34 @@ pub struct BrushRing {
     pub was: f32,
     /// The radius being asked for now, screen px.
     pub now: f32,
+}
+
+/// What a brush-tuning drag's flow indicator draws (§18.1.9): how full the brush is,
+/// beside the point the drag pressed on.
+///
+/// **A share of the range, not the value** — the bar stands for the whole of
+/// `0..MAX_FLOW` and the fill says where in it the brush sits, so the overlay needs
+/// neither the maximum nor the panel's units to draw one. A drawing instruction on
+/// [`BrushRing`]'s argument, arrived at from the other end: the ring converts here
+/// because the gesture holds the one zoom that could scale it, and this carries no
+/// length at all because flow has none on screen — how long a bar is, is the
+/// stylesheet's to say.
+///
+/// No reference mark behind it, where the ring carries the size it started from. The
+/// ring needs one because "it will be this big" is not an answer without "bigger than
+/// what"; a bar that is a share of the whole range has already said how much, and a
+/// second mark on it would be a picture of where the gesture began rather than of what
+/// the brush is now carrying.
+#[derive(Copy, Clone, PartialEq)]
+pub struct FlowBar {
+    /// The press position in page px — what the bar stands beside. [`BrushRing::at`]
+    /// and for its reason: the one point a gesture agrees on however far it has
+    /// wandered since. *Beside*, not on, and which side is the overlay's call — the
+    /// travel this drag measures runs straight through the press, so a readout above
+    /// or below it is in the path of the hand.
+    pub at: Vec2,
+    /// How full, 0..=1 — the flow as a share of the range the sliders allow.
+    pub fill: f32,
 }
 
 /// The tow string as the overlay draws it (§6.11): the towed tip, the pointer,
@@ -664,7 +720,7 @@ impl AppState {
             preset_save_open: root_signal(|| false),
             color_epoch: root_signal(|| 0),
             pick: PickState::new(),
-            brush_ring: root_signal(|| None),
+            tune_readout: root_signal(|| None),
             brush_cursor: root_signal(|| None),
             smoothing: root_signal(|| 0.0),
             tow: root_signal(|| None),
@@ -1437,6 +1493,12 @@ pub fn resize(state: AppState, width: u32, height: u32) {
 /// [`use_obs`]'s business, and the panels that do not show a brush now sleep
 /// through this. What is left is `observe`'s own walk of the layer tree, which
 /// only splitting the projection by cadence can remove (U1).
+/// Returns nothing, though one caller wants what it set — the flow half of the tuning
+/// drag, whose readout has to show a number its own knob computes inside `f`. It takes
+/// it out through the closure rather than from a return value here, and that is the
+/// cheaper trade by a wide margin: most of the thirty callers are `oninput` handlers
+/// where a returned value stops the closure coercing to the `Callback` the prop wants,
+/// so answering would cost a discarded value at every one of them.
 pub fn update_brush(state: AppState, f: impl FnOnce(&mut BrushParams)) {
     let brush = state.obs.read().as_ref().map(|o| o.brush);
     if let Some(mut brush) = brush {
