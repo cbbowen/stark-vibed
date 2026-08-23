@@ -351,7 +351,7 @@ async fn generate(state: AppState, w: Wearable) -> bool {
 /// as the soft mass it is, each filling the thumbnail rather than being drawn at
 /// some one zoom that suits neither.
 fn thumb_view(b: &BrushParams) -> ViewTransform {
-    let r = b.radius.max(1.0);
+    let r = b.size.max(1.0);
     // Canvas-space width shown; the wide row's aspect leaves the height ~3
     // radii, which is what bounds the S's swing in `test_stroke`.
     let span = 22.0 * r;

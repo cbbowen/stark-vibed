@@ -1370,9 +1370,9 @@ fn stroke(state: AppState) -> Vec<Deed> {
 /// of comparisons that a brush parameter added later would silently fall out of.
 fn brush_deed(was: &BrushParams, now: &BrushParams) -> Option<Deed> {
     let mut tuned = *was;
-    tuned.radius = now.radius;
-    tuned.dynamics.add = now.dynamics.add;
-    if tuned == *now && (was.radius != now.radius || was.dynamics.add != now.dynamics.add) {
+    tuned.size = now.size;
+    tuned.dynamics.flow = now.dynamics.flow;
+    if tuned == *now && (was.size != now.size || was.dynamics.flow != now.dynamics.flow) {
         return Some(Deed::TunedBrush);
     }
 
@@ -2254,11 +2254,11 @@ mod tests {
         let was = BrushParams::default();
 
         let mut bigger = was;
-        bigger.radius = was.radius * 2.0;
+        bigger.size = was.size * 2.0;
         assert_eq!(brush_deed(&was, &bigger), Some(Deed::TunedBrush));
 
         let mut looser = was;
-        looser.dynamics.add = was.dynamics.add + 0.5;
+        looser.dynamics.flow = was.dynamics.flow + 0.5;
         assert_eq!(brush_deed(&was, &looser), Some(Deed::TunedBrush));
 
         let mut red = was;
@@ -2268,7 +2268,7 @@ mod tests {
         // A preset: the size and the color both, plus whatever else it carries. Not
         // an adjustment of either, so it counts as neither.
         let mut preset = was;
-        preset.radius = was.radius * 2.0;
+        preset.size = was.size * 2.0;
         preset.color = [1.0, 0.0, 0.0, was.color[3]];
         assert_eq!(brush_deed(&was, &preset), None);
 

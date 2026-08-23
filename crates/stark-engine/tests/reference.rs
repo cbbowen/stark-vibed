@@ -118,7 +118,7 @@ fn reference_light_reproduces_opaque_paint() {
             engine.process(DocCommand::SetSubstrateColor(Srgb::new(substrate)));
             let brush = BrushParams {
                 color: [c[0], c[1], c[2], 1.0],
-                radius: 48.0,
+                size: 48.0,
                 shape: BrushShape::Round { hardness: 0.95 },
                 drain: 0.0,
                 ..BrushParams::default()

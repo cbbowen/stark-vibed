@@ -250,7 +250,7 @@ impl Footprint {
 /// would still be contained. What *would* break this is the wall coming down, and
 /// that is a shader invariant, checkable only where the shader is.
 fn stroke_pad(brush: &BrushParams) -> f32 {
-    brush.radius * 1.5 * BrushParams::elongation(brush.stretch) + 4.0
+    brush.size * 1.5 * BrushParams::elongation(brush.stretch) + 4.0
 }
 
 /// The tile-aligned reach of a stroke: everything its render may read or write.
@@ -568,7 +568,7 @@ mod tests {
             ActionKind::CommitStroke(StrokeRecord {
                 layer,
                 brush: BrushParams {
-                    radius,
+                    size: radius,
                     ..BrushParams::default()
                 },
                 path: vec![point(from), point(to)],
@@ -785,14 +785,14 @@ mod tests {
     fn a_stretched_stroke_claims_the_tiles_its_drawn_out_tip_can_reach() {
         for stretch in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let brush = BrushParams {
-                radius: 40.0,
+                size: 40.0,
                 stretch,
                 ..BrushParams::default()
             };
             // What the renderer will draw into: the tip's own reach — a stamp may fill
             // its mask's corners — times how far the stretch draws it out.
             let painted =
-                brush.radius * std::f32::consts::SQRT_2 * BrushParams::elongation(stretch);
+                brush.size * std::f32::consts::SQRT_2 * BrushParams::elongation(stretch);
             assert!(
                 stroke_pad(&brush) >= painted,
                 "stretch {stretch}: the footprint pads {} where the tip paints {painted}",
@@ -812,7 +812,7 @@ mod tests {
             stroke_rect(&StrokeRecord {
                 layer: LayerId(0),
                 brush: BrushParams {
-                    radius: 40.0,
+                    size: 40.0,
                     stretch,
                     ..BrushParams::default()
                 },

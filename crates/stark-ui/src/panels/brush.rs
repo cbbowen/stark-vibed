@@ -68,10 +68,10 @@ pub fn BrushPanel() -> Element {
         // number's (§18.1.8) — the panel needs no line of code that knows about
         // slots, and the rack draws itself over the canvas while the key is down
         // (`slots::SlotOverlay`) rather than keeping a row of chips here.
-        Slider { label: "Size", glyph: icons::SIZE, min: MIN_RADIUS, max: MAX_RADIUS, value: brush.radius,
-            oninput: move |v| update_brush(state, move |b| b.radius = v) }
-        Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: MAX_FLOW, value: brush.dynamics.add,
-            oninput: move |v| update_brush(state, move |b| b.dynamics.add = v) }
+        Slider { label: "Size", glyph: icons::SIZE, min: MIN_RADIUS, max: MAX_RADIUS, value: brush.size,
+            oninput: move |v| update_brush(state, move |b| b.size = v) }
+        Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: MAX_FLOW, value: brush.dynamics.flow,
+            oninput: move |v| update_brush(state, move |b| b.dynamics.flow = v) }
         // The panel's two doors, side by side: adjust the brush you have, or keep it.
         // One line rather than two because they are the same size of thing — a button
         // that opens a dialog — and the panel's scarcest dimension is height, which

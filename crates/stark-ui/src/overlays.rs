@@ -101,7 +101,7 @@ pub fn BrushCursor() -> Element {
             .layers
             .iter()
             .any(|l| l.id == o.active_layer && l.is_paintable());
-        (o.brush.radius * o.view.zoom, paintable, o.tool)
+        (o.brush.size * o.view.zoom, paintable, o.tool)
     });
     let Some(at) = (state.brush_cursor)() else {
         return rsx! {};

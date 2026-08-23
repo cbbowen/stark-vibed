@@ -456,7 +456,7 @@ impl Taper {
     /// commit, which sees the whole stroke, computes the same 1 for it.
     fn resolve(b: &BrushParams, total: Option<f32>) -> Self {
         let (start, end) = b.taper_px();
-        let radius = b.radius.max(0.5);
+        let radius = b.size.max(0.5);
         let shoulder = super::budget::shoulder_per_radius(&b.shape);
         match total {
             Some(total) if start + end > total => {
@@ -689,7 +689,7 @@ pub(super) fn generate_segments_in(
             pressure,
             tilt: tilt.length(),
         };
-        (b.radius * b.modulation.size(pen) * tap).max(0.5)
+        (b.size * b.modulation.size(pen) * tap).max(0.5)
     };
 
     // `ends` is the tip at the segment's two ends — where the radius *ramp* comes from
@@ -747,7 +747,7 @@ pub(super) fn generate_segments_in(
         Segment {
             sweep,
             paint: Paint {
-                add: d.add * m.flow(pen),
+                add: d.flow * m.flow(pen),
                 lift: d.lift * m.lift(pen),
                 deposit: d.deposit * m.deposit(pen),
                 bleed: d.bleed * m.bleed(pen),
@@ -1079,7 +1079,7 @@ mod tests {
         StrokeRecord {
             layer: stark_model::document::LayerId(0),
             brush: BrushParams {
-                radius,
+                size: radius,
                 drain: 0.0,
                 start_taper_length: start,
                 end_taper_length: end,
@@ -1280,7 +1280,7 @@ mod tests {
         let rec = StrokeRecord {
             layer: stark_model::document::LayerId(0),
             brush: BrushParams {
-                radius: 500.0,
+                size: 500.0,
                 drain: 0.0,
                 ..BrushParams::default()
             },
@@ -1458,7 +1458,7 @@ mod tests {
         StrokeRecord {
             layer: stark_model::document::LayerId(0),
             brush: BrushParams {
-                radius,
+                size: radius,
                 drain: 0.0,
                 ..BrushParams::default()
             },
@@ -1763,7 +1763,7 @@ mod tests {
             let theta = k as f64 * std::f64::consts::TAU / 16.0;
             let dir = Vec2::new(cos_series(theta) as f32, sin_series(theta) as f32);
             let mut b = BrushParams {
-                radius,
+                size: radius,
                 ..BrushParams::default()
             };
             b.shape = stamp;
@@ -1866,7 +1866,7 @@ mod tests {
     fn smearing(radius: f32) -> BrushParams {
         use stark_model::document::BrushDynamics;
         BrushParams {
-            radius,
+            size: radius,
             dynamics: BrushDynamics {
                 lift: 0.8,
                 deposit: 0.8,
@@ -1906,7 +1906,7 @@ mod tests {
         use stark_model::document::BrushDynamics;
         let at = |lift: f32, deposit: f32, charge: f32| {
             flatten_tolerance(&BrushParams {
-                radius: 100.0,
+                size: 100.0,
                 dynamics: BrushDynamics {
                     lift,
                     deposit,
@@ -1986,7 +1986,7 @@ mod tests {
                 3,
                 record(
                     BrushParams {
-                        radius: 20.0,
+                        size: 20.0,
                         ..BrushParams::default()
                     },
                     &straight,
@@ -2044,7 +2044,7 @@ mod tests {
                 15,
                 record(
                     BrushParams {
-                        radius: 20.0,
+                        size: 20.0,
                         start_taper_length: 2.0,
                         end_taper_length: 3.0,
                         ..BrushParams::default()
@@ -2059,7 +2059,7 @@ mod tests {
                 31,
                 record(
                     BrushParams {
-                        radius: 20.0,
+                        size: 20.0,
                         ..BrushParams::default()
                     },
                     &arc,
@@ -2076,7 +2076,7 @@ mod tests {
                 31,
                 record(
                     BrushParams {
-                        radius: 80.0,
+                        size: 80.0,
                         ..BrushParams::default()
                     },
                     &arc,
@@ -2092,7 +2092,7 @@ mod tests {
                 26,
                 record(
                     BrushParams {
-                        radius: 20.0,
+                        size: 20.0,
                         ..BrushParams::default()
                     },
                     &spiral,
@@ -2103,7 +2103,7 @@ mod tests {
                 26,
                 record(
                     BrushParams {
-                        radius: 80.0,
+                        size: 80.0,
                         ..BrushParams::default()
                     },
                     &spiral,

@@ -40,11 +40,11 @@ const BLUE: [f32; 4] = [0.10, 0.20, 0.85, 1.0];
 fn soft(color: [f32; 4], radius: f32) -> BrushParams {
     BrushParams {
         color,
-        radius,
+        size: radius,
         shape: BrushShape::Round { hardness: 0.0 },
         drain: 0.0,
         dynamics: BrushDynamics {
-            add: 0.6,
+            flow: 0.6,
             ..Default::default()
         },
         ..Default::default()

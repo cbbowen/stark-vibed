@@ -50,7 +50,7 @@ fn golden_studio_environment() {
     let mut b = brush(RED, 34.0);
     b.shape = BrushShape::Round { hardness: 0.55 };
     b.drain = 0.0;
-    b.dynamics.add = 1.2;
+    b.dynamics.flow = 1.2;
     for (color, y) in [
         ([1.0, 0.35, 0.2, 1.0], -60.0),
         ([0.2, 0.4, 0.9, 1.0], 0.0),
@@ -203,12 +203,12 @@ fn golden_lift_end_regression() {
         return;
     };
     let brush = BrushParams {
-        radius: 80.0,
+        size: 80.0,
         shape: BrushShape::Round { hardness: 0.95 },
         // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
         drain: 0.4,
         dynamics: BrushDynamics {
-            add: 1.0,
+            flow: 1.0,
             lift: 0.95,
             deposit: 0.95,
             ..BrushDynamics::default()
@@ -241,10 +241,10 @@ fn golden_heavy_smear_regression() {
     stroke_with(
         &mut engine,
         BrushParams {
-            radius: 200.0,
+            size: 200.0,
             shape,
             dynamics: BrushDynamics {
-                add: 1.5,
+                flow: 1.5,
                 ..BrushDynamics::default()
             },
             ..BrushParams::default()
@@ -254,10 +254,10 @@ fn golden_heavy_smear_regression() {
     stroke_with(
         &mut engine,
         BrushParams {
-            radius: 50.0,
+            size: 50.0,
             shape,
             dynamics: BrushDynamics {
-                add: 0.0,
+                flow: 0.0,
                 lift: 0.95,
                 deposit: 0.95,
                 ..BrushDynamics::default()
@@ -277,12 +277,12 @@ fn golden_drained_brush_length_independent() {
         return;
     };
     let brush = BrushParams {
-        radius: 80.0,
+        size: 80.0,
         shape: BrushShape::Round { hardness: 0.95 },
         // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
         drain: 0.4,
         dynamics: BrushDynamics {
-            add: 1.0,
+            flow: 1.0,
             lift: 0.95,
             deposit: 0.95,
             ..BrushDynamics::default()
@@ -324,10 +324,10 @@ fn golden_straight_smear_into_paint() {
         &mut engine,
         BrushParams {
             color,
-            radius: 256.0,
+            size: 256.0,
             shape,
             dynamics: BrushDynamics {
-                add: 2.0,
+                flow: 2.0,
                 ..Default::default()
             },
             ..Default::default()
@@ -339,10 +339,10 @@ fn golden_straight_smear_into_paint() {
         &mut engine,
         BrushParams {
             color,
-            radius: 64.0,
+            size: 64.0,
             shape,
             dynamics: BrushDynamics {
-                add: 0.0,
+                flow: 0.0,
                 lift: 0.5,
                 deposit: 0.95,
                 ..Default::default()
@@ -374,10 +374,10 @@ fn golden_wiggly_smear_into_paint() {
         &mut engine,
         BrushParams {
             color,
-            radius: 256.0,
+            size: 256.0,
             shape,
             dynamics: BrushDynamics {
-                add: 2.0,
+                flow: 2.0,
                 ..Default::default()
             },
             ..Default::default()
@@ -396,10 +396,10 @@ fn golden_wiggly_smear_into_paint() {
         &mut engine,
         BrushParams {
             color,
-            radius: 64.0,
+            size: 64.0,
             shape,
             dynamics: BrushDynamics {
-                add: 0.0,
+                flow: 0.0,
                 lift: 0.5,
                 deposit: 0.95,
                 ..Default::default()

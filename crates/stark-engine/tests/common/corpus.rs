@@ -189,7 +189,7 @@ pub fn smear_brush(radius: f32) -> BrushParams {
     let mut b = brush(RED, radius);
     b.dynamics.lift = 0.6;
     b.dynamics.deposit = 0.5;
-    b.dynamics.add = 0.5;
+    b.dynamics.flow = 0.5;
     b.drain = 0.0;
     b
 }
@@ -533,7 +533,7 @@ pub const CASES: &[Case] = &[
             let mut b = brush(RED, 16.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
             b.drain = 0.0;
-            b.dynamics.add = 1.0;
+            b.dynamics.flow = 1.0;
             b.start_taper_length = 4.0;
             b.end_taper_length = 9.0;
             b
@@ -564,7 +564,7 @@ pub const CASES: &[Case] = &[
             let mut b = bristle_stamp(e, 45.0);
             b.dynamics.lift = 0.6;
             b.dynamics.deposit = 0.5;
-            b.dynamics.add = 0.5;
+            b.dynamics.flow = 0.5;
             b
         },
         path: half_turn_arc,
@@ -690,7 +690,7 @@ pub const CASES: &[Case] = &[
             undercoat(e, at);
             let mut b = brush(RED, 30.0);
             b.drain = 0.0;
-            b.dynamics.add = 0.0;
+            b.dynamics.flow = 0.0;
             b.dynamics.bleed = 0.8;
             b
         },
@@ -718,7 +718,7 @@ pub const CASES: &[Case] = &[
             // A thick field to smear, laid flat so the smear's own structure is what
             // shows. Wider than the tip that will work it, so the mark stays inside it.
             let mut lay = brush([0.0, 0.0, 0.0, 1.0], 260.0);
-            lay.dynamics.add = 1.5;
+            lay.dynamics.flow = 1.5;
             lay.drain = 0.0;
             stroke_with(
                 e,
@@ -727,7 +727,7 @@ pub const CASES: &[Case] = &[
             );
             let mut b = smear_brush(250.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
-            b.dynamics.add = 0.0;
+            b.dynamics.flow = 0.0;
             b.dynamics.lift = 0.9;
             b.dynamics.deposit = 0.9;
             b

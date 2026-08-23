@@ -51,7 +51,7 @@ fn toothed(give: f32) -> BrushParams {
             // Low flow: the tooth decides how much of the parcel lands, and at a flow
             // that saturates the slab law every texel reads as solid whatever fraction
             // it received. A dry-brush mark is the case this axis is *for*.
-            add: 0.35,
+            flow: 0.35,
             ..Default::default()
         },
         ..brush(RED, 26.0)
@@ -537,7 +537,7 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
     let glob = |give: f32| BrushParams {
         tooth_give: give,
         dynamics: BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             lift: 0.0,
             deposit: 0.6,
             charge: 0.25,
@@ -754,7 +754,7 @@ fn a_toothed_smear_previews_as_it_commits() {
     let smear = BrushParams {
         tooth_give: 0.5,
         dynamics: BrushDynamics {
-            add: 0.6,
+            flow: 0.6,
             lift: 0.6,
             deposit: 0.95,
             ..Default::default()

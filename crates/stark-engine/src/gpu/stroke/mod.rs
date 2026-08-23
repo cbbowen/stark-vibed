@@ -240,7 +240,7 @@ impl StrokeRenderer {
                 // ([`complained`](Self::complained)).
                 if self.complain_once(rec.seed) {
                     tracing::error!(
-                        radius = rec.brush.radius,
+                        radius = rec.brush.size,
                         max_region_dim = MAX_REGION_DIM,
                         "brush tip too large for one dynamics region: falling back to \
                          the swept deposit, so this stroke's lift/deposit/charge do \

@@ -101,7 +101,7 @@ pub(super) const MAX_TIP_TURN: f32 = 0.1;
 pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
     let mut tol = crate::path::FLATTEN_TOLERANCE;
     // Use a more relaxed tolerance for larger brushes.
-    tol.position = tol.position.max(0.01 * b.radius);
+    tol.position = tol.position.max(0.01 * b.size);
     // The `attribute` bound is a step in the **pen's** own units, so it prices a brush
     // quantity correctly only while the two are proportional — 2% of pressure being 2%
     // of radius. A modulation puts a curve between them (§6.2), and a steep one turns
@@ -126,7 +126,7 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // `s` times less. The brush's own elongation and not a segment's, for the reason
     // every bound here is stated against `b`: a modulation only ever scales the knob
     // down, so this one bounds them all.
-    tol.max_arc_curvature = MAX_TIP_TURN / (b.radius * BrushParams::elongation(b.stretch)).max(0.5);
+    tol.max_arc_curvature = MAX_TIP_TURN / (b.size * BrushParams::elongation(b.stretch)).max(0.5);
     // **`drain` is deliberately not bought here.** A `0.02 / drain` px cap per segment
     // dominates everything else (at `drain = 0.02`, one segment per pixel), and it buys
     // nothing: the falloff is not a per-segment constant, since both paths evaluate it
@@ -141,7 +141,7 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // longest segment.
     let d = b.dynamics;
     if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 || d.bleed > 0.0 {
-        tol.max_len = tol.max_len.min((exchange_travel(d) * b.radius).max(0.5));
+        tol.max_len = tol.max_len.min((exchange_travel(d) * b.size).max(0.5));
     }
     tol
 }

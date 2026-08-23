@@ -74,13 +74,13 @@ fn wait_idle(engine: &stark_engine::Engine) {
 
 fn smear_brush(radius: f32) -> BrushParams {
     let mut b = BrushParams {
-        radius,
+        size: radius,
         color: [0.8, 0.2, 0.1, 0.9],
         ..BrushParams::default()
     };
     b.dynamics.lift = 0.6;
     b.dynamics.deposit = 0.5;
-    b.dynamics.add = 0.5;
+    b.dynamics.flow = 0.5;
     b
 }
 

@@ -134,8 +134,8 @@ impl ModRow {
 
     fn get(self, b: &BrushParams) -> f32 {
         match self {
-            Self::Size => b.radius,
-            Self::Flow => b.dynamics.add,
+            Self::Size => b.size,
+            Self::Flow => b.dynamics.flow,
             Self::Stretch => b.stretch,
             Self::ToothGive => b.tooth_give,
             Self::Lift => b.dynamics.lift,
@@ -146,8 +146,8 @@ impl ModRow {
 
     fn set(self, b: &mut BrushParams, v: f32) {
         match self {
-            Self::Size => b.radius = v,
-            Self::Flow => b.dynamics.add = v,
+            Self::Size => b.size = v,
+            Self::Flow => b.dynamics.flow = v,
             Self::Stretch => b.stretch = v,
             Self::ToothGive => b.tooth_give = v,
             Self::Lift => b.dynamics.lift = v,
@@ -1034,7 +1034,7 @@ fn paint_reference_stroke(r: &mut Renderer) {
         .collect();
     let brush = BrushParams {
         color: [0.82, 0.15, 0.12, 1.0],
-        radius: 75.0,
+        size: 75.0,
         shape: BrushShape::Round { hardness: 0.9 },
         drain: 0.0,
         ..BrushParams::default()

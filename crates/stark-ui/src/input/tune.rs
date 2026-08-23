@@ -165,7 +165,7 @@ impl Tune {
         let Some(view) = view_of(self.state) else {
             return false;
         };
-        let Some(radius) = self.state.obs.peek().as_ref().map(|o| o.brush.radius) else {
+        let Some(radius) = self.state.obs.peek().as_ref().map(|o| o.brush.size) else {
             return false;
         };
         e.prevent_default();
@@ -230,7 +230,7 @@ impl Tune {
                 let travel = p.x - in_flight.from.x;
                 let radius = (in_flight.was * (travel / SIZE_DRAG_DOUBLE).exp2())
                     .clamp(MIN_RADIUS, MAX_RADIUS);
-                update_brush(self.state, |b| b.radius = radius);
+                update_brush(self.state, |b| b.size = radius);
                 // The ring follows the *clamp* rather than the pointer, so a drag that
                 // has run past the largest brush stops growing where the brush did.
                 self.show_ring(&in_flight, radius);
@@ -245,9 +245,9 @@ impl Tune {
                 // when nothing was set, so there is nothing to show.
                 let mut flow = None;
                 update_brush(self.state, |b| {
-                    b.dynamics.add =
-                        (b.dynamics.add - step.y * MAX_FLOW / FLOW_DRAG_SPAN).clamp(0.0, MAX_FLOW);
-                    flow = Some(b.dynamics.add);
+                    b.dynamics.flow =
+                        (b.dynamics.flow - step.y * MAX_FLOW / FLOW_DRAG_SPAN).clamp(0.0, MAX_FLOW);
+                    flow = Some(b.dynamics.flow);
                 });
                 // The ring does not have to be taken down first. It was the *size*
                 // drag's readout and this is the flow drag's, and a gesture has one —

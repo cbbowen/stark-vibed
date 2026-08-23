@@ -409,7 +409,7 @@ mod tests {
     fn a_peers_live_brush_is_sanitized_before_it_is_drawn() {
         let mut rx = GestureRx::default();
         let hostile = BrushParams {
-            radius: f32::NAN,
+            size: f32::NAN,
             tooth_give: -3.0,
             tooth_softness: f32::NEG_INFINITY,
             dynamics: stark_model::document::BrushDynamics {
@@ -439,7 +439,7 @@ mod tests {
             .expect("the head starts an assembly")
             .head
             .brush;
-        assert!(brush.radius.is_finite(), "a NaN radius sizes a dispatch");
+        assert!(brush.size.is_finite(), "a NaN radius sizes a dispatch");
         assert_eq!(
             brush.tooth_give, 0.0,
             "the tooth's give is quoted in [0, 1]"
@@ -459,7 +459,7 @@ mod tests {
         // …and an ordinary brush is untouched, so a peer's stroke still draws as the
         // peer drew it.
         let ordinary = BrushParams {
-            radius: 24.0,
+            size: 24.0,
             ..BrushParams::default()
         };
         rx.apply(

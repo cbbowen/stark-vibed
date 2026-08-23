@@ -210,7 +210,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     // The smudge under test, through the same 4-tile corner.
     let mut smudge = brush(RED, 28.0);
     smudge.dynamics = BrushDynamics {
-        add: 0.0,
+        flow: 0.0,
         lift: 0.6,
         deposit: 0.5,
         ..Default::default()

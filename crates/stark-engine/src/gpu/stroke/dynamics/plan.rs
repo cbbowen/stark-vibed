@@ -1583,7 +1583,7 @@ mod tests {
     /// A brush that manipulates paint, so a stroke of it settles at all.
     fn smearing(radius: f32) -> stark_model::document::BrushParams {
         stark_model::document::BrushParams {
-            radius,
+            size: radius,
             dynamics: stark_model::document::BrushDynamics {
                 lift: 0.8,
                 deposit: 0.8,

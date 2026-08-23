@@ -113,7 +113,8 @@ pub struct BrushDynamics {
     /// sequential stamp loop (§6.2), so a gain applied on one path and not the other
     /// would make nudging [`deposit`](Self::deposit) off zero change the flow of a
     /// slider that has nothing to do with it.
-    pub add: f32,
+    #[serde(default)]
+    pub flow: f32,
     /// Canvas paint **lifted** onto the tool per step, as a fraction of the paint present,
     /// in [0, 1]: 0 = none, 1 = lift it all (scrape clean). Vertical flux canvas → tool.
     #[serde(default)]
@@ -158,7 +159,7 @@ impl Default for BrushDynamics {
     /// The everyday brush: lay the brush's own paint, manipulate nothing.
     fn default() -> Self {
         Self {
-            add: 0.6,
+            flow: 0.6,
             lift: 0.0,
             deposit: 0.0,
             charge: 0.0,
@@ -180,7 +181,7 @@ impl BrushDynamics {
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         Self {
-            add: at_least_zero(self.add, d.add),
+            flow: at_least_zero(self.flow, d.flow),
             lift: clamp01(finite_or(self.lift, d.lift)),
             deposit: clamp01(finite_or(self.deposit, d.deposit)),
             charge: at_least_zero(self.charge, d.charge),
@@ -426,7 +427,7 @@ impl Modulation {
 /// input to brush parameter that makes one tool a brush and another a palette knife.
 ///
 /// Exactly the parameters that already vary **per swept segment**, and no others. A
-/// segment carries one radius, one set of paint rates and one orientation (§6.6), so
+/// segment carries one size, one set of paint rates and one orientation (§6.6), so
 /// these are the quantities a modulation can reach without changing what a segment
 /// *is*; `hardness` (baked into the prefix-τ texture per value) and `charge` (an
 /// initial condition, not a rate) cannot be modulated at all, and are left out rather
@@ -436,9 +437,9 @@ impl Modulation {
 /// so the parameter reaches the renderer as the exact float the slider holds.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub struct Modulations {
-    /// Scales [`BrushParams::radius`].
+    /// Scales [`BrushParams::size`].
     pub size: Option<Modulation>,
-    /// Scales [`BrushDynamics::add`] — the brush's own paint, "Flow" in the UI.
+    /// Scales [`BrushDynamics::flow`] — the brush's own paint, "Flow" in the UI.
     pub flow: Option<Modulation>,
     /// Scales [`BrushDynamics::lift`].
     pub lift: Option<Modulation>,
@@ -450,24 +451,6 @@ pub struct Modulations {
     /// substrate (§6.4). Mapped to pressure this is the charcoal behaviour: barely
     /// touching the paper the tip has no give and prints the peaks alone, and borne
     /// down it presses past the falls it was bridging, so the grain fills in.
-    ///
-    /// **This is the mapping the axis is quoted for.** A modulation only ever scales
-    /// down, so which way the knob runs decides which way the pen reads — see
-    /// [`BrushParams::tooth_give`], which is the give and not the bite for exactly
-    /// this reason.
-    ///
-    /// The give alone. [`BrushParams::tooth_softness`] is not a target and is not
-    /// missing: it is a property of what the tip is made of, and a charcoal stick does
-    /// not go harder because the hand does.
-    ///
-    /// The alias is for the field's old name, and it is a *pointer* that survives the
-    /// rename rather than a value: what a mapping says is "the pen drives the tooth",
-    /// and that is still true of a file written when the knob ran the other way. What
-    /// it did on that file it does not do now — it used to make a hard press dry —
-    /// which is the whole reason the knob was turned round. The alias is here because
-    /// the alternative is refusing the file outright (§8), not because the pixels
-    /// carry over.
-    #[serde(alias = "tooth")]
     pub tooth_give: Option<Modulation>,
     /// Scales [`BrushParams::stretch`] — how far the extent elongates along the
     /// brush's facing axis (§6.6). Mapped to [`ModSource::Tilt`] with
@@ -595,7 +578,7 @@ pub struct BrushParams {
     /// Straight (un-premultiplied) sRGB RGBA, components in [0, 1].
     pub color: [f32; 4],
     /// Stamp radius in canvas pixels at full pressure.
-    pub radius: f32,
+    pub size: f32,
     /// Reservoir depletion per **radius** travelled: the stroke thins as paint runs
     /// out (§6.2). 0 = inexhaustible — which is what a pen, a charcoal
     /// stick, or an ordinary digital brush wants; a physical loaded brush wants a
@@ -651,7 +634,7 @@ pub struct BrushParams {
     /// What the pen drives, and how (§6.2) — the mapping from pen input to brush
     /// parameter. [`Modulations::PRESSURE_SIZE`] by default: the pressure → radius
     /// scaling, held here as data so a preset can drop it or aim it elsewhere.
-    #[serde(default = "Modulations::pressure_size")]
+    #[serde(default)]
     pub modulation: Modulations,
     /// How much **give** this tool has against the canvas substrate's tooth (§6.4), in
     /// [0, 1]: 1 = infinite give — the tip follows every fall, the substrate does not
@@ -749,7 +732,7 @@ impl Default for BrushParams {
     fn default() -> Self {
         Self {
             color: [0.0, 0.0, 0.0, 1.0],
-            radius: 16.0,
+            size: 16.0,
             drain: 0.0,
             shape: BrushShape::default(),
             orientation: OrientationSource::default(),
@@ -789,7 +772,7 @@ impl BrushParams {
     /// `paint_common.wesl`'s `const TOOTH_SOFTNESS` until the knob existed; the shader
     /// takes it as a uniform now and declares nothing, which is what keeps the default
     /// from being a host transcription of a shader constant (§6.10).
-    pub const DEFAULT_TOOTH_SOFTNESS: f32 = 0.06;
+    pub const DEFAULT_TOOTH_SOFTNESS: f32 = 0.5;
 
     /// [`DEFAULT_TOOTH_SOFTNESS`](Self::DEFAULT_TOOTH_SOFTNESS) as a function, for
     /// `#[serde(default = "…")]` — which takes a path to call and cannot name a
@@ -803,7 +786,7 @@ impl BrushParams {
     /// fields arrive from files, presets and peers, and a taper is a length.
     pub fn taper_px(&self) -> (f32, f32) {
         // `f32::max` returns the non-NaN operand, so this also normalizes NaN to 0.
-        let r = self.radius.max(0.0);
+        let r = self.size.max(0.0);
         let px = |len: f32| {
             let px = len.max(0.0) * r;
             if px.is_finite() { px } else { 0.0 }
@@ -823,7 +806,7 @@ impl BrushParams {
     pub fn drain_px(&self) -> f32 {
         // `f32::max` returns the non-NaN operand, so a NaN in either field lands on
         // the `is_finite` fallback below by way of a NaN quotient — as does 0/0.
-        let px = self.drain.max(0.0) / self.radius.max(0.0);
+        let px = self.drain.max(0.0) / self.size.max(0.0);
         if px.is_finite() { px } else { 0.0 }
     }
 
@@ -878,7 +861,7 @@ impl BrushParams {
         let d = Self::default();
         Self {
             color: self.color.map(clamp01),
-            radius: at_least_zero(self.radius, d.radius),
+            size: at_least_zero(self.size, d.size),
             drain: at_least_zero(self.drain, d.drain),
             shape: self.shape.sanitized(),
             orientation: self.orientation,
@@ -1087,7 +1070,7 @@ mod tests {
     fn a_sanitized_brush_holds_no_number_a_shader_cannot_use() {
         type Poke = (&'static str, fn(&mut BrushParams, f32));
         let pokes: [Poke; 17] = [
-            ("radius", |b, f| b.radius = f),
+            ("radius", |b, f| b.size = f),
             ("drain", |b, f| b.drain = f),
             ("tooth_give", |b, f| b.tooth_give = f),
             ("tooth_softness", |b, f| b.tooth_softness = f),
@@ -1096,7 +1079,7 @@ mod tests {
             ("end_taper", |b, f| b.end_taper_length = f),
             ("color.r", |b, f| b.color[0] = f),
             ("color.a", |b, f| b.color[3] = f),
-            ("dynamics.add", |b, f| b.dynamics.add = f),
+            ("dynamics.add", |b, f| b.dynamics.flow = f),
             ("dynamics.lift", |b, f| b.dynamics.lift = f),
             ("dynamics.deposit", |b, f| b.dynamics.deposit = f),
             ("dynamics.charge", |b, f| b.dynamics.charge = f),
@@ -1124,14 +1107,14 @@ mod tests {
                 let clean = brush.sanitized();
                 // Every number is a number…
                 for v in [
-                    clean.radius,
+                    clean.size,
                     clean.drain,
                     clean.tooth_give,
                     clean.tooth_softness,
                     clean.stretch,
                     clean.start_taper_length,
                     clean.end_taper_length,
-                    clean.dynamics.add,
+                    clean.dynamics.flow,
                     clean.dynamics.lift,
                     clean.dynamics.deposit,
                     clean.dynamics.charge,
@@ -1153,14 +1136,14 @@ mod tests {
         // An ordinary brush comes through **bit for bit**: this runs on replay, so
         // anything it nudged would move a golden.
         let ordinary = BrushParams {
-            radius: 40.0,
+            size: 40.0,
             stretch: 0.5,
             tooth_give: 0.25,
             // Past the default band, and legitimately so: a soft stick spans the
             // grain rather than sitting on it, and the ceiling is a slider's.
             tooth_softness: 0.3,
             dynamics: BrushDynamics {
-                add: 2.5, // past the frontend's slider, and legitimately so
+                flow: 2.5, // past the frontend's slider, and legitimately so
                 lift: 1.0,
                 bleed: 0.95,
                 ..BrushDynamics::default()
@@ -1181,7 +1164,7 @@ mod tests {
     #[test]
     fn a_bigger_brush_runs_dry_proportionally_further() {
         let at = |radius: f32| BrushParams {
-            radius,
+            size: radius,
             drain: 0.25,
             ..BrushParams::default()
         };
@@ -1197,7 +1180,7 @@ mod tests {
         // a NaN falloff — the same class the poison test above rules out for the
         // stored fields, asked of the derived one.
         for radius in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-            let b = BrushParams { radius, ..at(16.0) };
+            let b = BrushParams { size: radius, ..at(16.0) };
             assert_eq!(b.drain_px(), 0.0, "radius {radius} must drain nothing");
         }
         // And zero stays zero at every size, so a brush that never heard of drain

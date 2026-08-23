@@ -56,7 +56,7 @@ fn conservative_smear_preserves_uniform_field() {
         RED,
         24.0,
         BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             lift: 0.5,
             deposit: 0.5,
             ..Default::default()
@@ -109,7 +109,7 @@ fn smear_carries_paint_onto_bare_canvas() {
         RED,
         28.0,
         BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             lift: 0.9,
             deposit: 0.3,
             ..Default::default()
@@ -165,7 +165,7 @@ fn eraser_thins_without_retint() {
         RED,
         24.0,
         BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             lift: 0.5,
             deposit: 0.0,
             ..Default::default()
@@ -196,7 +196,7 @@ fn smear_over_empty_canvas_adds_nothing() {
         RED,
         24.0,
         BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             lift: 1.0,
             deposit: 1.0,
             ..Default::default()
@@ -242,7 +242,7 @@ fn an_eraser_takes_the_paint_it_stopped_on() {
             RED,
             45.0,
             BrushDynamics {
-                add: 0.0,
+                flow: 0.0,
                 lift: 0.95,
                 deposit: 0.0,
                 ..Default::default()
@@ -297,7 +297,7 @@ fn a_carrying_stroke_ends_without_breaking_its_own_slope() {
                 RED,
                 70.0,
                 BrushDynamics {
-                    add: 0.0,
+                    flow: 0.0,
                     lift: 0.0,
                     deposit: 0.12,
                     charge: 2.0,
@@ -334,7 +334,7 @@ fn charged_tool_lays_a_finite_glob() {
         RED,
         20.0,
         BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             deposit: 0.12,
             charge: 2.0,
             ..Default::default()
@@ -387,7 +387,7 @@ fn dynamics_stroke_is_deterministic() {
             RED,
             16.0,
             BrushDynamics {
-                add: 0.1,
+                flow: 0.1,
                 lift: 0.5,
                 deposit: 0.5,
                 ..Default::default()
@@ -427,7 +427,7 @@ fn golden_smudge_drag() {
         RED,
         16.0,
         BrushDynamics {
-            add: 0.1,
+            flow: 0.1,
             lift: 0.5,
             deposit: 0.5,
             ..Default::default()
@@ -460,7 +460,7 @@ fn golden_self_smear() {
         RED,
         18.0,
         BrushDynamics {
-            add: 0.5,
+            flow: 0.5,
             lift: 0.6,
             deposit: 0.5,
             ..Default::default()
@@ -507,7 +507,7 @@ fn dynamics_stroke_reads_as_one_continuous_mark() {
             RED,
             60.0,
             BrushDynamics {
-                add: 0.6,
+                flow: 0.6,
                 lift: 0.2,
                 deposit: 0.9,
                 ..Default::default()
@@ -570,7 +570,7 @@ fn a_carrying_stroke_reads_as_one_continuous_mark() {
             RED,
             60.0,
             BrushDynamics {
-                add: 0.0,
+                flow: 0.0,
                 lift: 0.4,
                 deposit: 0.9,
                 ..Default::default()
@@ -640,7 +640,7 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
         RED,
         30.0,
         BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             lift: 0.9,
             deposit: 0.9,
             ..Default::default()
@@ -721,7 +721,7 @@ fn a_conservative_smear_does_not_destroy_paint_either() {
             RED,
             40.0,
             BrushDynamics {
-                add: 0.0,
+                flow: 0.0,
                 lift: 0.95,
                 deposit: 0.95,
                 ..Default::default()
@@ -785,10 +785,10 @@ fn a_barely_lifting_brush_reads_as_one_that_does_not_lift() {
     };
     let smear = |lift: f32| BrushParams {
         color: RED,
-        radius: 30.0,
+        size: 30.0,
         shape: BrushShape::Round { hardness: 0.9 },
         dynamics: BrushDynamics {
-            add: 0.6,
+            flow: 0.6,
             lift,
             // High enough to empty the tool every segment: with nothing lifted to
             // refill it, whatever the source hands back is all it carries.
@@ -863,12 +863,12 @@ fn a_carried_stroke_is_independent_of_how_the_path_was_cut() {
         return;
     };
     let brush = BrushParams {
-        radius: 80.0,
+        size: 80.0,
         shape: BrushShape::Round { hardness: 0.95 },
         // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
         drain: 0.4,
         dynamics: BrushDynamics {
-            add: 1.0,
+            flow: 1.0,
             lift: 0.95,
             deposit: 0.95,
             ..BrushDynamics::default()
@@ -958,7 +958,7 @@ fn bar_then_glaze(add: f32, deposit: f32) -> Option<stark_engine::RgbaImage> {
         RED,
         34.0,
         BrushDynamics {
-            add,
+            flow: add,
             lift: 0.0,
             deposit,
             charge: 0.0,
@@ -1063,7 +1063,7 @@ fn bleed_alone_neither_lays_paint_nor_disturbs_a_uniform_field() {
         GREEN,
         24.0,
         BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             bleed: 0.95,
             ..Default::default()
         },
@@ -1150,7 +1150,7 @@ fn bleed_softens_a_color_boundary() {
         RED,
         28.0,
         BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             bleed: 0.95,
             ..Default::default()
         },
@@ -1245,7 +1245,7 @@ fn a_bleed_trail_across_an_edge_has_no_step_in_it() {
         RED,
         70.0,
         BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             bleed: 0.95,
             ..Default::default()
         },
@@ -1337,7 +1337,7 @@ fn bleed_reach_scales_with_the_brush() {
         RED,
         60.0,
         BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             bleed: 0.95,
             ..Default::default()
         },
@@ -1389,7 +1389,7 @@ fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
         GREEN,
         40.0,
         BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             bleed: 0.95,
             ..Default::default()
         },
@@ -1455,7 +1455,7 @@ fn a_bleeding_stroke_previews_as_it_commits() {
         RED,
         26.0,
         BrushDynamics {
-            add: 0.8,
+            flow: 0.8,
             bleed: 0.9,
             ..Default::default()
         },
@@ -1528,7 +1528,7 @@ fn a_smear_that_transfers_nothing_leaves_the_canvas_alone() {
         };
         let mut field = brush(RED, 200.0);
         field.drain = 0.0;
-        field.dynamics.add = 0.02;
+        field.dynamics.flow = 0.02;
         stroke_with(
             &mut engine,
             field,
@@ -1543,7 +1543,7 @@ fn a_smear_that_transfers_nothing_leaves_the_canvas_alone() {
             RED,
             40.0,
             BrushDynamics {
-                add: 0.0,
+                flow: 0.0,
                 lift: 1e-4,
                 deposit: 1e-4,
                 ..Default::default()
@@ -1620,7 +1620,7 @@ fn the_settle_leaves_no_crease_across_the_last_stamp() {
     let mut bed = brush(paint, 256.0);
     bed.drain = 0.0;
     bed.shape = hard;
-    bed.dynamics.add = 2.0;
+    bed.dynamics.flow = 2.0;
     stroke_with(
         &mut engine,
         bed,
@@ -1630,7 +1630,7 @@ fn the_settle_leaves_no_crease_across_the_last_stamp() {
         paint,
         64.0,
         BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             lift: 0.5,
             deposit: 0.95,
             ..Default::default()
@@ -1694,12 +1694,12 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
         height: 256,
     };
     let brush = BrushParams {
-        radius: 80.0,
+        size: 80.0,
         shape: BrushShape::Round { hardness: 0.95 },
         // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
         drain: 0.4,
         dynamics: BrushDynamics {
-            add: 1.0,
+            flow: 1.0,
             lift: 0.95,
             deposit: 0.95,
             ..BrushDynamics::default()
@@ -1848,7 +1848,7 @@ fn a_bleeding_strokes_preview_is_its_commit() {
     // the bleed alone, so every visible difference is the flux.
     let mut b = brush([0.0, 0.0, 0.0, 0.0], 120.0);
     b.drain = 0.0;
-    b.dynamics.add = 0.0;
+    b.dynamics.flow = 0.0;
     b.dynamics.bleed = 1.0;
     engine.process(ViewCommand::SetBrush(b));
 

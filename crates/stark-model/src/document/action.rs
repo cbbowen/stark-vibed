@@ -823,7 +823,7 @@ mod tests {
         let stroke = ActionKind::CommitStroke(StrokeRecord {
             layer: LayerId(0),
             brush: BrushParams {
-                radius: bad,
+                size: bad,
                 tooth_give: 9.0,
                 ..BrushParams::default()
             },
@@ -836,7 +836,7 @@ mod tests {
         let ActionKind::CommitStroke(rec) = &stroke else {
             panic!("a stroke stays a stroke")
         };
-        assert!(rec.brush.radius.is_finite());
+        assert!(rec.brush.size.is_finite());
         assert_eq!(rec.brush.tooth_give, 1.0);
         assert_eq!(rec.start, 0.0);
 

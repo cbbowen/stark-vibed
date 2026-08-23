@@ -295,7 +295,7 @@ pub(super) fn chunk_segments(segments: &[Segment], fires: &[BleedFire]) -> Vec<R
 /// flattening cap, and a coverage box of a given extent spans at most one tile more
 /// than it covers, whichever tile boundary it happens to straddle.
 pub(super) fn segment_fits_region(b: &BrushParams, tol: crate::path::FlattenTolerance) -> bool {
-    let radius = b.radius.max(0.5);
+    let radius = b.size.max(0.5);
     // The chord is what `path::within` caps; the arc over it is longer, and bows a
     // sagitta out of its own box. Both are bounded by the turn a segment may bend
     // through (`MAX_HALF_TURN_SIN`) — under 2% and under 5% of the chord — so a
@@ -707,7 +707,7 @@ mod tests {
     fn the_gate_admits_any_brush_whose_own_tip_fits() {
         let fits = |radius: f32| {
             let mut b = BrushParams {
-                radius,
+                size: radius,
                 ..BrushParams::default()
             };
             b.dynamics.lift = 0.5;

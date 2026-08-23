@@ -66,7 +66,7 @@ fn main() {
             unreachable!()
         };
         rec.brush.dynamics.bleed = 0.0;
-        rec.brush.dynamics.add = 0.0;
+        rec.brush.dynamics.flow = 0.0;
         rec.brush.dynamics.charge = 1e-4;
         println!("--identity: final stroke reduced to the bare stamp loop");
     }
@@ -90,7 +90,7 @@ fn main() {
             hi.x = hi.x.max(cp.pos.x);
             hi.y = hi.y.max(cp.pos.y);
         }
-        let pad = Vec2::splat(rec.brush.radius * 2.0 + 32.0);
+        let pad = Vec2::splat(rec.brush.size * 2.0 + 32.0);
         let mut fill = stroke.clone();
         fill.id.lamport = stroke.id.lamport.saturating_sub(1);
         fill.kind = ActionKind::Fill {
@@ -126,9 +126,9 @@ fn main() {
         "last stroke: action #{last}, {} control points, radius {}, drain {}/radius, \
          add {}, lift {}, deposit {}, charge {}, bleed {}, alpha {}",
         rec.path.len(),
-        b.radius,
+        b.size,
         b.drain,
-        b.dynamics.add,
+        b.dynamics.flow,
         b.dynamics.lift,
         b.dynamics.deposit,
         b.dynamics.charge,
@@ -144,7 +144,7 @@ fn main() {
         hi.x = hi.x.max(cp.pos.x);
         hi.y = hi.y.max(cp.pos.y);
     }
-    let margin = b.radius * 1.5 + 8.0;
+    let margin = b.size * 1.5 + 8.0;
     let center = (lo + hi) * 0.5;
     let size = Extent2 {
         width: (((hi.x - lo.x) + 2.0 * margin).ceil() as u32).clamp(64, 2048),

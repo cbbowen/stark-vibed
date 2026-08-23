@@ -754,11 +754,11 @@ mod tests {
     fn a_changed_brush_stays_with_the_number() {
         let base = w(BrushParams::default());
         let entered = w(BrushParams {
-            radius: 40.0,
+            size: 40.0,
             ..base.params
         });
         let dragged = w(BrushParams {
-            radius: 64.0,
+            size: 64.0,
             ..entered.params
         });
         let (kept, back) = held(entered, base).settle(dragged);
@@ -771,7 +771,7 @@ mod tests {
         // The one edit a slot is defined not to carry (see `presets::wear`).
         let base = w(BrushParams::default());
         let entered = w(BrushParams {
-            radius: 40.0,
+            size: 40.0,
             ..base.params
         });
         let recolored = w(BrushParams {
@@ -837,7 +837,7 @@ mod tests {
         // one question, what comes back to the hand is the other.
         let base = w(BrushParams::default());
         let entered = w(BrushParams {
-            radius: 40.0,
+            size: 40.0,
             ..base.params
         });
         let h = Held {

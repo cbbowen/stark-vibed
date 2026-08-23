@@ -79,7 +79,7 @@ const COMBINING: [BlendMode; 3] = [BlendMode::Reinhard, RADIANCE, BlendMode::Mul
 fn opaque(color: [f32; 4]) -> BrushParams {
     BrushParams {
         dynamics: BrushDynamics {
-            add: 6.0,
+            flow: 6.0,
             ..Default::default()
         },
         shape: BrushShape::Round { hardness: 0.99 },
@@ -791,7 +791,7 @@ const CARRY_DRAG: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 40.0)];
 fn carrying_brush() -> BrushParams {
     let mut b = brush([0.0, 0.0, 0.0, 0.0], 26.0);
     b.drain = 0.0;
-    b.dynamics.add = 0.0;
+    b.dynamics.flow = 0.0;
     b.dynamics.lift = 0.9;
     b.dynamics.deposit = 0.9;
     b

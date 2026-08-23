@@ -520,9 +520,9 @@ fn a_filled_region_can_be_scraped_back_by_a_lift_brush() {
     // than opaque because the claim is that the paint is liftable, not that one
     // pass of a scraper out-runs eight units of it.
     let scraper = BrushParams {
-        radius: 24.0,
+        size: 24.0,
         dynamics: BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             lift: 1.0,
             deposit: 0.0,
             charge: 0.0,

@@ -180,11 +180,11 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             Some(1),
             0.15,
             BrushParams {
-                radius: 100.0,
+                size: 100.0,
                 drain: 0.1,
                 shape: BrushShape::Round { hardness: 0.98 },
                 dynamics: BrushDynamics {
-                    add: 3.0,
+                    flow: 3.0,
                     lift: 0.25,
                     deposit: 0.75,
                     bleed: 0.25,
@@ -212,10 +212,10 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             None,
             0.15,
             BrushParams {
-                radius: 100.0,
+                size: 100.0,
                 shape: shapes.bristles,
                 dynamics: BrushDynamics {
-                    add: 3.0,
+                    flow: 3.0,
                     lift: 0.25,
                     deposit: 0.75,
                     bleed: 0.5,
@@ -246,12 +246,12 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             Some(2),
             0.5,
             BrushParams {
-                radius: 18.0,
+                size: 18.0,
                 shape: BrushShape::Round { hardness: 0.95 },
                 start_taper_length: 5.0,
                 end_taper_length: 11.0,
                 dynamics: BrushDynamics {
-                    add: 0.45,
+                    flow: 0.45,
                     ..BrushDynamics::default()
                 },
                 ..BrushParams::default()
@@ -283,7 +283,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             BrushParams {
                 // The sharpened point itself now, where the radius used to stand
                 // for the *widest* mark the tilt mapping would scale back from.
-                radius: 15.0,
+                size: 15.0,
                 shape: shapes.flat_tip,
                 // Which aims the stretch, as well as turning the stamp: the axis a
                 // tip is drawn out along is the axis it faces (§6.6).
@@ -303,7 +303,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     ..Modulations::default()
                 },
                 dynamics: BrushDynamics {
-                    add: 0.4,
+                    flow: 0.4,
                     ..BrushDynamics::default()
                 },
                 color_dynamics: ColorDynamics {
@@ -319,7 +319,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             Some(4),
             0.1,
             BrushParams {
-                radius: 500.0,
+                size: 500.0,
                 shape: BrushShape::Round { hardness: 0.5 },
                 modulation: Modulations {
                     size: Some(Modulation {
@@ -331,7 +331,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     ..Modulations::default()
                 },
                 dynamics: BrushDynamics {
-                    add: 0.1,
+                    flow: 0.1,
                     ..BrushDynamics::default()
                 },
                 color_dynamics: ColorDynamics {
@@ -348,10 +348,10 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             Some(slots::ERASER),
             0.0,
             BrushParams {
-                radius: 80.0,
+                size: 80.0,
                 shape: BrushShape::Round { hardness: 0.25 },
                 dynamics: BrushDynamics {
-                    add: 0.0,
+                    flow: 0.0,
                     lift: 1.0,
                     bleed: 0.25,
                     ..BrushDynamics::default()
@@ -373,10 +373,10 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             None,
             0.0,
             BrushParams {
-                radius: 40.0,
+                size: 40.0,
                 shape: BrushShape::Round { hardness: 0.95 },
                 dynamics: BrushDynamics {
-                    add: 0.0,
+                    flow: 0.0,
                     lift: 1.0,
                     ..BrushDynamics::default()
                 },
@@ -733,7 +733,7 @@ mod tests {
             .find(|e| e.slot == Some(slots::ERASER))
             .expect("an eraser ships on the pen's own slot");
         assert_eq!(
-            e.brush.params.dynamics.add, 0.0,
+            e.brush.params.dynamics.flow, 0.0,
             "an eraser lays no paint of its own"
         );
         assert!(e.brush.params.dynamics.lift > 0.0, "an eraser lifts");

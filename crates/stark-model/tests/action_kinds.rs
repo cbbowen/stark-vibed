@@ -146,7 +146,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
         ActionKind::CommitStroke(StrokeRecord {
             layer: id,
             brush: BrushParams {
-                radius: n,
+                size: n,
                 tooth_give: n,
                 tooth_softness: n,
                 stretch: n,

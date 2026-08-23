@@ -109,7 +109,7 @@ fn decimate(img: &RgbaImage, n: u32) -> RgbaImage {
 /// A hard, thin tip: the content whose edges a single tap per pixel cannot represent.
 fn fine(color: [f32; 4]) -> BrushParams {
     BrushParams {
-        radius: 2.0,
+        size: 2.0,
         shape: BrushShape::Round { hardness: 1.0 },
         ..brush(color, 2.0)
     }

@@ -236,7 +236,7 @@ fn selection_gates_the_brush_dynamics_path() {
     };
     let mut b = brush(RED, 14.0);
     b.dynamics = BrushDynamics {
-        add: 1.0,
+        flow: 1.0,
         lift: 0.3,
         deposit: 0.8,
         charge: 0.5,
@@ -282,7 +282,7 @@ fn dynamics_brush_does_not_lift_paint_from_outside() {
 
     let mut smudge = brush([0.0, 0.0, 0.0, 1.0], 16.0);
     smudge.dynamics = BrushDynamics {
-        add: 0.0,
+        flow: 0.0,
         lift: 0.9,
         deposit: 0.9,
         ..BrushDynamics::default()
@@ -823,7 +823,7 @@ fn golden_selection_smear() {
     // from the canvas — and none of it may cross the boundary in either direction.
     let mut smudge = brush([0.0, 0.0, 0.0, 1.0], 26.0);
     smudge.dynamics = BrushDynamics {
-        add: 0.0,
+        flow: 0.0,
         lift: 0.7,
         deposit: 0.85,
         ..BrushDynamics::default()

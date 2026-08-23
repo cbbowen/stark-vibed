@@ -237,7 +237,7 @@ fn deposit_follows_tilt_on_the_stamp_loop() {
     };
     let b = BrushParams {
         dynamics: BrushDynamics {
-            add: 0.0,
+            flow: 0.0,
             lift: 0.0,
             deposit: 0.9,
             charge: 1.5,

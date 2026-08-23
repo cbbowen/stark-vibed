@@ -1445,7 +1445,7 @@ const SIZE_STEP: f32 = 1.1;
 /// says what the panel says.
 fn step_radius(state: AppState, factor: f32) {
     update_brush(state, move |b| {
-        b.radius = (b.radius * factor).clamp(MIN_RADIUS, MAX_RADIUS);
+        b.size = (b.size * factor).clamp(MIN_RADIUS, MAX_RADIUS);
     });
 }
 
