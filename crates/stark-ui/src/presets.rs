@@ -136,15 +136,15 @@ fn default_presets(state: AppState) -> Vec<PresetEntry> {
 
 #[derive(Default)]
 struct BuiltinShapes {
-    flat_tip: BrushShape,
     bristles: BrushShape,
+    pencil: BrushShape,
 }
 
 impl BuiltinShapes {
     pub fn for_app(state: AppState) -> Option<Self> {
         Some(BuiltinShapes {
-            flat_tip: builtins::shape(state, builtins::FLAT_TIP)?,
             bristles: builtins::shape(state, builtins::BRISTLES)?,
+            pencil: builtins::shape(state, builtins::PENCIL)?,
         })
     }
 }
@@ -281,17 +281,11 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             Some(3),
             0.0,
             BrushParams {
-                // The sharpened point itself now, where the radius used to stand
-                // for the *widest* mark the tilt mapping would scale back from.
-                size: 15.0,
-                shape: shapes.flat_tip,
-                // Which aims the stretch, as well as turning the stamp: the axis a
-                // tip is drawn out along is the axis it faces (§6.6).
+                size: 30.0,
+                shape: shapes.pencil,
+                tooth_give: 1.0,
+                tooth_softness: 0.5,
                 orientation: OrientationSource::Pen,
-                // Laid flat the contact patch runs four points long. Linear from a
-                // zero floor, so a mouse — which reports no tilt at all — gets the
-                // sharpened point and nothing else, which is the honest reading of
-                // "the pen is upright" rather than a case to floor away.
                 stretch: 0.75,
                 modulation: Modulations {
                     stretch: Some(Modulation {
@@ -300,6 +294,11 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                         curve: -0.5,
                     }),
                     flow: Some(Modulation::linear(ModSource::Pressure)),
+                    tooth_give: Some(Modulation {
+                        source: ModSource::Pressure,
+                        floor: 0.5,
+                        curve: 0.0,
+                    }),
                     ..Modulations::default()
                 },
                 dynamics: BrushDynamics {

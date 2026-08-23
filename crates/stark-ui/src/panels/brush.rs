@@ -42,11 +42,7 @@ pub const MAX_TAPER: f32 = 20.0;
 /// every texel is somewhere inside the transition, the gate is a flat scale on the
 /// deposit, and the grain has stopped reading. Past that the knob would only be
 /// walking towards a half.
-///
-/// The default (`BrushParams::DEFAULT_TOOTH_SOFTNESS`, 0.06) therefore sits about an
-/// eighth of the way along — a paint that sits on the substrate near the bottom, a
-/// charcoal well up it.
-pub const MAX_TOOTH_SOFTNESS: f32 = 0.5;
+pub const MAX_TOOTH_SOFTNESS: f32 = 1.0;
 
 /// The floating Brush panel: the everyday quick controls (size, amount).
 /// Everything else — the full grouped parameter set with a live test

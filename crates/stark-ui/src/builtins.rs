@@ -41,11 +41,14 @@ pub struct BuiltinShape {
     pub path: &'static str,
 }
 
-/// The worn bristle stamp: a dry, broken-edged tip.
+/// The worn bristle shape: a dry, broken-edged tip.
 pub const BRISTLES: &str = "Worn Bristles";
 
-/// The flat stamp.
+/// The flat shape.
 pub const FLAT_TIP: &str = "Flat";
+
+/// The pencil shape
+pub const PENCIL: &str = "Pencil";
 
 /// Every shape that ships with the app, in gallery order.
 pub const SHAPES: &[BuiltinShape] = &[
@@ -58,6 +61,11 @@ pub const SHAPES: &[BuiltinShape] = &[
         name: FLAT_TIP,
         asset: asset!("/assets/shape/Flat.png"),
         path: "shape/Flat.png",
+    },
+    BuiltinShape {
+        name: PENCIL,
+        asset: asset!("/assets/shape/Pencil.png"),
+        path: "shape/Pencil.png",
     },
 ];
 
