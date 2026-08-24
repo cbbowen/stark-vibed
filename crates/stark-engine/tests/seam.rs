@@ -51,8 +51,12 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
     }));
 
     // Diagonal stroke through the 4-tile corner at `shift` (origin for shift=0).
-    // Tooth off for the same reason (it gates deposition by canvas-space substrate).
-    let b = brush(RED, 28.0);
+    // Tooth off for the same reason (it gates deposition by canvas-space substrate),
+    // and the deposit jitter with it: its gate is keyed to the canvas texel (§6.2),
+    // so it too is deliberately not translation invariant and would differ between
+    // the shifted renders.
+    let mut b = brush(RED, 28.0);
+    b.dynamics.deposit_jitter = 0.0;
     engine.process(ViewCommand::SetBrush(b));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
@@ -199,7 +203,10 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     }));
 
     // A wide base field along the diagonal, fully containing the smudge's path.
-    let field = brush(RED, 60.0);
+    // Jitter off on both brushes here, by `render_shifted`'s argument: the gate is
+    // canvas-anchored (§6.2) and this test compares shifted renders.
+    let mut field = brush(RED, 60.0);
+    field.dynamics.deposit_jitter = 0.0;
     engine.process(ViewCommand::SetBrush(field));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
@@ -218,6 +225,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
         flow: 0.0,
         lift: 0.6,
         deposit: 0.5,
+        deposit_jitter: 0.0,
         ..Default::default()
     };
     engine.process(ViewCommand::SetBrush(smudge));

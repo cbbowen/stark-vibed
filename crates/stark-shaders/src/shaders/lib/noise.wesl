@@ -59,28 +59,60 @@ fn _pcg3d(v_in: vec3u) -> vec3u {
     return v;
 }
 
+// A centered uniform lane from one hash word: odd multiples of 2⁻²³ in
+// (−0.5, 0.5) — symmetric and so zero-mean *exactly*, with both endpoints
+// unreachable by construction: the word's top 23 bits are placed as a [1,2)
+// mantissa with the low bit forced. Both float steps are exact (the placement
+// does no arithmetic; subtracting 1.5 from [1,2) is exact by Sterbenz), so the
+// value is the same on every backend.
+fn _centered(h: u32) -> f32 {
+    return bitcast<f32>((h >> 9u) | 0x3f800001u) - 1.5;
+}
+
 // Two centered uniform lanes at target pixel `px` — quantization dither for a
 // store that walks f32 down to a shallow encoding (§6.5). Scaled by one code
 // step of the target's encoding at the call site, it makes the store's rounding
 // stochastic: a value between two codes splits between them in exact proportion,
 // so a ramp too gentle for the codes renders as mixture instead of bands.
 //
-// The swing is **half a code either way, and strictly inside it** — not the
-// audio-style full-code triangle. Half, so a value the encode lands exactly on a
-// code — black, white, anything the tonemap clamped — renders that code at every
-// pixel rather than speckling its neighbours. Strictly inside, by construction:
-// the hash's top 23 bits are placed as a [1,2) mantissa with the low bit forced,
-// so every lane is an odd multiple of 2⁻²³ — a symmetric, zero-mean set that
-// cannot produce ±0.5 itself, which is what would land a code-point value on the
-// rounding tie between two codes. Both float steps are exact (the placement does
-// no arithmetic; subtracting 1.5 from [1,2) is exact by Sterbenz), so the value
-// is the same on every backend.
+// The swing is **half a code either way, and strictly inside it** (`_centered`)
+// — not the audio-style full-code triangle. Half, so a value the encode lands
+// exactly on a code — black, white, anything the tonemap clamped — renders that
+// code at every pixel rather than speckling its neighbours; strictly inside, so
+// a code-point value can never land on the rounding tie between two codes.
 //
 // Keyed on the integer pixel rather than a float position so no derived
 // quantity's ULPs can re-roll the noise; `seed` separates passes writing the
 // same coordinates.
 fn dither2(px: vec2u, seed: u32) -> vec2f {
     let h = _pcg3d(vec3u(px, seed));
-    let m = (h.xy >> vec2u(9u)) | vec2u(0x3f800001u);
-    return bitcast<vec2f>(m) - 1.5;
+    return vec2f(_centered(h.x), _centered(h.y));
+}
+
+// The deposit jitter (§6.2): the multiplicative gate a stroke's paint takes at
+// canvas texel `texel` — `color_jitter`'s sibling, perturbing the *amount* where
+// that perturbs the color. Uniform in `(1 − eps, 1 + eps)`, mean exactly 1 (the
+// `_centered` set is symmetric), and exactly 1.0 when `eps` is 0, which is what
+// keeps a jitter-free stroke bit-identical.
+//
+// It multiplies the swept **exposure**, beside the substrate tooth and under the
+// tooth's own two laws (§6.2, §6.4): a factor on the exposure keeps the deposit's
+// two composing forms intact where a factor on the finished parcel would not, and
+// the tool's side of the exchange books the gate's *mean* — for the tooth the
+// bearing fraction, here exactly 1, so the tool's dispatch does not change at all
+// and the books balance in expectation over the extent, by the same argument.
+//
+// Keyed on the **absolute canvas texel** and a per-stroke seed, so the gate is
+// one field however the stroke is cut, folded or replayed: constant along the
+// stroke, it factors out of every per-segment sum (§6.4, live == committed), and
+// per-stroke seeding is what keeps repeated glazes from compounding one pattern.
+// White per texel rather than the baked field's smooth structure, because its job
+// is the field's opposite: decorrelating neighbouring texels' accumulation, so
+// what the iterative exchange would pile into a visible band lands as dither.
+fn deposit_jitter(texel: vec2<i32>, seed: u32, eps: f32) -> f32 {
+    if eps <= 0.0 {
+        return 1.0;
+    }
+    let h = _pcg3d(vec3u(bitcast<vec2u>(texel), seed));
+    return 1.0 + 2.0 * eps * _centered(h.x);
 }

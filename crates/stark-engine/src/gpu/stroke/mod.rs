@@ -324,6 +324,12 @@ impl StrokeRenderer {
             nfreq,
             namp,
             noff,
+            // Clamped where the record becomes numbers, like the color above: the
+            // gate is `1 + 2ε·centered` with `centered ∈ (−½, ½)`, so any ε ≤ 1
+            // keeps it positive and a wire value beyond that is nonsense, not a
+            // stronger setting.
+            jitter_eps: rec.brush.dynamics.deposit_jitter.clamp(0.0, 1.0),
+            jitter_seed: deposit_jitter_seed(rec.seed),
         }
     }
 }
@@ -371,6 +377,13 @@ struct StrokeConstants {
     nfreq: [f32; 4],
     namp: [f32; 4],
     noff: [f32; 4],
+    /// The deposit jitter (§6.2): the gate's half-range
+    /// (`BrushDynamics::deposit_jitter`, clamped) and the stroke's own seed for it
+    /// ([`deposit_jitter_seed`]). Resolved here like the color-dynamics triplet
+    /// above and for the same reason: the loop's `add` axis is the swept path's
+    /// deposit, and the two must read one gate.
+    jitter_eps: f32,
+    jitter_seed: u32,
 }
 
 /// The stroke's color-dynamics uniform triplet — (per-axis frequency
@@ -392,6 +405,20 @@ fn noise_uniform(rec: &StrokeRecord) -> ([f32; 4], [f32; 4], [f32; 4]) {
         [amp[0], amp[1], amp[2], 0.0],
         [off[0], off[1], 0.0, 0.0],
     )
+}
+
+/// The deposit jitter's per-stroke seed: the third draw of the same splitmix64
+/// stream [`noise_offset`] takes its two from, folded to the u32 the hash wants —
+/// deterministic from the record like everything else here (replay and
+/// live == committed hold, §6.2), and a fresh pattern per stroke, which is what
+/// keeps repeated glazes averaging out instead of compounding one texture.
+fn deposit_jitter_seed(seed: u64) -> u32 {
+    let state = seed.wrapping_add(0x9E3779B97F4A7C15u64.wrapping_mul(3));
+    let mut z = state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^= z >> 31;
+    (z >> 32) as u32
 }
 
 /// The per-stroke noise lookup translation in [0, 1)², derived from the stroke

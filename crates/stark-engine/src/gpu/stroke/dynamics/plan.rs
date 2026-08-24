@@ -99,6 +99,12 @@ struct SlotCommon<'a> {
     /// The one lane here that is not a stroke constant: the bias is where the *piece*
     /// sits, which `k` cannot know.
     substrate: [f32; 3],
+    /// The region's canvas origin in texels — the deposit jitter's map from a
+    /// region texel to the absolute canvas one its gate is keyed on (§6.2).
+    /// Integral by the cell grid's own argument ([`cell_geometry`]'s assert), and
+    /// a plan fact like `substrate` above: the piece's placement, which `k`
+    /// cannot know.
+    origin: [i32; 2],
 }
 
 impl SlotCommon<'_> {
@@ -120,6 +126,14 @@ impl SlotCommon<'_> {
             // so every slot kind carries the same width and the swept path's
             // `TileXform` is demonstrably reading the same resolution of it.
             tooth_softness: self.k.tooth_softness,
+            // The deposit jitter (§6.2), off `k` by the tooth width's argument: one
+            // gate for every slot kind and for the swept path. Inert on a bleed slot
+            // — its rates are zero, so the jittered exposure decides nothing — and
+            // filled anyway, because an exception here would be a lane two slot
+            // kinds disagree about.
+            jitter_eps: self.k.jitter_eps,
+            jitter_seed: self.k.jitter_seed,
+            canvas_origin: self.origin,
             ..Slot::default()
         }
     }
@@ -252,6 +266,12 @@ struct Slot {
     /// gain. [`Stretch::NONE`](super::super::segments::Stretch::NONE) states it, so
     /// neither this default nor the shader's neutral value is written twice.
     stretch: Stretch,
+    /// The deposit jitter (§6.2): the gate's half-range (0 = off, the neutral
+    /// value), the stroke's seed for it, and the region's canvas origin — the
+    /// jitter's map from region texels to the absolute canvas grid it is keyed on.
+    jitter_eps: f32,
+    jitter_seed: u32,
+    canvas_origin: [i32; 2],
 }
 
 impl Default for Slot {
@@ -303,6 +323,9 @@ impl Default for Slot {
             cell_anchor: Vec2::ZERO,
             ramp: 0.0,
             stretch: Stretch::NONE,
+            jitter_eps: 0.0,
+            jitter_seed: 0,
+            canvas_origin: [0, 0],
         }
     }
 }
@@ -358,6 +381,9 @@ impl Slot {
             substrate_uv_scale: self.substrate_uv_scale,
             cell_px: self.cell as i32,
             bleed_reach: self.bleed_reach as i32,
+            jitter_eps: self.jitter_eps,
+            jitter_seed: self.jitter_seed,
+            canvas_origin: self.canvas_origin,
             ..Default::default()
         }
     }
@@ -645,6 +671,7 @@ pub(super) fn dynamics_plan(
             substrate_uv_bias.x,
             substrate_uv_bias.y,
         ],
+        origin: [region_origin.x as i32, region_origin.y as i32],
     };
 
     // Drained in step with the walk below, which is only correct because `bleed_fires`
@@ -1247,6 +1274,9 @@ mod tests {
                 lateral: 47.0,
                 turns: 0.0,
             },
+            jitter_eps: 49.0,
+            jitter_seed: 50,
+            canvas_origin: [51, 52],
         }
         .pack();
 
@@ -1288,6 +1318,9 @@ mod tests {
             [45.0, 46.0, 47.0],
             "the facing stretch (§6.6)"
         );
+        assert_eq!(packed.jitter_eps, 49.0, "the deposit jitter (§6.2)");
+        assert_eq!(packed.jitter_seed, 50);
+        assert_eq!(packed.canvas_origin, [51, 52]);
     }
 
     /// The neutral slot is neutral *in the shader's terms*, which for six fields is

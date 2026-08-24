@@ -58,8 +58,10 @@ use crate::mirror::{Mirror, Served};
 /// would decode as some other action entirely;
 /// 10: how large the canvas substrate is laid became document state, so `ActionKind`
 /// gained `SetSubstrateScale` — and *inserted*, beside the `SetSubstrate` it is the other
-/// half of, which shifts the index of every variant after it, §6.4).
-pub(crate) const ALPN: &[u8] = b"stark/collab/10";
+/// half of, which shifts the index of every variant after it, §6.4;
+/// 11: `BrushDynamics` gained `deposit_jitter`, §6.2 — a plain shape change to a
+/// struct every stroke gossips).
+pub(crate) const ALPN: &[u8] = b"stark/collab/11";
 
 /// The first byte of every response.
 ///

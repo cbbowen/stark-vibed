@@ -65,6 +65,10 @@ fn toothed(give: f32) -> BrushParams {
             // that saturates the slab law every texel reads as solid whatever fraction
             // it received. A dry-brush mark is the case this axis is *for*.
             flow: 0.35,
+            // No deposit jitter: two of this file's claims are exact comparisons
+            // across strokes (the flat-canvas identity, the level-set
+            // monotonicity), and the jitter is per-stroke-seeded by design (§6.2).
+            deposit_jitter: 0.0,
             ..Default::default()
         },
         ..brush(RED, 26.0)

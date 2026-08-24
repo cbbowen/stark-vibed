@@ -5,7 +5,7 @@
 // turns that depth into channel deposits (see stamp.wesl; the Mixbox space
 // reuses it, since its deposit is the same premultiplied-"over").
 
-import package::lib::noise::{color_jitter};
+import package::lib::noise::{color_jitter, deposit_jitter};
 import package::lib::paint_common::{substrate_texel_at, rise_ahead, tooth_gate};
 import package::lib::sample::{bilerp_taps, bilerp_mix1};
 
@@ -47,6 +47,11 @@ struct TileXform {
     noise_amp: vec4<f32>,
     // Per-stroke noise lookup translation .xy (from the stroke seed); .zw unused.
     noise_off: vec4<f32>,
+    // The deposit jitter (§6.2): the gate's half-range (0 = off, and then the
+    // deposit is bit-identical) and the stroke's own seed for it — a second
+    // stream off the same record seed `noise_off` is drawn from.
+    jitter_eps: f32,
+    jitter_seed: u32,
 }
 
 @group(0) @binding(0) var<uniform> xf: TileXform;
@@ -656,6 +661,16 @@ fn substrate_tooth(in: VsOut, sw: Sweep) -> f32 {
     let dims = textureDimensions(substrate_tex);
     let g = textureLoad(substrate_tex, substrate_texel_at(in.canvas * uv_scale, dims), 0);
     return tooth_gate(rise_ahead(g, sweep_tangent(in.dir, sw.turn)), in.tooth_give, xf.paint.z);
+}
+
+// The deposit jitter's gate at this fragment (§6.2, `lib::noise::deposit_jitter`):
+// keyed on the fragment's own canvas texel, a nearest read of an integer grid
+// exactly as the substrate tap above is, and a pure function of canvas position
+// the same way — so tile aprons stay bit-consistent, and the dynamics loop's
+// `deposit_jitter_at`, which reaches the same texel through its region's origin,
+// reads the identical gate (the loop must: its `add` axis is this path's deposit).
+fn deposit_jitter_of(in: VsOut) -> f32 {
+    return deposit_jitter(vec2<i32>(floor(in.canvas)), xf.jitter_seed, xf.jitter_eps);
 }
 
 // Bilinear lookup of one orientation slice `zi` at brush-local (xl, yl) ∈ [-1,1]: 0

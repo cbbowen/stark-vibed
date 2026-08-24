@@ -24,11 +24,13 @@ const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 /// A test brush with no `drain`: the run-dry falloff is the one *other* thing that
 /// varies along a stroke, and these tests are about what varies across one.
 fn plain(radius: f32, modulation: Modulations) -> BrushParams {
-    BrushParams {
-        drain: 0.0,
-        modulation,
-        ..brush(RED, radius)
-    }
+    let mut b = brush(RED, radius);
+    b.drain = 0.0;
+    // And no deposit jitter: this file's claims are bit-equalities across two
+    // *strokes*, and the jitter is per-stroke-seeded by design (§6.2).
+    b.dynamics.deposit_jitter = 0.0;
+    b.modulation = modulation;
+    b
 }
 
 /// Paint and commit a stroke through `points` with the pen held at one `pressure`
@@ -242,6 +244,8 @@ fn deposit_follows_tilt_on_the_stamp_loop() {
             deposit: 0.9,
             charge: 1.5,
             bleed: 0.0,
+            // Off, like `plain`'s (this literal replaces the whole of it).
+            deposit_jitter: 0.0,
         },
         shape: BrushShape::Round { hardness: 0.9 },
         modulation: Modulations {

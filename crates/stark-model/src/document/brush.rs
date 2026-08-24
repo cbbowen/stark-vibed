@@ -124,6 +124,16 @@ pub struct BrushDynamics {
     /// immediately. Vertical flux tool → canvas.
     #[serde(default)]
     pub deposit: f32,
+    /// The deposit jitter (§6.2) — color dynamics' sibling for the *amount*: every
+    /// texel of a stroke scales the exposure it presents by a factor uniform in
+    /// `(1 − ε, 1 + ε)`, `ε` in `[0, 1]` (past 1 the gate would go negative, which
+    /// is not a stronger setting but a meaningless one), keyed on the canvas texel
+    /// and the stroke's seed. What it buys is freedom from banding: what the
+    /// exchange loop's iterative accumulation would pile into coherent bands lands
+    /// as per-texel dither, because neighbouring texels accumulate at decorrelated
+    /// phases. 0 is the exact gate 1 — bit-identical to the unjittered deposit.
+    #[serde(default = "BrushDynamics::default_deposit_jitter")]
+    pub deposit_jitter: f32,
     /// Initial paint **pre-loaded onto the tool** reservoir before the stroke starts, as a
     /// height (the "load a glob on the palette knife" param). 0 = the tool starts empty (the
     /// historical behaviour). It depletes as the tool [`deposit`](Self::deposit)s and refills
@@ -164,6 +174,7 @@ impl Default for BrushDynamics {
             deposit: 0.0,
             charge: 0.0,
             bleed: 0.0,
+            deposit_jitter: Self::DEFAULT_DEPOSIT_JITTER,
         }
     }
 }
@@ -186,7 +197,27 @@ impl BrushDynamics {
             deposit: clamp01(finite_or(self.deposit, d.deposit)),
             charge: at_least_zero(self.charge, d.charge),
             bleed: clamp01(finite_or(self.bleed, d.bleed)),
+            // In `[0, 1]` by the field's own doc: the gate `1 + 2ε·centered` is
+            // positive for every ε ≤ 1 and meaningless past it.
+            deposit_jitter: clamp01(finite_or(self.deposit_jitter, d.deposit_jitter)),
         }
+    }
+
+    /// The deposit jitter a brush gets when it does not say
+    /// ([`deposit_jitter`](Self::deposit_jitter)), sized between two floors. It
+    /// must clear the f16 tile quantum (relative ≈ 2⁻¹¹ ≈ 0.05%) by a wide
+    /// margin, so the exchange loop's stores land at decorrelated phases of the
+    /// f16 lattice instead of ratcheting a region coherently into bands — 1% is
+    /// ~20 quanta of displacement wherever a gradient is gentle enough to band at
+    /// all. And it must stay under what reads as texture: at ±1% a strong deposit
+    /// shifts by at most a couple of 8-bit levels per texel, at the threshold of
+    /// visibility.
+    pub const DEFAULT_DEPOSIT_JITTER: f32 = 0.01;
+
+    /// [`DEFAULT_DEPOSIT_JITTER`](Self::DEFAULT_DEPOSIT_JITTER) as a function, for
+    /// `#[serde(default = "…")]`.
+    fn default_deposit_jitter() -> f32 {
+        Self::DEFAULT_DEPOSIT_JITTER
     }
 }
 

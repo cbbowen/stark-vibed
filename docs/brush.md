@@ -1055,6 +1055,38 @@ field and parameters, so a brush looks the same whichever path renders it.
 Amplitude 0 (the default) binds a 1×1 zero tile and early-outs — bit-identical to
 the constant-color deposit.
 
+### The deposit jitter (quantity dither)
+
+Color dynamics' sibling for the *amount*: every texel of a stroke scales the
+exposure it presents by a multiplicative gate, uniform in `(1 − ε, 1 + ε)` and
+hashed from the **absolute canvas texel** and a per-stroke seed
+(`lib/noise.wesl::deposit_jitter`). `ε` is `BrushDynamics::deposit_jitter`,
+beside the `deposit` rate it perturbs — historized, since it changes stored
+pixels, defaulting (in the brush and for a document that predates the field
+alike) to `DEFAULT_DEPOSIT_JITTER` (1%, sized just above the f16 tile quantum);
+the field's addition bumped the ALPN (§8). Its job is the display dither's
+(§6.5) one layer down: the lift/deposit loop accumulates iteratively, and
+whatever its residues and the f16 stores would pile into spatially coherent
+bands lands as per-texel dither instead, because neighbouring texels accumulate
+at decorrelated phases.
+
+Where it applies is exactly where the deposition tooth does, and it holds the
+same three laws by the same arguments. It scales the **exposure** — beside
+`substrate_tooth` in the swept stamp, the exchange loop's two deposit kernels
+and the settle — so the exchange's four shares stay exact complements of one
+(jittered) exposure and nothing is minted per texel. It is constant along the
+stroke at a given texel, so it factors out of every per-segment sum and the
+deposit stays *exactly* independent of how the path was cut (§6.2) — which
+per-segment keying would have destroyed. And the tool's side books the gate's
+mean, as it books `tooth_bearing` — the jitter's mean is exactly 1, so the
+tool's dispatch is untouched and conservation holds in expectation over the
+extent. The bleed pair is never gated, for the tooth's own antisymmetry reason.
+White per-texel noise rather than the baked field's smooth structure, because
+the job is the opposite of a pattern: decorrelating neighbours. Per-stroke
+seeding (a second splitmix64 stream off the record's `seed`) keeps repeated
+glazes averaging out rather than compounding one texture; `ε = 0` is exactly
+the gate 1.0, bit-identical to the unjittered deposit.
+
 
 ## 6.6 Brush shapes & the asset store
 

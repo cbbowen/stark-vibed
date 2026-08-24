@@ -50,7 +50,7 @@
 
 import package::stamp_common::{
     VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color, stroke_arc, stroke_drain,
-    substrate_tooth, xf,
+    substrate_tooth, deposit_jitter_of, xf,
 };
 import package::lib::paint_common::{OPACITY_K};
 
@@ -123,14 +123,19 @@ fn fs_main(in: VsOut) -> FsOut {
     // exactly independent of how the path was cut, which a factor on the finished
     // parcel would not be.
     let tooth = substrate_tooth(in, sw);
+    // The deposit jitter (§6.2): a second per-fragment factor on `τ`, beside the
+    // tooth and under the same law — constant along the stroke at this texel, so
+    // it factors out of the sum over the segments and the deposit stays exactly
+    // independent of how the path was cut.
+    let jitter = deposit_jitter_of(in);
     // `add` comes off the *instance*: it is the one paint rate the swept path reads,
     // and the pen can drive it (§6.2), so it varies segment to segment exactly as the
     // radius does. Constant within the segment either way, which is all the argument
     // above needs — the deposit is still linear in this segment's `τ`.
     //
-    // The tooth gates the **height** and not the opacity beside it (§6.1): it decides
-    // how much paint arrives, not what the pigment is.
-    let h = in.extra.w * drain * tooth * tau;
+    // The tooth gates the **height** and not the opacity beside it (§6.1), and the
+    // jitter follows it: both decide how much paint arrives, not what the pigment is.
+    let h = in.extra.w * drain * tooth * jitter * tau;
     let op = xf.color.w * drain;
     let m = op * h;
 

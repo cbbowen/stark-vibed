@@ -383,6 +383,12 @@ impl StrokeRenderer {
                 noise_freq: k.nfreq,
                 noise_amp: k.namp,
                 noise_off: k.noff,
+                jitter_eps: k.jitter_eps,
+                jitter_seed: k.jitter_seed,
+                // The struct's own trailing padding, generated because the two
+                // scalars above end 8 bytes short of the uniform's 16-byte round
+                // (§6.10).
+                _pad_9: [0; 8],
             };
             let at = i * UNIFORM_STRIDE;
             xform_data[at..at + XFORM_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&xform));

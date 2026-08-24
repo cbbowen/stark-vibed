@@ -302,6 +302,7 @@ fn a_carrying_stroke_ends_without_breaking_its_own_slope() {
                     deposit: 0.12,
                     charge: 2.0,
                     bleed: 0.0,
+                    ..Default::default()
                 },
             )
         },
@@ -963,6 +964,7 @@ fn bar_then_glaze(add: f32, deposit: f32) -> Option<stark_engine::RgbaImage> {
             deposit,
             charge: 0.0,
             bleed: 0.0,
+            ..Default::default()
         },
     );
     // No falloff, so the glaze is one uniform parcel over its whole travel and both
