@@ -135,7 +135,7 @@ pub fn LightingPanel() -> Element {
         // and it is what the pop-out is placed against — see `PopoutId::in_stack`
         // for why the row is the right box to measure.
         div { class: "slider-row marked", "data-popout": "substrate-color",
-            div { class: "slider-label", {icon(icons::CANVAS)} {label("Canvas")} }
+            div { class: "slider-label", {icon(icons::CANVAS)} {label("Background")} }
             button {
                 class: swatch_class,
                 style: "{swatch}",
