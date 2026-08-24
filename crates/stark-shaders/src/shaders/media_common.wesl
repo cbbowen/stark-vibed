@@ -163,7 +163,7 @@ fn equirect_uv(dir: vec3<f32>) -> vec2<f32> {
 // the seam (saturating relief and defeating `height_strength`). Screen +X → world
 // +X (right); screen +Y is down → world −Y; +Z (toward viewer) → −Z (forward).
 fn env_dir(n: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(n.x, n.y, -n.z);
+    return vec3<f32>(n.x, -n.y, -n.z);
 }
 
 fn sample_env(dir: vec3<f32>, lod: f32) -> vec3<f32> {
