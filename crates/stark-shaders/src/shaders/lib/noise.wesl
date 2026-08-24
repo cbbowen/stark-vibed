@@ -1,15 +1,20 @@
-// GPU noise, two tiers with two jobs (§6.2, §6.5).
+// GPU noise: one baked field and one hash, three consumers between them
+// (§6.2, §6.5).
 //
-// **Artistic noise is baked, quantization noise is hashed.** The color-dynamics
-// field wants smooth, tileable spatial structure, so it is baked once on the CPU
-// into a small `Rgba8Snorm` texture (`stark-engine`'s `noise.rs`) and the GPU only
-// samples it — that is what keeps a *pattern* bit-identical across GPUs, runs and
-// peers, the same determinism contract as the sRGB↔Oklab constants (§6.5).
-// Quantization dither wants the opposite — white noise, one fresh value per
-// target pixel — and a baked texture of it would be this hash with a footprint.
-// The hash holds the same contract on its own terms: integer arithmetic is exact
-// on every backend, and the one float step below is a mantissa placement and a
-// Sterbenz-exact subtraction, so no operation ever rounds.
+// **Smooth noise is baked, white noise is hashed.** The color-dynamics field
+// (`color_jitter`) wants tileable spatial structure, so it is baked once on the
+// CPU into a small `Rgba8Snorm` texture (`stark-engine`'s `noise.rs`) and the
+// GPU only samples it — that is what keeps a *pattern* bit-identical across
+// GPUs, runs and peers, the same determinism contract as the sRGB↔Oklab
+// constants (§6.5). The two white-noise jobs want the opposite — one fresh
+// value per integer key, no spatial structure at all — and a baked texture of
+// either would be this hash with a footprint: `dither2` keys on the target
+// pixel to make the display encode's rounding stochastic (§6.5), and
+// `deposit_jitter` keys on the canvas texel to do the same for the paint a
+// stroke accumulates (§6.2). The hash holds the determinism contract on its
+// own terms: integer arithmetic is exact on every backend, and the one float
+// step (`_centered`) is a mantissa placement and a Sterbenz-exact subtraction,
+// so no operation ever rounds.
 //
 // There is deliberately nothing else here — no `noise_N_to_M` wrapper family. A
 // hash the GPU never evaluates cannot change a pixel, which makes it exactly the
