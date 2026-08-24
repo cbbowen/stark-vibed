@@ -13,6 +13,10 @@
 //! is what lets the segment-budget tests pin it exactly (`segments::tests`).
 
 use stark_model::document::{BrushDynamics, BrushParams, BrushShape};
+use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX};
+
+use super::dynamics::BLEED_TRAVEL_QUANTUM;
+use super::segments::tip_reach;
 
 /// The optical depth one full pass of an opaque tip lays over a point — the τ
 /// ceiling `assets::build_prefix_tau` clamps to.
@@ -72,6 +76,74 @@ pub(super) const MAX_STAMPS: usize = 4096;
 /// accuracy instead of spent here: **§6.2**.
 /// `golden_drained_brush_length_independent` is what pins it.
 const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
+
+/// The shortest segment worth cutting, in canvas px — the floor under every length
+/// cap here. It is also the least [`fit_len`] must afford for the stamp loop to run
+/// at all: a fit below it means the tip *alone* overflows the region, which is
+/// [`dynamics_setup`](super::dynamics::dynamics_setup)'s refusal rather than a
+/// flattening problem.
+pub(super) const MIN_SEGMENT_LEN: f32 = 0.5;
+
+/// The margin [`fit_len`] holds over a segment's `max_len` when it prices the
+/// travel: the chord is what `path::within` caps, and the arc over it is longer and
+/// bows a sagitta out of its own box. Both are bounded by the turn a segment may
+/// bend through (`path::MAX_HALF_TURN_SIN`) — under 2% and under 5% of the chord —
+/// so a single margin covers the pair with room to spare.
+const ARC_MARGIN: f32 = 1.1;
+
+/// The longest `max_len` one segment of `b` can flatten at and still fit a
+/// [`MAX_REGION_DIM`]-bounded region (§6.2) — negative when the tip's own extent
+/// overflows the region before any travel is priced in.
+///
+/// `chunk_segments` can cut a stroke as fine as a single segment, but no finer: the
+/// reservoir pickup reduces over the whole tip at once, so the region can never be
+/// smaller than one extent. What the extent holds beyond the tip is the segment's
+/// travel, and that is the one knob subdivision still has — so [`flatten_tolerance`]
+/// spends it, shortening segments until one fits, and only a brush whose *minimal*
+/// segment overflows is refused. Shorter segments are never wrong, only more
+/// numerous: the exchange step they set is a first-order discretization that
+/// tightens as they shrink ([`exchange_travel`]).
+///
+/// Bounded rather than measured, since it has to hold for segments that do not
+/// exist yet: radius peaks at the brush's own (pressure only scales it down), and a
+/// coverage box of a given extent spans at most one tile more than it covers,
+/// whichever tile boundary it happens to straddle — so the budget is the largest
+/// whole-tile block whose texture (apron ring included, `Covered::rect`) fits the
+/// region.
+///
+/// **A pure function of the brush**, like everything in this file: a live tail and
+/// the commit that replaces it cap the same brush to the same segment length.
+pub(super) fn fit_len(b: &BrushParams) -> f32 {
+    let radius = b.size.max(0.5);
+    let budget = ((MAX_REGION_DIM - TILE_TEX) / TILE_SIZE * TILE_SIZE) as f32;
+    // A bleeding brush's segment also carries its firings, whose windows reach up
+    // to one quantum back past its start (`chunk_segments`) — so the floor the
+    // chunker cannot get under is that much longer for it.
+    let bleed = if b.dynamics.bleed > 0.0 {
+        BLEED_TRAVEL_QUANTUM * radius
+    } else {
+        0.0
+    };
+    // The tip's reach rather than its radius, for `coverage_bounds`' reason: a
+    // stamp that fills its mask's corners occupies a `√2`-wider box, and this is
+    // the bound that decides how much travel is left over.
+    //
+    // Drawn out along its facing axis by the brush's **own** elongation and not by
+    // any one segment's (§6.6). A modulation can only scale the knob down
+    // ([`Modulation`](stark_model::document::Modulation)), so the brush's value
+    // bounds every segment's.
+    let stretch = BrushParams::elongation(b.stretch);
+    let tip = 2.0 * (radius * tip_reach(&b.shape) * stretch + TILE_APRON as f32);
+    (budget - tip - bleed) / ARC_MARGIN
+}
+
+/// The travel the brush's **own** budget puts on one segment, before the region has
+/// its say: [`exchange_travel`] priced at the brush's size, floored at
+/// [`MIN_SEGMENT_LEN`]. What [`flatten_tolerance`] spends, and the number the
+/// shortening warning quotes against what [`fit_len`] left of it.
+pub(super) fn dynamics_len(b: &BrushParams) -> f32 {
+    (exchange_travel(b.dynamics) * b.size).max(MIN_SEGMENT_LEN)
+}
 
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
 /// swept through before the segment goes back to being straight (§6.2).
@@ -141,7 +213,18 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // longest segment.
     let d = b.dynamics;
     if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 || d.bleed > 0.0 {
-        tol.max_len = tol.max_len.min((exchange_travel(d) * b.size).max(0.5));
+        tol.max_len = tol.max_len.min(dynamics_len(b));
+        // The region floor's price (§6.2): a tip so wide that a full-length
+        // segment's extent would overflow [`MAX_REGION_DIM`] gets shorter segments
+        // instead of losing its dynamics — the same trade `chunk_segments` makes
+        // along the stroke, made along the segment. Never taken below
+        // [`MIN_SEGMENT_LEN`]: a fit under the floor means the tip alone
+        // overflows, which is `dynamics_setup`'s refusal, and capping here would
+        // flatten dust for a loop that cannot run.
+        let fit = fit_len(b);
+        if fit >= MIN_SEGMENT_LEN {
+            tol.max_len = tol.max_len.min(fit);
+        }
     }
     tol
 }

@@ -15,12 +15,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use stark_model::document::BrushParams;
 use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 
 use super::budget::{MAX_REGION_DIM, MAX_STAMPS};
-use super::dynamics::BLEED_TRAVEL_QUANTUM;
-use super::segments::{BleedFire, Segment, Sweep, tip_reach};
+use super::segments::{BleedFire, Segment, Sweep};
 
 /// Call `f(segment index, tile)` for every tile whose *texture* (interior + apron) a
 /// segment's swept capsule overlaps, in segment order.
@@ -245,7 +243,8 @@ fn segment_bounds(s: &Sweep) -> (Vec2, Vec2) {
 /// Greedy: extend the run until one more segment would push its region past
 /// [`MAX_REGION_DIM`], or its dispatch batch past [`MAX_STAMPS`]. A run always holds
 /// at least one segment — one tip's own extent is the floor no subdivision gets
-/// under, which is what [`segment_fits_region`] gates on instead.
+/// under, which `budget::fit_len` prices (shortening segments until one fits) and
+/// `dynamics_setup` gates on instead.
 ///
 /// A segment is measured **with its own bleed firings** ([`piece_sweeps`]'s reason): a
 /// window can reach back a quantum before the segment it fires after, so a piece's
@@ -278,51 +277,6 @@ pub(super) fn chunk_segments(segments: &[Segment], fires: &[BleedFire]) -> Vec<R
         runs.push(start..segments.len());
     }
     runs
-}
-
-/// Whether one segment of `b`'s swept extent fits a region.
-///
-/// [`chunk_segments`] can cut a stroke as fine as a single segment, but no finer: the
-/// reservoir pickup reduces over the whole tip at once, so the region can never be
-/// smaller than one extent. A brush too fat for that is the one thing left that
-/// sends a dynamics stroke to the plain swept deposit — and it is decided from the
-/// brush alone rather than from a whole-stroke measurement, so it costs nothing to
-/// re-ask on every pointer move and cannot answer differently for a piece than for the
-/// stroke it belongs to.
-///
-/// Bounded rather than measured, since it has to hold for segments that do not exist
-/// yet: radius peaks at the brush's own (pressure only scales it down), travel at the
-/// flattening cap, and a coverage box of a given extent spans at most one tile more
-/// than it covers, whichever tile boundary it happens to straddle.
-pub(super) fn segment_fits_region(b: &BrushParams, tol: crate::path::FlattenTolerance) -> bool {
-    let radius = b.size.max(0.5);
-    // The chord is what `path::within` caps; the arc over it is longer, and bows a
-    // sagitta out of its own box. Both are bounded by the turn a segment may bend
-    // through (`MAX_HALF_TURN_SIN`) — under 2% and under 5% of the chord — so a
-    // single margin covers the pair with room to spare.
-    //
-    // A bleeding brush's segment also carries its firings, whose windows reach up
-    // to one quantum back past its start ([`chunk_segments`]) — so the floor the
-    // chunker cannot get under is that much longer for it.
-    let bleed = if b.dynamics.bleed > 0.0 {
-        BLEED_TRAVEL_QUANTUM * radius
-    } else {
-        0.0
-    };
-    let length = tol.max_len * 1.1 + bleed;
-    // The tip's reach rather than its radius, for [`coverage_bounds`]' reason: a
-    // stamp that fills its mask's corners occupies a `√2`-wider box, and this is the
-    // bound that decides whether the loop may draw the brush at all.
-    //
-    // Drawn out along its facing axis by the brush's **own** elongation and not by any
-    // one segment's (§6.6). A modulation can only scale the knob down
-    // ([`Modulation`](stark_model::document::Modulation)), so the brush's value bounds every
-    // segment's — which is what this whole function is: a bound taken against
-    // `rec.brush` that has to stay a bound however the pen drives it.
-    let stretch = BrushParams::elongation(b.stretch);
-    let extent = length + 2.0 * (radius * tip_reach(&b.shape) * stretch + TILE_APRON as f32);
-    let worst = (extent / TILE_SIZE as f32).ceil().max(0.0) as u32 * TILE_SIZE + TILE_TEX;
-    worst <= MAX_REGION_DIM
 }
 
 impl Covered {
@@ -404,7 +358,7 @@ pub(super) struct RegionRect {
 
 #[cfg(test)]
 mod tests {
-    use super::super::budget::flatten_tolerance;
+    use super::super::dynamics::BLEED_TRAVEL_QUANTUM;
     use super::super::segments::{Paint, Stretch};
     use super::*;
 
@@ -697,27 +651,5 @@ mod tests {
             assert!(run.len() <= MAX_STAMPS, "piece {run:?} overruns the batch");
         }
         assert_eq!(next, segments.len(), "the pieces do not cover the stroke");
-    }
-
-    /// The floor the chunker cannot get under: one segment's own extent. A brush
-    /// whose tip fits is drawn by the loop however long the stroke gets, which is the
-    /// whole point of cutting it into pieces; one whose tip does not is the only case
-    /// left that degrades to the swept deposit.
-    #[test]
-    fn the_gate_admits_any_brush_whose_own_tip_fits() {
-        let fits = |radius: f32| {
-            let mut b = BrushParams {
-                size: radius,
-                ..BrushParams::default()
-            };
-            b.dynamics.lift = 0.5;
-            segment_fits_region(&b, flatten_tolerance(&b))
-        };
-        assert!(fits(1.0), "a hairline tip fits");
-        assert!(fits(120.0), "the largest tip the UI offers fits");
-        assert!(
-            !fits(MAX_REGION_DIM as f32),
-            "a tip wider than the whole region cannot fit"
-        );
     }
 }

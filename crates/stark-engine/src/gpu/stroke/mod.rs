@@ -112,9 +112,10 @@ pub struct StrokeRenderer {
     /// it is handed in rather than rebuilt with the rest of this renderer.
     selection: SelectionRenderer,
 
-    /// The seed of the last stroke this renderer said it could not draw
-    /// ([`StrokePath::TipTooLarge`]), so it says so once per stroke rather than once
-    /// per pointer move.
+    /// The seed of the last stroke this renderer complained about — could not draw
+    /// ([`StrokePath::TipTooLarge`]), or could draw only with segments shortened to
+    /// fit the region (`StrokePlan::shortened`) — so it says so once per stroke
+    /// rather than once per pointer move.
     ///
     /// The gate is re-asked on every render, and deliberately so — it is a pure
     /// function of the brush, which is what lets a live tail and its commit agree for
@@ -224,18 +225,38 @@ impl StrokeRenderer {
         // the record, never from the piece in hand. A live tail and the commit that
         // eventually replaces it have to make the same choice, or releasing the pointer
         // would visibly redraw the stroke. See `dynamics_setup`.
-        let plan = dynamics_setup(rec);
+        let plan = dynamics_setup(&rec.brush);
         match plan.path {
-            StrokePath::Loop => self.render_dynamic(scene, rec, spans, tool, plan.tol),
+            StrokePath::Loop => {
+                // The fit was bought with shorter segments (`budget::fit_len`) —
+                // correct geometry, but a real cost, since the loop exchanges once
+                // per segment. Said once per stroke, like the error below and for
+                // its reason: the cap is a pure function of the brush.
+                if let Some(s) = &plan.shortened
+                    && self.complain_once(rec.seed)
+                {
+                    tracing::warn!(
+                        radius = rec.brush.size,
+                        wanted_px = s.wanted,
+                        got_px = s.got,
+                        "brush tip nearly fills a dynamics region: segments \
+                         shortened to fit, so this stroke costs ~{:.1}x the stamps \
+                         its brush budgeted",
+                        s.wanted / s.got,
+                    );
+                }
+                self.render_dynamic(scene, rec, spans, tool, plan.tol)
+            }
             StrokePath::Swept => self.render_swept(scene, rec, spans, plan.tol),
             StrokePath::TipTooLarge => {
                 // An error, not a warning: what lands is not a rougher version of the
                 // stroke that was asked for but a different brush — the swept deposit
                 // only ever adds paint, so `lift`, `deposit` and `charge` all silently
-                // do nothing. It is the one degradation left (stroke *length* is
-                // handled by drawing the stroke in pieces, §6.2), and no
-                // brush the UI can build reaches it, so hitting it means a record came
-                // from somewhere else and is not being honoured.
+                // do nothing. It is the one degradation left: stroke *length* is
+                // handled by drawing the stroke in pieces (§6.2) and an oversized
+                // *segment* by shortening it (`budget::fit_len`), so only a tip
+                // whose own extent overflows the region lands here — an extreme
+                // stretch at an extreme size, or a record from somewhere else.
                 //
                 // Said once per stroke, not once per render: the gate is a pure
                 // function of the brush and so answers the same way every pointer move

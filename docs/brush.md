@@ -366,10 +366,18 @@ One thing must be decided from the record rather than the piece in hand, because
 a live tail and the commit that replaces it must draw the same pixels: whether
 the stroke runs the stamp loop at all. It is decided from the **brush alone** —
 the strongest form of that guarantee, since there is nothing about the piece, or
-about how long the stroke has grown, for it to disagree over — and what it asks
-is the floor no subdivision gets under: whether one segment's own extent fits
-a region, since the reservoir pickup reduces over the whole tip at once. See
-`gpu::stroke::dynamics::dynamics_setup`.
+about how long the stroke has grown, for it to disagree over. What it asks is
+the floor no cutting gets under: the reservoir pickup reduces over the whole tip
+at once, so a region can never be smaller than one tip's extent plus one
+segment's travel. The travel is the one knob subdivision still has, so it is
+spent before anything is given up — a tip so wide that a full-length segment
+would overflow the region flattens to shorter segments instead
+(`gpu::stroke::budget::fit_len`), which is never wrong, only more numerous: the
+exchange step a segment's length sets is a first-order discretization that
+tightens as segments shrink. The renderer warns once per stroke when the
+shortening binds, because the loop pays per segment. Only a brush whose tip
+*alone* overflows the region — an extreme stretch at an extreme size — still
+degrades to the swept deposit. See `gpu::stroke::dynamics::dynamics_setup`.
 
 **Continuous stamping (swept segments).** Discrete dabs are visible with hard
 tips. The fix: stamp each short *segment* of the flattened curve as one quad
