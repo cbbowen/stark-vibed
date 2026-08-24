@@ -502,13 +502,13 @@ fn impossible_exports_are_errors() {
 
 /// The export limit is **the device's own**, and everything inside it really renders.
 ///
-/// Not the literal 8192, which is only where `wgpu::Limits::default()` happens to cap
-/// 2D textures — the frontend requests those, so on the app's device a hardcoded
-/// number would agree by coincidence. The headless device asks for the engine's own
-/// minimums, whose 2D cap is `MAX_TEXTURE_DIM_2D` (2048), and there every size from
-/// 2049 to 8192 would pass a check written against a limit the device does not have,
-/// then ask wgpu for a texture it was never granted: the permissive direction, from
-/// the one guard whose whole job is to report that in words instead.
+/// Not a literal, which would agree with one device by coincidence and not the other:
+/// the frontend requests `wgpu::Limits::default()` while the headless device asks only
+/// for the engine's own minimums (`MAX_TEXTURE_DIM_2D`). When those differed, every
+/// size between them passed a check written against a limit the headless device did
+/// not have and then asked wgpu for a texture it was never granted — the permissive
+/// direction, from the one guard whose whole job is to report that in words instead.
+/// Both numbers have since moved, which is exactly why neither is written here.
 ///
 /// Both halves matter. Refusing one past the limit is the easy one; *rendering* the
 /// one exactly at it is what says the number is real and not merely arithmetic

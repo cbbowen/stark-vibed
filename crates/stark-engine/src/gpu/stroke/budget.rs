@@ -27,16 +27,57 @@ use super::dynamics::BLEED_TRAVEL_QUANTUM;
 /// the rates through by this makes an axis mean a fraction **per pass of the tip**
 /// — hardness-independent, and what a 0..1 knob is expected to mean.
 pub(super) const TAU_PER_PASS: f32 = 6.9;
-/// Largest region edge (canvas px) the stamp loop composites at once. A stroke that
-/// wants more is drawn in as many region-sized *pieces* as it takes
-/// ([`chunk_segments`](super::segments::chunk_segments)), so this bounds the loop's
+/// Region edge (canvas px) the chunker aims to keep a piece inside. A stroke that
+/// wants more is drawn in as many pieces as it takes
+/// ([`chunk_segments`](super::region::chunk_segments)), so this bounds the loop's
 /// transient GPU memory rather than deciding which strokes the loop can draw at all
 /// (§6.2).
 ///
 /// At 2048² that is ~67 MB for a piece: color and aux are both `Rgba16Float`, so
 /// each is 2048² × 8 B = 32 MiB. And it really is *per piece* rather than per stroke,
 /// because `DynamicsRun::flush` destroys a piece's region as soon as it submits it.
-pub(super) const MAX_REGION_DIM: u32 = 2048;
+///
+/// **A target, not a ceiling** — [`MAX_REGION_DIM`] is the ceiling, and the two are
+/// different numbers for a reason. Cutting is by *segment*, so a piece can be made to
+/// fit this only while a single segment does; a brush whose tip alone wants more gets
+/// a piece the size of its tip and pays for it. Raising this instead would let an
+/// ordinary long stroke grow its pieces to the ceiling too, which is the same
+/// megabytes bought for nobody: a 10 px tip crossing the canvas draws exactly as well
+/// in 67 MB pieces as in 1 GB ones.
+pub(super) const REGION_BUDGET_DIM: u32 = 2048;
+
+/// **The largest region a piece may ever allocate** — the hard ceiling, where
+/// [`REGION_BUDGET_DIM`] is the target the chunker aims at (§6.2).
+///
+/// A region is a texture, so this is the device's texture limit and nothing else is
+/// available to be. It is reached only by the floor no cutting gets under — one
+/// segment of one brush — which is why it also sets the ceiling on a brush's reach
+/// ([`max_tip_reach`]).
+///
+/// **Paid only by the stroke that asks.** A tip needing more than
+/// [`REGION_BUDGET_DIM`] gets one segment per piece, so its region is the size of its
+/// own extent rather than of this constant: ~124 MB for the widest brush the editor
+/// offers drawn along its facing axis, and ~500 MB for the same brush drawn at 45°,
+/// where an axis-aligned box around a long diagonal tip is at its worst. Transient,
+/// freed per piece, and only for a brush somebody deliberately built at the extreme.
+pub(super) const MAX_REGION_DIM: u32 = crate::gpu::context::MAX_TEXTURE_DIM_2D;
+
+// A region is a texture, so the ceiling may never be set past what the device was
+// asked for. Written down even though the line above derives it from exactly that
+// constant, because the failure it guards against is somebody replacing that
+// derivation with a literal — which is the natural thing to do when raising one of
+// the two, and which `create_texture` would then report as a validation error from
+// inside the render path rather than as a number being wrong.
+const _: () = assert!(
+    MAX_REGION_DIM <= crate::gpu::context::MAX_TEXTURE_DIM_2D,
+    "a region would not fit the texture limit the device was asked for",
+);
+// And the chunker's target has to sit inside the ceiling it aims below, or every
+// ordinary piece would be measured against a bound no texture can honour.
+const _: () = assert!(
+    REGION_BUDGET_DIM <= MAX_REGION_DIM,
+    "the region budget overruns the ceiling it is a target for",
+);
 /// Cap on the **segments** one piece dispatches. Reached only by a stroke fine enough
 /// to fill a whole region with them, and it cuts a new piece rather than coarsening
 /// anything.
@@ -167,6 +208,10 @@ fn bleed_reach(b: &BrushParams) -> f32 {
 /// is what keeps the two from drifting — so a brush built inside it is drawable and
 /// one built outside it is not, with nothing in between for a caller to guess at.
 ///
+/// Around 3936 canvas px for a non-bleeding brush, which is past `MAX_RADIUS × 7.8`:
+/// wide enough that the editor gives up nothing until the very top of its size
+/// slider. It was ~887 while a region was capped at 2048.
+///
 /// It reads `b` for everything *except* the two knobs it bounds: a bleeding brush
 /// gets less, because its firings reach back past the segment they follow. Handed
 /// the brush being edited, it answers for that brush.
@@ -181,29 +226,41 @@ pub fn max_tip_reach(b: &BrushParams) -> f32 {
 /// editor's slider actually moves in (§6.6).
 ///
 /// [`BrushParams::MAX_STRETCH`] whenever the reach cap is out of the knob's own
-/// reach, which is every brush up to about a 110 px radius: the knob tops out at an
-/// elongation of [`MAX_ELONGATION`](BrushParams::MAX_ELONGATION), so a small tip
-/// cannot spend its way past the region however far it is drawn out. Only a large
-/// brush trades.
+/// reach, which is every brush up to about a 492 px radius: the knob tops out at an
+/// elongation of [`MAX_ELONGATION`](BrushParams::MAX_ELONGATION), so a tip cannot
+/// spend its way past the region until it is nearly as wide as the editor allows.
+/// Only the top of the size slider trades at all, and only a little.
 ///
 /// **The engine answers this rather than the editor deriving it**, because the
 /// derivation does not survive being written twice. `elongation` is `1/(1 − knob)`
 /// clamped at the top, so inverting it round-trips to within an ulp and not to the
 /// bit — and an ulp on the wrong side is a brush the gate refuses and the slider
-/// offered. So the knob is stepped down until the *gate's own* arithmetic accepts
-/// it, and `the_offered_stretch_is_always_drawable` is what says it always does.
+/// offered.
+///
+/// So the answer is settled by **asking the gate**, not by a second expression that
+/// ought to agree with it: [`max_tip_reach`] only supplies the starting guess, and
+/// the knob is stepped down until [`fit_len`] — the very call
+/// [`dynamics_setup`](super::dynamics::dynamics_setup) makes — accepts the brush.
+/// A predicate written as `size · elongation ≤ cap` instead is the same inequality
+/// in a different association order, and it disagreed with the gate by one ulp at a
+/// 500 px tip the moment the region grew; `the_offered_stretch_is_always_drawable`
+/// is what caught it and what keeps it caught.
 pub fn max_stretch(b: &BrushParams) -> f32 {
-    let size = b.size.max(0.5);
-    let cap = max_tip_reach(b);
-    let holds = |knob: f32| size * BrushParams::elongation(knob) <= cap;
-    if holds(BrushParams::MAX_STRETCH) {
+    let drawable = |knob: f32| {
+        fit_len(&BrushParams {
+            stretch: knob,
+            ..*b
+        }) >= MIN_SEGMENT_LEN
+    };
+    if drawable(BrushParams::MAX_STRETCH) {
         return BrushParams::MAX_STRETCH;
     }
     // The closed-form answer, then walked down by ulps onto the right side of the
-    // comparison. It starts at most one ulp off, so this steps once or not at all —
-    // the loop is a proof obligation discharged, not a search.
-    let mut knob = (1.0 - size / cap).clamp(0.0, BrushParams::MAX_STRETCH);
-    while knob > 0.0 && !holds(knob) {
+    // gate. `fit_len` is monotone in the knob and this starts a hair above the
+    // frontier, so it is a short walk; `knob > 0.0` bounds it regardless, an
+    // unstretched tip being the smallest extent the brush has.
+    let mut knob = (1.0 - b.size.max(0.5) / max_tip_reach(b)).clamp(0.0, BrushParams::MAX_STRETCH);
+    while knob > 0.0 && !drawable(knob) {
         knob = f32::from_bits(knob.to_bits() - 1);
     }
     knob

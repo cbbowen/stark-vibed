@@ -76,10 +76,15 @@ pub const MAX_PICTURE_DIM: u32 = 4096;
 
 /// Largest edge (px) a canvas substrate keeps (§6.4).
 ///
-/// Matches the engine's `MAX_TEXTURE_DIM_2D`, and is a fixed constant rather than
-/// a device query — which is load-bearing: were the downsample factor to follow
-/// the adapter's real limit, the same PNG would canonicalize differently on two
-/// machines and the id would stop naming one thing.
+/// A fixed constant rather than a device query, which is load-bearing: were the
+/// downsample factor to follow the adapter's real limit, the same PNG would
+/// canonicalize differently on two machines and the id would stop naming one thing.
+///
+/// It becomes a texture, so it must not exceed the engine's `MAX_TEXTURE_DIM_2D`.
+/// That is a **bound, not a match** — the engine holds the two apart with a static
+/// assertion, and this one may sit below: it is also a frozen id derivation, so
+/// raising it re-canonicalizes nothing already stored but does admit larger content,
+/// which is a decision about substrates rather than about textures.
 pub const MAX_SUBSTRATE_DIM: u32 = 2048;
 
 /// Stable identity of an asset: the BLAKE3 hash of its **decoded canonical

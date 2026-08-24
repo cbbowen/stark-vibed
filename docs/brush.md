@@ -382,11 +382,24 @@ shortening binds, because the loop pays per segment. Only a brush whose tip
 **That last limit is published rather than discovered.** The region is a single
 texture bounded by `MAX_TEXTURE_DIM_2D`, which is *the* number: the engine asks the
 device for exactly it and never allocates past it, so it is a statement about which
-devices Stark runs on rather than a tuning knob. At 2048 that is every WebGPU
-implementation and a WebGL2-class one besides, and each step up narrows the set.
-One tip has to fit a region whole, so this puts a ceiling on the tip's **reach**,
-`size × elongation`, of about 887 canvas px (less for a bleeding brush, whose
-firings reach back past the segment they follow). `budget::max_tip_reach` is that ceiling and
+devices Stark runs on rather than a tuning knob. At **8192** it is where WebGPU
+itself sits — `Limits::default()`'s cap and the floor a conformant implementation
+must meet — so every device Stark can run on already qualifies. One tip has to fit
+a region whole, so this puts a ceiling on the tip's **reach**, `size × elongation`,
+of about 3936 canvas px (less for a bleeding brush, whose firings reach back past
+the segment they follow). That is past `MAX_RADIUS × 7.8`, so the editor gives up
+nothing until the very top of its size slider.
+
+**The region's two bounds are different numbers, and the difference is the point.**
+`REGION_BUDGET_DIM` (2048, ~67 MB a piece) is what the chunker *aims* at, and
+`MAX_REGION_DIM` is the ceiling a piece may reach when a single segment demands it
+— which cutting can never get under, since cutting is by segment. Raising the
+budget to the ceiling instead would let an ordinary long stroke grow its pieces
+there too: a 10 px tip crossing the canvas draws exactly as well in 67 MB pieces as
+in 1 GB ones. So the big region is paid only by the stroke that asks — around
+124 MB for the widest brush the editor offers drawn along its facing axis, ~500 MB
+for that same brush drawn at 45°, where an axis-aligned box around a long diagonal
+tip is at its worst — transient, and freed per piece. `budget::max_tip_reach` is that ceiling and
 `budget::max_stretch` is it expressed in the units the editor's slider moves in;
 the frontend clamps every brush against them (`state::hold_the_tip_drawable`), so
 no brush the app can build degrades, and `TipTooLarge` is left for a record from a
@@ -394,17 +407,15 @@ peer or another build. Two properties keep that honest and are tested as such: t
 published cap is *exactly* the frontier `fit_len` refuses at — the same arithmetic
 inverted, not a second copy — and what the editor offers always draws.
 
-The ceiling is why the stretch slider's top moves with size. Below about a 110 px
+The ceiling is why the stretch slider's top moves with size. Up to about a 492 px
 radius nothing is given up, the knob saturating at an elongation of 8 before the
-region does; a larger brush trades, and it is the **stretch** that yields rather
-than the size, because `size` has four writers (the panel slider, the editor row,
-the tuning drag and the `[`/`]` keys) and is what the artist reaches for. Two ways
-to lift the ceiling, and they cost different things: raise `MAX_TEXTURE_DIM_2D`,
-which is one line and buys reach proportionally but drops the devices that cannot
-meet it — or give the loop more than one region, which costs nobody anything and is
-narrower than it looks, since the reservoir is a fixed 64×64 brush-local texture
-and the deposit is per-texel local, so the only pass needing the whole tip resident
-is `exchange`'s gather over the canvas beneath it.
+region does; only the last of the size slider trades, and it is the **stretch**
+that yields rather than the size, because `size` has four writers (the panel
+slider, the editor row, the tuning drag and the `[`/`]` keys) and is what the
+artist reaches for. Lifting the ceiling further would mean giving the loop more
+than one region — narrower than it looks, since the reservoir is a fixed 64×64
+brush-local texture and the deposit is per-texel local, so the only pass needing
+the whole tip resident is `exchange`'s gather over the canvas beneath it.
 
 **Continuous stamping (swept segments).** Discrete dabs are visible with hard
 tips. The fix: stamp each short *segment* of the flattened curve as one quad

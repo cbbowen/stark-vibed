@@ -17,7 +17,7 @@ use std::ops::Range;
 
 use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 
-use super::budget::{MAX_REGION_DIM, MAX_STAMPS};
+use super::budget::{MAX_REGION_DIM, MAX_STAMPS, REGION_BUDGET_DIM};
 use super::segments::{BleedFire, Segment, Sweep};
 
 /// Call `f(segment index, tile)` for every tile whose *texture* (interior + apron) a
@@ -77,7 +77,7 @@ pub(super) fn piece_sweeps<'a>(
 /// The canvas box a set of sweeps covers, accumulated one sweep at a time.
 ///
 /// **The one definition of what a piece needs**, and the reason it is a type. The
-/// chunker's promise — "this piece fits [`MAX_REGION_DIM`]" — and the region the loop
+/// chunker's promise — "this piece fits a region" — and the region the loop
 /// actually allocates have to be the same rectangle, and they are because they are the
 /// same arithmetic: [`Covered::rect`] takes its extent from [`dims`](Self::dims),
 /// which is the very function the chunker checked. Derived separately — a bounding box
@@ -241,10 +241,15 @@ fn segment_bounds(s: &Sweep) -> (Vec2, Vec2) {
 /// itself rather than one the fitter made for it.
 ///
 /// Greedy: extend the run until one more segment would push its region past
-/// [`MAX_REGION_DIM`], or its dispatch batch past [`MAX_STAMPS`]. A run always holds
-/// at least one segment — one tip's own extent is the floor no subdivision gets
-/// under, which `budget::fit_len` prices (shortening segments until one fits) and
-/// `dynamics_setup` gates on instead.
+/// [`REGION_BUDGET_DIM`], or its dispatch batch past [`MAX_STAMPS`]. A run always
+/// holds at least one segment — one tip's own extent is the floor no subdivision
+/// gets under, which `budget::fit_len` prices (shortening segments until one fits)
+/// and `dynamics_setup` gates on instead.
+///
+/// So a piece may exceed the budget, and only in that one way: a brush whose single
+/// segment wants more gets a piece of exactly that segment. What it may never exceed
+/// is [`MAX_REGION_DIM`], the size a texture can be, and `fit_len` is what makes that
+/// true before the first segment is ever measured here.
 ///
 /// A segment is measured **with its own bleed firings** ([`piece_sweeps`]'s reason): a
 /// window can reach back a quantum before the segment it fires after, so a piece's
@@ -266,7 +271,8 @@ pub(super) fn chunk_segments(segments: &[Segment], fires: &[BleedFire]) -> Vec<R
         }
         let grown = run.union(here);
         let (w, h) = grown.dims();
-        if i > start && (w > MAX_REGION_DIM || h > MAX_REGION_DIM || i - start >= MAX_STAMPS) {
+        if i > start && (w > REGION_BUDGET_DIM || h > REGION_BUDGET_DIM || i - start >= MAX_STAMPS)
+        {
             runs.push(start..i);
             (start, run) = (i, here);
         } else {
@@ -287,7 +293,7 @@ impl Covered {
     ///
     /// **The extent comes from [`Coverage::dims`]**, which is the function
     /// [`chunk_segments`] checked this piece against. That is the whole point of the
-    /// type: the promise "this piece fits `MAX_REGION_DIM`" and the allocation the
+    /// type: the promise "this piece fits a region" and the allocation the
     /// promise is about are now one arithmetic rather than two that a comment asked to
     /// agree. Only the halo comes from the tile set, and only because a diagonal stroke
     /// touches fewer tiles than its bounding rectangle holds — compositing the
@@ -312,9 +318,13 @@ impl Covered {
         // so at the point the region is actually allocated. Debug-only because the
         // failure is an oversized allocation rather than a wrong picture, and because a
         // panic in the render path is its own defect (see `plan::dispatch_rect`).
+        // Against the **ceiling**, not the chunker's budget: a piece holding a
+        // single oversized segment is allowed to exceed the budget and does so by
+        // design (`chunk_segments`). What is never allowed is a region past the size
+        // a texture can be, which is what `budget::fit_len` guarantees upstream.
         debug_assert!(
             w <= MAX_REGION_DIM && h <= MAX_REGION_DIM,
-            "a {w}x{h} region overruns the {MAX_REGION_DIM} the chunker promised",
+            "a {w}x{h} region overruns the {MAX_REGION_DIM} a texture can be",
         );
         // The top-left *tile* origin the box spans. Taken off the tile set rather than
         // re-floored off the box, which is the same point: `dims` is a span between
@@ -623,6 +633,11 @@ mod tests {
     /// (so the sequence of segments the loop walks is unchanged — the whole reason
     /// cutting it is sound), and every piece actually fits the region bound the cut
     /// exists to respect.
+    ///
+    /// Measured against [`REGION_BUDGET_DIM`] rather than the ceiling, which is the
+    /// stronger claim and the one worth making: this tip is far inside what a single
+    /// segment may demand, so nothing here has any business exceeding the budget.
+    /// Checked against the ceiling it would also pass with the cut removed entirely.
     #[test]
     fn the_chunks_tile_the_stroke_and_each_one_fits() {
         // A stroke far longer than one region in both axes, and a fat tip whose own
@@ -644,7 +659,7 @@ mod tests {
             next = run.end;
             let (w, h) = measured(&segments[run.clone()], &[]).expect("a piece is never empty");
             assert!(
-                w <= MAX_REGION_DIM && h <= MAX_REGION_DIM,
+                w <= REGION_BUDGET_DIM && h <= REGION_BUDGET_DIM,
                 "piece {run:?} needs a {w}x{h} region",
             );
             assert!(run.len() <= MAX_STAMPS, "piece {run:?} overruns the batch");

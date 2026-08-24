@@ -1253,16 +1253,16 @@ so the question it asks may not be routed through one that isn't.
 
 **What "too large" means is asked of the device, not written down.** `export_plan`
 refuses a size past `device.limits().max_texture_dimension_2d` so a huge scale
-comes back as an error rather than a wgpu validation panic. That used to be the
-literal 8192, and the literal was wrong in the *permissive* direction:
-`wgpu::Limits::default()` caps 2D textures there and the frontend requests it, so
-on the app's device the two agreed by coincidence — but the headless device
-(`GpuContext::headless`) asks for `downlevel_defaults`, the 2048-px web/WebGL2
-floor, and every size from 2049 to 8192 passed a check written against a limit
-that device did not have. A guard kept in step with a limit it does not read is a
-guard already out of step somewhere. Reading it also lets the ceiling *rise*: the
-adapters this runs on report far more (32768 is common), so a frontend that
-requests more gets more, with nothing here to update.
+comes back as an error rather than a wgpu validation panic. That used to be a
+literal, and a literal is wrong in the *permissive* direction here because there
+are two devices to be wrong about: the frontend requests `wgpu::Limits::default()`
+while the headless device (`GpuContext::headless`) asks only for the engine's own
+minimums (`MAX_TEXTURE_DIM_2D`). Written against the frontend's cap, every size
+between the two passed a check the headless device could not honour. A guard kept
+in step with a limit it does not read is a guard already out of step somewhere —
+and both numbers have since moved, which is the argument making itself. Reading it
+also lets the ceiling *rise*: the adapters this runs on report far more (32768 is
+common), so a frontend that requests more gets more, with nothing here to update.
 
 **Export is `async`, and had to be.** Reading pixels back off the GPU is the one
 inherently asynchronous GPU operation (§7), and it is the one place native and

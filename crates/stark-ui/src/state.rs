@@ -1609,12 +1609,18 @@ mod tests {
         }
     }
 
-    /// The clamp costs a brush nothing it did not have to give: every stretch a
-    /// small tip can carry survives it untouched. A clamp that over-reached would
-    /// pass the test above by flattening every brush to no stretch at all.
+    /// The clamp costs a brush nothing it did not have to give: every stretch a tip
+    /// short of the region's reach can carry survives it untouched. A clamp that
+    /// over-reached would pass the test above by flattening every brush to no
+    /// stretch at all.
+    ///
+    /// The sizes stop at 400 rather than at `MAX_RADIUS` because the frontier is
+    /// near 492 (`stark_engine::max_tip_reach` over an elongation of 8) and a test
+    /// pinning where it falls would be a test about the region arithmetic wearing
+    /// this one's name.
     #[test]
     fn the_clamp_leaves_a_small_tip_alone() {
-        for size in [crate::panels::brush::MIN_RADIUS, 30.0, 110.0] {
+        for size in [crate::panels::brush::MIN_RADIUS, 30.0, 110.0, 250.0, 400.0] {
             let mut b = BrushParams {
                 size,
                 stretch: BrushParams::MAX_STRETCH,
@@ -1626,6 +1632,7 @@ mod tests {
                 BrushParams::MAX_STRETCH,
                 "a {size} px tip should keep the whole stretch range",
             );
+            assert_eq!(b.size, size, "…and its size untouched");
         }
     }
 

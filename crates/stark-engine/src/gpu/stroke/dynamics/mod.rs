@@ -256,14 +256,20 @@ mod tests {
     /// number kept in step by hand, and what is left for `TipTooLarge` is a record
     /// from somewhere else — a peer, or a file built by another build.
     ///
-    /// It also pins that the cap is not vacuous: below about a 110 px radius the
-    /// whole slider stays available, because the knob tops out at an elongation of
-    /// 8 and a small tip cannot spend its way past the region however far it is
-    /// drawn out. A cap that quietly became "no stretch for anybody" would pass the
-    /// frontier test above and fail here.
+    /// It also pins that the cap is not vacuous: a non-bleeding tip up to 400 px
+    /// keeps the *whole* slider, because the knob tops out at an elongation of 8 and
+    /// such a tip cannot spend its way past the region however far it is drawn out.
+    /// A cap that quietly became "no stretch for anybody" would pass the frontier
+    /// test above and fail here.
+    ///
+    /// 400 is a checked bound rather than the true one, which sits near 492 — the
+    /// region holds a reach of ~3936 and the knob can ask for eight times the size.
+    /// Stated loosely on purpose: the exact figure moves with `MAX_TEXTURE_DIM_2D`
+    /// and the tile arithmetic, and a test that pinned it would fail on every
+    /// retune while claiming to be about the slider.
     #[test]
     fn the_offered_stretch_is_always_drawable() {
-        for size in [1.0f32, 30.0, 110.0, 111.0, 250.0, 400.0, 500.0] {
+        for size in [1.0f32, 30.0, 110.0, 250.0, 400.0, 492.0, 500.0] {
             for bleed in [0.0f32, 0.6] {
                 let mut b = brush(size, 0.5);
                 b.dynamics.bleed = bleed;
@@ -274,7 +280,7 @@ mod tests {
                      degrades",
                     b.stretch,
                 );
-                if size <= 110.0 && bleed == 0.0 {
+                if size <= 400.0 && bleed == 0.0 {
                     assert_eq!(
                         b.stretch,
                         BrushParams::MAX_STRETCH,

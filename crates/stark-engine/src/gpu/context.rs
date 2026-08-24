@@ -96,17 +96,22 @@ impl GpuHealth {
 /// **It is the requirement rather than a reading of one.** The limit is *set* from
 /// this constant rather than raised to meet it, so the number here and the number
 /// the device was asked for cannot drift apart, and a build that raises it asks for
-/// the bigger device instead of quietly creating a texture nobody promised. What it
-/// costs is device breadth: at 2048 every WebGPU implementation qualifies and so
-/// does a WebGL2-class one, and each step up narrows that. A frontend free to be
-/// less portable may ask for more — `stark-ui` requests `Limits::default()` improved
-/// by these — but nothing in the engine may *use* more.
+/// the bigger device instead of quietly creating a texture nobody promised.
+///
+/// What it costs is device breadth, and 8192 is where WebGPU itself sits: it is
+/// `wgpu::Limits::default()`'s cap and the floor the WebGPU spec requires of a
+/// conformant implementation, so every device Stark can run on already meets it.
+/// The value was 2048 — the `downlevel_defaults()`/WebGL2 floor — which bought
+/// portability to a backend this workspace does not build: no crate enables wgpu's
+/// `webgl` feature, so a WebGL2 device was never going to be handed to the engine
+/// anyway. What that 2048 was actually costing was the reach of a brush, since the
+/// stamp loop's region is a texture (`gpu::stroke::budget::MAX_REGION_DIM`).
 ///
 /// **A fixed constant, never a device query**, which is load-bearing beyond texture
 /// allocation: the substrate downsample is part of the canonical form an asset id is
 /// taken over (§19), so following the adapter's real limit would canonicalize the
 /// same PNG differently on two machines and the id would stop naming one thing.
-pub(crate) const MAX_TEXTURE_DIM_2D: u32 = 2048;
+pub(crate) const MAX_TEXTURE_DIM_2D: u32 = 8192;
 
 // The canonical-form caps that become **textures** have to fit inside what the device
 // was asked for, and both are frozen one-way ratchets (§19) that a future raise could
