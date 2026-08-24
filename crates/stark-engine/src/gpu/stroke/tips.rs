@@ -82,7 +82,7 @@ impl TipCache {
     /// layout they hang it off, not in how the texture is chosen.
     ///
     /// The **orientation source** is part of the question for an image brush (§6.6):
-    /// follow-stroke reads a single identity layer, pen a padded stack of them. A round
+    /// follow-stroke reads a single identity layer, pen a stack of them. A round
     /// tip is rotation-invariant and answers both with the same one slice, which is why
     /// it is asked only for its hardness.
     pub(super) fn prefix_view(

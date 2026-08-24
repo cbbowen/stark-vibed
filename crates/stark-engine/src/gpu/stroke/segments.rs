@@ -869,14 +869,14 @@ pub(super) fn orientation_turns(source: OrientationSource, dir: Vec2, tilt: Vec2
 /// brush already binds:
 ///
 /// - `FollowStroke` faces along the tangent, so `û = t̂` and therefore `v̂ = t̂` — the
-///   relative angle stays 0 and the single unpadded identity layer still serves.
+///   relative angle stays 0 and the single identity layer still serves.
 /// - A round tip is rotation-invariant: one slice answers every angle (§6.6).
-/// - `Pen` on a stamp already reads the padded stack of every angle, so a shifted
-///   slice index is free.
+/// - `Pen` on a stamp already reads the stack of every angle, so a shifted slice
+///   index is free.
 ///
 /// An axis free of the facing one would break all three at once — a follow-stroke
-/// stamp would need the padded rotatable bake it never builds — which is why there
-/// is no second direction to set.
+/// stamp would need the rotatable stack it never builds — which is why there is no
+/// second direction to set.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(super) struct Stretch {
     /// `m` — the segment's travel measured in the stretched frame, as a multiple of
@@ -2129,7 +2129,7 @@ mod stretch_tests {
     /// The prefix-τ volume's own lookup, evaluated by quadrature rather than baked:
     /// slice `w` holds the mask turned by `+w` turns and integrated along `+x`, so a
     /// read at `(x, y)` is `∫ mask(R(−wτ)·(u, y)) du` up to `x`
-    /// (`assets::rotate_layers_padded`, `assets::build_prefix_tau`).
+    /// (`assets::rotate_layers`, `assets::build_prefix_tau`).
     fn prefix(x: f32, y: f32, w: f32) -> f32 {
         const STEPS: usize = 4000;
         let (lo, hi) = (-1.5f32, x.min(1.5));
