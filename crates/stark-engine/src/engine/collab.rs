@@ -71,6 +71,15 @@ impl Engine {
                 a.id.actor = actor;
             }
         }
+        // The layer-id space belongs to the actor, so this client's counter resumes
+        // past whatever *it* has already minted here (§17.9). A first share finds
+        // nothing and so does start at 1: the layer ids in a solo log are `SOLO`'s,
+        // and unlike the action ids above they are deliberately left that way. What
+        // restarting regardless got wrong is that the actor of a second share is the
+        // first one back again — an identity is a browser's persisted key, not a
+        // session's — as is the actor of a file this client shared before and has
+        // just loaded.
+        self.authoring.next_layer = Self::next_ordinal(actor, &log);
         // Replay from the substrate this document's log *starts* from, not from the
         // default — same base state `reset_document` builds, so re-hosting a document
         // that was created on a non-default canvas doesn't silently move it.
@@ -82,9 +91,6 @@ impl Engine {
         self.authoring.outbox = Some(Vec::new());
         self.preview.set_doc(None);
         self.committed_changed();
-        // New actor, new layer-id space: this client's counter restarts, and the
-        // pre-share layers keep the `SOLO` ids they were minted with.
-        self.authoring.next_layer = 1;
         self.mark_live_stale();
     }
 

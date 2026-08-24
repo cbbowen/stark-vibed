@@ -761,9 +761,13 @@ struct Authoring {
     /// This client's Lamport counter: the `lamport` half of every [`ActionId`] it
     /// mints, advanced past everything it has seen (§12.1).
     clock: u64,
-    /// The next per-actor layer ordinal. Resumed past the log's own on a load
-    /// ([`Engine::resync_counters`]) and restarted at 1 when the actor changes,
-    /// because the id space is partitioned by author (§17.9).
+    /// The next per-actor layer ordinal, resumed past whatever this actor has
+    /// already minted in the log at both places it is set — a load
+    /// ([`Engine::resync_counters`]) and a share ([`Engine::next_ordinal`]).
+    ///
+    /// The id space is partitioned by author (§17.9), and this is the half that is
+    /// *ours*; what it is not is empty merely because a session is new, since the
+    /// actor of a second share is the first one back again.
     next_layer: u64,
     /// Locally-committed actions awaiting broadcast to peers (§12.4), drained by
     /// the transport through [`Engine::take_outbox`].

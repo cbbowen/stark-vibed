@@ -685,6 +685,16 @@ peer must agree on because it predates any actor. `Engine::resync_counters`
 resumes only *this* actor's counter, since resuming past someone else's would
 skip ids for no reason and hide the fact that they cannot collide.
 
+The same defect kept a second door, closed later: **sharing** restarted the
+counter outright, on the reading that a new session is a new actor with an empty
+half of the id space. An identity is a browser's persisted key rather than a
+session's, so re-sharing a painting — or sharing one this client shared before and
+has reopened — restarts inside a half it has already minted in, and mints an id
+the document holds. Both places that set the counter ask the log for it now
+(`Engine::next_ordinal`), which is the only thing either of them can trust:
+neither "the actor changed" nor "the session is new" is the question, and the
+second one has no honest answer at all.
+
 **A remote `RemoveLayer` could strand the active layer.** The engine repointed
 `session.active_layer` after a *local* `RemoveLayer`, but `merge_remote` had no
 equivalent, so a peer deleting the layer I am painting on left me pointed at a

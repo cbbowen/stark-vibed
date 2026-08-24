@@ -395,6 +395,72 @@ fn leaving_a_session_hands_the_history_back() {
     );
 }
 
+/// **Sharing the same document twice does not mint a layer id twice** (§17.9).
+///
+/// Partitioning the id space by author is what makes starting a counter at 1 safe,
+/// and the half it partitions off is *this actor's* — which the actor of a second
+/// share already has ids in, being the first one back again: an identity is a
+/// browser's persisted key, not a session's. Starting over there mints an id the
+/// document holds, the convergence failure `LayerId::mint` exists to rule out, and
+/// locally it is worse than it sounds: `layer_index` resolves an id to whichever
+/// layer comes first, so paint aimed at the new layer lands on the old.
+///
+/// Two roads in, because the counter is resumed from the log rather than from
+/// whether the actor changed, and only the second road can tell those apart.
+#[test]
+fn re_sharing_a_document_does_not_re_mint_a_layer_id() {
+    let Some(mut a) = engine_or_skip() else {
+        return;
+    };
+
+    a.start_collaboration(ActorId(1));
+    a.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    let first = a.observe().active_layer;
+
+    // The same browser sharing the same painting again: `leave` kept the canvas, and
+    // the identity that comes back is the one that just left.
+    a.end_collaboration();
+    a.start_collaboration(ActorId(1));
+    a.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    let second = a.observe().active_layer;
+
+    assert_ne!(
+        first, second,
+        "the second session re-minted an id the document already holds"
+    );
+    let ids: Vec<_> = a.observe().layers.iter().map(|l| l.id).collect();
+    assert_eq!(ids.len(), 3, "root and one layer per session");
+    assert_eq!(
+        ids.iter().collect::<std::collections::HashSet<_>>().len(),
+        ids.len(),
+        "every layer in the stack is reachable by its own id"
+    );
+
+    // The second road: opened off disk, where nothing about this engine's own state
+    // remembers that the ids in the file are this client's — the load starts it at
+    // `SOLO`, so the actor does change, and only the log can say so.
+    let bytes = a.save_bytes().expect("save the shared document");
+    let Some(mut reopened) = engine_or_skip() else {
+        return;
+    };
+    reopened.load_bytes(&bytes).expect("load it back");
+    reopened.start_collaboration(ActorId(1));
+    reopened.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    assert!(
+        !ids.contains(&reopened.observe().active_layer),
+        "sharing a reopened file minted an id the file already holds"
+    );
+}
+
 /// **A peer's merge-down removes a layer too**, so it has to repoint the brush the
 /// same way a peer's `RemoveLayer` does (§17.9).
 ///

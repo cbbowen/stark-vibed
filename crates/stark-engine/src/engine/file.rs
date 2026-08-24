@@ -25,7 +25,7 @@ use stark_model::AssetNeed;
 use stark_model::ColorSpaceId;
 use stark_model::DocumentFile;
 use stark_model::SubstrateId;
-use stark_model::document::Action;
+use stark_model::document::{Action, ActorId, LayerId};
 
 impl Engine {
     /// Snapshot the document as a saveable [`DocumentFile`] (§8), bundling the
@@ -676,25 +676,39 @@ impl Engine {
     /// After loading, advance the id counters past everything in the log so new
     /// edits get fresh, monotonic ids.
     pub(super) fn resync_counters(&mut self, actions: &[Action]) {
-        let mut max_lamport = None;
-        // Only *this* client's layer ids matter: the id space is partitioned by
-        // author (§17.9), so resuming past someone else's counter would
-        // skip ids for no reason and, worse, hide the fact that they cannot collide.
-        let mut max_ordinal = 0u64;
-        for a in actions {
-            max_lamport = Some(max_lamport.map_or(a.id.lamport, |m: u64| m.max(a.id.lamport)));
-            // Which actions mint an id is asked of [`ActionKind::minted_layers`],
-            // beside the variants, rather than answered by a list kept here. The
-            // list kept here is how `AddFilter` came to be missed: it is not the
-            // same set as the actions that *name* an id, so nothing about a wrong
-            // answer shows up until two layers share one.
-            for id in a.kind.minted_layers() {
-                if id.minted_by(self.actor()) {
-                    max_ordinal = max_ordinal.max(id.ordinal());
-                }
-            }
-        }
+        let max_lamport = actions.iter().map(|a| a.id.lamport).max();
         self.authoring.clock = max_lamport.map_or(0, |m| m + 1);
-        self.authoring.next_layer = max_ordinal + 1;
+        self.authoring.next_layer = Self::next_ordinal(self.actor(), actions);
+    }
+
+    /// The next layer ordinal `actor` may mint against `actions`: one past the
+    /// highest it has minted in them, or 1 if it has minted none (§17.9).
+    ///
+    /// Only *this* actor's ids are counted, because the id space is partitioned by
+    /// author: resuming past someone else's counter would skip ids for no reason
+    /// and, worse, hide the fact that they cannot collide.
+    ///
+    /// Asked of the log rather than assumed, at both of the two places a client's
+    /// counter is set. "This actor has minted nothing here" is the answer far less
+    /// often than it looks — a re-shared session and a file this same client shared
+    /// before both arrive holding ids in this actor's half of the space — and where
+    /// it is wrong it mints an id the document already holds, which is two layers
+    /// under one id rather than an id merely reused.
+    ///
+    /// Which actions mint an id is asked of [`ActionKind::minted_layers`], beside
+    /// the variants, rather than answered by a list kept here. The list kept here is
+    /// how `AddFilter` came to be missed: it is not the same set as the actions that
+    /// *name* an id, so nothing about a wrong answer shows up until two layers share
+    /// one.
+    ///
+    /// [`ActionKind::minted_layers`]: stark_model::document::ActionKind::minted_layers
+    pub(super) fn next_ordinal(actor: ActorId, actions: &[Action]) -> u64 {
+        actions
+            .iter()
+            .flat_map(|a| a.kind.minted_layers())
+            .filter(|id| id.minted_by(actor))
+            .map(LayerId::ordinal)
+            .max()
+            .map_or(1, |n| n + 1)
     }
 }
