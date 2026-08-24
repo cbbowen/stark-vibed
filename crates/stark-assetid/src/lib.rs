@@ -17,7 +17,10 @@
 //! Three kinds, two shapes:
 //!
 //! - a **brush shape** is coverage — luminance × alpha, so white-on-black masks
-//!   and alpha-cut masks both work ([`coverage`]);
+//!   and alpha-cut masks both work — **reach-normalized**, so the circle that
+//!   circumscribes its content is the disc inscribed in its square and a brush's
+//!   `size` names the disc the mark fits in, for every shape ([`coverage`],
+//!   [`normalize_reach`]);
 //! - a **canvas substrate** is height — channel 0, because a height map's grey *is*
 //!   its height and weighting the channels would tilt the substrate ([`height`]);
 //! - a **picture** is all four channels, kept ([`picture`]) — an image placed into
@@ -32,9 +35,10 @@
 //! that is the one thing every consumer indexes by.
 //!
 //! **Changing anything here changes what existing documents mean.** The id is
-//! derived from the decoded field, so a change to the decode, the downsample or
-//! the caps re-names content that is already on disk and already referenced by
-//! saved logs. Treat the constants and all three `id` derivations as frozen.
+//! derived from the decoded field, so a change to the decode, the downsample,
+//! the reach normalization or the caps re-names content that is already on disk
+//! and already referenced by saved logs. Treat the constants and all three `id`
+//! derivations as frozen.
 //!
 //! **And the three dimension caps are a one-way ratchet: they may only ever go up.**
 //! They are enforced on the way *in*, so lowering one refuses content that a bundle
@@ -331,6 +335,13 @@ pub fn picture(png_bytes: &[u8]) -> Result<Picture> {
 ///
 /// Coverage = luminance × alpha, so white-on-black masks (luminance) and
 /// alpha-cut masks both work. Palette/grayscale/16-bit inputs are normalized.
+///
+/// The canonical form is **reach-normalized** ([`normalize_reach`]): the mask's
+/// content is scaled about its centre so the circle that circumscribes it is the
+/// disc inscribed in the mask square. That makes the brush `size` knob mean one
+/// thing for every shape — the radius of the disc the mark is guaranteed to fit
+/// in, which is what it already meant for the built-in round tip — and it is what
+/// lets the renderer bound every stamp's extent by its radius alone (§6.6).
 pub fn coverage(png_bytes: &[u8]) -> Result<Canonical> {
     let mut decoder = png::Decoder::new(Cursor::new(png_bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
@@ -373,7 +384,136 @@ pub fn coverage(png_bytes: &[u8]) -> Result<Canonical> {
         // transformation did not apply — not that indexed input is rejected.
         png::ColorType::Indexed => return Err(AssetError("indexed PNG not expanded".into())),
     }
-    Ok(downsample(texels, info.width, info.height, MAX_SHAPE_DIM))
+    Ok(normalize_reach(downsample(
+        texels,
+        info.width,
+        info.height,
+        MAX_SHAPE_DIM,
+    )))
+}
+
+/// Scale a coverage field's content about its centre so the circle that
+/// circumscribes it is the unit disc inscribed in the mask square — the shape
+/// half of the §19 identity contract's canonical form, applied by [`coverage`]
+/// after the cap and before the hash.
+///
+/// **The invariant every consumer may rely on: nothing the mask can paint lies
+/// outside the inscribed disc**, bilinear sampling included. Distances are
+/// measured in the square's own `[-1, 1]²` coordinates — the frame every renderer
+/// maps the mask into whatever its pixel aspect — and each texel is charged one
+/// texel diagonal of padding, which covers both its own extent and the reach of a
+/// bilinear tap. A rotation maps the disc to itself, so the bound holds at every
+/// orientation, which is what lets a renderer's extent arithmetic use the radius
+/// alone and a pen-oriented bake rotate the mask inside its own square.
+///
+/// Content is also scaled *up* to just inside the disc when it huddles well
+/// short of it, so a loosely-cropped import paints the size its brush names
+/// instead of some fraction of it. "Just inside" leaves a dead band ([`slack`
+/// below]) sized to the measurement's own texel granularity, and that band is
+/// what makes the function **idempotent**: its output measures back inside the
+/// band and is returned unchanged, so re-decoding a stored mask lands on the same
+/// texels and the same id. The centre is the mask's own, never the content's —
+/// an author's deliberate offset is composition, not slop.
+///
+/// Resampling is a bilinear tap at the inverse-mapped position: pure `f32`
+/// arithmetic in a fixed order, so every build canonicalizes a source to the same
+/// bytes. The worst minification is `≈1.6×` (a corner-filling mask), mild enough
+/// that the tap loses nothing a coverage mask carries.
+fn normalize_reach(c: Canonical) -> Canonical {
+    let (w, h) = (c.width, c.height);
+    let (wf, hf) = (w as f32, h as f32);
+    // Brush-local coordinates of a texel's centre, and the padding one texel is
+    // charged: its own diagonal, which bounds the texel's extent and the support
+    // of a bilinear tap on it.
+    let local = |x: u32, y: u32| -> (f32, f32) {
+        (
+            (2.0 * (x as f32 + 0.5) - wf) / wf,
+            (2.0 * (y as f32 + 0.5) - hf) / hf,
+        )
+    };
+    // `sqrt`, never `hypot`: the id is taken over these texels, and `sqrt` is
+    // correctly rounded by IEEE 754 where `hypot` is a libm call two platforms
+    // may round differently — a one-ulp fork here is two ids for one image.
+    let dist = |x: f32, y: f32| (x * x + y * y).sqrt();
+    let pad = dist(2.0 / wf, 2.0 / hf);
+    let mut furthest = 0.0f32;
+    for y in 0..h {
+        for x in 0..w {
+            if c.texels[(y * w + x) as usize] > 0 {
+                let (cx, cy) = local(x, y);
+                furthest = furthest.max(dist(cx, cy));
+            }
+        }
+    }
+    if furthest == 0.0 {
+        // Nothing to measure: an empty mask is its own canonical form.
+        return c;
+    }
+    let reach = furthest + pad;
+
+    // The dead band under the disc's rim that counts as "already normalized", and
+    // the target the rescale aims for — its centre. Sized to the measurement's own
+    // granularity (a rescale lands within ~2 padded texels of its target, so 6
+    // keeps the output strictly inside the band), floored so a fine mask is not
+    // asked to hit a hair's width, and it grows for a coarse mask until, past
+    // `t ≤ 2·pad`, aiming inside the disc at all stops being meaningful and the
+    // invariant falls back to clipping.
+    let slack = (6.0 * pad).max(0.1);
+    let t = 1.0 - 0.5 * slack;
+
+    let mut out = c;
+    let scale = if t <= 2.0 * pad {
+        // Too coarse to place content (a handful of texels on an edge): keep it
+        // where it is and let the clip below enforce the invariant. Decided from
+        // the dimensions alone, so a re-decode takes the same branch.
+        None
+    } else if reach <= 1.0 && reach >= 1.0 - slack {
+        None
+    } else {
+        Some(t / reach)
+    };
+    if let Some(s) = scale {
+        let src = &out.texels;
+        let sample = |fx: f32, fy: f32| -> f32 {
+            let x0 = fx.floor();
+            let y0 = fy.floor();
+            let (tx, ty) = (fx - x0, fy - y0);
+            let at = |xi: f32, yi: f32| -> f32 {
+                if xi < 0.0 || yi < 0.0 || xi >= wf || yi >= hf {
+                    0.0
+                } else {
+                    src[yi as usize * w as usize + xi as usize] as f32
+                }
+            };
+            let a = at(x0, y0) * (1.0 - tx) + at(x0 + 1.0, y0) * tx;
+            let b = at(x0, y0 + 1.0) * (1.0 - tx) + at(x0 + 1.0, y0 + 1.0) * tx;
+            a * (1.0 - ty) + b * ty
+        };
+        let mut texels = vec![0u8; src.len()];
+        let (cxp, cyp) = (wf / 2.0, hf / 2.0);
+        for y in 0..h {
+            for x in 0..w {
+                let sx = cxp + ((x as f32 + 0.5) - cxp) / s - 0.5;
+                let sy = cyp + ((y as f32 + 0.5) - cyp) / s - 0.5;
+                texels[(y * w + x) as usize] = (sample(sx, sy) + 0.5) as u8;
+            }
+        }
+        out.texels = texels;
+    }
+    // The invariant, enforced rather than inferred: whatever the path above did,
+    // no texel outside the disc (padding included) survives. A no-op on every
+    // texel the rescale placed — the band arithmetic keeps content well inside —
+    // so this only ever clips the coarse-mask fallback, and clipping is
+    // idempotent where rescaling is not.
+    for y in 0..h {
+        for x in 0..w {
+            let (cx, cy) = local(x, y);
+            if dist(cx, cy) + pad > 1.0 {
+                out.texels[(y * w + x) as usize] = 0;
+            }
+        }
+    }
+    out
 }
 
 /// Decode a canvas substrate to its canonical height field.
@@ -599,7 +739,7 @@ mod tests {
         let src = fixture();
         assert_eq!(
             coverage(&src).expect("coverage").id().to_hex(),
-            "2c30aae5d574d125a86a68dbf103d4581c87f65fb1f1f8f1813cde994dcba3c6",
+            "8ed3638fd794589057f44c22de7b3ef00a57cc7421c183909c5b3d74c80d1825",
         );
         assert_eq!(
             height(&src).expect("height").id().to_hex(),
@@ -631,18 +771,20 @@ mod tests {
         // fact neither of the others carries at all.
         let mut src = Vec::new();
         {
-            let mut enc = png::Encoder::new(&mut src, 2, 2);
+            let mut enc = png::Encoder::new(&mut src, 16, 16);
             enc.set_color(png::ColorType::Rgba);
             enc.set_depth(png::BitDepth::Eight);
             let mut w = enc.write_header().expect("header");
-            w.write_image_data(&[255, 0, 0, 128].repeat(4))
+            w.write_image_data(&[255, 0, 0, 128].repeat(256))
                 .expect("data");
         }
         let p = picture(&src).expect("picture");
         assert_eq!(p.sample(0, 0), [255, 0, 0, 128]);
-        // …where the other two collapse it to one byte each, differently.
+        // …where the other two collapse it to one byte each, differently. Read at
+        // the centre: a shape's canonical form is reach-normalized, and a uniform
+        // source keeps its value only where the shrunk content lands.
         assert_eq!(height(&src).expect("height").texels[0], 255);
-        assert_eq!(coverage(&src).expect("coverage").texels[0], 38);
+        assert_eq!(coverage(&src).expect("coverage").texels[8 * 16 + 8], 38);
     }
 
     /// Outside a picture there is no paint, at any distance and on either axis — the
@@ -731,13 +873,128 @@ mod tests {
         // Red-only RGB: channel 0 is full, luminance is not.
         let mut out = Vec::new();
         {
-            let mut enc = png::Encoder::new(&mut out, 2, 2);
+            let mut enc = png::Encoder::new(&mut out, 16, 16);
             enc.set_color(png::ColorType::Rgb);
             enc.set_depth(png::BitDepth::Eight);
             let mut w = enc.write_header().expect("header");
-            w.write_image_data(&[255, 0, 0].repeat(4)).expect("data");
+            w.write_image_data(&[255, 0, 0].repeat(256)).expect("data");
         }
-        assert_eq!(height(&out).expect("height").texels, vec![255; 4]);
-        assert_eq!(coverage(&out).expect("coverage").texels, vec![76; 4]);
+        assert_eq!(height(&out).expect("height").texels, vec![255; 256]);
+        // The centre texel, for the reason `a_picture_keeps_…` reads one: a
+        // shape's canonical form is reach-normalized.
+        assert_eq!(coverage(&out).expect("coverage").texels[8 * 16 + 8], 76);
+    }
+
+    // --- reach normalization ---------------------------------------------
+
+    /// The measure `normalize_reach` bounds: a texel centre's distance from the
+    /// mask centre in the square's own `[-1, 1]²` coordinates, plus the texel
+    /// diagonal charged against the texel's extent and bilinear support.
+    fn padded_dist(c: &Canonical, x: u32, y: u32) -> f32 {
+        let (wf, hf) = (c.width as f32, c.height as f32);
+        let cx = (2.0 * (x as f32 + 0.5) - wf) / wf;
+        let cy = (2.0 * (y as f32 + 0.5) - hf) / hf;
+        (cx * cx + cy * cy).sqrt() + ((2.0 / wf).powi(2) + (2.0 / hf).powi(2)).sqrt()
+    }
+
+    /// Shape sources that between them exercise every branch of the
+    /// normalization: content past the disc (shrunk), content huddled at the
+    /// centre (grown), an author's offset (kept as composition), odd non-square
+    /// dimensions, and a mask too coarse to place at all.
+    fn shape_sources() -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            (
+                "corner dot",
+                gray_png(64, 64, |x, y| u8::from(x < 2 && y < 2) * 255),
+            ),
+            ("full square", gray_png(64, 64, |_, _| 200)),
+            (
+                "centre texel",
+                gray_png(64, 64, |x, y| u8::from(x == 32 && y == 32) * 255),
+            ),
+            (
+                "offset blob",
+                gray_png(63, 47, |x, y| {
+                    let (dx, dy) = (x as f32 - 44.0, y as f32 - 14.0);
+                    u8::from(dx * dx + dy * dy < 64.0) * 180
+                }),
+            ),
+            ("coarse", gray_png(4, 4, |_, _| 255)),
+        ]
+    }
+
+    /// **The invariant every renderer leans on**: nothing a canonical shape can
+    /// paint lies outside the disc inscribed in its square, bilinear support
+    /// included — which is what lets a stamp's extent be bounded by its radius
+    /// alone, at every orientation (§6.6).
+    #[test]
+    fn canonical_content_lies_inside_the_inscribed_disc() {
+        for (name, png) in shape_sources() {
+            let c = coverage(&png).expect(name);
+            for y in 0..c.height {
+                for x in 0..c.width {
+                    if c.texels[(y * c.width + x) as usize] > 0 {
+                        assert!(
+                            padded_dist(&c, x, y) <= 1.0,
+                            "{name}: texel ({x}, {y}) can paint outside the disc",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Normalization is **idempotent to the byte**: its output measures back
+    /// inside the dead band and is returned untouched, so re-decoding a stored
+    /// mask cannot drift. For the other two kinds the round-trip property is free;
+    /// here it is held by the band, and this is what pins it.
+    #[test]
+    fn normalization_is_idempotent() {
+        for (name, png) in shape_sources() {
+            let once = coverage(&png).expect(name);
+            let twice = coverage(&once.encode().expect(name)).expect(name);
+            assert_eq!(once, twice, "{name} drifted on re-decode");
+        }
+    }
+
+    /// Content that huddles at the centre is grown to meet its name: after
+    /// normalization the mark reaches the disc's dead band, so a loosely-cropped
+    /// import paints the size its brush asks for instead of a fraction of it.
+    #[test]
+    fn loose_content_is_grown_to_meet_its_name() {
+        let png = gray_png(256, 256, |x, y| {
+            let (dx, dy) = (x as f32 - 128.0, y as f32 - 128.0);
+            u8::from(dx * dx + dy * dy < (25.0f32).powi(2)) * 255
+        });
+        let c = coverage(&png).expect("decode");
+        let mut furthest = 0.0f32;
+        for y in 0..256 {
+            for x in 0..256 {
+                if c.texels[(y * 256 + x) as usize] > 0 {
+                    furthest = furthest.max(padded_dist(&c, x, y));
+                }
+            }
+        }
+        assert!(
+            (0.85..=1.0).contains(&furthest),
+            "content reaches {furthest} of the disc",
+        );
+    }
+
+    /// A mask whose content already sits in the dead band is **bit-identical** to
+    /// its source: the band is what keeps a well-formed mask's id stable under
+    /// re-import, and most drawn tips are exactly this case.
+    #[test]
+    fn a_disc_bounded_mask_is_already_canonical() {
+        let disc = |x: u32, y: u32| {
+            let (dx, dy) = (x as f32 - 128.0, y as f32 - 128.0);
+            u8::from(dx * dx + dy * dy < (119.0f32).powi(2)) * 200
+        };
+        let c = coverage(&gray_png(256, 256, disc)).expect("decode");
+        for y in 0..256u32 {
+            for x in 0..256 {
+                assert_eq!(c.texels[(y * 256 + x) as usize], disc(x, y), "({x}, {y})");
+            }
+        }
     }
 }
