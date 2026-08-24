@@ -283,6 +283,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             BrushParams {
                 size: 30.0,
                 shape: shapes.pencil,
+                jitter: 0.1,
                 tooth_give: 1.0,
                 tooth_softness: 0.5,
                 orientation: OrientationSource::Pen,
