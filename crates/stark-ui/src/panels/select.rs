@@ -52,6 +52,12 @@ use stark_model::document::{FillOp, SelectionMode, ShapeAction};
 /// The four selecting actions also set a *default* that shift / alt override for one
 /// gesture (see [`modifier_mode`]) — the modifiers are inert under Fill, which has
 /// no combining to do.
+///
+/// Add is the one whose word the mask algebra would not have honoured: a union with
+/// the unrestricted selection is the unrestricted selection, so on a fresh document
+/// the chip did nothing at all. The gesture resolves it to New instead
+/// (`Session::start_selection`, §6.8), which is why the chip's tooltip says so and
+/// the row still reads as five answers to one question.
 #[component]
 pub fn SelectPanel() -> Element {
     let state = use_context::<AppState>();
@@ -99,7 +105,7 @@ pub fn SelectPanel() -> Element {
             ShapeAction::Select(SelectionMode::Union),
             icons::SELECTION_ADD,
             "Add",
-            "Add this region to the selection (or hold shift)",
+            "Add this region to the selection (or hold shift). With nothing \n             selected, this selects just the region",
         ),
         (
             ShapeAction::Select(SelectionMode::Subtract),

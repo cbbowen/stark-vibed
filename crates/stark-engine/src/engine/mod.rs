@@ -1035,7 +1035,15 @@ impl Engine {
                     // A marquee or lasso fits no curve, so it has no use for the
                     // tolerance (or the rope); its own decimation is a mask-cost
                     // knob (§6.8).
-                    self.session.start_selection(tool, sample.pos);
+                    //
+                    // What it does need is whether there is a mask to combine with,
+                    // which only this side holds: an Add drawn over nothing is a New
+                    // (`session::against_selection`). Off the committed document and
+                    // read at the press, so the gesture's meaning is fixed before it
+                    // has drawn anything.
+                    let has_selection = self.document().has_selection(self.actor());
+                    self.session
+                        .start_selection(tool, sample.pos, has_selection);
                 } else {
                     let seed = self.authoring.clock;
                     self.session

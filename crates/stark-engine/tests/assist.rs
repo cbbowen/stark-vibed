@@ -441,7 +441,7 @@ fn a_hold_with_nothing_in_flight_is_a_no_op() {
     assert!(!session.assist_stroke(&nothing()));
 
     // A shape gesture builds no stroke, and an exact marquee has nothing to snap to.
-    session.start_selection(Tool::SelectRect, Vec2::ZERO);
+    session.start_selection(Tool::SelectRect, Vec2::ZERO, false);
     session.selection_to(Vec2::new(60.0, 60.0));
     assert!(!session.assist_stroke(&nothing()));
     assert!(session.is_selecting(), "the marquee survived the hold");

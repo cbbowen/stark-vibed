@@ -173,6 +173,12 @@ pub enum SelectionMode {
     #[default]
     Replace,
     /// Add to it (shift-drag).
+    ///
+    /// `max(p, s)`, with no exception for `p = 1` — a union with the unrestricted
+    /// selection *is* the unrestricted selection, and every peer rasterizing this op
+    /// agrees. A *gesture* asking to add to nothing means something else, and is
+    /// resolved to [`Self::Replace`] before it becomes an op (§6.8), so what reaches
+    /// this enum is always what was meant.
     Union,
     /// Cut out of it (alt-drag).
     Subtract,

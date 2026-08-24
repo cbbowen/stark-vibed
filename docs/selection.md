@@ -36,6 +36,10 @@ meaningful on feathered ones:
 | `Subtract` | `p · (1 − s)` |
 | `Intersect` | `p · s` |
 
+No mode has a case in it, and nothing below adds one. The single place a *gesture* is
+read differently from this table — **Add, over nothing, is New** — is settled before
+an op exists, so everything downstream of here still sees only these four.
+
 Rasterization (`selection.wesl`) evaluates the shape **analytically at canvas
 position** and takes coverage from a signed distance, so antialiasing and feather
 are one knob: the 0.5-contour is the boundary, and the ramp around it spans
@@ -173,6 +177,33 @@ no boundary to rasterize, so a partial one would need a rewrite of every tile th
 selection has — for a state the UI cannot ask for, since the only `All` op is
 Deselect. Selections built entirely at full strength have `level == 1` and
 `outside ∈ {0,1}`, where every expression above reduces to exactly what it was.
+
+**Add, over nothing, is New.** The one place the chrome's reading of a mode is
+allowed to differ from the algebra's, and it is a deliberate incorrectness.
+`max(1, s) = 1`: a union with the unrestricted selection *is* the unrestricted
+selection, which is right, and is what a person reaching for **Add** on a fresh
+document least expects. Their mental model is the row's own — five answers to *what
+does this shape do?* — and under it "add this region" plainly asks for a selection of
+that region. The correct answer was indistinguishable from a broken tool: no outline,
+no selection bar, nothing to undo.
+
+So `Session::start_selection` resolves the gesture's action against the mask in force
+at the press, and an Add with nothing to add to becomes a Replace. Three things follow
+from resolving it **there**, where a gesture becomes an op, rather than in the
+algebra:
+
+- **What is logged is `Replace`** — what the user actually got. A save file, an undo,
+  a replay and a peer receiving the op all reproduce the picture without knowing the
+  rule exists, and no reordering of the log can make one op mean two things (§12.6).
+- **`SelectionMode::combine` and `Selection::plan` are untouched**, so the soft-set
+  algebra stays the honest thing the table claims and every consumer keeps inheriting
+  four identities rather than four-and-a-caveat.
+- **Only `Union` needed it.** Subtracting from everything is the complement and
+  intersecting with it is the shape — both already what the gesture reads as.
+
+The Add chip stays lit on Add afterwards, since what it names is a standing default
+rather than what the last gesture did; its tooltip is where the rule is said to the
+user.
 
 **Selecting is momentary; filling is not.** `Session::end_shape` hands the canvas
 back to `Tool::Brush` the moment a *selecting* gesture actually encloses

@@ -19,7 +19,7 @@ use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::BrushDynamics;
-use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
+use stark_model::document::{SelectionMode, SelectionOp, SelectionShape, ShapeAction};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -55,6 +55,23 @@ fn select(engine: &mut stark_engine::Engine, mode: SelectionMode, shape: Selecti
 
 fn rect(min: Vec2, max: Vec2) -> SelectionShape {
     SelectionShape::rect_from_corners(min, max)
+}
+
+/// Drag a rectangular marquee from `min` to `max` with the panel set to `action` —
+/// the gesture path, which is the only one that resolves what an action *means*
+/// against the selection it is drawn over (`session::against_selection`).
+fn marquee(engine: &mut stark_engine::Engine, action: ShapeAction, min: Vec2, max: Vec2) {
+    engine.process(ViewCommand::SetShapeAction(action));
+    engine.process(GestureCommand::Start {
+        tool: Tool::SelectRect,
+        sample: InputSample::at(min),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    engine.process(GestureCommand::To {
+        sample: InputSample::at(max),
+    });
+    engine.process(GestureCommand::End);
 }
 
 /// A horizontal stroke that crosses the selection boundary at x = 0, so the same
@@ -405,6 +422,73 @@ fn a_selection_gesture_commits_the_same_op_it_previewed() {
     let img = engine.render_to_image();
     assert!(is_painted(&img, Vec2::new(-20.0, 0.0)));
     assert!(!is_painted(&img, Vec2::new(20.0, 0.0)));
+}
+
+/// **Add, with nothing selected, selects the region** (§6.8) — the one place the
+/// chrome's reading of a mode is allowed to differ from the algebra's.
+///
+/// `max(1, s) = 1` says a union with the unrestricted selection changes nothing, and
+/// that is what the mask code goes on computing. But a person reaching for Add on a
+/// fresh document is asking for a selection of what they are about to draw, and the
+/// old answer was indistinguishable from the tool being broken: no outline, no
+/// selection bar, and the very assertion below reading false.
+///
+/// Resolved at the press, so what is committed is a `Replace` — which is why this is
+/// a test about a *gesture*: `DocCommand::Select` carries whatever op it was handed,
+/// and a peer replaying the log never learns the rule exists.
+#[test]
+fn adding_to_an_empty_selection_selects_only_the_region() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    marquee(
+        &mut engine,
+        ShapeAction::Select(SelectionMode::Union),
+        BOX_MIN,
+        BOX_MAX,
+    );
+    assert!(
+        engine.observe().has_selection,
+        "a union over nothing used to select everything, which is no selection at all",
+    );
+
+    crossing_stroke(&mut engine);
+    let img = engine.render_to_image();
+    assert!(is_painted(&img, Vec2::new(-20.0, 0.0)), "inside the region");
+    assert!(!is_painted(&img, Vec2::new(20.0, 0.0)), "outside it");
+}
+
+/// …and with a selection in force, Add is still Add: the rule reaches exactly the
+/// case where the union had nothing to add to.
+#[test]
+fn adding_to_a_selection_still_extends_it() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    marquee(
+        &mut engine,
+        ShapeAction::Select(SelectionMode::Union),
+        BOX_MIN,
+        BOX_MAX,
+    );
+    marquee(
+        &mut engine,
+        ShapeAction::Select(SelectionMode::Union),
+        Vec2::new(10.0, -40.0),
+        Vec2::new(40.0, 40.0),
+    );
+
+    crossing_stroke(&mut engine);
+    let img = engine.render_to_image();
+    assert!(
+        is_painted(&img, Vec2::new(-20.0, 0.0)),
+        "the first region survived the second gesture"
+    );
+    assert!(is_painted(&img, Vec2::new(25.0, 0.0)), "added by the union");
+    assert!(
+        !is_painted(&img, Vec2::new(5.0, 0.0)),
+        "the gap between them was never selected"
+    );
 }
 
 #[test]

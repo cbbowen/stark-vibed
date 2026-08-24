@@ -17,8 +17,8 @@ use crate::view::ViewTransform;
 use stark_model::Srgb;
 use stark_model::document::Scaffold;
 use stark_model::document::{
-    ActorId, BrushParams, FillOp, GuideId, LayerId, SelectionOp, SelectionShape, ShapeAction,
-    StrokeRecord,
+    ActorId, BrushParams, FillOp, GuideId, LayerId, SelectionMode, SelectionOp, SelectionShape,
+    ShapeAction, StrokeRecord,
 };
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
@@ -106,6 +106,37 @@ pub enum ShapeResult {
     Fill(FillOp),
 }
 
+/// What a shape gesture's action *means* against the selection it is drawn over:
+/// **Add, with nothing selected, is New** (§6.8).
+///
+/// The algebra says otherwise and goes on saying it — `max(1, s) = 1`, so a union
+/// with the unrestricted selection *is* the unrestricted selection, and that is the
+/// answer every peer would rasterize. What it is not is what anyone means by the
+/// gesture: "add this region to the selection" with no selection in hand asks for a
+/// selection of that region, and a mask that comes back covering everything reads as
+/// the tool having done nothing at all. The Select panel's action row is one question
+/// with five answers — *what does this shape do?* — and one of them being inert on a
+/// fresh document is the row failing to answer it.
+///
+/// Resolved **here, where a gesture becomes an op**, and deliberately not in the
+/// mask algebra. `SelectionMode::combine` stays the honest soft-set operation it
+/// documents, `Selection::plan` keeps its four identities, and what reaches the log
+/// is `Replace` — which is what the user got. So replay, undo, a save file and a peer
+/// receiving the op all reproduce the picture without knowing this rule exists, and
+/// no reordering of the log can make one op mean two things (§12.6).
+///
+/// Only `Union` has anything to answer for. Subtracting from everything is the
+/// complement and intersecting with it is the shape, both of which are already what
+/// the gesture reads as.
+fn against_selection(action: ShapeAction, has_selection: bool) -> ShapeAction {
+    match action {
+        ShapeAction::Select(SelectionMode::Union) if !has_selection => {
+            ShapeAction::Select(SelectionMode::Replace)
+        }
+        action => action,
+    }
+}
+
 /// The shape gesture currently being dragged out (§6.8). Like a stroke it
 /// is ephemeral: only the [`ShapeResult`] it resolves to on release is committed,
 /// and the shape is derived from the drag on demand so a live preview and the
@@ -115,6 +146,10 @@ struct ShapeDrag {
     /// What the release will do with the region — captured at the *start* of the
     /// drag, like the feather, so re-picking a chip mid-gesture cannot change what
     /// the gesture already looks like it is doing.
+    ///
+    /// The action as [`against_selection`] resolved it, not as the panel is set:
+    /// what a gesture means depends on what it is drawn over, and the only moment
+    /// that is settled is the press.
     action: ShapeAction,
     feather: f32,
     /// The color a fill will lay, taken off the brush when the drag began. Unused
@@ -596,7 +631,13 @@ impl Session {
 
     /// Begin a shape gesture with the session's current action, feather and brush.
     /// Any in-flight stroke or earlier gesture is abandoned.
-    pub fn start_selection(&mut self, tool: Tool, pos: Vec2) {
+    ///
+    /// `has_selection` is the engine's to supply — whether the author already has a
+    /// mask in force (`DocState::has_selection`) — because it decides what an Add
+    /// gesture means; see [`against_selection`]. Off the *committed* document, which
+    /// is the only selection this gesture can be adding to: the one thing that could
+    /// change it mid-drag is this drag.
+    pub fn start_selection(&mut self, tool: Tool, pos: Vec2, has_selection: bool) {
         self.tool = tool;
         self.in_flight = None;
         // The press supersedes the hover it interrupted — and the window must
@@ -607,7 +648,7 @@ impl Session {
         let [r, g, b, _] = self.brush.color;
         self.selecting = Some(ShapeDrag {
             tool,
-            action: self.shape_action,
+            action: against_selection(self.shape_action, has_selection),
             feather: self.selection_feather,
             // The color is the brush's — a fill lays the paint you have in hand.
             // Its *alpha* is not: that is the brush's pigment talking, and how
@@ -1181,5 +1222,65 @@ impl StrokeBuilder {
             seed: self.seed,
             start,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::view::ViewTransform;
+    use stark_model::geom::Extent2;
+
+    fn session(action: ShapeAction) -> Session {
+        let mut s = Session::new(ViewTransform::identity(Extent2::new(256, 256)), LayerId(0));
+        s.shape_action = action;
+        s
+    }
+
+    /// The mode a marquee dragged across `(0,0)..(10,10)` resolves to.
+    fn dragged(action: ShapeAction, has_selection: bool) -> SelectionMode {
+        let mut s = session(action);
+        s.start_selection(Tool::SelectRect, Vec2::ZERO, has_selection);
+        s.selection_to(Vec2::splat(10.0));
+        match s.preview_shape().expect("the marquee encloses something") {
+            ShapeResult::Select(op) => op.mode,
+            ShapeResult::Fill(_) => panic!("a selecting action does not fill"),
+        }
+    }
+
+    /// **Add, with nothing selected, is New** ([`against_selection`]) — and the
+    /// gesture is logged as the New it behaved as, so nothing downstream carries the
+    /// rule.
+    ///
+    /// Read off the *preview*, which is the same call the release commits
+    /// ([`Session::end_shape`]): the resolution happens once, at the press, so the
+    /// two cannot disagree about what the drag is doing.
+    #[test]
+    fn adding_to_nothing_selects_the_region() {
+        let add = ShapeAction::Select(SelectionMode::Union);
+        assert_eq!(dragged(add, false), SelectionMode::Replace);
+        assert_eq!(
+            dragged(add, true),
+            SelectionMode::Union,
+            "with a mask in force there is something to add to",
+        );
+    }
+
+    /// The other three are already what the gesture reads as against an empty
+    /// selection — the shape, its complement, and the shape again — so only Add is
+    /// touched, and Fill is not a combining question at all.
+    #[test]
+    fn the_other_actions_are_unchanged_by_an_empty_selection() {
+        for mode in [
+            SelectionMode::Replace,
+            SelectionMode::Subtract,
+            SelectionMode::Intersect,
+        ] {
+            assert_eq!(dragged(ShapeAction::Select(mode), false), mode);
+        }
+        let mut s = session(ShapeAction::Fill);
+        s.start_selection(Tool::SelectRect, Vec2::ZERO, false);
+        s.selection_to(Vec2::splat(10.0));
+        assert!(matches!(s.preview_shape(), Some(ShapeResult::Fill(_))));
     }
 }
