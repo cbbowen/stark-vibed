@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{engine_or_skip, images_match, paint};
+use common::{engine_or_skip, images_match, paint, whole_render};
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::ActorId;
@@ -312,6 +312,87 @@ fn a_shared_timeline_reports_no_scrub_range() {
     let before = snap(&mut a);
     a.process(DocCommand::Seek(0));
     assert!(images_match(&before, &snap(&mut a), 0));
+}
+
+/// **Leaving the session hands the history back** (§18.2.4).
+///
+/// The refusal above is made on behalf of peers still appending to the log, so it
+/// has to end when they do: a document nobody else is writing to is one client's
+/// to walk, whoever painted what is in it. Asked here rather than left to the bar,
+/// because "the scrubber is unavailable" has no pixels of its own — the mode simply
+/// goes on saying a session that has ended is still running.
+///
+/// Three claims, in the order they can fail: the conversion moves no paint, the
+/// walk that comes back spans the *whole* document (the peer's stroke included, and
+/// exactly the actions a save would write), and travelling it is lossless.
+#[test]
+fn leaving_a_session_hands_the_history_back() {
+    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+        return;
+    };
+
+    a.start_collaboration(ActorId(1));
+    b.join_collaboration(&a.document_file(), ActorId(2));
+
+    paint(
+        &mut a,
+        RED,
+        12.0,
+        &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
+    );
+    paint(
+        &mut a,
+        BLUE,
+        12.0,
+        &[Vec2::new(40.0, 60.0), Vec2::new(216.0, 60.0)],
+    );
+    // Undone *as an action* while shared, so the log A leaves with holds a step it
+    // must not walk back through: the `Undo` and its target are both still in it.
+    a.process(DocCommand::Undo);
+    sync(&mut a, &mut b);
+    paint(
+        &mut b,
+        GREEN,
+        12.0,
+        &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)],
+    );
+    sync(&mut a, &mut b);
+
+    let shared_log = a.document_file().actions.len();
+    let shared = snap(&mut a);
+    a.end_collaboration();
+    assert!(
+        images_match(&shared, &snap(&mut a), 0),
+        "leaving repainted the canvas"
+    );
+
+    let (at, total) = a.scrub_range().expect("the history is this client's again");
+    assert_eq!(at, total, "the playhead stands where the session left it");
+    assert_eq!(
+        total,
+        a.document_file().actions.len(),
+        "every action a save would write is a step the scrubber can reach"
+    );
+    assert_eq!(
+        total,
+        shared_log - 2,
+        "the undone stroke and its `Undo` resolved away, as a solo load flattens them"
+    );
+    assert_eq!(a.scrub_labels().len(), total, "a caption per step");
+
+    // The reference is the *replay* render: a scrub re-folds each stroke through
+    // `apply`, where a live commit took its preview's own tiles (§6.2).
+    let reference = whole_render(&mut a);
+    a.process(DocCommand::Seek(0));
+    assert!(
+        !images_match(&reference, &snap(&mut a), 0),
+        "a seek to the empty canvas changed nothing"
+    );
+    a.process(DocCommand::Seek(total));
+    assert!(
+        images_match(&reference, &snap(&mut a), 0),
+        "the round trip through the peer's stroke did not come back"
+    );
 }
 
 /// **A peer's merge-down removes a layer too**, so it has to repoint the brush the

@@ -1041,9 +1041,12 @@ it, so the canvas refuses paint while the transport runs (panning still works).
 
 Two limits worth stating:
 
-- **Solo only.** A shared document's state is a function of a log peers are still
-  appending to, so a scrub would be silently undone by the next arrival;
-  `Timeline::scrub_range` answers `None` there and the bar says why.
+- **Solo only, and only while the session lasts.** A shared document's state is a
+  function of a log peers are still appending to, so a scrub would be silently
+  undone by the next arrival; `Timeline::scrub_range` answers `None` there and the
+  bar says why. The refusal is made on behalf of those peers, so it ends when they
+  do: leaving hands the walk back (`Timeline::unshare`, §12.3), rather than the
+  mode going on describing a session that is over.
 - **Steps, not seconds.** Playback is paced in actions per second, not by the
   `InputSample.time` stamps the log carries. Wall-clock pacing wants an idle-gap
   policy — an hour away from the easel is one action apart — and that is a

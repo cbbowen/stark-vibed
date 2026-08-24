@@ -65,6 +65,22 @@ pub trait Timeline {
         false
     }
 
+    /// The same history, one client's own again, once the session that shared it
+    /// has ended (§12.3, §18.2.4). The engine goes on with what this answers.
+    ///
+    /// A [`LinearTimeline`] answers with itself — solo is what it already is. A
+    /// [`ReplicatedTimeline`] hands over its materialization, which *is* a linear
+    /// history: the effective sequence, applied in order, with the snapshots that
+    /// stepping back through it needs. So the walk comes back for the cost of a
+    /// move rather than of a replay.
+    ///
+    /// Consuming, and answering with a timeline rather than with a flag, because
+    /// the two are two types: nothing is left holding a shared log that nothing
+    /// materializes any more. Required rather than defaulted for the same reason —
+    /// what a timeline becomes when the sharing stops is not a question an
+    /// implementation should be able to leave unanswered.
+    fn unshare(self: Box<Self>) -> Box<dyn Timeline>;
+
     /// Where the playhead stands and how far it can travel — `(applied, total)`,
     /// both counted in actions — or `None` for a timeline that cannot be scrubbed
     /// (§18.2.4).
@@ -178,6 +194,23 @@ impl LinearTimeline {
         }
     }
 
+    /// Adopt a history materialized elsewhere — what [`Timeline::unshare`] hands
+    /// over when a shared session ends.
+    ///
+    /// Nothing is withheld and nothing is folded: the whole effective sequence is
+    /// applied, which is where the session left the document, so the playhead
+    /// starts at the newest step with the entire walk behind it. What was undone
+    /// during the session is *not* waiting in `redo` — a suppressed action was
+    /// never materialized, so it is not here to re-apply, which is the same
+    /// flattening a solo load of the same file performs (`Engine::load_document`).
+    fn from_history(history: History<Entry>) -> Self {
+        Self {
+            history,
+            redo: Vec::new(),
+            forgotten: Vec::new(),
+        }
+    }
+
     /// Every action this timeline holds, oldest first — the folded prefix and then
     /// the live history.
     pub fn actions(&self) -> impl Iterator<Item = &Action> {
@@ -252,6 +285,10 @@ impl Timeline for LinearTimeline {
 
     fn clone_actions(&self) -> Vec<Action> {
         self.actions().cloned().collect()
+    }
+
+    fn unshare(self: Box<Self>) -> Box<dyn Timeline> {
+        self
     }
 
     fn scrub_range(&self) -> Option<(usize, usize)> {
@@ -785,6 +822,17 @@ impl Timeline for ReplicatedTimeline {
 
     fn merge(&mut self, action: Action, ctx: &mut ApplyCtx) -> bool {
         self.insert(action, ctx)
+    }
+
+    /// The materialization goes on alone; the log does not go with it.
+    ///
+    /// Which is the whole content of leaving: with no one left to merge, the two
+    /// things this type holds that a linear history does not — the `Undo` actions
+    /// and the actions they suppress — are answers to a question nobody will ask
+    /// again. Resolving them is what [`effective_actions`] already did, once, into
+    /// the very history handed over here.
+    fn unshare(self: Box<Self>) -> Box<dyn Timeline> {
+        Box::new(LinearTimeline::from_history(self.history))
     }
 
     fn stats(&self) -> TimelineStats {

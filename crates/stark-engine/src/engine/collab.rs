@@ -12,7 +12,7 @@
 //! these hooks, and `stark-net` owns the wire.
 
 use super::{Engine, ROOT_LAYER};
-use crate::document::{DocState, ReplicatedTimeline, TimelineStats};
+use crate::document::{DocState, LinearTimeline, ReplicatedTimeline, Timeline, TimelineStats};
 use crate::peer::{Identity, Peer};
 use stark_model::DocumentFile;
 use stark_model::document::{Action, ActorId};
@@ -40,14 +40,11 @@ impl Engine {
     /// Whether this engine is **broadcasting**: authoring into a shared session,
     /// with an outbox for the transport to drain (§12.4).
     ///
-    /// Not quite the same question as "is this document's history a shared log",
-    /// and the difference is real rather than pedantic:
-    /// [`end_collaboration`](Self::end_collaboration) stops the broadcast but keeps
-    /// the [`ReplicatedTimeline`], so afterwards this answers `false` while the
-    /// history is still the session's — which is why
-    /// [`scrub_range`](Self::scrub_range) is the authority on *that* question and
-    /// goes on reporting `None`. Editing continues; the scrubber does not come back
-    /// until a new or loaded document brings a linear history with it.
+    /// The same question as "is this document's history a shared log", and kept
+    /// that way deliberately: [`end_collaboration`](Self::end_collaboration) gives
+    /// the history back in the same breath as it drops the outbox, so there is no
+    /// state in which this and [`scrub_range`](Self::scrub_range) disagree about
+    /// whose the document is.
     pub fn is_shared(&self) -> bool {
         self.authoring.outbox.is_some()
     }
@@ -120,10 +117,10 @@ impl Engine {
         self.mark_live_stale();
     }
 
-    /// Leave a shared session: stop queueing broadcasts and forget everyone who was
-    /// in it. The replicated timeline (and the shared log) stays — editing continues
-    /// solo on the same canvas, and a later [`Self::start_collaboration`] re-shares
-    /// it.
+    /// Leave a shared session: stop queueing broadcasts, forget everyone who was in
+    /// it, and take the history back as this client's own to walk. Editing continues
+    /// solo on the same canvas — same pixels, same active layer — and a later
+    /// [`Self::start_collaboration`] shares it again.
     ///
     /// The peers' *selections* stay in the document, because replay still needs them
     /// to reproduce their strokes; they simply stop being drawn, since the roster is
@@ -134,6 +131,25 @@ impl Engine {
         // it, since there is no longer anyone owed it.
         self.authoring.outbox = None;
         self.peers.clear();
+        // A [`ReplicatedTimeline`] refuses to seek, to undo by navigation and to fold
+        // its oldest actions away, and every one of those refusals is made on behalf
+        // of peers who are still appending to the log (§12.2, §18.2.4). None of them
+        // is, once this returns — so the timeline stops being one that refuses,
+        // rather than the refusals outliving the session that justified them.
+        //
+        // `unshare` consumes, which is what leaves nothing behind still claiming a
+        // shared log; the swap therefore needs somewhere to park, and an empty
+        // timeline is the cheapest valid thing there is (a `DocState` is persistent
+        // maps, §5.1).
+        let parked: Box<dyn Timeline> =
+            Box::new(LinearTimeline::new(DocState::with_layer(ROOT_LAYER)));
+        self.timeline = std::mem::replace(&mut self.timeline, parked).unshare();
+        // What the document's history *offers* moved with it: a peer's stroke is
+        // this document's to undo now, and the scrubber comes back. Published for
+        // the reason [`Self::start_collaboration`] publishes the conversion it makes
+        // in the other direction — the pixels are untouched either way, and nothing
+        // else in the projection would say so.
+        self.committed_changed();
         self.mark_live_stale();
     }
 

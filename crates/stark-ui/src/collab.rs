@@ -227,8 +227,8 @@ fn supply_locally(state: AppState, need: AssetNeed) {
 }
 
 /// Leave the session: tear down the network side and keep painting solo on the
-/// current canvas (the shared log stays loaded; the engine just stops queueing
-/// broadcasts).
+/// current canvas, whose history is this client's alone again once the engine has
+/// stopped queueing broadcasts (`Engine::end_collaboration`).
 pub fn leave(state: AppState) {
     let mut session_sig = state.collab.session;
     let Some(session) = session_sig.write().take() else {
@@ -248,13 +248,14 @@ pub fn leave(state: AppState) {
     links.set(Vec::new());
     // Say goodbye before the transport goes: peers drop this client at once rather
     // than waiting out the presence timeout with a stale cursor on their canvas.
-    // Quiet: the peers' paint coming off the canvas is a repaint, and the roster
-    // emptying is `state.collab`'s business — the projection says nothing about
-    // either.
-    let farewell = crate::state::with_engine_quiet(state, |r| {
+    //
+    // Publishing, unlike the share that started this: leaving hands the history back
+    // (§18.2.4), so the undo affordances and the timeline bar are looking at a
+    // document whose past has changed shape. The frame it asks for is the one that
+    // takes the peers' paint off the canvas.
+    let farewell = crate::state::with_engine(state, |r| {
         let frame = r.leaving_presence();
         r.end_collaboration();
-        r.paint();
         frame
     });
     let mut ticket = state.collab.ticket;

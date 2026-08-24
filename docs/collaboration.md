@@ -71,7 +71,12 @@ they return `None` (solo).
   sessions cannot tell the difference.
 - A file saved mid-session carries the **full log**; a solo load replays the
   effective sequence (undone work flattens away), while a joining peer gets the
-  full log so later redos still resolve.
+  full log so later redos still resolve. **Leaving performs that same flattening
+  in place, and without a replay** (`Timeline::unshare`): the effective sequence
+  is what the timeline has been materializing all along, so the linear history it
+  hands back on the way out is the one already on screen. The scrubber returns
+  with it (§18.2.4), and so does undo by navigation — with no session left to own
+  it, a peer's stroke is this document's like any other.
 
 ### 12.4 Transport — `stark-net` over iroh
 

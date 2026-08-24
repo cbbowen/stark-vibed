@@ -551,7 +551,7 @@ impl Renderer {
         self.engine.join_collaboration(file, identity);
     }
 
-    /// Leave a shared session (keep the canvas, stop broadcasting).
+    /// Leave a shared session (keep the canvas and its history, stop broadcasting).
     pub fn end_collaboration(&mut self) {
         self.engine.end_collaboration();
     }

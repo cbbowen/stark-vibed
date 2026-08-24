@@ -519,6 +519,8 @@ pub trait Timeline {
     fn undo_as_action(&self) -> Option<ActionId> { None }
     fn redo_as_action(&self) -> Option<ActionId> { None }
     fn merge(&mut self, action: Action, ctx: &mut ApplyCtx) -> bool { false }
+    // …and the way back out, which no impl may leave unanswered (§12.3):
+    fn unshare(self: Box<Self>) -> Box<dyn Timeline>;
 }
 ```
 
