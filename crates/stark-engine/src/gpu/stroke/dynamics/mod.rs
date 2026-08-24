@@ -49,6 +49,10 @@ pub(super) enum StrokePath {
     /// in — wants more than one region, and the region is the one thing pieces
     /// cannot subdivide. The swept deposit draws what it can, which is the brush's
     /// own `add` paint and none of the manipulation.
+    ///
+    /// Unreachable from a brush this app built: the frontier is published as
+    /// [`max_tip_reach`](super::budget::max_tip_reach) and the frontend clamps to
+    /// it. What is left is a record from a peer or another build.
     TipTooLarge,
 }
 
@@ -129,6 +133,7 @@ pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
 
 #[cfg(test)]
 mod tests {
+    use super::super::budget::{max_stretch, max_tip_reach};
     use super::*;
 
     fn brush(size: f32, lift: f32) -> BrushParams {
@@ -197,18 +202,94 @@ mod tests {
         }
     }
 
-    /// Stretch multiplies the tip's extent past what any segment shortening can
-    /// buy back: past `size · elongation ≈ 880` canvas px the tip alone overflows
-    /// the region, and the stroke degrades — the one frontier left (§6.6).
+    /// **[`max_tip_reach`] is exactly the frontier this gate refuses at**, which is
+    /// the whole of what makes it a limit an editor can clamp against: a brush built
+    /// at the cap draws, and the arithmetic that says so is the same arithmetic
+    /// inverted rather than a second copy of it. Drift either way and the editor
+    /// either offers a brush that silently loses its dynamics (the 2026-08-23 bug,
+    /// one knob over) or withholds one that would have drawn.
+    ///
+    /// Swept over both knobs and over the bleed, because the reach is a *product*
+    /// and the cap has to say the same thing wherever the two put it — including
+    /// for a bleeding brush, whose firings buy it a smaller cap of its own.
     #[test]
-    fn an_extreme_stretch_still_degrades() {
-        let mut b = brush(500.0, 0.5);
-        b.stretch = 0.875; // elongation 8
-        assert!(matches!(dynamics_setup(&b).path, StrokePath::TipTooLarge));
-        // …while a moderate stretch pays segments instead of losing its dynamics.
-        b.stretch = 0.3; // elongation ≈ 1.43
-        let plan = dynamics_setup(&b);
-        assert!(matches!(plan.path, StrokePath::Loop));
-        assert!(plan.shortened.is_some());
+    fn the_published_reach_limit_is_the_gates_frontier() {
+        let mut saw_both = (false, false);
+        for size in [1.0f32, 30.0, 111.0, 250.0, 500.0, 900.0] {
+            for knob in [0.0f32, 0.25, 0.5, 0.75, BrushParams::MAX_STRETCH] {
+                for bleed in [0.0f32, 0.4] {
+                    let mut b = brush(size, 0.5);
+                    b.dynamics.bleed = bleed;
+                    b.stretch = knob;
+                    let reach = size * BrushParams::elongation(knob);
+                    let fits = reach <= max_tip_reach(&b);
+                    let drawn = matches!(dynamics_setup(&b).path, StrokePath::Loop);
+                    assert_eq!(
+                        drawn,
+                        fits,
+                        "size {size}, stretch {knob}, bleed {bleed}: a reach of \
+                         {reach} against a cap of {} took the wrong path",
+                        max_tip_reach(&b),
+                    );
+                    if fits {
+                        saw_both.0 = true
+                    } else {
+                        saw_both.1 = true
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            saw_both,
+            (true, true),
+            "the sweep has to straddle the cap, or it pins nothing",
+        );
+    }
+
+    /// **What the editor offers is always drawable**, at every size and for every
+    /// other setting that moves the cap.
+    ///
+    /// This is the engine's half of the bargain `stark-ui` keeps by clamping to
+    /// [`max_stretch`] (`state::update_brush`, and the stretch slider's own top):
+    /// take the largest knob this says is available and the loop runs. So the
+    /// degradation is unreachable from the UI *structurally* rather than by a
+    /// number kept in step by hand, and what is left for `TipTooLarge` is a record
+    /// from somewhere else — a peer, or a file built by another build.
+    ///
+    /// It also pins that the cap is not vacuous: below about a 110 px radius the
+    /// whole slider stays available, because the knob tops out at an elongation of
+    /// 8 and a small tip cannot spend its way past the region however far it is
+    /// drawn out. A cap that quietly became "no stretch for anybody" would pass the
+    /// frontier test above and fail here.
+    #[test]
+    fn the_offered_stretch_is_always_drawable() {
+        for size in [1.0f32, 30.0, 110.0, 111.0, 250.0, 400.0, 500.0] {
+            for bleed in [0.0f32, 0.6] {
+                let mut b = brush(size, 0.5);
+                b.dynamics.bleed = bleed;
+                b.stretch = max_stretch(&b);
+                assert!(
+                    matches!(dynamics_setup(&b).path, StrokePath::Loop),
+                    "size {size}, bleed {bleed}: the editor's top stretch of {} \
+                     degrades",
+                    b.stretch,
+                );
+                if size <= 110.0 && bleed == 0.0 {
+                    assert_eq!(
+                        b.stretch,
+                        BrushParams::MAX_STRETCH,
+                        "size {size} should keep the whole slider",
+                    );
+                }
+            }
+        }
+        // …and a large brush really does give something up, so the clamp is doing
+        // work rather than being a no-op the UI could have skipped.
+        let mut big = brush(500.0, 0.5);
+        big.stretch = max_stretch(&big);
+        assert!(
+            big.stretch < BrushParams::MAX_STRETCH,
+            "a 500 px tip cannot keep the whole stretch range",
+        );
     }
 }

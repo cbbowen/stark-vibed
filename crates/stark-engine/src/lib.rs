@@ -126,7 +126,8 @@ pub use engine::{
 pub use error::{EngineError, Result};
 pub use gpu::{
     Compositor, CompositorPipeline, DeviceFailure, EnvironmentId, FailureKind, GpuContext,
-    GpuHealth, MediaParams, Offscreen, StrokeRenderer, TilePairHandle, TilePool,
+    GpuHealth, MediaParams, Offscreen, StrokeRenderer, TilePairHandle, TilePool, max_stretch,
+    max_tip_reach,
 };
 pub use image::RgbaImage;
 pub use peer::{LiveGesture, Peer, Peers};

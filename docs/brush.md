@@ -376,8 +376,32 @@ would overflow the region flattens to shorter segments instead
 exchange step a segment's length sets is a first-order discretization that
 tightens as segments shrink. The renderer warns once per stroke when the
 shortening binds, because the loop pays per segment. Only a brush whose tip
-*alone* overflows the region — an extreme stretch at an extreme size — still
-degrades to the swept deposit. See `gpu::stroke::dynamics::dynamics_setup`.
+*alone* overflows the region still degrades to the swept deposit. See
+`gpu::stroke::dynamics::dynamics_setup`.
+
+**That last limit is published rather than discovered.** The region is a single
+texture bounded by `MAX_TEXTURE_DIM_2D` — 2048, the downlevel/WebGL2 floor, so a
+portability guarantee and not a tuning knob — and one tip has to fit inside it
+whole. That puts a hard ceiling on the tip's **reach**, `size × elongation`, of
+about 887 canvas px (less for a bleeding brush, whose firings reach back past the
+segment they follow). `budget::max_tip_reach` is that ceiling and
+`budget::max_stretch` is it expressed in the units the editor's slider moves in;
+the frontend clamps every brush against them (`state::hold_the_tip_drawable`), so
+no brush the app can build degrades, and `TipTooLarge` is left for a record from a
+peer or another build. Two properties keep that honest and are tested as such: the
+published cap is *exactly* the frontier `fit_len` refuses at — the same arithmetic
+inverted, not a second copy — and what the editor offers always draws.
+
+The ceiling is why the stretch slider's top moves with size. Below about a 110 px
+radius nothing is given up, the knob saturating at an elongation of 8 before the
+region does; a larger brush trades, and it is the **stretch** that yields rather
+than the size, because `size` has four writers (the panel slider, the editor row,
+the tuning drag and the `[`/`]` keys) and is what the artist reaches for. Lifting
+the ceiling means giving the loop more than one region rather than raising a
+constant — see §6.2's note on what actually ties a tip to one region, which is
+narrower than it looks: the reservoir is a fixed 64×64 brush-local texture and the
+deposit is per-texel local, so what needs the whole tip resident is the
+`exchange`'s gather over the canvas beneath it.
 
 **Continuous stamping (swept segments).** Discrete dabs are visible with hard
 tips. The fix: stamp each short *segment* of the flattened curve as one quad

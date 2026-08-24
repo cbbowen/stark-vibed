@@ -52,6 +52,7 @@ use tips::TipCache;
 // The module's substrate, re-exported so callers name `gpu::stroke::X` rather than the
 // file X happens to live in — the split below is about where a maintainer reads, not
 // about what the engine depends on.
+pub use budget::{max_stretch, max_tip_reach};
 pub use incremental::{StrokeCarry, StrokeSpans, ToolState};
 // Not part of the module's public surface: the engine calls it, nothing outside the
 // crate does, and keeping it crate-visible is what lets its doc comment point at the
@@ -254,9 +255,15 @@ impl StrokeRenderer {
                 // only ever adds paint, so `lift`, `deposit` and `charge` all silently
                 // do nothing. It is the one degradation left: stroke *length* is
                 // handled by drawing the stroke in pieces (§6.2) and an oversized
-                // *segment* by shortening it (`budget::fit_len`), so only a tip
-                // whose own extent overflows the region lands here — an extreme
-                // stretch at an extreme size, or a record from somewhere else.
+                // *segment* by shortening it (`budget::fit_len`), so only a tip whose
+                // own extent overflows the region lands here.
+                //
+                // **No brush this app can build does.** The frontier is published as
+                // [`max_tip_reach`](budget::max_tip_reach) and the frontend clamps
+                // every brush to it (`stark-ui`'s `state::hold_the_tip_drawable`), so
+                // reaching this arm means a record came from somewhere that did not —
+                // a peer, or a file written by another build — and is not being
+                // honoured.
                 //
                 // Said once per stroke, not once per render: the gate is a pure
                 // function of the brush and so answers the same way every pointer move

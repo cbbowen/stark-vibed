@@ -1535,13 +1535,99 @@ pub fn update_brush(state: AppState, f: impl FnOnce(&mut BrushParams)) {
     let brush = state.obs.read().as_ref().map(|o| o.brush);
     if let Some(mut brush) = brush {
         f(&mut brush);
+        hold_the_tip_drawable(&mut brush);
         dispatch(state, ViewCommand::SetBrush(brush));
     }
+}
+
+/// Keep the brush inside what the renderer can actually draw: a tip reaching
+/// further than one region holds loses its lift, deposit and charge *entirely*
+/// (§6.2), so the stretch is brought down to the most this size can carry
+/// (`stark_engine::max_stretch`).
+///
+/// **Here rather than on the stretch slider**, which is the only reason this is a
+/// function and not a line in the brush editor. The reach is a product of two
+/// knobs, and `size` has four writers — the panel slider, the editor's own row, the
+/// tuning drag (`input::Tune`) and the `[`/`]` keys — so a clamp living with the
+/// *stretch* control would be silently bypassed by all four. This is the one door
+/// the live brush goes through, which makes "no brush the app holds is undrawable"
+/// a property of the seam instead of a rule four call sites have to remember.
+///
+/// **The stretch yields, never the size.** Size is what the artist reaches for and
+/// what three of those four writers exist to move; a size drag that quietly shrank
+/// itself would be a fight. Stretch giving way is visible instead — the slider's own
+/// top moves with it, and the editor says why (`ModRow::range`).
+fn hold_the_tip_drawable(b: &mut BrushParams) {
+    b.stretch = b.stretch.min(stark_engine::max_stretch(b));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **No brush this app can hold is one the renderer refuses to draw.**
+    ///
+    /// `stark-ui`'s half of the bargain the engine keeps in
+    /// `dynamics::tests::the_offered_stretch_is_always_drawable`: whatever a caller
+    /// asks `update_brush` for, what reaches the engine has a drawable tip. Swept
+    /// over the app's own ranges — `panels::brush::{MIN_RADIUS, MAX_RADIUS}` and the
+    /// stretch knob's full travel — including the combinations no slider can reach
+    /// but a *drag* or a preset can, since those are the writers the clamp is
+    /// positioned to catch.
+    ///
+    /// Checked against `max_tip_reach` rather than against `max_stretch`, so it
+    /// fails if the clamp is ever quietly rewritten in terms of itself.
+    #[test]
+    fn the_clamp_leaves_every_brush_drawable() {
+        for size in [
+            crate::panels::brush::MIN_RADIUS,
+            30.0,
+            110.0,
+            250.0,
+            crate::panels::brush::MAX_RADIUS,
+        ] {
+            for knob in [0.0, 0.25, 0.5, 0.75, BrushParams::MAX_STRETCH] {
+                for bleed in [0.0, 0.6] {
+                    let mut b = BrushParams {
+                        size,
+                        stretch: knob,
+                        ..BrushParams::default()
+                    };
+                    b.dynamics.bleed = bleed;
+                    hold_the_tip_drawable(&mut b);
+                    let reach = b.size * BrushParams::elongation(b.stretch);
+                    assert!(
+                        reach <= stark_engine::max_tip_reach(&b),
+                        "size {size}, stretch {knob}, bleed {bleed}: a reach of \
+                         {reach} survived the clamp",
+                    );
+                    // The size the caller asked for is the size it gets — the
+                    // clamp spends the stretch, never the size (its own doc).
+                    assert_eq!(b.size, size, "the clamp moved the size");
+                }
+            }
+        }
+    }
+
+    /// The clamp costs a brush nothing it did not have to give: every stretch a
+    /// small tip can carry survives it untouched. A clamp that over-reached would
+    /// pass the test above by flattening every brush to no stretch at all.
+    #[test]
+    fn the_clamp_leaves_a_small_tip_alone() {
+        for size in [crate::panels::brush::MIN_RADIUS, 30.0, 110.0] {
+            let mut b = BrushParams {
+                size,
+                stretch: BrushParams::MAX_STRETCH,
+                ..BrushParams::default()
+            };
+            hold_the_tip_drawable(&mut b);
+            assert_eq!(
+                b.stretch,
+                BrushParams::MAX_STRETCH,
+                "a {size} px tip should keep the whole stretch range",
+            );
+        }
+    }
 
     /// The claim [`AppState`] is a newtype for: the handle is **one pointer**,
     /// whatever [`Signals`] grows to hold.

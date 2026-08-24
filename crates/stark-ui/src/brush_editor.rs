@@ -114,16 +114,27 @@ impl ModRow {
         }
     }
 
-    /// The base slider's range. The three pickup axes stop at 0.95 for the reason
-    /// they always did — λ diverges at 1 (§6.2).
-    fn range(self) -> (f32, f32) {
+    /// The base slider's range, for the brush being edited. The three pickup axes
+    /// stop at 0.95 for the reason they always did — λ diverges at 1 (§6.2).
+    ///
+    /// Takes the brush because one row's top is not a constant: see `Stretch`.
+    fn range(self, b: &BrushParams) -> (f32, f32) {
         match self {
             Self::Size => (MIN_RADIUS, MAX_RADIUS),
             Self::Flow => (0.0, MAX_FLOW),
-            // The knob is `1 − 1/s`, so its own top is an infinitely long tip; the
-            // stop is where `BrushParams::elongation` saturates and the slider stops
-            // meaning anything (§6.6).
-            Self::Stretch => (0.0, 1.0 - 1.0 / BrushParams::MAX_ELONGATION),
+            // The knob is `1 − 1/s`, so its own top is an infinitely long tip. Two
+            // things stop it short, and the smaller wins: the elongation saturates
+            // at `MAX_ELONGATION`, past which the slider stops meaning anything
+            // (§6.6) — and the *renderer* cannot draw a tip reaching further than
+            // one region holds, which for a large brush bites first
+            // (`stark_engine::max_stretch`, §6.2).
+            //
+            // Asking the engine rather than restating its arithmetic is the whole
+            // point: a tip past that limit does not draw a coarser stroke, it
+            // silently stops lifting and depositing altogether. A slider that
+            // offered one would be offering a broken brush, and no note beside it
+            // would make that better than not offering it.
+            Self::Stretch => (0.0, stark_engine::max_stretch(b)),
             // Full range, and it reads right-to-left: 1 is all the give there is, so
             // the substrate gates nothing, and 0 is the driest tip (§6.4). Quoted that
             // way round for the pen's sake — see `BrushParams::tooth_give`.
@@ -432,6 +443,13 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         div { class: "be-note",
                             "Stretching along the stroke, so the mark gets heavier rather                                  than wider. Switch to Pen angle for a tip that broadens as                                  the pen leans." }
                     }
+                    // Why the slider stopped short of where it stops on a smaller
+                    // brush. Said only when it actually did: below ~110 px the
+                    // whole range is there and there is nothing to explain.
+                    if stark_engine::max_stretch(&brush) < BrushParams::MAX_STRETCH {
+                        div { class: "be-note",
+                            "This tip is too big to draw out any further — a stroke                                  that lifts and deposits works over a copy of the canvas                                  beneath it, and that has a size limit. Lower Size to                                  stretch it more." }
+                    }
                     if let BrushShape::Round { hardness } = brush.shape {
                         Slider { label: "Hardness", min: 0.0, max: 1.0, value: hardness,
                             oninput: move |v| edit(state, preview, move |b| {
@@ -622,7 +640,7 @@ fn mod_slider(
     brush: BrushParams,
 ) -> Element {
     let mut open = open;
-    let (min, max) = row.range();
+    let (min, max) = row.range(&brush);
     let m = row.of(&brush.modulation);
     let expanded = open() == Some(row);
     // The chip says what is driving the parameter, which is the one thing a glance

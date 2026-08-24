@@ -43,7 +43,7 @@ pub use merge::{MergeRenderer, MergeSide};
 pub use place::PlaceRenderer;
 pub use registry::{Registry, Resource};
 pub use selection::SelectionRenderer;
-pub use stroke::{StrokeRenderer, StrokeSpans, ToolState};
+pub use stroke::{StrokeRenderer, StrokeSpans, ToolState, max_stretch, max_tip_reach};
 pub use substrate::{Substrate, SubstrateMap};
 pub use tile::{
     AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, MASK_TEX, MaskHandle, TilePairHandle,

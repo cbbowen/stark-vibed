@@ -113,25 +113,100 @@ const ARC_MARGIN: f32 = 1.1;
 /// **A pure function of the brush**, like everything in this file: a live tail and
 /// the commit that replaces it cap the same brush to the same segment length.
 pub(super) fn fit_len(b: &BrushParams) -> f32 {
-    let radius = b.size.max(0.5);
-    let budget = ((MAX_REGION_DIM - TILE_TEX) / TILE_SIZE * TILE_SIZE) as f32;
-    // A bleeding brush's segment also carries its firings, whose windows reach up
-    // to one quantum back past its start (`chunk_segments`) — so the floor the
-    // chunker cannot get under is that much longer for it.
-    let bleed = if b.dynamics.bleed > 0.0 {
-        BLEED_TRAVEL_QUANTUM * radius
+    (region_extent_budget() - tip_extent(tip_reach(b)) - bleed_reach(b)) / ARC_MARGIN
+}
+
+/// The extent one region can hold, in canvas px: the largest whole-tile block whose
+/// texture — the apron ring [`Covered::rect`](super::region::Covered::rect) adds
+/// included — fits [`MAX_REGION_DIM`].
+fn region_extent_budget() -> f32 {
+    ((MAX_REGION_DIM - TILE_TEX) / TILE_SIZE * TILE_SIZE) as f32
+}
+
+/// How far from the centreline `b`'s tip can deposit, in canvas px.
+///
+/// The tip's radius bounds every shape's reach exactly — nothing a canonical mask
+/// can paint lies outside the disc inscribed in its square
+/// ([`Sweep::reach`](super::segments::Sweep)) — drawn out along its facing axis by
+/// the brush's **own** elongation and not by any one segment's (§6.6). A modulation
+/// can only scale either knob down ([`Modulation`](stark_model::document::Modulation)),
+/// so the brush's value bounds every segment's.
+fn tip_reach(b: &BrushParams) -> f32 {
+    b.size.max(0.5) * BrushParams::elongation(b.stretch)
+}
+
+/// The canvas extent a tip reaching `reach` occupies, apron included — the part of
+/// the region no shortening can give back.
+fn tip_extent(reach: f32) -> f32 {
+    2.0 * (reach + TILE_APRON as f32)
+}
+
+/// The extra floor a bleeding brush's segment carries: its firings' windows reach up
+/// to one quantum back past the segment they fire after (`chunk_segments`).
+///
+/// Measured against the tip's own radius rather than its reach, which is what the
+/// cadence is denominated in — so a stretched tip does not pay for it twice.
+fn bleed_reach(b: &BrushParams) -> f32 {
+    if b.dynamics.bleed > 0.0 {
+        BLEED_TRAVEL_QUANTUM * b.size.max(0.5)
     } else {
         0.0
-    };
-    // The tip's radius bounds every shape's reach exactly — nothing a canonical
-    // mask can paint lies outside the disc inscribed in its square
-    // (`Sweep::reach`) — drawn out along its facing axis by the brush's **own**
-    // elongation and not by any one segment's (§6.6). A modulation can only scale
-    // the knob down ([`Modulation`](stark_model::document::Modulation)), so the
-    // brush's value bounds every segment's.
-    let stretch = BrushParams::elongation(b.stretch);
-    let tip = 2.0 * (radius * stretch + TILE_APRON as f32);
-    (budget - tip - bleed) / ARC_MARGIN
+    }
+}
+
+/// **The largest tip reach — `size × elongation`, canvas px — the stamp loop can
+/// draw for a brush settled like `b`** (§6.2). A brush past it loses its dynamics
+/// altogether ([`StrokePath::TipTooLarge`](super::dynamics::StrokePath)), because
+/// the region is a single texture bounded by
+/// [`MAX_TEXTURE_DIM_2D`](crate::gpu::context::MAX_TEXTURE_DIM_2D) and one tip has
+/// to fit inside it whole.
+///
+/// **This is a limit an editor is expected to clamp against, not one a stroke is
+/// expected to discover.** It is the exact frontier [`fit_len`] refuses at — the
+/// same arithmetic inverted, and `the_published_reach_limit_is_the_gates_frontier`
+/// is what keeps the two from drifting — so a brush built inside it is drawable and
+/// one built outside it is not, with nothing in between for a caller to guess at.
+///
+/// It reads `b` for everything *except* the two knobs it bounds: a bleeding brush
+/// gets less, because its firings reach back past the segment they follow. Handed
+/// the brush being edited, it answers for that brush.
+pub fn max_tip_reach(b: &BrushParams) -> f32 {
+    // `fit_len(b) ≥ MIN_SEGMENT_LEN`, solved for the reach.
+    let spare = region_extent_budget() - bleed_reach(b) - MIN_SEGMENT_LEN * ARC_MARGIN;
+    (spare / 2.0 - TILE_APRON as f32).max(0.0)
+}
+
+/// **The largest `stretch` knob a brush otherwise settled like `b` may carry and
+/// still be drawn by the stamp loop** — [`max_tip_reach`] expressed in the units the
+/// editor's slider actually moves in (§6.6).
+///
+/// [`BrushParams::MAX_STRETCH`] whenever the reach cap is out of the knob's own
+/// reach, which is every brush up to about a 110 px radius: the knob tops out at an
+/// elongation of [`MAX_ELONGATION`](BrushParams::MAX_ELONGATION), so a small tip
+/// cannot spend its way past the region however far it is drawn out. Only a large
+/// brush trades.
+///
+/// **The engine answers this rather than the editor deriving it**, because the
+/// derivation does not survive being written twice. `elongation` is `1/(1 − knob)`
+/// clamped at the top, so inverting it round-trips to within an ulp and not to the
+/// bit — and an ulp on the wrong side is a brush the gate refuses and the slider
+/// offered. So the knob is stepped down until the *gate's own* arithmetic accepts
+/// it, and `the_offered_stretch_is_always_drawable` is what says it always does.
+pub fn max_stretch(b: &BrushParams) -> f32 {
+    let size = b.size.max(0.5);
+    let cap = max_tip_reach(b);
+    let holds = |knob: f32| size * BrushParams::elongation(knob) <= cap;
+    if holds(BrushParams::MAX_STRETCH) {
+        return BrushParams::MAX_STRETCH;
+    }
+    // The closed-form answer, then walked down by ulps onto the right side of the
+    // comparison. It starts at most one ulp off, so this steps once or not at all —
+    // the loop is a proof obligation discharged, not a search.
+    let mut knob = (1.0 - size / cap).clamp(0.0, BrushParams::MAX_STRETCH);
+    while knob > 0.0 && !holds(knob) {
+        knob = f32::from_bits(knob.to_bits() - 1);
+    }
+    knob
 }
 
 /// The travel the brush's **own** budget puts on one segment, before the region has
