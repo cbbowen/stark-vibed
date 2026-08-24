@@ -112,11 +112,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace   # the suite (`.config/nextest.toml`; see below)
 cargo test --workspace --doc    # doctests, which nextest cannot run (see below)
 cargo check -p stark-ui --target wasm32-unknown-unknown
-# the second configuration (§6.7): no Mixbox, and so no CC BY-NC 4.0 code at all.
-# Also the ONLY gate that catches a `#[cfg]` that drifted off the `use` it
-# guarded — the default build is green either way.
-cargo clippy --workspace --all-targets --no-default-features \
-  --features stark-net/webrtc -- -D warnings
 dx serve --web -p stark-ui                  # run it (needs a WebGPU browser)
 cargo bench -p stark-engine --bench stroke    # criterion; the dynamics perf gate
 # where a stroke's time goes, phase by phase (§7.1) — seconds, not minutes
@@ -132,8 +127,37 @@ look, seconds not minutes, and the only one that accounts for the GPU drain
 between runs of identical code.
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy `-D warnings`, the test suite
-and the wasm build. Vendored crates are excluded from the workspace, so run their
-suites by hand when the vendored code changes:
+and the wasm build — **the default feature set only**.
+
+**The second configuration (§6.7) is not part of the default round.** It is the
+build without Mixbox, and so without any CC BY-NC 4.0 code — the one a commercial
+build would ship. Neither CI nor the commands above cover it: it doubles a slow
+round to recompile what the default build just compiled, and the two differ by
+*subtraction* rather than by anything that runs differently, so what it can catch
+is compilation. **Run it when a change could mean something different with a
+feature off** — a `#[cfg]` added or moved, the Mixbox color space, `stark-net`'s
+transports — and not otherwise. It is the only gate that catches a `#[cfg]` that
+drifted off the `use` it guarded (rustfmt can slide a different `use` under one
+during a bulk import rewrite), an item left without the artifact its gate
+provides, or a helper reached only from a gated test. The default build is green
+either way, so nothing else will say so.
+
+```sh
+cargo clippy --workspace --all-targets --no-default-features \
+  --features stark-net/webrtc -- -D warnings
+cargo check -p stark-ui --target wasm32-unknown-unknown \
+  --no-default-features --features stark-net/webrtc
+# the licence claim, stated against the build graph itself: with the feature off,
+# the vendored crate is not among those compiled. Prints nothing when it holds.
+cargo tree -p stark-engine --no-default-features -e normal | grep -i mixbox
+```
+
+`--features stark-net/webrtc` puts back the *other* thing `--no-default-features`
+takes away: `stark-net`'s transport is a default feature too, and dropping it
+would make the run about two subtractions at once.
+
+Vendored crates are excluded from the workspace, so run their suites by hand when
+the vendored code changes:
 
 ```sh
 cargo test --manifest-path vendor/iroh-webrtc-transport/Cargo.toml

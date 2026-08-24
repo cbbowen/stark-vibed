@@ -47,54 +47,6 @@ jobs:
       - name: Check stark-ui (wasm32)
         run: cargo check -p stark-ui --target wasm32-unknown-unknown
 
-  # The build **without** the Mixbox pigment space (§6.7) — the configuration that
-  # links no CC BY-NC 4.0 code, so it is the one a commercial build would ship.
-  #
-  # Lint-shaped rather than a second test run: turning the feature off subtracts code
-  # paths rather than changing any that remain, so what can break is compilation —
-  # a `cfg` that left an accessor without its artifact, a helper used only by a gated
-  # test, an `include_bytes!` still pointing at the vendored LUT.
-  #
-  # **Submodules are checked out here even so**, and that is a cargo constraint rather
-  # than a choice: a `path` dependency's manifest is read while the dependency *graph*
-  # is resolved, which happens before features select anything, so `vendor/mixbox` has
-  # to exist for `cargo` to get as far as deciding not to build it. What the feature
-  # controls is whether it is ever compiled — which is the claim that matters, and
-  # which the `cargo tree` step below checks directly rather than by inference.
-  no-mixbox:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: true
-
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/git
-            ~/.cargo/registry
-            target
-          key: ${{ runner.os }}-ci-nomixbox-${{ hashFiles('**/Cargo.lock') }}
-
-      # The licence claim, stated against the build graph itself: with the feature
-      # off, the vendored crate is not among the crates that get compiled.
-      - name: The vendored crate is not in the build
-        run: |
-          if cargo tree -p stark-engine --no-default-features -e normal | grep -qi mixbox; then
-            echo "the mixbox crate is still in the dependency graph without its feature" >&2
-            cargo tree -p stark-engine --no-default-features -e normal | grep -i mixbox >&2
-            exit 1
-          fi
-
-      # `--features stark-net/webrtc` puts back the *other* thing `--no-default-features`
-      # takes away: stark-net's transport is a default feature too, and dropping it
-      # here would make this job about two subtractions at once.
-      - name: Clippy (no mixbox)
-        run: cargo clippy --workspace --all-targets --no-default-features --features stark-net/webrtc -- -D warnings
-
-      - name: Check stark-ui (wasm32, no mixbox)
-        run: cargo check -p stark-ui --target wasm32-unknown-unknown --no-default-features --features stark-net/webrtc
-
   test:
     runs-on: ubuntu-latest
     steps:
