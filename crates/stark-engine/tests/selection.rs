@@ -234,6 +234,9 @@ fn selection_gates_the_brush_dynamics_path() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
+    // `brush`'s default jitter rides along: a fully deselected texel takes the
+    // exact "keeps its value" exit whatever gates the exposure, which is the very
+    // thing this test pins.
     let mut b = brush(RED, 14.0);
     b.dynamics = BrushDynamics {
         flow: 1.0,
@@ -241,10 +244,6 @@ fn selection_gates_the_brush_dynamics_path() {
         deposit: 0.8,
         charge: 0.5,
         bleed: 0.0,
-        // The default jitter rides along: a fully deselected texel takes the
-        // exact "keeps its value" exit whatever gates the exposure, which is the
-        // very thing this test pins.
-        ..Default::default()
     };
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
     stroke_with(

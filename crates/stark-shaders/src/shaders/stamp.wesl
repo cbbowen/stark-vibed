@@ -50,7 +50,7 @@
 
 import package::stamp_common::{
     VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color, stroke_arc, stroke_drain,
-    substrate_tooth, deposit_jitter_of, xf,
+    substrate_tooth, jitter_of, xf,
 };
 import package::lib::paint_common::{OPACITY_K};
 
@@ -127,7 +127,7 @@ fn fs_main(in: VsOut) -> FsOut {
     // tooth and under the same law — constant along the stroke at this texel, so
     // it factors out of the sum over the segments and the deposit stays exactly
     // independent of how the path was cut.
-    let jitter = deposit_jitter_of(in);
+    let jitter = jitter_of(in);
     // `add` comes off the *instance*: it is the one paint rate the swept path reads,
     // and the pen can drive it (§6.2), so it varies segment to segment exactly as the
     // radius does. Constant within the segment either way, which is all the argument

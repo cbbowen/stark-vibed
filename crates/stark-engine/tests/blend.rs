@@ -316,7 +316,7 @@ fn stacking_is_order_independent(mode: BlendMode) {
             // Jitter off (§6.2): stroke seeds follow painting order, so a
             // reordered document jitters the same layer differently and the
             // comparison would read that as an order dependence of the blend.
-            opaque.dynamics.deposit_jitter = 0.0;
+            opaque.jitter = 0.0;
             stroke_with(&mut engine, opaque, paths[i]);
             let id = engine.observe().active_layer;
             engine.process(DocCommand::SetLayerBlend(id, mode));

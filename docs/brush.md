@@ -1060,10 +1060,12 @@ the constant-color deposit.
 Color dynamics' sibling for the *amount*: every texel of a stroke scales the
 exposure it presents by a multiplicative gate, uniform in `(1 − ε, 1 + ε)` and
 hashed from the **absolute canvas texel** and a per-stroke seed
-(`lib/noise.wesl::deposit_jitter`). `ε` is `BrushDynamics::deposit_jitter`,
-beside the `deposit` rate it perturbs — historized, since it changes stored
-pixels, defaulting (in the brush and for a document that predates the field
-alike) to `DEFAULT_DEPOSIT_JITTER` (1%, sized just above the f16 tile quantum);
+(`lib/noise.wesl::jitter`). `ε` is `BrushParams::jitter`, beside the color
+dynamics it is the amount's half of rather than among the flux axes, because it
+gates what *every* paint-laying path lays and not only the exchange loop's —
+historized, since it changes stored pixels, defaulting (in the brush and for a
+document that predates the field alike) to `DEFAULT_JITTER` (1%, sized just
+above the f16 tile quantum);
 the field's addition bumped the ALPN (§8). Its job is the display dither's
 (§6.5) one layer down: the lift/deposit loop accumulates iteratively, and
 whatever its residues and the f16 stores would pile into spatially coherent

@@ -79,7 +79,7 @@ import package::stamp_common::{
     prefix_at, prefix_span, ramp_apply, stretch_gain, stretch_look, stretch_unlook, Sweep,
     sweep_at, sweep_tangent,
 };
-import package::lib::noise::{color_jitter, deposit_jitter};
+import package::lib::noise::{color_jitter, jitter};
 import package::lib::latent::{
     Latent, latent_add, latent_any, latent_blend, latent_div, latent_lerp, latent_of,
     latent_scale, latent_sub, latent_unpremult, latent_wsum, latent_zero,
@@ -644,9 +644,9 @@ fn substrate_tooth(rt: vec2<i32>, turn: f32) -> f32 {
 }
 
 // The deposit jitter's gate at region texel `rt` (§6.2) —
-// `lib::noise::deposit_jitter` at the absolute canvas texel, so a live piece, its
+// `lib::noise::jitter` at the absolute canvas texel, so a live piece, its
 // commit and a replay read the identical gate however the region is placed, and
-// the swept path's `deposit_jitter_of` reads the same one (the loop's `add` axis
+// the swept path's `jitter_of` reads the same one (the loop's `add` axis
 // is that path's deposit, and the two must lay the same paint).
 //
 // Applied wherever `substrate_tooth` is — it is the same shape of gate, a
@@ -655,8 +655,8 @@ fn substrate_tooth(rt: vec2<i32>, turn: f32) -> f32 {
 // (`bleed_weight`); and never on the tool side, which books the gate's mean the
 // way it books `tooth_bearing` — and the jitter's mean is exactly 1, so the
 // tool's dispatch does not change at all.
-fn deposit_jitter_at(rt: vec2<i32>) -> f32 {
-    return deposit_jitter(st.canvas_origin + rt, st.jitter_seed, st.jitter_eps);
+fn jitter_at(rt: vec2<i32>) -> f32 {
+    return jitter(st.canvas_origin + rt, st.jitter_seed, st.jitter_eps);
 }
 
 // The extent's **optical depth** for a given coverage — the currency every
@@ -1639,7 +1639,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // in the form that composes across segment cuts. Scaling the finished shares
     // instead would do neither.
     let e = dpre * sw.warp * stretch_gain(st.stretch)
-        * substrate_tooth(rt, sw.turn) * deposit_jitter_at(rt);
+        * substrate_tooth(rt, sw.turn) * jitter_at(rt);
     // The selection's coverage here (§6.8). Fully deselected texels are exactly the
     // "keeps its value" case, so they cost nothing.
     let sel = load1(sel_mask, rt).r;
@@ -1976,7 +1976,7 @@ fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The substrate's share of this texel (§6.4) and the deposit jitter (§6.2) — per
     // texel, never per cell: both gates are the canvas's resolution, and averaging
     // either over a cell would smear exactly the per-texel structure it exists for.
-    let e = cell.x * substrate_tooth(rt, sw.turn) * deposit_jitter_at(rt);
+    let e = cell.x * substrate_tooth(rt, sw.turn) * jitter_at(rt);
     let sel = load1(sel_mask, rt).r;
     if sel <= 0.0 {
         return;
@@ -2150,7 +2150,7 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     // delivered there stays on it. Nothing
     // is destroyed — the tool is discarded at pen-up carrying whatever it still holds,
     // which is what a knife lifted off a canvas does.
-    let ex = exchange_at(e * substrate_tooth(rt, sw.turn) * deposit_jitter_at(rt));
+    let ex = exchange_at(e * substrate_tooth(rt, sw.turn) * jitter_at(rt));
 
     // The parcel is **what the rest of the pass would have delivered**, not the cell
     // overhead. At the end of a long smear the reservoir is radially skewed: the

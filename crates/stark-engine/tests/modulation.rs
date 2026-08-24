@@ -28,7 +28,7 @@ fn plain(radius: f32, modulation: Modulations) -> BrushParams {
     b.drain = 0.0;
     // And no deposit jitter: this file's claims are bit-equalities across two
     // *strokes*, and the jitter is per-stroke-seeded by design (§6.2).
-    b.dynamics.deposit_jitter = 0.0;
+    b.jitter = 0.0;
     b.modulation = modulation;
     b
 }
@@ -244,8 +244,6 @@ fn deposit_follows_tilt_on_the_stamp_loop() {
             deposit: 0.9,
             charge: 1.5,
             bleed: 0.0,
-            // Off, like `plain`'s (this literal replaces the whole of it).
-            deposit_jitter: 0.0,
         },
         shape: BrushShape::Round { hardness: 0.9 },
         modulation: Modulations {

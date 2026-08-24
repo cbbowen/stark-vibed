@@ -10,7 +10,7 @@
 // value per integer key, no spatial structure at all — and a baked texture of
 // either would be this hash with a footprint: `dither2` keys on the target
 // pixel to make the display encode's rounding stochastic (§6.5), and
-// `deposit_jitter` keys on the canvas texel to do the same for the paint a
+// `jitter` keys on the canvas texel to do the same for the paint a
 // stroke accumulates (§6.2). The hash holds the determinism contract on its
 // own terms: integer arithmetic is exact on every backend, and the one float
 // step (`_centered`) is a mantissa placement and a Sterbenz-exact subtraction,
@@ -114,7 +114,7 @@ fn dither2(px: vec2u, seed: u32) -> vec2f {
 // White per texel rather than the baked field's smooth structure, because its job
 // is the field's opposite: decorrelating neighbouring texels' accumulation, so
 // what the iterative exchange would pile into a visible band lands as dither.
-fn deposit_jitter(texel: vec2<i32>, seed: u32, eps: f32) -> f32 {
+fn jitter(texel: vec2<i32>, seed: u32, eps: f32) -> f32 {
     if eps <= 0.0 {
         return 1.0;
     }

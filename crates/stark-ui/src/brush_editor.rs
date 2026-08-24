@@ -510,11 +510,11 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // stroke — what keeps the wet loop's accumulation from banding,
                     // at the 1% default; the rest of the track is grain as a look.
                     // The slider stops at 0.2 where the field runs to 1
-                    // (`BrushDynamics::deposit_jitter`): past strong grain the gate
+                    // (`BrushParams::jitter`): past strong grain the gate
                     // is only noise, and a ceiling the model does not own belongs to
                     // the slider's end rather than to the quantity.
-                    Slider { label: "Jitter", min: 0.0, max: 0.2, value: d.deposit_jitter,
-                        oninput: move |v| edit(state, preview, move |b| b.dynamics.deposit_jitter = v) }
+                    Slider { label: "Jitter", min: 0.0, max: 0.2, value: brush.jitter,
+                        oninput: move |v| edit(state, preview, move |b| b.jitter = v) }
                     // Per-unit opacity, independent of the amount laid (§6.1).
                     // The ghost the Layers panel's opacity wears: the same question
                     // — how much of what is under this shows through — asked of the
