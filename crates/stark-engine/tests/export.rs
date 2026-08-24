@@ -504,11 +504,11 @@ fn impossible_exports_are_errors() {
 ///
 /// Not the literal 8192, which is only where `wgpu::Limits::default()` happens to cap
 /// 2D textures — the frontend requests those, so on the app's device a hardcoded
-/// number would agree by coincidence. The headless device asks for
-/// `downlevel_defaults` (2048, the web/WebGL2 floor), and there every size from 2049
-/// to 8192 would pass a check written against a limit the device does not have, then
-/// ask wgpu for a texture it was never granted: the permissive direction, from the one
-/// guard whose whole job is to report that in words instead.
+/// number would agree by coincidence. The headless device asks for the engine's own
+/// minimums, whose 2D cap is `MAX_TEXTURE_DIM_2D` (2048), and there every size from
+/// 2049 to 8192 would pass a check written against a limit the device does not have,
+/// then ask wgpu for a texture it was never granted: the permissive direction, from
+/// the one guard whose whole job is to report that in words instead.
 ///
 /// Both halves matter. Refusing one past the limit is the easy one; *rendering* the
 /// one exactly at it is what says the number is real and not merely arithmetic

@@ -150,11 +150,12 @@ impl ExportPlan {
 /// Asked of the device rather than fixed at a number, because the number was wrong in
 /// the dangerous direction. `wgpu::Limits::default()` caps 2D textures at 8192 and the
 /// frontend requests that, so on the app's device the two agreed by coincidence; the
-/// headless device ([`GpuContext::headless`]) requests only `downlevel_defaults` —
-/// 2048, the web/WebGL2 floor — and there a 4096-px export passed a check written
-/// against 8192 and then asked for a texture the device was never granted. A guard
-/// that has to be kept in step with a limit it does not read is a guard that is
-/// already out of step somewhere.
+/// headless device ([`GpuContext::headless`]) asks for the engine's own minimums,
+/// whose 2D cap is
+/// [`MAX_TEXTURE_DIM_2D`](crate::gpu::context::MAX_TEXTURE_DIM_2D) — 2048 — and there
+/// a 4096-px export passed a check written against 8192 and then asked for a texture
+/// the device was never granted. A guard that has to be kept in step with a limit it
+/// does not read is a guard that is already out of step somewhere.
 ///
 /// It also lets the ceiling *rise*: the adapters this runs on report far more than
 /// 8192 (32768 is common), so a frontend that requests more gets more, and this

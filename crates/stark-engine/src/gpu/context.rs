@@ -86,11 +86,43 @@ impl GpuHealth {
     }
 }
 
-/// Max substrate texture edge. `Limits::downlevel_defaults()` (and WebGL2) cap 2D
-/// textures at 2048, so larger sources are box-downsampled by an integer factor
-/// (which preserves tileability) — applied on every target so deposition stays
-/// deterministic across native and web.
+/// **The largest 2D texture the engine will create, and therefore exactly what it
+/// asks a device for** ([`GpuContext::minimum_required_limits`]).
+///
+/// It bounds the canvas substrate — a larger source is box-downsampled by an integer
+/// factor, which preserves tileability — and the stamp loop's region, which is what
+/// puts a ceiling on a brush's reach (`gpu::stroke::budget::max_tip_reach`, §6.2).
+///
+/// **It is the requirement rather than a reading of one.** The limit is *set* from
+/// this constant rather than raised to meet it, so the number here and the number
+/// the device was asked for cannot drift apart, and a build that raises it asks for
+/// the bigger device instead of quietly creating a texture nobody promised. What it
+/// costs is device breadth: at 2048 every WebGPU implementation qualifies and so
+/// does a WebGL2-class one, and each step up narrows that. A frontend free to be
+/// less portable may ask for more — `stark-ui` requests `Limits::default()` improved
+/// by these — but nothing in the engine may *use* more.
+///
+/// **A fixed constant, never a device query**, which is load-bearing beyond texture
+/// allocation: the substrate downsample is part of the canonical form an asset id is
+/// taken over (§19), so following the adapter's real limit would canonicalize the
+/// same PNG differently on two machines and the id would stop naming one thing.
 pub(crate) const MAX_TEXTURE_DIM_2D: u32 = 2048;
+
+// The canonical-form caps that become **textures** have to fit inside what the device
+// was asked for, and both are frozen one-way ratchets (§19) that a future raise could
+// walk into this ceiling.
+//
+// `MAX_PICTURE_DIM` is deliberately absent rather than overlooked: a placed picture is
+// built into tiles on the CPU and never bound as a texture at all, which is why it is
+// allowed to be larger (§23).
+const _: () = assert!(
+    stark_assetid::MAX_SUBSTRATE_DIM <= MAX_TEXTURE_DIM_2D,
+    "a substrate would not fit the texture limit the device was asked for",
+);
+const _: () = assert!(
+    stark_assetid::MAX_SHAPE_DIM <= MAX_TEXTURE_DIM_2D,
+    "a brush shape would not fit the texture limit the device was asked for",
+);
 
 /// The wgpu device, queue, and adapter the engine draws with.
 ///
@@ -155,11 +187,16 @@ impl GpuContext {
     }
 
     pub fn minimum_required_limits() -> wgpu::Limits {
-        // downlevel defaults keep us within web/WebGL2 limits too.
+        // A conservative floor for everything the engine does not have an opinion
+        // about; the two it does are set from that opinion below.
         let mut required_limits = wgpu::Limits::downlevel_defaults();
-        required_limits.max_texture_dimension_2d = required_limits
-            .max_texture_dimension_2d
-            .max(MAX_TEXTURE_DIM_2D);
+        // **Assigned, not raised to meet.** [`MAX_TEXTURE_DIM_2D`] is the largest
+        // texture the engine will create, so it is also precisely what the device is
+        // asked for — one number, and no way for the size we allocate and the size we
+        // required to disagree. Written as `.max(…)` against a preset, the preset was
+        // silently the real limit whenever it was the larger, and the constant was
+        // documented as matching a `wgpu` default it had no way to keep matching.
+        required_limits.max_texture_dimension_2d = MAX_TEXTURE_DIM_2D;
         // **The stamp loop's `exchange` writes six storage textures where WebGPU
         // guarantees four.**
         //
