@@ -16,7 +16,6 @@ use stark_model::document::{BrushDynamics, BrushParams, BrushShape};
 use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX};
 
 use super::dynamics::BLEED_TRAVEL_QUANTUM;
-use super::segments::tip_reach;
 
 /// The optical depth one full pass of an opaque tip lays over a point — the τ
 /// ceiling `assets::build_prefix_tau` clamps to.
@@ -124,16 +123,14 @@ pub(super) fn fit_len(b: &BrushParams) -> f32 {
     } else {
         0.0
     };
-    // The tip's reach rather than its radius, for `coverage_bounds`' reason: a
-    // stamp that fills its mask's corners occupies a `√2`-wider box, and this is
-    // the bound that decides how much travel is left over.
-    //
-    // Drawn out along its facing axis by the brush's **own** elongation and not by
-    // any one segment's (§6.6). A modulation can only scale the knob down
-    // ([`Modulation`](stark_model::document::Modulation)), so the brush's value
-    // bounds every segment's.
+    // The tip's radius bounds every shape's reach exactly — nothing a canonical
+    // mask can paint lies outside the disc inscribed in its square
+    // (`Sweep::reach`) — drawn out along its facing axis by the brush's **own**
+    // elongation and not by any one segment's (§6.6). A modulation can only scale
+    // the knob down ([`Modulation`](stark_model::document::Modulation)), so the
+    // brush's value bounds every segment's.
     let stretch = BrushParams::elongation(b.stretch);
-    let tip = 2.0 * (radius * tip_reach(&b.shape) * stretch + TILE_APRON as f32);
+    let tip = 2.0 * (radius * stretch + TILE_APRON as f32);
     (budget - tip - bleed) / ARC_MARGIN
 }
 

@@ -162,27 +162,22 @@ mod tests {
     }
 
     /// The 2026-08-23 repro: a gentle full-size stamp earned the relaxed
-    /// full-radius segment, overflowed the region by one tile row, and lost its
-    /// dynamics entirely. Now the region floor shortens its segments instead —
-    /// still comfortably above the reference exchange step — and the loop runs.
+    /// full-radius segment, overflowed the region by one tile row through the
+    /// `√2` corner bound, and lost its dynamics entirely. A canonical mask's
+    /// content lies inside its inscribed disc (`Sweep::reach`), so a stamp now
+    /// prices exactly as the round tip the 500/2048 calibration was built for:
+    /// the loop runs at the brush's own full budget, nothing shortened at all.
     #[test]
-    fn a_full_size_stamp_buys_its_fit_with_shorter_segments() {
+    fn a_full_size_stamp_prices_as_the_round_tip_does() {
         let mut b = brush(500.0, 0.05);
         b.shape = stark_model::document::BrushShape::Stamp(stark_model::AssetId([7u8; 32]));
         let plan = dynamics_setup(&b);
         assert!(matches!(plan.path, StrokePath::Loop), "the loop must run");
-        let s = plan.shortened.expect("…and the cap must actually bind");
         assert!(
-            s.got < s.wanted && s.got > 0.25 * b.size,
-            "shortened to {} px against {} wanted — the fit should cost segments, \
-             not approach the exchange-step floor",
-            s.got,
-            s.wanted,
+            plan.shortened.is_none(),
+            "a stamp's tip costs its radius, not √2 of it — nothing to shorten",
         );
-        assert_eq!(
-            plan.tol.max_len, s.got,
-            "the budget spends what the fit left"
-        );
+        assert_eq!(plan.tol.max_len, dynamics_len(&b));
     }
 
     /// The cap is exactly a no-op for every brush that already fits: `shortened`

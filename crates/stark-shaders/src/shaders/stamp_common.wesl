@@ -473,9 +473,9 @@ fn sweep_vertex(
     // ...and at its **stretched** reach on each axis (`stretch_hull`). A tip drawn out
     // along its facing axis paints outside the strip its radius alone would have been
     // given, and a fragment that is never rasterized is a stroke cut off along a
-    // straight line — the same failure a shape reaching its own corners caused before
-    // `tip_reach` existed (§6.6). Both factors are exactly 1 with no stretch, so no
-    // existing stroke's strip moves by an ulp.
+    // straight line — the failure every under-reported reach lands on
+    // (`segments::Sweep::reach`, §6.6). Both factors are exactly 1 with no stretch, so
+    // no existing stroke's strip moves by an ulp.
     let hf = stretch_hull(stretch);
     let ha = hull * hf.x; // the travel margin at each end
     let hl = hull * hf.y; // the lateral rim
@@ -746,8 +746,10 @@ fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
 // reached the point when the span opened. `prefix_at` passes `-2` and means exactly that.
 fn prefix_span(x1: f32, x0: f32, yl: f32, w: f32) -> f32 {
     // Outside the extent's own square there is no shape to integrate: every mask is
-    // swept over brush-local `|x| ≤ 1, |y| ≤ 1` and is zero beyond it by construction
-    // (`segments::tip_reach`). Stated rather than left to the mask's border row,
+    // swept over brush-local `|x| ≤ 1, |y| ≤ 1` and is zero beyond it — the round tip
+    // by construction, a canonical stamp because its content lies inside the disc
+    // inscribed in that square (`stark_assetid::coverage`). Stated rather than left
+    // to the mask's border row,
     // because `bilerp_taps` **clamps** — so a lateral tap past the edge silently reads
     // the outermost row instead, and that row is not quite zero: the round tip's
     // `κ = (h/π)·acos(r)/r` is still small-but-positive at the last texel's `r ≈ 0.996`.

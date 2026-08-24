@@ -1138,16 +1138,24 @@ pub enum BrushShape {
 bristle brush read as a real stroke rather than a rubber stamp), while `Pen` pins
 it to the pen's tilt azimuth in canvas space, like a calligraphy nib.
 
-**A mask is a square, and a tip's reach says so.** The prefix-τ volume is indexed
-over brush-local `|x| ≤ 1, |y| ≤ 1`, so a shape may be opaque out to the corners
-of its own image; only the round tip, exactly zero outside its unit disc, stops
-at one radius. So the box that decides which tiles a segment is drawn into — and
-which rect the dynamics loop dispatches over its extent — is the **rotated
-square**, `√2 · radius` from the centreline for a stamp, not the radius. Measured
-against the radius alone the two answers agree at every axis-aligned angle and
-differ most at 45°, which is exactly the shape of the bug it caused: a diagonal
-stroke sliced off along a tile boundary, with horizontal and vertical strokes
-looking perfect.
+**A brush's `size` names the disc the mark fits in — for every shape.** An
+imported mask is **reach-normalized** at decode (`stark_assetid::coverage`, part
+of the identity contract's canonical form, §19): its content is scaled about the
+mask's own centre so the circle that circumscribes it is the disc inscribed in
+the mask square — grown to just under the rim when it huddled short of it,
+shrunk inside when it spilled past. A dead band under the rim keeps the
+operation idempotent, so re-decoding a stored mask lands on the same texels and
+the same id; the centre is the author's own, so a deliberate offset survives as
+composition rather than being re-centred away. The round tip has the property by
+construction — exactly zero outside its unit disc — so one sentence covers every
+brush: **nothing a tip can paint lies further than `radius` from its centre, at
+any orientation**. The box that decides which tiles a segment is drawn into, the
+rect the dynamics loop dispatches, and the region budget's tip floor
+(`budget::fit_len`) all use exactly that. A mask could once be opaque to the
+corners of its own square, and every one of those bounds carried a `√2` for a
+worst case almost no mask was — with the region floor calibrated for the round
+tip, that `√2` was also what silently sent every large gentle stamp back to the
+swept deposit.
 
 **The two orientation sources are two bakes, not one bake read two ways.** The
 swept integral runs along the travel direction, so orienting the extent means
@@ -1157,37 +1165,25 @@ sources ask opposite amounts of that:
 - `FollowStroke` never turns it at all. The relative angle is 0 by definition, so
   the volume is **one layer, the mask as it stands**, integrated over its own
   width. That is what nearly every stroke reads, and it costs a single pass.
-- `Pen` turns it through the whole circle, and *a square does not fit inside
-  itself turned* — a 45° rotation puts its corners `√2` out, and what survives an
-  unpadded bake is the octagon the two squares share, 83% of the tip. So the pen
-  volume is **padded by `√2` and stacked**, one layer per relative angle, built
-  on first use rather than at import (the store cannot see a brush setting, and
-  eagerly baking it would charge every follow-stroke brush for a mode it never
-  enters).
+- `Pen` turns it through the whole circle, which is safe **inside the mask's own
+  square**: canonical content lies within the inscribed disc, and a rotation
+  maps the disc to itself. So the pen volume is the same grid **stacked**, one
+  layer per relative angle, built on first use rather than at import (the store
+  cannot see a brush setting, and eagerly baking it would charge every
+  follow-stroke brush for a mode it never enters). While a mask could fill its
+  corners this stack had to be padded by `√2` — a square does not fit inside
+  itself turned — and every pen-oriented brush paid double the texels, or at the
+  fixed memory budget half the orientation resolution, for corners the canonical
+  form now guarantees empty.
 
-Padding a volume moves two numbers, and both have to move together or the mode
-stops matching its own brush:
-
-- **The frame.** The padded `[-1, 1]²` is `√2` tips wide, so the sweep is unrolled
-  in a frame that much larger for the mask inside it to land at the radius the
-  brush asked for. `Segment::frame` carries it and is the only radius the shaders
-  see; `Segment::radius` stays the tip's own, which is what keeps a nib's bleed
-  cadence and stencil the size of the tip rather than of the box around it.
-- **The column width the τ integral is taken at.** A padded column is narrower in
-  texels while standing for the same width of *mask*, so `build_prefix_tau` takes
-  its `dx` as a parameter rather than as `2/width`. Take it from the texture and
-  every pen stroke lands `√2` lighter than the same brush following the stroke.
-
-Only the tool side of the dynamics loop needs the conversion between the two
-(`frame_scale`, 1 for every unpadded volume). A prefix-τ difference is an
-absolute optical depth whatever box was baked around it, so the canvas side never
-asks; the reservoir, which has no prefix to difference and rebuilds its exposure
-from raw coverage, must, or it picks up from an extent `√2` wider than the one
-it lays. Today that correction changes almost nothing — the paint it misplaces
-lands in the padding, and the deposit reads the reservoir back through a
-τ-weighted prefix that is zero out there, so a zero-angle nib renders within two
-levels either way. It is written correctly because the representation has to be
-consistent, not because a pixel currently depends on it.
+With every volume on the mask's own grid there is one frame and one column
+width: `Segment::frame` is the tip's radius for every brush, and
+`build_prefix_tau` integrates its rows at `2/width`. Both were mode-dependent
+while the pen stack was padded — the frame `√2` larger so the mask inside landed
+at the radius the brush asked for, the `dx` a number the padded texture could
+not supply — and each had to reach exactly one of the two sides of the dynamics
+loop, a consistency that had to be written correct because no pixel visibly
+depended on it.
 
 **A tip is drawn out along the axis it faces.** Tilting a real pencil does not press a
 bigger circle onto the paper — it rolls the cone over, and the patch in contact

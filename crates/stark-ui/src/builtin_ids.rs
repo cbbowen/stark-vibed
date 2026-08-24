@@ -148,17 +148,26 @@ mod tests {
     /// `Rough.png` — and every painting made on it still opens, while re-authoring
     /// it under the same name strands them all. The path beside each hash says
     /// which asset it was, and nothing looks it up.
+    ///
+    /// **The two shape rows were re-canonicalized once, in alpha** (2026-08-23),
+    /// when a brush shape's canonical form became reach-normalized so that a
+    /// brush's `size` names the disc its mark fits in for every shape
+    /// (`stark_assetid::coverage`, §6.6). That re-derived every shape id and
+    /// stranded documents painted on the old ones — a decision about other
+    /// people's files that §19 puts at exactly this rung, and one the alpha
+    /// window is *for*. The substrate rows did not move, the height derivation
+    /// being untouched. Past alpha the rule above stands as written: append.
     #[test]
     fn the_shipped_catalog_is_append_only() {
         // Shipped ids, oldest first. Append; do not edit.
         const SHIPPED: &[(&str, &str)] = &[
             (
                 "shape/Flat.png",
-                "4051f4c5e66e9e7a008a1367d31aaced9e524b06104dd9fc4509abffccd265a1",
+                "2c484d9d80ad2d087996fe17aade9b6618cf4e91a97a570df8b378cd3de563bb",
             ),
             (
                 "shape/Worn_Bristles.png",
-                "62b76803f7c06460854d3268cd41d868f271ba1cf54ecc53b7387cb81d83979e",
+                "e572234345c9a1ffdf7df457569a3bc14709437512266f4b9c4fb7f4214bab0d",
             ),
             (
                 "substrate/Rough.png",

@@ -111,29 +111,30 @@ fn a_capped_shape_paints_and_survives_save_load() {
 }
 
 /// **The two orientation bakes must agree where they describe the same footprint**
-/// (§6.6) — which is the whole of what makes the pen volume's padding a change of
+/// (§6.6) — which is the whole of what makes the pen volume a change of
 /// representation rather than a change of brush.
 ///
-/// The two are separate bakes now: follow-stroke is the mask as it stands, one layer,
-/// while pen is the same mask shrunk into a `PEN_PAD`-wider square, stacked per angle,
-/// and read back at a frame scaled to match. At a **relative angle of zero** they stand
-/// for the identical tip, so the marks have to land on top of one another — and that is
-/// the one comparison that pins every number the padding moves at once. Get the frame
-/// wrong and the pen mark is `√2` too wide or too narrow; get `build_prefix_tau`'s `dx`
-/// wrong and it is the right size at the wrong darkness. Either shows here as a mark
-/// that is not the other mark, and nowhere else as anything but "the tip looks off".
+/// The two are separate bakes: follow-stroke is the mask as it stands, one layer,
+/// while pen is the same mask rotated per relative angle on its own grid
+/// (`assets::rotate_layers` — sound unpadded because a canonical mask's content lies
+/// inside its inscribed disc, which a rotation maps to itself). At a **relative angle
+/// of zero** they stand for the identical tip, so the marks have to land on top of
+/// one another — the one comparison that pins the rotation arithmetic, the τ
+/// integral's column width and the frame agreement at once. Any of them wrong shows
+/// here as a mark that is not the other mark, and nowhere else as anything but "the
+/// tip looks off".
 ///
 /// A mouse stroke along `+x` is the zero-angle case without contrivance: the travel
 /// direction and the (absent) tilt azimuth are both 0, so `orientation_turns` returns 0
 /// and the pen volume is read at its own slice 0.
 ///
 /// The tolerance is for resampling and nothing else. The pen bake carries the mask
-/// through a rotation into a finer grid and the shader reads it back with its own
-/// bilinear, so the two differ by what two filter passes do to an edge; they cannot be
-/// compared to the bit. Measured, they agree to **2 levels** — while dropping the
-/// `PEN_PAD` out of the τ integral misses by 27 and reading the padded volume at an
-/// unpadded frame misses by 53, so the bound has half a decade of room on the side that
-/// matters and six times the resampling noise on the other.
+/// through slice 0's rotation arithmetic and the shader reads it back with its own
+/// bilinear, so the two differ by what two filter passes do to an edge; they cannot
+/// be compared to the bit. In the padded era the same comparison measured 2 levels of
+/// resampling noise against misses of 27 and 53 for the two ways the padding could be
+/// dropped on one side only, so the bound has half a decade of room on the side that
+/// matters.
 #[test]
 fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
     let Some(mut engine) = engine_or_skip_blue() else {
@@ -148,14 +149,8 @@ fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
         // Lift and deposit, so the **dynamics loop** draws this rather than the swept
         // fast path. Both paths read the frame and the volume, and they read them from
         // different sides — one uniform each, filled at different call sites — so a
-        // padding that only one of them agreed with would show here and in no golden
+        // bake that only one of them agreed with would show here and in no golden
         // the corpus draws.
-        //
-        // It does *not* pin the tool's own `frame_scale` (`dynamics.wesl::exchange`):
-        // what that corrects is stranded in the padding, where the deposit's τ-weighted
-        // read finds nothing, so the mark comes out within 2 levels either way. Said
-        // plainly because the alternative is a test that looks like coverage it has not
-        // got.
         b.dynamics.lift = 0.6;
         b.dynamics.deposit = 0.6;
         engine.process(ViewCommand::SetBrush(b));

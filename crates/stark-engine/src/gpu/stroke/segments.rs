@@ -5,7 +5,7 @@
 //! same record — which is what lets a live tail and the commit that replaces it
 //! agree pixel for pixel.
 
-use stark_model::document::{BrushParams, BrushShape, OrientationSource, PenState, StrokeRecord};
+use stark_model::document::{BrushParams, OrientationSource, PenState, StrokeRecord};
 use stark_model::geom::Vec2;
 
 use super::StrokeSpans;
@@ -75,34 +75,32 @@ pub(super) struct Sweep {
     /// `|r₁ − r₀| < r₁ + r₀` for any two positive radii.
     ///
     /// Relative rather than absolute (px) because it is then the *same number* for the
-    /// tip and for the frame the sweep is unrolled in ([`frame`](Self::frame)): the two
-    /// differ by a constant [`frame_scale`], which cancels. One lane serves both.
+    /// tip and for the frame the sweep is unrolled in ([`frame`](Self::frame)), which
+    /// are one radius. One lane serves both.
     pub(super) ramp: f32,
-    /// The radius of the **frame the sweep is integrated in**, in canvas px: the one
-    /// radius the shaders see, and the tip's own only when the two coincide.
+    /// The radius of the **frame the sweep is integrated in**, in canvas px — the one
+    /// radius the shaders see, and the tip's own.
     ///
-    /// They part company for a pen-oriented stamp (§6.6). Its prefix-τ volume is padded
-    /// so the mask can turn inside it without losing its corners, so the volume's
-    /// `[-1, 1]²` is `PEN_PAD` tips wide rather than one — and the sweep has to be
-    /// unrolled in a frame that much larger for the mask inside it to land at the
-    /// radius the brush asked for. Everything the shader derives from brush-local
-    /// coordinates (the swept arc, the color-noise domain, the reservoir's placement)
-    /// is in this frame; nothing the host prices is, which is what keeps a tip's dab
-    /// and its bleed the size of the tip instead of the size of the box around it.
+    /// The two were separate quantities while a pen-oriented stamp's prefix-τ volume
+    /// was padded to keep a turned mask's corners. A canonical mask's content lies
+    /// inside the disc inscribed in its square (`stark_assetid::coverage`, §6.6), a
+    /// rotation maps that disc to itself, and so every volume is baked unpadded and
+    /// every brush's frame is its tip.
     pub(super) frame: f32,
-    /// How far from the centreline this tip's deposit can land, in canvas px — the
-    /// half-extent of its extent **square**, not of the disc inscribed in it
-    /// ([`tip_reach`], scaled by the radius).
+    /// How far from the centreline this tip's deposit can land, in canvas px.
     ///
     /// Scaled by the segment's **widest** tip rather than its mean, since the ramp
     /// makes those different numbers and this one bounds a box: under-reporting it is
     /// a stroke clipped at a tile boundary (see [`coverage_bounds`]).
     ///
-    /// Every shape is swept over brush-local `|x| ≤ 1, |y| ≤ 1` — that is the whole
-    /// domain of the prefix-τ volume — so a shape is free to fill the corners of its
-    /// own mask, and an image stamp that does reaches `√2 · radius` from the
-    /// centreline. Only the round tip, zero outside its unit disc by construction
-    /// ([`round_coverage`]), reaches exactly `radius`.
+    /// Every shape is swept over brush-local `|x| ≤ 1, |y| ≤ 1` — the whole domain of
+    /// the prefix-τ volume — but nothing any shape can paint lies outside the **disc**
+    /// inscribed in that square, at any orientation: the round tip by construction
+    /// ([`round_coverage`]), an image stamp by its canonical form's reach
+    /// normalization (`stark_assetid::coverage`, §6.6). So the widest tip's radius,
+    /// drawn out by the stretch, is the exact bound — where this once carried a `√2`
+    /// for a mask that might fill its corners, and every stamp's boxes were that much
+    /// larger than what they held.
     pub(super) reach: f32,
     /// Arc length of the centreline (canvas px) — the tip's own travel, which is the
     /// measure every rate in both paths is denominated in.
@@ -728,7 +726,7 @@ pub(super) fn generate_segments_in(
             curvature: track.curvature,
             radius,
             ramp: (r1 - r0) / radius,
-            frame: radius * frame_scale(b),
+            frame: radius,
             // Filled from `widest_tip` below, which needs the ramp this initializer is
             // still building — and must be *that* expression rather than one equal to
             // it, since this bounds the strip the GPU draws.
@@ -738,12 +736,12 @@ pub(super) fn generate_segments_in(
             stretch,
             dist: track.dist,
         };
-        // **The tip's own reach, times how far it is drawn out.** `A` maps the mask's
-        // square (or the round tip's disc inside it) into a region no point of which is
-        // further out than `‖A‖ = elongation` times where it started, so one factor
+        // **The tip's own disc, drawn out by the stretch.** `A` maps the disc every
+        // shape's paint lies inside ([`Sweep::reach`]) into a region no point of which
+        // is further out than `‖A‖ = elongation` times where it started, so one factor
         // bounds every angle — which is what this has to be, since it grows an
         // axis-aligned box (`coverage_bounds`).
-        sweep.reach = sweep.widest_tip() * tip_reach(&b.shape) * elong;
+        sweep.reach = sweep.widest_tip() * elong;
         Segment {
             sweep,
             paint: Paint {
@@ -831,50 +829,6 @@ pub(super) fn generate_segments_in(
     }
 
     (segs, end_dist)
-}
-
-/// How far a tip of this shape deposits from the centreline, as a multiple of the
-/// radius in force (§6.6) — the half-extent of its extent square, which is what
-/// [`Segment::reach`] scales.
-///
-/// The sweep integrates every shape over brush-local `|x| ≤ 1, |y| ≤ 1`, so what
-/// separates the two answers is not how the mask is *drawn* but whether the shape can
-/// occupy the corners of its own square. Stated as a property of the shape rather than
-/// measured off the mask because it has to be the same number on both sides of a
-/// commit and on every peer, and a bound is exactly what the callers want: a box that
-/// is a little large costs fragments that difference their prefix taps to zero, and one
-/// that is a little small is a clipped stroke.
-pub(super) fn tip_reach(shape: &BrushShape) -> f32 {
-    match shape {
-        // Exactly zero outside its unit disc, by construction (`round_coverage`), so
-        // the corners of its square hold nothing to lose.
-        BrushShape::Round { .. } => 1.0,
-        // An imported mask may be opaque to the very corner texel. Swept along a
-        // diagonal that square's canvas box is `√2` times as wide as the disc's, which
-        // is what a bound taken off the radius alone was cutting off at the tile
-        // boundary.
-        BrushShape::Stamp(_) => std::f32::consts::SQRT_2,
-    }
-}
-
-/// The frame the sweep is integrated in for this brush, as a multiple of the tip's own
-/// radius (§6.6) — what [`Segment::frame`] scales, and 1 for everything but a
-/// pen-oriented stamp.
-///
-/// A property of the brush rather than of the shape alone, because it is the pair
-/// `(shape, orientation)` that decides which prefix-τ volume gets bound: a stamp that
-/// follows the stroke reads an unpadded identity layer and a stamp pinned to the pen
-/// reads the padded stack. Resolved from the same pair on both sides, so the frame the
-/// renderer sweeps in is the frame the volume was baked for
-/// ([`AssetStore::prefix_view`](crate::assets::AssetStore::prefix_view)).
-pub(super) fn frame_scale(b: &BrushParams) -> f32 {
-    match (b.shape, b.orientation) {
-        // A disc is its own rotation, so its volume is one slice with nothing to turn
-        // inside it — whatever the orientation source says.
-        (BrushShape::Round { .. }, _) => 1.0,
-        (BrushShape::Stamp(_), OrientationSource::FollowStroke) => 1.0,
-        (BrushShape::Stamp(_), OrientationSource::Pen) => crate::assets::pen_frame_scale(),
-    }
 }
 
 /// The shape's orientation for a segment, as a fraction of a full turn ∈ [0, 1): the
@@ -1026,6 +980,7 @@ mod tests {
     use super::super::region::{coverage_bounds, segment_end};
     use super::super::safe_frozen;
     use super::*;
+    use stark_model::document::BrushShape;
 
     // --- the round tip ---------------------------------------------------
 
@@ -1736,27 +1691,22 @@ mod tests {
         }
     }
 
-    /// A tip's box has to contain the **square** it is swept over, not the disc
-    /// inscribed in that square — and at a diagonal those are different boxes.
+    /// A stamp's box holds its **disc** exactly — no more, at any angle.
     ///
-    /// This is the bug the `reach` field exists for. Every shape is integrated over
-    /// brush-local `|x| ≤ 1, |y| ≤ 1`, so a stamp is free to paint the corners of its
-    /// own mask; measured against the radius alone, a stroke running at 45° claimed a
-    /// box `√2` too small on both axes, and `for_each_touched` then left tiles — or
-    /// segments within a tile — out of the render. What it looks like is a stroke sliced
-    /// off along a tile boundary, which no golden would attribute to the tip's width.
+    /// Nothing any canonical shape can paint lies outside the disc inscribed in its
+    /// mask square ([`Sweep::reach`]), so the disc's rim is the exact frontier the
+    /// box must contain, and the box that contains only it is the tight one: a `√2`
+    /// margin for a corner a canonical mask cannot occupy was every stamp stroke
+    /// paying up to double the region area for texels its prefix taps difference to
+    /// zero. Containment failing clips the stroke at a tile boundary;
+    /// tightness failing is the tax coming back.
     ///
-    /// Swept at a range of angles because the axis-aligned ones are exactly where the
-    /// two answers agree, and those were the ones that always looked right.
+    /// Swept at a range of angles because axis-aligned travel is where a wrong bound
+    /// and the right one agree, and those were the strokes that always looked right.
     #[test]
-    fn a_square_tip_claims_the_corners_it_can_paint() {
+    fn a_stamps_box_is_its_disc_exactly() {
         let radius = 24.0f32;
         let stamp = BrushShape::Stamp(stark_model::AssetId([7u8; 32]));
-        assert_eq!(
-            tip_reach(&BrushShape::default()),
-            1.0,
-            "a round tip is a disc"
-        );
         for k in 0..16 {
             // Angles off the axes as well as on them, from the series (see
             // `sin_series`) so the case is the same on every platform.
@@ -1770,32 +1720,37 @@ mod tests {
             let rec = record(b, &[Vec2::ZERO, dir * 200.0]);
             for (i, s) in whole(&rec).iter().enumerate() {
                 let (lo, hi) = coverage_bounds(s);
-                let perp = Vec2::new(-s.dir.y, s.dir.x);
                 let end = segment_end(s);
-                // The four corners of the tip's square at each end of the travel —
-                // every one of them a texel the deposit may reach.
+                // Containment: the rim of the tip's disc at each end of the travel,
+                // every point of it a texel the deposit may reach. A tolerance well
+                // under a texel is what says "contains" here; nothing downstream can
+                // resolve less, and both consumers add their own margin
+                // (`TILE_APRON`, `RECT_MARGIN`) on top.
+                const SLACK: f32 = 1e-3;
                 for base in [s.start, end] {
-                    for sx in [-1.0f32, 1.0] {
-                        for sy in [-1.0f32, 1.0] {
-                            let c = base + s.dir * (sx * s.radius) + perp * (sy * s.radius);
-                            // At exactly 45° the box is *tight* — the corner is on its
-                            // edge — and the two sides reach `r·√2` by different
-                            // arithmetic, so they land an ulp or so apart. A tolerance
-                            // well under a texel is what says "contains" here; nothing
-                            // downstream can resolve less, and both consumers add their
-                            // own margin (`TILE_APRON`, `RECT_MARGIN`) on top.
-                            const SLACK: f32 = 1e-3;
-                            assert!(
-                                c.x >= lo.x - SLACK
-                                    && c.y >= lo.y - SLACK
-                                    && c.x <= hi.x + SLACK
-                                    && c.y <= hi.y + SLACK,
-                                "angle {k}/16, segment {i}: the tip's corner {c:?} \
-                                 falls outside its own coverage box {lo:?}..{hi:?}",
-                            );
-                        }
+                    for j in 0..16 {
+                        let phi = j as f64 * std::f64::consts::TAU / 16.0;
+                        let rim = base
+                            + Vec2::new(cos_series(phi) as f32, sin_series(phi) as f32) * s.radius;
+                        assert!(
+                            rim.x >= lo.x - SLACK
+                                && rim.y >= lo.y - SLACK
+                                && rim.x <= hi.x + SLACK
+                                && rim.y <= hi.y + SLACK,
+                            "angle {k}/16, segment {i}: the disc's rim {rim:?} falls \
+                             outside its own coverage box {lo:?}..{hi:?}",
+                        );
                     }
                 }
+                // Tightness: the box is the travel's own, grown by one radius — not
+                // by `√2` of one.
+                let tight_lo = s.start.min(end) - Vec2::splat(s.radius);
+                let tight_hi = s.start.max(end) + Vec2::splat(s.radius);
+                assert!(
+                    (lo - tight_lo).length() <= SLACK && (hi - tight_hi).length() <= SLACK,
+                    "angle {k}/16, segment {i}: box {lo:?}..{hi:?} is not the tight \
+                     {tight_lo:?}..{tight_hi:?}",
+                );
             }
         }
     }
@@ -2299,8 +2254,8 @@ mod stretch_tests {
     /// `hull` has to hold **everything the mask can paint**, because what is drawn for
     /// the extent is drawn from it: the sweep strip in the shader, and the tile box
     /// on the host. Under-report it and the stroke is cut off along a straight line
-    /// where its own geometry ran out — the failure `tip_reach` was added for, which a
-    /// stretch reintroduces at a different scale.
+    /// where its own geometry ran out — the failure every under-reported reach lands
+    /// on ([`Sweep::reach`]), which a stretch reintroduces at a different scale.
     ///
     /// So: every point of the reference travel frame that the map lands *inside* the
     /// mask's square must be inside the hull.
@@ -2348,22 +2303,17 @@ mod stretch_tests {
                 };
                 for i in 0..=64 {
                     let f = i as f32 / 32.0 - 1.0;
-                    // A stamp may fill its square's corners; a round tip stops at its
-                    // own disc. `tip_reach` is the difference, and it multiplies.
-                    for (q, reach) in [
-                        ((1.0, f), std::f32::consts::SQRT_2),
-                        ((f, 1.0), std::f32::consts::SQRT_2),
-                        ((f.cos(), f.sin()), 1.0),
-                    ] {
-                        let p = fwd(q);
-                        let d = (p.0 * p.0 + p.1 * p.1).sqrt();
-                        assert!(
-                            d <= reach * elongation + 1e-4,
-                            "s={elongation} orient={orient}: mask {q:?} lands {d} out, \
-                             past a reach of {}",
-                            reach * elongation,
-                        );
-                    }
+                    // The disc's rim is the frontier: nothing any canonical shape
+                    // can paint lies outside its disc ([`Sweep::reach`]), so the rim
+                    // covering under the map is the whole promise.
+                    let q = (f.cos(), f.sin());
+                    let p = fwd(q);
+                    let d = (p.0 * p.0 + p.1 * p.1).sqrt();
+                    assert!(
+                        d <= elongation + 1e-4,
+                        "s={elongation} orient={orient}: mask {q:?} lands {d} out, \
+                         past a reach of {elongation}",
+                    );
                 }
             }
         }

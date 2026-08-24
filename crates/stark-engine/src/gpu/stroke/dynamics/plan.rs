@@ -575,12 +575,11 @@ impl SlotSource<'_> {
         match self {
             SlotSource::Segment(s) => coverage_bounds(&s.sweep),
             SlotSource::Bleed(f) => coverage_bounds(&f.window),
-            // The tip's own square rather than a swept box — a pen-up is a standing
-            // tip. Its half-extent is the tip's `reach`, which is the radius only for a
-            // shape that stays inside its own disc (`segments::tip_reach`); the settle
-            // writes the same extent the pass was laying, corners included. It
-            // cannot be the largest box in the piece: a segment's box is this square
-            // grown by its travel, and this is the last segment's.
+            // The tip's own extent rather than a swept box — a pen-up is a standing
+            // tip. Its half-extent is the tip's `reach` (`Sweep::reach`), so the
+            // settle writes the same extent the pass was laying. It cannot be the
+            // largest box in the piece: a segment's box is this square grown by its
+            // travel, and this is the last segment's.
             SlotSource::Settle(s) => {
                 let end = segment_end(&s.sweep);
                 let reach = Vec2::splat(s.sweep.reach);

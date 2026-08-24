@@ -135,14 +135,7 @@ impl TipCache {
         let cov = round_coverage(hardness, ROUND_RES);
         // The round tip is rotation-invariant, so a single orientation layer suffices —
         // the shader's wrapping lookup reads it for every orientation (§6.6).
-        let prefix = build_prefix_tau(
-            &self.ctx,
-            ROUND_RES,
-            ROUND_RES,
-            1,
-            2.0 / ROUND_RES as f32,
-            &cov,
-        );
+        let prefix = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, 1, &cov);
         let bytes: Vec<u8> = cov.iter().map(|c| (c * 255.0).round() as u8).collect();
         let coverage = build_coverage_r8(&self.ctx, ROUND_RES, ROUND_RES, &bytes);
         let tip = RoundTip { prefix, coverage };
