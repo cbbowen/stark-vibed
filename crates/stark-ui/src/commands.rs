@@ -1464,7 +1464,38 @@ fn step_radius(state: AppState, factor: f32) {
 fn arm_tool(state: AppState, tool: Tool) {
     let already = crate::panels::select::current_tool(state) == tool;
     let next = if already { Tool::Brush } else { tool };
+    // Which of the three was last in hand, kept where the session cannot keep it:
+    // a selecting gesture disarms to `Tool::Brush` (§6.8), so the engine's own
+    // `tool` has forgotten which marquee drew by the time anything asks. Recorded
+    // here because this is the one door into arming — the chip, the chord and the
+    // palette are all this call — and read back by [`arm_shape_tool`].
+    if next.is_selection() {
+        let mut last = state.shape_tool;
+        last.set(next);
+    }
     dispatch(state, ViewCommand::SetTool(next));
+}
+
+/// Hand back a shape tool without naming one — the last one armed
+/// ([`AppState::shape_tool`]), and nothing at all if one is already in hand.
+///
+/// The Select panel's action row is what asks (`crate::panels::select`): picking
+/// what a shape *does* is a statement about a gesture that has not been made yet,
+/// and with the brush in hand there is nothing for it to be a statement about.
+/// Which of the three would draw it is a question the row does not answer, so it
+/// takes the answer the chips above left behind.
+///
+/// Leaving an armed tool alone is the same rule read the other way: the row says
+/// nothing about which of the three, so a lasso stays a lasso.
+pub fn arm_shape_tool(state: AppState) {
+    if !crate::panels::select::current_tool(state).is_selection() {
+        // Read out first, never `*state.shape_tool.peek()` in the argument: a
+        // signal's read guard lives to the end of the *statement*, and the call it
+        // would be an argument to writes that same signal — which is a panic, taken
+        // in a handler that has already dispatched half of what it came to do.
+        let last = *state.shape_tool.peek();
+        arm_tool(state, last);
+    }
 }
 
 /// Whether `tool` is the one the next gesture would use — reactively (`read`,

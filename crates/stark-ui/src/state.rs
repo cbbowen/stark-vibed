@@ -21,7 +21,7 @@ use crate::collab;
 use crate::commands::VisibilityToggle;
 use crate::prefs::Prefs;
 use crate::render::Renderer;
-use stark_engine::command::ViewCommand;
+use stark_engine::command::{Tool, ViewCommand};
 use stark_engine::{InputCommand, ObservableState};
 use stark_model::document::{BrushParams, GuideId, LayerId};
 use stark_model::geom::Vec2;
@@ -290,6 +290,20 @@ pub struct Signals {
     pub tow: Signal<Option<TowUi>>,
     /// The drag-and-hold drawing assist (§6.9; `crate::input`).
     pub assist: AssistState,
+    /// Which of the three shape tools the Select panel's action row reaches for
+    /// (§6.8) — the last one armed, rect until one has been.
+    ///
+    /// The counterpart of a rule the session owns: a selecting gesture hands the
+    /// canvas straight back to the brush, which is exactly what makes the
+    /// *identity* of the tool it used worth keeping — the engine's `tool` says
+    /// `Brush` a moment later and no longer remembers which marquee drew.
+    ///
+    /// Written by the one act that arms a tool at all
+    /// ([`commands::arm_tool`](crate::commands)), so a chip, a chord and the
+    /// search palette all leave the same answer behind, and read by the one act
+    /// that hands a tool back without naming one
+    /// ([`commands::arm_shape_tool`](crate::commands::arm_shape_tool)).
+    pub shape_tool: Signal<Tool>,
     /// Minimal mode: the chrome over the canvas drops its words and keeps its marks
     /// (§11).
     ///
@@ -741,6 +755,7 @@ impl AppState {
             smoothing: root_signal(|| 0.0),
             tow: root_signal(|| None),
             assist: AssistState::new(),
+            shape_tool: root_signal(|| Tool::SelectRect),
             // Seeded from the preference defaults rather than written out again here:
             // `prefs::load` overwrites this at app start, so a default stated in
             // this file would be the one that never applies (`crate::prefs`).

@@ -38,6 +38,10 @@ use stark_model::document::{FillOp, SelectionMode, ShapeAction};
 /// paint instead (§18.0.4), and everything the row already had comes
 /// with it: the same shapes, the same rasterizer, the same feather slider below.
 ///
+/// Picking any of the five also **hands back a shape tool** to draw the region
+/// with ([`pick_action`]), since all five are answers about a gesture that has not
+/// been made yet.
+///
 /// Two consequences the row does not have to explain, because they follow:
 ///
 /// - a fill is still **clipped by the selection**, since the mask gates every tool;
@@ -146,7 +150,7 @@ pub fn SelectPanel() -> Element {
                 button {
                     class: chip(action == a),
                     title: "{hint}",
-                    onclick: move |_| dispatch(state, ViewCommand::SetShapeAction(a)),
+                    onclick: move |_| pick_action(state, a),
                     // Fill's bucket is *full of* the color it would lay, so the row
                     // says what the gesture will deposit — the one thing that
                     // distinguishes this action from its four neighbours, and the one
@@ -309,6 +313,33 @@ pub fn modifier_mode(m: Modifiers) -> Option<SelectionMode> {
         (false, true) => Some(SelectionMode::Subtract),
         (false, false) => None,
     }
+}
+
+/// Pick what the next shape gesture does — the action row's whole act, which is
+/// more than the setter it sends (§6.8).
+///
+/// Every one of the five answers is about a region that has not been drawn yet, so
+/// picking one and being left holding the brush answers nothing: the row would sit
+/// there lit on "Add" while the next gesture painted. So the pick arms the tool the
+/// gesture needs, taking which of the three from the chips above
+/// ([`commands::arm_shape_tool`](crate::commands::arm_shape_tool)) — it is their
+/// question, not this row's, and the momentary rule is what makes the brush the
+/// common thing to be holding: every selecting gesture ends by handing the canvas
+/// back (§6.8). Fill included, so the rule stays one sentence: Fill encloses its
+/// region with the same three tools, and its staying armed afterwards is about what
+/// a *gesture* leaves behind rather than about what a pick means.
+///
+/// **The chrome's half**, where the disarm that makes it necessary is the session's
+/// — because the engine is sent [`ViewCommand::SetShapeAction`] and nothing else,
+/// and the canvas sends that same command twice per modifier-held gesture: once to
+/// override the action, once to put it back (`crate::input::paint`). That restore
+/// lands *after* the gesture disarmed the tool, so an arm attached to the command
+/// itself would re-arm on every shift-drag and quietly repeal the momentary rule.
+/// What the frontend has that the command does not is the knowledge that a person
+/// picked.
+fn pick_action(state: AppState, action: ShapeAction) {
+    dispatch(state, ViewCommand::SetShapeAction(action));
+    crate::commands::arm_shape_tool(state);
 }
 
 /// The tool the next canvas gesture will use.

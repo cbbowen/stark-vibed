@@ -203,6 +203,28 @@ whether the tool is armed rather than the panel's own comparison. What the
 armed tool then *does* with the region it encloses is the action row below, and
 stays the panel's — five answers to one question is a question, not an act.
 
+The row does arm, in the one direction it can be sure of: **picking what a shape
+does hands back a shape tool to do it with.** All five answers are about a region
+that has not been drawn yet, so picking one while holding the brush answers
+nothing — the row would sit lit on "Add" while the next gesture painted. The
+momentary rule above is what makes the brush the common thing to be holding, so
+the two are halves of one behaviour: a selecting gesture gives the canvas back,
+and reaching for the row takes it again. Which of the three is not this row's
+question, so it takes the chips' own last answer (rect until there is one), and a
+tool already in hand is left alone — a lasso stays a lasso. Fill included, so the
+rule stays one sentence: a fill encloses its region with the same three tools, and
+its *staying* armed afterwards is about what a gesture leaves behind rather than
+about what a pick means.
+
+That half is the **chrome's**, where the disarm is the session's, and the seam is
+the reason. The engine is sent `SetShapeAction` and nothing else — and the canvas
+sends that same command twice per modifier-held gesture, once to override the
+action and once to put it back (§6.8's shift/alt marquee modifiers). The restore
+lands *after* the gesture disarmed the tool, so an arm attached to the command
+itself would re-arm on every shift-drag and quietly repeal the momentary rule.
+What the frontend has that the command does not is the knowledge that a person
+picked.
+
 The commands that act on a whole
 selection (transform, fill, deselect, invert) live in a small floating bar
 mounted only while a selection is in force: they are meaningless without one, and
