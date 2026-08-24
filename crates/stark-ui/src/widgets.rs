@@ -22,7 +22,7 @@ use crate::state::AppState;
 /// [`Command::active`] rather than from a prop: a chip showing that its act is
 /// live right now — the armed shape tool (§6.8) — is saying something about
 /// the act, and a call site that computed it would be the second copy of an
-/// answer the blue mark a menu row and a palette row both wear already reads
+/// answer the lit mark a menu row and a palette row both wear already reads
 /// from the registry. A command with no such state (`None`) is never lit,
 /// which is every act on a bar today.
 #[component]
@@ -45,6 +45,25 @@ pub fn CommandButton(
             {label_span(command.word())}
         }
     }
+}
+
+/// The filled share of a range control, as the inline `--fill` custom property
+/// the track's gradient is drawn from (`.slider` in stark.css).
+///
+/// Inline because it is the one part of the slider's look only the control
+/// knows: the track shows how far along its range the value sits, a browser
+/// paints that only for a *native* range — in the platform's accent blue, which
+/// the neutral chrome gave up — and CSS alone cannot see the value. Every range
+/// input wearing `.slider` passes through here, the raw call sites as well as
+/// [`Slider`]; the stylesheet's fallback (an empty track) is what a site that
+/// forgets shows.
+pub fn slider_fill(min: f32, max: f32, value: f32) -> String {
+    let pct = if max > min {
+        ((value - min) / (max - min) * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    format!("--fill: {pct}%")
 }
 
 /// A labelled range control.
@@ -87,6 +106,7 @@ pub fn Slider(
             }
             input {
                 class: "slider",
+                style: slider_fill(min, max, value),
                 r#type: "range", min: "{min}", max: "{max}", step: "any", value: "{value}",
                 oninput: move |e| {
                     if let Ok(v) = e.value().parse::<f32>() { oninput.call(v); }

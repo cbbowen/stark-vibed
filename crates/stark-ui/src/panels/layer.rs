@@ -48,7 +48,7 @@ use crate::platform::{capture_pointer, layer_boxes, select_all};
 use crate::preview;
 use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch, use_obs};
-use crate::widgets::CommandButton;
+use crate::widgets::{CommandButton, slider_fill};
 use stark_engine::LayerInfo;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::LayerId;
@@ -288,6 +288,7 @@ pub fn LayerPanel() -> Element {
                 }
                 input {
                     class: "slider",
+                    style: slider_fill(0.0, 100.0, l.opacity * 100.0),
                     r#type: "range", min: "0", max: "100", step: "any",
                     value: "{(l.opacity * 100.0) as i32}",
                     title: "{opacity_hint(&l)}",
@@ -391,6 +392,7 @@ pub fn LayerPanel() -> Element {
                     }
                     input {
                         class: "slider",
+                        style: slider_fill(bend_ends().0, bend_ends().1, k.log2()),
                         r#type: "range", step: "any",
                         // In **octaves of `k`**, not in `k`. The bend is a scale, so
                         // what it does to the curve is a matter of ratio: half of 0.2

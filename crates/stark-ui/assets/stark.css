@@ -41,6 +41,8 @@
      nothing behind it is being read — and a title band with rows sliding under it
      has to actually cover them. */
   --panel-solid: var(--panel-noise), rgb(var(--panel-ink));
+
+  --panel-row-margin: 6px;
 }
 
 /* --- the world-axis hues (§20.3): the X/Y/Z semantics every 3D tool taught,
@@ -69,6 +71,49 @@
   --axis-x: oklab(0.667 0.1675 0.0664);
   --axis-y: oklab(0.667 -0.1237 0.0782);
   --axis-z: oklab(0.667 -0.0143 -0.1553);
+}
+
+/* --- the two registers of emphasis ------------------------------------------
+
+   The chrome stands over a painting and beside a palette, so it spends no color
+   of its own: a color in the corner of the eye is a distraction from the work
+   and a thumb on the scale of every color the artist weighs. What must still
+   read does it on **value** — with one relaxation, and one standing exception.
+
+   `--lit-*` is the *selected* register: a state the user put something in and
+   can walk away from — the active layer, the tool in hand, the chosen card.
+   It is hueless, and it marks by value alone: a chip inverts to a light ground
+   with dark ink, a row lifts toward the light, and where the ground is a
+   picture, a light ring with a dark keyline just inside it (the brush cursor's
+   two-hairline trick, so the ring reads on a light picture and a dark one).
+
+   `--live-*` is the relaxation — the *transient* register: the chrome
+   answering the hand right now. A hover, an open flyout's trigger, a drag's
+   landing zone, a chip listening for a key, a mode's armed edge. These may
+   carry a pale blue, because they are gone the moment the hand moves on and
+   never sit beside the work. The wash is a translucent film over the panel's
+   own dark (so nothing inside it re-inks); the edge is the pale line form of
+   the same voice.
+
+   `--danger` is the standing exception: the red a destructive control answers
+   a hover in — ink only, never a filled ground, and only under the pointer.
+
+   The axis hues above are outside all three registers: they are the X/Y/Z
+   vocabulary the guide lines on the canvas are drawn in (§20.3), and the chips
+   quoting those lines must keep speaking it. */
+:root {
+  --lit-bg: #d8d8dc;
+  --lit-ink: #17171a;
+  --lit-ring: #e8e8ea;
+  --live-edge: #8fb0e8;
+  --live-wash: #8fb0e84d;
+  --live-tint: #8fb0e824;
+  --live-text: #9cc3e8;
+  --danger: #e8757a;
+  /* The slider's two inks (`.slider` below): the one control repeated twenty
+     times down the stack, so any color it wore would be the chrome's loudest. */
+  --slider-fill: #bfbfc6;
+  --slider-track: #ffffff1f;
 }
 
 /* --- the chrome's own scrollbar ---------------------------------------------
@@ -135,8 +180,8 @@ hr {
   border: none;
   border-top: 1px solid #ffffff14;
   width: 100%;
-  margin-top: 10px;
-  margin-bottom: 10px;
+  margin-top: var(--panel-row-margin);
+  margin-bottom: var(--panel-row-margin);
 }
 
 /* --- app shell --- */
@@ -622,7 +667,7 @@ hr {
 
 /* --- sliders --- */
 .slider-row {
-  margin-bottom: 4px;
+  margin-bottom: var(--panel-row-margin);
 }
 
 /* Flex so the few sliders that carry a mark (`widgets::Slider`'s `glyph`) sit it
@@ -637,8 +682,77 @@ hr {
   margin-bottom: 2px;
 }
 
+/* The track and its fill, drawn by hand because the value has to stay readable
+   with the browser's paint given up: a native range fills its travelled half in
+   the platform's accent blue, and the panels are done with blue. The fill
+   fraction arrives per control as `--fill` (`widgets::slider_fill` — every
+   `.slider` call site passes it), because the stylesheet cannot know where the
+   thumb stands: Chromium has no fill pseudo-element once a range is
+   `appearance: none`. The fallback is 0% so a site that forgets the property
+   shows an empty track — legible, and visibly wrong — rather than a full one
+   that reads as a value. */
 .slider {
   width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  margin: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.slider::-webkit-slider-runnable-track {
+  height: 7px;
+  border-radius: 2.5px;
+  background: linear-gradient(
+    to right,
+    var(--slider-fill) var(--fill, 0%),
+    var(--slider-track) var(--fill, 0%));
+}
+
+.slider::-moz-range-track {
+  height: 7px;
+  border-radius: 2.5px;
+  background: linear-gradient(
+    to right,
+    var(--slider-fill) var(--fill, 0%),
+    var(--slider-track) var(--fill, 0%));
+}
+
+/* The grip, with the dark hairline that keeps a light thumb legible where it
+   stands on its own light fill. WebKit centres by arithmetic ((7 - 13) / 2);
+   Gecko centres on its own. */
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -3px;
+  border: none;
+  border-radius: 50%;
+  background: var(--slider-fill);
+  box-shadow: none;
+}
+
+.slider::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: none;
+  border-radius: 50%;
+  background: var(--slider-fill);
+  box-shadow: none;
+}
+
+/* The native focus ring went with the native paint; the keyboard still needs to
+   see which track it holds, and holding one is transient — the live edge. */
+.slider:focus-visible {
+  outline: none;
+}
+
+/* The native gray-out went with the native paint too, so a disabled track says
+   so the way a disabled chip does. */
+.slider:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .color-pick {
@@ -810,9 +924,10 @@ hr {
   border-color: #ffffff66;
 }
 
-/* A well whose pop-out is open wears the same lit border that pop-out's own selected
-   card does, so the row a surface belongs to is findable *from* the surface — it is
-   standing a column away by then, and nothing else says which press opened it.
+/* A well whose pop-out is open wears the live edge for as long as it is, so the
+   row a surface belongs to is findable *from* the surface — it is standing a
+   column away by then, and nothing else says which press opened it. Transient
+   register: the mark lives exactly as long as the pop-out does.
 
    Qualified by `.panel` to out-specify the two `:hover` rules rather than to scope
    the idea: open and hovered are both lit, one of them means something, and a well
@@ -822,7 +937,7 @@ hr {
    (`.panel-scroll.chrome.dimmed` is the same trick for the same reason). */
 .panel .swatch.open,
 .panel .surface-well.open {
-  border-color: #3a6ea5;
+  border-color: var(--live-edge);
 }
 
 /* The color selector a `.swatch` opens flies *out* of the well in both of the places
@@ -916,7 +1031,7 @@ hr {
 /* Except while something is being dragged over it, when the dashed edge is the whole
    signal that this is where it would land. Inset so it does not fight the radius. */
 .stack-popout .asset-grid.dropping {
-  border: 1.5px dashed #3a6ea5;
+  border: 1.5px dashed var(--live-edge);
   padding: 6px;
   margin: -6px -6px 0;
 }
@@ -988,8 +1103,10 @@ hr {
   background-repeat: no-repeat;
 }
 
+/* Ring rather than inversion: the thumbnail is white-on-transparent, and a
+   light ground would swallow the very shape the chip is showing. */
 .shape-chip.active {
-  background-color: #3a6ea5;
+  box-shadow: inset 0 0 0 2px var(--lit-ring);
 }
 
 /* A chip is a row of its own contents (glyph, swatch, word) centred as a group, so a
@@ -1009,8 +1126,11 @@ hr {
   background: #33333a;
 }
 
+/* The selected register's fill form: the chip inverts, and everything inside
+   re-inks itself through `currentColor`. */
 .chip.active {
-  background: #3a6ea5;
+  background: var(--lit-bg);
+  color: var(--lit-ink);
 }
 
 .chip:disabled {
@@ -1020,7 +1140,7 @@ hr {
 
 /* An inline icon (`icons::icon`). The glyph is `fill: currentColor`, so it takes the
    color of the control it sits in and needs no state of its own: it goes
-   white-on-blue with a lit chip and fades with a disabled one, from the same file.
+   dark-on-light with a lit chip and fades with a disabled one, from the same file.
    `flex: none` so it keeps its size while the label takes the slack, and the svg is
    `block` so the box is the glyph rather than the glyph plus a line-box's descender
    gap — which is what would otherwise sit a stacked icon off-centre. */
@@ -1301,8 +1421,13 @@ hr {
   filter: brightness(1.12);
 }
 
+/* The selected register's ring form, with the dark keyline just inside it: the
+   thumbnail under it runs light on one half and dark on the other, so a single
+   ring of either value would vanish somewhere along its own run. */
 .preset-row.active {
-  box-shadow: inset 0 0 0 2px #3a6ea5;
+  box-shadow:
+    inset 0 0 0 2px var(--lit-ring),
+    inset 0 0 0 3px #00000059;
 }
 
 /* A name floating over the thing it names, everywhere a row *is* its picture:
@@ -1385,7 +1510,7 @@ hr {
 .preset-remove:hover,
 .slot-clear:hover,
 .gradient-remove:hover {
-  color: #e8757a;
+  color: var(--danger);
   opacity: 1;
 }
 
@@ -1395,8 +1520,7 @@ hr {
    Always visible, where the trash appears on hover: this is a *state*, and one that
    only showed itself under the pointer would leave the list looking uniform at rest
    — which is the one thing it must not do. Dim, though, because it is a fact about
-   the row rather than something to reach for; the lit row's white-on-blue lifts it
-   with everything else, from the same file (`fill: currentColor`). */
+   the row rather than something to reach for. */
 .preset-lock {
   display: flex;
   align-items: center;
@@ -1550,14 +1674,15 @@ hr {
   opacity: 1;
 }
 
-/* The slot the live brush still is, color aside — the same test and the same blue
-   the preset rows are lit by, so a slot and a preset holding the one brush light
-   together and say they are two ways to it. This is the mark that matters when the
-   rack is pinned and idle: with no key down, it is the only thing saying which of
-   the ten is in hand. */
+/* The slot the live brush still is, color aside — the same test and the same
+   keylined ring the preset rows are lit by, so a slot and a preset holding the
+   one brush light together and say they are two ways to it. This is the mark
+   that matters when the rack is pinned and idle: with no key down, it is the
+   only thing saying which of the ten is in hand. */
 .slot-row.active {
   box-shadow:
-    inset 0 0 0 2px #3a6ea5,
+    inset 0 0 0 2px var(--lit-ring),
+    inset 0 0 0 3px #00000059,
     0 2px 8px #0006;
 }
 
@@ -1605,7 +1730,7 @@ hr {
 }
 
 /* The key to press, on the picture of what it holds. A dark disc rather than plain
-   shadowed text: a digit over a stroke that may be light, dark or red needs its own
+   shadowed text: a digit over a stroke that may be light or dark needs its own
    ground to stay a digit. Tabular figures for the chips' reason — ten values of one
    glyph read as an index only if they sit on one rhythm. */
 .slot-row-digit {
@@ -1896,7 +2021,7 @@ hr {
 }
 
 .filter-add-item:hover {
-  background: #3a6ea5;
+  background: var(--live-wash);
 }
 
 /* The tree's own ground: a well a step darker than the panel, translucent so the
@@ -1961,13 +2086,14 @@ hr {
   font-size: 12px;
 }
 
-/* The selected layer, in the one blue every other list in the application marks a
-   selection with — a guide row, a brush preset, a shape card, a lit chip. The green
-   this wore was a second vocabulary for the same word: nothing else in the chrome
-   ever meant "selected" in green, so the panel was asking to be read on its own
-   terms while sitting beside two lists that were not. */
+/* The selected layer, marked the one way every list in the application now marks a
+   selection: lifted toward the light. A guide row lifts to the same gray, a preset
+   and a slot wear the light ring, a chip inverts — one direction, three forms, and
+   this is the fill form on a row that keeps its light ink. The blue this wore was
+   the chrome speaking color beside the palette, which is the one voice it has
+   given up. */
 .layer-row.active {
-  background: #3a6ea5;
+  background: #55555e;
 }
 
 /* --- groups and clipping (§14.6) ---
@@ -1975,26 +2101,20 @@ hr {
    membership: this layer is carried by the one below it. The *rail* down its left
    edge is clipping: this layer shows only where there is paint under it. A Photoshop
    refugee arrives believing the indent means clipping, so the rail has to be
-   something the indent visibly is not — a colored edge rather than more space. */
+   something the indent visibly is not — with the chrome's blue given up, that is a
+   hard solid edge against the strata's faint translucent bands: same axis, opposite
+   ends of it. One value serves both grounds: bright enough to stand ~9:1 over a
+   resting band and still ~4:1 over the lifted selected one, which is the contrast
+   the old blue pair spent two values reaching. */
 .layer-row.clipped {
-  border-left: 3px solid #6f8fd0;
+  border-left: 3px solid #e8e8ea;
   padding-left: 3px;
-}
-
-/* The rail on the selected row. Now that selection is blue, the resting rail is a
-   blue a step lighter than its own ground — about 1.7:1, which is the rail going
-   quiet on exactly the row you are working on. Lifted here to the contrast it has
-   everywhere else (~4:1) rather than the rail being re-hued: what the mark must not
-   be confusable with is the *indent* (§14.6), so it stays in the blue family, and
-   what changed is only the ground under one row. */
-.layer-row.active.clipped {
-  border-left-color: #cfe0ff;
 }
 
 /* The frame's dashed border already claims the whole edge, so a clipped matte gets
    the rail's color on its existing border rather than a second one beside it. */
 .layer-row.matte.clipped {
-  border-left: 3px solid #6f8fd0;
+  border-left: 3px solid #e8e8ea;
 }
 
 /* A filter layer's row (§21.6). The same muted ground a frame's row gets, because it
@@ -2011,7 +2131,7 @@ hr {
    clipping rail; if one is ever set on it from a file, the border says so the way a
    matte's does rather than growing a second edge beside it. */
 .layer-row.filter.clipped {
-  border-left: 3px solid #6f8fd0;
+  border-left: 3px solid #e8e8ea;
 }
 
 /* --- the row's own three marks: fold, carry, release ---
@@ -2228,7 +2348,7 @@ button.layer-remove {
 }
 
 button.layer-remove:hover {
-  color: #e8757a;
+  color: var(--danger);
 }
 
 /* --- the row at rest says where the layer is; hovering asks what can be done to it ---
@@ -2465,7 +2585,7 @@ button.layer-remove:hover {
 }
 
 .layer-item.dragging .layer-row.active {
-  background: #4a7cb4;
+  background: #62626c;
 }
 
 /* A row in flight is not a row to press buttons on, and the pointer is over it for
@@ -2504,7 +2624,7 @@ button.layer-remove:hover {
    clipping (§14.6). Drawn inside the row's own box so nothing reflows when it
    appears; a border would step every glyph on the line sideways by a pixel. */
 .layer-row.carrying {
-  box-shadow: inset 0 0 0 1.5px #8fb0e8;
+  box-shadow: inset 0 0 0 1.5px var(--live-edge);
 }
 
 /* --- command rail ---
@@ -2566,16 +2686,19 @@ button.layer-remove:hover {
 }
 
 /* The trigger of an open flyout. Not a hover state — it holds until the surface
-   is dismissed — so it wears the accent steadily, which is what says which of the
-   rail's entries the surface beside it belongs to. */
+   is dismissed — so it wears the live register steadily, which is what says which
+   of the rail's entries the surface beside it belongs to. Wash *and* edge, where
+   a menu row gets the wash alone: this mark stands apart from the list it
+   governs, so it carries the line that says it is held rather than hovered. */
 .rail-button.open,
 .rail-button.open:hover {
-  background: #3a6ea5;
+  background: var(--live-wash);
+  box-shadow: inset 0 0 0 1px var(--live-edge);
   color: #fff;
 }
 
 /* Keyboard-shortcut hint trailing a menu item label. Translucent white stays
-   legible on both the panel background and the blue hover/focus highlight. */
+   legible on both the panel background and the pale hover wash. */
 .menu-shortcut {
   color: #ffffff8c;
   font-size: 12px;
@@ -2691,27 +2814,29 @@ button.layer-remove:hover {
 
 .palette-row:hover:not([data-disabled="true"]),
 .palette-row.selected:not([data-disabled="true"]) {
-  background: #3a6ea5;
+  background: var(--live-wash);
   color: #fff;
 }
 
-/* A live act's mark takes the select blue — `Command::active`, whether that is Share
-   while a session runs, a mode you are in or a panel that is up. The state rides the
-   icon rather than a trailing tick because every row already has a mark and the eye
-   is already on it, where a tick is a column of its own that only a row with such a
-   state ever fills. The palette and the visibility menu both wear it, which is what
-   makes them one picture of one answer (`rail::PaletteRow`, `rail::CmdItem`). */
+/* A live act's mark takes the pale accent — `Command::active`, whether that is Share
+   while a session runs, a mode you are in or a panel that is up. Color is admissible
+   here because a menu only exists while it is open: the mark is gone with the flyout.
+   The state rides the icon rather than a trailing tick because every row already has
+   a mark and the eye is already on it, where a tick is a column of its own that only
+   a row with such a state ever fills. The palette and the visibility menu both wear
+   it, which is what makes them one picture of one answer (`rail::PaletteRow`,
+   `rail::CmdItem`). */
 .cmd-active .icon {
   color: #cdd9ed;
-  filter: drop-shadow(0 0 4px #8fb0e8);
+  filter: drop-shadow(0 0 4px var(--live-edge));
 }
 
 .cmd-inactive .icon {
   color: #6a6a72;
 }
 
-/* Lightened under a row's own blue highlight, where the resting accent would
-   disappear into it. */
+/* Plain under a row's own wash: one highlight at a time, so the glow stands
+   down while the row itself is lit. */
 .palette-row:hover .cmd-active .icon,
 .palette-row.selected .cmd-active .icon {
   color: var(--panel-color);
@@ -2755,10 +2880,12 @@ button.layer-remove:hover {
 }
 
 /* The row that is listening. Not a hover state — it holds until a key or
-   Escape answers — so it wears the accent the hover would, steadily. */
+   Escape answers — so it wears the wash the hover would, steadily, with the
+   live edge to say it is held rather than pointed at. */
 .bind-chip.capturing {
   visibility: visible;
-  background: #3a6ea5;
+  background: var(--live-wash);
+  box-shadow: inset 0 0 0 1px var(--live-edge);
   color: #fff;
   cursor: default;
   font-style: italic;
@@ -2897,7 +3024,7 @@ button.layer-remove:hover {
 }
 
 .modal-input:focus {
-  border-color: #3a6ea5;
+  border-color: var(--live-edge);
 }
 
 .modal-input::placeholder {
@@ -3222,8 +3349,8 @@ button.layer-remove:hover {
 }
 
 .space-card.selected {
-  border-color: #3a6ea5;
-  background: #3a6ea524;
+  border-color: var(--lit-ring);
+  background: #ffffff14;
 }
 
 .space-card-title {
@@ -3478,8 +3605,8 @@ button.layer-remove:hover {
 
 .mod-chip.active {
   opacity: 1;
-  border-color: #3a6ea5;
-  background: #3a6ea533;
+  border-color: var(--lit-ring);
+  background: #ffffff1f;
 }
 
 .mod-chip svg {
@@ -3552,8 +3679,8 @@ button.layer-remove:hover {
 }
 
 .asset-grid.dropping {
-  border-color: #3a6ea5;
-  background: #3a6ea51a;
+  border-color: var(--live-edge);
+  background: var(--live-tint);
 }
 
 .asset-card {
@@ -3575,8 +3702,8 @@ button.layer-remove:hover {
 }
 
 .asset-card.selected {
-  border-color: #3a6ea5;
-  background: #3a6ea524;
+  border-color: var(--lit-ring);
+  background: #ffffff14;
 }
 
 /* A stamp's card: the coverage field the stroke will lay, drawn as white ink with
@@ -3653,8 +3780,10 @@ button.layer-remove:hover {
   opacity: 1;
 }
 
+/* Red ink on the disc it already has, not a red disc: every roster's trash
+   answers a hover the same way (`.preset-remove:hover`). */
 .asset-remove:hover {
-  background: #a53a3a;
+  color: var(--danger);
 }
 
 .asset-card.import {
@@ -3696,8 +3825,8 @@ button.layer-remove:hover {
 }
 
 .btn-primary {
-  background: #3a6ea5;
-  color: #fff;
+  background: var(--lit-bg);
+  color: var(--lit-ink);
 }
 
 /* --- frame / matte layers (§15.7) --- */
@@ -4014,7 +4143,7 @@ button.layer-remove:hover {
 }
 
 .guide-row.active {
-  background: #3a6ea5;
+  background: #55555e;
 }
 
 /* --- dragging a row to move it (§20.5) ---
@@ -4034,7 +4163,7 @@ button.layer-remove:hover {
 }
 
 .guide-row.active.dragging {
-  background: #4a7cb4;
+  background: #62626c;
 }
 
 /* A row in flight is not a row to press buttons on, and the pointer is over it for
@@ -4123,7 +4252,7 @@ button.layer-remove:hover {
 
 /* The destructive one answers a hover in red, as it does on a layer row. */
 .guide-remove:hover {
-  color: #e8757a;
+  color: var(--danger);
 }
 
 /* Like the layer eyes: an open eye rests hidden and appears on hover, a
@@ -4280,18 +4409,19 @@ button.layer-remove:hover {
 }
 
 /* A composing mode's bar wears a register of its own (MODAL_DESIGN.md): the
-   armed accent (`.gradient-trace.active`'s blue) ringing the surface and
-   tinting the label's ink. A status bar describes a fact the canvas still
-   answers to; a mode bar fronts a catcher that has taken the pointer away from
-   painting, and that difference is the one thing this column must say at a
-   glance. */
+   live edge ringing the surface and the pale ink tinting the label — the same
+   armed voice `.gradient-trace.active` speaks, admissible because a mode is a
+   gesture in progress, not a state left standing beside the work. A status bar
+   describes a fact the canvas still answers to; a mode bar fronts a catcher
+   that has taken the pointer away from painting, and that difference is the
+   one thing this column must say at a glance. */
 .mode-bar {
-  box-shadow: var(--panel-shadow), 0 0 0 1px #3a6ea5;
+  box-shadow: var(--panel-shadow), 0 0 0 1px var(--live-edge);
   animation: mode-bar-rise 160ms ease-out;
 }
 
 .mode-bar .bar-label {
-  color: #9cc3e8;
+  color: var(--live-text);
 }
 
 /* Entering reads as a card laid over the column; the recess below is the other
@@ -5154,7 +5284,8 @@ label.setting-text {
 }
 
 .setting-row .bind-chip.capturing {
-  background: #3a6ea5;
+  background: var(--live-wash);
+  box-shadow: inset 0 0 0 1px var(--live-edge);
 }
 
 .setting-row .bind-add {
@@ -5209,7 +5340,7 @@ label.setting-text {
 }
 
 .drag-preset:hover {
-  border-color: #3a6ea5;
+  border-color: var(--live-edge);
   background: #ffffff14;
 }
 
@@ -5337,8 +5468,8 @@ label.setting-text {
   left: 0;
   top: 0;
   bottom: 0;
-  background: #3a6ea540;
-  border-right: 1px solid #6ea3d8;
+  background: var(--live-tint);
+  border-right: 1px solid var(--live-edge);
   pointer-events: none;
 }
 
@@ -5383,7 +5514,7 @@ label.setting-text {
    ticks stay in their box, and an outline offset outward would be clipped with
    them — the one focus ring that has to survive is this one. */
 .timeline-range:focus-visible {
-  outline: 2px solid #6ea3d8;
+  outline: 2px solid var(--live-edge);
   outline-offset: -2px;
 }
 
@@ -5405,7 +5536,7 @@ label.setting-text {
   margin-top: 2px;
   border: none;
   border-radius: 3px;
-  background: #e8eef6;
+  background: #e8e8ea;
   box-shadow: 0 0 4px #000000a6;
 }
 
@@ -5414,7 +5545,7 @@ label.setting-text {
   height: 22px;
   border: none;
   border-radius: 3px;
-  background: #e8eef6;
+  background: #e8e8ea;
   box-shadow: 0 0 4px #000000a6;
 }
 
@@ -5540,11 +5671,14 @@ label.setting-text {
   font-size: 12px;
 }
 
-/* Armed: the chip stays lit for the mode's whole life, the way an armed
-   selection chip does — the button is the mode's indicator as well as its
-   switch, since the catcher it arms is invisible. */
+/* Armed: the chip wears the live register for the mode's whole life — the
+   button is the mode's indicator as well as its switch, since the catcher it
+   arms is invisible. Wash and edge rather than the lit inversion, because
+   armed is something the user is *doing*, not a state they have put a thing
+   in — the register the mode bar's own ring speaks. */
 .gradient-trace.active {
-  background: #3a6ea5;
+  background: var(--live-wash);
+  box-shadow: inset 0 0 0 1px var(--live-edge);
   color: #fff;
 }
 
@@ -5630,8 +5764,13 @@ label.setting-text {
   filter: brightness(1.12);
 }
 
+/* The keylined ring (`.preset-row.active`), which this row needs even more: the
+   picture under it is an arbitrary ramp, so either single value would vanish
+   against some gradient in the library. */
 .gradient-row.active {
-  box-shadow: inset 0 0 0 2px #3a6ea5;
+  box-shadow:
+    inset 0 0 0 2px var(--lit-ring),
+    inset 0 0 0 3px #00000059;
 }
 
 .gradient-row:hover .gradient-remove {

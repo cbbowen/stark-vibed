@@ -360,6 +360,11 @@ fn knob_rows<F: Copy + 'static>(
                 span { class: "filter-knob-value", "{readout(knob, &current)}" }
                 input {
                     class: "slider",
+                    style: crate::widgets::slider_fill(
+                        knob.range.0,
+                        knob.range.1,
+                        (knob.get)(&current) / knob.scale,
+                    ),
                     r#type: "range",
                     min: "{knob.range.0}", max: "{knob.range.1}", step: "any",
                     value: "{(knob.get)(&current) / knob.scale}",

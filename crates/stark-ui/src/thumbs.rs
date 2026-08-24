@@ -6,7 +6,7 @@
 //! painting color aside ([`keyed`]): a slot carries the color that was live when
 //! it was filled, and one preset in two colors is one picture.
 //!
-//! Each thumbnail is a red stroke drawn across a canvas laid **entirely in
+//! Each thumbnail is a mid-gray stroke drawn across a canvas laid **entirely in
 //! paint** — a light-gray slab on the left half, a dark-gray slab on the right —
 //! rendered by a **shared** engine (`Renderer::shared_engine`), so it costs no
 //! pipeline compiles, no fetches and no decodes: one engine is built lazily on
@@ -16,7 +16,7 @@
 //! Paint under the whole stroke, not bare substrate, because the substrate half of
 //! what a brush *is* here is what it does to the paint already down (§6.2):
 //! a smudge drags gray into its wake, an eraser bites a gap, a wet brush's lift
-//! muddies its own red — none of which bare canvas can show. Two grays rather
+//! muddies its own body — none of which bare canvas can show. Two grays rather
 //! than one so the stroke's opacity and its pickup each read against a substrate
 //! that contrasts with them somewhere along the run.
 //!
@@ -66,9 +66,12 @@ const THUMB_H: u32 = 72;
 /// an unchanged preset must be byte-stable, or the cache key would be a lie.
 const THUMB_SEED: u64 = 0x7B1D_EA0F_57A2;
 
-/// The test stroke's fixed red — the one saturated thing in the picture, over
-/// the two grays it is judged against.
-const STROKE_COLOR: [f32; 3] = [0.82, 0.15, 0.12];
+/// The test stroke's fixed neutral: a mid gray pitched between the two slabs,
+/// so it reads darker over the light half and lighter over the dark half. Gray
+/// rather than any hue for the chrome's own reason (stark.css): the library is
+/// a column of these standing beside the painting, and one saturated color
+/// repeated down it is a thumb on the scale of every color the artist weighs.
+const STROKE_COLOR: [f32; 3] = [0.55, 0.55, 0.55];
 
 /// The two paint slabs the stroke crosses: light on the left, dark on the
 /// right. Both sit away from the white substrate beneath them, so an eraser's
@@ -150,7 +153,7 @@ fn lookup(state: AppState, w: &Wearable) -> Option<String> {
         .map(|(_, url)| url.clone())
 }
 
-/// The brush **as the thumbnail paints it**: the test stroke's own red in place
+/// The brush **as the thumbnail paints it**: the test stroke's own gray in place
 /// of the painting color. Both the render and the cache key go through it, so
 /// the key cannot come to disagree with the picture about what a thumbnail is.
 ///
@@ -425,7 +428,7 @@ mod tests {
     /// The blank row this key exists to rule out: `presets::wear` keeps the live
     /// painting color across every swap, so a slot filled from a preset is that
     /// preset wearing today's color (§18.1.8). One picture — the thumbnail is
-    /// painted in its own red either way — so it must not cost a second render,
+    /// painted in its own gray either way — so it must not cost a second render,
     /// and the row must not wait on one.
     #[test]
     fn two_painting_colors_of_one_brush_are_one_thumbnail() {

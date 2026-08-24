@@ -47,7 +47,7 @@ use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, guide_boxes, select_all};
 use crate::preview;
 use crate::state::{AppState, GuideEdit, dispatch, use_obs_opt};
-use crate::widgets::CommandButton;
+use crate::widgets::{CommandButton, slider_fill};
 use stark_engine::GuideInfo;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{GuideId, Lens, PairTrace, PerspectiveGuide};
@@ -817,6 +817,7 @@ pub fn PerspectiveGuideBar() -> Element {
             }
             input {
                 class: "slider",
+                style: slider_fill(CELL_OCTAVES.0 as f32, CELL_OCTAVES.1 as f32, octave),
                 r#type: "range",
                 min: "{CELL_OCTAVES.0}", max: "{CELL_OCTAVES.1}", step: "1",
                 value: "{octave}",
@@ -848,6 +849,7 @@ pub fn PerspectiveGuideBar() -> Element {
             }
             input {
                 class: "slider",
+                style: slider_fill(0.1, 1.0, opacity),
                 r#type: "range", min: "0.1", max: "1", step: "any",
                 value: "{opacity}",
                 title: "How strongly the guide reads over the paint",

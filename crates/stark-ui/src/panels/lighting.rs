@@ -8,7 +8,7 @@ use crate::icons::{self, icon, label};
 use crate::panels::color::OklabPicker;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, with_engine_quiet};
-use crate::widgets::{PopoutId, Slider};
+use crate::widgets::{PopoutId, Slider, slider_fill};
 use dioxus::dioxus_core::spawn_forever;
 use stark_engine::command::ViewCommand;
 use stark_engine::{EnvironmentId, MediaParams};
@@ -164,6 +164,11 @@ pub fn LightingPanel() -> Element {
             }
             input {
                 class: "slider",
+                style: slider_fill(
+                    SubstrateScale::MIN as f32,
+                    SubstrateScale::MAX as f32,
+                    scale.percent() as f32,
+                ),
                 r#type: "range",
                 min: "{SubstrateScale::MIN}",
                 max: "{SubstrateScale::MAX}",

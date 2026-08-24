@@ -39,7 +39,7 @@ use crate::icons::{self, icon};
 use crate::layout::ChromeHiding;
 use crate::prefs;
 use crate::state::{AppState, dispatch, use_obs};
-use crate::widgets::Modal;
+use crate::widgets::{Modal, slider_fill};
 use stark_engine::command::ViewCommand;
 
 /// The settings dialog, opened from the command rail's ⚙ button and dismissed by
@@ -312,6 +312,7 @@ fn SettingSlider(
                 input {
                     id: "{id}",
                     class: "slider setting-slider",
+                    style: slider_fill(0.0, max as f32, at as f32),
                     r#type: "range",
                     min: "0",
                     max: "{max}",

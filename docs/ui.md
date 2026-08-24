@@ -62,8 +62,8 @@ which the engine draws into directly. DOM chrome surrounds it.
   display name, terse chip word (`Command::word`, the abbreviation a control in
   a narrow column wears — "Rect" for "Rectangle select"), mark, tooltip,
   availability (`Command::enabled`, what a row greys on), whether the act is
-  live right now (`Command::active`, drawn two ways from one answer: the select
-  blue on the mark, which a menu row and a palette row draw alike, and a lit
+  live right now (`Command::active`, drawn two ways from one answer: the pale
+  accent on the mark, which a menu row and a palette row draw alike, and a lit
   `CommandButton` — the armed shape tool, Share while a session runs),
   the advertised shortcut (`Command::shortcut`), the gate its act must ask
   (`Command::run`), and the chord that reaches it from the keyboard
