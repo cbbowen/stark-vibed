@@ -183,19 +183,11 @@ struct Slot {
     /// The sweep's start in region px, and the unit travel tangent it leaves along.
     start: Vec2,
     dir: Vec2,
-    /// The radius of the frame the sweep is unrolled in, region px, and its travel as
-    /// a multiple of that radius — 0 on a settle, which is a break of contact rather
-    /// than a stretch of it.
-    ///
-    /// The frame, not the tip ([`Segment::frame`]): a pen-oriented stamp's volume is
-    /// padded, and everything the shader reads out of a brush-local coordinate is in
-    /// that larger frame.
-    frame: f32,
+    /// The tip's radius in region px — and so the frame the sweep is unrolled in
+    /// (§6.6) — with its travel as a multiple of that radius: 0 on a settle, which
+    /// is a break of contact rather than a stretch of it.
+    radius: f32,
     travel_radii: f32,
-    /// How many tips wide that frame is (§6.6) — the one conversion between the
-    /// frame's units and the mask's, and 1 for every unpadded volume. Only the tool
-    /// side reads it, the canvas side's prefix differences being absolute.
-    frame_scale: f32,
     /// `λ = ln(1 − axis) ≤ 0`, clamped away from −∞. Zero is "no transfer".
     lambda_lift: f32,
     lambda_deposit: f32,
@@ -261,7 +253,7 @@ struct Slot {
     /// ([`Stretch`](super::super::segments::Stretch)).
     ///
     /// The identity `(1, 0, 1)` for every brush that does not stretch — and, like
-    /// [`frame_scale`](Self::frame_scale), that is a triple of *scales* and not of
+    /// the other neutral-at-1 lanes below, that is a triple of *scales* and not of
     /// zeroes: a zeroed lane is not "no stretch" but a tip of no width and infinite
     /// gain. [`Stretch::NONE`](super::super::segments::Stretch::NONE) states it, so
     /// neither this default nor the shader's neutral value is written twice.
@@ -275,15 +267,14 @@ struct Slot {
 }
 
 impl Default for Slot {
-    /// Zero everywhere except the four fields whose neutral value is **1**. Three are
+    /// Zero everywhere except the three fields whose neutral value is **1**. Two are
     /// there for one reason: they are *scales*, and a zeroed scale does not mean "none
     /// of this" but "none of the thing it multiplies". `bearing` is the share of the
     /// substrate a tip stands on where there is nothing to bite — zeroed it would book the
     /// tool's half of every transfer against no substrate at all, which is not "no tooth"
-    /// but "infinite tooth". `cell` at 1 is the exact per-texel deposit. `frame_scale`
-    /// at 1 is an unpadded volume, where the frame and the tip are one thing.
+    /// but "infinite tooth". `cell` at 1 is the exact per-texel deposit.
     ///
-    /// The fourth, `tooth_give`, is there for a reason of its own: the knob runs the
+    /// The third, `tooth_give`, is there for a reason of its own: the knob runs the
     /// other way (`BrushParams::tooth_give`), so a zeroed lane is not "no tooth" but
     /// the driest tip there is. 1 is a tip that follows every fall, which is what a
     /// bleed slot needs — it is the only lane keeping the lateral flux clear of the
@@ -293,9 +284,8 @@ impl Default for Slot {
         Self {
             start: Vec2::ZERO,
             dir: Vec2::ZERO,
-            frame: 0.0,
+            radius: 0.0,
             travel_radii: 0.0,
-            frame_scale: 1.0,
             lambda_lift: 0.0,
             lambda_deposit: 0.0,
             channels: [0.0; 4],
@@ -336,9 +326,9 @@ impl Slot {
     /// **A rename, not a packing.** `Stamp`'s members are named now, and the mirror
     /// generates them from the shader's own declaration (§6.10), so the field names on
     /// both sides of each line below are one name checked by the compiler. What stood
-    /// here was a lane map — `e: [self.add, self.curvature, self.bleed_reach,
-    /// self.frame_scale]` — whose correspondence to the shader's `st.e.z` nothing
-    /// could see: the sizes matched whatever order the four were written in.
+    /// here was a lane map — `e: [self.add, self.curvature, self.bleed_reach, …]` —
+    /// whose correspondence to the shader's `st.e.z` nothing could see: the sizes
+    /// matched whatever order the four were written in.
     ///
     /// The casts are the members the shader declares **integral** because they are:
     /// a rect origin, a cell edge, a stencil reach. They are `f32` in the plan because
@@ -349,10 +339,9 @@ impl Slot {
         Stamp {
             start: self.start.to_array(),
             dir: self.dir.to_array(),
-            frame_radius: self.frame,
+            radius: self.radius,
             travel_radii: self.travel_radii,
             radius_ramp: self.ramp,
-            frame_scale: self.frame_scale,
             lambda_lift: self.lambda_lift,
             lambda_deposit: self.lambda_deposit,
             lambda_bleed: self.lambda_bleed,
@@ -741,17 +730,13 @@ pub(super) fn dynamics_plan(
                     slot: Slot {
                         start: p,
                         dir: sw.dir,
-                        // The frame, and the travel in its units — both the volume's,
-                        // which is the tip's own for everything but a padded
-                        // (pen-oriented) stamp.
-                        frame: sw.frame,
-                        travel_radii: sw.length / sw.frame,
-                        frame_scale: sw.frame / sw.radius,
-                        // The tip's growth across this segment, which the frame shares
-                        // because the two differ by the constant `frame_scale` above
-                        // ([`Sweep::ramp`]). Everything the host prices off
-                        // `sw.radius` — the cell, the bleed cadence, the exchange step
-                        // — stays on the reference tip, which is what that radius is.
+                        // The tip, and the travel in its units.
+                        radius: sw.radius,
+                        travel_radii: sw.length / sw.radius,
+                        // The tip's growth across this segment ([`Sweep::ramp`]).
+                        // Everything the host prices off `sw.radius` — the cell, the
+                        // bleed cadence, the exchange step — stays on the reference
+                        // tip, which is what that radius is.
                         ramp: sw.ramp,
                         lambda_lift: lambda(paint.lift),
                         lambda_deposit: lambda(paint.deposit),
@@ -821,9 +806,8 @@ pub(super) fn dynamics_plan(
                     slot: Slot {
                         start: p,
                         dir: w.dir,
-                        frame: w.frame,
-                        travel_radii: w.length / w.frame,
-                        frame_scale: w.frame / w.radius,
+                        radius: w.radius,
+                        travel_radii: w.length / w.radius,
                         rect_origin: rect.origin,
                         orient: w.orient,
                         stretch: w.stretch,
@@ -869,8 +853,7 @@ pub(super) fn dynamics_plan(
                         // was when it left the page — the same segment this slot takes
                         // its radius and orientation from. (`travel_radii` stays at its
                         // default 0.)
-                        frame: sw.frame,
-                        frame_scale: sw.frame / sw.radius,
+                        radius: sw.radius,
                         lambda_lift: lambda(paint.lift),
                         lambda_deposit: lambda(paint.deposit),
                         rect_origin: rect.origin,
@@ -1044,9 +1027,8 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<BleedFire> {
                     // the same one the inherited rates below make.
                     ramp: 0.0,
                     // The crossing segment's shape is the window's shape — a firing is
-                    // that segment relaxing its own extent, so it is swept in the
-                    // same frame and reaches exactly as far from the centreline.
-                    frame: s.frame,
+                    // that segment relaxing its own extent, so it reaches exactly as
+                    // far from the centreline.
                     reach: s.reach,
                     // One quantum of arc length, which is what `sweep_at` measures
                     // travel in — and what `bleed_stencil` is calibrated against.
@@ -1184,9 +1166,8 @@ mod tests {
             // A tip that holds still, so the frame the shader unrolls is the one
             // these builders are being measured against and nothing else.
             ramp: 0.0,
-            // A round tip's frame and reach, both the radius: the plan builders are
-            // being measured here, not the width of any one shape.
-            frame: radius,
+            // A tip that reaches its own radius: the plan builders are being
+            // measured here, not the width of any one shape.
             reach: radius,
             length,
             orient: 0.0,
@@ -1227,10 +1208,10 @@ mod tests {
     /// (§6.10), so `pack` reads `lambda_lift: self.lambda_lift` and a swap of two
     /// same-typed neighbours is a compile error rather than a wrong picture. What
     /// survives is the handful of lines where the two sides spell one quantity
-    /// differently — `frame`/`frame_radius`, `orient`/`orientation`, `dist`/
-    /// `arc_at_start`, `ramp`/`radius_ramp`, `bearing`/`tooth_bearing` — and the three
-    /// that split a host array (`channels`, `resid`, `noise_freq`). Those are the
-    /// assertions below; the rest are the compiler's.
+    /// differently — `orient`/`orientation`, `dist`/`arc_at_start`,
+    /// `ramp`/`radius_ramp`, `bearing`/`tooth_bearing` — and the three that split a
+    /// host array (`channels`, `resid`, `noise_freq`). Those are the assertions
+    /// below; the rest are the compiler's.
     ///
     /// It also stands behind `pack`'s `..Default::default()`, which exists to leave the
     /// generated padding alone and would otherwise let a *forgotten* member zero
@@ -1241,9 +1222,8 @@ mod tests {
         let packed = Slot {
             start: Vec2::new(1.0, 2.0),
             dir: Vec2::new(3.0, 4.0),
-            frame: 5.0,
+            radius: 5.0,
             travel_radii: 6.0,
-            frame_scale: 43.0,
             lambda_lift: 7.0,
             lambda_deposit: 8.0,
             channels: [9.0, 10.0, 11.0, 12.0],
@@ -1280,7 +1260,6 @@ mod tests {
         .pack();
 
         // The pairs the two sides spell differently.
-        assert_eq!(packed.frame_radius, 5.0, "frame → frame_radius");
         assert_eq!(packed.travel_radii, 6.0, "travel_radii");
         assert_eq!(packed.orientation, 15.0, "orient → orientation");
         assert_eq!(packed.arc_at_start, 29.0, "dist → arc_at_start");
@@ -1301,7 +1280,7 @@ mod tests {
         // all — which `..Default::default()` would zero in silence — still fails here.
         assert_eq!(packed.start, [1.0, 2.0]);
         assert_eq!(packed.dir, [3.0, 4.0]);
-        assert_eq!(packed.frame_scale, 43.0);
+        assert_eq!(packed.radius, 5.0);
         assert_eq!(packed.lambda_lift, 7.0);
         assert_eq!(packed.lambda_deposit, 8.0);
         assert_eq!(packed.lambda_bleed, 31.0);
@@ -1322,14 +1301,13 @@ mod tests {
         assert_eq!(packed.canvas_origin, [51, 52]);
     }
 
-    /// The neutral slot is neutral *in the shader's terms*, which for six fields is
-    /// not zero. Five are **scales**, and a zeroed scale does not say "none of
+    /// The neutral slot is neutral *in the shader's terms*, which for five fields is
+    /// not zero. Four are **scales**, and a zeroed scale does not say "none of
     /// this" but "none of the thing it multiplies": a `bearing` of 0 books the tool's
     /// half of every transfer against no substrate at all — infinite tooth, not absent
-    /// tooth; a `cell` of 0 is no deposit grid rather than the exact one; a
-    /// `frame_scale` of 0 is a tip of no width rather than an unpadded volume; and a
+    /// tooth; a `cell` of 0 is no deposit grid rather than the exact one; and a
     /// zeroed stretch is a tip of no width whose every prefix difference is divided by
-    /// it (§6.6). The sixth, `tooth_give`, is not a scale but a knob that runs the
+    /// it (§6.6). The fifth, `tooth_give`, is not a scale but a knob that runs the
     /// other way (`BrushParams::tooth_give`): zeroed it is the driest tip there is,
     /// where 1 is the short-circuit a slot with no tooth wants. A derived `Default`
     /// would make every slot kind that leaves one alone quietly wrong, and this is the
@@ -1340,10 +1318,6 @@ mod tests {
         assert_eq!(d.tooth_bearing, 1.0, "the default bearing must be 1, not 0");
         assert_eq!(d.cell_px, 1, "the default cell must be 1 — exact — not 0");
         assert_eq!(
-            d.frame_scale, 1.0,
-            "the default frame scale must be 1 — unpadded — not 0"
-        );
-        assert_eq!(
             d.tooth_give, 1.0,
             "the default give must be 1 — full contact — not 0, which is the dry mark"
         );
@@ -1353,12 +1327,11 @@ mod tests {
             "the default stretch must be the identity map, not zeroes"
         );
         // And everything else is zero, which for the rest of the slot *is* neutral —
-        // stated as the complement of the five above so a new member has to be
+        // stated as the complement of the four above so a new member has to be
         // classified rather than silently joining whichever list it was written near.
         let z = Stamp {
             tooth_bearing: 1.0,
             cell_px: 1,
-            frame_scale: 1.0,
             tooth_give: 1.0,
             stretch: [1.0, 0.0, 1.0],
             ..Default::default()

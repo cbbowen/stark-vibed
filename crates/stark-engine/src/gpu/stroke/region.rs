@@ -384,9 +384,8 @@ mod tests {
             // A tip that holds still: these cases are about how the measurements
             // combine boxes, and a ramp would put a second variable in every box.
             ramp: 0.0,
-            // A round tip's frame and reach, both the radius: these cases are about how
-            // the measurements combine boxes, not about how wide one shape is.
-            frame: radius,
+            // A tip that reaches its own radius: these cases are about how the
+            // measurements combine boxes, not about how wide one shape is.
             reach: radius,
             length,
             orient: 0.0,

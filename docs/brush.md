@@ -1177,13 +1177,15 @@ sources ask opposite amounts of that:
   form now guarantees empty.
 
 With every volume on the mask's own grid there is one frame and one column
-width: `Segment::frame` is the tip's radius for every brush, and
+width, so both stopped being quantities at all: the frame *is* the tip
+(`Sweep::radius`, and the shader's `Stamp::radius` lane), and
 `build_prefix_tau` integrates its rows at `2/width`. Both were mode-dependent
-while the pen stack was padded — the frame `√2` larger so the mask inside landed
-at the radius the brush asked for, the `dx` a number the padded texture could
-not supply — and each had to reach exactly one of the two sides of the dynamics
-loop, a consistency that had to be written correct because no pixel visibly
-depended on it.
+while the pen stack was padded — the frame `√2` larger so the mask inside
+landed at the radius the brush asked for, the `dx` a number the padded texture
+could not supply — and each had to reach exactly one of the two sides of the
+dynamics loop, carrying a `frame_scale` conversion whose correctness no pixel
+visibly depended on. A representation that cannot express the distinction is
+what retired it.
 
 **A tip is drawn out along the axis it faces.** Tilting a real pencil does not press a
 bigger circle onto the paper — it rolls the cone over, and the patch in contact

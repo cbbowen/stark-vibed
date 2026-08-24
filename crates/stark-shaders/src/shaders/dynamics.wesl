@@ -118,41 +118,26 @@ struct Stamp {
     // not carried here.)
     start: vec2<f32>,
     dir: vec2<f32>,
-    // The radius of the **frame the sweep is unrolled in** — region px per brush-local
-    // unit. The frame, not the tip: the two are the same for every brush but a
-    // pen-oriented stamp, whose prefix-τ volume is padded so the mask can turn inside
-    // it without losing its corners (§6.6). There the volume's `[-1, 1]²` is
-    // `frame_scale` tips wide, and everything read out of a brush-local coordinate —
-    // the arc, the color-noise domain, the reservoir's placement — is in that larger
-    // frame.
-    frame_radius: f32,
-    // Segment length as a multiple of `frame_radius`. 0 on a settle slot, which is a
+    // The tip's radius — region px per brush-local unit, and so the frame every
+    // brush-local coordinate is read in: the arc, the color-noise domain, the
+    // reservoir's placement. One radius for every brush (§6.6): a mask's content
+    // lies inside the disc inscribed in its square, so its volume is baked unpadded
+    // and the frame the sweep is unrolled in *is* the tip.
+    radius: f32,
+    // Segment length as a multiple of `radius`. 0 on a settle slot, which is a
     // break of contact rather than a stretch of travel.
     travel_radii: f32,
-    // How much the tip grows across this slot's sweep, as a fraction of `frame_radius`
+    // How much the tip grows across this slot's sweep, as a fraction of `radius`
     // (§6.2, `Segment::ramp`), so the tip a fraction `u` of the way through is
-    // `frame_radius·(1 + radius_ramp·(u − ½))`. A segment does not have one radius —
+    // `radius·(1 + radius_ramp·(u − ½))`. A segment does not have one radius —
     // the taper and the size modulation both scale the tip with distance travelled —
     // and a sweep at a single radius steps the stroke's outline at every cut.
     //
-    // Its neutral value is 0, unlike `frame_scale` and `cell_px`, because it is a
+    // Its neutral value is 0, unlike `tooth_bearing` and `cell_px`, because it is a
     // *difference* rather than a scale: a zeroed lane is a tip that holds still, which
     // is what a bleed window and a settle both are, and what every untapered stroke at
     // constant pressure is.
     radius_ramp: f32,
-    // How many tips wide the frame `frame_radius` measures is (§6.6), and so the one
-    // conversion between the frame's units and the **mask's**. Exactly 1 for every
-    // unpadded volume, which is every brush but a pen-oriented stamp, so a slot that
-    // never heard of padding reads its extent exactly as it always did.
-    //
-    // The canvas side never needs it: a prefix-τ difference is an absolute optical
-    // depth, integrated at the mask's own column width whatever box was baked around it
-    // (`assets::build_prefix_tau`). Only the tool side, which has no prefix to
-    // difference and reconstructs its exposure from the raw coverage, has to know.
-    //
-    // Neutral at 1 rather than 0, like `tooth_bearing` and `cell_px`: the lane is a
-    // *scale*, and a zeroed one is not "no padding" but "no tip".
-    frame_scale: f32,
     // The three exchange rates as the host packs them: `λ = ln(1 − axis) ≤ 0`, clamped
     // away from −∞. Every consumer wants `k = −λ ≥ 0`, which is what `lift_rate` and
     // its two neighbours below hand back — spelling the negation at each site is an
@@ -281,7 +266,7 @@ struct Stamp {
 // there is now nothing between the reader and the declaration to decode.
 
 // The segment's travel in px — the product the arc arithmetic wants.
-fn travel_px() -> f32 { return st.travel_radii * st.frame_radius; }
+fn travel_px() -> f32 { return st.travel_radii * st.radius; }
 
 // The three exchange rates, as `k = −λ ≥ 0`. `lift` and `deposit` are the vertical
 // pair; `bleed` is the lateral one, and is nonzero only on a dedicated bleed slot.
@@ -835,12 +820,12 @@ fn bake(
 //
 // The tool *reservoir* deliberately does not ramp: `bake` and `exchange` place a
 // brush-local grid, which is the tool's own and does not stretch as the tip does, and
-// they reach the canvas through `st.frame_radius` rather than through a `Sweep` at all.
+// they reach the canvas through `st.radius` rather than through a `Sweep` at all.
 // What ramps is the canvas-side coverage — the prefix-τ difference, which is what the
 // stroke's outline is made of.
 fn segment_frame(rt: vec2<i32>) -> Sweep {
     let p = vec2<f32>(rt) + vec2<f32>(0.5, 0.5);
-    let sw = sweep_at(p, st.start, st.dir, st.frame_radius, travel_px(), st.curvature);
+    let sw = sweep_at(p, st.start, st.dir, st.radius, travel_px(), st.curvature);
     return ramp_apply(sw, st.radius_ramp);
 }
 
@@ -1102,35 +1087,21 @@ fn exchange(
     // smear conserving. Exactly 1 when there is no tooth, so an ordinary brush is
     // untouched.
     //
-    // **Both halves are in the mask's units, not the frame's** (§6.6). A reservoir texel
-    // tiles the frame, which for a padded volume is `st.frame_scale` tips wide — so the
-    // mask under it sits at `local · st.frame_scale`, and the track it is dragged along is
-    // that many more of the tip's own radii than of the frame's. The canvas side is
-    // already in mask units, its prefix having been integrated at the mask's column
-    // width. Exactly 1 for an unpadded volume, so nothing here moves for any brush but a
-    // nib.
+    // Both halves are in the mask's units, which are the frame's: a volume is baked
+    // on the mask's own grid, so a reservoir texel tiles exactly one tip (§6.6). The
+    // canvas side is in the same units, its prefix having been integrated at the same
+    // column width. While a pen-oriented volume was padded these were two different
+    // units and both factors here carried the conversion.
     //
-    // Left in the frame's units the tool weights itself by a mask stretched over its own
-    // padding — picking up from an extent `st.frame_scale` wider than the one it lays —
-    // and books the exposure for it in the wrong units on top. What that does *today* is
-    // very little, and the reason is worth stating so nobody reads the correction as
-    // load-bearing where it is not: the paint it misplaces lands in the padding, and
-    // `deposit` reads the reservoir back through `bake`'s τ-weighted prefix, which is
-    // zero out there. So it is stranded rather than deposited, and a zero-angle nib
-    // renders within 2 levels either way (`assets.rs`). It is written correctly because
-    // the *representation* has to be consistent — the day anything reads the reservoir
-    // by something other than the mask's own τ, a tool a third too wide stops being
-    // invisible, and nothing about that day would point back here.
-    //
-    // **And by the tip's stretch** (§6.6), which is the third thing in the same
+    // **Scaled by the tip's stretch** (§6.6), which is the third thing in the same
     // sentence: a mask texel on a tip drawn out along its facing axis stands over more
     // canvas, so the track it crosses is that many fewer of its *own* widths. The
     // factor is `travel` and not `1/travel` for the reason the canvas side's is the
     // reciprocal — the two are opposite sides of one substitution, and it is what makes
     // the books balance: a stretch multiplies the canvas's total exposure by `s` and
     // the area each reservoir texel answers for by the same `s`.
-    let e = tau_of(coverage_at(local * st.frame_scale))
-        * st.travel_radii * st.stretch.x * st.frame_scale * st.tooth_bearing;
+    let e = tau_of(coverage_at(local))
+        * st.travel_radii * st.stretch.x * st.tooth_bearing;
     let ex = exchange_at(e);
     let rdim = vec2<f32>(textureDimensions(region_color));
     // Where this reservoir texel rides, in the tip's own reference frame — the two
@@ -1153,7 +1124,7 @@ fn exchange(
         let f = 0.5;
         let tip = tip_at(f);
         let dir = tip.zw;
-        let world = tip.xy + (seat.x * dir + seat.y * vec2<f32>(-dir.y, dir.x)) * st.frame_radius;
+        let world = tip.xy + (seat.x * dir + seat.y * vec2<f32>(-dir.y, dir.x)) * st.radius;
         let uv = world / rdim;
 
         // Outside the selection the canvas gives nothing up and the source mints
@@ -1218,7 +1189,7 @@ fn exchange(
         // source stop balancing: the `deposit` hands the canvas `add_w · A` at the
         // canvas texel's arc, and this takes back `src_w · A` at the tool texel's. The
         // two are the same place at the same moment, so they must read the same `A`.
-        let arc = st.arc_at_start + f * travel_px() + (local.x * cs - local.y * sn) * st.frame_radius;
+        let arc = st.arc_at_start + f * travel_px() + (local.x * cs - local.y * sn) * st.radius;
         let drain = stroke_drain(arc);
         let src_h = st.add * drain * ex.src_w * sel;
         let src_m = st.brush_op * drain * src_h;
@@ -1506,9 +1477,9 @@ fn lay_parcel(
     //
     // The travel frame's `y` is in units of the tip **in force here** and scales by
     // `sw.radius`; its `x` is in the segment's reference units and scales by
-    // `st.frame_radius`. The two axes are denominated differently on a ramping tip
+    // `st.radius`. The two axes are denominated differently on a ramping tip
     // (`stamp_common::Sweep`).
-    let arc = st.arc_at_start + sw.local.x * st.frame_radius;
+    let arc = st.arc_at_start + sw.local.x * st.radius;
     let drain = stroke_drain(arc);
     let own_op = st.brush_op * drain;
 
@@ -1866,7 +1837,7 @@ fn cell_hoist(@builtin(global_invocation_id) gid: vec3<u32>) {
     // region `[k·c − a, (k+1)·c − a)`, and this is that span's midpoint — a position,
     // not a texel index, so no half-texel offset applies on top.
     let p = (vec2<f32>(cell_base() + ci) + vec2<f32>(0.5, 0.5)) * f32(c) - vec2<f32>(a);
-    let sw = sweep_at(p, st.start, st.dir, st.frame_radius, travel_px(), st.curvature);
+    let sw = sweep_at(p, st.start, st.dir, st.radius, travel_px(), st.curvature);
     var tool = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     var lat = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     @if(resid) var res = vec4<f32>(0.0, 0.0, 0.0, 0.0);

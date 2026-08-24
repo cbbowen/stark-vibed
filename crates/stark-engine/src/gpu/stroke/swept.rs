@@ -308,20 +308,15 @@ impl StrokeRenderer {
                 SegmentInstance {
                     start: sweep.start.to_array(),
                     dir: sweep.dir.to_array(),
-                    // The **frame**, not the tip: brush-local coordinates are the
-                    // volume's, and a padded one is wider than the shape inside it
-                    // (§6.6, [`Sweep::frame`]). The two are the same number for
-                    // every brush but a pen-oriented stamp.
-                    //
-                    // The ramp rides here unscaled, and that is the point of its being
-                    // *relative*: the frame is the tip times a constant, so the tip's
-                    // fractional growth is the frame's ([`Sweep::ramp`]).
-                    geom: [sweep.frame, sweep.length, sweep.ramp],
+                    // The tip's radius, which is the frame brush-local coordinates
+                    // are read in (§6.6, [`Sweep::radius`]) — the ramp rides beside
+                    // it unscaled, that being the point of its being *relative*.
+                    geom: [sweep.radius, sweep.length, sweep.ramp],
                     extra: [sweep.orient, sweep.dist, sweep.curvature, paint.add],
                     tooth_give: paint.tooth_give,
-                    // The solved stretch map (§6.6). Unscaled by the frame for the
-                    // ramp's reason: it acts on brush-local coordinates, which are
-                    // already in the frame's units whatever the frame is.
+                    // The solved stretch map (§6.6). Unscaled for the ramp's reason:
+                    // it acts on brush-local coordinates, which are already the
+                    // frame's own units.
                     stretch: [
                         sweep.stretch.travel,
                         sweep.stretch.shear,

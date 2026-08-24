@@ -43,6 +43,14 @@ pub(super) struct Sweep {
     ///
     /// The *reference*, because a segment does not have a radius: the tip is a
     /// function of travel, and [`ramp`](Self::ramp) is the rest of that function.
+    ///
+    /// It is also **the frame the sweep is unrolled in** — region px per brush-local
+    /// unit, the units everything the shaders read out of a brush-local coordinate is
+    /// in. The two were separate quantities while a pen-oriented stamp's prefix-τ
+    /// volume was padded to keep a turned mask's corners; a canonical mask's content
+    /// lies inside the disc inscribed in its square (`stark_assetid::coverage`, §6.6),
+    /// a rotation maps that disc to itself, so every volume is baked unpadded and the
+    /// frame is the tip for every brush there is.
     pub(super) radius: f32,
     /// How much the tip grows across this segment, as a fraction of
     /// [`radius`](Self::radius): `(r_end − r_start) / radius`, so the tip in force a
@@ -74,19 +82,9 @@ pub(super) struct Sweep {
     /// without a clamp: the ends are floored at `0.5` by [`generate_segments_in`], and
     /// `|r₁ − r₀| < r₁ + r₀` for any two positive radii.
     ///
-    /// Relative rather than absolute (px) because it is then the *same number* for the
-    /// tip and for the frame the sweep is unrolled in ([`frame`](Self::frame)), which
-    /// are one radius. One lane serves both.
+    /// Relative rather than absolute (px) because the tip and the frame the sweep is
+    /// unrolled in are one radius — [`radius`](Self::radius) is both.
     pub(super) ramp: f32,
-    /// The radius of the **frame the sweep is integrated in**, in canvas px — the one
-    /// radius the shaders see, and the tip's own.
-    ///
-    /// The two were separate quantities while a pen-oriented stamp's prefix-τ volume
-    /// was padded to keep a turned mask's corners. A canonical mask's content lies
-    /// inside the disc inscribed in its square (`stark_assetid::coverage`, §6.6), a
-    /// rotation maps that disc to itself, and so every volume is baked unpadded and
-    /// every brush's frame is its tip.
-    pub(super) frame: f32,
     /// How far from the centreline this tip's deposit can land, in canvas px.
     ///
     /// Scaled by the segment's **widest** tip rather than its mean, since the ramp
@@ -726,7 +724,6 @@ pub(super) fn generate_segments_in(
             curvature: track.curvature,
             radius,
             ramp: (r1 - r0) / radius,
-            frame: radius,
             // Filled from `widest_tip` below, which needs the ramp this initializer is
             // still building — and must be *that* expression rather than one equal to
             // it, since this bounds the strip the GPU draws.
