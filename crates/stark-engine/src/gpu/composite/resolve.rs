@@ -2,8 +2,8 @@
 //! the caller's target (§6.4).
 //!
 //! Encoded only when the view is zoomed out. At 1:1 the passes above write the
-//! target directly, this is never bound, and every golden blessed at `zoom = 1.0`
-//! is bit-identical to before supersampling existed.
+//! target directly and this is never bound, so painting at 100% costs exactly
+//! what it always did.
 
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
@@ -57,8 +57,8 @@ const MAX_SUPERSAMPLED_BYTES: u64 = 224 << 20;
 /// How many samples per axis a render of `size` at `zoom` takes (§6.4).
 ///
 /// `1` at 1:1 and closer — a view that magnifies is already oversampling, so
-/// painting at 100% costs exactly what it always did and every golden blessed at
-/// `zoom = 1.0` is bit-identical. Below that it is the minification ratio, so each
+/// painting at 100% costs exactly what it always did and a golden blessed at
+/// `zoom = 1.0` never sees this pass. Below that it is the minification ratio, so each
 /// output pixel gets back roughly one sample per canvas pixel it covers, capped by
 /// [`MAX_SUPERSAMPLE`], by [`MAX_SUPERSAMPLED_BYTES`] and by what the device will
 /// allocate.
@@ -164,13 +164,14 @@ impl ResolvePass {
         encoder: &mut wgpu::CommandEncoder,
         ss: &Supersampled,
         n: u32,
+        dither_step: f32,
         target: &wgpu::TextureView,
     ) {
         ctx.queue.write_buffer(
             &ss.buf,
             0,
             bytemuck::bytes_of(&ResolveUniform {
-                n: [n as f32, 0.0, 0.0, 0.0],
+                n: [n as f32, dither_step, 0.0, 0.0],
             }),
         );
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

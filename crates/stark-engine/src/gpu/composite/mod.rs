@@ -959,6 +959,15 @@ impl Compositor {
         // one-sample-per-pixel line draws at any angle but the axes.
         let draw_target = self.ss_target.as_ref().map_or(target, Supersampled::view);
 
+        // One code of the target's encoding for both walks down to it — the
+        // supersampled intermediate carries the target's own format (§6.4) — and 0
+        // when this consumer's params ask for the undithered reference (§6.5).
+        let dither_step = if p.media_params.dither {
+            media::dither_step(p.target_format)
+        } else {
+            0.0
+        };
+
         let mut encoder = p
             .ctx
             .device
@@ -986,6 +995,7 @@ impl Compositor {
                 substrate_color: bg_channels,
                 substrate_resid: bg_resid,
                 transparent,
+                dither_step,
             },
         );
 
@@ -1018,7 +1028,7 @@ impl Compositor {
         // picture is already the size it was asked for.
         if let Some(ss_target) = &self.ss_target {
             p.resolve
-                .encode(&p.ctx, &mut encoder, ss_target, ss, target);
+                .encode(&p.ctx, &mut encoder, ss_target, ss, dither_step, target);
         }
 
         p.ctx.queue.submit([encoder.finish()]);

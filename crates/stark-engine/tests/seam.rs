@@ -40,11 +40,14 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
     // which the sharp reflection would otherwise amplify past tolerance — stays
     // small. SubstrateMap relief is turned OFF: the canvas substrate is sampled in canvas
     // space, so it intentionally is *not* tile-grid translation invariant and would
-    // mask the apron behavior tested here.
+    // mask the apron behavior tested here. Display dither is off by the same
+    // argument: it is keyed to the screen pixel (§6.5), so it too would differ
+    // between the shifted renders and fog the comparison.
     engine.process(ViewCommand::SetMediaParams(MediaParams {
         height_strength: 2.5,
         specular: 0.3,
         substrate_strength: 0.0,
+        dither: false,
     }));
 
     // Diagonal stroke through the 4-tile corner at `shift` (origin for shift=0).
@@ -114,6 +117,7 @@ fn render_shifted_image(shift: Vec2) -> RgbaImage {
         height_strength: 2.5,
         specular: 0.3,
         substrate_strength: 0.0,
+        dither: false,
     }));
 
     // A field of varying color and full alpha, big enough to span the 4-tile corner in
@@ -191,6 +195,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
         height_strength: 2.5,
         specular: 0.3,
         substrate_strength: 0.0,
+        dither: false,
     }));
 
     // A wide base field along the diagonal, fully containing the smudge's path.

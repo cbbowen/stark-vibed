@@ -58,6 +58,12 @@ pub struct MediaParams {
     pub specular: f32,
     /// How strongly the canvas substrate relief shows (its substrate amplitude).
     pub substrate_strength: f32,
+    /// Whether the display encode dithers its rounding (§6.5). On for every canvas
+    /// a person looks at; a consumer measuring *paint* through the render — the
+    /// suite's reference-identity configurations — turns it off, by the same
+    /// argument that flattens the light there: the half-code of noise is
+    /// deliberate on screen and a contaminant in a measurement.
+    pub dither: bool,
 }
 
 impl Default for MediaParams {
@@ -69,7 +75,30 @@ impl Default for MediaParams {
             // relief is there to be *painted into* (§6.2) whether or not the light is
             // made to show it. Raising this embosses it into the lit result.
             substrate_strength: 0.0,
+            dither: true,
         }
+    }
+}
+
+/// One code step of `format`'s encoding — the amplitude the media pass and the
+/// resolve scale their quantization dither by (§6.5) — or 0 for a format deep
+/// enough not to band, which turns the dither off.
+///
+/// Half a code either way (uniform), not the audio-style full-code triangle: a
+/// value the encode lands exactly on a code — black, white, anything the tonemap
+/// clamped — must render that code at every pixel rather than speckle its
+/// neighbours, and ±half a step is the widest swing with that property
+/// (`lib/noise.wesl::dither2` keeps it *strictly* inside the half, so the
+/// rounding tie between two codes is unreachable). The formats listed are every
+/// 8-bit target a compositor is built for; anything else — the f16 targets picks
+/// render into never come through here, but a future deep surface would — gets 0
+/// until it demonstrably bands, because dither a target does not need is only
+/// noise.
+pub(super) fn dither_step(format: wgpu::TextureFormat) -> f32 {
+    use wgpu::TextureFormat as F;
+    match format {
+        F::Rgba8Unorm | F::Rgba8UnormSrgb | F::Bgra8Unorm | F::Bgra8UnormSrgb => 1.0 / 255.0,
+        _ => 0.0,
     }
 }
 
@@ -186,6 +215,12 @@ pub(super) struct MediaScene<'a> {
     /// Skip the substrate and carry the paint's visible alpha out, for a cut-out
     /// export (§15.6).
     pub(super) transparent: bool,
+    /// One code of the target's encoding — [`dither_step`]'s answer for the format
+    /// this pass stores into, whether that is the caller's target or the
+    /// supersampled intermediate of the same format (§6.4) — already 0 when this
+    /// consumer's [`MediaParams::dither`] asks for the undithered reference. The
+    /// shader scales its store's quantization dither by it (§6.5).
+    pub(super) dither_step: f32,
 }
 
 impl MediaScene<'_> {
@@ -220,7 +255,7 @@ impl MediaScene<'_> {
             sub_b: [
                 m.substrate_strength,
                 if self.transparent { 1.0 } else { 0.0 },
-                0.0,
+                self.dither_step,
                 0.0,
             ],
             view_m: self.view.inverse_linear().to_cols_array(),

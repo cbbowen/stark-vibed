@@ -29,13 +29,21 @@
 // downsample is: on the opaque path every alpha is 1 and this is the plain mean, and
 // on a cut-out export (§15.6) a fragment that is nine-tenths nothing contributes a
 // tenth of a color rather than a full one.
+//
+// And the re-encode is a second walk down to 8-bit codes, so it carries its own
+// quantization dither (§6.5): the average recovered the depth the source texels'
+// dither spread across the block, and storing it back undithered would hand the
+// banding straight back.
 
 import package::lib::color::{linear_to_srgb, srgb_to_linear};
+import package::lib::noise::{dither2};
 import package::lib::quad::{fullscreen_clip};
 
 struct Resolve {
-    // n.x = samples per axis. The rest is the 16-byte stride a uniform member takes
-    // anyway; it stays a float because that is the only scalar this file needs.
+    // n.x = samples per axis; n.y = the dither step — one code of the target's
+    // encoding, the same number `media_common.wesl` scales its own store's dither
+    // by (§6.5). The rest is the 16-byte stride a uniform member takes anyway; all
+    // floats because those are the only scalars this file needs.
     n: vec4<f32>,
 }
 
@@ -49,6 +57,10 @@ struct Resolve {
 // composited coverage, but the box filter's own accumulated weight), and a bare `EPS`
 // would not say which of the three a reader is looking at.
 const WEIGHT_EPS: f32 = 1e-5;
+
+// This pass's dither identity — distinct from `media_common.wesl`'s, so the two
+// stores share no pattern.
+const DITHER_SEED: u32 = 1u;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
@@ -70,5 +82,9 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
             a += t.a;
         }
     }
-    return vec4<f32>(linear_to_srgb(rgb / max(a, WEIGHT_EPS)), a / f32(n * n));
+    // The header's second walk down to 8 bits: the same law as the media pass's
+    // store — one luma lane, one alpha lane, ±half a code — at this pass's own
+    // pixel grid and seed.
+    let d = dither2(vec2u(pos.xy), DITHER_SEED) * r.n.y;
+    return vec4<f32>(linear_to_srgb(rgb / max(a, WEIGHT_EPS)) + d.x, a / f32(n * n) + d.y);
 }

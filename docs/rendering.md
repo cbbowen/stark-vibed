@@ -701,6 +701,29 @@ Oklab ──→ display (sRGB/Rec.2020) (only in the media pass's final blit)
 - **Extensibility:** `CanvasMeta.color_space` records the working space so a
   future wide-gamut or spectral pipeline is a new variant, not a rewrite; the
   display transform is chosen from the surface format at present time.
+- **Dither at the encode, and only there.** The walk from f32 down to the
+  target's 8-bit codes — the media pass's store, and the resolve's re-encode
+  when the view is supersampled (§6.4) — is the one place banding is born, so
+  each of those two stores adds ±half a code of uniform noise before it rounds
+  (`lib/noise.wesl::dither2`, hashed from the integer target pixel and a fixed
+  per-pass seed). A value between two codes then renders as their mixture in
+  exact proportion instead of banding, while a value the encode lands exactly
+  on a code — black, white, anything the tonemap clamped — renders that code at
+  every pixel: that is why the swing is half a code (uniform) rather than the
+  audio-style full-code triangle, and why the helper keeps it strictly inside
+  the half, out of reach of the rounding tie. One lane is shared across RGB so
+  the noise is luma-only; a second covers alpha for cut-out exports (§15.6).
+  The amplitude comes from the target format (`media::dither_step` — 0 for a
+  target deep enough not to band), gated by `MediaParams::dither`: a consumer
+  measuring *paint* through the render — the suite's reference-identity
+  configurations — turns it off by the same argument that flattens the light
+  there. The noise is a pure function of target pixel, so renders stay
+  reproducible (§9), any two renders at the same
+  viewport cancel exactly in a comparison, and nothing upstream ever sees it:
+  tiles, the accumulators, and everything the CRDT (§12) or the eyedropper
+  (§18.0.2) reads stay noise-free. Paint math is never dithered — the dynamics
+  loop re-reads its own stores, and noise baked into a tile would compound
+  there and become part of the document.
 
 
 ## 6.7 Pluggable color spaces (Oklab & Mixbox pigment mixing)

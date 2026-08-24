@@ -340,6 +340,15 @@ fn a_tapers_deposit_has_no_ripple_at_the_cut() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
+    // Dither off (§6.5): the column sums below are a stand-in for `τ`, and the
+    // display's per-pixel half-code of deliberate noise reads as a ~5%-of-mean
+    // second difference — right where the artifact this test pins used to sit.
+    engine.process(stark_engine::command::ViewCommand::SetMediaParams(
+        stark_engine::MediaParams {
+            dither: false,
+            ..Default::default()
+        },
+    ));
     // One taper over the whole run, so every column is inside it, and a soft thin
     // tip so the deposit never saturates. `drain` is off in `inking_brush`, so the
     // taper is the only thing varying along the stroke.

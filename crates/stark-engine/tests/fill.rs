@@ -50,6 +50,14 @@ fn texel(img: &RgbaImage, canvas: Vec2) -> [i32; 3] {
 }
 
 /// Whether the pixel at a canvas point reads as red paint rather than bare paper.
+/// Whether two texels show the same paint. "The same" is within one code per
+/// channel: the display encode dithers each pixel's rounding independently
+/// (§6.5), so two screen pixels of identical paint may legitimately land one
+/// code apart.
+fn same_paint(a: [i32; 3], b: [i32; 3]) -> bool {
+    a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1)
+}
+
 fn is_red(img: &RgbaImage, canvas: Vec2) -> bool {
     let [r, g, b] = texel(img, canvas);
     r - g > 40 && r - b > 40
@@ -685,10 +693,13 @@ fn a_linear_gradient_fill_ramps_along_its_axis_and_clamps_past_it() {
         "past the axis it holds its last"
     );
     // Constant on perpendiculars: the ramp is a function of the axis alone.
-    assert_eq!(
+    let (above, below) = (
         texel(&img, Vec2::new(-50.0, -20.0)),
         texel(&img, Vec2::new(-50.0, 20.0)),
-        "perpendicular offsets read the same ramp position"
+    );
+    assert!(
+        same_paint(above, below),
+        "perpendicular offsets read the same ramp position: {above:?} vs {below:?}"
     );
     // And the middle is a mixture, not either end.
     let [r, _, b] = texel(&img, Vec2::ZERO);
@@ -726,10 +737,13 @@ fn a_radial_gradient_fill_rings_outward() {
         is_blue(&img, Vec2::new(70.0, 0.0)),
         "past the radius the ramp holds its last stop"
     );
-    assert_eq!(
+    let (east, south) = (
         texel(&img, Vec2::new(30.0, 0.0)),
         texel(&img, Vec2::new(0.0, 30.0)),
-        "the ramp is a function of distance alone"
+    );
+    assert!(
+        same_paint(east, south),
+        "the ramp is a function of distance alone: {east:?} vs {south:?}"
     );
 }
 

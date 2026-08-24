@@ -27,14 +27,16 @@ use stark_model::Srgb;
 use stark_model::document::{BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
-/// The reference configuration: no relief to tilt a normal, no substrate, no gloss —
-/// every knob that could shape the light turned off, so what is left is only the
-/// lighting model itself. Exposure is not among them: it rides with the environment,
-/// and these tests run on `Neutral`, whose exposure is 1.0 for exactly this reason.
+/// The reference configuration: no relief to tilt a normal, no substrate, no gloss,
+/// no display dither (§6.5) — every knob that could shape the output turned off, so
+/// what is left is only the lighting model itself. Exposure is not among them: it
+/// rides with the environment, and these tests run on `Neutral`, whose exposure is
+/// 1.0 for exactly this reason.
 const REFERENCE: MediaParams = MediaParams {
     height_strength: 0.0,
     specular: 0.0,
     substrate_strength: 0.0,
+    dither: false,
 };
 
 /// Largest byte error the reference light is allowed. Two levels out of 255 — the

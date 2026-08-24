@@ -6,6 +6,7 @@
 // encode — lives here so it is written once.
 
 import package::lib::color::{linear_to_srgb};
+import package::lib::noise::{dither2};
 import package::lib::paint_common::{PAINT_EPS};
 
 struct Media {
@@ -25,7 +26,9 @@ struct Media {
     // direction and this uniform carries only what shading multiplies by.
     shade: vec4<f32>,
     view_a: vec4<f32>, // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
-    sub_b: vec4<f32>, // substrate_strength, transparent (0/1), _, _
+    // substrate_strength, transparent (0/1), dither step (one code of the target's
+    // encoding, or 0 — `media::dither_step`, §6.5), _
+    sub_b: vec4<f32>,
     // The screen→canvas linear map, column-major: `view_m.xy` is the first column,
     // `view_m.zw` the second. What carries a fragment into canvas space when the view
     // is turned or mirrored (§18.1.2). `view_a.z` is the same map's
@@ -50,6 +53,11 @@ struct Media {
 // and leave the colorimetric one binding a placeholder it never samples.
 
 const PI: f32 = 3.14159265359;
+
+// This pass's dither identity: `resolve.wesl` runs the same law over the same
+// pixel grid when the view is supersampled, and the two stores must not share a
+// pattern. Any two distinct values do.
+const DITHER_SEED: u32 = 0u;
 
 // Absolute canvas substrate height at screen pixel `p` (sampled in canvas space, so
 // the substrate is fixed to the canvas). `Flat` is height 0, so it adds no relief.
@@ -270,5 +278,15 @@ fn finish(base: vec3<f32>, paint: f32, alpha: f32, p: vec2<f32>, dim: vec2<i32>)
     let sheen = spec_energy * dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722)) * exposure;
     // Straight (un-premultiplied) alpha: PNG stores straight, and the color here is
     // the paint's own, not paint-times-coverage.
-    return vec4<f32>(linear_to_srgb(commerce_tonemap(lit, sheen)), alpha);
+    let srgb = linear_to_srgb(commerce_tonemap(lit, sheen));
+    // Quantization dither (§6.5): the store below is the pipeline's one walk from
+    // f32 down to the target's 8-bit codes, so its rounding is made stochastic —
+    // ±half a code, uniform, `lib::noise`'s law — and a ramp too gentle for the
+    // codes renders as mixture instead of bands. One lane shared across RGB, so
+    // the noise is luma-only (chroma noise is the visible kind at this amplitude);
+    // the second covers alpha, whose soft edges band the same way on a cut-out
+    // export (§15.6). `sub_b.z` is one code of the target's encoding — and 0 for
+    // a target deep enough not to band, which turns all of this off.
+    let d = dither2(vec2u(p), DITHER_SEED) * m.sub_b.z;
+    return vec4<f32>(srgb + d.x, alpha + d.y);
 }

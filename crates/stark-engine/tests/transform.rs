@@ -143,6 +143,14 @@ fn identity_transform_is_a_noop_at_a_feathered_edge() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
+    // Dither off (§6.5): the single-ulp drift this pins is sub-code, and the
+    // display's own half-code of noise can round it across two boundaries.
+    engine.process(stark_engine::command::ViewCommand::SetMediaParams(
+        stark_engine::MediaParams {
+            dither: false,
+            ..Default::default()
+        },
+    ));
     blob(&mut engine, Vec2::new(-30.0, 0.0));
     select_rect(
         &mut engine,
@@ -190,6 +198,15 @@ fn integer_translation_is_exact() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
+    // Dither off (§6.5): the display's dither is keyed to the *screen* pixel by
+    // design, so it is the one layer that does not shift with the painting.
+    // Byte-exactness is asserted of everything beneath it.
+    engine.process(stark_engine::command::ViewCommand::SetMediaParams(
+        stark_engine::MediaParams {
+            dither: false,
+            ..Default::default()
+        },
+    ));
     blob(&mut engine, Vec2::new(-60.0, -20.0));
     let before = engine.render_to_image();
     let (dx, dy) = (64i32, 32i32);

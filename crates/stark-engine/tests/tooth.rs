@@ -530,16 +530,20 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
     let Some(mut engine) = rough_engine() else {
         return;
     };
-    // **Lighting flat.** The measure below is a stand-in for mass, and a lit render is
-    // not one: the media pass takes its normals from the height gradient (§6.3), so
-    // the same paint laid bumpily catches more light than the same paint laid smooth —
-    // which is the whole visible point of the tooth, and here it is the contaminant.
-    // At `height_strength = 0` and `substrate_strength = 0` the pass is the reference
-    // identity and the deviation from bare tracks visible alpha, which tracks mass.
+    // **Lighting flat, dither off.** The measure below is a stand-in for mass, and a
+    // lit render is not one: the media pass takes its normals from the height gradient
+    // (§6.3), so the same paint laid bumpily catches more light than the same paint
+    // laid smooth — which is the whole visible point of the tooth, and here it is the
+    // contaminant. At `height_strength = 0` and `substrate_strength = 0` the pass is
+    // the reference identity and the deviation from bare tracks visible alpha, which
+    // tracks mass. The display dither is the same story one layer down: it makes
+    // sub-code ink *register* (§6.5), which is its whole visible point — and here it
+    // would inflate exactly the faint tail this test needs to see stay faint.
     engine.process(stark_engine::command::ViewCommand::SetMediaParams(
         stark_engine::MediaParams {
             height_strength: 0.0,
             substrate_strength: 0.0,
+            dither: false,
             ..Default::default()
         },
     ));
