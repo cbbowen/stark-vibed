@@ -47,6 +47,11 @@ pub const MAX_SELECTION_TILES: usize = 1024;
 /// validation instead of rasterizing; and `selection.wesl` walks every edge **per
 /// texel**, so `N` prices the pass linearly across a million-texel tile set.
 ///
+/// The first of those is now held where the texture is built rather than only
+/// claimed here — `gpu::selection`'s `MIN_MAX_TEXTURE_DIM_1D` asserts against this
+/// constant, which is why it is re-exported from `document` at all. It was not, so
+/// the engine could name the bound in prose and nothing could check it.
+///
 /// Four thousand is far past any loop a hand draws: the frontend decimates live
 /// input to one vertex per `LASSO_MIN_STEP` (2 px), so this is a boundary some
 /// eight kilopixels long. What it is defending against is not a drawing but a
@@ -141,11 +146,17 @@ impl SelectionShape {
     /// something this can answer. Evenly around the cycle, which is what keeps the
     /// loop a loop — the first vertex is kept and the closing edge is implicit, so
     /// there is no end to pin the way a ramp's is.
+    ///
+    /// The index goes through [`pick_index`](crate::pick_index) rather than being
+    /// spelled `i * points.len() / MAX_LASSO_POINTS` here, and that is not
+    /// tidiness: `usize` is 32 bits in the browser, so the product wraps on a loop
+    /// past ~1.05M vertices and lands on a valid-but-wrong index — a different
+    /// polygon than a native peer reads from the same bytes. See there.
     pub fn sanitized(self) -> Self {
         match self {
             Self::Lasso(points) if points.len() > MAX_LASSO_POINTS => Self::Lasso(
                 (0..MAX_LASSO_POINTS)
-                    .map(|i| points[i * points.len() / MAX_LASSO_POINTS])
+                    .map(|i| points[crate::pick_index(i, points.len(), MAX_LASSO_POINTS)])
                     .collect(),
             ),
             shape => shape,

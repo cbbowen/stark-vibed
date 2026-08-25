@@ -55,7 +55,9 @@ pub use guide::{
 };
 pub use image::{MAX_IMAGE_TILES, image_tiles};
 pub use layer::{BlendMode, DRAGO_K, DRAGO_K_RANGE, LayerId, MattePaint, MatteRegion, Place};
-pub use selection::{MAX_SELECTION_TILES, SelectionMode, SelectionOp, SelectionShape};
+pub use selection::{
+    MAX_LASSO_POINTS, MAX_SELECTION_TILES, SelectionMode, SelectionOp, SelectionShape,
+};
 pub use transform::{
     Homography, MAX_TRANSFORM_TILES, PerspectiveMap, TransformMap, affine_usable, rect_corners,
 };

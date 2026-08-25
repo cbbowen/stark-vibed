@@ -114,3 +114,67 @@ pub(crate) fn finite_or(x: f32, fallback: f32) -> f32 {
 pub(crate) fn at_least_zero(x: f32, fallback: f32) -> f32 {
     finite_or(x, fallback).max(0.0)
 }
+
+/// `i · span / out_of` — where the `i`th of `out_of` evenly-spaced picks lands in a
+/// list of `span` — computed in `u64` so it **cannot overflow the pointer width**.
+///
+/// The width is the whole reason this is a function rather than three characters at
+/// each call site. `usize` is **32 bits on `wasm32`**, so the obvious
+/// `i * span / out_of` wraps once `span` passes `u32::MAX / out_of` — for a lasso
+/// (`out_of` = 4096) that is about 1.05 million vertices, some 8 MB of [`Vec2`],
+/// which a document reaches easily and which deflate hides on the way in (§8).
+///
+/// A debug build panics there, which is at least loud. A release build **wraps, and
+/// lands on a perfectly valid index**: the browser then decimates a *different*
+/// polygon than a native peer decodes from the same bytes, and §6.8 allows exactly
+/// one amount of disagreement between two clients rasterizing the same log. Nothing
+/// in the suite can see it — every test host is 64-bit, and
+/// `cargo check --target wasm32-unknown-unknown` is green either way.
+///
+/// Same stance as [`TileRect::covering`](geom::TileRect::covering)'s `i64`: the
+/// arithmetic holds itself, instead of resting on a bound stated in another file.
+/// Both decimations in the crate go through here — [`SelectionShape::sanitized`]
+/// and `gradient::thin` — so there is one place to be right.
+///
+/// [`SelectionShape::sanitized`]: document::SelectionShape::sanitized
+pub(crate) fn pick_index(i: usize, span: usize, out_of: usize) -> usize {
+    debug_assert!(out_of > 0, "an evenly-spaced pick needs somewhere to land");
+    (i as u64 * span as u64 / out_of as u64) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`pick_index`] is exact where the naive `usize` product is not.
+    ///
+    /// The span here overflows a `u32` against a lasso's own `out_of`, which is the
+    /// case the browser reaches and this host does not — so what this really pins is
+    /// the *arithmetic*, against a `u128` reference that has room for either width.
+    /// It would fail outright if the body narrowed back to `usize` on a 32-bit
+    /// target, which is the regression it exists for.
+    #[test]
+    fn a_pick_is_exact_past_the_32_bit_product() {
+        let out_of = 4096usize;
+        for span in [1_100_000usize, 4_000_000, 33_000_000] {
+            for i in [0usize, 1, 1000, 3000, out_of - 1] {
+                let want = (i as u128 * span as u128 / out_of as u128) as usize;
+                assert_eq!(pick_index(i, span, out_of), want, "i={i} span={span}");
+            }
+        }
+    }
+
+    /// …and it still spreads: the picks start at the head, never step backwards,
+    /// and never step off the end.
+    #[test]
+    fn picks_are_ordered_and_in_range() {
+        let (out_of, span) = (4096usize, 1_100_000usize);
+        assert_eq!(pick_index(0, span, out_of), 0);
+        let mut prev = 0;
+        for i in 0..out_of {
+            let at = pick_index(i, span, out_of);
+            assert!(at >= prev && at < span, "i={i} landed at {at}");
+            prev = at;
+        }
+    }
+}

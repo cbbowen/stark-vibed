@@ -36,6 +36,28 @@ use stark_model::geom::{TileCoord, Vec2};
 /// says about a lasso is its vertex list and the bound on how long that may be
 /// (`SelectionShape`, `MAX_LASSO_POINTS`); turning one into edge texels is the
 /// shader's own business.
+/// The narrowest `maxTextureDimension1D` a WebGPU adapter may report, and so the
+/// longest edge list [`SelectionRenderer::edge_texture`] can upload as one row.
+///
+/// A floor from the spec rather than a number this build chose, which is why it is
+/// not read off the adapter: an op that validates on this machine and fails on a
+/// peer's is the §6.8 disagreement, so the bound has to be the *guaranteed* one.
+const MIN_MAX_TEXTURE_DIM_1D: usize = 8192;
+
+// `MAX_LASSO_POINTS` is what keeps a lasso inside it, and until this assert existed
+// that was a sentence in the model's doc comment with nothing behind it: the
+// constant was not even re-exported, so this file could name it only in prose while
+// `edge_texture` sized a texture straight from `edges.len()`. One edge per vertex,
+// so the two numbers are directly comparable.
+//
+// Same shape and same reason as `gpu::fill`'s assert against the shader's stop
+// count: a bound is worth having where the thing it bounds is built.
+const _: () = assert!(
+    stark_model::document::MAX_LASSO_POINTS <= MIN_MAX_TEXTURE_DIM_1D,
+    "a lasso can name more edges than a guaranteed 1-D texture row holds, so the \
+     op would fail wgpu validation on some adapters instead of rasterizing"
+);
+
 fn lasso_edges(points: &[Vec2]) -> Vec<[f32; 4]> {
     if points.len() < 3 {
         return Vec::new();

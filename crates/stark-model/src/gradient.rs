@@ -214,8 +214,14 @@ fn thin(stops: &mut Vec<GradientStop>) {
     if len <= MAX_STOPS {
         return;
     }
+    // Through [`pick_index`](crate::pick_index) for the reason the lasso's
+    // decimation is: `usize` is 32 bits in the browser. This one is safe by size
+    // alone — the product needs 286M stops to overflow, which is 4.6 GB — but the
+    // arithmetic should hold itself rather than rest on a bound stated elsewhere,
+    // and there is no reason for the crate's two decimations to be spelled
+    // differently.
     *stops = (0..MAX_STOPS)
-        .map(|i| stops[i * (len - 1) / (MAX_STOPS - 1)])
+        .map(|i| stops[crate::pick_index(i, len - 1, MAX_STOPS - 1)])
         .collect();
 }
 
