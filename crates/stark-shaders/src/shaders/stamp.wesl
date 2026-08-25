@@ -81,7 +81,7 @@ fn vs_main(
     // five-float vector would be three unused lanes to carry one number.
     //
     // The give only. How wide the contact transition around it is
-    // (`BrushParams::tooth_softness`) does not vary segment to segment, so it rides
+    // (`ToothParams::softness`) does not vary segment to segment, so it rides
     // the stroke uniform instead (`stamp_common::TileXform::paint`).
     @location(4) tooth_give: f32,
     // The tip drawn out along its facing axis (§6.6): the travel scale, the shear and

@@ -824,7 +824,10 @@ mod tests {
             layer: LayerId(0),
             brush: BrushParams {
                 size: bad,
-                tooth_give: 9.0,
+                tooth: crate::document::brush::ToothParams {
+                    give: 9.0,
+                    ..Default::default()
+                },
                 ..BrushParams::default()
             },
             path: Vec::new(),
@@ -837,7 +840,7 @@ mod tests {
             panic!("a stroke stays a stroke")
         };
         assert!(rec.brush.size.is_finite());
-        assert_eq!(rec.brush.tooth_give, 1.0);
+        assert_eq!(rec.brush.tooth.give, 1.0);
         assert_eq!(rec.start, 0.0);
 
         let fill = ActionKind::Fill {

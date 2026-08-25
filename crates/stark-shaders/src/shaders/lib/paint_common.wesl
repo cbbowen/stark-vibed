@@ -90,7 +90,7 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
 // tip there (`rise_ahead` — the height's derivative along the travel, taken across
 // the contact's own reach) and how much give the tool has left.
 //
-// **The knob `tooth_level` reads *is* that give** (`BrushParams::tooth_give`). The
+// **The knob `tooth_level` reads *is* that give** (`ToothParams::give`). The
 // gate thresholds the rise against the steepest fall the tip can still follow, and the
 // knob walks that limit from *demanding* substrate that rises at the contact scale
 // (give = 0: only the leading faces of the grain print — the dry mark, still a mark)
@@ -245,7 +245,7 @@ fn tooth_level(give: f32) -> f32 {
 // taking all of it. A paint that sits on the substrate has a narrow band and prints
 // the faces; a charcoal or a soft graphite crumbles into the valleys instead of
 // spanning them, and its contact comes on over several times that width
-// (`BrushParams::tooth_softness`, which is where the band's default lives — the host
+// (`ToothParams::softness`, which is where the band's default lives — the host
 // carries it, so this file declares no constant for it).
 //
 // **Mirrored on the CPU** in `gpu::substrate`, which averages it over the map's rise

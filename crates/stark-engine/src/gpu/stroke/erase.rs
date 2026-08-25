@@ -214,7 +214,7 @@ impl StrokeRenderer {
             false,
             |_| wgpu::BindingResource::TextureView(&prefix_view),
         );
-        let noise_view = self.tips.noise_view(&rec.brush.color_dynamics);
+        let noise_view = self.tips.noise_view(&rec.brush.color_dynamics());
         let noise_bg = desc::bind_group_for(
             device,
             "stark erase noise bg",
@@ -231,9 +231,20 @@ impl StrokeRenderer {
         let draws = sweep_draws(self, &mut scope, rec, &k, &segments);
 
         // The strength, once per piece — a stroke constant, clamped where the
-        // record becomes numbers, `StrokeConstants`' rule.
+        // record becomes numbers, `StrokeConstants`' rule. The effect is this
+        // path's own by construction: `dynamics_setup` routed the stroke here off
+        // the very same variant, and the path is a pure function of the brush.
         let strength = stark_shaders::mirror::erase::Erase {
-            params: [rec.brush.erase.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+            params: [
+                rec.brush
+                    .erase()
+                    .expect("the erase pass draws erase brushes (§6.12)")
+                    .strength
+                    .clamp(0.0, 1.0),
+                0.0,
+                0.0,
+                0.0,
+            ],
         };
         let strength_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stark erase strength"),

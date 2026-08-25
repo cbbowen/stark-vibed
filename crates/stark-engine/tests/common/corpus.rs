@@ -187,9 +187,9 @@ impl Case {
 /// cadence across the cut.
 pub fn smear_brush(radius: f32) -> BrushParams {
     let mut b = brush(RED, radius);
-    b.dynamics.lift = 0.6;
-    b.dynamics.deposit = 0.5;
-    b.dynamics.flow = 0.5;
+    b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;
+    b.paint_mut().expect("a paint brush").dynamics.deposit = 0.5;
+    b.paint_mut().expect("a paint brush").dynamics.flow = 0.5;
     b.drain = 0.0;
     b
 }
@@ -383,7 +383,7 @@ fn sine_sweep(n: usize, span: f32, amp: f32, turns: f32) -> Vec<InputSample> {
 /// the gate is still recognisably a threshold on the rise and the mark is a level set
 /// of the grain rather than a tone across it (§6.4).
 ///
-/// Theirs rather than `BrushParams::DEFAULT_TOOTH_SOFTNESS`, for the reason
+/// Theirs rather than `ToothParams::DEFAULT_SOFTNESS`, for the reason
 /// `gpu::substrate::tooth`'s own tests keep a `NARROW` of their own: the shipped
 /// default is a taste that gets retuned, and a golden that moves with it detects
 /// nothing. 0.06 is the bundled substrates' interquartile rise, and the width the
@@ -549,7 +549,7 @@ pub const CASES: &[Case] = &[
             let mut b = brush(RED, 16.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
             b.drain = 0.0;
-            b.dynamics.flow = 1.0;
+            b.paint_mut().expect("a paint brush").dynamics.flow = 1.0;
             b.start_taper_length = 4.0;
             b.end_taper_length = 9.0;
             b
@@ -578,9 +578,9 @@ pub const CASES: &[Case] = &[
         view: SIZE,
         prepare: |e, _| {
             let mut b = bristle_stamp(e, 45.0);
-            b.dynamics.lift = 0.6;
-            b.dynamics.deposit = 0.5;
-            b.dynamics.flow = 0.5;
+            b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;
+            b.paint_mut().expect("a paint brush").dynamics.deposit = 0.5;
+            b.paint_mut().expect("a paint brush").dynamics.flow = 0.5;
             b
         },
         path: half_turn_arc,
@@ -640,13 +640,13 @@ pub const CASES: &[Case] = &[
             linen_substrate(e);
             let mut b = smear_brush(45.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
-            b.tooth_give = 0.1;
+            b.tooth.give = 0.1;
             // Named, not inherited: what the *default* softness is set to is taste —
             // which tool the app opens on — and this golden is a claim about the tooth
             // reading the substrate's gradient along the travel. Left on the default it
             // re-blessed itself every time the default moved, which is a golden that has
             // stopped detecting anything (§6.4).
-            b.tooth_softness = TOOTH_BAND;
+            b.tooth.softness = TOOTH_BAND;
             b
         },
         path: half_turn_arc,
@@ -712,8 +712,8 @@ pub const CASES: &[Case] = &[
             undercoat(e, at);
             let mut b = brush(RED, 30.0);
             b.drain = 0.0;
-            b.dynamics.flow = 0.0;
-            b.dynamics.bleed = 0.8;
+            b.paint_mut().expect("a paint brush").dynamics.flow = 0.0;
+            b.paint_mut().expect("a paint brush").dynamics.bleed = 0.8;
             b
         },
         path: || sine_sweep(80, 180.0, 30.0, 0.75),
@@ -741,7 +741,7 @@ pub const CASES: &[Case] = &[
             // shows. Wider than the tip that will work it, so the mark stays inside it.
             // Replayed, as `undercoat` is and for its reason.
             let mut lay = brush([0.0, 0.0, 0.0, 1.0], 260.0);
-            lay.dynamics.flow = 1.5;
+            lay.paint_mut().expect("a paint brush").dynamics.flow = 1.5;
             lay.drain = 0.0;
             replay_with(
                 e,
@@ -750,9 +750,9 @@ pub const CASES: &[Case] = &[
             );
             let mut b = smear_brush(250.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
-            b.dynamics.flow = 0.0;
-            b.dynamics.lift = 0.9;
-            b.dynamics.deposit = 0.9;
+            b.paint_mut().expect("a paint brush").dynamics.flow = 0.0;
+            b.paint_mut().expect("a paint brush").dynamics.lift = 0.9;
+            b.paint_mut().expect("a paint brush").dynamics.deposit = 0.9;
             b
         },
         path: || at(&[(-300.0, -120.0), (0.0, 120.0), (300.0, -120.0)]),
@@ -822,11 +822,15 @@ pub const CASES: &[Case] = &[
         prepare: |e, at| {
             undercoat(e, at);
             let mut b = brush(RED, 24.0);
-            b.erase = 0.5;
-            // High enough that the bite saturates to its ceiling over the stroke's
-            // core — which is what makes the crossing a claim about the *cap*
-            // rather than about two half-built fringes summing.
-            b.dynamics.flow = 2.5;
+            // Flow high enough that the bite saturates to its ceiling over the
+            // stroke's core — which is what makes the crossing a claim about the
+            // *cap* rather than about two half-built fringes summing.
+            b.effect =
+                stark_model::document::BrushEffect::Erase(stark_model::document::EraseEffect {
+                    strength: 0.5,
+                    flow: 2.5,
+                    ..Default::default()
+                });
             b.drain = 0.0;
             b
         },

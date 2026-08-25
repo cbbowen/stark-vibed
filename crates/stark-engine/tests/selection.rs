@@ -19,7 +19,7 @@ use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::BrushDynamics;
-use stark_model::document::{SelectionMode, SelectionOp, SelectionShape, ShapeAction};
+use stark_model::document::{BrushEffect, SelectionMode, SelectionOp, SelectionShape, ShapeAction};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -255,13 +255,13 @@ fn selection_gates_the_brush_dynamics_path() {
     // exact "keeps its value" exit whatever gates the exposure, which is the very
     // thing this test pins.
     let mut b = brush(RED, 14.0);
-    b.dynamics = BrushDynamics {
+    b.effect = BrushEffect::paint_with(BrushDynamics {
         flow: 1.0,
         lift: 0.3,
         deposit: 0.8,
         charge: 0.5,
         bleed: 0.0,
-    };
+    });
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
     stroke_with(
         &mut engine,
@@ -301,12 +301,12 @@ fn dynamics_brush_does_not_lift_paint_from_outside() {
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
 
     let mut smudge = brush([0.0, 0.0, 0.0, 1.0], 16.0);
-    smudge.dynamics = BrushDynamics {
+    smudge.effect = BrushEffect::paint_with(BrushDynamics {
         flow: 0.0,
         lift: 0.9,
         deposit: 0.9,
         ..BrushDynamics::default()
-    };
+    });
     // Drag right-to-left, from the painted bar into the selected empty region.
     stroke_with(
         &mut engine,
@@ -909,12 +909,12 @@ fn golden_selection_smear() {
     // A conservative smudge: no paint of its own, so everything that moves was lifted
     // from the canvas — and none of it may cross the boundary in either direction.
     let mut smudge = brush([0.0, 0.0, 0.0, 1.0], 26.0);
-    smudge.dynamics = BrushDynamics {
+    smudge.effect = BrushEffect::paint_with(BrushDynamics {
         flow: 0.0,
         lift: 0.7,
         deposit: 0.85,
         ..BrushDynamics::default()
-    };
+    });
     stroke_with(
         &mut engine,
         smudge,

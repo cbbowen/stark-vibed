@@ -179,8 +179,8 @@ fn a_stroke_too_wide_for_one_region_still_moves_paint() {
 
     let mut scrape = brush([0.0, 0.0, 0.0, 0.0], 22.0);
     scrape.drain = 0.0;
-    scrape.dynamics.flow = 0.0;
-    scrape.dynamics.lift = 1.0;
+    scrape.paint_mut().expect("a paint brush").dynamics.flow = 0.0;
+    scrape.paint_mut().expect("a paint brush").dynamics.lift = 1.0;
     stroke_with(&mut engine, scrape, &across);
     assert!(
         is_blue(center(&engine.render_to_image())),
@@ -199,7 +199,7 @@ fn inking_brush(start: f32, end: f32) -> BrushParams {
     let mut b = brush(RED, 16.0);
     b.shape = stark_model::document::BrushShape::Round { hardness: 0.9 };
     b.drain = 0.0;
-    b.dynamics.flow = 1.0;
+    b.paint_mut().expect("a paint brush").dynamics.flow = 1.0;
     b.start_taper_length = start;
     b.end_taper_length = end;
     b
@@ -354,7 +354,7 @@ fn a_tapers_deposit_has_no_ripple_at_the_cut() {
     // taper is the only thing varying along the stroke.
     let mut b = inking_brush(12.5, 0.0);
     b.shape = stark_model::document::BrushShape::Round { hardness: 0.2 };
-    b.dynamics.flow = 0.08;
+    b.paint_mut().expect("a paint brush").dynamics.flow = 0.08;
     stroke_with(&mut engine, b, &straight_run());
     let img = engine.render_to_image();
 

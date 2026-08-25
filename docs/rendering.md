@@ -485,7 +485,7 @@ makes over one `TOOTH_REACH` (3 canvas px) along each axis.
 **The tooth is two knobs, and they are different questions.** Where the
 threshold sits, and how wide the band around it is.
 
-`BrushParams::tooth_give` is the give itself — the gate thresholds the rise
+`ToothParams::give` is the give itself — the gate thresholds the rise
 against the steepest fall the tip can still follow, and the knob walks that
 limit through three stations (`tooth_level`, a `2 − 1/(1 − give)` map): at 1 the
 give is infinite, the tip tracks any fall and the substrate is ignored, exactly
@@ -502,13 +502,13 @@ than about the substrate.** A `Modulation` only ever scales a parameter *down*
 (§6.2), so which way this knob runs decides which way pressure reads. Quoted as
 the depth of the bite, a pressure mapping made a light touch solid and a hard
 press dry — backwards for the one mapping the axis exists for. Quoted as the
-give, `Modulations::tooth_give` on pressure *is* the charcoal: barely touching
+give, `BrushModulations::tooth_give` on pressure *is* the charcoal: barely touching
 the paper the tip has no give and prints the peaks alone, borne down it presses
 past the falls it was bridging and the grain fills in. The cost is that the
 slider's interesting end is its left one, and the mapping is worth more than the
 habit.
 
-`BrushParams::tooth_softness` is the width of the transition around that level,
+`ToothParams::softness` is the width of the transition around that level,
 in the rise's own units, and it is what the tip is *made of* rather than how hard
 it is pressed. A hard threshold is a binary indicator per texel: correct in the
 mean, and at canvas resolution it aliases into speckle that reads as dither — so

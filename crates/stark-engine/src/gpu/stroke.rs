@@ -14,7 +14,7 @@
 //! integrate over the base into a fresh CoW tile. A brush that also moves paint
 //! already on the canvas (`lift` / `deposit` / `charge` / `bleed`, §6.2) instead runs
 //! the sequential swept-exchange loop in `dynamics.wesl`; one that erases
-//! (`BrushParams::erase`, §6.12) runs the same sweep into a per-stroke
+//! (`BrushEffect::Erase`, §6.12) runs the same sweep into a per-stroke
 //! accumulator and turns it on the base's visible opacity (`erase.rs`).
 //! `dynamics_setup` decides which path a record takes.
 //!
@@ -91,7 +91,7 @@ pub struct StrokeRenderer {
     /// gates on).
     dynamics: DynamicsKit,
     /// The erase pass (§6.12), used when the brush erases
-    /// (`BrushParams::erase`) — the swept extent turned on the base's visible
+    /// (`BrushEffect::Erase`) — the swept extent turned on the base's visible
     /// opacity. Built over the swept kit's own layouts, so the two share bind
     /// groups.
     erase: EraseKit,
@@ -360,7 +360,7 @@ impl StrokeRenderer {
             channels: [ch[0], ch[1], ch[2], rec.brush.color[3]],
             resid: [res[0], res[1], res[2], 0.0],
             substrate_uv_scale: substrate.relief * substrate.uv_scale,
-            tooth_softness: rec.brush.tooth_softness,
+            tooth_softness: rec.brush.tooth.softness,
             nfreq,
             namp,
             noff,
@@ -433,7 +433,7 @@ struct StrokeConstants {
 /// identically. Inactive jitter zeroes frequency *and* amplitude, so with the
 /// zero volume bound the shader's early-out keeps the deposit bit-identical.
 fn noise_uniform(rec: &StrokeRecord) -> ([f32; 4], [f32; 4], [f32; 4]) {
-    let cd = rec.brush.color_dynamics;
+    let cd = rec.brush.color_dynamics();
     let (freq, amp) = if cd.is_active() {
         (cd.frequency, cd.amplitude)
     } else {

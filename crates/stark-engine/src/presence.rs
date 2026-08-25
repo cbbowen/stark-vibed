@@ -410,12 +410,16 @@ mod tests {
         let mut rx = GestureRx::default();
         let hostile = BrushParams {
             size: f32::NAN,
-            tooth_give: -3.0,
-            tooth_softness: f32::NEG_INFINITY,
-            dynamics: stark_model::document::BrushDynamics {
-                lift: f32::INFINITY,
-                ..Default::default()
+            tooth: stark_model::document::ToothParams {
+                give: -3.0,
+                softness: f32::NEG_INFINITY,
             },
+            effect: stark_model::document::BrushEffect::paint_with(
+                stark_model::document::BrushDynamics {
+                    lift: f32::INFINITY,
+                    ..Default::default()
+                },
+            ),
             ..BrushParams::default()
         };
         rx.apply(
@@ -441,12 +445,12 @@ mod tests {
             .brush;
         assert!(brush.size.is_finite(), "a NaN radius sizes a dispatch");
         assert_eq!(
-            brush.tooth_give, 0.0,
+            brush.tooth.give, 0.0,
             "the tooth's give is quoted in [0, 1]"
         );
         assert_eq!(
-            brush.tooth_softness,
-            BrushParams::DEFAULT_TOOTH_SOFTNESS,
+            brush.tooth.softness,
+            stark_model::document::ToothParams::DEFAULT_SOFTNESS,
             "a contact transition of minus infinity is no width the shader can divide by",
         );
         // An *infinite* lift falls back to the field's own default rather than to
@@ -455,7 +459,14 @@ mod tests {
         // (`crate::clamp01`'s neighbours). The give above is clamped because −3.0 is
         // a number, just not one in range — and it is poisoned at *that* end because
         // the knob's other end is its default, where a clamp would prove nothing.
-        assert_eq!(brush.dynamics.lift, BrushParams::default().dynamics.lift);
+        assert_eq!(
+            brush.paint().expect("a paint brush").dynamics.lift,
+            BrushParams::default()
+                .paint()
+                .expect("a paint brush")
+                .dynamics
+                .lift
+        );
         // …and an ordinary brush is untouched, so a peer's stroke still draws as the
         // peer drew it.
         let ordinary = BrushParams {

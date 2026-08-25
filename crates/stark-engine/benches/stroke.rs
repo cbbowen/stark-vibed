@@ -133,9 +133,9 @@ fn smear(radius: f32) -> BrushParams {
         color: [0.8, 0.2, 0.1, 0.9],
         ..BrushParams::default()
     };
-    b.dynamics.lift = 0.6;
-    b.dynamics.deposit = 0.5;
-    b.dynamics.flow = 0.5;
+    b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;
+    b.paint_mut().expect("a paint brush").dynamics.deposit = 0.5;
+    b.paint_mut().expect("a paint brush").dynamics.flow = 0.5;
     b
 }
 
@@ -148,7 +148,7 @@ fn smear(radius: f32) -> BrushParams {
 /// unmeasured, and the one number anybody had for it came from a hand-timed replay.
 fn blender(radius: f32) -> BrushParams {
     let mut b = smear(radius);
-    b.dynamics.bleed = 0.9;
+    b.paint_mut().expect("a paint brush").dynamics.bleed = 0.9;
     b
 }
 
@@ -157,7 +157,7 @@ fn blender(radius: f32) -> BrushParams {
 /// The control the dynamics numbers are read against.
 fn plain(radius: f32) -> BrushParams {
     BrushParams {
-        dynamics: Default::default(),
+        effect: Default::default(),
         ..smear(radius)
     }
 }

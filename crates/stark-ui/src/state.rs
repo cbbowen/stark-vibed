@@ -1608,7 +1608,9 @@ mod tests {
                         stretch: knob,
                         ..BrushParams::default()
                     };
-                    b.dynamics.bleed = bleed;
+                    if let Some(p) = b.paint_mut() {
+                        p.dynamics.bleed = bleed;
+                    }
                     hold_the_tip_drawable(&mut b);
                     let reach = b.size * BrushParams::elongation(b.stretch);
                     assert!(

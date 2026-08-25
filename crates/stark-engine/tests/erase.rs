@@ -15,7 +15,7 @@ use common::*;
 use stark_engine::RgbaImage;
 use stark_engine::command::DocCommand;
 use stark_model::Srgb;
-use stark_model::document::{BrushParams, FillOp, SelectionShape};
+use stark_model::document::{BrushEffect, BrushParams, EraseEffect, FillOp, SelectionShape};
 use stark_model::geom::Vec2;
 
 /// The bed every test erases from: a full-canvas red fill. A fill rather than a
@@ -24,14 +24,17 @@ use stark_model::geom::Vec2;
 /// at the target coverage.
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
-/// An eraser (§6.12): `erase` is the dial, and Flow is its rate — high
+/// An eraser (§6.12): `strength` is the dial, and its flow the rate — high
 /// enough here that one pass saturates the bite to its ceiling over the stroke's
 /// core, so a test sampling the core is reading the dial and not a half-built
 /// fringe.
 fn eraser(strength: f32, radius: f32) -> BrushParams {
     let mut b = brush([0.0, 0.0, 0.0, 1.0], radius);
-    b.erase = strength;
-    b.dynamics.flow = 2.5;
+    b.effect = BrushEffect::Erase(EraseEffect {
+        strength,
+        flow: 2.5,
+        ..EraseEffect::default()
+    });
     b.drain = 0.0;
     b
 }

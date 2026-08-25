@@ -245,9 +245,12 @@ impl Tune {
                 // when nothing was set, so there is nothing to show.
                 let mut flow = None;
                 update_brush(self.state, |b| {
-                    b.dynamics.flow =
-                        (b.dynamics.flow - step.y * MAX_FLOW / FLOW_DRAG_SPAN).clamp(0.0, MAX_FLOW);
-                    flow = Some(b.dynamics.flow);
+                    // The effect's own rate, paint or eraser alike — the drag tunes
+                    // the tool in hand (`BrushEffect::flow`, §6.12).
+                    let stepped =
+                        (b.effect.flow() - step.y * MAX_FLOW / FLOW_DRAG_SPAN).clamp(0.0, MAX_FLOW);
+                    b.effect.set_flow(stepped);
+                    flow = Some(stepped);
                 });
                 // The ring does not have to be taken down first. It was the *size*
                 // drag's readout and this is the flow drag's, and a gesture has one —

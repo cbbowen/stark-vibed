@@ -16,7 +16,8 @@ use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::Srgb;
 use stark_model::document::{
-    BrushDynamics, BrushParams, FillOp, SelectionMode, SelectionOp, SelectionShape, ShapeAction,
+    BrushDynamics, BrushEffect, BrushParams, FillOp, SelectionMode, SelectionOp, SelectionShape,
+    ShapeAction,
 };
 use stark_model::geom::Vec2;
 
@@ -529,13 +530,13 @@ fn a_filled_region_can_be_scraped_back_by_a_lift_brush() {
     // pass of a scraper out-runs eight units of it.
     let scraper = BrushParams {
         size: 24.0,
-        dynamics: BrushDynamics {
+        effect: BrushEffect::paint_with(BrushDynamics {
             flow: 0.0,
             lift: 1.0,
             deposit: 0.0,
             charge: 0.0,
             bleed: 0.0,
-        },
+        }),
         ..BrushParams::default()
     };
     stroke_with(

@@ -1364,8 +1364,11 @@ fn stroke(state: AppState) -> Vec<Deed> {
 fn brush_deed(was: &BrushParams, now: &BrushParams) -> Option<Deed> {
     let mut tuned = *was;
     tuned.size = now.size;
-    tuned.dynamics.flow = now.dynamics.flow;
-    if tuned == *now && (was.size != now.size || was.dynamics.flow != now.dynamics.flow) {
+    // The effect's own flow, grafted onto the effect `was` has — so a change of
+    // *effect* is never read as a tune, `set_flow` writing the old kind's rate
+    // and the `==` below seeing the kinds differ.
+    tuned.effect.set_flow(now.effect.flow());
+    if tuned == *now && (was.size != now.size || was.effect.flow() != now.effect.flow()) {
         return Some(Deed::TunedBrush);
     }
 
@@ -2177,7 +2180,7 @@ mod tests {
         assert_eq!(brush_deed(&was, &bigger), Some(Deed::TunedBrush));
 
         let mut looser = was;
-        looser.dynamics.flow = was.dynamics.flow + 0.5;
+        looser.effect.set_flow(was.effect.flow() + 0.5);
         assert_eq!(brush_deed(&was, &looser), Some(Deed::TunedBrush));
 
         let mut red = was;

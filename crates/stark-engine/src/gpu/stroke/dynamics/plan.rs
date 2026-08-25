@@ -646,7 +646,7 @@ pub(super) fn dynamics_plan(
     // sampled at below: a curved segment's canvas side reads a tangent that turns
     // across the sweep, and the midpoint is the representative of that whose error is
     // second order where either endpoint's would be first.
-    let bearing = |give: f32, dir: Vec2| substrate.bearing(give, b.tooth_softness, dir.to_array());
+    let bearing = |give: f32, dir: Vec2| substrate.bearing(give, b.tooth.softness, dir.to_array());
     // λ per axis is [`lambda`](super::super::budget::lambda) — one definition, the
     // same clamp the flattening budget prices. Taken **per segment**, off the rates
     // the segment generator resolved from the pen (§6.2), rather than once for the
@@ -1589,11 +1589,13 @@ mod tests {
     fn smearing(radius: f32) -> stark_model::document::BrushParams {
         stark_model::document::BrushParams {
             size: radius,
-            dynamics: stark_model::document::BrushDynamics {
-                lift: 0.8,
-                deposit: 0.8,
-                ..stark_model::document::BrushDynamics::default()
-            },
+            effect: stark_model::document::BrushEffect::paint_with(
+                stark_model::document::BrushDynamics {
+                    lift: 0.8,
+                    deposit: 0.8,
+                    ..stark_model::document::BrushDynamics::default()
+                },
+            ),
             ..stark_model::document::BrushParams::default()
         }
     }

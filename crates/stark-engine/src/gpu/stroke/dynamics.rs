@@ -47,9 +47,9 @@ pub(super) enum StrokePath {
     Swept,
     /// The brush erases (§6.12): the same swept extent, accumulated across the
     /// whole stroke and turned on the base's *visible* opacity instead of laid as
-    /// paint. Ahead of every other answer because `erase` names the whole of what
-    /// such a stroke does ([`BrushParams::erase`]) — the four dynamics axes do not
-    /// run, and no region is ever needed, so no tip is too large for it.
+    /// paint. Its own arm because the effect is its own variant
+    /// (`BrushEffect::Erase`) — an eraser has no dynamics axes to gate on, and no
+    /// region is ever needed, so no tip is too large for it.
     Erase,
     /// The brush manipulates paint, but its tip alone — before any travel is priced
     /// in — wants more than one region, and the region is the one thing pieces
@@ -100,7 +100,10 @@ pub(super) struct Shortened {
 /// ([`fit_len`]). All that is left is the floor no shortening gets under — the
 /// tip's own extent plus a minimal segment — and only a brush past that degrades.
 pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
-    let d = b.dynamics;
+    // The same flattened segments whichever path runs, at the same budget: a long
+    // stroke costs more pieces, not coarser geometry — and the swept fallback below
+    // draws the very segments the loop would have.
+    let tol = flatten_tolerance(b);
     // The brush's **own** rates, not the modulated ones — and that is sound rather
     // than an oversight the pen could catch out. A modulation is a factor in [0, 1]
     // (`document::Modulation`), so an axis the brush leaves at zero is zero at every
@@ -108,17 +111,16 @@ pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
     // positive *somewhere*. There is no segment this test could be asked about that
     // would answer differently — which is exactly the property the function's
     // contract above needs, and the reason a modulation was built as a multiplier.
-    // The same flattened segments whichever path runs, at the same budget: a long
-    // stroke costs more pieces, not coarser geometry — and the swept fallback below
-    // draws the very segments the loop would have.
-    let tol = flatten_tolerance(b);
-    if b.erase > 0.0 {
-        return StrokePlan {
-            path: StrokePath::Erase,
-            tol,
-            shortened: None,
-        };
-    }
+    let d = match &b.effect {
+        stark_model::document::BrushEffect::Erase(_) => {
+            return StrokePlan {
+                path: StrokePath::Erase,
+                tol,
+                shortened: None,
+            };
+        }
+        stark_model::document::BrushEffect::Paint(p) => p.dynamics,
+    };
     if d.lift <= 0.0 && d.deposit <= 0.0 && d.charge <= 0.0 && d.bleed <= 0.0 {
         return StrokePlan {
             path: StrokePath::Swept,
@@ -154,23 +156,22 @@ mod tests {
             size,
             ..BrushParams::default()
         };
-        b.dynamics.lift = lift;
+        b.paint_mut()
+            .expect("the default brush paints")
+            .dynamics
+            .lift = lift;
         b
     }
 
-    /// `erase` answers before everything else (§6.12): past zero the stroke
-    /// erases, whatever the four dynamics axes say — they do not run — and at any
-    /// size, because the pass needs no region and so has no tip too large for it.
+    /// An `Erase` brush takes the erase path at any size: the pass needs no
+    /// region, so it has no tip too large for it, and there are no dynamics axes
+    /// on it for the loop to gate on (§6.12).
     #[test]
-    fn an_erase_brush_takes_the_erase_path_whatever_else_is_set() {
+    fn an_erase_brush_takes_the_erase_path_whatever_its_size() {
         let mut b = brush(40.0, 0.0);
-        b.erase = 0.5;
+        b.effect = stark_model::document::BrushEffect::Erase(Default::default());
         assert!(matches!(dynamics_setup(&b).path, StrokePath::Erase));
-        // The axes that would otherwise pick the loop…
-        b.dynamics.lift = 0.9;
-        b.dynamics.bleed = 0.4;
-        assert!(matches!(dynamics_setup(&b).path, StrokePath::Erase));
-        // …and the tip that would otherwise be too large for it.
+        // The tip that would be too large for the loop.
         b.size = super::super::budget::MAX_REGION_DIM as f32;
         assert!(matches!(dynamics_setup(&b).path, StrokePath::Erase));
     }
@@ -249,7 +250,7 @@ mod tests {
             for knob in [0.0f32, 0.25, 0.5, 0.75, BrushParams::MAX_STRETCH] {
                 for bleed in [0.0f32, 0.4] {
                     let mut b = brush(size, 0.5);
-                    b.dynamics.bleed = bleed;
+                    b.paint_mut().expect("a paint brush").dynamics.bleed = bleed;
                     b.stretch = knob;
                     let reach = size * BrushParams::elongation(knob);
                     let fits = reach <= max_tip_reach(&b);
@@ -302,7 +303,7 @@ mod tests {
         for size in [1.0f32, 30.0, 110.0, 250.0, 400.0, 492.0, 500.0] {
             for bleed in [0.0f32, 0.6] {
                 let mut b = brush(size, 0.5);
-                b.dynamics.bleed = bleed;
+                b.paint_mut().expect("a paint brush").dynamics.bleed = bleed;
                 b.stretch = max_stretch(&b);
                 assert!(
                     matches!(dynamics_setup(&b).path, StrokePath::Loop),

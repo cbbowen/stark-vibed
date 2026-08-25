@@ -32,7 +32,7 @@ struct TileXform {
     // own knob is quoted per *radius*, and the host divides), the canvas →
     // substrate-tile uv scale (1/SUBSTRATE_TILE_PX, zero when the substrate has no relief
     // to gate with) in .y, and the **width of the tooth's contact transition** in the
-    // rise's own units in .z (`BrushParams::tooth_softness`, §6.4); .w unused. All
+    // rise's own units in .z (`ToothParams::softness`, §6.4); .w unused. All
     // three stroke constants in the only sense that matters — each is a function of
     // something the fragment already knows, so it is evaluated there (`stroke_drain`,
     // `substrate_tooth`). The tooth's *depth* is not among them, and neither is `add`:

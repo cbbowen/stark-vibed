@@ -30,8 +30,8 @@
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, BlendMode, BrushParams, FillOp, Filter, GradientAxis,
     GradientParcel, GuideId, LayerId, MattePaint, MatteRegion, Parcel, PerspectiveGuide,
-    PerspectiveMap, Place, SelectionMode, SelectionOp, SelectionShape, StrokeRecord, WarpMap,
-    affine_usable, rect_corners,
+    PerspectiveMap, Place, SelectionMode, SelectionOp, SelectionShape, StrokeRecord, ToothParams,
+    WarpMap, affine_usable, rect_corners,
 };
 use stark_model::geom::{Affine2, IVec2, Vec2};
 use stark_model::gradient::{Gradient, GradientStop};
@@ -147,8 +147,10 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             layer: id,
             brush: BrushParams {
                 size: n,
-                tooth_give: n,
-                tooth_softness: n,
+                tooth: ToothParams {
+                    give: n,
+                    softness: n,
+                },
                 stretch: n,
                 drain: n,
                 start_taper_length: n,

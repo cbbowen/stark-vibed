@@ -31,7 +31,10 @@ fn paint_toothed(engine: &mut Engine) {
         stark_model::document::BrushParams {
             color: RED,
             size: 30.0,
-            tooth_give: 0.45,
+            tooth: stark_model::document::ToothParams {
+                give: 0.45,
+                ..Default::default()
+            },
             drain: 0.15,
             ..Default::default()
         },

@@ -216,11 +216,11 @@ struct Stamp {
     // substrate. 1 is all of it, and means the substrate does not gate anything.
     //
     // Neutral at 1 rather than 0, like `tooth_bearing` and `cell_px`, and for a reason
-    // of its own: this knob runs the other way (`BrushParams::tooth_give`), so a zeroed
+    // of its own: this knob runs the other way (`ToothParams::give`), so a zeroed
     // lane is not "no tooth" but the driest tip there is.
     tooth_give: f32,
     // How wide the contact transition around that level is, in the rise's own units
-    // (`BrushParams::tooth_softness`, §6.4) — how gradually a texel goes from taking
+    // (`ToothParams::softness`, §6.4) — how gradually a texel goes from taking
     // none of the tip's paint to taking all of it. A stroke constant, unlike the give
     // beside it: what the tip is made of does not change under the hand. It is a
     // member here rather than a second uniform for `drain`'s reason — this loop's

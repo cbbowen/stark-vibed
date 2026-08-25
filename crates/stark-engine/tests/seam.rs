@@ -222,12 +222,12 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     // The smudge under test, through the same 4-tile corner.
     let mut smudge = brush(RED, 28.0);
     smudge.jitter = 0.0;
-    smudge.dynamics = BrushDynamics {
+    smudge.effect = stark_model::document::BrushEffect::paint_with(BrushDynamics {
         flow: 0.0,
         lift: 0.6,
         deposit: 0.5,
         ..Default::default()
-    };
+    });
     engine.process(ViewCommand::SetBrush(smudge));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,

@@ -18,7 +18,7 @@ use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand
 use stark_engine::path::DEFAULT_TOLERANCE;
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
-use stark_model::document::{BrushDynamics, BrushParams, BrushShape};
+use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -50,7 +50,7 @@ fn golden_studio_environment() {
     let mut b = brush(RED, 34.0);
     b.shape = BrushShape::Round { hardness: 0.55 };
     b.drain = 0.0;
-    b.dynamics.flow = 1.2;
+    b.paint_mut().expect("a paint brush").dynamics.flow = 1.2;
     for (color, y) in [
         ([1.0, 0.35, 0.2, 1.0], -60.0),
         ([0.2, 0.4, 0.9, 1.0], 0.0),
@@ -207,12 +207,12 @@ fn golden_lift_end_regression() {
         shape: BrushShape::Round { hardness: 0.95 },
         // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
         drain: 0.4,
-        dynamics: BrushDynamics {
+        effect: BrushEffect::paint_with(BrushDynamics {
             flow: 1.0,
             lift: 0.95,
             deposit: 0.95,
             ..BrushDynamics::default()
-        },
+        }),
         ..BrushParams::default()
     };
     for (i, x) in [-200.0, -300.0, -400.0].into_iter().enumerate() {
@@ -243,10 +243,10 @@ fn golden_heavy_smear_regression() {
         BrushParams {
             size: 200.0,
             shape,
-            dynamics: BrushDynamics {
+            effect: BrushEffect::paint_with(BrushDynamics {
                 flow: 1.5,
                 ..BrushDynamics::default()
-            },
+            }),
             ..BrushParams::default()
         },
         &points,
@@ -256,12 +256,12 @@ fn golden_heavy_smear_regression() {
         BrushParams {
             size: 50.0,
             shape,
-            dynamics: BrushDynamics {
+            effect: BrushEffect::paint_with(BrushDynamics {
                 flow: 0.0,
                 lift: 0.95,
                 deposit: 0.95,
                 ..BrushDynamics::default()
-            },
+            }),
             ..BrushParams::default()
         },
         &points,
@@ -281,12 +281,12 @@ fn golden_drained_brush_length_independent() {
         shape: BrushShape::Round { hardness: 0.95 },
         // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
         drain: 0.4,
-        dynamics: BrushDynamics {
+        effect: BrushEffect::paint_with(BrushDynamics {
             flow: 1.0,
             lift: 0.95,
             deposit: 0.95,
             ..BrushDynamics::default()
-        },
+        }),
         ..BrushParams::default()
     };
     // These should all be visually indistiguishable because the brush runs out of paint before the end of the stroke (which is also off the edge of the image).
@@ -326,10 +326,10 @@ fn golden_straight_smear_into_paint() {
             color,
             size: 256.0,
             shape,
-            dynamics: BrushDynamics {
+            effect: BrushEffect::paint_with(BrushDynamics {
                 flow: 2.0,
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         },
         &[Vec2::new(-256.0, 0.0), Vec2::new(256.0, 0.0)],
@@ -341,12 +341,12 @@ fn golden_straight_smear_into_paint() {
             color,
             size: 64.0,
             shape,
-            dynamics: BrushDynamics {
+            effect: BrushEffect::paint_with(BrushDynamics {
                 flow: 0.0,
                 lift: 0.5,
                 deposit: 0.95,
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         },
         &[Vec2::new(-256.0, 0.0), Vec2::new(0.0, 0.0)],
@@ -376,10 +376,10 @@ fn golden_wiggly_smear_into_paint() {
             color,
             size: 256.0,
             shape,
-            dynamics: BrushDynamics {
+            effect: BrushEffect::paint_with(BrushDynamics {
                 flow: 2.0,
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         },
         &[Vec2::new(-256.0, 0.0), Vec2::new(256.0, 0.0)],
@@ -398,12 +398,12 @@ fn golden_wiggly_smear_into_paint() {
             color,
             size: 64.0,
             shape,
-            dynamics: BrushDynamics {
+            effect: BrushEffect::paint_with(BrushDynamics {
                 flow: 0.0,
                 lift: 0.5,
                 deposit: 0.95,
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         },
         &points,

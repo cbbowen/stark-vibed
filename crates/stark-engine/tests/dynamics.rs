@@ -9,7 +9,7 @@ use common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_model::document::{BrushDynamics, BrushParams, BrushShape};
+use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -18,7 +18,7 @@ const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 /// A brush with the given [`BrushDynamics`].
 fn dyn_brush(color: [f32; 4], radius: f32, dynamics: BrushDynamics) -> BrushParams {
     BrushParams {
-        dynamics,
+        effect: BrushEffect::paint_with(dynamics),
         ..brush(color, radius)
     }
 }
@@ -787,14 +787,14 @@ fn a_barely_lifting_brush_reads_as_one_that_does_not_lift() {
         color: RED,
         size: 30.0,
         shape: BrushShape::Round { hardness: 0.9 },
-        dynamics: BrushDynamics {
+        effect: BrushEffect::paint_with(BrushDynamics {
             flow: 0.6,
             lift,
             // High enough to empty the tool every segment: with nothing lifted to
             // refill it, whatever the source hands back is all it carries.
             deposit: 0.95,
             ..BrushDynamics::default()
-        },
+        }),
         ..brush(RED, 30.0)
     };
     let mut render = |lift: f32| {
@@ -867,12 +867,12 @@ fn a_carried_stroke_is_independent_of_how_the_path_was_cut() {
         shape: BrushShape::Round { hardness: 0.95 },
         // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
         drain: 0.4,
-        dynamics: BrushDynamics {
+        effect: BrushEffect::paint_with(BrushDynamics {
             flow: 1.0,
             lift: 0.95,
             deposit: 0.95,
             ..BrushDynamics::default()
-        },
+        }),
         ..BrushParams::default()
     };
     let renders: Vec<stark_engine::RgbaImage> = [200.0f32, 300.0, 400.0, 500.0, 600.0]
@@ -1536,7 +1536,7 @@ fn a_smear_that_transfers_nothing_leaves_the_canvas_alone() {
         };
         let mut field = brush(RED, 200.0);
         field.drain = 0.0;
-        field.dynamics.flow = 0.02;
+        field.paint_mut().expect("a paint brush").dynamics.flow = 0.02;
         stroke_with(
             &mut engine,
             field,
@@ -1628,7 +1628,7 @@ fn the_settle_leaves_no_crease_across_the_last_stamp() {
     let mut bed = brush(paint, 256.0);
     bed.drain = 0.0;
     bed.shape = hard;
-    bed.dynamics.flow = 2.0;
+    bed.paint_mut().expect("a paint brush").dynamics.flow = 2.0;
     stroke_with(
         &mut engine,
         bed,
@@ -1706,12 +1706,12 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
         shape: BrushShape::Round { hardness: 0.95 },
         // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
         drain: 0.4,
-        dynamics: BrushDynamics {
+        effect: BrushEffect::paint_with(BrushDynamics {
             flow: 1.0,
             lift: 0.95,
             deposit: 0.95,
             ..BrushDynamics::default()
-        },
+        }),
         ..BrushParams::default()
     };
     // Two regimes: the fifteen-radius stroke (the brush bone dry for
@@ -1856,8 +1856,8 @@ fn a_bleeding_strokes_preview_is_its_commit() {
     // the bleed alone, so every visible difference is the flux.
     let mut b = brush([0.0, 0.0, 0.0, 0.0], 120.0);
     b.drain = 0.0;
-    b.dynamics.flow = 0.0;
-    b.dynamics.bleed = 1.0;
+    b.paint_mut().expect("a paint brush").dynamics.flow = 0.0;
+    b.paint_mut().expect("a paint brush").dynamics.bleed = 1.0;
     engine.process(ViewCommand::SetBrush(b));
 
     let samples: Vec<InputSample> = (0..200)

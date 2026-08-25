@@ -270,7 +270,7 @@ impl StrokeRenderer {
         // the stroke's lookup parameters. An inactive brush binds the zero
         // tile with zero amplitudes — the deposit is exactly the constant
         // color.
-        let noise_view = self.tips.noise_view(&rec.brush.color_dynamics);
+        let noise_view = self.tips.noise_view(&rec.brush.color_dynamics());
         // The canvas substrate beside it (§6.4): the deposition tooth's height and the
         // rise ahead of it, in the same group because it is the same kind of thing —
         // a field the deposit samples per fragment.

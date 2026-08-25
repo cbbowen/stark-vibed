@@ -152,7 +152,8 @@ impl Sweep {
 
 /// The brush's paint rates **as the pen asked for them here** (§6.2): the four axes of
 /// [`BrushDynamics`](stark_model::document::BrushDynamics) scaled by whatever
-/// [`Modulations`](stark_model::document::Modulations) maps onto each, plus the tooth's depth.
+/// [`BrushModulations`](stark_model::document::BrushModulations) and its effect-side
+/// siblings map onto each, plus the tooth's depth.
 ///
 /// They live on the segment rather than on the stroke because that is now what they
 /// are — the pen attributes they follow are interpolated per segment, and the
@@ -179,7 +180,7 @@ pub(super) struct Paint {
     ///
     /// **A modulation scales this down towards the driest tip**, which is the whole
     /// reason the knob is quoted as the give: it is what makes a pressure mapping the
-    /// charcoal rather than its opposite (`Modulations::tooth_give`).
+    /// charcoal rather than its opposite (`BrushModulations::tooth_give`).
     pub(super) tooth_give: f32,
 }
 
@@ -189,7 +190,7 @@ impl Default for Paint {
     /// deposits exactly what it would with no substrate under it at all.
     ///
     /// Written out rather than derived, because the knob runs the other way
-    /// (`BrushParams::tooth_give`) and a derived zero here would be the *driest* tip
+    /// (`ToothParams::give`) and a derived zero here would be the *driest* tip
     /// there is — a default that gates paint away rather than one that does nothing.
     fn default() -> Self {
         Self {
@@ -197,7 +198,7 @@ impl Default for Paint {
             lift: 0.0,
             deposit: 0.0,
             bleed: 0.0,
-            tooth_give: stark_model::document::BrushParams::DEFAULT_TOOTH_GIVE,
+            tooth_give: stark_model::document::ToothParams::DEFAULT_GIVE,
         }
     }
 }
@@ -611,7 +612,7 @@ struct Track {
 /// the curve adaptively, then make each polyline edge a segment. This is where the
 /// brush's fixed numbers become the per-segment ones the shaders read: the radius
 /// follows the size mapping and the stroke's start/end tapers, and each paint rate
-/// follows whatever [`Modulations`](stark_model::document::Modulations) points at it
+/// follows whatever [`BrushModulations`](stark_model::document::BrushModulations) points at it
 /// (§6.2). **It is the only place a modulation is resolved** — both render paths
 /// flatten through here, so a live tail and the commit that replaces it cannot read
 /// the pen differently.
@@ -700,7 +701,6 @@ pub(super) fn generate_segments_in(
             tilt: at.tilt.length(),
         };
         let m = &b.modulation;
-        let d = b.dynamics;
         let (r0, r1) = ends;
         // The mean rather than the midpoint *sample*, and that is what makes the ramp
         // exact at both ends: `radius·(1 ± ramp/2)` is then `r1` and `r0` themselves,
@@ -739,14 +739,30 @@ pub(super) fn generate_segments_in(
         // bounds every angle — which is what this has to be, since it grows an
         // axis-aligned box (`coverage_bounds`).
         sweep.reach = sweep.widest_tip() * elong;
+        // The rates are the effect's own, at its own pen mappings — the one place
+        // per segment the enum is asked. An eraser's `add` is its flow (the rate
+        // its bite builds at, §6.12) and it has no fluxes to carry; which is
+        // a statement about the *brush*, so every segment of every stroke answers
+        // it the same way (`dynamics_setup`'s purity argument).
+        let (add, lift, deposit, bleed) = match &b.effect {
+            stark_model::document::BrushEffect::Paint(p) => (
+                p.dynamics.flow * p.modulation.flow(pen),
+                p.dynamics.lift * p.modulation.lift(pen),
+                p.dynamics.deposit * p.modulation.deposit(pen),
+                p.dynamics.bleed * p.modulation.bleed(pen),
+            ),
+            stark_model::document::BrushEffect::Erase(e) => {
+                (e.flow * e.modulation.flow(pen), 0.0, 0.0, 0.0)
+            }
+        };
         Segment {
             sweep,
             paint: Paint {
-                add: d.flow * m.flow(pen),
-                lift: d.lift * m.lift(pen),
-                deposit: d.deposit * m.deposit(pen),
-                bleed: d.bleed * m.bleed(pen),
-                tooth_give: b.tooth_give * m.tooth_give(pen),
+                add,
+                lift,
+                deposit,
+                bleed,
+                tooth_give: b.tooth.give * m.tooth_give(pen),
             },
         }
     };
@@ -1260,7 +1276,7 @@ mod tests {
     fn a_tip_that_holds_still_carries_no_ramp() {
         // No taper, no size modulation, full pressure throughout.
         let mut rec = tapered_record(40.0, 0.0, 0.0, 900.0);
-        rec.brush.modulation = stark_model::document::Modulations::default();
+        rec.brush.modulation = stark_model::document::BrushModulations::default();
         for s in whole(&rec) {
             assert_eq!(s.ramp, 0.0, "an unvarying tip picked up a ramp");
             assert_eq!(s.radius, 40.0, "an unvarying tip changed size");
@@ -1819,11 +1835,11 @@ mod tests {
         use stark_model::document::BrushDynamics;
         BrushParams {
             size: radius,
-            dynamics: BrushDynamics {
+            effect: stark_model::document::BrushEffect::paint_with(BrushDynamics {
                 lift: 0.8,
                 deposit: 0.8,
                 ..BrushDynamics::default()
-            },
+            }),
             ..BrushParams::default()
         }
     }
@@ -1859,12 +1875,12 @@ mod tests {
         let at = |lift: f32, deposit: f32, charge: f32| {
             flatten_tolerance(&BrushParams {
                 size: 100.0,
-                dynamics: BrushDynamics {
+                effect: stark_model::document::BrushEffect::paint_with(BrushDynamics {
                     lift,
                     deposit,
                     charge,
                     ..BrushDynamics::default()
-                },
+                }),
                 ..BrushParams::default()
             })
             .max_len

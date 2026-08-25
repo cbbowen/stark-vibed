@@ -32,7 +32,7 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
 struct Erase {
-    // The erase strength (`BrushParams::erase`, §6.12) in `.x`; `.yzw` unused —
+    // The erase strength (`EraseEffect::strength`, §6.12) in `.x`; `.yzw` unused —
     // the uniform's 16-byte round (§6.10).
     params: vec4<f32>,
 }

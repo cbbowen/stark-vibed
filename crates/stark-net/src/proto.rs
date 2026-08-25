@@ -61,7 +61,10 @@ use crate::mirror::{Mirror, Served};
 /// half of, which shifts the index of every variant after it, §6.4;
 /// 11: `BrushParams` gained `jitter`, §6.2 — a plain shape change to a
 /// struct every stroke gossips;
-/// 12: `BrushParams` gained `erase`, §6.12 — the same kind of change as 11).
+/// 12: what a brush *does* became `BrushEffect` — `Paint` or the new `Erase`
+/// (§6.12) — with the dynamics, the color dynamics and the modulations
+/// regrouped around it, and the tooth's pair folded into `ToothParams`: one
+/// reshaping of the struct every stroke gossips).
 pub(crate) const ALPN: &[u8] = b"stark/collab/12";
 
 /// The first byte of every response.

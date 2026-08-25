@@ -29,7 +29,7 @@ use std::sync::Arc;
 // localize.
 //
 // The transition's *width* used to be a fourth. It is a brush parameter now
-// (`BrushParams::tooth_softness`), so it arrives as an argument and neither side
+// (`ToothParams::softness`), so it arrives as an argument and neither side
 // declares it — the shader keeps only the floor under the division, which is a
 // property of the arithmetic rather than a number to agree on.
 use stark_shaders::mirror::paint_common::{RISE_LIMIT, TOOTH_RISE, TOOTH_SOFTNESS_FLOOR};
@@ -356,7 +356,7 @@ impl Bearing {
 mod tests {
     use super::*;
     use crate::gpu::substrate::SUBSTRATE_TILE_PX;
-    use stark_model::document::BrushParams;
+    use stark_model::document::ToothParams;
 
     // `the_host_and_the_shader_agree_on_the_tooths_constants` stood here, reading all
     // three out of the linked `stamp()` and comparing them against this module's own
@@ -392,7 +392,7 @@ mod tests {
 
     /// The contact transition every claim below about the *give* is read through.
     ///
-    /// **The tests' own, deliberately not `BrushParams::DEFAULT_TOOTH_SOFTNESS`.** What
+    /// **The tests' own, deliberately not `ToothParams::DEFAULT_SOFTNESS`.** What
     /// the shipped default is set to is taste — which tool the app opens on — and it
     /// has been retuned once already; what is asserted here is the deposition model,
     /// and a change of taste must not be able to fail a claim about the rise field. It
@@ -485,7 +485,7 @@ mod tests {
             let hist = tabulate_bearing(&pack_substrate(&substrate, w, h, SUBSTRATE_TILE_PX));
             for dir in 0..BEARING_DIRS {
                 assert_eq!(
-                    row_mean(&hist, dir, BrushParams::DEFAULT_TOOTH_GIVE),
+                    row_mean(&hist, dir, ToothParams::DEFAULT_GIVE),
                     1.0,
                     "direction {dir} gated a brush with full give at less than full \
                      contact — the follow limit is not outrunning the encodable falls \

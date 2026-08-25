@@ -12,8 +12,17 @@ use crate::gpu::channels::Targets;
 use crate::gpu::composite::view_uniform;
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TileMap};
-use stark_model::document::StrokeRecord;
+use stark_model::document::{PaintEffect, StrokeRecord};
 use stark_model::geom::{TileCoord, Vec2};
+
+/// The paint effect the loop is drawing — its own by construction:
+/// `dynamics_setup` routes a stroke here off the `Paint` variant's axes, and the
+/// path is a pure function of the brush (§6.2), so no other kind can arrive.
+fn paint_effect(rec: &StrokeRecord) -> &PaintEffect {
+    rec.brush
+        .paint()
+        .expect("the stamp loop draws paint brushes (§6.2)")
+}
 use stark_shaders::mirror::composite::binding as cb;
 
 use super::super::region::{RegionRect, chunk_segments, cover};
@@ -123,7 +132,7 @@ impl StrokeRenderer {
         // measure every piece **with its windows** — a window can reach back a
         // quantum before the segment it fires after, which for a piece's first
         // segment is substrate no segment box covers ([`chunk_segments`]).
-        let fires = bleed_fires(rec.brush.dynamics.bleed, &segments);
+        let fires = bleed_fires(paint_effect(rec).dynamics.bleed, &segments);
         // The pen-up settle (§6.2) belongs to the range that reaches the *stroke's* end,
         // and within it to the last piece — which is the same condition that says there
         // is no reservoir worth keeping. A range that stops short hands its tool on
@@ -264,7 +273,7 @@ impl<'a> DynamicsRun<'a> {
         let cov = r.tips.coverage_view(scene.assets, &rec.brush);
         // Color dynamics for the brush's own `add` paint — the same field and
         // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
-        let noise = r.tips.noise_view(&rec.brush.color_dynamics);
+        let noise = r.tips.noise_view(&rec.brush.color_dynamics());
 
         // A stroke that starts fresh initializes its first reservoir by a render clear
         // (the driver does the f16 encode), hence RENDER_ATTACHMENT; one resuming from
@@ -336,7 +345,7 @@ impl<'a> DynamicsRun<'a> {
         } else {
             // Init: latent = the brush's own color, per-unit opacity = its alpha;
             // the carried amount starts at the pre-`charge` glob (0 = empty tool).
-            let d = rec.brush.dynamics;
+            let d = paint_effect(rec).dynamics;
             scope
                 .encoder()
                 .begin_render_pass(&wgpu::RenderPassDescriptor {

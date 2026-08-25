@@ -188,11 +188,29 @@ fn tip_extent(reach: f32) -> f32 {
 /// Measured against the tip's own radius rather than its reach, which is what the
 /// cadence is denominated in — so a stretched tip does not pay for it twice.
 fn bleed_reach(b: &BrushParams) -> f32 {
-    if b.dynamics.bleed > 0.0 {
+    if axes(b).bleed > 0.0 {
         BLEED_TRAVEL_QUANTUM * b.size.max(0.5)
     } else {
         0.0
     }
+}
+
+/// The four dynamics axes as the budget prices them: the paint effect's, and all
+/// zero on an eraser — which has none to price. An eraser's own path needs no
+/// region at all, but the caps here are also *published* limits an editor clamps
+/// any brush against ([`max_tip_reach`], [`max_stretch`]), so they have to answer
+/// for every effect — and zero axes is the relaxed answer the erase pass earns.
+fn axes(b: &BrushParams) -> stark_model::document::BrushDynamics {
+    b.paint().map_or(
+        stark_model::document::BrushDynamics {
+            flow: 0.0,
+            lift: 0.0,
+            deposit: 0.0,
+            charge: 0.0,
+            bleed: 0.0,
+        },
+        |p| p.dynamics,
+    )
 }
 
 /// **The largest tip reach — `size × elongation`, canvas px — the stamp loop can
@@ -271,7 +289,7 @@ pub fn max_stretch(b: &BrushParams) -> f32 {
 /// [`MIN_SEGMENT_LEN`]. What [`flatten_tolerance`] spends, and the number the
 /// shortening warning quotes against what [`fit_len`] left of it.
 pub(super) fn dynamics_len(b: &BrushParams) -> f32 {
-    (exchange_travel(b.dynamics) * b.size).max(MIN_SEGMENT_LEN)
+    (exchange_travel(axes(b)) * b.size).max(MIN_SEGMENT_LEN)
 }
 
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
@@ -314,7 +332,7 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // Exactly 1 for the unmodulated brush and for every plain linear mapping,
     // including the default pressure → size, so those brushes are unaffected to the
     // bit.
-    tol.attribute /= b.modulation.max_slope();
+    tol.attribute /= b.max_slope();
     // The tightest arc this tip may be swept along (§6.2). Both the
     // flattener and the segment generator get it from here, so an edge too tight to
     // sweep as an arc is priced as a chord as well as drawn as one.
@@ -340,7 +358,7 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // discretization of a coupled ODE. [`RESERVOIR_EXCHANGE_STEP`] is what keeps it
     // fine enough. The cap also bounds the snapshot scratch, which is sized by the
     // longest segment.
-    let d = b.dynamics;
+    let d = axes(b);
     if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 || d.bleed > 0.0 {
         tol.max_len = tol.max_len.min(dynamics_len(b));
         // The region floor's price (§6.2): a tip so wide that a full-length

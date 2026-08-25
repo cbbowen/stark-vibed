@@ -78,9 +78,9 @@ fn smear_brush(radius: f32) -> BrushParams {
         color: [0.8, 0.2, 0.1, 0.9],
         ..BrushParams::default()
     };
-    b.dynamics.lift = 0.6;
-    b.dynamics.deposit = 0.5;
-    b.dynamics.flow = 0.5;
+    b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;
+    b.paint_mut().expect("a paint brush").dynamics.deposit = 0.5;
+    b.paint_mut().expect("a paint brush").dynamics.flow = 0.5;
     b
 }
 
@@ -202,7 +202,7 @@ fn main() {
     // dynamics numbers have something to be compared against.
     for radius in [30.0, 100.0] {
         let mut plain = smear_brush(radius);
-        plain.dynamics = Default::default();
+        plain.effect = Default::default();
         let commit = bench_commit(&mut engine, plain, n);
         let (total, mean, p95) = bench_live(&mut engine, plain, n);
         println!(

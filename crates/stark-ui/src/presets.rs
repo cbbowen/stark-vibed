@@ -36,8 +36,9 @@
 use dioxus::prelude::*;
 
 use stark_model::document::{
-    BrushDynamics, BrushParams, BrushShape, ColorDynamics, ModSource, Modulation, Modulations,
-    NoiseKind, OrientationSource,
+    BrushDynamics, BrushEffect, BrushModulations, BrushParams, BrushShape, ColorDynamics,
+    EraseEffect, EraseModulations, ModSource, Modulation, NoiseKind, OrientationSource,
+    PaintEffect, PaintModulations, ToothParams,
 };
 
 use crate::builtins;
@@ -183,26 +184,31 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 size: 100.0,
                 drain: 0.1,
                 shape: BrushShape::Round { hardness: 0.98 },
-                dynamics: BrushDynamics {
-                    flow: 3.0,
-                    lift: 0.25,
-                    deposit: 0.75,
-                    bleed: 0.25,
-                    ..BrushDynamics::default()
-                },
-                color_dynamics: ColorDynamics {
-                    noise: NoiseKind::Simplex,
-                    frequency: [0.05, 0.1],
-                    amplitude: [0.0, 0.025, 0.05],
-                },
-                modulation: Modulations {
+                effect: BrushEffect::Paint(PaintEffect {
+                    dynamics: BrushDynamics {
+                        flow: 3.0,
+                        lift: 0.25,
+                        deposit: 0.75,
+                        bleed: 0.25,
+                        ..BrushDynamics::default()
+                    },
+                    color_dynamics: ColorDynamics {
+                        noise: NoiseKind::Simplex,
+                        frequency: [0.05, 0.1],
+                        amplitude: [0.0, 0.025, 0.05],
+                    },
+                    modulation: PaintModulations {
+                        flow: Some(Modulation::linear(ModSource::Pressure)),
+                        ..PaintModulations::default()
+                    },
+                }),
+                modulation: BrushModulations {
                     size: Some(Modulation {
                         source: ModSource::Pressure,
                         floor: 0.8,
                         curve: 0.0,
                     }),
-                    flow: Some(Modulation::linear(ModSource::Pressure)),
-                    ..Modulations::default()
+                    ..BrushModulations::default()
                 },
                 ..BrushParams::default()
             },
@@ -214,26 +220,31 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             BrushParams {
                 size: 100.0,
                 shape: shapes.bristles,
-                dynamics: BrushDynamics {
-                    flow: 3.0,
-                    lift: 0.25,
-                    deposit: 0.75,
-                    bleed: 0.5,
-                    ..BrushDynamics::default()
-                },
-                color_dynamics: ColorDynamics {
-                    noise: NoiseKind::Simplex,
-                    frequency: [0.05, 0.1],
-                    amplitude: [0.0, 0.025, 0.05],
-                },
-                modulation: Modulations {
+                effect: BrushEffect::Paint(PaintEffect {
+                    dynamics: BrushDynamics {
+                        flow: 3.0,
+                        lift: 0.25,
+                        deposit: 0.75,
+                        bleed: 0.5,
+                        ..BrushDynamics::default()
+                    },
+                    color_dynamics: ColorDynamics {
+                        noise: NoiseKind::Simplex,
+                        frequency: [0.05, 0.1],
+                        amplitude: [0.0, 0.025, 0.05],
+                    },
+                    modulation: PaintModulations {
+                        flow: Some(Modulation::linear(ModSource::Pressure)),
+                        ..PaintModulations::default()
+                    },
+                }),
+                modulation: BrushModulations {
                     size: Some(Modulation {
                         source: ModSource::Pressure,
                         floor: 0.8,
                         curve: 0.0,
                     }),
-                    flow: Some(Modulation::linear(ModSource::Pressure)),
-                    ..Modulations::default()
+                    ..BrushModulations::default()
                 },
                 ..BrushParams::default()
             },
@@ -250,10 +261,10 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 shape: BrushShape::Round { hardness: 0.95 },
                 start_taper_length: 5.0,
                 end_taper_length: 11.0,
-                dynamics: BrushDynamics {
+                effect: BrushEffect::paint_with(BrushDynamics {
                     flow: 0.45,
                     ..BrushDynamics::default()
-                },
+                }),
                 ..BrushParams::default()
             },
         ),
@@ -284,33 +295,40 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 size: 30.0,
                 shape: shapes.pencil,
                 jitter: 0.1,
-                tooth_give: 1.0,
-                tooth_softness: 0.5,
+                tooth: ToothParams {
+                    give: 1.0,
+                    softness: 0.5,
+                },
                 orientation: OrientationSource::Pen,
                 stretch: 0.75,
-                modulation: Modulations {
+                modulation: BrushModulations {
                     stretch: Some(Modulation {
                         source: ModSource::Tilt,
                         floor: 0.0,
                         curve: -0.5,
                     }),
-                    flow: Some(Modulation::linear(ModSource::Pressure)),
                     tooth_give: Some(Modulation {
                         source: ModSource::Pressure,
                         floor: 0.5,
                         curve: 0.0,
                     }),
-                    ..Modulations::default()
+                    ..BrushModulations::default()
                 },
-                dynamics: BrushDynamics {
-                    flow: 0.4,
-                    ..BrushDynamics::default()
-                },
-                color_dynamics: ColorDynamics {
-                    noise: NoiseKind::White,
-                    frequency: [0.5, 0.0],
-                    amplitude: [0.01, 0.0, 0.0],
-                },
+                effect: BrushEffect::Paint(PaintEffect {
+                    dynamics: BrushDynamics {
+                        flow: 0.4,
+                        ..BrushDynamics::default()
+                    },
+                    color_dynamics: ColorDynamics {
+                        noise: NoiseKind::White,
+                        frequency: [0.5, 0.0],
+                        amplitude: [0.01, 0.0, 0.0],
+                    },
+                    modulation: PaintModulations {
+                        flow: Some(Modulation::linear(ModSource::Pressure)),
+                        ..PaintModulations::default()
+                    },
+                }),
                 ..BrushParams::default()
             },
         ),
@@ -321,24 +339,29 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             BrushParams {
                 size: 500.0,
                 shape: BrushShape::Round { hardness: 0.5 },
-                modulation: Modulations {
+                modulation: BrushModulations {
                     size: Some(Modulation {
                         source: ModSource::Pressure,
                         floor: 0.6,
                         curve: 0.0,
                     }),
-                    flow: Some(Modulation::linear(ModSource::Pressure)),
-                    ..Modulations::default()
+                    ..BrushModulations::default()
                 },
-                dynamics: BrushDynamics {
-                    flow: 0.1,
-                    ..BrushDynamics::default()
-                },
-                color_dynamics: ColorDynamics {
-                    noise: NoiseKind::Simplex,
-                    frequency: [0.05, 0.1],
-                    amplitude: [0.0, 0.025, 0.05],
-                },
+                effect: BrushEffect::Paint(PaintEffect {
+                    dynamics: BrushDynamics {
+                        flow: 0.1,
+                        ..BrushDynamics::default()
+                    },
+                    color_dynamics: ColorDynamics {
+                        noise: NoiseKind::Simplex,
+                        frequency: [0.05, 0.1],
+                        amplitude: [0.0, 0.025, 0.05],
+                    },
+                    modulation: PaintModulations {
+                        flow: Some(Modulation::linear(ModSource::Pressure)),
+                        ..PaintModulations::default()
+                    },
+                }),
                 ..BrushParams::default()
             },
         ),
@@ -348,36 +371,42 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             0.1,
             BrushParams {
                 size: 100.0,
-                tooth_give: 0.5,
+                tooth: ToothParams {
+                    give: 0.5,
+                    ..ToothParams::default()
+                },
                 shape: BrushShape::Round { hardness: 0.8 },
-                dynamics: BrushDynamics {
-                    flow: 0.0,
-                    lift: 0.25,
-                    deposit: 0.75,
-                    bleed: 0.25,
-                    ..BrushDynamics::default()
-                },
-                modulation: Modulations {
-                    lift: Some(Modulation {
-                        source: ModSource::Pressure,
-                        floor: 0.8,
-                        curve: 0.0,
-                    }),
-                    bleed: Some(Modulation {
-                        source: ModSource::Pressure,
-                        floor: 0.0,
-                        curve: 0.0,
-                    }),
-                    ..Modulations::default()
-                },
+                effect: BrushEffect::Paint(PaintEffect {
+                    dynamics: BrushDynamics {
+                        flow: 0.0,
+                        lift: 0.25,
+                        deposit: 0.75,
+                        bleed: 0.25,
+                        ..BrushDynamics::default()
+                    },
+                    modulation: PaintModulations {
+                        lift: Some(Modulation {
+                            source: ModSource::Pressure,
+                            floor: 0.8,
+                            curve: 0.0,
+                        }),
+                        bleed: Some(Modulation {
+                            source: ModSource::Pressure,
+                            floor: 0.0,
+                            curve: 0.0,
+                        }),
+                        ..PaintModulations::default()
+                    },
+                    ..PaintEffect::default()
+                }),
                 ..BrushParams::default()
             },
         ),
         // The eraser the pen's other end starts life holding (§18.1.8). An
-        // eraser is `erase` up (§6.12) — it removes what the eye sees, so a
-        // half-pressure pass really is a lighter erase — with Flow as its rate,
-        // which is where the pressure mapping points: light touch feathers the
-        // coverage in, borne down it walks to the full bite.
+        // eraser is the `Erase` effect (§6.12) — it removes what the eye
+        // sees, so a half-pressure pass really is a lighter erase — with its own
+        // flow as the rate, which is where the pressure mapping points: light
+        // touch feathers the coverage in, borne down it walks to the full bite.
         shipped(
             "Soft Eraser",
             Some(slots::ERASER),
@@ -385,19 +414,20 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             BrushParams {
                 size: 80.0,
                 shape: BrushShape::Round { hardness: 0.25 },
-                erase: 1.0,
-                dynamics: BrushDynamics {
+                effect: BrushEffect::Erase(EraseEffect {
+                    strength: 1.0,
                     flow: 1.0,
-                    ..BrushDynamics::default()
-                },
-                modulation: Modulations {
+                    modulation: EraseModulations {
+                        flow: Some(Modulation {
+                            source: ModSource::Pressure,
+                            floor: 0.0,
+                            curve: 1.0,
+                        }),
+                    },
+                }),
+                modulation: BrushModulations {
                     size: Some(Modulation::linear(ModSource::Pressure)),
-                    flow: Some(Modulation {
-                        source: ModSource::Pressure,
-                        floor: 0.0,
-                        curve: 1.0,
-                    }),
-                    ..Modulations::default()
+                    ..BrushModulations::default()
                 },
                 ..BrushParams::default()
             },
@@ -409,21 +439,22 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             BrushParams {
                 size: 40.0,
                 shape: BrushShape::Round { hardness: 0.95 },
-                erase: 1.0,
-                dynamics: BrushDynamics {
+                effect: BrushEffect::Erase(EraseEffect {
+                    strength: 1.0,
                     // Enough that one pass saturates the bite to the tip's very
                     // shoulder — the hard edge the name promises.
                     flow: 2.0,
-                    ..BrushDynamics::default()
-                },
-                modulation: Modulations {
+                    modulation: EraseModulations {
+                        flow: Some(Modulation {
+                            source: ModSource::Pressure,
+                            floor: 0.25,
+                            curve: 0.0,
+                        }),
+                    },
+                }),
+                modulation: BrushModulations {
                     size: Some(Modulation::linear(ModSource::Pressure)),
-                    flow: Some(Modulation {
-                        source: ModSource::Pressure,
-                        floor: 0.25,
-                        curve: 0.0,
-                    }),
-                    ..Modulations::default()
+                    ..BrushModulations::default()
                 },
                 ..BrushParams::default()
             },
@@ -769,12 +800,17 @@ mod tests {
             .into_iter()
             .find(|e| e.slot == Some(slots::ERASER))
             .expect("an eraser ships on the pen's own slot");
+        let erase = e
+            .brush
+            .params
+            .erase()
+            .expect("the pen's tail must erase, not paint");
         assert!(
-            e.brush.params.erase > 0.0,
-            "the pen's tail must erase, not paint"
+            erase.strength > 0.0,
+            "an eraser at no strength does nothing"
         );
         assert!(
-            e.brush.params.dynamics.flow > 0.0,
+            erase.flow > 0.0,
             "flow is the erase pass's rate; at zero the eraser would do nothing"
         );
     }

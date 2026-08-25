@@ -1013,7 +1013,7 @@ returns `x` itself — so the default brush's radius is the exact product
 **A steep response is paid for in segments.** A segment sweeps at one value of
 everything, so the flattener's attribute budget — 2% of a pen unit — has to be 2%
 of the *parameter*, and a curve stretches the one into the other. So
-`flatten_tolerance` divides the budget by `Modulations::max_slope`, the largest
+`flatten_tolerance` divides the budget by `BrushParams::max_slope`, the largest
 `|d factor / d input|` across the mapped targets, which is why the bias is
 clamped (`MIN_BIAS = 0.1`, so the slope tops out at 9) rather than left open. The
 unmodulated brush and every plain linear mapping come out at exactly 1 and
@@ -1230,7 +1230,7 @@ bigger circle onto the paper — it rolls the cone over, and the patch in contac
 *elongates along the lean*, growing along one axis and not the other. `stretch` is that
 axis: `BrushParams::stretch` in `[0, 1)` names the elongation `s = 1/(1 − stretch)`, the
 extent is scaled by `s` along the brush's facing direction and left alone across it,
-and `Modulations::stretch` lets the pen drive it. Pointed at `Tilt` with
+and `BrushModulations::stretch` lets the pen drive it. Pointed at `Tilt` with
 `OrientationSource::Pen` that *is* the pencil — and the same knob held at a value with
 no mapping is a chisel nib, off a plain round tip with no shape asset at all.
 
@@ -1794,15 +1794,23 @@ for the lasso. Each is local to the tow and its Start parameter.
 
 ## 6.12 The eraser — coverage subtracted through the slab law
 
-`BrushParams::erase` in `(0, 1]` routes a stroke through the **erase pass**: the
-same swept extent every brush rasterizes, turned on the layer's *visible*
-opacity instead of laid as paint. It exists because the conserved-flux eraser —
-`lift` up, `deposit` 0 — is a *scraper*: it removes a fraction of the paint's
-**height** per pass, and the slab law `1 − exp(−K·op·h)` (§6.1) is nearly flat
-in `h` wherever paint is thick, so the knob never meant anything in the units a
+What a brush **does** is a sum type: `BrushParams::effect` is a
+`BrushEffect` — `Paint`, carrying the dynamics, the color dynamics and their pen
+mappings, or `Erase`, carrying a strength, its own flow and its own mappings.
+Each variant holds exactly the knobs that exist under it, so an eraser has no
+`lift` for a pass to ignore and no color dynamics for a panel to show; what is
+left on `BrushParams` — the tip, the tooth, the jitter, the tapers, the drain —
+shapes the swept extent whichever effect then uses it.
+
+`BrushEffect::Erase` routes a stroke through the **erase pass**: the same swept
+extent every brush rasterizes, turned on the layer's *visible* opacity instead
+of laid as paint. It exists because the conserved-flux eraser — `lift` up,
+`deposit` 0 — is a *scraper*: it removes a fraction of the paint's **height**
+per pass, and the slab law `1 − exp(−K·op·h)` (§6.1) is nearly flat in `h`
+wherever paint is thick, so the knob never meant anything in the units a
 digital artist reads. The erase pass acts in those units directly, and its dial
-is honest: `erase = 0.5` under a saturated stroke leaves half the opacity that
-was there.
+is honest: `strength = 0.5` under a saturated stroke leaves half the opacity
+that was there.
 
 ### The law
 
@@ -1811,7 +1819,7 @@ stroke's accumulated **transparency mass** (below):
 
 ```text
 w  = 1 − exp(−K·m_e)                    the coverage the stroke would have covered by
-v₁ = v₀ · (1 − erase·w)                 what must remain visible
+v₁ = v₀ · (1 − strength·w)              what must remain visible
 m₁ = −ln(1 − v₁)/K,   h₁ = h₀·(m₁/m₀)   the slab law inverted; op, latent, residual untouched
 ```
 
@@ -1820,13 +1828,16 @@ Three properties are the design:
 - **The erased fraction is the coverage the same stroke would have painted.**
   `w` is the parcel alpha of §6.2's deposit with per-unit opacity 1 — the same
   prefix-τ sweep, the same drain, tooth and jitter gates — so an eraser's edge
-  is exactly the soft edge its brush would have drawn, and Flow is its rate
-  knob with the meaning Flow always has.
-- **`erase` is a ceiling, not a rate.** `w` saturates at 1 however long the
-  stroke works one spot, so a stroke removes at most `erase` of what it finds;
-  scrubbing walks the edge toward the cap rather than eating past it. A second
-  *stroke* takes `erase` of the remainder, which is what every buildup eraser
-  does.
+  is exactly the soft edge its brush would have drawn, and its flow is a rate
+  with the meaning Flow always has.
+- **`strength` is a ceiling, not a rate.** `w` saturates at 1 however long
+  the stroke works one spot, so a stroke removes at most `strength` of what it
+  finds; scrubbing walks the edge toward the cap rather than eating past it. A
+  second *stroke* takes `strength` of the remainder, which is what every
+  buildup eraser does. The rate is the effect's own `flow`
+  (`EraseEffect::flow`) — its own field, not a reading of the paint effect's,
+  so switching a brush's effect never re-interprets a number that meant
+  something else.
 - **Only the amount falls.** The per-unit opacity is what the pigment is; the
   latent and the residual are which pigment. Erased paint is *less of the same
   paint* (§6.1), so the pass rewrites the height lane alone and the color
@@ -1836,10 +1847,12 @@ The brush's **color is ignored** — the erase parcel is "fully opaque
 transparency", mass = height, `fill.wesl`'s arithmetic — deliberately: the
 eraser slot never carries the painting color (§18.1.8), so a per-unit opacity
 read from the brush would let the Color panel's alpha quietly scale how hard
-the pen's other end erases. Past zero, `erase` names the whole of what the
-stroke does: the four dynamics axes do not run, and no region is ever needed,
-so no tip is too large for this path (`dynamics_setup` answers `Erase` before
-anything else).
+the pen's other end erases — which is also why `color` stays on `BrushParams`
+rather than moving into `Paint`: it is the *hand's*, written by the Color panel
+whatever brush is held, and a color picked while the eraser end is down needs
+somewhere to land. That the dynamics axes do not run is the enum, not a rule: an
+`Erase` brush has none. No region is ever needed either, so no tip is too large
+for this path (`dynamics_setup` answers `Erase` off the variant alone).
 
 ### Why the extent accumulates across pieces
 
@@ -1882,7 +1895,7 @@ eraser is the digital artist's tool, calibrated in the coverage domain; paint
 as *material* answers to the knife (`lift`), which removes amount and conserves
 it. Both exist because they are different questions.
 
-**Not built, and deliberately:** an `erase` target in `Modulations` — the pen
-drives an eraser through Flow (the rate) and Size for now; a modulated
-*ceiling* needs a second accumulator lane (mass-weighted strength) to stay
-piece-independent, and is its own change.
+**Not built, and deliberately:** a `strength` target in `EraseModulations` —
+the pen drives an eraser through its flow (the rate, already a target there)
+and Size for now; a modulated *ceiling* needs a second accumulator lane
+(mass-weighted strength) to stay piece-independent, and is its own change.

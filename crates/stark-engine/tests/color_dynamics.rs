@@ -32,7 +32,7 @@ const S_CURVE: [Vec2; 5] = [
 
 fn jitter_brush(noise: NoiseKind, frequency: [f32; 2], amplitude: [f32; 3]) -> BrushParams {
     let mut b = brush(TEAL, 42.0);
-    b.color_dynamics = ColorDynamics {
+    b.paint_mut().expect("a paint brush").color_dynamics = ColorDynamics {
         noise,
         frequency,
         amplitude,
@@ -115,7 +115,7 @@ fn zero_amplitude_is_bit_identical_to_off() {
     paint(&mut a, TEAL, 42.0, &S_CURVE);
 
     let mut jb = brush(TEAL, 42.0);
-    jb.color_dynamics = ColorDynamics {
+    jb.paint_mut().expect("a paint brush").color_dynamics = ColorDynamics {
         noise: NoiseKind::White,
         frequency: [5.0, 5.0],
         amplitude: [0.0; 3],
@@ -183,12 +183,12 @@ fn jitter_applies_in_dynamics_loop() {
         return;
     };
     let mut jb = jitter_brush(NoiseKind::Simplex, [3.0, 3.0], [0.2, 0.12, 0.12]);
-    jb.dynamics.lift = 0.3;
-    jb.dynamics.deposit = 0.3; // lift/deposit > 0 ⇒ the exchange-loop path
+    jb.paint_mut().expect("a paint brush").dynamics.lift = 0.3;
+    jb.paint_mut().expect("a paint brush").dynamics.deposit = 0.3; // lift/deposit > 0 ⇒ the exchange-loop path
     stroke_with(&mut a, jb, &S_CURVE);
     stroke_with(&mut b, jb, &S_CURVE);
     let mut pb = jb;
-    pb.color_dynamics = ColorDynamics::default();
+    pb.paint_mut().expect("a paint brush").color_dynamics = ColorDynamics::default();
     stroke_with(&mut plain, pb, &S_CURVE);
 
     let (ia, ib) = (a.render_to_image(), b.render_to_image());

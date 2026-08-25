@@ -31,7 +31,7 @@ mod common;
 use common::*;
 use stark_engine::command::DocCommand;
 use stark_model::SubstrateId;
-use stark_model::document::{BrushDynamics, BrushParams, BrushShape};
+use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, ToothParams};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -39,7 +39,7 @@ const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 /// The contact transition every brush here is drawn through, and every bearing here is
 /// asked at (§6.4).
 ///
-/// **The tests' own, deliberately not `BrushParams::DEFAULT_TOOTH_SOFTNESS`.** What the
+/// **The tests' own, deliberately not `ToothParams::DEFAULT_SOFTNESS`.** What the
 /// shipped default is set to is taste — which tool the app opens on — and it gets
 /// retuned; what this file measures is the deposition model, and a change of taste must
 /// not be able to move a level-set claim about the grain. `gpu::substrate::tooth`'s unit
@@ -56,17 +56,19 @@ const BAND: f32 = 0.06;
 fn toothed(give: f32) -> BrushParams {
     BrushParams {
         drain: 0.0,
-        tooth_give: give,
-        tooth_softness: BAND,
+        tooth: ToothParams {
+            give,
+            softness: BAND,
+        },
         shape: BrushShape::Round { hardness: 0.9 },
         modulation: Default::default(),
-        dynamics: BrushDynamics {
+        effect: BrushEffect::paint_with(BrushDynamics {
             // Low flow: the tooth decides how much of the parcel lands, and at a flow
             // that saturates the slab law every texel reads as solid whatever fraction
             // it received. A dry-brush mark is the case this axis is *for*.
             flow: 0.35,
             ..Default::default()
-        },
+        }),
         // No deposit jitter: two of this file's claims are exact comparisons
         // across strokes (the flat-canvas identity, the level-set monotonicity),
         // and the jitter is per-stroke-seeded by design (§6.2).
@@ -406,10 +408,10 @@ fn the_tooth_reads_the_same_on_both_render_paths() {
     // the two strokes differ in which shader ran and in nothing else that shows.
     let swept = toothed(0.5);
     let looped = BrushParams {
-        dynamics: BrushDynamics {
+        effect: BrushEffect::paint_with(BrushDynamics {
             lift: 0.05,
-            ..swept.dynamics
-        },
+            ..swept.paint().expect("a paint brush").dynamics
+        }),
         ..swept
     };
     let a = one_run(&mut engine, swept, 1.0);
@@ -556,15 +558,17 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
     // tool is empty well before the end either way and the total delivered is the
     // whole charge rather than however far each got.
     let glob = |give: f32| BrushParams {
-        tooth_give: give,
-        tooth_softness: BAND,
-        dynamics: BrushDynamics {
+        tooth: ToothParams {
+            give,
+            softness: BAND,
+        },
+        effect: BrushEffect::paint_with(BrushDynamics {
             flow: 0.0,
             lift: 0.0,
             deposit: 0.6,
             charge: 0.25,
             ..Default::default()
-        },
+        }),
         ..BrushParams {
             drain: 0.0,
             shape: BrushShape::Round { hardness: 0.9 },
@@ -776,14 +780,16 @@ fn a_toothed_smear_previews_as_it_commits() {
         &[Vec2::new(-140.0, 0.0), Vec2::new(0.0, 0.0)],
     );
     let smear = BrushParams {
-        tooth_give: 0.5,
-        tooth_softness: BAND,
-        dynamics: BrushDynamics {
+        tooth: ToothParams {
+            give: 0.5,
+            softness: BAND,
+        },
+        effect: BrushEffect::paint_with(BrushDynamics {
             flow: 0.6,
             lift: 0.6,
             deposit: 0.95,
             ..Default::default()
-        },
+        }),
         ..BrushParams {
             drain: 0.0,
             shape: BrushShape::Round { hardness: 0.9 },

@@ -28,7 +28,7 @@ use stark_model::ColorSpaceId;
 #[cfg(feature = "mixbox")]
 use stark_model::Srgb;
 use stark_model::document::{
-    BlendMode, BrushDynamics, BrushParams, BrushShape, DRAGO_K, DRAGO_K_RANGE, LayerId,
+    BlendMode, BrushDynamics, BrushEffect, BrushParams, BrushShape, DRAGO_K, DRAGO_K_RANGE, LayerId,
 };
 use stark_model::geom::Vec2;
 
@@ -78,10 +78,10 @@ const COMBINING: [BlendMode; 3] = [BlendMode::Reinhard, RADIANCE, BlendMode::Mul
 /// instead.
 fn opaque(color: [f32; 4]) -> BrushParams {
     BrushParams {
-        dynamics: BrushDynamics {
+        effect: BrushEffect::paint_with(BrushDynamics {
             flow: 6.0,
             ..Default::default()
-        },
+        }),
         shape: BrushShape::Round { hardness: 0.99 },
         ..brush(color, 44.0)
     }
@@ -795,9 +795,9 @@ const CARRY_DRAG: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 40.0)];
 fn carrying_brush() -> BrushParams {
     let mut b = brush([0.0, 0.0, 0.0, 0.0], 26.0);
     b.drain = 0.0;
-    b.dynamics.flow = 0.0;
-    b.dynamics.lift = 0.9;
-    b.dynamics.deposit = 0.9;
+    b.paint_mut().expect("a paint brush").dynamics.flow = 0.0;
+    b.paint_mut().expect("a paint brush").dynamics.lift = 0.9;
+    b.paint_mut().expect("a paint brush").dynamics.deposit = 0.9;
     b
 }
 

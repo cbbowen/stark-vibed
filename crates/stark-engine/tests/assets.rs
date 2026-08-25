@@ -151,8 +151,8 @@ fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
         // different sides — one uniform each, filled at different call sites — so a
         // bake that only one of them agreed with would show here and in no golden
         // the corpus draws.
-        b.dynamics.lift = 0.6;
-        b.dynamics.deposit = 0.6;
+        b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;
+        b.paint_mut().expect("a paint brush").dynamics.deposit = 0.6;
         engine.process(ViewCommand::SetBrush(b));
         engine.process(GestureCommand::Start {
             tool: Tool::Brush,

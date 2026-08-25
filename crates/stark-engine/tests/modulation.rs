@@ -15,7 +15,8 @@ use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::{
-    BrushDynamics, BrushParams, BrushShape, ModSource, Modulation, Modulations,
+    BrushDynamics, BrushEffect, BrushModulations, BrushParams, BrushShape, ModSource, Modulation,
+    PaintEffect, PaintModulations,
 };
 use stark_model::geom::Vec2;
 
@@ -23,13 +24,15 @@ const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
 /// A test brush with no `drain`: the run-dry falloff is the one *other* thing that
 /// varies along a stroke, and these tests are about what varies across one.
-fn plain(radius: f32, modulation: Modulations) -> BrushParams {
+fn plain(radius: f32) -> BrushParams {
     let mut b = brush(RED, radius);
     b.drain = 0.0;
     // And no deposit jitter: this file's claims are bit-equalities across two
     // *strokes*, and the jitter is per-stroke-seeded by design (§6.2).
     b.jitter = 0.0;
-    b.modulation = modulation;
+    // No mappings at all, on either half: what a test maps, it maps itself.
+    b.modulation = BrushModulations::default();
+    b.paint_mut().expect("a paint brush").modulation = PaintModulations::default();
     b
 }
 
@@ -136,7 +139,7 @@ fn an_unmapped_brush_cannot_feel_the_pen() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let b = plain(30.0, Modulations::default());
+    let b = plain(30.0);
     let before = engine.render_to_image();
     stroke_pen(&mut engine, b, &run(), (1.0, 0.9));
     let heavy = engine.render_to_image();
@@ -166,13 +169,9 @@ fn flow_follows_pressure_when_it_is_mapped_to_it() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let b = plain(
-        30.0,
-        Modulations {
-            flow: Some(Modulation::linear(ModSource::Pressure)),
-            ..Modulations::default()
-        },
-    );
+    let mut b = plain(30.0);
+    b.paint_mut().expect("a paint brush").modulation.flow =
+        Some(Modulation::linear(ModSource::Pressure));
     let (heavy, light) = two_marks(&mut engine, b, (1.0, 0.0), (0.15, 0.0), ink);
     assert!(
         light < heavy * 0.6,
@@ -186,7 +185,7 @@ fn flow_follows_pressure_when_it_is_mapped_to_it() {
     // The control: the same two presses with flow unmapped lay the same paint. What
     // this rules out is the difference above being anything other than the mapping —
     // the geometry, the dab, the fitter's own response to pressure.
-    let flat = plain(30.0, Modulations::default());
+    let flat = plain(30.0);
     let (a, b) = two_marks(&mut engine, flat, (1.0, 0.0), (0.15, 0.0), ink);
     assert_eq!(a, b, "unmapped, the two presses must lay the same paint");
 }
@@ -202,13 +201,8 @@ fn size_can_be_driven_by_tilt_instead_of_pressure() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let b = plain(
-        40.0,
-        Modulations {
-            size: Some(Modulation::linear(ModSource::Tilt)),
-            ..Modulations::default()
-        },
-    );
+    let mut b = plain(40.0);
+    b.modulation.size = Some(Modulation::linear(ModSource::Tilt));
     let wide = |a: &_, c: &_| covered(a, c) as f64;
     let (flat_pen, upright) = two_marks(&mut engine, b, (1.0, 1.0), (1.0, 0.2), wide);
     assert!(
@@ -238,19 +232,22 @@ fn deposit_follows_tilt_on_the_stamp_loop() {
         return;
     };
     let b = BrushParams {
-        dynamics: BrushDynamics {
-            flow: 0.0,
-            lift: 0.0,
-            deposit: 0.9,
-            charge: 1.5,
-            bleed: 0.0,
-        },
+        effect: BrushEffect::Paint(PaintEffect {
+            dynamics: BrushDynamics {
+                flow: 0.0,
+                lift: 0.0,
+                deposit: 0.9,
+                charge: 1.5,
+                bleed: 0.0,
+            },
+            modulation: PaintModulations {
+                deposit: Some(Modulation::linear(ModSource::Tilt)),
+                ..PaintModulations::default()
+            },
+            ..PaintEffect::default()
+        }),
         shape: BrushShape::Round { hardness: 0.9 },
-        modulation: Modulations {
-            deposit: Some(Modulation::linear(ModSource::Tilt)),
-            ..Modulations::default()
-        },
-        ..plain(30.0, Modulations::default())
+        ..plain(30.0)
     };
 
     let before = engine.render_to_image();

@@ -40,8 +40,9 @@ pub(crate) mod warp;
 
 pub use action::{Action, ActionId, ActionKind, ActorId, StrokeRecord};
 pub use brush::{
-    BrushDynamics, BrushParams, BrushShape, ColorDynamics, ModSource, Modulation, Modulations,
-    NoiseKind, OrientationSource, PenState,
+    BrushDynamics, BrushEffect, BrushModulations, BrushParams, BrushShape, ColorDynamics,
+    EraseEffect, EraseModulations, ModSource, Modulation, NoiseKind, OrientationSource,
+    PaintEffect, PaintModulations, PenState, ToothParams,
 };
 pub use fill::{FillOp, GradientAxis, GradientParcel, MAX_FILL_TILES, Parcel, ShapeAction};
 pub use filter::{ChromaticAberration, ColorAdjust, Filter};
