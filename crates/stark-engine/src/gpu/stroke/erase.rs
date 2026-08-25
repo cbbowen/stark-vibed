@@ -239,7 +239,7 @@ impl StrokeRenderer {
                 rec.brush
                     .erase()
                     .expect("the erase pass draws erase brushes (§6.12)")
-                    .strength
+                    .opacity
                     .clamp(0.0, 1.0),
                 0.0,
                 0.0,

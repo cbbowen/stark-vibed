@@ -415,7 +415,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 size: 80.0,
                 shape: BrushShape::Round { hardness: 0.25 },
                 effect: BrushEffect::Erase(EraseEffect {
-                    strength: 1.0,
+                    opacity: 1.0,
                     flow: 1.0,
                     modulation: EraseModulations {
                         flow: Some(Modulation {
@@ -440,7 +440,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 size: 40.0,
                 shape: BrushShape::Round { hardness: 0.95 },
                 effect: BrushEffect::Erase(EraseEffect {
-                    strength: 1.0,
+                    opacity: 1.0,
                     // Enough that one pass saturates the bite to the tip's very
                     // shoulder — the hard edge the name promises.
                     flow: 2.0,
@@ -806,7 +806,7 @@ mod tests {
             .erase()
             .expect("the pen's tail must erase, not paint");
         assert!(
-            erase.strength > 0.0,
+            erase.opacity > 0.0,
             "an eraser at no strength does nothing"
         );
         assert!(

@@ -827,7 +827,7 @@ pub const CASES: &[Case] = &[
             // *cap* rather than about two half-built fringes summing.
             b.effect =
                 stark_model::document::BrushEffect::Erase(stark_model::document::EraseEffect {
-                    strength: 0.5,
+                    opacity: 0.5,
                     flow: 2.5,
                     ..Default::default()
                 });

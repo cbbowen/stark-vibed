@@ -554,9 +554,9 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // Not a rate: the rate is Flow below, exactly as it is for
                     // paint, which is also where an eraser's pen mapping points.
                     if let Some(e) = brush.erase() {
-                        Slider { label: "Strength", min: 0.0, max: 1.0, value: e.strength,
+                        Slider { label: "Strength", min: 0.0, max: 1.0, value: e.opacity,
                             oninput: move |v| edit(state, preview, move |b| {
-                                if let Some(e) = b.erase_mut() { e.strength = v; }
+                                if let Some(e) = b.erase_mut() { e.opacity = v; }
                             }) }
                     }
                     // `add` is the tool's only source term (§6.2) and its only amount

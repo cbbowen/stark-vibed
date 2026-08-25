@@ -31,7 +31,7 @@ const RED: [f32; 3] = [1.0, 0.0, 0.0];
 fn eraser(strength: f32, radius: f32) -> BrushParams {
     let mut b = brush([0.0, 0.0, 0.0, 1.0], radius);
     b.effect = BrushEffect::Erase(EraseEffect {
-        strength,
+        opacity: strength,
         flow: 2.5,
         ..EraseEffect::default()
     });

@@ -610,9 +610,9 @@ impl PaintModulations {
 
 /// The pen mappings whose targets exist only while **erasing** (§6.12).
 ///
-/// [`strength`](EraseEffect::strength) is deliberately not a target: a modulated
+/// [`opacity`](EraseEffect::opacity) is deliberately not a target: a modulated
 /// *ceiling* cannot ride the erase integrate's one per-stroke uniform — it needs a
-/// second accumulator lane (a mass-weighted strength) to stay independent of how a
+/// second accumulator lane (a mass-weighted opacity) to stay independent of how a
 /// live stroke is cut into pieces — so the knob the pen drives today is the rate,
 /// exactly as it is for paint.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
@@ -791,8 +791,8 @@ pub struct PaintEffect {
 /// removes what the eye sees. The same swept extent a deposit would rasterize is
 /// accumulated across the whole stroke, read as the coverage `w` it would have
 /// covered the canvas by, and the paint's **visible** opacity is scaled by
-/// `1 − strength·w` — inverted through the slab law (§6.1) into the height
-/// that shows exactly that much. That inversion is the point: `strength = 0.5`
+/// `1 − opacity` — inverted through the slab law (§6.1) into the height
+/// that shows exactly that much. That inversion is the point: `opacity = 0.5`
 /// under a saturated stroke leaves half the opacity that was there, where the
 /// `lift` axis — the scraper — removes half the *height*, of which thick paint
 /// shows almost nothing.
@@ -807,7 +807,7 @@ pub struct EraseEffect {
     /// **ceiling, not a rate**. `w` saturates at 1 however long a stroke works one
     /// spot, so a stroke removes at most this fraction of what it finds; scrubbing
     /// walks the stroke's soft edge toward the cap rather than eating past it.
-    pub strength: f32,
+    pub opacity: f32,
     /// The rate: how fast a pass builds `w` — the eraser's own flow, playing
     /// exactly the role [`BrushDynamics::flow`] plays for paint, and so the knob an
     /// airbrush-style eraser turns down. Its own field rather than a reading of the
@@ -815,7 +815,7 @@ pub struct EraseEffect {
     /// that meant something else.
     pub flow: f32,
     /// The pen mappings onto this effect's own rates ([`EraseModulations`] — which
-    /// is also where the note on modulating `strength` lives).
+    /// is also where the note on modulating `opacity` lives).
     #[serde(default)]
     pub modulation: EraseModulations,
 }
@@ -825,7 +825,7 @@ impl Default for EraseEffect {
     /// the rate one clean pass saturates.
     fn default() -> Self {
         Self {
-            strength: 1.0,
+            opacity: 1.0,
             flow: 1.0,
             modulation: EraseModulations::default(),
         }
@@ -902,10 +902,10 @@ impl BrushEffect {
                 modulation: p.modulation.sanitized(),
             }),
             Self::Erase(e) => Self::Erase(EraseEffect {
-                // In `[0, 1]` by the field's own doc: the removal `strength·w` is
+                // In `[0, 1]` by the field's own doc: the removal `opacity` is
                 // a fraction of the visible opacity, and past 1 it would ask for
                 // less than none.
-                strength: clamp01(finite_or(e.strength, 1.0)),
+                opacity: clamp01(finite_or(e.opacity, 1.0)),
                 // Floored but not capped, for `BrushDynamics::flow`'s reason: a
                 // rate, whose ceiling is a slider's.
                 flow: at_least_zero(e.flow, 1.0),
@@ -1181,7 +1181,7 @@ impl BrushParams {
     /// is for a filter (§21.5) and for the same two reasons.
     ///
     /// **It clamps only where this crate already states a range.** The three pickup
-    /// axes, the tooth's *give*, the erase *strength*, the hardness and the color are
+    /// axes, the tooth's *give*, the erase *opacity*, the hardness and the color are
     /// quoted in `[0, 1]` by their own field docs, and so is the deposit
     /// [`jitter`](Self::jitter), whose gate goes negative past 1; the stretch
     /// saturates at [`MAX_STRETCH`](Self::MAX_STRETCH) by construction. Everything
@@ -1422,9 +1422,9 @@ mod tests {
         let pokes: [Poke; 19] = [
             ("radius", |b, f| b.size = f),
             ("drain", |b, f| b.drain = f),
-            ("erase.strength", |b, f| {
+            ("erase.opacity", |b, f| {
                 b.effect = BrushEffect::Erase(EraseEffect {
-                    strength: f,
+                    opacity: f,
                     ..EraseEffect::default()
                 })
             }),
@@ -1478,7 +1478,7 @@ mod tests {
                 ]);
             }
             if let Some(e) = b.erase() {
-                v.push(e.strength);
+                v.push(e.opacity);
             }
             v
         };
@@ -1488,7 +1488,7 @@ mod tests {
                 v.extend([p.dynamics.lift, p.dynamics.deposit, p.dynamics.bleed]);
             }
             if let Some(e) = b.erase() {
-                v.push(e.strength);
+                v.push(e.opacity);
             }
             v
         };
@@ -1539,7 +1539,7 @@ mod tests {
         // …and so does an ordinary eraser, its own rate past 1 included.
         let eraser = BrushParams {
             effect: BrushEffect::Erase(EraseEffect {
-                strength: 0.5,
+                opacity: 0.5,
                 flow: 2.0,
                 ..EraseEffect::default()
             }),
