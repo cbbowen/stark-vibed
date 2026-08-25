@@ -423,6 +423,21 @@ So **the numbers hold brushes**, and there is exactly one rule:
 > it is held stays with the number; the brush you were holding comes back when
 > you let go.
 
+What a number holds is **a preset, at a size and flow of its own**
+(`slots::QuickBrush`). The brush has two halves, split along what a hand changes
+its mind about: the size and the flow are adjusted all day without the tool
+becoming a different tool — the Brush panel's two knobs, the tuning drag's two
+axes (§18.1.9) — and that is the **transient** half (`brush_config::Transient`).
+Everything else is what the tool *is*, the **durable** half, and only a preset
+stores one. A preset carries both halves, so clicking it puts on the tool at the
+size and flow it was saved at; a slot carries the preset's *name* beside a
+transient half of its own, and the tool on the number is looked up live
+(`slots::resolve`). That is what makes the binding durable in the sense the word
+wants: overwrite a preset in the brush editor and every number bound to it holds
+the new tool from then on, at the size each number remembers. The snapshots this
+replaced had the opposite property — a slot was a copy of the tool as it had been
+the day it was assigned, and editing the preset reached nothing.
+
 Everything the feature does falls out of that instead of being wired up three
 times — this is the whole of `stark-ui/src/slots.rs`, and the panel and the
 engine learn nothing:
@@ -431,11 +446,18 @@ engine learn nothing:
   the live brush for the length of the hold, and a stroke takes its copy of the
   brush at `Start`.
 - **Hold and click a preset** and the preset lands on the live brush, so at
-  release it is what the number keeps.
+  release it is what the number is bound to, at the size and flow the preset
+  brought with it.
 - **Hold and drag Size or Flow** and the panel's sliders write the live brush, as
   they always did. The Brush panel shows the live brush; while a number is held
   the live brush is that number's, so it shows and edits the slot without a line
   of code that knows about slots.
+- **Hold and edit the tool** — open the brush editor under a hold and move a
+  hardness — and the edit is to the *preset's* tool, which the number has nowhere
+  of its own to keep. "Overwrite preset" writes it back, and it reaches this
+  number and every other bound to that preset; let the hold go without, and the
+  swap-back takes it away with the borrowed brush. A number keeps a binding and a
+  tune, never a third copy of a tool.
 - **Flip the pen over** and the eraser end holds slot 0 for as long as its tail
   is on the glass — *whatever it is pressed against*. The same hold, made by
   hardware rather than by a key, and bound at the window rather than by any one
@@ -457,12 +479,20 @@ engine learn nothing:
   hold. A finger's release is left alone, so a palm settling mid-erase does not
   hand the brush back under a pen that never moved.
 
-Four things the rule has to get right, each a place a looser design goes wrong:
+Five things the rule has to get right, each a place a looser design goes wrong
+(`slots::Held::settle`, a pure function of the release):
 
-- **An unused hold keeps nothing.** Compared against the brush the hold *entered*
-  on, so holding 5 and drawing does not quietly make 5 whatever was in hand. A
-  slot that filled itself on first press would be indistinguishable from one the
-  user had set.
+- **An unused hold keeps nothing.** Compared against the size and flow the hold
+  *entered* on, so holding 5 and drawing does not quietly make 5 whatever was in
+  hand. A slot that filled itself on first press would be indistinguishable from
+  one the user had set.
+- **Only the transient half is a change.** A slot keeps a name and a size and
+  flow, so those two are what "did anything change?" is asked of. A color picked
+  mid-hold cannot reach the number — the same rule the preset library states as
+  `presets::wear`, in both directions: swapping never changes the color you are
+  painting with, and a color picked mid-hold survives the release. Nor can an
+  opacity or a hardness moved under the hold, which are the preset's to keep (the
+  bullet above says where they go).
 - **A tool chosen deliberately counts, even when it moves nothing.** That
   comparison is a *proxy* for "did the artist set this brush?", and it is wrong
   in exactly one place: clicking the preset already in hand. Holding an empty 3
@@ -473,13 +503,14 @@ Four things the rule has to get right, each a place a looser design goes wrong:
   rather than being inferred from their effect. It is not raised inside
   `presets::wear`, which the hold uses itself in both directions and which would
   therefore make every hold claim itself on the way in.
-- **Color is not part of a slot**, in both directions — the same rule the preset
-  library already states, now shared as `presets::wear` rather than restated.
-  Swapping never changes the color you are painting with, a color picked
-  mid-hold survives the release, and the "was anything changed?" test is
-  `presets::matches`, which is exactly *the same brush, color aside*. The
-  effect's own opacity (`BrushEffect::opacity`, part of what the tool does —
-  §6.2) does travel, as it does in a preset.
+- **A number binds to a preset or to nothing.** What it binds to is the preset in
+  hand at the release (`AppState::preset_in_hand`) — the one a click under the
+  hold put on, or the slot's own for an untouched hold, or the displaced brush's
+  for an empty slot. A brush that descends from no preset the library still has
+  is a tool the rack cannot name, and a tune with no tool under it is kept
+  nowhere. Removing a preset empties every number bound to it
+  (`slots::unbind`), and a stored name the library cannot answer is an empty
+  slot wherever it is met, so a stale binding can only ever do nothing.
 - **A hold ends only for whoever made it.** The grip is carried through, so a
   keyup cannot end an eraser stroke and lifting the pen cannot release a key
   still under a finger; the slot is carried too, so a hand rolling from 3 to 4
@@ -487,16 +518,24 @@ Four things the rule has to get right, each a place a looser design goes wrong:
   releases whatever is held, because focus leaving is the one way a key ends
   without ever sending its keyup.
 
+The split reaches the preset rows too. A row lights while the live brush is still
+*that tool* — `presets::same_tool`, the transient half and the color set aside —
+so a pen sized up is still the pen and the row still says so, where it used to go
+out on the first pixel of a Size drag. The stricter test (`presets::same_brush`,
+size and flow counted) answers the two questions a size counts in: whether a
+slot's brush is the one in hand, and whether "Overwrite preset" has anything to
+write, since a preset keeps a size and flow of its own.
+
 The rack is read off the **physical** key (`code`, not `key`): on a French layout
 the digit row types `&é"'` unshifted, and a rack reachable only through Shift
 would be no rack.
 
 **Holding a number draws the rack** (`slots::SlotOverlay`): a column down the
 left of the window of the brushes the digits carry, each shown as the rendered
-test stroke the preset library shows it by (§11) and named where the slot still
-*is* one of the presets. The held row is ringed; an empty digit appears when it
-is the one being held, since holding an empty number is not a mistake but how it
-gets its first brush.
+test stroke the preset library shows it by (§11) and named by the preset it is
+bound to, whatever size it holds it at. The held row is ringed; an empty digit
+appears when it is the one being held, since holding an empty number is not a
+mistake but how it gets its first brush.
 
 The held row is drawn from **what the number will keep** rather than from what is
 stored — the release's own rule asked a moment early (`Held::would_keep`, which is
@@ -508,8 +547,8 @@ a transient rack is already gone and the answer waits for the next press of that
 key. What it cannot preview is the *picture* of a brush tuned under the hold — a
 Size drag makes a new brush every frame, and rendering a thumbnail per frame is
 GPU spent on a picture nobody has asked to keep — so the row keeps the last true
-picture of the slot rather than blinking empty, and its name, which costs a
-lookup, updates throughout.
+picture of the slot rather than blinking empty, and its name, which is the
+binding's, updates the moment a preset is clicked under it.
 
 It replaced a permanent row of ten chips at the head of the Brush panel, and the
 trade is the point. The chips spent the scarcest space in the app — panel height
@@ -519,7 +558,8 @@ unlabelled numbers actually raises is *what is on 4*. Being momentary is what
 pays for the answer. On screen only while a finger is on the key that summons it,
 the overlay can afford the width of a real preview and costs the panel nothing —
 and the previews were already there to be shown, one cache keyed by the brush
-itself, so a slot that came from a preset is rendered once for both viewers.
+itself, so a slot still at its preset's own size and flow is rendered once for
+both viewers.
 
 **The rail's visibility menu can keep it up** ("Quick brushes" — one of the three
 entries in that menu that are not panels in the stack), and that is what makes the
@@ -578,13 +618,16 @@ where that eye is during hold-and-draw. It grows rather than sliding out, the ra
 being anchored to that edge, so the digits stay in one column and only the picture
 moves.
 
-The second mark answers the second question: the row the live brush still *is*
-(color aside) is lit in the preset rows' own blue, on the same test — so a slot and
-a preset holding one brush light together and say they are two ways to it. They
-only look like one question while a key is down. Pinned and idle, nothing is held,
-the whole rack rests transparent, and the lit row is the only thing saying which of
-the ten is in hand — which is what the chips' `active` used to be for. Held wins
-where both apply: it is what the user is doing, not a state they are in.
+The second mark answers the second question: the row whose brush the live brush
+still *is* (color aside) is lit in the preset rows' own blue. On the stricter of
+the library's two tests, the size and flow counted (`presets::same_brush`) — a
+slot *is* a size and a flow, where a preset row lights for the tool at any size —
+so a slot and the preset it is bound to light together while the slot still holds
+the preset's own tune, and the slot alone goes out when its tune is dragged off.
+They only look like one question while a key is down. Pinned and idle, nothing is
+held, the whole rack rests transparent, and the lit row is the only thing saying
+which of the ten is in hand — which is what the chips' `active` used to be for.
+Held wins where both apply: it is what the user is doing, not a state they are in.
 
 Reading the live brush costs nothing per stroke, and that is not an accident of
 this component: a sample dispatches *quietly* and never refreshes the observable,
@@ -628,8 +671,9 @@ between them.
 
 Clicking a row *during* a hold is left meaning what the one rule already makes it
 mean: the click puts that slot's brush on, and the hold keeps whatever is live
-when it ends, so holding 3 and clicking 5 copies 5 onto 3 exactly as holding 3
-and clicking a preset assigns that preset. One rule, no special case.
+when it ends, so holding 3 and clicking 5 copies 5 onto 3 — binding and tune
+alike — exactly as holding 3 and clicking a preset assigns that preset. One rule,
+no special case.
 
 The hold that summons the overlay is a **key** hold alone, which is the one place
 the two grips are told apart rather than being the same hold. The pen's tail

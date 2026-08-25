@@ -42,8 +42,11 @@ which the engine draws into directly. DOM chrome surrounds it.
   Erase forgets nothing (the hand's color above all — an erasing brush carries no
   pigment of its own), and the stroke-smoothing feel (§6.11) travels with the
   brush though the record must not carry it. `brush_config::BrushConfig` is that
-  editing shape, held in `AppState::brush`; the preset library and the
-  quick-brush rack store it whole, and `state::update_brush` is the one door down
+  editing shape, held in `AppState::brush`; the preset library stores it whole,
+  the quick-brush rack stores a preset's name beside the **transient** half
+  (`brush_config::Transient` — the size and flow, the two knobs a hand adjusts
+  without changing its mind about the tool; §18.1.8 has the split), and
+  `state::update_brush` is the one door down
   — it writes the signal and dispatches `ViewCommand::SetBrush` with the
   projection (`BrushConfig::params`) and the hand's color beside it, which is
   what a fill lays even mid-erase (`Session::color`). Nothing reads a brush back
@@ -435,20 +438,22 @@ which the engine draws into directly. DOM chrome surrounds it.
   flat substrate, neutral light — so a thumbnail is the *brush's* identity card and
   its cache key is the brush snapshot alone. The snapshot *as the picture paints
   it*, which is the same thing minus the painting color: the stroke is laid in
-  the thumbnail's own red whatever RGB it is handed, so keying on the raw
-  snapshot would file one picture under a fresh name for every color the artist
-  happened to be holding — and a quick slot assigned under a hold stores the
-  preset's brush wearing today's color (§18.1.8), so that is not a theoretical
-  duplicate but the row of the slot you just filled, blank while it waits on a
-  byte-for-byte copy of the thumbnail beside it. The brush's own opacity does
-  stay in the key: the stroke really is laid with it (§6.1). Each row's picture is two
-  half-canvas fills (the substrate is all paint, so smearing and lifting read), one
-  replayed stroke and one small `Engine::export_view` readback on that one kept
-  engine, generated in the background and cached per session. The key being the
-  brush is what lets the cache have two viewers for the price of one: the preset
-  library's rows and the quick-brush rack the number keys draw (§18.1.8) show the
-  same picture of the same brush, and a slot that came from a preset is never
-  rendered twice. The generator therefore belongs to the app **root**, not to
+  the thumbnail's own gray whatever RGB it is handed, so keying on the raw
+  snapshot would file one picture under a fresh name for every color a preset
+  happened to be saved in — a preset carries the color the hand held when it
+  was written, and `presets::wear` keeps the live one over it (§18.1.8), so one
+  tool saved twice in two colors would be rendered twice for one row's worth of
+  picture. The brush's own opacity does stay in the key: the stroke really is
+  laid with it (§6.1) — and so do the size and flow, since a slot tuned off its
+  preset's is a different stroke. Each row's picture is two half-canvas fills
+  (the substrate is all paint, so smearing and lifting read), one replayed
+  stroke and one small `Engine::export_view` readback on that one kept engine,
+  generated in the background and cached per session. The key being the brush
+  is what lets the cache have two viewers for the price of one: the preset
+  library's rows and the quick-brush rack the number keys draw (§18.1.8) show
+  the same picture of the same brush — a slot is its preset at a size and flow
+  (`slots::resolve`), and one still at the preset's own is never rendered
+  twice. The generator therefore belongs to the app **root**, not to
   either viewer — the Brush panel closes, and the rack's overlay exists only
   while a key is held, which is far too late to start rendering what it is there
   to show.

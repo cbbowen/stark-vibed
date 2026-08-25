@@ -373,12 +373,14 @@ pub struct Signals {
     pub presets: Signal<Vec<crate::presets::PresetEntry>>,
     /// The preset the brush in hand was taken from, by name — and still, after
     /// every edit since. That is what tells it apart from the Brush panel's
-    /// highlighted row (`presets::matches`): the row says the brush still *is* a
-    /// preset, this says which one it *descends from*, and the brush editor's
-    /// "Overwrite preset" is a question about the second. `None` when the tool
-    /// in hand came from no preset the library still has.
+    /// highlighted row (`presets::same_tool`): the row says the brush still *is*
+    /// a preset, this says which one it *descends from*, and the brush editor's
+    /// "Overwrite preset" is a question about the second — as is what a held
+    /// number binds itself to at the release (`slots::Held::settle`), since a
+    /// slot is a preset's name and not a brush. `None` when the tool in hand
+    /// came from no preset the library still has.
     ///
-    /// Written only where a whole tool arrives (`presets::wear_from`), where a
+    /// Written only where a whole tool arrives (`presets::wear`), where a
     /// name is given to the brush in hand (`presets::save_current`) and where
     /// the named preset goes (`presets::remove`) — never by an edit, which is
     /// the point of it.
@@ -525,8 +527,10 @@ impl AppState {
 /// once for the life of the page and belong to no component's scope.
 #[derive(Clone, Copy)]
 pub struct SlotState {
-    /// What each digit holds; `None` for a slot nobody has filled. Loaded from
-    /// `localStorage` at startup like the shape and preset libraries.
+    /// What each digit holds — a preset's name and a size and flow
+    /// (`slots::QuickBrush`), never a brush; `None` for a slot nobody has
+    /// filled. Loaded from `localStorage` at startup like the shape and preset
+    /// libraries, and resolved against the preset library at every use.
     pub brushes: Signal<crate::slots::Rack>,
     /// The hold in flight — `Some` for exactly as long as a number key is down
     /// or the pen's eraser end is on the glass. The rack's overlay is mounted on
@@ -895,7 +899,7 @@ impl ShapesState {
 impl SlotState {
     fn new() -> Self {
         Self {
-            brushes: root_signal(|| [None; crate::slots::COUNT]),
+            brushes: root_signal(crate::slots::empty_rack),
             held: root_signal(|| None),
             taps: root_signal(crate::slots::Taps::default),
             // The rack's pin is one of the four entries of the visibility menu

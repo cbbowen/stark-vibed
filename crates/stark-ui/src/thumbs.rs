@@ -2,9 +2,10 @@
 //! offscreen and cached (§11). Two viewers share the one cache — the preset
 //! library's rows, and the quick-brush rack the number keys draw (§18.1.8) —
 //! and they share it exactly because the key is the brush itself, so a brush
-//! that is in both places is rendered once. Itself *as the picture paints it*,
-//! painting color aside ([`keyed`]): a slot carries the color that was live when
-//! it was filled, and one preset in two colors is one picture.
+//! that is in both places is rendered once: a slot is its preset at a size and
+//! flow (`slots::resolve`), and one still at the preset's own is the preset's
+//! picture. Itself *as the picture paints it*, painting color aside
+//! ([`keyed`]): one preset saved in two colors is one picture.
 //!
 //! Each thumbnail is a mid-gray stroke drawn across a canvas laid **entirely in
 //! paint** — a light-gray slab on the left half, a dark-gray slab on the right —
@@ -159,18 +160,17 @@ fn lookup(state: AppState, w: &BrushConfig) -> Option<String> {
 ///
 /// The picture ignores the RGB it is handed — every thumbnail is drawn in
 /// [`STROKE_COLOR`], over the same two grays — so two brushes differing only in
-/// painting color are one picture, and keying on the raw snapshot files that one
-/// picture under a fresh name for every color the artist happens to be holding.
-///
-/// That is not a tidiness point, it is a blank row. `presets::wear` keeps the
-/// live color across every swap (§18.1.8), so a slot assigned under a hold stores
-/// the preset's brush wearing *today's* color: under the raw key its row misses a
-/// cache the preset list already filled, and shows nothing until a background
-/// render produces a byte-for-byte copy of the thumbnail sitting beside it.
+/// painting color are one picture, and keying on the raw snapshot would file
+/// that one picture under a fresh name for every color a preset happened to be
+/// saved in: a preset carries the color the hand held when it was written
+/// (`presets::wear` keeps the live one on the way back in, §18.1.8), so one
+/// tool saved twice in two colors would be rendered twice for one row's worth
+/// of picture.
 ///
 /// The effect's opacity is deliberately untouched: it is the brush's own — the
 /// stroke really is laid under it (§6.2) — so two brushes that differ in it are
-/// two pictures and keep two entries.
+/// two pictures and keep two entries. So are the size and flow, for the same
+/// reason: a slot tuned off its preset is a different stroke, and gets one.
 fn keyed(w: &BrushConfig) -> BrushConfig {
     let mut w = *w;
     w.paint.color = STROKE_COLOR;
@@ -228,12 +228,13 @@ pub fn refresh(state: AppState) {
 /// quick-brush rack (§18.1.8), whose overlay shows the same picture per slot.
 ///
 /// The rack is scanned as well as the library rather than instead of being
-/// assumed to be a subset of it, because it is not one: a slot tuned under a
-/// hold keeps a brush no preset holds (`slots::release`), and that is exactly the
-/// slot whose row would otherwise be the only blank one in the column. Presets
-/// first, so the list a user is looking at fills in before the rack they have to
-/// hold a key to see — and a slot that *did* come from a preset costs nothing
-/// here, since the two hash to one key.
+/// assumed to be a subset of it, because it is not one: a slot is its preset at
+/// a size and flow of its own (`slots::resolve`), and one tuned off the preset's
+/// is a brush no preset holds — exactly the slot whose row would otherwise be
+/// the only blank one in the column. Presets first, so the list a user is
+/// looking at fills in before the rack they have to hold a key to see — and a
+/// slot still at its preset's own size costs nothing here, since the two are one
+/// key.
 fn next_missing(state: AppState) -> Option<BrushConfig> {
     let cache = state.thumbs.cache.peek();
     let presets = state.presets.peek();
@@ -241,7 +242,11 @@ fn next_missing(state: AppState) -> Option<BrushConfig> {
     presets
         .iter()
         .map(|e| e.brush)
-        .chain(rack.iter().flatten().copied())
+        .chain(
+            rack.iter()
+                .flatten()
+                .filter_map(|slot| crate::slots::resolve(&presets, slot)),
+        )
         // Asked on the same terms the cache answers on ([`keyed`]) — and it has
         // to be, or a brush filed under its rendered color would be reported
         // missing forever and `refresh` would never finish its scan.
@@ -425,11 +430,10 @@ mod tests {
         b
     }
 
-    /// The blank row this key exists to rule out: `presets::wear` keeps the live
-    /// painting color across every swap, so a slot filled from a preset is that
-    /// preset wearing today's color (§18.1.8). One picture — the thumbnail is
-    /// painted in its own gray either way — so it must not cost a second render,
-    /// and the row must not wait on one.
+    /// The second render this key exists to rule out: a preset carries the color
+    /// it was saved in and `presets::wear` keeps the live one over it (§18.1.8),
+    /// so one tool saved twice in two colors is one picture — the thumbnail is
+    /// painted in its own gray either way — and must not cost two.
     #[test]
     fn two_painting_colors_of_one_brush_are_one_thumbnail() {
         assert_eq!(

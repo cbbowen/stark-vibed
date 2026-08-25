@@ -86,8 +86,11 @@ pub fn BrushPanel() -> Element {
 }
 
 /// The preset library (`crate::presets`) at the panel's foot: one row per preset —
-/// click applies it, hover reveals a remove ✕. The row whose snapshot the live brush
-/// still *is* (color aside) is highlighted; it goes out the moment any knob moves.
+/// click applies it, hover reveals a remove ✕. The row whose *tool* the live brush
+/// still is — size, flow and color aside (`presets::same_tool`) — is highlighted;
+/// it goes out the moment any other knob moves. Size and flow are the transient
+/// half, adjusted all day without the tool becoming another tool, so a pen sized
+/// up is still the pen and the row still says so.
 ///
 /// The section takes every pixel the panel has left and scrolls its own overflow, so
 /// the library's size is the user's to choose (by the panel's resize grip) rather than
@@ -107,7 +110,8 @@ fn PresetSection() -> Element {
     let state = use_context::<AppState>();
     let entries = (state.presets)();
     // The whole tool — feel and inactive effect included — so a row goes out
-    // when the smoothing moves off its snapshot like it does for any other knob.
+    // when the smoothing moves off its snapshot like it does for any durable
+    // knob.
     let brush = (state.brush)();
 
     rsx! {
@@ -131,7 +135,7 @@ fn PresetSection() -> Element {
                     {
                         let apply_name = entry.name.clone();
                         let remove_name = entry.name.clone();
-                        let active = presets::matches(&brush, &entry.brush);
+                        let active = presets::same_tool(&brush, &entry.brush);
                         // The brush as a stroke (`crate::thumbs`), filling the whole
                         // row as its background: the preview is the star, and the
                         // name floats over it (shadowed in the stylesheet) to tell

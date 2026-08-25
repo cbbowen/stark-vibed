@@ -4,7 +4,14 @@
 //! A preset is a whole brush **except the painting color**: applying one keeps
 //! the current RGB (color belongs to the Color panel) while everything else —
 //! including the effect's own opacity (§6.2) — comes from the preset
-//! ([`wear`]).
+//! ([`wear`]). Both halves of the brush, that is: the durable half, which is
+//! what the tool *is* and which nothing but a preset stores, and the transient
+//! half — the size and flow it was saved at (`brush_config::Transient`). The
+//! quick-brush rack (`crate::slots`) holds no brush of its own: a slot names a
+//! preset here and keeps a transient half beside the name, so the tool on a
+//! number is whatever the preset is *now* (§18.1.8). That is what makes an
+//! overwrite of a preset reach every number bound to it — and what
+//! [`same_tool`] is for, the test that sets the transient half aside.
 //!
 //! # Two kinds of entry, one list
 //!
@@ -65,11 +72,12 @@ pub struct PresetEntry {
     /// The digit this preset **ships on**, if any — how a fresh quick-brush rack
     /// is filled (§18.1.8; `slots::seed_defaults`).
     ///
-    /// Deliberately not a live binding: the rack holds brush *snapshots*, not
-    /// references back to here, so editing a slot does not edit the preset and
-    /// vice versa. This says only where the app puts a tool on the keyboard the
-    /// first time somebody sees one, which is why only the app's own presets
-    /// declare it and everything the user saves has `None`.
+    /// Not the binding itself: a slot names its preset from the rack's side
+    /// (`slots::QuickBrush`), and this says only where the app puts a tool on the
+    /// keyboard the first time somebody sees one — which is why only the app's
+    /// own presets declare it and everything the user saves has `None`. The rack
+    /// is the user's to arrange after that, and a preset does not follow its
+    /// shipped digit around once it has been moved off it.
     pub slot: Option<usize>,
     /// Whether this is one of the app's own presets rather than the user's.
     ///
@@ -512,11 +520,12 @@ pub fn apply(state: AppState, name: &str) {
     // nothing, which is exactly the case of filling a slot with the brush already
     // in hand. Said here rather than in [`wear`], which the hold uses itself.
     slots::claim(state);
-    wear_from(state, entry.brush, Some(entry.name));
+    wear(state, entry.brush, Some(entry.name));
 }
 
 /// Put `brush` on: make it the live brush, **keeping the painting color** and
-/// resolving its stamp.
+/// resolving its stamp — and record which preset it came `from`, which is what
+/// [`AppState::preset_in_hand`] takes.
 ///
 /// The rule this module's docs state, as a function, because it is not only the
 /// preset library's any more — the quick-brush rack (`crate::slots`) swaps
@@ -530,24 +539,17 @@ pub fn apply(state: AppState, name: &str) {
 /// opacity (`BrushEffect::opacity`, part of what the tool does — §6.2) rides
 /// along with the tool, as does everything else.
 ///
+/// `from` is the caller's to say rather than looked up here, because every
+/// caller knows it better than a lookup by snapshot could: a preset row clicked
+/// ([`apply`]) has an exact name even where two entries hold the same brush, a
+/// quick slot names its preset outright (`slots::QuickBrush`), and a hold ending
+/// (`slots::release`) puts back a brush that may have been edited away from its
+/// preset and must not forget which one that was.
+///
 /// A stamp shape whose bytes are no longer anywhere (removed from the shape
 /// library, unseen by this document) falls back to the round tip rather than
 /// pointing at an asset the engine would silently substitute.
-pub fn wear(state: AppState, brush: BrushConfig) {
-    // A snapshot's provenance is whichever preset it still is: a quick slot holds
-    // no name of its own (`PresetEntry::slot`), so this is the same answer the
-    // rack's overlay gives when it labels the row.
-    let from = name_of(&state.presets.peek(), &brush);
-    wear_from(state, brush, from);
-}
-
-/// [`wear`], told which preset the tool came from — what
-/// [`AppState::preset_in_hand`] takes. For the two callers that know better than
-/// a lookup by snapshot: a preset row clicked ([`apply`]), whose name is exact
-/// even where two entries hold the same brush, and a quick-slot hold ending
-/// (`slots::release`), which puts back a brush that may have been edited away
-/// from its preset and must not forget which one that was.
-pub fn wear_from(state: AppState, brush: BrushConfig, from: Option<String>) {
+pub fn wear(state: AppState, brush: BrushConfig, from: Option<String>) {
     // A whole tool arriving is not an adjustment of the one you had — not even in
     // the case where it differs in nothing but its size, which the tour would
     // otherwise read as somebody reaching for the size slider (§24.2). This is the
@@ -628,7 +630,9 @@ pub fn save_current(state: AppState, name: String) {
 }
 
 /// Drop one of the user's presets from the library. The live brush is untouched
-/// — it stops matching a library entry, nothing more.
+/// — it stops matching a library entry, nothing more. Every quick slot bound to
+/// the preset is emptied with it (`slots::unbind`): a slot is a name and a tune,
+/// and a name the library no longer answers to holds nothing.
 ///
 /// The app's own presets survive by name, which is belt and braces: their rows
 /// wear a lock rather than a trash, so nothing offers this. It costs one term to
@@ -636,8 +640,15 @@ pub fn save_current(state: AppState, name: String) {
 /// built-in the next start would silently bring back.
 pub fn remove(state: AppState, name: &str) {
     let mut entries = state.presets;
-    entries.write().retain(|e| e.builtin || e.name != name);
+    // Its own statement, for the `peek` rule — and before anything moves, since a
+    // built-in that stays must keep its slots too.
+    let refused = is_builtin(&entries.peek(), name);
+    if refused {
+        return;
+    }
+    entries.write().retain(|e| e.name != name);
     persist(&entries.read());
+    slots::unbind(state, name);
     // A brush taken from a preset that is gone descends from nothing the library
     // has: no name to show for it, and nothing left to overwrite. Bound before the
     // `if`: a `peek` in the condition stays borrowed through a body that writes
@@ -658,29 +669,36 @@ pub fn next_name(entries: &[PresetEntry]) -> String {
         .unwrap()
 }
 
-/// The library's name for `brush`, where some preset still *is* it — what the
-/// quick-brush rack labels a slot by (`slots::SlotOverlay`), since a slot holds
-/// a snapshot rather than a reference back to the preset it came from.
-///
-/// [`matches`] is the test, so this answers on exactly the terms the preset rows
-/// light on: a slot tuned away from what it was given gets no name back, which is
-/// the truth — it is not that preset any more.
-pub fn name_of(entries: &[PresetEntry], brush: &BrushConfig) -> Option<String> {
-    entries
-        .iter()
-        .find(|e| matches(brush, &e.brush))
-        .map(|e| e.name.clone())
+/// The library's entry called `name`, if it still has one.
+pub fn find<'a>(entries: &'a [PresetEntry], name: &str) -> Option<&'a PresetEntry> {
+    entries.iter().find(|e| e.name == name)
 }
 
-/// Whether the live brush *is* this preset — everything but the painting color
-/// (RGB), which [`apply`] deliberately leaves alone. Exact equality on purpose:
-/// the row highlights until any knob moves off the preset, then goes out. The
-/// smoothing amount is one of the knobs (§6.11): a preset worn and then
-/// smoothed differently is no longer that preset.
-pub fn matches(current: &BrushConfig, preset: &BrushConfig) -> bool {
-    let mut p = *preset;
-    p.paint.color = current.paint.color;
-    p == *current
+/// Whether the live brush is still **this tool** — the preset in every durable
+/// knob, with the transient half (size and flow, `brush_config::Transient`) and
+/// the painting color set aside. What the preset rows light on: a tool put on
+/// and then sized up is the same tool at another size, so the row stays lit,
+/// while the smoothing amount is one of the knobs (§6.11) and a preset worn and
+/// then smoothed differently is no longer that preset. The effect's own opacity
+/// is durable too — part of what the tool does (§6.2) — so the row goes out
+/// the moment it moves.
+///
+/// Exact equality on the rest, on purpose: the row says the brush still *is*
+/// the preset, not that it resembles one.
+pub fn same_tool(current: &BrushConfig, preset: &BrushConfig) -> bool {
+    same_brush(&current.with_transient(preset.transient()), preset)
+}
+
+/// Whether two brushes are **the same brush** — equal in both halves, the
+/// painting color alone set aside, since [`apply`] deliberately leaves it. The
+/// stricter of the two tests, for the questions a size counts in: whether a
+/// quick slot's brush is the one in hand (`slots::SlotOverlay`), and whether
+/// writing the brush back over its preset would change anything
+/// ([`Overwrite::Unchanged`]), since a preset carries the transient half too.
+pub fn same_brush(a: &BrushConfig, b: &BrushConfig) -> bool {
+    let mut b = *b;
+    b.paint.color = a.paint.color;
+    b == *a
 }
 
 /// What "Overwrite preset" can do with the brush in hand. The brush editor's
@@ -697,6 +715,8 @@ pub enum Overwrite {
     /// (see [`save_current`]).
     Builtin(String),
     /// The preset in hand already *is* this brush (color aside): nothing to write.
+    /// Judged with the transient half counted ([`same_brush`]): a preset keeps a
+    /// size and a flow, so a brush moved only in those has something to write.
     Unchanged(String),
     /// Replace the named preset's snapshot with the brush in hand.
     Ready(String),
@@ -704,13 +724,13 @@ pub enum Overwrite {
 
 /// Decide [`Overwrite`] for the brush in hand.
 pub fn overwrite(entries: &[PresetEntry], in_hand: Option<&str>, brush: &BrushConfig) -> Overwrite {
-    let Some(entry) = in_hand.and_then(|name| entries.iter().find(|e| e.name == name)) else {
+    let Some(entry) = in_hand.and_then(|name| find(entries, name)) else {
         return Overwrite::Nothing;
     };
     let name = entry.name.clone();
     if entry.builtin {
         Overwrite::Builtin(name)
-    } else if matches(brush, &entry.brush) {
+    } else if same_brush(brush, &entry.brush) {
         Overwrite::Unchanged(name)
     } else {
         Overwrite::Ready(name)
@@ -872,13 +892,50 @@ mod tests {
         assert_ne!(first.slot, Some(slots::ERASER));
     }
 
+    /// The line between the halves, as the preset rows light on it: the transient
+    /// half and the color are set aside, and every other knob counts.
+    #[test]
+    fn the_same_tool_is_the_preset_at_any_size_and_flow() {
+        let preset = BrushConfig {
+            size: 33.0,
+            ..BrushConfig::default()
+        };
+        let mut resized = preset;
+        resized.set_transient(crate::brush_config::Transient {
+            size: 80.0,
+            flow: 0.2,
+        });
+        let mut recolored = preset;
+        recolored.paint.color = [0.9, 0.1, 0.2];
+        let mut thinned = preset;
+        thinned.set_opacity(0.4);
+        let smoothed = BrushConfig {
+            smoothing: 0.5,
+            ..preset
+        };
+        let erasing = BrushConfig {
+            effect: BrushEffectType::Erase,
+            ..preset
+        };
+
+        assert!(same_tool(&resized, &preset), "size and flow are transient");
+        assert!(same_tool(&recolored, &preset), "color is the hand's");
+        assert!(!same_tool(&thinned, &preset), "opacity is the tool's");
+        assert!(!same_tool(&smoothed, &preset), "the feel is the tool's");
+        assert!(!same_tool(&erasing, &preset), "the effect is the tool");
+        // The stricter test counts the size.
+        assert!(same_brush(&recolored, &preset));
+        assert!(!same_brush(&resized, &preset));
+    }
+
     #[test]
     fn overwrite_answers_for_the_preset_in_hand() {
         // The rule the brush editor's button is drawn from: dead with no name in
         // hand or a name the library no longer has, dead on the app's own (the
         // write would not outlast the next start), dead where there is nothing
         // to write, and live only for the user's own preset the brush has moved
-        // off — by something a preset carries, which the color is not.
+        // off — by something a preset carries, which the color is not. The size
+        // is: a preset keeps the transient half, so a resize is a write.
         let mut entries = shipped();
         let mine = BrushConfig {
             size: 33.0,

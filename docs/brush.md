@@ -1830,8 +1830,10 @@ encoding. Instead:
   hatch from heavy smoothing is the one artists already reach for to do fine
   work.
 - **The amount is stored with the preset, UI-side** — a field of the preset
-  library and the quick-brush rack snapshots (`stark-ui`, localStorage; the
-  versioned format migrates, absent = 0), never of the action log.
+  library (`stark-ui`, localStorage; the self-describing format reconciles by
+  name, absent = 0), and so of every quick slot bound to a preset, since a slot
+  stores the preset's name and only its own size and flow (§18.1.8) — never of
+  the action log.
 
 The name collision is deliberate avoided: `path.rs` already has a private
 `SMOOTHING` — the fit's curvature ridge, numerical conditioning, not a feel knob

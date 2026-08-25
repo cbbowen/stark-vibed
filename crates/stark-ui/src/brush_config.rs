@@ -1,4 +1,5 @@
-//! The brush as **this frontend** carries it: [`BrushConfig`].
+//! The brush as **this frontend** carries it: [`BrushConfig`], and the
+//! **transient** half of it a quick slot keeps of its own ([`Transient`]).
 //!
 //! The engine's [`BrushParams`] is shaped for what a stroke's record needs —
 //! the shared tip knobs and *the* effect in force, with each effect carrying
@@ -11,11 +12,34 @@
 //! embodies it and the record must not carry it.
 //!
 //! One type for all of it, so a whole-brush snapshot that lost its feel or its
-//! inactive half is unrepresentable: the live brush (`AppState::brush`), the
-//! preset library (`crate::presets`) and the quick-brush rack (`crate::slots`)
-//! all traffic in this. The engine never sees it — [`params`](BrushConfig::params)
-//! is the one projection down, and `state::update_brush` the one door that
-//! sends it.
+//! inactive half is unrepresentable: the live brush (`AppState::brush`) and the
+//! preset library (`crate::presets`) both traffic in this. The engine never sees
+//! it — [`params`](BrushConfig::params) is the one projection down, and
+//! `state::update_brush` the one door that sends it.
+//!
+//! # Durable and transient
+//!
+//! The brush has two halves, and the line between them is what a hand changes
+//! its mind about. The **size** and the **flow** are adjusted all day without the
+//! tool becoming a different tool — they are the two knobs on the Brush panel, the
+//! two the tuning drag moves (§18.1.9), the two a number key remembers. That is
+//! the **transient** half. Everything else — shape, tapers, dynamics, the effect
+//! and its opacity, the feel — is what the tool *is*: the **durable** half, which
+//! a preset owns and nothing else stores. A preset carries both halves, so
+//! clicking one puts on the tool at the size and flow it was saved at; a quick
+//! slot carries a preset's *name* beside a [`Transient`] of its own, so the tool
+//! on a number is looked up live and an edit to the preset reaches every number
+//! bound to it (§18.1.8, `crate::slots`).
+//!
+//! The transient half is a type and the durable half is not, on purpose. The
+//! flow has to stay where the model records it — inside the effect in force
+//! (`PaintEffect::dynamics.flow`, `EraseEffect::flow`), with the inactive effect
+//! keeping its own so the Paint ↔ Erase toggle still forgets nothing — which
+//! rules out a nested `durable` field holding the effects minus their flow. So
+//! [`Transient`] is a *view* of the brush, read off it and written back
+//! ([`transient`](BrushConfig::transient), [`set_transient`](BrushConfig::set_transient)),
+//! and "the durable half" is the brush with that view set aside
+//! (`presets::same_tool`).
 
 use serde::{Deserialize, Serialize};
 use stark_model::document::{
@@ -36,18 +60,35 @@ pub enum BrushEffectType {
     Erase,
 }
 
+/// The **transient** half of a brush: the size, and the flow of the effect in
+/// force — the two knobs a hand adjusts without changing its mind about the tool
+/// (see the module doc). What a quick slot keeps of its own beside the name of
+/// the preset it is bound to (`slots::QuickBrush`, §18.1.8).
+///
+/// A view of a [`BrushConfig`] rather than a piece of it: read off with
+/// [`BrushConfig::transient`], written back with [`BrushConfig::set_transient`].
+/// Serde because the rack stores it; no `#[serde(default)]`, since a stored slot
+/// that lacks half of its tune is a damaged entry and not a slot at some size.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Transient {
+    /// Stamp radius in canvas pixels at full pressure ([`BrushConfig::size`]).
+    pub size: f32,
+    /// The in-force effect's source rate ([`BrushConfig::flow`]).
+    pub flow: f32,
+}
+
 /// A whole brush, as edited: the shared tip knobs beside **both** effects, the
 /// switch that says which is in force, and the feel. See the module doc.
 ///
-/// Serde, because this is what the preset library and the quick-brush rack
-/// store — one stored shape for one type, so the two libraries cannot come to
-/// disagree about what a stored brush is. `#[serde(default)]` on the container:
-/// the stores skip a damaged entry outright, so a field a stored brush lacks
-/// falling back to the default is strictly more of it surviving.
+/// Serde, because this is what the preset library stores. `#[serde(default)]`
+/// on the container: the store skips a damaged entry outright, so a field a
+/// stored brush lacks falling back to the default is strictly more of it
+/// surviving.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BrushConfig {
     /// Stamp radius in canvas pixels at full pressure (`BrushParams::size`).
+    /// Transient — see the module doc.
     pub size: f32,
     /// Brush tip shape (§6.6).
     pub shape: BrushShape,
@@ -75,9 +116,11 @@ pub struct BrushConfig {
     /// panel and the eyedropper write it whatever [`effect`](Self::effect)
     /// says, a preset or a slot leaves it alone on the way in, and a fill lays
     /// it even while the eraser is held (the projection sends it beside the
-    /// params — `ViewCommand::SetBrush`).
+    /// params — `ViewCommand::SetBrush`). Its `dynamics.flow` is the transient
+    /// half's flow while paint is in force — see the module doc.
     pub paint: PaintEffect,
     /// The erasing effect's configuration — held whether or not it is in force.
+    /// Its `flow` is the transient half's flow while erase is in force.
     pub erase: EraseEffect,
     /// Stroke smoothing, 0..=1 (§6.11) — the knob, not the rope. The rope
     /// is derived at gesture start (`input::rope`), because the knob is
@@ -195,6 +238,32 @@ impl BrushConfig {
             BrushEffectType::Erase => self.erase.opacity = opacity,
         }
     }
+
+    /// The transient half — the size, and the in-force effect's flow (see the
+    /// module doc). What a quick slot keeps of its own.
+    pub fn transient(&self) -> Transient {
+        Transient {
+            size: self.size,
+            flow: self.flow(),
+        }
+    }
+
+    /// Write the transient half back: the size, and the flow of the effect in
+    /// force. The inactive effect's flow is not touched — it is that effect's
+    /// own, waiting for the toggle.
+    pub fn set_transient(&mut self, t: Transient) {
+        self.size = t.size;
+        self.set_flow(t.flow);
+    }
+
+    /// This brush at another size and flow — [`set_transient`](Self::set_transient)
+    /// by value, for the sites that build one: a quick slot resolved against its
+    /// preset (`slots::resolve`), and the "same tool" test that sets the halves
+    /// apart (`presets::same_tool`).
+    pub fn with_transient(mut self, t: Transient) -> Self {
+        self.set_transient(t);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -222,5 +291,33 @@ mod tests {
         c.effect = BrushEffectType::Paint;
         assert_eq!(c.params().effect, BrushEffect::Paint(held));
         assert_eq!(c.erase.opacity, 0.25, "…and the erase side keeps its own");
+    }
+
+    /// The transient half is the in-force effect's flow and nothing of the
+    /// other's: a slot's tune written onto a paint brush leaves the eraser's
+    /// own rate for the toggle to find, which is what keeps the halves from
+    /// undoing what the toggle promises above.
+    #[test]
+    fn the_transient_half_is_the_in_force_flow() {
+        let mut c = BrushConfig::default();
+        c.erase.flow = 2.0;
+        c.set_transient(Transient {
+            size: 40.0,
+            flow: 0.5,
+        });
+        assert_eq!(
+            c.transient(),
+            Transient {
+                size: 40.0,
+                flow: 0.5
+            }
+        );
+        assert_eq!(
+            c.paint.dynamics.flow, 0.5,
+            "paint is in force, so paint's flow moved"
+        );
+        assert_eq!(c.erase.flow, 2.0, "the inactive effect keeps its own");
+        c.effect = BrushEffectType::Erase;
+        assert_eq!(c.transient().flow, 2.0, "…and it is the transient half now");
     }
 }

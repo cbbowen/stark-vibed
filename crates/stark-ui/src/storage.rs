@@ -150,6 +150,18 @@ pub enum Store {
     /// The user's own brush presets (`crate::presets`).
     Presets,
     /// The ten brushes under the hand (§18.1.8, `crate::slots`).
+    ///
+    /// **Its key is `stark.quick`, and was `stark.slots`** — the one renaming
+    /// this registry has made, and made for the opposite of the usual reason. A
+    /// slot used to be stored as a brush snapshot and is stored as a binding now
+    /// (`slots::QuickBrush`): every old row is unreadable by this build, so
+    /// nothing was orphaned that could have been read. What the new key buys is
+    /// the *seed*. Under the old one a rack of ten unreadable rows loads as
+    /// `Some(empty)` — "set to nothing", which is left alone — and every browser
+    /// that had ever set a slot would open on an empty rack for good. Under a
+    /// fresh key it loads as "never set" and is seeded from the library
+    /// (`slots::seed_defaults`). The old key is dropped at start
+    /// ([`drop_retired`]).
     Slots,
     /// The gradient library (§22.3, `crate::gradients`).
     Gradients,
@@ -181,7 +193,7 @@ impl Store {
             Store::Shapes => ("stark.shapes", "the shape library"),
             Store::Substrates => ("stark.grounds", "the substrate library"),
             Store::Presets => ("stark.presets", "the brush presets"),
-            Store::Slots => ("stark.slots", "the quick brushes"),
+            Store::Slots => ("stark.quick", "the quick brushes"),
             Store::Gradients => ("stark.gradients", "the gradient library"),
         }
     }
@@ -324,6 +336,9 @@ pub fn drop_retired() {
         // be kept in none (`crate::visibility`).
         "stark.panels",
         "stark.navigator",
+        // The rack as brush snapshots, before a slot became a binding to a preset
+        // — see `Store::Slots` for why the key moved rather than the rows.
+        "stark.slots",
     ] {
         crate::platform::local_remove(key);
     }
@@ -530,6 +545,7 @@ mod tests {
             "stark.identity.secret",
             "stark.panels",
             "stark.navigator",
+            "stark.slots",
         ] {
             assert!(!live.contains(key));
         }
