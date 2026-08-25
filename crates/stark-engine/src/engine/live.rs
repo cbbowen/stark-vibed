@@ -393,10 +393,10 @@ pub(super) struct FrozenHead {
     /// Not recoverable from `spans` alone, and the `drain` falloff and color
     /// dynamics both read it (see `gpu::stroke::StrokeSpans`).
     dist: f32,
-    /// The brush state the tail must resume from, for a stroke that runs the
-    /// sequential stamp loop (`lift`/`deposit`/`charge`). `None` for the swept path,
-    /// which carries nothing between segments. See
-    /// [`ToolState`](crate::gpu::stroke::ToolState).
+    /// The brush state the tail must resume from: the sequential stamp loop's
+    /// reservoir (`lift`/`deposit`/`charge`), or the erase pass's accumulated
+    /// extent (§6.12). `None` for the swept path, which carries nothing
+    /// between segments. See [`ToolState`](crate::gpu::stroke::ToolState).
     tool: Option<crate::gpu::stroke::ToolState>,
     state: DocState,
     /// Which gesture this is the head of — its author's ordinal. A head is only ever

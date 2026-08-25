@@ -45,7 +45,9 @@
 //! deposit's reads are gated by the same `outside_sweep` predicate, so a texel one
 //! skips the other never loads; and a cell the coarse deposit can name is one its
 //! own hoist wrote (`plan::cell_geometry`). The tool-state copies are written whole
-//! by the very copy that checks them out.
+//! by the very copy that checks them out; the erase pass's accumulators (§6.12)
+//! are cleared by their first sweep pass or fully copied into from the carried
+//! total before anything loads them.
 
 use std::sync::{Arc, Mutex};
 
@@ -238,6 +240,16 @@ impl Kept {
             .as_ref()
             .expect("a Kept holds its lease until drop")
             .tex
+    }
+
+    /// The whole-texture view — what the erase pass binds its carried
+    /// accumulator by, and renders its working one through (§6.12).
+    pub(super) fn view(&self) -> &wgpu::TextureView {
+        &self
+            .lease
+            .as_ref()
+            .expect("a Kept holds its lease until drop")
+            .view
     }
 }
 

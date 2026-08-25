@@ -489,6 +489,14 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // `add` is the tool's only source term (§6.2) and its only amount
                     // knob: the paint height laid per unit swept optical depth.
                     {mod_slider(state, preview, mod_open, ModRow::Flow, brush)}
+                    // The eraser dial (§6.12): past zero the stroke lays nothing
+                    // and instead removes what the eye sees — the swept extent's
+                    // coverage comes off the paint's *visible* opacity, so 0.5
+                    // under a saturated stroke leaves half. A per-stroke ceiling,
+                    // not a rate: the rate is Flow above, exactly as it is for
+                    // paint, which is also where an eraser's pen mapping points.
+                    Slider { label: "Erase", min: 0.0, max: 1.0, value: brush.erase,
+                        oninput: move |v| edit(state, preview, move |b| b.erase = v) }
                     // How far the tip settles into the canvas's own tooth (§6.4):
                     // at 1 it follows every fall, the substrate is irrelevant and the
                     // mark is solid; turned *down* the paint catches on the
@@ -589,7 +597,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
 
                 Section {
                     part: BrushPart::Pickup,
-                    title: "Pickup", desc: "Canvas paint on the move — smudge, knife, eraser, blur.",
+                    title: "Pickup", desc: "Canvas paint on the move — smudge, knife, blur.",
                     glyph: icons::PICKUP,
                     open: pickup_open,
                     // The three axes a palette knife is built out of, and the three

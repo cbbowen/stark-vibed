@@ -177,3 +177,37 @@ fn fs_main(in: VsOut) -> FsOut {
     @if(resid) out.resid = vec4<f32>(xf.resid.xyz * w, w);
     return out;
 }
+
+// The erase pass's accumulator target (§6.12): one channel, the stroke's
+// **transparency mass** summed additively across the overlapping segment quads —
+// and, unlike the paint scratch beside it, across the *pieces* of a live stroke,
+// which is what lets `erase.wesl` read the whole stroke's extent at once.
+struct FsErase {
+    @location(0) mass: vec4<f32>,
+}
+
+// The erase variant of the sweep (§6.12): the same swept extent as
+// [`fs_main`], laid as **transparency** rather than paint. What it writes is the
+// mass of a parcel whose per-unit opacity is exactly 1 — so mass and height are one
+// number, the arithmetic `fill.wesl` already makes for fully opaque paint — built
+// from the same per-fragment chain as the deposit's height: `add` (the flow, and the
+// eraser's one rate), the drain, the tooth and the jitter, all factors on `τ`, so
+// the accumulated total is independent of how the path was cut (§6.2's two forms).
+//
+// **The brush's color is deliberately absent** — `xf.color.w` above scales the
+// deposit's mass and does not scale this one. An eraser lays nothing for a color to
+// be a property of, and the erase slot never carries the painting color (§18.1.8),
+// so a per-unit opacity read from `xf` here would make the Color panel's alpha
+// quietly scale how hard the *other* end of the pen erases.
+@fragment
+fn fs_erase(in: VsOut) -> FsErase {
+    let sw = sweep_of(in);
+    let tau = swept_depth(in, sw);
+    let drain = stroke_drain(stroke_arc(in, sw));
+    let tooth = substrate_tooth(in, sw);
+    let jitter = jitter_of(in);
+
+    var out: FsErase;
+    out.mass = vec4<f32>(in.extra.w * drain * tooth * jitter * tau, 0.0, 0.0, 0.0);
+    return out;
+}

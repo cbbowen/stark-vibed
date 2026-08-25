@@ -373,7 +373,11 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 ..BrushParams::default()
             },
         ),
-        // The eraser the pen's other end starts life holding (§18.1.8).
+        // The eraser the pen's other end starts life holding (§18.1.8). An
+        // eraser is `erase` up (§6.12) — it removes what the eye sees, so a
+        // half-pressure pass really is a lighter erase — with Flow as its rate,
+        // which is where the pressure mapping points: light touch feathers the
+        // coverage in, borne down it walks to the full bite.
         shipped(
             "Soft Eraser",
             Some(slots::ERASER),
@@ -381,15 +385,14 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             BrushParams {
                 size: 80.0,
                 shape: BrushShape::Round { hardness: 0.25 },
+                erase: 1.0,
                 dynamics: BrushDynamics {
-                    flow: 0.0,
-                    lift: 1.0,
-                    bleed: 0.25,
+                    flow: 1.0,
                     ..BrushDynamics::default()
                 },
                 modulation: Modulations {
                     size: Some(Modulation::linear(ModSource::Pressure)),
-                    lift: Some(Modulation {
+                    flow: Some(Modulation {
                         source: ModSource::Pressure,
                         floor: 0.0,
                         curve: 1.0,
@@ -406,14 +409,16 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             BrushParams {
                 size: 40.0,
                 shape: BrushShape::Round { hardness: 0.95 },
+                erase: 1.0,
                 dynamics: BrushDynamics {
-                    flow: 0.0,
-                    lift: 1.0,
+                    // Enough that one pass saturates the bite to the tip's very
+                    // shoulder — the hard edge the name promises.
+                    flow: 2.0,
                     ..BrushDynamics::default()
                 },
                 modulation: Modulations {
                     size: Some(Modulation::linear(ModSource::Pressure)),
-                    lift: Some(Modulation {
+                    flow: Some(Modulation {
                         source: ModSource::Pressure,
                         floor: 0.25,
                         curve: 0.0,
@@ -756,21 +761,21 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_eraser_takes_paint_and_gives_none_back() {
-        // What makes it an eraser at all (§6.2) — there is no eraser *tool* to
-        // check for, only these three numbers.
+    fn the_shipped_eraser_erases() {
+        // What makes it an eraser at all (§6.12) — there is no eraser *tool* to
+        // check for, only these two numbers: the dial that routes the stroke
+        // through the erase pass, and the flow that is that pass's one rate.
         let e = shipped()
             .into_iter()
             .find(|e| e.slot == Some(slots::ERASER))
             .expect("an eraser ships on the pen's own slot");
-        assert_eq!(
-            e.brush.params.dynamics.flow, 0.0,
-            "an eraser lays no paint of its own"
+        assert!(
+            e.brush.params.erase > 0.0,
+            "the pen's tail must erase, not paint"
         );
-        assert!(e.brush.params.dynamics.lift > 0.0, "an eraser lifts");
-        assert_eq!(
-            e.brush.params.dynamics.deposit, 0.0,
-            "and never lays back what it lifted"
+        assert!(
+            e.brush.params.dynamics.flow > 0.0,
+            "flow is the erase pass's rate; at zero the eraser would do nothing"
         );
     }
 

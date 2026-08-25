@@ -45,6 +45,12 @@ pub(super) enum StrokePath {
     /// The brush manipulates no paint already on the canvas, so the swept deposit
     /// *is* the whole stroke — one pass, no region, nothing given up.
     Swept,
+    /// The brush erases (§6.12): the same swept extent, accumulated across the
+    /// whole stroke and turned on the base's *visible* opacity instead of laid as
+    /// paint. Ahead of every other answer because `erase` names the whole of what
+    /// such a stroke does ([`BrushParams::erase`]) — the four dynamics axes do not
+    /// run, and no region is ever needed, so no tip is too large for it.
+    Erase,
     /// The brush manipulates paint, but its tip alone — before any travel is priced
     /// in — wants more than one region, and the region is the one thing pieces
     /// cannot subdivide. The swept deposit draws what it can, which is the brush's
@@ -106,6 +112,13 @@ pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
     // stroke costs more pieces, not coarser geometry — and the swept fallback below
     // draws the very segments the loop would have.
     let tol = flatten_tolerance(b);
+    if b.erase > 0.0 {
+        return StrokePlan {
+            path: StrokePath::Erase,
+            tol,
+            shortened: None,
+        };
+    }
     if d.lift <= 0.0 && d.deposit <= 0.0 && d.charge <= 0.0 && d.bleed <= 0.0 {
         return StrokePlan {
             path: StrokePath::Swept,
@@ -143,6 +156,23 @@ mod tests {
         };
         b.dynamics.lift = lift;
         b
+    }
+
+    /// `erase` answers before everything else (§6.12): past zero the stroke
+    /// erases, whatever the four dynamics axes say — they do not run — and at any
+    /// size, because the pass needs no region and so has no tip too large for it.
+    #[test]
+    fn an_erase_brush_takes_the_erase_path_whatever_else_is_set() {
+        let mut b = brush(40.0, 0.0);
+        b.erase = 0.5;
+        assert!(matches!(dynamics_setup(&b).path, StrokePath::Erase));
+        // The axes that would otherwise pick the loop…
+        b.dynamics.lift = 0.9;
+        b.dynamics.bleed = 0.4;
+        assert!(matches!(dynamics_setup(&b).path, StrokePath::Erase));
+        // …and the tip that would otherwise be too large for it.
+        b.size = super::super::budget::MAX_REGION_DIM as f32;
+        assert!(matches!(dynamics_setup(&b).path, StrokePath::Erase));
     }
 
     /// The floor the shortening cannot get under: the tip's own extent plus one

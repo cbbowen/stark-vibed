@@ -95,9 +95,11 @@ pub enum OrientationSource {
 /// - [`bleed`](Self::bleed) — the paint under the tip diffuses towards its
 ///   neighbours (a blur brush alone; wet-softening under `add`).
 ///
-/// `lift`-only is an eraser; `lift`+`deposit` (`add = 0`) a conservative smudge;
-/// `bleed`-only a blur; `add`-only ordinary paint. All flow runs with fixed
-/// iteration counts, so replay stays deterministic (§6.2).
+/// `lift`-only is a scraper — it takes paint as a knife does, by the *amount*;
+/// the tool an artist calls an eraser acts on what the eye sees instead and is
+/// [`BrushParams::erase`] (§6.12). `lift`+`deposit` (`add = 0`) is a
+/// conservative smudge; `bleed`-only a blur; `add`-only ordinary paint. All flow
+/// runs with fixed iteration counts, so replay stays deterministic (§6.2).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct BrushDynamics {
     /// The brush's own paint laid directly: the paint **height** deposited per unit of
@@ -606,6 +608,30 @@ pub struct BrushParams {
     /// documents saved before this field load as the everyday `add`-only brush.
     #[serde(default)]
     pub dynamics: BrushDynamics,
+    /// How strongly this brush **erases instead of painting**, in [0, 1]: 0 = a
+    /// brush, and the default; anything above routes the stroke through the erase
+    /// pass (§6.12), which lays no paint at all. The pass accumulates the same
+    /// swept extent a deposit would, reads it as the coverage `w` that extent
+    /// would have covered the canvas by, and scales the paint's **visible**
+    /// opacity by `1 − erase·w` — inverted through the slab law (§6.1) into
+    /// the height that shows exactly that much. That inversion is the point:
+    /// `erase = 0.5` under a saturated stroke leaves half the opacity that was
+    /// there, where a `lift`-built eraser removes half the *height*, of which
+    /// thick paint shows almost nothing.
+    ///
+    /// **A ceiling, not a rate.** `w` saturates at 1 however long a stroke works
+    /// one spot, so a stroke removes at most `erase` of what it finds — scrubbing
+    /// walks the stroke's soft edge toward that cap rather than eating past it.
+    /// The rate is [`flow`](BrushDynamics::flow), exactly as it is for paint: how
+    /// fast a pass builds `w`, and so the knob an airbrush-style eraser turns
+    /// down — which is also where an eraser's pressure mapping points
+    /// ([`Modulations::flow`]).
+    ///
+    /// The brush's color is ignored — an eraser lays nothing the color could be
+    /// a property of — and the four [`dynamics`](Self::dynamics) axes do not run:
+    /// past zero, `erase` names the whole of what the stroke does.
+    #[serde(default)]
+    pub erase: f32,
     /// Color dynamics (color jitter) — how the applied color varies across the
     /// brush and along the stroke (§6.2). Historized (it changes stored
     /// pixels); the default (amplitude 0) is the historical constant color.
@@ -754,6 +780,7 @@ impl Default for BrushParams {
             shape: BrushShape::default(),
             orientation: OrientationSource::default(),
             dynamics: BrushDynamics::default(),
+            erase: 0.0,
             color_dynamics: ColorDynamics::default(),
             jitter: Self::DEFAULT_JITTER,
             start_taper_length: 0.0,
@@ -902,6 +929,10 @@ impl BrushParams {
             shape: self.shape.sanitized(),
             orientation: self.orientation,
             dynamics: self.dynamics.sanitized(),
+            // In `[0, 1]` by the field's own doc: the removal `erase·w` is a
+            // fraction of the visible opacity, and past 1 it would ask for less
+            // than none.
+            erase: clamp01(finite_or(self.erase, d.erase)),
             color_dynamics: self.color_dynamics.sanitized(),
             // In `[0, 1]` by the field's own doc: the gate `1 + 2ε·centered` is
             // positive for every ε ≤ 1 and meaningless past it.
@@ -1108,9 +1139,10 @@ mod tests {
     #[test]
     fn a_sanitized_brush_holds_no_number_a_shader_cannot_use() {
         type Poke = (&'static str, fn(&mut BrushParams, f32));
-        let pokes: [Poke; 17] = [
+        let pokes: [Poke; 18] = [
             ("radius", |b, f| b.size = f),
             ("drain", |b, f| b.drain = f),
+            ("erase", |b, f| b.erase = f),
             ("tooth_give", |b, f| b.tooth_give = f),
             ("tooth_softness", |b, f| b.tooth_softness = f),
             ("stretch", |b, f| b.stretch = f),
@@ -1134,6 +1166,7 @@ mod tests {
                 b.dynamics.lift,
                 b.dynamics.deposit,
                 b.dynamics.bleed,
+                b.erase,
                 b.tooth_give,
                 b.color[0],
                 b.color[3],

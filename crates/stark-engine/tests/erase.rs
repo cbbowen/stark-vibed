@@ -1,0 +1,247 @@
+//! The erase pass (§6.12).
+//!
+//! The claims worth pinning are the ones the pass exists for: the dial is quoted
+//! in what the eye sees (`erase = 0.5` under a saturated stroke leaves half the
+//! visible opacity — held here as *equality with the half-covered fill*, which is
+//! the same statement with no media arithmetic in it), the strength is a ceiling
+//! a stroke cannot scrub past, separate strokes compound multiplicatively, a full
+//! erase is bare canvas again to the bit, and nothing outside the stroke's own
+//! extent moves at all. The piecewise-vs-whole and round-trip obligations ride
+//! the corpus (`corpus.rs`, case `erase`).
+
+mod common;
+
+use common::*;
+use stark_engine::RgbaImage;
+use stark_engine::command::DocCommand;
+use stark_model::Srgb;
+use stark_model::document::{BrushParams, FillOp, SelectionShape};
+use stark_model::geom::Vec2;
+
+/// The bed every test erases from: a full-canvas red fill. A fill rather than a
+/// stroke, because its coverage is *stated* (`FillOp::opacity`) — which is what
+/// lets the headline test compare an erased bed against a bed simply asked for
+/// at the target coverage.
+const RED: [f32; 3] = [1.0, 0.0, 0.0];
+
+/// An eraser (§6.12): `erase` is the dial, and Flow is its rate — high
+/// enough here that one pass saturates the bite to its ceiling over the stroke's
+/// core, so a test sampling the core is reading the dial and not a half-built
+/// fringe.
+fn eraser(strength: f32, radius: f32) -> BrushParams {
+    let mut b = brush([0.0, 0.0, 0.0, 1.0], radius);
+    b.erase = strength;
+    b.dynamics.flow = 2.5;
+    b.drain = 0.0;
+    b
+}
+
+/// Fill the whole canvas with `color` at `opacity` — the bed, or the headline
+/// test's stated-coverage reference.
+fn fill_canvas(engine: &mut stark_engine::Engine, color: [f32; 3], opacity: f32) {
+    let layer = engine.observe().active_layer;
+    engine.process(DocCommand::Fill {
+        layer,
+        op: FillOp::new(
+            SelectionShape::rect_from_corners(Vec2::new(-128.0, -128.0), Vec2::new(128.0, 128.0)),
+            0.0,
+            Srgb::new(color),
+            opacity,
+        ),
+    });
+}
+
+/// A pixel's screen position for a canvas point, under the tests' identity view.
+fn screen_of(canvas: Vec2) -> (u32, u32) {
+    let half = Vec2::new(SIZE.width as f32, SIZE.height as f32) * 0.5;
+    let p = canvas + half;
+    (p.x as u32, p.y as u32)
+}
+
+fn texel(img: &RgbaImage, canvas: Vec2) -> [i32; 3] {
+    let (x, y) = screen_of(canvas);
+    let c = img.pixel(x, y);
+    [c[0] as i32, c[1] as i32, c[2] as i32]
+}
+
+/// The worst per-channel distance between two texels.
+fn apart(a: [i32; 3], b: [i32; 3]) -> i32 {
+    a.iter().zip(b).map(|(x, y)| (x - y).abs()).max().unwrap()
+}
+
+/// A full-strength eraser returns the canvas to bare — the very pixels it showed
+/// before anything was painted — and takes nothing beyond its own extent.
+///
+/// Exactness is the claim: a full erase inverts the slab law to a height of
+/// exactly 0, a zero tile composites as nothing, and the display dither is a
+/// function of position (§6.5) — so "erased" and "never painted" are the same
+/// image, not merely similar.
+#[test]
+fn a_full_erase_is_bare_canvas_again() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let bare = engine.render_to_image();
+    fill_canvas(&mut engine, RED, 1.0);
+    let painted = engine.render_to_image();
+    assert!(
+        red_dominant(center(&painted)),
+        "the bed must read as paint before the claim means anything"
+    );
+
+    stroke_with(
+        &mut engine,
+        eraser(1.0, 24.0),
+        &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)],
+    );
+    let after = engine.render_to_image();
+
+    assert_eq!(
+        texel(&after, Vec2::ZERO),
+        texel(&bare, Vec2::ZERO),
+        "a full erase must be bare canvas to the bit at the stroke's core"
+    );
+    // …and the bed beyond the tip's reach (radius 24, plus the soft edge) is
+    // exactly the painted image still: the integrate's untouched branch passes
+    // the base through rather than recomputing it.
+    for p in [Vec2::new(0.0, 90.0), Vec2::new(-100.0, -80.0)] {
+        assert_eq!(
+            texel(&after, p),
+            texel(&painted, p),
+            "paint the stroke never reached moved at {p:?}"
+        );
+    }
+}
+
+/// `erase` is a **ceiling, not a rate**: a stroke scrubbing the same spot five
+/// times leaves what one clean pass leaves. The extent accumulates and its
+/// coverage saturates at 1, so the removal saturates at the dial (§6.12) —
+/// where a per-piece or per-pass law would compound toward bare canvas.
+#[test]
+fn scrubbing_cannot_pass_the_dial() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    fill_canvas(&mut engine, RED, 1.0);
+    let bed = engine.render_to_image();
+
+    // One clean pass across y = −40…
+    stroke_with(
+        &mut engine,
+        eraser(0.5, 20.0),
+        &[Vec2::new(-80.0, -40.0), Vec2::new(80.0, -40.0)],
+    );
+    // …and one stroke worrying the same band at y = 40, five crossings.
+    let scrub: Vec<Vec2> = (0..5)
+        .flat_map(|i| {
+            let x = if i % 2 == 0 { -80.0 } else { 80.0 };
+            [Vec2::new(x, 40.0 + i as f32 * 0.25)]
+        })
+        .collect();
+    stroke_with(&mut engine, eraser(0.5, 20.0), &scrub);
+    let after = engine.render_to_image();
+
+    let once = texel(&after, Vec2::new(0.0, -40.0));
+    let scrubbed = texel(&after, Vec2::new(0.0, 40.0));
+    assert!(
+        apart(once, scrubbed) <= 2,
+        "a scrubbed half-eraser must land where one pass lands: one pass \
+         {once:?}, scrubbed {scrubbed:?}"
+    );
+    // The pass did something, or the equality above is two untouched texels
+    // agreeing with each other.
+    assert!(
+        apart(once, texel(&bed, Vec2::new(0.0, -40.0))) > 20,
+        "the half eraser left the bed unmoved, so this test measured nothing"
+    );
+}
+
+/// Separate strokes compound multiplicatively on what each finds: two passes at
+/// 0.5 are one pass at 0.75, exactly as layered glazes are — `(1−½)² = 1−¾`.
+#[test]
+fn two_half_erases_are_one_three_quarter_erase() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    fill_canvas(&mut engine, RED, 1.0);
+
+    for _ in 0..2 {
+        stroke_with(
+            &mut engine,
+            eraser(0.5, 20.0),
+            &[Vec2::new(-80.0, -40.0), Vec2::new(80.0, -40.0)],
+        );
+    }
+    stroke_with(
+        &mut engine,
+        eraser(0.75, 20.0),
+        &[Vec2::new(-80.0, 40.0), Vec2::new(80.0, 40.0)],
+    );
+    let after = engine.render_to_image();
+
+    let twice_half = texel(&after, Vec2::new(0.0, -40.0));
+    let three_quarter = texel(&after, Vec2::new(0.0, 40.0));
+    assert!(
+        apart(twice_half, three_quarter) <= 2,
+        "two half erases {twice_half:?} must equal one three-quarter erase \
+         {three_quarter:?}"
+    );
+}
+
+/// **The dial is quoted in visible opacity** — the claim the pass exists for
+/// (§6.12), stated with no media arithmetic in it: a fully covered bed
+/// erased at 0.5 *is* the bed filled at 0.5. Same latent, same per-unit
+/// opacity, and a height within `exp(−OPAQUE_MASS)` of the same — so the two
+/// documents render the same pixels, lighting included.
+///
+/// A `lift`-built eraser fails this by construction: it removes a fraction of
+/// the *height*, and near-opaque paint shows almost none of that.
+#[test]
+fn a_half_erase_is_the_half_covered_fill() {
+    let Some(mut erased) = engine_or_skip() else {
+        return;
+    };
+    fill_canvas(&mut erased, RED, 1.0);
+    stroke_with(
+        &mut erased,
+        eraser(0.5, 24.0),
+        &[Vec2::new(-90.0, 0.0), Vec2::new(90.0, 0.0)],
+    );
+    let erased = erased.render_to_image();
+
+    let mut asked = engine_or_skip().expect("the adapter answered once already");
+    fill_canvas(&mut asked, RED, 0.5);
+    let asked = asked.render_to_image();
+
+    for p in [Vec2::ZERO, Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)] {
+        let (e, a) = (texel(&erased, p), texel(&asked, p));
+        assert!(
+            apart(e, a) <= 2,
+            "at {p:?} the half-erased bed {e:?} must be the half-covered fill \
+             {a:?} — the dial is not landing in the coverage domain"
+        );
+    }
+}
+
+/// Erasing where there is nothing changes nothing — to the bit. A tile the
+/// layer does not have is nothing to erase (§6.12): the pass mints no
+/// tiles, so the render after is the render before.
+#[test]
+fn erasing_bare_canvas_changes_nothing() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let before = engine.render_to_image();
+    stroke_with(
+        &mut engine,
+        eraser(1.0, 30.0),
+        &[Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)],
+    );
+    let after = engine.render_to_image();
+    let (frac, worst) = diff_fraction(&before, &after);
+    assert_eq!(
+        (frac, worst),
+        (0.0, 0),
+        "an eraser over bare canvas moved pixels"
+    );
+}

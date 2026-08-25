@@ -60,8 +60,9 @@ use crate::mirror::{Mirror, Served};
 /// gained `SetSubstrateScale` — and *inserted*, beside the `SetSubstrate` it is the other
 /// half of, which shifts the index of every variant after it, §6.4;
 /// 11: `BrushParams` gained `jitter`, §6.2 — a plain shape change to a
-/// struct every stroke gossips).
-pub(crate) const ALPN: &[u8] = b"stark/collab/11";
+/// struct every stroke gossips;
+/// 12: `BrushParams` gained `erase`, §6.12 — the same kind of change as 11).
+pub(crate) const ALPN: &[u8] = b"stark/collab/12";
 
 /// The first byte of every response.
 ///

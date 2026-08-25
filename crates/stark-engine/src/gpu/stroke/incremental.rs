@@ -12,12 +12,72 @@
 //! [`safe_frozen`] is the one rule that holds it back until its answer can no
 //! longer change, and it is what makes `preview == committed` hold here (§1.3).
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use stark_model::document::StrokeRecord;
 use stark_model::geom::TileCoord;
 
 use super::scratch::Kept;
+use crate::gpu::tile::TilePairHandle;
 
-/// The stamp loop's carried state at a cut point in a stroke (§6.2).
+/// A stroke's carried state at a cut point (§6.2) — what its path threads
+/// between pieces that does not already live on the canvas. Which of the two kinds
+/// it holds follows the path itself, and cannot disagree with it: the path is a
+/// pure function of the brush ([`dynamics_setup`](super::dynamics::dynamics_setup)),
+/// and a carry only ever resumes the stroke that captured it.
+///
+/// The textures ride in [`Kept`] leases rather than being created and destroyed
+/// per pointer move: one of these is captured per fold, and the pool hands the
+/// same textures back on drop — which is sound *because* a run only ever borrows a
+/// `ToolState`, so the drop that returns a lease can only happen after the run's
+/// own submit (see [`Kept`]).
+pub struct ToolState(pub(super) Carried);
+
+/// The two kinds of cross-piece stroke state, one per path that has any — the
+/// swept deposit carries nothing at all.
+pub(super) enum Carried {
+    /// The stamp loop's tool reservoir (§6.2). Boxed for size alone: three
+    /// pooled leases dwarf the erase map's header, and a `ToolState` moves
+    /// through `Option::or` on every fold.
+    Loop(Box<Reservoir>),
+    /// The erase pass's accumulated extent (§6.12).
+    Erase(EraseCarry),
+}
+
+impl ToolState {
+    /// The loop's reservoir, on a carry the loop captured.
+    ///
+    /// The other kind is unreachable rather than an error to handle: which path a
+    /// stroke takes is a pure function of its brush (§6.2), a carry resumes only
+    /// the stroke that captured it, and the brush is snapshotted when the gesture
+    /// starts — so the loop can only ever be handed its own kind back.
+    pub(super) fn reservoir(&self) -> &Reservoir {
+        match &self.0 {
+            Carried::Loop(r) => r,
+            Carried::Erase(_) => {
+                unreachable!(
+                    "an erase carry resumed the stamp loop; the path is a pure function of the brush (§6.2)"
+                )
+            }
+        }
+    }
+
+    /// The erase pass's accumulation, on a carry it captured — [`reservoir`](Self::reservoir)'s
+    /// argument, from the other side.
+    pub(super) fn erased(&self) -> &EraseCarry {
+        match &self.0 {
+            Carried::Erase(e) => e,
+            Carried::Loop(_) => {
+                unreachable!(
+                    "a loop carry resumed the erase pass; the path is a pure function of the brush (§6.2)"
+                )
+            }
+        }
+    }
+}
+
+/// The stamp loop's carried state (§6.2).
 ///
 /// The sequential loop threads exactly two things from one segment to the next that
 /// do not already live on the canvas: the **tool reservoir** — what paint the tip is
@@ -30,12 +90,7 @@ use super::scratch::Kept;
 /// The reservoir is brush-*local*, which is why this works at all: it says nothing
 /// about where the stroke is, so the region rectangle may change completely between
 /// the piece that produced this state and the piece that resumes from it.
-/// The textures ride in [`Kept`] leases rather than being created and destroyed
-/// per pointer move: one of these is captured per fold, and the pool hands the
-/// same textures back on drop — which is sound *because* a run only ever borrows a
-/// `ToolState`, so the drop that returns a lease can only happen after the run's
-/// own submit (see [`Kept`]).
-pub struct ToolState {
+pub(super) struct Reservoir {
     /// Reservoir color: per texel, the latent paint (rgb) and its per-unit opacity.
     pub(super) color: Kept,
     /// Reservoir aux: per texel, the carried amount (height).
@@ -45,6 +100,35 @@ pub struct ToolState {
     /// that picked up black paint has to still be carrying black when the next
     /// pointer move resumes it, and the concentrations alone cannot say so.
     pub(super) resid: Option<Kept>,
+}
+
+/// The erase pass's carried state (§6.12): per touched tile, the stroke's
+/// accumulated extent and the tile it is measured against.
+///
+/// Where the reservoir is brush-local, this is **canvas-local** — the accumulated
+/// transparency mass is a field over the tiles the stroke has reached — and that
+/// is what it exists to be: the pass turns the *whole* stroke's extent on the
+/// pristine paint at once (`erase.wesl`), so a piece needs everything the pieces
+/// before it accumulated, per texel, where the loop needs only what the tip
+/// carries.
+pub(super) struct EraseCarry {
+    pub(super) tiles: BTreeMap<TileCoord, EraseTile>,
+}
+
+/// One tile's share of an [`EraseCarry`].
+pub(super) struct EraseTile {
+    /// The layer's tile as the stroke found it — the paint every piece's rewrite
+    /// is derived from. A piece rendered later must not read the *output* of an
+    /// earlier one (the base it is handed holds exactly that), or the erase would
+    /// compound per piece instead of per stroke. An `Arc`'d pool handle, so
+    /// keeping it is a refcount, not a copy.
+    pub(super) pristine: TilePairHandle,
+    /// The stroke's transparency mass over this tile, summed so far
+    /// (`stamp.wesl::fs_erase`). Shared between successive carries rather than
+    /// copied: a piece never writes the accumulator it resumed from — it copies
+    /// into a fresh working texture and extends that — so the tiles a piece does
+    /// not touch ride forward as clones of the same lease.
+    pub(super) accum: Arc<Kept>,
 }
 
 /// What a range render leaves behind for the range that resumes after it.

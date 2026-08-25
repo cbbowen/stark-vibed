@@ -2,7 +2,7 @@
 //!
 //! Other painting applications bind keys to *tools* — B for brush, E for eraser,
 //! R for blur. Stark has no such list to bind: an eraser is a brush whose
-//! `lift` is up and whose `add` is zero, a blur is one with `bleed` up, and both
+//! `erase` is up (§6.12), a blur is one with `bleed` up, and both
 //! are points in the same parameter space as the brush that made them (§6.2). A
 //! key that selected a tool would have to select a *brush*, and which brush is
 //! the artist's answer, not ours.

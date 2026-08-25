@@ -1,6 +1,6 @@
 # The brush engine
 
-Tiles and channels, the fitted-path swept-segment stroke renderer, the wet-mixing dynamics loop, brush shape assets, the drag-and-hold shape assist, and stroke smoothing — §6.1, §6.2, §6.6, §6.9, §6.11.
+Tiles and channels, the fitted-path swept-segment stroke renderer, the wet-mixing dynamics loop, brush shape assets, the drag-and-hold shape assist, stroke smoothing, and the eraser — §6.1, §6.2, §6.6, §6.9, §6.11, §6.12.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
@@ -1791,3 +1791,98 @@ a soft-rope *pursuit* variant that creeps inside the dead zone, kept in reserve
 in case feel-testing wants continuous response at low amounts more than it wants
 the parked-tip stability; a mid-stroke modifier to change the amount; smoothing
 for the lasso. Each is local to the tow and its Start parameter.
+
+## 6.12 The eraser — coverage subtracted through the slab law
+
+`BrushParams::erase` in `(0, 1]` routes a stroke through the **erase pass**: the
+same swept extent every brush rasterizes, turned on the layer's *visible*
+opacity instead of laid as paint. It exists because the conserved-flux eraser —
+`lift` up, `deposit` 0 — is a *scraper*: it removes a fraction of the paint's
+**height** per pass, and the slab law `1 − exp(−K·op·h)` (§6.1) is nearly flat
+in `h` wherever paint is thick, so the knob never meant anything in the units a
+digital artist reads. The erase pass acts in those units directly, and its dial
+is honest: `erase = 0.5` under a saturated stroke leaves half the opacity that
+was there.
+
+### The law
+
+Per texel, with `m₀ = op·h` the resident paint's optical mass and `m_e` the
+stroke's accumulated **transparency mass** (below):
+
+```text
+w  = 1 − exp(−K·m_e)                    the coverage the stroke would have covered by
+v₁ = v₀ · (1 − erase·w)                 what must remain visible
+m₁ = −ln(1 − v₁)/K,   h₁ = h₀·(m₁/m₀)   the slab law inverted; op, latent, residual untouched
+```
+
+Three properties are the design:
+
+- **The erased fraction is the coverage the same stroke would have painted.**
+  `w` is the parcel alpha of §6.2's deposit with per-unit opacity 1 — the same
+  prefix-τ sweep, the same drain, tooth and jitter gates — so an eraser's edge
+  is exactly the soft edge its brush would have drawn, and Flow is its rate
+  knob with the meaning Flow always has.
+- **`erase` is a ceiling, not a rate.** `w` saturates at 1 however long the
+  stroke works one spot, so a stroke removes at most `erase` of what it finds;
+  scrubbing walks the edge toward the cap rather than eating past it. A second
+  *stroke* takes `erase` of the remainder, which is what every buildup eraser
+  does.
+- **Only the amount falls.** The per-unit opacity is what the pigment is; the
+  latent and the residual are which pigment. Erased paint is *less of the same
+  paint* (§6.1), so the pass rewrites the height lane alone and the color
+  textures pass through bit-for-bit.
+
+The brush's **color is ignored** — the erase parcel is "fully opaque
+transparency", mass = height, `fill.wesl`'s arithmetic — deliberately: the
+eraser slot never carries the painting color (§18.1.8), so a per-unit opacity
+read from the brush would let the Color panel's alpha quietly scale how hard
+the pen's other end erases. Past zero, `erase` names the whole of what the
+stroke does: the four dynamics axes do not run, and no region is ever needed,
+so no tip is too large for this path (`dynamics_setup` answers `Erase` before
+anything else).
+
+### Why the extent accumulates across pieces
+
+`1 − erase·w` is neither additive in τ nor `1 − exp(−k·τ)`, so it is *not* one
+of the two forms that compose under re-cutting (§6.2) — applied per piece it
+would compound at every cut a live stroke makes, and the committed piecewise
+render would band against its own replay. The pass therefore keeps the two
+composable halves separate: the **sweep** (`stamp.wesl::fs_erase`) accumulates
+the transparency mass additively into a one-channel accumulator per touched
+tile — across segments *and across pieces*, so re-cutting changes nothing —
+and the **integrate** (`erase.wesl`) applies the non-composable law exactly
+once per tile per render, always from the **pristine** base: the tile as the
+stroke first found it, never an earlier piece's output.
+
+Both ride the stroke's carry (`EraseCarry`, beside the stamp loop's reservoir
+in `ToolState`): per touched tile, the pristine handle (an `Arc` bump, tiles
+being copy-on-write) and the accumulator lease. A resuming piece **copies** the
+carried accumulator into a working texture and extends the copy — the carried
+one is only ever read — which is what lets the live tail re-render from the
+same frozen head every pointer move, and makes `preview == committed` hold with
+no seam term at all: the pieces' render *is* the whole's sums.
+
+A tile the layer does not have is nothing to erase: no output tile, no
+accumulator, no entry in the carry — an eraser over bare canvas mints nothing.
+
+### What it costs, and the one soft spot
+
+Per piece and touched tile: one accumulator copy, one sweep draw, one
+fullscreen integrate — the swept fast path's cost plus a copy, no dynamics
+region, no sequential loop. The accumulators are one `R16Float` tile texture
+per touched tile for the stroke's lifetime, pooled (`scratch`).
+
+The soft spot is heavy impasto. Visible opacity stops encoding mass around
+`OPAQUE_MASS` (§6.1's law is saturated there), so honouring "remove half of
+what the eye sees" on paint far past it means removing nearly all of its mass —
+a partial-strength eraser grazing thick impasto cuts its *relief* much faster
+than its opacity, because that is the only mass the target opacity leaves room
+for. This is the arithmetic of the promise, not a defect to tune away: the
+eraser is the digital artist's tool, calibrated in the coverage domain; paint
+as *material* answers to the knife (`lift`), which removes amount and conserves
+it. Both exist because they are different questions.
+
+**Not built, and deliberately:** an `erase` target in `Modulations` — the pen
+drives an eraser through Flow (the rate) and Size for now; a modulated
+*ceiling* needs a second accumulator lane (mass-weighted strength) to stay
+piece-independent, and is its own change.

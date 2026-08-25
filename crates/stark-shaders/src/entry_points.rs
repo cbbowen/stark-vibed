@@ -21,6 +21,7 @@ pub const ENTRY_POINTS: &[&str] = &[
     "blend_oklab",
     "composite",
     "dynamics",
+    "erase",
     "fill",
     "filter_mixbox",
     "filter_oklab",
@@ -99,6 +100,7 @@ pub const RESID_FEATURE: &str = "resid";
 pub const RESID_ENTRY_POINTS: &[&str] = &[
     "composite",
     "dynamics",
+    "erase",
     "fill",
     "integrate",
     "matte",

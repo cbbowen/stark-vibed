@@ -248,6 +248,16 @@ pub fn dynamics(resid: bool) -> &'static str {
     resid_variant!(resid, "dynamics", "dynamics_resid")
 }
 
+/// WGSL stroke **erase** pass: the stroke's accumulated extent turned on the
+/// layer's visible opacity, inverted through the slab law into a height — §6.12.
+///
+/// Takes `resid` because this pass rewrites a tile whole, residual included —
+/// untouched, since an erase changes no pigment — so it is built in two variants
+/// (see [`RESID_ENTRY_POINTS`]).
+pub fn erase(resid: bool) -> &'static str {
+    resid_variant!(resid, "erase", "erase_resid")
+}
+
 /// WGSL region-aux narrowing for the stamp loop's write-back — §6.2/§6.4.
 ///
 /// Takes no `resid`: the write-back's color and residual leave the region as plain
@@ -356,6 +366,7 @@ mod tests {
             ("blend_oklab", blend_oklab),
             ("composite", || composite(false)),
             ("dynamics", || dynamics(false)),
+            ("erase", || erase(false)),
             ("fill", || fill(false)),
             #[cfg(feature = "mixbox")]
             ("filter_mixbox", filter_mixbox),
@@ -423,6 +434,7 @@ mod tests {
         let resid: &[ResidAccessor] = &[
             ("composite", composite),
             ("dynamics", dynamics),
+            ("erase", erase),
             ("fill", fill),
             ("integrate", integrate),
             ("matte", matte),

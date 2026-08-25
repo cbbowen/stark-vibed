@@ -313,7 +313,7 @@ impl<'a> DynamicsRun<'a> {
             Some((t, v)) => (Some(t), Some(v)),
             None => (None, None),
         };
-        if let Some(t) = tool {
+        if let Some(t) = tool.map(ToolState::reservoir) {
             // Resume: the tip arrives at this range carrying exactly what it carried
             // when the previous range stopped.
             scope.encoder().copy_texture_to_texture(
@@ -1325,16 +1325,18 @@ impl<'a> DynamicsRun<'a> {
             );
             dst
         };
-        ToolState {
-            color: copy_out(&color_src, "stark tool state color"),
-            aux: copy_out(&aux_src, "stark tool state aux"),
-            // Carried across ranges with the color, and for the same reason: a tip
-            // that lifted black paint has to still be carrying black when the next
-            // pointer move resumes it (§6.7).
-            resid: resid_src
-                .as_ref()
-                .map(|t| copy_out(t, "stark tool state resid")),
-        }
+        ToolState(super::super::incremental::Carried::Loop(Box::new(
+            super::super::incremental::Reservoir {
+                color: copy_out(&color_src, "stark tool state color"),
+                aux: copy_out(&aux_src, "stark tool state aux"),
+                // Carried across ranges with the color, and for the same reason: a tip
+                // that lifted black paint has to still be carrying black when the next
+                // pointer move resumes it (§6.7).
+                resid: resid_src
+                    .as_ref()
+                    .map(|t| copy_out(t, "stark tool state resid")),
+            },
+        )))
     }
 
     /// Close the run: the scope submits what is still recorded, then releases

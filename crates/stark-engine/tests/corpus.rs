@@ -72,6 +72,7 @@ battery!(
     bleed,
     wide_smear,
     oversized_smear,
+    erase,
 );
 
 /// How many points along a stroke the incremental preview is held against a fresh

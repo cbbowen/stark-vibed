@@ -28,14 +28,14 @@ const XFORM_SLOTS: &[Slot] = &[Slot::dynamic(sd::XF)];
 /// The prefix-τ volume at group 1 — an R32Float 2-D array (x, y, + orientation layers)
 /// read with `textureLoad`, since the shader does its own trilinear lookup (§6.6). The
 /// array dimension comes from the declaration; the host used to name it.
-const PREFIX_SLOTS: &[Slot] = &[Slot::at(sd::PREFIX_TEX)];
+pub(super) const PREFIX_SLOTS: &[Slot] = &[Slot::at(sd::PREFIX_TEX)];
 
 /// Group 2: the color-dynamics noise field and its repeat sampler (§6.2), and beside
 /// them the canvas substrate's map — height and the rise ahead — with its own sampler,
 /// for the deposition tooth (§6.4). In this group rather than one of its own because it
 /// is the same kind of thing as the noise: a tileable field the deposit samples per
 /// fragment, resolved per stroke.
-const NOISE_SLOTS: &[Slot] = &[
+pub(super) const NOISE_SLOTS: &[Slot] = &[
     Slot::sampled(sd::NOISE_TEX),
     Slot::at(sd::NOISE_SAMP),
     // The substrate is read **nearest** (`substrate_texel_at`, §6.4), so it needs no filtering and
@@ -287,126 +287,21 @@ impl StrokeRenderer {
                 other => unreachable!("`NOISE_SLOTS` lists no binding {other}"),
             },
         );
-        // Which segments reach which tile, and the instance buffer laid out to match:
-        // each tile's segments contiguous, so its draw is one instance *range* rather
-        // than the whole stroke. A segment writes exactly zero outside the tiles it is
-        // listed under, and zero is an exact identity through both blends, so this is
-        // the same picture as drawing everything everywhere — for
-        // `Σ tiles-per-segment` instances instead of `segments × tiles`
-        // ([`tiles_with_segments`]).
-        //
-        // The duplication is real but small: a segment is at most a tip wide, so it
-        // appears under a handful of tiles. What it replaces grew with the *stroke*.
-        let touched = tiles_with_segments(&segments);
-        let coords: Vec<TileCoord> = touched.keys().copied().collect();
-        let mut instances: Vec<SegmentInstance> = Vec::new();
-        let mut runs: Vec<std::ops::Range<u32>> = Vec::with_capacity(touched.len());
-        for idx in touched.values() {
-            let from = instances.len() as u32;
-            instances.extend(idx.iter().map(|&i| {
-                let Segment { sweep, paint } = &segments[i as usize];
-                SegmentInstance {
-                    start: sweep.start.to_array(),
-                    dir: sweep.dir.to_array(),
-                    // The tip's radius, which is the frame brush-local coordinates
-                    // are read in (§6.6, [`Sweep::radius`]) — the ramp rides beside
-                    // it unscaled, that being the point of its being *relative*.
-                    geom: [sweep.radius, sweep.length, sweep.ramp],
-                    extra: [sweep.orient, sweep.dist, sweep.curvature, paint.add],
-                    tooth_give: paint.tooth_give,
-                    // The solved stretch map (§6.6). Unscaled for the ramp's reason:
-                    // it acts on brush-local coordinates, which are already the
-                    // frame's own units.
-                    stretch: [
-                        sweep.stretch.travel,
-                        sweep.stretch.shear,
-                        sweep.stretch.lateral,
-                    ],
-                }
-            }));
-            runs.push(from..instances.len() as u32);
-        }
-        // Written via `write_buffer` (not `create_buffer_init`, which maps-at-creation):
-        // a long stroke makes this buffer large, and Chrome/Dawn caps map-at-creation
-        // buffers well below the normal `maxBufferSize`, so a long stroke would panic
-        // in `createBuffer`.
-        let instance_bytes: &[u8] = bytemuck::cast_slice(&instances);
-        let instance_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stark sweep instances"),
-            size: instance_bytes.len() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-        self.ctx
-            .queue
-            .write_buffer(&instance_buf, 0, instance_bytes);
+        // The per-tile draw list, instance buffer and transform slots — shared with
+        // the erase pass ([`sweep_draws`]).
+        let draws = sweep_draws(self, &mut scope, rec, &k, &segments);
+        let SweepDraws {
+            coords,
+            runs,
+            instances: instance_buf,
+            xforms: bind_group,
+        } = &draws;
 
         let carry = StrokeCarry {
             dist: end_dist,
             tool: None,
             dirty: coords.clone(),
         };
-
-        // Per-tile sweep transforms, one [`UNIFORM_STRIDE`] slot each in a single
-        // buffer the draws below select with a dynamic offset. The texture top-left is
-        // the interior origin shifted out by the apron, so the full TILE_TEX target
-        // maps to NDC [-1, 1]; everything else is a stroke constant, repeated per slot
-        // because the slot is what the shader reads.
-        //
-        // One buffer and one bind group for the stroke, not one of each per tile: this
-        // path redraws on every pointer move, and the allocation *rate* is what OOMs
-        // the tab (see [`ScopedResources`] and [`UNIFORM_STRIDE`]).
-        let apron = TILE_APRON as f32;
-        let mut xform_data = vec![0u8; coords.len() * UNIFORM_STRIDE];
-        for (i, coord) in coords.iter().enumerate() {
-            let origin = coord.origin();
-            let xform = TileXform {
-                params: [
-                    origin.x - apron,
-                    origin.y - apron,
-                    2.0 / TILE_TEX as f32,
-                    0.0,
-                ],
-                color: k.channels,
-                resid: k.resid,
-                paint: [
-                    rec.brush.drain_px(),
-                    k.substrate_uv_scale,
-                    k.tooth_softness,
-                    0.0,
-                ],
-                noise_freq: k.nfreq,
-                noise_amp: k.namp,
-                noise_off: k.noff,
-                jitter_eps: k.jitter_eps,
-                jitter_seed: k.jitter_seed,
-                // The struct's own trailing padding, generated because the two
-                // scalars above end 8 bytes short of the uniform's 16-byte round
-                // (§6.10).
-                _pad_9: [0; 8],
-            };
-            let at = i * UNIFORM_STRIDE;
-            xform_data[at..at + XFORM_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&xform));
-        }
-        let xform_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stark sweep xforms"),
-            size: xform_data.len() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-        self.ctx.queue.write_buffer(&xform_buf, 0, &xform_data);
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark sweep bg"),
-            layout: &self.swept.uniform_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &xform_buf,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(XFORM_SLOT),
-                }),
-            }],
-        });
 
         // Extent → cleared scratch tile: within-stroke accumulation of the parcel
         // this stroke lays (the color target over-blends the parcel's visible alpha
@@ -461,7 +356,7 @@ impl StrokeRenderer {
                         multiview_mask: None,
                     });
                 pass.set_pipeline(&self.swept.pipeline);
-                pass.set_bind_group(0, &bind_group, &[xform_off]);
+                pass.set_bind_group(0, bind_group, &[xform_off]);
                 pass.set_bind_group(1, &prefix_bg, &[]);
                 pass.set_bind_group(2, &noise_bg, &[]);
                 pass.set_vertex_buffer(0, instance_buf.slice(..));
@@ -542,6 +437,157 @@ impl StrokeRenderer {
         scope.hold(ring);
         scope.finish();
         (new_map, carry)
+    }
+}
+
+/// Everything one piece's sweep draws with, per tile: which tiles, each tile's
+/// contiguous instance range, the instance buffer, and the per-tile transform
+/// slots behind one dynamic-offset bind group.
+///
+/// One derivation for both consumers — the plain deposit ([`StrokeRenderer::render_swept`])
+/// and the erase pass (`erase.rs`) — for [`StrokeConstants`]'s reason: the two
+/// rasterize the *same* extent, gated by the same drain, tooth and jitter, and a
+/// second copy of this construction would be a place for them to disagree about
+/// what the extent is.
+pub(super) struct SweepDraws {
+    /// The tiles the piece's segments reach, texture (interior + apron) included —
+    /// [`tiles_with_segments`]' answer, in its order, which the instance runs below
+    /// are laid out to match.
+    pub(super) coords: Vec<TileCoord>,
+    /// Each tile's slice of the instance buffer.
+    pub(super) runs: Vec<std::ops::Range<u32>>,
+    pub(super) instances: wgpu::Buffer,
+    /// The per-tile [`TileXform`] slots, selected by a dynamic offset of
+    /// `i * UNIFORM_STRIDE` for tile `i` of [`coords`](Self::coords).
+    pub(super) xforms: wgpu::BindGroup,
+}
+
+/// Build a piece's [`SweepDraws`]: which segments reach which tile, and the
+/// instance buffer laid out to match — each tile's segments contiguous, so its
+/// draw is one instance *range* rather than the whole stroke. A segment writes
+/// exactly zero outside the tiles it is listed under, and zero is an exact
+/// identity through both blends, so this is the same picture as drawing everything
+/// everywhere — for `Σ tiles-per-segment` instances instead of `segments × tiles`
+/// ([`tiles_with_segments`]).
+///
+/// The duplication is real but small: a segment is at most a tip wide, so it
+/// appears under a handful of tiles. What it replaces grew with the *stroke*.
+pub(super) fn sweep_draws(
+    r: &StrokeRenderer,
+    scope: &mut super::scratch::SubmitScope,
+    rec: &StrokeRecord,
+    k: &super::StrokeConstants,
+    segments: &[Segment],
+) -> SweepDraws {
+    let device = &r.ctx.device;
+    let touched = tiles_with_segments(segments);
+    let coords: Vec<TileCoord> = touched.keys().copied().collect();
+    let mut instances: Vec<SegmentInstance> = Vec::new();
+    let mut runs: Vec<std::ops::Range<u32>> = Vec::with_capacity(touched.len());
+    for idx in touched.values() {
+        let from = instances.len() as u32;
+        instances.extend(idx.iter().map(|&i| {
+            let Segment { sweep, paint } = &segments[i as usize];
+            SegmentInstance {
+                start: sweep.start.to_array(),
+                dir: sweep.dir.to_array(),
+                // The tip's radius, which is the frame brush-local coordinates
+                // are read in (§6.6, [`Sweep::radius`]) — the ramp rides beside
+                // it unscaled, that being the point of its being *relative*.
+                geom: [sweep.radius, sweep.length, sweep.ramp],
+                extra: [sweep.orient, sweep.dist, sweep.curvature, paint.add],
+                tooth_give: paint.tooth_give,
+                // The solved stretch map (§6.6). Unscaled for the ramp's reason:
+                // it acts on brush-local coordinates, which are already the
+                // frame's own units.
+                stretch: [
+                    sweep.stretch.travel,
+                    sweep.stretch.shear,
+                    sweep.stretch.lateral,
+                ],
+            }
+        }));
+        runs.push(from..instances.len() as u32);
+    }
+    // Written via `write_buffer` (not `create_buffer_init`, which maps-at-creation):
+    // a long stroke makes this buffer large, and Chrome/Dawn caps map-at-creation
+    // buffers well below the normal `maxBufferSize`, so a long stroke would panic
+    // in `createBuffer`.
+    let instance_bytes: &[u8] = bytemuck::cast_slice(&instances);
+    let instance_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stark sweep instances"),
+        size: instance_bytes.len() as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    }));
+    r.ctx.queue.write_buffer(&instance_buf, 0, instance_bytes);
+
+    // Per-tile sweep transforms, one [`UNIFORM_STRIDE`] slot each in a single
+    // buffer the draws select with a dynamic offset. The texture top-left is
+    // the interior origin shifted out by the apron, so the full TILE_TEX target
+    // maps to NDC [-1, 1]; everything else is a stroke constant, repeated per slot
+    // because the slot is what the shader reads.
+    //
+    // One buffer and one bind group for the stroke, not one of each per tile: this
+    // path redraws on every pointer move, and the allocation *rate* is what OOMs
+    // the tab (see [`ScopedResources`] and [`UNIFORM_STRIDE`]).
+    let apron = TILE_APRON as f32;
+    let mut xform_data = vec![0u8; coords.len() * UNIFORM_STRIDE];
+    for (i, coord) in coords.iter().enumerate() {
+        let origin = coord.origin();
+        let xform = TileXform {
+            params: [
+                origin.x - apron,
+                origin.y - apron,
+                2.0 / TILE_TEX as f32,
+                0.0,
+            ],
+            color: k.channels,
+            resid: k.resid,
+            paint: [
+                rec.brush.drain_px(),
+                k.substrate_uv_scale,
+                k.tooth_softness,
+                0.0,
+            ],
+            noise_freq: k.nfreq,
+            noise_amp: k.namp,
+            noise_off: k.noff,
+            jitter_eps: k.jitter_eps,
+            jitter_seed: k.jitter_seed,
+            // The struct's own trailing padding, generated because the two
+            // scalars above end 8 bytes short of the uniform's 16-byte round
+            // (§6.10).
+            _pad_9: [0; 8],
+        };
+        let at = i * UNIFORM_STRIDE;
+        xform_data[at..at + XFORM_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&xform));
+    }
+    let xform_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stark sweep xforms"),
+        size: xform_data.len() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    }));
+    r.ctx.queue.write_buffer(&xform_buf, 0, &xform_data);
+    let xforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("stark sweep bg"),
+        layout: &r.swept.uniform_bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &xform_buf,
+                offset: 0,
+                size: wgpu::BufferSize::new(XFORM_SLOT),
+            }),
+        }],
+    });
+
+    SweepDraws {
+        coords,
+        runs,
+        instances: instance_buf,
+        xforms,
     }
 }
 

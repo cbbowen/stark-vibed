@@ -13,8 +13,10 @@
 //! That is the plain **add** fast path: extent → cleared scratch tile →
 //! integrate over the base into a fresh CoW tile. A brush that also moves paint
 //! already on the canvas (`lift` / `deposit` / `charge` / `bleed`, §6.2) instead runs
-//! the sequential swept-exchange loop in `dynamics.wesl`; `dynamics_setup`
-//! decides which path a record takes.
+//! the sequential swept-exchange loop in `dynamics.wesl`; one that erases
+//! (`BrushParams::erase`, §6.12) runs the same sweep into a per-stroke
+//! accumulator and turns it on the base's visible opacity (`erase.rs`).
+//! `dynamics_setup` decides which path a record takes.
 //!
 //! The renderer is parameterized by a [`ColorSpace`] (formats, blends, channel
 //! mapping, shader). It holds only immutable GPU objects plus `Arc`-backed
@@ -36,6 +38,7 @@ use stark_model::document::StrokeRecord;
 
 mod budget;
 mod dynamics;
+mod erase;
 mod incremental;
 mod region;
 mod scratch;
@@ -45,6 +48,7 @@ mod tips;
 
 use budget::MAX_REGION_DIM;
 use dynamics::{DynamicsKit, StrokePath, build_dynamics_kit, dynamics_setup};
+use erase::{EraseKit, build_erase_kit};
 use scratch::ScratchPool;
 use swept::{SweptKit, build_swept_kit};
 use tips::TipCache;
@@ -86,6 +90,11 @@ pub struct StrokeRenderer {
     /// paint (`lift` / `deposit` / `charge` / `bleed` — the four axes `dynamics_setup`
     /// gates on).
     dynamics: DynamicsKit,
+    /// The erase pass (§6.12), used when the brush erases
+    /// (`BrushParams::erase`) — the swept extent turned on the base's visible
+    /// opacity. Built over the swept kit's own layouts, so the two share bind
+    /// groups.
+    erase: EraseKit,
 
     /// What a brush resolves to, and the lazily-baked caches behind it (§6.6) — the
     /// prefix-τ volume both paths integrate against, the coverage mask the reservoir
@@ -167,12 +176,14 @@ impl StrokeRenderer {
         // things a renderer is handed.
         let swept = build_swept_kit(&ctx.device, color_space.as_ref());
         let dynamics = build_dynamics_kit(ctx, color_space.as_ref());
+        let erase = build_erase_kit(&ctx.device, color_space.as_ref(), &swept);
 
         Self {
             ctx: ctx.clone(),
             color_space,
             swept,
             dynamics,
+            erase,
             tips: TipCache::new(ctx),
             scratch: ScratchPool::default(),
             zeroes,
@@ -249,6 +260,7 @@ impl StrokeRenderer {
                 self.render_dynamic(scene, rec, spans, tool, plan.tol)
             }
             StrokePath::Swept => self.render_swept(scene, rec, spans, plan.tol),
+            StrokePath::Erase => self.render_erase(scene, rec, spans, tool, plan.tol),
             StrokePath::TipTooLarge => {
                 // An error, not a warning: what lands is not a rougher version of the
                 // stroke that was asked for but a different brush — the swept deposit

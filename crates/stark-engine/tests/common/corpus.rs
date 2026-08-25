@@ -811,4 +811,37 @@ pub const CASES: &[Case] = &[
             lift: 0.0,
         },
     },
+    Case {
+        name: "erase",
+        what: "The erase pass (§6.12): a self-crossing recorded stroke through two \
+               painted bands at half strength. The only cover for the accumulated \
+               extent — the crossing must bite once, not twice — for the \
+               pristine-base rule every incremental piece re-derives from, and for \
+               the slab-law inversion that turns the removal back into a height.",
+        view: SIZE,
+        prepare: |e, at| {
+            undercoat(e, at);
+            let mut b = brush(RED, 24.0);
+            b.erase = 0.5;
+            // High enough that the bite saturates to its ceiling over the stroke's
+            // core — which is what makes the crossing a claim about the *cap*
+            // rather than about two half-built fringes summing.
+            b.dynamics.flow = 2.5;
+            b.drain = 0.0;
+            b
+        },
+        path: || centred(stark_testdata::LOOP_STROKE),
+        tol: Tol {
+            golden: 6,
+            // The swept figure, not the loop's: the accumulator carries the same
+            // sums whether the stroke was cut or not (§6.12), so the pieces'
+            // render is the whole's and this bound is about f16 stores, not the
+            // pass.
+            seam: 4,
+            // `taper` fits this same recording at 4.0; the fit's answer to its
+            // tolerance is the fit's, whichever pass renders the curve.
+            refine: 4.0,
+            lift: 0.0,
+        },
+    },
 ];
