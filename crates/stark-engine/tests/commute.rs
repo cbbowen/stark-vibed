@@ -271,6 +271,86 @@ fn undo_splices_past_a_rename() {
     assert!(images_match(&img_a, &snap(&mut b), 0), "peers diverged");
 }
 
+/// **A stroke does not commute with the substrate it was painted on**, so an undo
+/// of a `SetSubstrate` buried under later strokes must refuse the splice (§6.4,
+/// §12.6).
+///
+/// The tooth gates how much paint lands by the substrate's rise, and `apply` reads
+/// it off the state being folded over — so the substrate in force is part of what a
+/// stroke *is*. The footprint said otherwise for a while, and this is what that
+/// cost.
+///
+/// # Why there are five strokes
+///
+/// One would pass either way, which is the trap. `shift_late` walks the *cached*
+/// states, and at each one it inverts the shifted action out and re-applies the
+/// single action at that version — so a lone stroke is re-rendered onto the
+/// pre-substrate state and comes out right by accident, footprint or no footprint.
+/// It is the run between two snapshots that is left behind: the whole run rotates
+/// past in one step, only its last action is re-applied, and every stroke before
+/// that keeps tiles toothed by a substrate the log no longer names.
+///
+/// # What the failure looks like
+///
+/// Not a disagreement between peers — **both take the same splice and converge on
+/// the same wrong picture** (`a == b` held throughout while `a == canonical` did
+/// not). The document is simply no longer what its own log says, so it changes the
+/// next time anyone opens the file. That is why the canonical comparison is the
+/// assertion that matters here and peer agreement is not enough.
+///
+/// Shaped like [`undo_splices_past_a_rename`], and the two are the pair worth
+/// reading together: there the buried action genuinely commutes and the splice is
+/// the right answer, here it does not and the rebuild is. The brush is given a
+/// **biting tooth** (`give` below its inert default of 1.0) so the substrate
+/// reaches the paint at all.
+#[test]
+fn undo_of_a_substrate_does_not_splice_past_the_strokes_it_toothed() {
+    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+        return;
+    };
+    a.start_collaboration(ActorId(1));
+
+    // Set before `b` joins, so the height map rides in the snapshot `b` joins from
+    // and both peers tooth against the same bytes (§8, §12.4).
+    let rough = a
+        .import_substrate(&stark_testdata::assets::rough())
+        .expect("the rough height map imports");
+    a.process(DocCommand::SetSubstrate(rough));
+    b.join_collaboration(&a.document_file(), ActorId(2));
+
+    let mut biting = common::brush(RED, 8.0);
+    biting.tooth.give = 0.2;
+    for y in [60.0f32, 100.0, 140.0, 180.0, 220.0] {
+        common::stroke_with(
+            &mut b,
+            biting.clone(),
+            &[Vec2::new(20.0, y), Vec2::new(230.0, y)],
+        );
+    }
+    sync(&mut a, &mut b);
+
+    // `a`'s own last action is the substrate, now buried under `b`'s five strokes.
+    a.process(DocCommand::Undo);
+    sync(&mut a, &mut b);
+
+    let stats = a.timeline_stats();
+    assert_eq!(
+        stats.fast_removes, 0,
+        "a substrate was spliced out past strokes it toothed",
+    );
+    assert!(stats.rebuilds >= 1, "the strokes should have re-rendered");
+
+    let img_a = snap(&mut a);
+    assert!(images_match(&img_a, &snap(&mut b), 0), "peers diverged");
+    let Some(canon) = canonical_snap(&mut a, common::SIZE) else {
+        return;
+    };
+    assert!(
+        images_match(&img_a, &canon, 0),
+        "the spliced state kept a tooth the log no longer names",
+    );
+}
+
 /// Overlapping strokes genuinely don't commute: the fast path must refuse and
 /// fall back to the rewind — and the peers must still converge exactly.
 #[test]

@@ -298,8 +298,25 @@ pub fn stroke_rect(rec: &StrokeRecord) -> TileRect {
 pub fn footprint(action: &Action) -> Footprint {
     let actor = action.id.actor;
     match &action.kind {
+        // The **substrate** is read alongside the author's mask, and it is the one
+        // read here that is not about the layer being painted on. The tooth gates
+        // how much paint lands by the substrate's rise over a reach in canvas px
+        // (§6.4), so `apply` takes both the substrate and the scale it is laid at
+        // off the state being folded over — which makes a stroke a function of
+        // them, and means it does not commute with either changing under it.
+        //
+        // Claiming it costs a false conflict between a stroke and a substrate
+        // switch, which is a pair nobody performs concurrently. Omitting it cost
+        // the §12.6 direction that has no alarm: an undo of a `SetSubstrate` took
+        // the commuting splice past every stroke after it, leaving those tiles
+        // toothed by a substrate the log no longer contained, and no pixel can say
+        // which materialization ran.
         ActionKind::CommitStroke(rec) => Footprint {
-            reads: vec![Resource::Existence(rec.layer), Resource::Selection(actor)],
+            reads: vec![
+                Resource::Existence(rec.layer),
+                Resource::Selection(actor),
+                Resource::Substrate,
+            ],
             writes: vec![Resource::Paint(rec.layer, stroke_rect(rec))],
         },
         // Both anchors are read — the sibling to insert above and the layer whose
@@ -733,6 +750,37 @@ mod tests {
         let other = stroke(2, LayerId(0), Vec2::splat(500.0), Vec2::splat(600.0), 8.0);
         assert!(!commutes(&select, &own));
         assert!(commutes(&select, &other));
+    }
+
+    /// **A stroke does not commute with the substrate changing under it.**
+    ///
+    /// The tooth gates the deposit by the substrate and by the scale it is laid at
+    /// (§6.4), and `apply` reads both off the state being folded over — so the
+    /// pixels of a stroke depend on which `SetSubstrate` preceded it, and an undo
+    /// that spliced one out past its strokes would leave them toothed by a
+    /// substrate the log no longer contains.
+    ///
+    /// Whose stroke it is makes no difference, unlike the mask: a substrate is
+    /// shared document state, so it gates every author's paint at once.
+    #[test]
+    fn a_stroke_does_not_commute_with_the_substrate_under_it() {
+        let own = stroke(1, LayerId(0), Vec2::ZERO, Vec2::splat(50.0), 8.0);
+        let theirs = stroke(2, LayerId(1), Vec2::splat(500.0), Vec2::splat(600.0), 8.0);
+        for substrate in [
+            act(1, ActionKind::SetSubstrate(crate::SubstrateId::Flat)),
+            act(
+                1,
+                ActionKind::SetSubstrateScale(crate::SubstrateScale::new(200)),
+            ),
+        ] {
+            assert!(!commutes(&substrate, &own));
+            assert!(!commutes(&substrate, &theirs), "a substrate is shared");
+        }
+
+        // The substrate *color* is a different resource and one no stroke reads:
+        // it sits under the paint at composite rather than gating the deposit.
+        let color = act(1, ActionKind::SetSubstrateColor(crate::Srgb::WHITE));
+        assert!(commutes(&color, &own));
     }
 
     #[test]

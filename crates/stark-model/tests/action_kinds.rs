@@ -555,9 +555,10 @@ fn every_action_reaching_a_state_has_been_through_the_funnel() {
 /// `conflicts` is the hot one — `history` builds the centralizer once per removal
 /// and then asks it about *every* later action — and it is `O(reads × writes)` on
 /// both sides. That is only fine while the lists are short, so this pins that they
-/// are: measured today, every kind claims at most 2 reads and at most 7 writes
-/// (`MergeLayerDown`, which names everything about both layers), with
-/// `size_of::<Resource>() == 32` and `size_of::<Footprint>() == 48`.
+/// are: measured today, every kind claims at most 3 reads (`CommitStroke`, which
+/// names the layer it paints on, the author's mask and the substrate that tooths
+/// it) and at most 7 writes (`MergeLayerDown`, which names everything about both
+/// layers), with `size_of::<Resource>() == 32` and `size_of::<Footprint>() == 48`.
 ///
 /// The one kind that scales is `DuplicateLayer`, whose lists grow with the subtree
 /// it copies — and that is exactly why `Resource::Layer` exists, collapsing nine
@@ -573,7 +574,7 @@ fn every_action_reaching_a_state_has_been_through_the_funnel() {
 fn a_footprint_stays_small_enough_for_a_nested_scan() {
     use stark_model::document::{Footprint, Resource, footprint};
 
-    const MAX_READS: usize = 2;
+    const MAX_READS: usize = 3;
     const MAX_WRITES: usize = 7;
 
     assert_eq!(std::mem::size_of::<Resource>(), 32);
