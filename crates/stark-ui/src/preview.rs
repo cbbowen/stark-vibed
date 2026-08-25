@@ -129,6 +129,21 @@ impl<T: Clone + 'static> Preview<T> {
 // nothing else; what a row cannot express is a preview with no commit, or a
 // commit whose preview shows something different.
 
+/// The selection's overall strength — the Select panel's Opacity slider under any
+/// of the four selecting actions (§6.8).
+///
+/// The one row here whose preview shows *nothing on the canvas*, and it is still a
+/// row rather than a bare commit: a mask's strength changes no pixel until something
+/// paints through it, but it is document state all the same, so a drag that logged
+/// every value it crossed would spend an undo step per pointer move on an adjustment
+/// the hand made once. What the preview buys is the panel — the engine reports the
+/// previewed number back through `observe`, so the track follows the pointer instead
+/// of snapping back to the committed value under it.
+pub const SELECTION_OPACITY: Preview<f32> = Preview::new(
+    ViewCommand::PreviewSelectionOpacity,
+    DocCommand::SetSelectionOpacity,
+);
+
 /// A layer's opacity — the Layers panel's slider (§14.6).
 pub const LAYER_OPACITY: Preview<(LayerId, f32)> =
     Preview::new(ViewCommand::PreviewLayerOpacity, |(layer, opacity)| {

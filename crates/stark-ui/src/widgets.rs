@@ -87,6 +87,13 @@ pub fn slider_fill(min: f32, max: f32, value: f32) -> String {
 /// in the panel stack actually comes from. A row that kept its word cannot fold — the
 /// words differ in length, so the tracks would start at a ragged left edge — and it
 /// does not have to, because the class it would need is the one it does not get.
+///
+/// `onsettle` is the other half of a control whose value is **document state**: such
+/// a slider previews per sample and lays its answer down once, and this is where the
+/// three events that can end a drag are wired (see
+/// [`Preview::settle`](crate::preview::Preview::settle) for why it takes all three).
+/// A slider setting view state — most of them — leaves it out and has nothing to
+/// settle.
 #[component]
 pub fn Slider(
     label: String,
@@ -95,7 +102,13 @@ pub fn Slider(
     max: f32,
     value: f32,
     oninput: EventHandler<f32>,
+    #[props(default)] onsettle: Option<EventHandler<()>>,
 ) -> Element {
+    let settle = move || {
+        if let Some(h) = &onsettle {
+            h.call(());
+        }
+    };
     rsx! {
         div { class: if glyph.is_some() { "slider-row marked" } else { "slider-row" },
             div { class: "slider-label",
@@ -111,6 +124,9 @@ pub fn Slider(
                 oninput: move |e| {
                     if let Ok(v) = e.value().parse::<f32>() { oninput.call(v); }
                 },
+                onchange: move |_| settle(),
+                onpointerup: move |_| settle(),
+                onpointercancel: move |_| settle(),
             }
         }
     }

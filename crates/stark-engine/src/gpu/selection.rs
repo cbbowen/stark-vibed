@@ -109,6 +109,10 @@ struct RasterShape<'a> {
     outside: f32,
     /// The result's peak coverage ([`Selection::level`]).
     level: f32,
+    /// The result's overall opacity ([`Selection::opacity`]) — the previous
+    /// selection's, since an op never sets it. Carried rather than read off `prev`
+    /// so the plan stays the one place the algebra is stated.
+    opacity: f32,
     /// The result's analytic hull, as the plan computed it ([`Selection::hull`]).
     hull: Option<(Vec2, Vec2)>,
     b: [f32; 4],
@@ -151,7 +155,7 @@ impl SelectionRenderer {
             device,
             "stark selection region view bgl",
             REGION_VIEW_SLOTS,
-            wgpu::ShaderStages::VERTEX,
+            wgpu::ShaderStages::VERTEX_FRAGMENT,
             false,
         );
         let region_tile_bgl = desc::layout_for(
@@ -237,10 +241,26 @@ impl SelectionRenderer {
 
     /// The mask bound for `coord`: the selection's own tile, or the constant that
     /// reigns outside its tile set.
+    ///
+    /// **The coverage the mask holds**, and only that — the whole mask's opacity
+    /// ([`Selection::strength`]) is *not* folded in. What this serves is a reader
+    /// that wants the coverage itself: the transform carrying the mask under its own
+    /// map, and a fill's own region, which is a shape rasterized as a selection and
+    /// has no strength of its own. A reader deciding how much of what it does lands
+    /// wants [`gate_for`](Self::gate_for) instead.
     pub fn mask_for(&self, selection: &Selection, coord: TileCoord) -> wgpu::TextureView {
         match selection.tile(coord) {
             Some(handle) => handle.view().clone(),
             None => self.constant(selection.outside()),
+        }
+    }
+
+    /// The mask bound for `coord` **as a gate** — the coverage, and the strength
+    /// every read of it must be scaled by (§6.8).
+    pub fn gate_for(&self, selection: &Selection, coord: TileCoord) -> Gate {
+        Gate {
+            view: self.mask_for(selection, coord),
+            strength: selection.strength(),
         }
     }
 
@@ -282,6 +302,7 @@ impl SelectionRenderer {
             RasterShape {
                 outside: plan.outside,
                 level: plan.level,
+                opacity: plan.opacity,
                 hull: plan.hull,
                 b,
                 c,
@@ -309,6 +330,7 @@ impl SelectionRenderer {
             RasterShape {
                 outside: plan.outside,
                 level: plan.level,
+                opacity: plan.opacity,
                 hull: plan.hull,
                 b: [0.0; 4],
                 c: [0.0, MODE_INVERT, 0.0, plan.level],
@@ -351,7 +373,7 @@ impl SelectionRenderer {
         let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark selection region uniform"),
             contents: bytemuck::bytes_of(&RegionUniform {
-                a: [w as f32, h as f32, MASK_TEX as f32, 0.0],
+                a: [w as f32, h as f32, MASK_TEX as f32, selection.strength()],
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -393,8 +415,14 @@ impl SelectionRenderer {
 
         {
             // Everything the selection has no tile for takes the constant coverage
-            // that reigns there.
-            let outside = outside_clear(selection);
+            // that reigns there — at the mask's strength, exactly as the copied
+            // tiles are (`mask_region.wesl`), since this is a *gating* read.
+            let outside = desc::clear_to(wgpu::Color {
+                r: f64::from(selection.outside() * selection.strength()),
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark selection region gather"),
                 color_attachments: &[Some(desc::attach(&view, outside))],
@@ -431,6 +459,7 @@ impl SelectionRenderer {
         let RasterShape {
             outside,
             level,
+            opacity,
             hull,
             b,
             c,
@@ -438,7 +467,7 @@ impl SelectionRenderer {
             edges,
         } = shape;
         if coords.is_empty() {
-            return Selection::from_parts(base, outside, level, hull);
+            return Selection::from_parts(base, outside, level, opacity, hull);
         }
         let device = &self.ctx.device;
         // The lasso's edge texture and the shape's parameters both belong to the
@@ -498,7 +527,7 @@ impl SelectionRenderer {
             scope.tile_done();
         }
         scope.finish();
-        Selection::from_parts(tiles, outside, level, hull)
+        Selection::from_parts(tiles, outside, level, opacity, hull)
     }
 
     /// Upload the lasso's edge list as an `N×1` texture (see `selection.wesl`).
@@ -530,6 +559,32 @@ impl SelectionRenderer {
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         (texture, view)
+    }
+}
+
+/// The selection as a **gating** pass reads it over one tile (§6.8): the coverage
+/// bound as a texture, and the scalar the shader multiplies every read of it by.
+///
+/// One value rather than two returns, because the two halves are one fact. A pass
+/// that took the view alone would compile, run, and quietly ignore the Opacity
+/// slider — the failure mode the whole-mask strength invites, since the mask tiles
+/// look exactly the same at every strength ([`Selection::strength`]). Handing the
+/// binding and its scale back together is what makes the second half hard to leave
+/// on the floor.
+pub struct Gate {
+    view: wgpu::TextureView,
+    strength: f32,
+}
+
+impl Gate {
+    /// The coverage, to bind.
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.view
+    }
+
+    /// The scalar to multiply every read of it by, for the pass's uniform.
+    pub fn strength(&self) -> f32 {
+        self.strength
     }
 }
 

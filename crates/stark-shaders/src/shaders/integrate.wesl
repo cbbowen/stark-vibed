@@ -32,9 +32,13 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
 struct Integrate {
-    // The paint effect's opacity (`PaintEffect::opacity`, §6.2) in `.x`;
-    // `.yzw` unused — the uniform's 16-byte round (§6.10). 1 is the identity,
-    // and taken as an exact branch below.
+    // The paint effect's opacity (`PaintEffect::opacity`, §6.2) in `.x`. 1 is the
+    // identity, and taken as an exact branch below.
+    //
+    // `.y` = the selection's strength (`Selection::strength`, §6.8): the whole
+    // mask's opacity, which every *gating* read of the mask is scaled by and which
+    // the mask texture itself does not carry. `.zw` unused — the uniform's 16-byte
+    // round (§6.10).
     params: vec4<f32>,
 }
 
@@ -174,7 +178,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // the stroke's coverage — a half-covered mask texel must read as half of the
     // finished paint, which for an opaque brush is nothing like half its optical
     // depth. That makes the mask's own antialiasing/feather the stroke's edge.
-    let sel = load1(selection, c).r;
+    // Scaled by the whole mask's strength: the coverage a mask *holds* is what its
+    // ops struck, and how strongly that gates is one number on top of it (§6.8) —
+    // so the two are only a mask together, and this is where they meet.
+    let sel = load1(selection, c).r * ig.params.y;
 
     out.color = mix(base_c, merged_c, sel);
     out.aux = mix(vec4<f32>(base_a.x, 0.0, 0.0, 0.0), merged_a, sel);

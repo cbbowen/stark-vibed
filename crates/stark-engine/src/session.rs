@@ -155,10 +155,14 @@ struct ShapeDrag {
     /// The color a fill will lay, taken off the brush when the drag began. Unused
     /// by a selecting gesture, which has no paint.
     color: Srgb,
-    /// How strongly this gesture's coverage lands — captured with the rest, so
-    /// moving the slider mid-drag cannot change what the drag already looks like it
-    /// is doing. Read by *both* actions: it is the selection's opacity when the
-    /// gesture selects and the fill's when it fills.
+    /// How strongly a **fill** lands — captured with the rest, so moving the slider
+    /// mid-drag cannot change what the drag already looks like it is doing.
+    ///
+    /// Unused by a selecting gesture, which mints its op at full strength: how
+    /// strongly a selection gates is the *whole* mask's opacity now, set after the
+    /// region is drawn rather than baked into it (§6.8). The per-shape
+    /// [`SelectionOp::opacity`] still stands underneath — nothing in the UI reaches
+    /// it.
     opacity: f32,
     /// Where the drag started; for the marquees this is one corner of the box.
     start: Vec2,
@@ -228,8 +232,11 @@ impl ShapeDrag {
     fn to_result(&self) -> Option<ShapeResult> {
         let shape = self.to_shape()?;
         Some(match self.action {
+            // At full strength: the mask's own opacity is a separate, retroactive
+            // number (`ActionKind::SetSelectionOpacity`, §6.8), so a shape says
+            // *where* and never how strongly.
             ShapeAction::Select(mode) => {
-                ShapeResult::Select(SelectionOp::at(mode, shape, self.feather, self.opacity))
+                ShapeResult::Select(SelectionOp::new(mode, shape, self.feather))
             }
             ShapeAction::Fill => {
                 ShapeResult::Fill(FillOp::new(shape, self.feather, self.color, self.opacity))
@@ -273,17 +280,15 @@ pub struct Session {
     /// action it takes: a feathered fill and a feathered selection are the same
     /// ramp, rasterized by the same shader.
     pub selection_feather: f32,
-    /// How strongly the next shape gesture's coverage lands, `0..=1` — the Select
-    /// panel's Opacity slider, and the exact counterpart of
-    /// [`selection_feather`](Self::selection_feather): one says how soft the edge
-    /// is, this says how strong the whole region is, and whichever action the
-    /// gesture takes reads both.
+    /// How strongly the next **fill** gesture's parcel lands, `0..=1` — the Select
+    /// panel's Opacity slider under the Fill action, and [`FillOp::opacity`].
     ///
-    /// Selecting, it is [`SelectionOp::opacity`] — the mask lands at that coverage,
-    /// and since every tool acts through the mask in proportion (§6.8) a
-    /// half-strength selection is a half-strength brush, fill and transform inside
-    /// it. Filling, it is [`FillOp::opacity`]. The two are the same statement about
-    /// the same coverage, landing on the mask or on the paint.
+    /// The counterpart of [`selection_feather`](Self::selection_feather) only for
+    /// that one action: one says how soft the coverage's edge is, this says how
+    /// strong the paint it lays is. Under the four *selecting* actions the same
+    /// slider asks the same question of the mask instead — and that answer is
+    /// document state, because it reaches the region already drawn
+    /// (`ActionKind::SetSelectionOpacity`, §6.8).
     pub shape_opacity: f32,
     /// Whether collaborators' selection outlines are drawn (§17.3).
     ///
@@ -662,7 +667,7 @@ impl Session {
             // The color is the hand's ([`color`](Self::color)) — a fill lays the
             // paint you have in hand, even while the brush held is an eraser.
             // Its *alpha* is not: that is the brush's pigment talking, and how
-            // strongly this gesture lands is the panel's own question (see
+            // strongly a fill lands is the panel's own question (see
             // [`shape_opacity`](Self::shape_opacity)).
             color: Srgb::new([r, g, b]),
             opacity: self.shape_opacity,

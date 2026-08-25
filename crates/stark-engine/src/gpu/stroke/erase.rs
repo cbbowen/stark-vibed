@@ -209,9 +209,10 @@ impl StrokeRenderer {
 
         // The erase opacity, once per piece — `StrokeConstants` resolved it with
         // the color, so this path cannot disagree with the others about what the
-        // dial said (`BrushEffect::opacity`).
+        // dial said (`BrushEffect::opacity`) — beside the strength the mask gates at
+        // (§6.8), which the mask tiles this pass binds do not carry.
         let opacity = stark_shaders::mirror::erase::Erase {
-            params: [k.opacity, 0.0, 0.0, 0.0],
+            params: [k.opacity, selection.strength(), 0.0, 0.0],
         };
         let opacity_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stark erase opacity"),
@@ -303,7 +304,9 @@ impl StrokeRenderer {
             // never on the base in hand, which for a resumed tile is an earlier
             // piece's output and would compound the erase per piece.
             let dst = self.acquire_tile(pool, AllocSource::IntegrateDestination);
-            let mask_view = self.selection.mask_for(selection, *coord);
+            // A gating read: the strength travels with the erase opacity
+            // uniform above, built from this same selection.
+            let mask_view = self.selection.gate_for(selection, *coord);
             let has_resid = pristine.resid_view().is_some();
             let bg = desc::bind_group_for(
                 device,
@@ -315,7 +318,7 @@ impl StrokeRenderer {
                     eb::BASE_COLOR => wgpu::BindingResource::TextureView(pristine.color_view()),
                     eb::BASE_AUX => wgpu::BindingResource::TextureView(pristine.aux_view()),
                     eb::ACCUM => wgpu::BindingResource::TextureView(work.view()),
-                    eb::SELECTION => wgpu::BindingResource::TextureView(&mask_view),
+                    eb::SELECTION => wgpu::BindingResource::TextureView(mask_view.view()),
                     eb::E => opacity_buf.as_entire_binding(),
                     eb::BASE_RESID => wgpu::BindingResource::TextureView(
                         pristine.resid_view().expect("a residual build has one"),

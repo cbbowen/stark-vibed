@@ -319,6 +319,16 @@ pub enum DocCommand {
     Select(SelectionOp),
     /// Swap selected for unselected everywhere.
     InvertSelection,
+    /// How strongly the **whole** mask gates, `0..=1` — the Select panel's Opacity
+    /// slider (§6.8).
+    ///
+    /// A document command where its neighbours on the panel
+    /// ([`ViewCommand::SetSelectionFeather`], [`ViewCommand::SetShapeOpacity`]) are
+    /// view commands, and the difference is the feature: those two shape the *next*
+    /// gesture, and this reaches the mask already drawn. So it is logged, undoable
+    /// and replicated like the ops it sits on top of — and previewed per pointer
+    /// sample through [`ViewCommand::PreviewSelectionOpacity`].
+    SetSelectionOpacity(f32),
 
     /// Fill a region of `layer` with paint (§18.0.4) — the direct
     /// path, next to `Select`: the selection bar's Fill button and any frontend
@@ -596,8 +606,16 @@ pub enum ViewCommand {
     /// Edge softness (canvas px) for the next shape gesture — the same ramp whether
     /// it selects or fills.
     SetSelectionFeather(f32),
-    /// How strongly the next shape gesture's coverage lands, `0..=1` — the mask's
-    /// own strength when the gesture selects, the fill's when it fills (§6.8).
+    /// How strongly a **fill** gesture's parcel lands, `0..=1`
+    /// ([`FillOp::opacity`](stark_model::document::FillOp), §18.0.4) — the Select
+    /// panel's Opacity slider under the Fill action.
+    ///
+    /// Not what a *selecting* gesture lands at any more: a selection's strength is
+    /// the whole mask's and is set after the fact
+    /// ([`DocCommand::SetSelectionOpacity`], §6.8). The two share a row on the panel
+    /// because they answer the same question — how strongly does this coverage land
+    /// — of the two places coverage can land, which is the same pairing the row of
+    /// five actions is built on.
     SetShapeOpacity(f32),
 
     /// Whether collaborators' selection outlines are drawn over the canvas
@@ -705,6 +723,16 @@ pub enum ViewCommand {
     /// only the compositor reads a preview, and what it reads of the scale is one
     /// number in a uniform.
     PreviewSubstrateScale(Option<SubstrateScale>),
+
+    /// Show the selection read at `opacity` **without logging it** — the in-flight
+    /// half of the Select panel's Opacity drag (§6.8). `None` drops the preview.
+    ///
+    /// The same bargain as [`PreviewLayerOpacity`](Self::PreviewLayerOpacity), and
+    /// the cheapest of the ten by some way: a selection's strength moves no pixels
+    /// at all until something paints through it, so what this preview costs is one
+    /// number in a `DocState` and what it *shows* is the panel's own slider
+    /// tracking the pointer rather than fighting it.
+    PreviewSelectionOpacity(Option<f32>),
 
     /// Show a layer at `opacity` **without logging it** — the in-flight half of an
     /// opacity-slider drag (§14.6). `None` drops the preview.

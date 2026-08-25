@@ -279,7 +279,7 @@ impl StrokeRenderer {
         // The integrate's opacity uniform, at this path's identity: the layout
         // names it on every stroke, and the shader's exact branch at 1 is what
         // keeps this path bit-for-bit what it was.
-        let opacity_buf = opacity_uniform(self, &mut scope, 1.0);
+        let opacity_buf = opacity_uniform(self, &mut scope, 1.0, selection.strength());
         let SweepDraws {
             coords,
             runs,
@@ -376,7 +376,9 @@ impl StrokeRenderer {
                 .resid
                 .as_ref()
                 .map(|zero| base.get(coord).and_then(|t| t.resid_view()).unwrap_or(zero));
-            let mask_view = self.selection.mask_for(selection, *coord);
+            // A gating read: the strength travels with the integrate's opacity
+            // uniform, which is built from the same selection.
+            let mask_view = self.selection.gate_for(selection, *coord);
             let integrate_bg = desc::bind_group_for(
                 device,
                 "stark integrate bg",
@@ -388,7 +390,7 @@ impl StrokeRenderer {
                     ib::BASE_AUX => wgpu::BindingResource::TextureView(base_aux),
                     ib::SCRATCH_COLOR => wgpu::BindingResource::TextureView(scratch.color_view()),
                     ib::SCRATCH_AUX => wgpu::BindingResource::TextureView(scratch.aux_view()),
-                    ib::SELECTION => wgpu::BindingResource::TextureView(&mask_view),
+                    ib::SELECTION => wgpu::BindingResource::TextureView(mask_view.view()),
                     ib::IG => opacity_buf.as_entire_binding(),
                     ib::BASE_RESID => wgpu::BindingResource::TextureView(
                         base_resid.expect("a residual build has one"),
@@ -463,7 +465,7 @@ impl StrokeRenderer {
         let device = &self.ctx.device;
         let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate);
         let draws = sweep_draws(self, &mut scope, rec, k, segments);
-        let opacity_buf = opacity_uniform(self, &mut scope, k.opacity);
+        let opacity_buf = opacity_uniform(self, &mut scope, k.opacity, selection.strength());
 
         // The carry this piece hands on: everything the pieces before it
         // accumulated — shared, never rewritten — with this piece's tiles
@@ -570,7 +572,9 @@ impl StrokeRenderer {
                     .and_then(|t| t.resid_view())
                     .unwrap_or(zero)
             });
-            let mask_view = self.selection.mask_for(selection, *coord);
+            // A gating read: the strength travels with the integrate's opacity
+            // uniform, which is built from the same selection.
+            let mask_view = self.selection.gate_for(selection, *coord);
             let integrate_bg = desc::bind_group_for(
                 device,
                 "stark integrate bg",
@@ -582,7 +586,7 @@ impl StrokeRenderer {
                     ib::BASE_AUX => wgpu::BindingResource::TextureView(base_aux),
                     ib::SCRATCH_COLOR => wgpu::BindingResource::TextureView(work.color.view()),
                     ib::SCRATCH_AUX => wgpu::BindingResource::TextureView(work.aux.view()),
-                    ib::SELECTION => wgpu::BindingResource::TextureView(&mask_view),
+                    ib::SELECTION => wgpu::BindingResource::TextureView(mask_view.view()),
                     ib::IG => opacity_buf.as_entire_binding(),
                     ib::BASE_RESID => wgpu::BindingResource::TextureView(
                         base_resid.expect("a residual build has one"),
@@ -710,16 +714,22 @@ pub(super) fn sweep_binds(
     (prefix_bg, noise_bg)
 }
 
-/// The integrate's opacity uniform (`integrate.wesl::Integrate`) for one piece:
-/// the paint effect's ceiling, or exactly 1 — the shader's identity branch — on
-/// the unscaled path, which binds it because the layout names it either way.
+/// The integrate's uniform (`integrate.wesl::Integrate`) for one piece: the paint
+/// effect's ceiling — or exactly 1, the shader's identity branch, on the unscaled
+/// path, which binds it because the layout names it either way — and the strength
+/// the selection mask gates at ([`Gate::strength`](crate::gpu::selection::Gate)).
+///
+/// The two travel together because the integrate reads them together: the ceiling
+/// says how much of the parcel is laid, the strength how much of that the mask lets
+/// through (§6.2, §6.8).
 pub(super) fn opacity_uniform(
     r: &StrokeRenderer,
     scope: &mut super::scratch::SubmitScope,
     opacity: f32,
+    gate: f32,
 ) -> wgpu::Buffer {
     let u = stark_shaders::mirror::integrate::Integrate {
-        params: [opacity, 0.0, 0.0, 0.0],
+        params: [opacity, gate, 0.0, 0.0],
     };
     let buf = scope.buffer(r.ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("stark integrate opacity"),

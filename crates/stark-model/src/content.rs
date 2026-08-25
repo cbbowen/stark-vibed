@@ -119,6 +119,7 @@ pub fn action_content(action: &Action) -> Option<AssetNeed> {
         | ActionKind::SetSubstrateScale(_)
         | ActionKind::Select(_)
         | ActionKind::InvertSelection
+        | ActionKind::SetSelectionOpacity(_)
         | ActionKind::Transform { .. }
         | ActionKind::TransformPerspective { .. }
         | ActionKind::TransformWarp { .. }

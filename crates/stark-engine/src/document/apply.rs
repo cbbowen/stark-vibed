@@ -438,6 +438,12 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             let selection = ctx.selection.invert(&ctx.pool, &prev);
             state.with_selection(action.id.actor, selection)
         }
+        // The author's own mask, keyed like every other selection edit off
+        // `action.id.actor`. Rasterizes nothing at all: the strength is how the mask
+        // is read, so this touches one number and no tile (§6.8).
+        ActionKind::SetSelectionOpacity(opacity) => {
+            state.with_selection_opacity(action.id.actor, *opacity)
+        }
         ActionKind::SetSubstrate(id) => state.with_substrate(*id),
         ActionKind::SetSubstrateScale(scale) => state.with_substrate_scale(*scale),
         ActionKind::AddMatte {
@@ -571,13 +577,19 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
 /// **Exhaustive, with no `_` arm**, for [`minted_layers`](Self::minted_layers)'s
 /// reason: a variant added later must be made to answer rather than defaulted
 /// into the safe answer and forgotten.
-pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState) -> bool {
+pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState, actor: ActorId) -> bool {
     // The layer this action names, or `false` from every arm below when it is
     // absent — see the doc comment.
     let layer = |id: LayerId| state.layer(id);
     match kind {
         ActionKind::SetLayerOpacity(id, opacity) => {
             layer(*id).is_some_and(|l| l.composite.opacity == *opacity)
+        }
+        // Asked of the author's own mask, since that is the only one an action can
+        // address (§17.3) — and answerable at all only because this action moves no
+        // tiles: a slider dragged out and back logs nothing.
+        ActionKind::SetSelectionOpacity(opacity) => {
+            state.selection_of(actor).opacity() == *opacity
         }
         ActionKind::SetLayerBlend(id, blend) => {
             layer(*id).is_some_and(|l| l.composite.blend == *blend)

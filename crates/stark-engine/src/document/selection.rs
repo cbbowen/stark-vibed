@@ -42,6 +42,20 @@ pub struct Selection {
     /// full-strength ops has `level == 1`, and every expression below collapses to
     /// the plain hard-edged answer for it.
     level: f32,
+    /// The **whole** mask's opacity, on top of the shape arithmetic (§6.8) — the
+    /// Select panel's Opacity slider, and what
+    /// [`ActionKind::SetSelectionOpacity`](stark_model::document::ActionKind) sets.
+    ///
+    /// Not in the tiles, and that is the point. The mask holds whatever the ops
+    /// made it; this says how strongly it is *read*, so moving it costs no
+    /// rasterization and applies to a region already drawn — which is the whole
+    /// feature. [`SelectionOp::opacity`] is the same question asked of one shape,
+    /// baked into that shape's coverage where it was struck; the two multiply.
+    ///
+    /// Carried through the op algebra untouched: an op says where the mask is, never
+    /// how strongly the mask is read. [`Self::strength`] is the reading, and is where
+    /// the one exception lives.
+    opacity: f32,
     /// A conservative analytic bounding box of the selected coverage, in canvas px
     /// — `None` when the selection is unbounded (`outside`) or its extent is not
     /// analytically known. Carried through the op algebra so the transform chrome
@@ -66,8 +80,22 @@ impl Selection {
             tiles: HashTrieMap::new(),
             outside: 1.0,
             level: 1.0,
+            opacity: 1.0,
             hull: None,
         }
+    }
+
+    /// Whether this is the selection a document starts with and a deselect returns
+    /// to — nothing masked, at full strength.
+    ///
+    /// [`Self::is_universal`] with the opacity asked as well, and the distinction is
+    /// the point: a mask that covers everything gates nothing whatever its opacity
+    /// says, but the number is still *held*, because the next region drawn takes it
+    /// (`plan` carries it forward). So this is the test for "worth storing at all"
+    /// — `DocState::with_selection`'s — and `is_universal` is the test for "gates
+    /// anything".
+    pub fn is_default(&self) -> bool {
+        self.is_universal() && self.opacity >= 1.0
     }
 
     /// A conservative canvas-space bounding box of the selected coverage, or
@@ -93,9 +121,47 @@ impl Selection {
         !self.is_universal()
     }
 
-    /// Coverage where there is no mask tile, as the shaders want it.
+    /// Coverage where there is no mask tile, as the shaders want it. The mask's own
+    /// number — [`Self::strength`] is not folded in, for the reason given there.
     pub fn outside(&self) -> f32 {
         self.outside
+    }
+
+    /// The whole mask's opacity — see the field docs. What the Select panel's slider
+    /// shows, and what a fresh selection inherits.
+    pub fn opacity(&self) -> f32 {
+        self.opacity
+    }
+
+    /// **The scalar every *gating* read of this mask must multiply by** (§6.8).
+    ///
+    /// A pass that binds the mask to decide how much of what it does lands — the
+    /// stroke's integrate, the eraser, a fill's gate, a transform's cut — reads
+    /// `coverage · strength`, and one that binds the mask to *carry* it (the
+    /// transform's own mask pass) reads the coverage alone. That split is why the
+    /// opacity is not folded into `outside` or into the tiles: the mask has one
+    /// value, and the two kinds of reader ask it different questions.
+    ///
+    /// 1 while the mask is universal, whatever the opacity says. Nothing is masked
+    /// there, so there is nothing to weaken — a deselect has to hand the canvas back
+    /// at full strength, and "everything, at a half" is a state this engine
+    /// deliberately cannot reach (see [`SelectionOp::opacity`], which pins the
+    /// unbounded shape for the same reason).
+    pub fn strength(&self) -> f32 {
+        if self.is_universal() { 1.0 } else { self.opacity }
+    }
+
+    /// The same selection read at `opacity` — [`ActionKind::SetSelectionOpacity`](stark_model::document::ActionKind)'s
+    /// whole effect. No tile moves, which is what makes it retroactive.
+    ///
+    /// Unclamped here: the number arrives through `ActionKind::sanitized`, the one
+    /// funnel an action passes into the document through, and a second bound would
+    /// be a second policy to keep in step (§8).
+    pub(crate) fn with_opacity(&self, opacity: f32) -> Self {
+        Self {
+            opacity,
+            ..self.clone()
+        }
     }
 
     /// The level whose half the outline traces, and that inversion reflects
@@ -128,6 +194,7 @@ impl Selection {
         tiles: MaskMap,
         outside: f32,
         level: f32,
+        opacity: f32,
         hull: Option<(Vec2, Vec2)>,
     ) -> Self {
         // The hull's meaning is "coverage ⊆ hull"; a selection with coverage at
@@ -138,6 +205,7 @@ impl Selection {
             tiles,
             outside,
             level,
+            opacity,
             hull,
         }
     }
@@ -184,6 +252,7 @@ impl Selection {
                         rasterize: Vec::new(),
                         outside,
                         level,
+                        opacity: self.opacity,
                         hull: None,
                     }
                 }
@@ -193,6 +262,7 @@ impl Selection {
                     rasterize: Vec::new(),
                     outside,
                     level,
+                    opacity: self.opacity,
                     hull: self.hull,
                 },
             });
@@ -248,6 +318,7 @@ impl Selection {
             rasterize,
             outside,
             level,
+            opacity: self.opacity,
             hull,
         })
     }
@@ -285,6 +356,7 @@ impl Selection {
             rasterize,
             outside,
             level: self.level,
+            opacity: self.opacity,
             hull,
         }
     }
@@ -299,6 +371,11 @@ pub(crate) struct SelectionPlan {
     pub outside: f32,
     /// The result's peak coverage — see [`Selection::level`].
     pub level: f32,
+    /// The result's overall opacity — the previous one, always. An op says where
+    /// the mask is; how strongly it is read is a separate question with a separate
+    /// action (§6.8), and carrying it here is what keeps a strength set before the
+    /// shape was drawn from being thrown away by drawing it.
+    pub opacity: f32,
     /// The result's analytic hull — see [`Selection::hull`].
     pub hull: Option<(Vec2, Vec2)>,
 }

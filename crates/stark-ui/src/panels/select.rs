@@ -8,6 +8,7 @@ use stark_model::Srgb;
 
 use crate::commands::Command;
 use crate::icons::{self, icon, icon_tinted, label};
+use crate::preview;
 use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{CommandButton, Slider};
@@ -66,9 +67,20 @@ pub fn SelectPanel() -> Element {
     // never at pointer rate; read straight off `obs` the panel re-rendered on
     // every pan and every sample of the stroke it is describing.
     let arm = use_obs(state, |o| {
-        (o.shape_action, o.selection_feather, o.shape_opacity)
+        (
+            o.shape_action,
+            o.selection_feather,
+            o.shape_opacity,
+            o.selection_opacity,
+        )
     });
-    let (action, feather, opacity) = arm().unwrap_or((ShapeAction::default(), 0.0, 1.0));
+    let (action, feather, fill_opacity, mask_opacity) =
+        arm().unwrap_or((ShapeAction::default(), 0.0, 1.0, 1.0));
+    // Which of the two the Opacity row is asking about — see the row itself.
+    let filling = action == ShapeAction::Fill;
+    let opacity = if filling { fill_opacity } else { mask_opacity };
+    // What a settled drag of the mask's strength would lay (`preview::settle`).
+    let dimming = use_signal(|| None::<f32>);
     // The hand's color, off the frontend's own brush signal — a fill lays it
     // whatever effect the brush held has (`BrushConfig::color`).
     let brush_color = (state.brush)().color();
@@ -165,7 +177,7 @@ pub fn SelectPanel() -> Element {
                         // The wash's strength is the marquee fill's own opacity —
                         // the slider below — since the brush color is three channels
                         // of pigment and nothing about amount (§6.2).
-                        {icon_tinted(glyph, [brush_color[0], brush_color[1], brush_color[2], opacity])}
+                        {icon_tinted(glyph, [brush_color[0], brush_color[1], brush_color[2], fill_opacity])}
                     } else {
                         {icon(glyph)}
                     }
@@ -178,13 +190,36 @@ pub fn SelectPanel() -> Element {
         // set to, because both describe the coverage the gesture produces and the
         // five actions differ only in where that coverage lands (§6.8).
         //
-        // Selecting, it dims the mask — and since every tool acts through the mask
-        // in proportion, a half-strength selection is a half-strength brush, fill
-        // and transform inside it. That is also what the two whole-selection fills
-        // on the bar read: they lay opaque paint *through* the mask, so this one
-        // slider governs them without their having a knob of their own.
+        // Where they differ is *when* the answer is given, and that is this row's
+        // whole subtlety. Feather has to be chosen before the gesture — it is the
+        // edge the rasterizer strikes. Strength does not: under the four selecting
+        // actions this is the **whole mask's** opacity, one number on top of the
+        // shape arithmetic, so it reaches a region already drawn and the ordinary
+        // way to use it is to draw first and then dim. Under Fill it is the fill's
+        // own opacity, chosen up front like the feather, because paint once laid is
+        // paint.
+        //
+        // So the row reads one value or the other and lays it down two ways: a view
+        // command for the fill, a previewed document action for the mask. What it
+        // is *not* is two rows. The question is one question — how strongly does
+        // this coverage land — asked of the two places coverage can land, which is
+        // the same pairing the five chips above are built on.
+        //
+        // Dimming the mask dims every tool that acts through it, since they all act
+        // through it in proportion: a half-strength selection is a half-strength
+        // brush, fill and transform inside it. That is also what the two
+        // whole-selection fills on the bar read — they lay opaque paint *through*
+        // the mask, so this one slider governs them without their having a knob of
+        // their own.
         Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: opacity,
-            oninput: move |v| dispatch(state, ViewCommand::SetShapeOpacity(v)) }
+            oninput: move |v| if filling {
+                dispatch(state, ViewCommand::SetShapeOpacity(v));
+            } else {
+                preview::SELECTION_OPACITY.during(state, dimming, v);
+            },
+            onsettle: move |_| if !filling {
+                preview::SELECTION_OPACITY.settle(state, dimming);
+            } }
         Slider { label: "Feather", glyph: icons::FEATHER, min: 0.0, max: 64.0, value: feather,
             oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
     }

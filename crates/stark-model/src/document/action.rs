@@ -15,6 +15,7 @@ use super::layer::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
 use super::selection::SelectionOp;
 use crate::Srgb;
 use crate::geom::Vec2;
+use crate::clamp01;
 use crate::{SubstrateId, SubstrateScale};
 
 /// Identifies the author of an action: one local user, or a peer (§4).
@@ -228,6 +229,17 @@ pub enum ActionKind {
     Select(SelectionOp),
     /// Swap selected for unselected everywhere (§6.8).
     InvertSelection,
+    /// Set the **whole** mask's opacity, on top of the shape arithmetic (§6.8) —
+    /// the Select panel's Opacity slider.
+    ///
+    /// Historized for [`Select`](Self::Select)'s reason and no other: a stroke's
+    /// pixels depend on how strongly the mask gated it, so replay has to put the
+    /// same number back. It carries no shape and rasterizes nothing — the mask
+    /// tiles are whatever the ops made them, and this is how strongly they are
+    /// *read*, which is exactly what lets it apply to a region already drawn. The
+    /// per-shape [`SelectionOp::opacity`] is the same question asked of one shape
+    /// and still stands underneath this; the two multiply.
+    SetSelectionOpacity(f32),
 
     /// Add a **matte** layer — a region filled with a [`MattePaint`]
     /// (§15.2). A frame is one of these on top of the stack; a substrate
@@ -576,6 +588,7 @@ impl ActionKind {
             | ActionKind::SetSubstrateScale(_)
             | ActionKind::Select(_)
             | ActionKind::InvertSelection
+            | ActionKind::SetSelectionOpacity(_)
             | ActionKind::SetMatteRect(..)
             | ActionKind::SetMattePaint(..)
             | ActionKind::SetFilter(..)
@@ -641,6 +654,10 @@ impl ActionKind {
             ActionKind::Select(op) => {
                 ActionKind::Select(SelectionOp::at(op.mode, op.shape, op.feather, op.opacity))
             }
+            // A coverage weight every gating read multiplies by, so a NaN here would
+            // take the whole mask with it. `clamp01` rather than `clamp`, for
+            // `SelectionOp::at`'s reason: both of NaN's comparisons are false.
+            ActionKind::SetSelectionOpacity(a) => ActionKind::SetSelectionOpacity(clamp01(a)),
             ActionKind::SetLayerBlend(id, mode) => ActionKind::SetLayerBlend(id, mode.sanitized()),
             ActionKind::SetFilter(id, f) => ActionKind::SetFilter(id, f.sanitized()),
             ActionKind::AddFilter {
@@ -768,6 +785,7 @@ impl ActionKind {
             ActionKind::TransformWarp { .. } => "Warp",
             ActionKind::Select(_) => "Select",
             ActionKind::InvertSelection => "Invert selection",
+            ActionKind::SetSelectionOpacity(_) => "Selection opacity",
             ActionKind::AddLayer { .. } => "Add layer",
             ActionKind::DuplicateLayer { .. } => "Duplicate layer",
             ActionKind::RemoveLayer(_) => "Remove layer",

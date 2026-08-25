@@ -23,14 +23,20 @@ enum Class {
 }
 
 fn classify(selection: &Selection, coord: TileCoord) -> Class {
+    // The coverage a *gating* read sees out there — the mask's own number scaled by
+    // the whole mask's strength (§6.8). It has to be the scaled one: `Full` is what
+    // lets a source tile be **dropped** rather than rewritten, and a plane selected
+    // at a half moves half its paint, so calling it full would delete the half that
+    // stayed.
+    let outside = selection.outside() * selection.strength();
     match selection.tile(coord) {
         Some(_) => Class::Partial,
         // Thresholds on the value rather than either side of a half, now that a
         // selection can be partial. For every selection built at full strength
         // `outside` is still 0 or 1, so these two answer exactly as the old
         // `> 0.5` did.
-        None if selection.outside() >= 1.0 => Class::Full,
-        None if selection.outside() > 0.0 => Class::Partial,
+        None if outside >= 1.0 => Class::Full,
+        None if outside > 0.0 => Class::Partial,
         None => Class::Untouched,
     }
 }

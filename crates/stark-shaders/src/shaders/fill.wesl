@@ -48,7 +48,9 @@ struct Fill {
     // .x = the fill's **opacity**: the visible alpha it covers with where
     // coverage is full (`FillOp::opacity`); .y = gradient stop count (0 = a
     // solid parcel; a gradient always has ≥ 2, §22.1); .z = the axis kind
-    // (0 linear, 1 radial); .w unused.
+    // (0 linear, 1 radial); .w = the author's selection strength
+    // (`Selection::strength`, §6.8) — the whole mask's opacity, which `gate`'s
+    // texels do not carry.
     p: vec4<f32>,
     // A solid parcel color's **residual** (.xyz) — the half of it the space's
     // three channels cannot express (§6.7); .w unused. Zero for every space but
@@ -104,7 +106,12 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let c = vec2<i32>(floor(frag.xy));
     let bc = load1(base_color, c);
     let ba = load1(base_aux, c).x;
-    let cov = load1(region, c).r * load1(gate, c).r;
+    // The gate at the mask's strength — a *gating* read, so the whole mask's
+    // opacity multiplies it (§6.8). On `cov` rather than folded into `f.p.x`,
+    // though the two are the same product: the exact passthrough below keys on
+    // `cov == 0`, and a mask read at strength 0 must take that branch rather than
+    // recompute the resident paint and land an ulp off it.
+    let cov = load1(region, c).r * load1(gate, c).r * f.p.w;
     // The base's color, both halves (§6.7, `lib::latent`). The gate is on the load —
     // a residual texture exists only in a space that has one — and the arithmetic
     // below is then written once.

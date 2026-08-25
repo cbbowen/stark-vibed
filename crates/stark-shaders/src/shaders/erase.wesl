@@ -32,8 +32,10 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
 struct Erase {
-    // The erase opacity (`EraseEffect::opacity`, §6.12) in `.x`; `.yzw` unused —
-    // the uniform's 16-byte round (§6.10).
+    // The erase opacity (`EraseEffect::opacity`, §6.12) in `.x`, and the selection's
+    // strength (`Selection::strength`, §6.8) in `.y` — the whole mask's opacity,
+    // which the mask texture does not carry and every gating read of it is scaled
+    // by. `.zw` unused — the uniform's 16-byte round (§6.10).
     params: vec4<f32>,
 }
 
@@ -117,7 +119,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // Gate by the selection (§6.8): a lerp of the *result*, `integrate.wesl`'s
     // rule. Color and residual are the base's either way, so the height is the
     // only lane with two answers to mix.
-    let sel = load1(selection, c).r;
+    // At the mask's own strength, exactly as `integrate.wesl` reads it: the tiles
+    // hold what the ops struck, and how strongly that gates is one number on top.
+    let sel = load1(selection, c).r * e.params.y;
     out.aux = vec4<f32>(mix(h0, h1, sel), 0.0, 0.0, 0.0);
     return out;
 }

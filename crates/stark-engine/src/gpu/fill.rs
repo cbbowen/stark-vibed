@@ -180,6 +180,11 @@ impl FillRenderer {
         // mixture (§22.4).
         let mut uniform = FillUniform::default();
         uniform.p[0] = op.opacity;
+        // How strongly the author's mask gates this fill (§6.8) — the whole mask's
+        // opacity, which `gate`'s own texels do not carry. The fill's *region* takes
+        // no such factor: it is this gesture's shape rasterized as a selection, and
+        // has no strength of its own.
+        uniform.p[3] = gate.strength();
         match &op.paint {
             Parcel::Solid(color) => {
                 let channels = self.color_space.rgb_to_channels(*color);
@@ -244,7 +249,9 @@ impl FillRenderer {
                     .clone()
             });
             let region_mask = self.selection.mask_for(&region, *coord);
-            let gate_mask = self.selection.mask_for(gate, *coord);
+            // As a gate: the coverage and the strength it is read at, which the
+            // uniform above already carries (`SelectionRenderer::gate_for`).
+            let gate_mask = self.selection.gate_for(gate, *coord);
             let dst = Channels::acquire(pool, self.formats, AllocSource::FillDestination);
             let bg = desc::bind_group_for(
                 device,
@@ -257,7 +264,7 @@ impl FillRenderer {
                     f::BASE_COLOR => tex(&base_color),
                     f::BASE_AUX => tex(&base_aux),
                     f::REGION => tex(&region_mask),
-                    f::GATE => tex(&gate_mask),
+                    f::GATE => tex(gate_mask.view()),
                     f::BASE_RESID => tex(base_resid
                         .as_ref()
                         .expect("a residual build has a base residual")),

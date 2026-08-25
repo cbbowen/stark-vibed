@@ -466,8 +466,15 @@ pub struct ObservableState {
     pub shape_action: ShapeAction,
     /// Edge softness (canvas px) the next shape gesture will apply.
     pub selection_feather: f32,
-    /// How strongly the next shape gesture's coverage will land, `0..=1` (§6.8).
+    /// How strongly a **fill** gesture's parcel will land, `0..=1` (§18.0.4).
     pub shape_opacity: f32,
+    /// How strongly this client's whole selection mask gates, `0..=1` (§6.8) — the
+    /// Select panel's Opacity slider under any of the four selecting actions.
+    ///
+    /// Held even while nothing is masked, because that is what the next region drawn
+    /// will take ([`Selection::opacity`](crate::document::Selection::opacity)); what
+    /// it *gates* at meanwhile is 1.
+    pub selection_opacity: f32,
     /// Whether collaborators' selection outlines are drawn (§17.3).
     pub show_peer_selections: bool,
     /// How much resident tile memory history retention may hold before undo depth
@@ -1183,6 +1190,12 @@ impl Engine {
             }
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
             DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
+            // `settle`, not `commit`, like every other slider's answer: a drag that
+            // travelled out and came back must log nothing, and must still drop the
+            // preview it left up.
+            DocCommand::SetSelectionOpacity(opacity) => {
+                self.settle(ActionKind::SetSelectionOpacity(opacity))
+            }
             DocCommand::Fill { layer, op } => self.commit(ActionKind::Fill { layer, op }),
             DocCommand::Transform { layer, map } => {
                 // A degenerate or non-finite map would be rejected by `apply`
@@ -1503,6 +1516,21 @@ impl Engine {
             ViewCommand::PreviewMattePaint(pick) => {
                 let preview =
                     pick.map(|(id, paint)| self.timeline.current().set_matte_paint(id, paint));
+                self.set_doc_preview(preview);
+            }
+            ViewCommand::PreviewSelectionOpacity(opacity) => {
+                let actor = self.actor();
+                let preview = opacity.map(|o| {
+                    // Through the action's own funnel, for `PreviewFilter`'s reason
+                    // (§21.5): a preview that skipped it could show a strength the
+                    // commit would then clamp to something else.
+                    let ActionKind::SetSelectionOpacity(o) =
+                        ActionKind::SetSelectionOpacity(o).sanitized()
+                    else {
+                        unreachable!("`sanitized` keeps the variant")
+                    };
+                    self.timeline.current().with_selection_opacity(actor, o)
+                });
                 self.set_doc_preview(preview);
             }
             ViewCommand::PreviewLayerOpacity(set) => {
@@ -1874,6 +1902,10 @@ impl Engine {
             layers,
             has_selection: doc.has_selection(self.actor()),
             selection_hull: doc.selection_of(self.actor()).hull(),
+            // Off the *shown* document, unlike the two above: this one previews
+            // (`PreviewSelectionOpacity`), and a panel reading the committed number
+            // would fight its own slider mid-drag (§6.8).
+            selection_opacity: shown.selection_of(self.actor()).opacity(),
             shape_action: self.session.shape_action,
             selection_feather: self.session.selection_feather,
             shape_opacity: self.session.shape_opacity,
@@ -2159,7 +2191,7 @@ impl Engine {
         // action that changes nothing — which is the case this whole function
         // exists to catch.
         let kind = kind.sanitized();
-        if crate::document::apply::is_noop_on(&kind, self.document()) {
+        if crate::document::apply::is_noop_on(&kind, self.document(), self.actor()) {
             // Nothing to log, and the drag still has to be superseded: a slider
             // released on the value it was pressed on left a preview up.
             self.preview.set_doc(None);

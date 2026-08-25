@@ -402,7 +402,11 @@ pub fn footprint(action: &Action) -> Footprint {
         ActionKind::SetMatteRect(id, _, _) => prop_write(*id, Prop::Matte),
         ActionKind::SetMattePaint(id, _) => prop_write(*id, Prop::Matte),
         ActionKind::SetFilter(id, _) => prop_write(*id, Prop::Filter),
-        ActionKind::Select(_) | ActionKind::InvertSelection => Footprint {
+        // The strength is *of* the mask, so it claims the mask: two peers cannot
+        // dim and redraw one selection at once and have both land (§12.6).
+        ActionKind::Select(_)
+        | ActionKind::InvertSelection
+        | ActionKind::SetSelectionOpacity(_) => Footprint {
             reads: Vec::new(),
             writes: vec![Resource::Selection(actor)],
         },

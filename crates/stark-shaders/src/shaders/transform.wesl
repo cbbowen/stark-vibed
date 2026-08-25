@@ -60,7 +60,11 @@ struct Quad {
     // t: the forward translation .xy; the source tile *texture* origin .zw
     //    (interior origin − apron, canvas px).
     t: vec4<f32>,
-    // u: source interior origin .xy (canvas px); .z = TILE_SIZE (interior edge).
+    // u: source interior origin .xy (canvas px); .z = TILE_SIZE (interior edge);
+    //    .w = the selection's strength (`Selection::strength`, §6.8) — the whole
+    //    mask's opacity, which `src_mask`'s texels do not carry. Read by
+    //    `fs_parcel` alone: the mask passes below *carry* coverage rather than
+    //    gate by it, and scaling there would apply the strength twice.
     u: vec4<f32>,
     // i/j: the inverse affine (rows / translation), fragment-stage. The fragment
     //    maps its own canvas centre back through the inverse rather than
@@ -151,7 +155,10 @@ fn fs_parcel(@builtin(position) frag: vec4<f32>) -> ParcelOut {
     let uv = src_uv(frag.xy);
     let c = textureSampleLevel(src_color, samp, uv, 0.0);
     let h = textureSampleLevel(src_aux, samp, uv, 0.0).x;
-    let m = textureSampleLevel(src_mask, samp, uv, 0.0).r;
+    // The author's coverage at the mask's own strength — a gating read (§6.8), and
+    // the identical factor `fs_combine` cuts the base by, so what leaves and what
+    // stays still sum to what was there.
+    let m = textureSampleLevel(src_mask, samp, uv, 0.0).r * q.u.w;
     var out: ParcelOut;
     out.color = c;
     out.aux = vec4<f32>(h * m, 0.0, 0.0, 0.0);
@@ -196,7 +203,9 @@ struct Gated {
     s: vec4<f32>,
     // The map's source rect: min .xy, max .zw — the coverage gate.
     r: vec4<f32>,
-    // Source tile texture origin .xy (interior origin − apron, canvas px).
+    // Source tile texture origin .xy (interior origin − apron, canvas px);
+    // .z = the selection's strength (`Selection::strength`, §6.8), read by
+    // `fs_parcel_gated` alone, for `Quad.u.w`'s reason; .w unused.
     t: vec4<f32>,
 }
 
@@ -279,7 +288,9 @@ fn fs_parcel_gated(@builtin(position) frag: vec4<f32>) -> ParcelOut {
     let uv = (s - qg.t.xy) / qg.a.z;
     let c = textureSampleLevel(src_color, samp, uv, 0.0);
     let h = textureSampleLevel(src_aux, samp, uv, 0.0).x;
-    let m = textureSampleLevel(src_mask, samp, uv, 0.0).r * box_coverage(s, qg.r.xy, qg.r.zw);
+    let m = textureSampleLevel(src_mask, samp, uv, 0.0).r
+        * qg.t.z
+        * box_coverage(s, qg.r.xy, qg.r.zw);
     var out: ParcelOut;
     out.color = c;
     out.aux = vec4<f32>(h * m, 0.0, 0.0, 0.0);
@@ -322,7 +333,9 @@ struct FsOut {
 // rect (perspective/warp), and by which. `a.z = 0` is the affine's whole-plane
 // cut, arithmetically untouched from before the gate existed.
 struct Combine {
-    // a: destination tile texture origin .xy; .z = 1 to gate the cut.
+    // a: destination tile texture origin .xy; .z = 1 to gate the cut; .w = the
+    //    selection's strength (`Selection::strength`, §6.8) — the same factor
+    //    the parcel side applied at the source, so the cut and the carry agree.
     a: vec4<f32>,
     // r: the gate rect, min .xy, max .zw.
     r: vec4<f32>,
@@ -337,7 +350,7 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     // constants read through the same code (§6.8's pattern, `lib::sample::load1`).
     let bc = load1(base_color, c);
     let ba = load1(base_aux, c);
-    var m = load1(base_mask, c).r;
+    var m = load1(base_mask, c).r * qc.a.w;
     if qc.a.z > 0.5 {
         // The cut only reaches inside the map's source rect (§16.8): the
         // effective coverage is m·box, the same gate the parcel side applied
