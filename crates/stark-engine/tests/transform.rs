@@ -19,7 +19,7 @@ use stark_engine::command::DocCommand;
 use stark_model::ColorSpaceId;
 use stark_model::Srgb;
 use stark_model::document::{
-    LayerId, MattePaint, MatteRegion, PerspectiveMap, Place, SelectionMode, SelectionOp,
+    LayerId, MatteRegion, Parcel, PerspectiveMap, Place, SelectionMode, SelectionOp,
     SelectionShape, TransformMap, WarpMap, rect_corners,
 };
 use stark_model::geom::{Affine2, Vec2};
@@ -436,7 +436,7 @@ fn transform_on_a_matte_layer_is_refused() {
             min: Vec2::new(-100.0, -100.0),
             max: Vec2::new(100.0, 100.0),
         },
-        paint: MattePaint::Solid(Srgb::new([0.2, 0.2, 0.2])),
+        paint: Parcel::Solid(Srgb::new([0.2, 0.2, 0.2])),
     });
     let matte: LayerId = engine
         .observe()

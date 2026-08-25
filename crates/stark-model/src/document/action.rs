@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use super::brush::BrushParams;
 use super::filter::Filter;
 use super::guide::{GuideId, PerspectiveGuide};
-use super::layer::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
+use super::layer::{BlendMode, LayerId, MatteRegion, Place};
+use super::paint::Parcel;
 use super::selection::SelectionOp;
 use crate::Srgb;
 use crate::clamp01;
@@ -244,7 +245,7 @@ pub enum ActionKind {
     /// and still stands underneath this; the two multiply.
     SetSelectionOpacity(f32),
 
-    /// Add a **matte** layer — a region filled with a [`MattePaint`]
+    /// Add a **matte** layer — a region filled with a [`Parcel`]
     /// (§15.2). A frame is one of these on top of the stack; a substrate
     /// ([`MatteRegion::Everything`]) is one at the bottom, which is why the
     /// anchor is the full [`Place`] where `AddLayer`'s stays the two-state
@@ -255,7 +256,7 @@ pub enum ActionKind {
         carrier: Option<LayerId>,
         at: Place,
         region: MatteRegion,
-        paint: MattePaint,
+        paint: Parcel,
     },
     /// Move a matte's rect — the frame drag's commit. One action per drag, not
     /// per pointer move: the gesture accumulates in session state and commits on
@@ -263,7 +264,7 @@ pub enum ActionKind {
     /// A no-op on a region with no rect to move ([`MatteRegion::with_rect`]).
     SetMatteRect(LayerId, Vec2, Vec2),
     /// Repaint a matte — a flat color or a gradient ramp (§15.4, §22.4).
-    SetMattePaint(LayerId, MattePaint),
+    SetMattePaint(LayerId, Parcel),
     /// Set the canvas substrate color — the substrate the paint sits on, straight
     /// sRGB (§15.5). Logged rather than held as a view setting, because the substrate a
     /// piece was painted on is part of what it is: unlogged, the paper color of a

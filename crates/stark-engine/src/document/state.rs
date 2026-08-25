@@ -15,7 +15,7 @@ use stark_model::Srgb;
 use stark_model::document::ActorId;
 use stark_model::document::Filter;
 use stark_model::document::{
-    BlendMode, GuideId, LayerId, MattePaint, MatteRegion, PerspectiveGuide, Place,
+    BlendMode, GuideId, LayerId, MatteRegion, Parcel, PerspectiveGuide, Place,
 };
 use stark_model::geom::{TileCoord, Vec2};
 use stark_model::{SubstrateId, SubstrateScale};
@@ -588,7 +588,7 @@ impl DocState {
         carrier: Option<LayerId>,
         at: Place,
         region: MatteRegion,
-        paint: MattePaint,
+        paint: Parcel,
     ) -> Self {
         if !region.usable() {
             return self.clone();
@@ -757,7 +757,7 @@ impl DocState {
 
     /// Set a matte layer's paint — a flat color or a gradient ramp (§15.4,
     /// §22.4). A no-op on a paint layer or an absent id.
-    pub fn set_matte_paint(&self, id: LayerId, paint: MattePaint) -> Self {
+    pub fn set_matte_paint(&self, id: LayerId, paint: Parcel) -> Self {
         self.map_content(id, |c| match c {
             LayerContent::Matte { region, .. } => Some(LayerContent::Matte {
                 region: *region,

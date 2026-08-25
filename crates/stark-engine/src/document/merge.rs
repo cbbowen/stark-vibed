@@ -668,7 +668,7 @@ mod tests {
                 None,
                 stark_model::document::Place::Above(A),
                 region,
-                stark_model::document::MattePaint::Solid(Srgb::new([1.0; 3])),
+                stark_model::document::Parcel::Solid(Srgb::new([1.0; 3])),
             )
             .insert_layer(C, None, Some(B));
         assert_eq!(dest(&over_matte, C), None, "a matte destination");

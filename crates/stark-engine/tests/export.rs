@@ -15,7 +15,7 @@ use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::LayerId;
-use stark_model::document::{MattePaint, MatteRegion, Place, SelectionOp};
+use stark_model::document::{MatteRegion, Parcel, Place, SelectionOp};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [0.85, 0.1, 0.1];
@@ -36,7 +36,7 @@ fn add_frame(engine: &mut Engine) -> LayerId {
         carrier: None,
         at: Place::Top,
         region: FRAME,
-        paint: MattePaint::Solid(Srgb::new(BLACK)),
+        paint: Parcel::Solid(Srgb::new(BLACK)),
     });
     engine.observe().layers.last().expect("matte").id
 }

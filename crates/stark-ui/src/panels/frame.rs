@@ -27,6 +27,7 @@
 
 use dioxus::prelude::*;
 use stark_model::Srgb;
+use stark_model::document::GradientParcel;
 
 use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
@@ -38,7 +39,7 @@ use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{LayerInfo, MatteInfo};
 use stark_model::document::LayerId;
-use stark_model::document::{MattePaint, MatteRegion, Place};
+use stark_model::document::{MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
 
 /// The frame's default fill: a near-black mat board. Dark reads as "not the
@@ -197,7 +198,7 @@ pub fn add_frame(state: AppState) {
             carrier: None,
             at: Place::Top,
             region: MatteRegion::OutsideRect { min, max },
-            paint: MattePaint::Solid(Srgb::new(DEFAULT_MATTE)),
+            paint: Parcel::Solid(Srgb::new(DEFAULT_MATTE)),
         },
     );
     // Select it. `AddMatte` mints the id engine-side, so the new frame is the
@@ -242,7 +243,7 @@ fn add_backing(state: AppState) {
             carrier: None,
             at: Place::Bottom,
             region: MatteRegion::Everything,
-            paint: MattePaint::Solid(Srgb::new(DEFAULT_BACKING)),
+            paint: Parcel::Solid(Srgb::new(DEFAULT_BACKING)),
         },
     );
     // The new backing is the only rect-less matte in the stack: it was just born,
@@ -269,13 +270,13 @@ pub fn FrameBar() -> Element {
     // Whether the color pop-out is open — app state now rather than a local, so
     // Escape can put it down (`widgets::PopoutId`, §25.7). A subscribing read, so
     // the well's pop-out appears and goes with the flag.
-    let show_picker = crate::widgets::popout_open(state, crate::widgets::PopoutId::MattePaint);
+    let show_picker = crate::widgets::popout_open(state, crate::widgets::PopoutId::Parcel);
     // And it goes when this bar does. A pop-out is drawn inside the bar that owns
     // it, so a bar that unmounts — the frame deselected, a mode taking the bottom
     // edge — takes the picker off the screen without clearing the flag, and the
     // next time a frame was selected the picker would be standing open on it.
     use_drop(move || {
-        if crate::widgets::popout_open(state, crate::widgets::PopoutId::MattePaint) {
+        if crate::widgets::popout_open(state, crate::widgets::PopoutId::Parcel) {
             crate::widgets::close_popout(state);
         }
     });
@@ -314,7 +315,7 @@ pub fn FrameBar() -> Element {
         c[1] * 100.0,
         c[2] * 100.0
     );
-    let is_gradient = matches!(matte.paint, MattePaint::Gradient { .. });
+    let is_gradient = matches!(matte.paint, Parcel::Gradient(GradientParcel { .. }));
     // Offered only while there is no backing to make. Once there is one it is a
     // row in the Layers panel like any other layer, and a second could not mean
     // anything — "the whole plane" admits no second.
@@ -432,7 +433,7 @@ pub fn FrameBar() -> Element {
                     title: if is_gradient { "Solid color (replaces the gradient)" } else { "Matte color" },
                     onclick: move |_| crate::widgets::toggle_popout(
                         state,
-                        crate::widgets::PopoutId::MattePaint,
+                        crate::widgets::PopoutId::Parcel,
                     ),
                 }
                 // Mounted only while open, so the picker re-seeds from the matte's
@@ -448,11 +449,11 @@ pub fn FrameBar() -> Element {
                             // per color the pointer crossed on the way (§15.7).
                             onchange: move |rgb: [f32; 3]| {
                                 preview::MATTE_PAINT
-                                    .show(state, (info.id, MattePaint::Solid(Srgb::new(rgb))));
+                                    .show(state, (info.id, Parcel::Solid(Srgb::new(rgb))));
                             },
                             oncommit: move |rgb: [f32; 3]| {
                                 preview::MATTE_PAINT
-                                    .commit(state, (info.id, MattePaint::Solid(Srgb::new(rgb))));
+                                    .commit(state, (info.id, Parcel::Solid(Srgb::new(rgb))));
                             },
                         }
                     }

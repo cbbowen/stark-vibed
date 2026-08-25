@@ -1,7 +1,7 @@
 //! What a layer *holds* (§5.1, §14, §21): its tiles, its matte or its filter, and
 //! the layers it carries.
 //!
-//! The other half — [`LayerId`], [`BlendMode`], [`Place`], [`MattePaint`] and the
+//! The other half — [`LayerId`], [`BlendMode`], [`Place`], [`Parcel`] and the
 //! rest of what a layer *is* as a fact about the document — is `stark-model`'s
 //! `document::layer`. The line is the usual one (§2): those are in the log, these
 //! hold tiles.
@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use rpds::{HashTrieMap, Vector};
 
-use stark_model::document::{BlendMode, LayerId, MattePaint, MatteRegion};
+use stark_model::document::{BlendMode, LayerId, MatteRegion, Parcel};
 
 use super::state::CanvasBounds;
 use crate::gpu::tile::TileMap;
@@ -166,7 +166,7 @@ pub enum LayerContent {
     /// Painted tiles. Only populated ones exist — this sparsity is the infinite
     /// canvas.
     Paint(PaintTiles),
-    /// A procedural region filled with a [`MattePaint`] — one flat color, or a
+    /// A procedural region filled with a [`Parcel`] — one flat color, or a
     /// gradient ramp (§22.4). The paint converts to working-space
     /// channels at composite time, so the log stays independent of whether the
     /// document is Oklab or Mixbox. A matte has no alpha of its own: its
@@ -181,10 +181,7 @@ pub enum LayerContent {
     /// same statement the gradient fill makes (§22.4). See §15.4 for
     /// why it must write the aux target at all, and why its blend there is
     /// `over` rather than additive.
-    Matte {
-        region: MatteRegion,
-        paint: MattePaint,
-    },
+    Matte { region: MatteRegion, paint: Parcel },
     /// A **function of what is composited beneath it** in its own stack (§21).
     ///
     /// The one content that is not content: a filter layer holds no tiles and no
@@ -298,7 +295,7 @@ impl Layer {
     }
 
     /// A matte layer over `region`, filled with `paint` (§15.4).
-    pub fn matte(id: LayerId, region: MatteRegion, paint: MattePaint) -> Self {
+    pub fn matte(id: LayerId, region: MatteRegion, paint: Parcel) -> Self {
         Self {
             content: LayerContent::Matte { region, paint },
             ..Self::new(id)

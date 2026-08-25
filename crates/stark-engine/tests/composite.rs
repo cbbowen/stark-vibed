@@ -136,7 +136,7 @@ fn an_invisible_layer_does_not_repaint_the_one_below() {
 fn an_off_size_render_matches_one_at_the_substrates_own_size() {
     use stark_engine::command::ViewCommand;
     use stark_engine::{Background, ExportScale, Offscreen, Rendered};
-    use stark_model::document::{BlendMode, MattePaint, MatteRegion, Place};
+    use stark_model::document::{BlendMode, MatteRegion, Parcel, Place};
     use stark_model::geom::Extent2;
 
     // The piece: a frame whose rect is exactly the exported size, centred on the
@@ -176,7 +176,7 @@ fn an_off_size_render_matches_one_at_the_substrates_own_size() {
                 min: -HALF,
                 max: HALF,
             },
-            paint: MattePaint::Solid(Srgb::new([0.0, 0.0, 0.0])),
+            paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
         });
         let frame = engine.observe().layers.last().expect("matte").id;
         // The view is the export's, so nothing about the substrate's size can reach
@@ -229,7 +229,7 @@ fn an_off_size_render_matches_one_at_the_substrates_own_size() {
 fn a_kept_offscreen_renders_what_a_fresh_one_would() {
     use stark_engine::command::ViewCommand;
     use stark_engine::{Background, EnvironmentId, ExportScale, Offscreen, Rendered};
-    use stark_model::document::{MattePaint, MatteRegion, Place};
+    use stark_model::document::{MatteRegion, Parcel, Place};
     use stark_model::geom::Extent2;
 
     let Some(mut engine) = engine_or_skip_sized(Extent2::new(200, 150)) else {
@@ -259,7 +259,7 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
                 min: Vec2::new(-80.0, -60.0),
                 max: Vec2::new(80.0, 60.0),
             },
-            paint: MattePaint::Solid(Srgb::new([0.0, 0.0, 0.0])),
+            paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
         });
     };
     let shot = |engine: &mut stark_engine::Engine, into: &mut Offscreen, scale: f32| {
@@ -357,7 +357,7 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
 #[test]
 fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
     use stark_engine::{Background, ExportScale, Offscreen, Rendered};
-    use stark_model::document::{BlendMode, MattePaint, MatteRegion, Place};
+    use stark_model::document::{BlendMode, MatteRegion, Parcel, Place};
     use stark_model::geom::Extent2;
 
     let Some(mut engine) = engine_or_skip_sized(Extent2::new(200, 150)) else {
@@ -378,7 +378,7 @@ fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
             min: Vec2::new(-80.0, -60.0),
             max: Vec2::new(80.0, 60.0),
         },
-        paint: MattePaint::Solid(Srgb::new([0.0, 0.0, 0.0])),
+        paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
     });
     let frame = engine.observe().layers.last().expect("matte").id;
 

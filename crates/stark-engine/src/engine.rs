@@ -394,7 +394,7 @@ pub struct MatteInfo {
     /// export frame all stand down rather than invent one.
     pub rect: Option<(stark_model::geom::Vec2, stark_model::geom::Vec2)>,
     /// The paint the region wears — flat, or a ramp (§15.4, §22.4).
-    pub paint: stark_model::document::MattePaint,
+    pub paint: stark_model::document::Parcel,
 }
 
 impl MatteInfo {
@@ -1512,7 +1512,7 @@ impl Engine {
                 let preview = scale.map(|s| self.timeline.current().with_substrate_scale(s));
                 self.set_doc_preview(preview);
             }
-            ViewCommand::PreviewMattePaint(pick) => {
+            ViewCommand::PreviewParcel(pick) => {
                 let preview =
                     pick.map(|(id, paint)| self.timeline.current().set_matte_paint(id, paint));
                 self.set_doc_preview(preview);

@@ -26,7 +26,7 @@ use common::*;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{Engine, LayerInfo, RgbaImage};
 use stark_model::Srgb;
-use stark_model::document::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
+use stark_model::document::{BlendMode, LayerId, MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
 
 const ROOT: LayerId = LayerId(0);
@@ -507,7 +507,7 @@ fn clipping_inside_solid_paint_is_the_unclipped_result() {
             min: Vec2::new(1e4, 1e4),
             max: Vec2::new(2e4, 2e4),
         },
-        paint: MattePaint::Solid(Srgb::new([0.5, 0.4, 0.3])),
+        paint: Parcel::Solid(Srgb::new([0.5, 0.4, 0.3])),
     });
     let top = add_layer(&mut engine);
     paint(&mut engine, COOL, 20.0, H_STROKE);

@@ -13,7 +13,7 @@
 //!
 //! | module | here | there |
 //! |---|---|---|
-//! | `layer` | `LayerId`, `BlendMode`, `Place`, `MattePaint` | `Layer`, `LayerContent`, `PaintTiles` |
+//! | `layer` | `LayerId`, `BlendMode`, `Place`, `Parcel` | `Layer`, `LayerContent`, `PaintTiles` |
 //! | `selection` | `SelectionOp` and its shapes | `Selection`, the mask itself |
 //! | `fill` | `FillOp`, `fill_bounds` | `plan`, which needs the mask |
 //! | `transform` | the maps, and the homography solve | the tile plans |
@@ -34,6 +34,7 @@ pub(crate) mod footprint;
 pub(crate) mod guide;
 pub(crate) mod image;
 pub(crate) mod layer;
+pub(crate) mod paint;
 pub(crate) mod selection;
 pub(crate) mod transform;
 pub(crate) mod warp;
@@ -44,7 +45,7 @@ pub use brush::{
     EraseEffect, EraseModulations, ModSource, Modulation, NoiseKind, OrientationSource,
     PaintEffect, PaintModulations, PenState, ToothParams,
 };
-pub use fill::{FillOp, GradientAxis, GradientParcel, MAX_FILL_TILES, Parcel, ShapeAction};
+pub use fill::{FillOp, MAX_FILL_TILES, ShapeAction};
 pub use filter::{ChromaticAberration, ColorAdjust, Filter};
 pub use fold::{Logged, Materialize};
 /// The commutation vocabulary (§12.6) — what an action reads and writes, and
@@ -54,7 +55,8 @@ pub use guide::{
     AxisPencil, AxisPlane, GuideId, GuideScene, Lens, PairTrace, PerspectiveGuide, Scaffold,
 };
 pub use image::{MAX_IMAGE_TILES, image_tiles};
-pub use layer::{BlendMode, DRAGO_K, DRAGO_K_RANGE, LayerId, MattePaint, MatteRegion, Place};
+pub use layer::{BlendMode, DRAGO_K, DRAGO_K_RANGE, LayerId, MatteRegion, Place};
+pub use paint::{GradientAxis, GradientParcel, Parcel};
 pub use selection::{
     MAX_LASSO_POINTS, MAX_SELECTION_TILES, SelectionMode, SelectionOp, SelectionShape,
 };

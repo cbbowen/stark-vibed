@@ -13,7 +13,6 @@
 use serde::{Deserialize, Serialize};
 
 use super::action::ActorId;
-use crate::Srgb;
 use crate::geom::Vec2;
 
 /// Stable identifier for a layer within a document.
@@ -484,66 +483,6 @@ impl MatteRegion {
         match self {
             Self::OutsideRect { .. } => Self::OutsideRect { min, max },
             Self::Everything => Self::Everything,
-        }
-    }
-}
-
-/// What a matte is filled with (§15.4, §22): one flat color, or a
-/// gradient read from canvas position — the same ramp the fill lays (§22.4),
-/// embedded by value the same way.
-///
-/// No opacity of its own in either variant: a matte's transparency *is* its
-/// layer opacity (§15.3), and its paint is a full-strength coat — which is why
-/// the solid keeps three channels, not four, and the gradient carries no
-/// per-unit opacity where the fill's parcel does.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
-pub enum MattePaint {
-    /// One color everywhere, converted to working-space channels at composite
-    /// time.
-    Solid(Srgb),
-    /// A color ramp along an axis (§22.4): interpolated per fragment in the
-    /// working space, so an Oklab document's matte matches the library strip
-    /// and a Mixbox document's is a pigment ramp — a graded wash, not a screen
-    /// gradient.
-    Gradient {
-        gradient: crate::gradient::Gradient,
-        axis: super::fill::GradientAxis,
-    },
-}
-
-impl MattePaint {
-    /// The color a one-swatch summary shows: the solid itself, or the ramp's
-    /// start — the stop the axis anchors on.
-    pub fn swatch(&self) -> Srgb {
-        match self {
-            Self::Solid(c) => *c,
-            Self::Gradient { gradient, .. } => gradient.sample(0.0),
-        }
-    }
-
-    /// The same paint with every color inside the sRGB cube and an axis the ramp
-    /// pass can evaluate — a matte's half of
-    /// [`ActionKind::sanitized`](super::ActionKind::sanitized).
-    ///
-    /// Word for word [`Parcel::sanitized`](super::fill::Parcel::sanitized), because
-    /// this is word for word a [`Parcel`](super::fill::Parcel): both are "what paint
-    /// to lay", both are a solid or a ramp on an axis, and both reach the same
-    /// `ramp_common::ramp_position` through different passes. They are two types
-    /// only because they reached the file at different times and their wire shapes
-    /// were written differently (`Gradient { gradient, axis }` against
-    /// `Gradient(GradientParcel)`); merging them is a save-format change and is
-    /// worth doing on its own, not as a side effect of closing this gap.
-    ///
-    /// Until then the *argument* is shared even though the match is not: see
-    /// `Parcel::sanitized` for why an unusable axis degrades to the ramp's anchor
-    /// rather than being clamped or refused.
-    pub fn sanitized(self) -> Self {
-        match self {
-            // See `Parcel::sanitized`: the colors hold themselves, and the axis is
-            // all that is left to answer.
-            Self::Solid(_) => self,
-            Self::Gradient { gradient, axis } if axis.usable() => Self::Gradient { gradient, axis },
-            Self::Gradient { gradient, .. } => Self::Solid(gradient.sample(0.0)),
         }
     }
 }

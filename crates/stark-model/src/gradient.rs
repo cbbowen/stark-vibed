@@ -52,7 +52,7 @@ pub struct GradientStop {
 ///
 /// **Which makes these invariants unable to tighten without repair.** This is the one
 /// refusing funnel on the load path, and it takes the whole document with it — a ramp
-/// sits inside a `MattePaint`, a `Filter::GradientMap`, and a
+/// sits inside a `Parcel`, a `Filter::GradientMap`, and a
 /// [`FillOp`](crate::document::FillOp)'s parcel, where it is refused *before* that
 /// op's own clamp can run. `RawFillOp` states the opposite policy for a reason that
 /// applies here too: a fill that will not open is worse than one whose opacity was

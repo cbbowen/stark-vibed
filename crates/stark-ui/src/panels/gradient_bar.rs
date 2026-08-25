@@ -39,7 +39,7 @@ use crate::preview;
 use crate::state::{AppState, GradientAxisKind, GradientTarget, GradientUi, use_obs};
 use crate::widgets::CommandButton;
 use stark_model::Gradient;
-use stark_model::document::{FillOp, GradientAxis, GradientParcel, MattePaint};
+use stark_model::document::{FillOp, GradientAxis, GradientParcel, Parcel};
 use stark_model::geom::Vec2;
 
 /// Enter the mode for a **fill of the selection**. The target layer is the
@@ -83,7 +83,7 @@ pub fn begin_fill(state: AppState) {
 /// the mode already shows something to adjust. With the library empty the mode
 /// still opens, carrying no ramp: the bar's well is where the first one is
 /// picked or traced, and the default axis stands ready for it.
-pub fn begin_matte(state: AppState, layer: stark_model::document::LayerId, paint: &MattePaint) {
+pub fn begin_matte(state: AppState, layer: stark_model::document::LayerId, paint: &Parcel) {
     // One composing mode at a time (`crate::modes`), as for the fill above —
     // and **before** the reads below rather than left to the `enter` inside
     // `open`, which is the ordering the defaults depend on: putting a mode down
@@ -91,7 +91,7 @@ pub fn begin_matte(state: AppState, layer: stark_model::document::LayerId, paint
     // that a preview still standing could be moving.
     crate::modes::leave(state);
     let (gradient, kind, drag) = match paint {
-        MattePaint::Gradient { gradient, axis } => {
+        Parcel::Gradient(GradientParcel { gradient, axis }) => {
             let (kind, drag) = match axis {
                 GradientAxis::Linear { from, to } => (GradientAxisKind::Linear, (*from, *to)),
                 GradientAxis::Radial { center, radius } => (
@@ -101,7 +101,7 @@ pub fn begin_matte(state: AppState, layer: stark_model::document::LayerId, paint
             };
             (Some(gradient.clone()), kind, drag)
         }
-        MattePaint::Solid(_) => {
+        Parcel::Solid(_) => {
             let (lo, hi) = default_axis_rect(state, layer);
             let cx = (lo.x + hi.x) * 0.5;
             (
@@ -191,7 +191,7 @@ pub fn refresh(state: AppState) {
 /// is not a case to handle; it is a value that cannot be built.
 enum Laid {
     Fill(stark_model::document::LayerId, FillOp),
-    Matte(stark_model::document::LayerId, MattePaint),
+    Matte(stark_model::document::LayerId, Parcel),
 }
 
 impl Laid {
@@ -276,10 +276,10 @@ fn compose(state: AppState, ui: &GradientUi) -> Option<Laid> {
         ),
         GradientTarget::Matte { layer, gradient } => Laid::Matte(
             *layer,
-            MattePaint::Gradient {
+            Parcel::Gradient(GradientParcel {
                 gradient: gradient.clone()?,
                 axis,
-            },
+            }),
         ),
     })
 }

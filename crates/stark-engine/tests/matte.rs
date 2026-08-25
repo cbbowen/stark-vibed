@@ -19,7 +19,7 @@ use common::*;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::Srgb;
-use stark_model::document::{LayerId, MattePaint, MatteRegion, Place};
+use stark_model::document::{LayerId, MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [0.85, 0.1, 0.1];
@@ -51,7 +51,7 @@ fn add_frame(engine: &mut Engine) {
         carrier: None,
         at: Place::Top,
         region: HOLE,
-        paint: MattePaint::Solid(Srgb::new(BLACK)),
+        paint: Parcel::Solid(Srgb::new(BLACK)),
     });
 }
 
@@ -422,9 +422,9 @@ fn picking_a_frame_color_previews_without_logging() {
 
     // Three "pointer moves" of a pick towards a pale mat board.
     for v in [0.3f32, 0.6, 0.9] {
-        engine.process(ViewCommand::PreviewMattePaint(Some((
+        engine.process(ViewCommand::PreviewParcel(Some((
             matte_id,
-            MattePaint::Solid(Srgb::new([v, v, v])),
+            Parcel::Solid(Srgb::new([v, v, v])),
         ))));
     }
     let picking = engine.render_to_image();
@@ -437,7 +437,7 @@ fn picking_a_frame_color_previews_without_logging() {
     let previewed = engine.observe().layers.last().and_then(|l| l.matte.clone());
     assert_eq!(
         previewed.map(|m| m.paint),
-        Some(MattePaint::Solid(Srgb::new([0.9, 0.9, 0.9])))
+        Some(Parcel::Solid(Srgb::new([0.9, 0.9, 0.9])))
     );
 
     // A history step during the pick drops the preview and finds nothing of it
@@ -451,14 +451,14 @@ fn picking_a_frame_color_previews_without_logging() {
 
     // Settling commits exactly one action, which supersedes the preview it matches.
     for v in [0.3f32, 0.6, 0.9] {
-        engine.process(ViewCommand::PreviewMattePaint(Some((
+        engine.process(ViewCommand::PreviewParcel(Some((
             matte_id,
-            MattePaint::Solid(Srgb::new([v, v, v])),
+            Parcel::Solid(Srgb::new([v, v, v])),
         ))));
     }
     engine.process(DocCommand::SetMattePaint(
         matte_id,
-        MattePaint::Solid(Srgb::new([0.9, 0.9, 0.9])),
+        Parcel::Solid(Srgb::new([0.9, 0.9, 0.9])),
     ));
     assert!(
         images_match(&picking, &engine.render_to_image(), 2),
@@ -486,14 +486,14 @@ fn a_frame_color_pick_that_changes_nothing_logs_nothing() {
     let black = engine.render_to_image();
 
     for v in [0.3f32, 0.6, 0.0] {
-        engine.process(ViewCommand::PreviewMattePaint(Some((
+        engine.process(ViewCommand::PreviewParcel(Some((
             matte_id,
-            MattePaint::Solid(Srgb::new([v, v, v])),
+            Parcel::Solid(Srgb::new([v, v, v])),
         ))));
     }
     engine.process(DocCommand::SetMattePaint(
         matte_id,
-        MattePaint::Solid(Srgb::new(BLACK)),
+        Parcel::Solid(Srgb::new(BLACK)),
     ));
     assert!(
         images_match(&black, &engine.render_to_image(), 2),
@@ -535,8 +535,8 @@ fn matte_undoes() {
 // The whole-plane region and the gradient paint (§15.5, §22.4).
 // ---------------------------------------------------------------------------
 
-use stark_model::document::GradientAxis;
-use stark_model::document::MattePaint as MP;
+use stark_model::document::Parcel as MP;
+use stark_model::document::{GradientAxis, GradientParcel};
 use stark_model::{Gradient, GradientStop};
 
 fn red_blue() -> Gradient {
@@ -566,7 +566,7 @@ fn an_everything_matte_backs_the_whole_view_beneath_the_paint() {
         carrier: None,
         at: Place::Bottom,
         region: MatteRegion::Everything,
-        paint: MattePaint::Solid(Srgb::new([0.1, 0.5, 0.15])),
+        paint: Parcel::Solid(Srgb::new([0.1, 0.5, 0.15])),
     });
     let img = engine.render_to_image();
     // Green everywhere the paint is not…
@@ -594,13 +594,13 @@ fn a_gradient_matte_grades_across_the_canvas() {
         carrier: None,
         at: Place::Bottom,
         region: MatteRegion::Everything,
-        paint: MP::Gradient {
+        paint: MP::Gradient(GradientParcel {
             gradient: red_blue(),
             axis: GradientAxis::Linear {
                 from: Vec2::new(-100.0, 0.0),
                 to: Vec2::new(100.0, 0.0),
             },
-        },
+        }),
     });
     let img = engine.render_to_image();
     let (w, h) = (img.width, img.height);
@@ -639,13 +639,13 @@ fn a_gradient_matte_survives_undo_and_reload() {
     let black = engine.render_to_image();
     engine.process(DocCommand::SetMattePaint(
         matte_id,
-        MP::Gradient {
+        MP::Gradient(GradientParcel {
             gradient: red_blue(),
             axis: GradientAxis::Radial {
                 center: Vec2::ZERO,
                 radius: 90.0,
             },
-        },
+        }),
     ));
     let graded = engine.render_to_image();
     assert!(
@@ -685,7 +685,7 @@ fn an_everything_matte_defines_no_export_frame() {
         carrier: None,
         at: Place::Bottom,
         region: MatteRegion::Everything,
-        paint: MattePaint::Solid(Srgb::new([0.9, 0.9, 0.85])),
+        paint: Parcel::Solid(Srgb::new([0.9, 0.9, 0.85])),
     });
     let backing = engine
         .observe()

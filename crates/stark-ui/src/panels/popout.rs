@@ -118,7 +118,7 @@ pub fn StackPopouts() -> Element {
                 // The ones drawn where they are opened — a bar's own, the rail's
                 // — which `in_stack` has already returned for above.
                 PopoutId::VisibilityMenu
-                | PopoutId::MattePaint
+                | PopoutId::Parcel
                 | PopoutId::GradientLibrary => rsx! {},
             }
         }

@@ -26,7 +26,7 @@ use common::*;
 use stark_engine::command::DocCommand;
 use stark_engine::{Background, ExportScale, Offscreen, Rendered, RgbaImage};
 use stark_model::Srgb;
-use stark_model::document::{BrushParams, BrushShape, MattePaint, MatteRegion, Place};
+use stark_model::document::{BrushParams, BrushShape, MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
 
 /// The frame the exports are taken against: a rect whose size divides by [`SS`], so
@@ -139,7 +139,7 @@ fn hatched(engine: &mut stark_engine::Engine) {
             min: Vec2::new(-HALF, -HALF),
             max: Vec2::new(HALF, HALF),
         },
-        paint: MattePaint::Solid(Srgb::new([0.0, 0.0, 0.0])),
+        paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
     });
 }
 

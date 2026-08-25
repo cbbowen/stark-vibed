@@ -687,10 +687,7 @@ mod tests {
             ActionKind::SetLayerClip(inner, true),
             ActionKind::SetLayerOpacity(inner, 0.5),
             ActionKind::SetLayerVisible(inner, false),
-            ActionKind::SetMattePaint(
-                inner,
-                crate::document::MattePaint::Solid(crate::Srgb::BLACK),
-            ),
+            ActionKind::SetMattePaint(inner, crate::document::Parcel::Solid(crate::Srgb::BLACK)),
             ActionKind::RemoveLayer(inner),
         ];
         for kind in edits {

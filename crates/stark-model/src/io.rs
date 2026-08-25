@@ -469,10 +469,10 @@ mod tests {
     /// takes about tightening an invariant.
     #[test]
     fn a_document_written_before_the_color_newtype_still_loads() {
-        use crate::document::{ActionKind, LayerId, MattePaint, MatteRegion, Place};
+        use crate::document::{ActionKind, LayerId, MatteRegion, Parcel, Place};
 
         #[derive(Serialize, Deserialize, carbonite::Schema)]
-        #[serde(rename = "MattePaint")]
+        #[serde(rename = "Parcel")]
         enum OldPaint {
             Solid([f32; 3]),
         }
@@ -554,7 +554,7 @@ mod tests {
             .map(|a| match &a.kind {
                 ActionKind::SetSubstrateColor(c) => c.get(),
                 ActionKind::AddMatte {
-                    paint: MattePaint::Solid(c),
+                    paint: Parcel::Solid(c),
                     ..
                 } => c.get(),
                 other => panic!("unexpected {other:?}"),

@@ -62,7 +62,7 @@ enum PatchOp {
     Visible(LayerId, bool),
     Name(LayerId, Option<Arc<str>>),
     /// A matte's region and color together — one footprint resource.
-    Matte(LayerId, MatteRegion, stark_model::document::MattePaint),
+    Matte(LayerId, MatteRegion, stark_model::document::Parcel),
     /// A filter layer's settings (§21) — one footprint resource, because the action
     /// that writes them carries the filter entire.
     Filter(LayerId, Filter),
@@ -417,7 +417,7 @@ mod tests {
         bool,
         Option<Arc<str>>,
         Option<Filter>,
-        Option<(MatteRegion, stark_model::document::MattePaint)>,
+        Option<(MatteRegion, stark_model::document::Parcel)>,
     );
 
     fn props(l: &Layer) -> Props {
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn every_property_round_trips() {
         use stark_model::document::{BlendMode, ColorAdjust, Filter};
-        use stark_model::document::{MattePaint, MatteRegion};
+        use stark_model::document::{MatteRegion, Parcel};
         use stark_model::geom::Vec2;
 
         let rect = MatteRegion::OutsideRect {
@@ -458,7 +458,7 @@ mod tests {
                 None,
                 Place::Top,
                 rect,
-                MattePaint::Solid(Srgb::new([0.2, 0.4, 0.6])),
+                Parcel::Solid(Srgb::new([0.2, 0.4, 0.6])),
             )
             .insert_filter(LayerId(4), None, None, Filter::Color(ColorAdjust::NEUTRAL));
 
@@ -470,7 +470,7 @@ mod tests {
                 Prop::Visible => (ActionKind::SetLayerVisible(B, false), B),
                 Prop::Name => (ActionKind::SetLayerName(B, Some("wash".into())), B),
                 Prop::Matte => (
-                    ActionKind::SetMattePaint(LayerId(3), MattePaint::Solid(Srgb::new([1.0; 3]))),
+                    ActionKind::SetMattePaint(LayerId(3), Parcel::Solid(Srgb::new([1.0; 3]))),
                     LayerId(3),
                 ),
                 Prop::Filter => (

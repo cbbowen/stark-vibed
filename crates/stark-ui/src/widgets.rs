@@ -262,7 +262,7 @@ pub enum PopoutId {
     /// already hearing (`rail::VisibilityMenu`, `input::keys`).
     VisibilityMenu,
     /// The frame bar's matte-colour picker (§15.4).
-    MattePaint,
+    Parcel,
     /// The gradient library, flown out of a bar's ramp well (§22.3).
     GradientLibrary,
     /// The Lighting panel's canvas-colour picker (§6.4).
@@ -290,7 +290,7 @@ impl PopoutId {
     /// about which control in the row happened to be pressed.
     pub fn in_stack(self) -> Option<&'static str> {
         match self {
-            PopoutId::VisibilityMenu | PopoutId::MattePaint | PopoutId::GradientLibrary => None,
+            PopoutId::VisibilityMenu | PopoutId::Parcel | PopoutId::GradientLibrary => None,
             PopoutId::SubstrateColor => Some("[data-popout=\"substrate-color\"]"),
             PopoutId::SubstrateGallery => Some("[data-popout=\"substrate-gallery\"]"),
         }

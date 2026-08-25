@@ -43,7 +43,7 @@ use crate::state::{AppState, dispatch};
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::LayerId;
 use stark_model::document::{
-    BlendMode, FillOp, Filter, GuideId, MattePaint, PerspectiveGuide, TransformMap,
+    BlendMode, FillOp, Filter, GuideId, Parcel, PerspectiveGuide, TransformMap,
 };
 use stark_model::geom::Vec2;
 
@@ -170,8 +170,8 @@ pub const MATTE_RECT: Preview<(LayerId, Vec2, Vec2)> =
 
 /// A matte's paint — the frame bar's color pop-out, and the gradient bar's axis
 /// when it is aimed at a matte (§15.4, §22.4).
-pub const MATTE_PAINT: Preview<(LayerId, MattePaint)> =
-    Preview::new(ViewCommand::PreviewMattePaint, |(layer, paint)| {
+pub const MATTE_PAINT: Preview<(LayerId, Parcel)> =
+    Preview::new(ViewCommand::PreviewParcel, |(layer, paint)| {
         DocCommand::SetMattePaint(layer, paint)
     });
 
@@ -291,8 +291,8 @@ mod tests {
         );
         check_pair!(
             MATTE_PAINT,
-            (id, MattePaint::Solid(Srgb::new([0.1, 0.2, 0.3]))),
-            ViewCommand::PreviewMattePaint(Some(shown)),
+            (id, Parcel::Solid(Srgb::new([0.1, 0.2, 0.3]))),
+            ViewCommand::PreviewParcel(Some(shown)),
             DocCommand::SetMattePaint(layer, laid) => (shown, (layer, laid))
         );
         check_pair!(
@@ -356,7 +356,7 @@ mod tests {
         ));
         assert!(matches!(
             (MATTE_PAINT.show)(None),
-            ViewCommand::PreviewMattePaint(None)
+            ViewCommand::PreviewParcel(None)
         ));
         assert!(matches!(
             (GUIDE.show)(None),

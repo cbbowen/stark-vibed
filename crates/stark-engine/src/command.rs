@@ -77,7 +77,7 @@ use crate::gpu::{EnvironmentId, MediaParams};
 use stark_model::AssetId;
 use stark_model::Srgb;
 use stark_model::document::{
-    BlendMode, BrushParams, FillOp, Filter, GuideId, LayerId, MattePaint, MatteRegion,
+    BlendMode, BrushParams, FillOp, Filter, GuideId, LayerId, MatteRegion, Parcel,
     PerspectiveGuide, Place, SelectionOp, ShapeAction, TransformMap,
 };
 use stark_model::geom::{Extent2, IVec2, Vec2};
@@ -344,7 +344,7 @@ pub enum DocCommand {
         op: FillOp,
     },
 
-    /// Add a **matte** layer — a region filled with a [`MattePaint`]
+    /// Add a **matte** layer — a region filled with a [`Parcel`]
     /// (§15.2). A frame is one of these on top of the stack; a substrate
     /// ([`MatteRegion::Everything`]) is one at the bottom, hence the full
     /// [`Place`] anchor (§15.5). The engine mints the id, as it does
@@ -354,7 +354,7 @@ pub enum DocCommand {
         carrier: Option<LayerId>,
         at: Place,
         region: MatteRegion,
-        paint: MattePaint,
+        paint: Parcel,
     },
     /// Bring an image in from **outside** the document — an image file, or the system
     /// clipboard — as a new layer holding it as paint (§23).
@@ -416,7 +416,7 @@ pub enum DocCommand {
     SetMatteRect(LayerId, Vec2, Vec2),
     /// Repaint a matte — a flat color or a gradient ramp (§15.4, §22.4). One
     /// action per pick or per composed axis, committed when the gesture settles.
-    SetMattePaint(LayerId, MattePaint),
+    SetMattePaint(LayerId, Parcel),
     /// Set the canvas substrate color — the substrate under everything, straight
     /// sRGB (§15.5). A document property, not a view setting: it is
     /// what the piece was painted on, and it is saved.
@@ -679,7 +679,7 @@ pub enum ViewCommand {
     /// is being chosen here is how a matte reads against the piece, which is a
     /// judgement made *by looking* — so the picking has to show on the canvas,
     /// and only the answer belongs in the log.
-    PreviewMattePaint(Option<(LayerId, MattePaint)>),
+    PreviewParcel(Option<(LayerId, Parcel)>),
 
     /// Show the document as a [`DocCommand::Transform`] would leave it, **without
     /// logging it** — the in-flight half of the transform gesture

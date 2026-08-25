@@ -51,9 +51,8 @@ use common::{engine_or_skip, images_match};
 use stark_engine::command::{DocCommand, InputCommand, PeerCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{
-    Action, ActionId, ActorId, BlendMode, ColorAdjust, FillOp, Filter, LayerId, MattePaint,
-    MatteRegion, Place, SelectionMode, SelectionOp, SelectionShape, TransformMap,
-    compute_footprint,
+    Action, ActionId, ActorId, BlendMode, ColorAdjust, FillOp, Filter, LayerId, MatteRegion,
+    Parcel, Place, SelectionMode, SelectionOp, SelectionShape, TransformMap, compute_footprint,
 };
 use stark_model::geom::{Affine2, Vec2};
 use stark_model::io::DocumentFile;
@@ -193,7 +192,7 @@ fn ordered(file: &DocumentFile, first: &Action, second: &Action) -> Option<RgbaI
 /// each other and a guide's identity is its own action id, which re-stamping would
 /// move. What is here is everything that paints, gates, restructures or presents.
 fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
-    let ramp = MattePaint::Solid(Srgb::new([0.2, 0.5, 0.9]));
+    let ramp = Parcel::Solid(Srgb::new([0.2, 0.5, 0.9]));
     let mut out = Vec::new();
     let mut push = |name: &'static str, action: Option<Action>| {
         if let Some(a) = action {

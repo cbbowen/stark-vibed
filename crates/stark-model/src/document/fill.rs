@@ -27,10 +27,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::paint::{GradientParcel, Parcel};
 use super::selection::{SelectionMode, SelectionShape};
 use crate::Srgb;
 use crate::geom::{TILE_APRON, Vec2};
-use crate::gradient::Gradient;
 use crate::{at_least_zero, clamp01};
 
 /// Largest number of paint tiles one fill may write. The same stance and roughly
@@ -73,95 +73,6 @@ impl ShapeAction {
     /// (shift / alt) mean anything for it.
     pub fn is_select(self) -> bool {
         matches!(self, Self::Select(_))
-    }
-}
-
-/// What paint a fill lays: the same parcel everywhere, or one that varies with
-/// canvas position (§22.4). This is the seam §18.0.4 named — a gradient is not a
-/// new pipeline, it is a fill whose parcel reads its latent from position — so
-/// the region, the gate, the stacking law and the footprint are all [`FillOp`]'s,
-/// untouched.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
-pub enum Parcel {
-    /// One color everywhere. Straight sRGB, and **color only**: how strongly a
-    /// fill covers is [`FillOp::opacity`], one number for the whole fill, so a
-    /// parcel says *what* paint and never *how much* of it (§6.1).
-    Solid(Srgb),
-    /// A color ramp read from canvas position (§22.4).
-    Gradient(GradientParcel),
-}
-
-impl Parcel {
-    /// The same paint with every color inside the sRGB cube and every axis one the
-    /// ramp pass can evaluate — the parcel's half of the funnel
-    /// [`FillOp::with_paint`] and
-    /// [`MattePaint::sanitized`](super::layer::MattePaint::sanitized) are.
-    ///
-    /// Held here rather than at the two gates because it is a fact about *paint*
-    /// and both of them lay the same paint through the same shader. `FillOp` used
-    /// to clamp a `Solid` and pass a `Gradient` through untouched — a solid's three
-    /// floats guarded and a ramp's forty-eight not, from the same picker, into the
-    /// same texel.
-    ///
-    /// **An unusable axis degrades the parcel to the ramp's anchor**, rather than
-    /// being clamped into a different axis or refusing the fill. That is the honest
-    /// reading of a gradient nobody can place: `swatch` already calls the first stop
-    /// "the stop the axis anchors on", so a parcel that cannot say *where* the
-    /// transition goes still knows exactly what color it starts from. Deterministic,
-    /// and it cannot make a `NaN`.
-    pub fn sanitized(self) -> Self {
-        match self {
-            // Nothing to hold: an `Srgb` is inside the cube by construction, and a
-            // ramp's stops are `Srgb`s. What is left is the *axis*, which is the
-            // one thing here a type could not answer.
-            Self::Solid(_) => self,
-            Self::Gradient(GradientParcel { gradient, axis }) if axis.usable() => {
-                Self::Gradient(GradientParcel { gradient, axis })
-            }
-            Self::Gradient(GradientParcel { gradient, .. }) => Self::Solid(gradient.sample(0.0)),
-        }
-    }
-}
-
-/// The gradient half of a [`Parcel`]: which ramp, along what axis (§22.4).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
-pub struct GradientParcel {
-    /// The ramp — embedded **by value**, the way a stroke embeds its brush
-    /// color, so the document stays self-contained and replayable with no
-    /// reference into anyone's browser-local library (§22.3).
-    pub gradient: Gradient,
-    /// Where `t = 0` and `t = 1` sit on the canvas.
-    pub axis: GradientAxis,
-}
-
-/// The geometry mapping canvas position to ramp position — the shape the
-/// composing drag draws (§22.4). Beyond either end the ramp holds its end stop:
-/// a gradient fill covers its whole region, the axis only says where the
-/// transition lives.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
-pub enum GradientAxis {
-    /// `t` grows from `from` to `to` along the line joining them, constant on
-    /// perpendiculars.
-    Linear { from: Vec2, to: Vec2 },
-    /// `t` grows with distance from `center`, reaching 1 at `radius`.
-    Radial { center: Vec2, radius: f32 },
-}
-
-impl GradientAxis {
-    /// Whether `ramp_common::ramp_position` can evaluate this axis at all.
-    ///
-    /// **Finiteness only**, because that is the only thing the shader does not
-    /// already handle: `ramp_position` floors both denominators at `1e-6`, so a
-    /// zero-length line and a zero radius are degenerate-but-defined (everything
-    /// lands at `t = 0`). A non-finite coordinate is the case it cannot floor — the
-    /// guard is a `max`, which is unspecified on a `NaN`, and the `clamp` after it
-    /// no better. That is a texel-wide disagreement between two clients rasterizing
-    /// the same log.
-    pub fn usable(&self) -> bool {
-        match self {
-            Self::Linear { from, to } => from.is_finite() && to.is_finite(),
-            Self::Radial { center, radius } => center.is_finite() && radius.is_finite(),
-        }
     }
 }
 

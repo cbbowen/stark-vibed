@@ -45,9 +45,9 @@ use stark_engine::command::{DocCommand, InputCommand};
 use stark_engine::document::{DocState, Layer, LayerContent, Selection};
 use stark_model::AssetId;
 use stark_model::document::{
-    ActionId, ActionKind, ActorId, BlendMode, ColorAdjust, FillOp, Filter, LayerId, MattePaint,
-    MatteRegion, PerspectiveGuide, PerspectiveMap, Place, Prop, Resource, SelectionMode,
-    SelectionOp, SelectionShape, TransformMap, WarpMap, compute_footprint, rect_corners,
+    ActionId, ActionKind, ActorId, BlendMode, ColorAdjust, FillOp, Filter, LayerId, MatteRegion,
+    Parcel, PerspectiveGuide, PerspectiveMap, Place, Prop, Resource, SelectionMode, SelectionOp,
+    SelectionShape, TransformMap, WarpMap, compute_footprint, rect_corners,
 };
 use stark_model::geom::{Affine2, IVec2, TileCoord, Vec2};
 use stark_model::{SubstrateId, SubstrateScale};
@@ -88,7 +88,7 @@ fn shape(state: &DocState) -> Vec<(LayerId, usize)> {
     out
 }
 
-fn matte_of(l: &Layer) -> Option<(MatteRegion, MattePaint)> {
+fn matte_of(l: &Layer) -> Option<(MatteRegion, Parcel)> {
     match &l.content {
         LayerContent::Matte { region, paint } => Some((*region, paint.clone())),
         LayerContent::Paint(_) | LayerContent::Filter(_) => None,
@@ -436,7 +436,7 @@ fn every_action_touches_only_what_it_declares() {
                 min: Vec2::new(10.0, 10.0),
                 max: Vec2::new(180.0, 140.0),
             },
-            paint: MattePaint::Solid(Srgb::new([0.9, 0.9, 0.9])),
+            paint: Parcel::Solid(Srgb::new([0.9, 0.9, 0.9])),
         },
     );
     let matte = engine
@@ -455,7 +455,7 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "recolor matte",
-        DocCommand::SetMattePaint(matte, MattePaint::Solid(Srgb::new([0.1, 0.1, 0.1]))),
+        DocCommand::SetMattePaint(matte, Parcel::Solid(Srgb::new([0.1, 0.1, 0.1]))),
     );
     step(
         &mut engine,

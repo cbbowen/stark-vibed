@@ -19,7 +19,7 @@ use crate::gpu::{
 use crate::image::RgbaImage;
 use crate::view::ViewTransform;
 use crate::{EngineError, Result};
-use stark_model::document::{GuideScene, LayerId};
+use stark_model::document::{GradientParcel, GuideScene, LayerId};
 use stark_model::geom::{Extent2, TileRect};
 
 /// What sits under the paint when rendering (§15.6).
@@ -1063,7 +1063,7 @@ impl Engine {
                 // every stop the same way, once per item build, and the shader
                 // interpolates in the working space (§22.4).
                 let (channels, resid, ramp) = match paint {
-                    stark_model::document::MattePaint::Solid(color) => (
+                    stark_model::document::Parcel::Solid(color) => (
                         self.shared.color_space.rgb_to_channels(*color),
                         {
                             let r = self.shared.color_space.rgb_to_resid(*color);
@@ -1071,7 +1071,7 @@ impl Engine {
                         },
                         None,
                     ),
-                    stark_model::document::MattePaint::Gradient { gradient, axis } => {
+                    stark_model::document::Parcel::Gradient(GradientParcel { gradient, axis }) => {
                         let mut ramp = stark_shaders::mirror::matte::Ramp::default();
                         let stops = gradient.stops();
                         ramp.p[0] = stops.len() as f32;

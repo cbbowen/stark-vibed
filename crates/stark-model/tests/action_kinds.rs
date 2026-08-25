@@ -23,9 +23,9 @@
 
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, BlendMode, BrushEffect, BrushParams, FillOp, Filter,
-    GradientAxis, GradientParcel, GuideId, LayerId, MattePaint, MatteRegion, Parcel,
-    PerspectiveGuide, PerspectiveMap, Place, SelectionMode, SelectionOp, SelectionShape,
-    StrokeRecord, ToothParams, WarpMap, affine_usable, rect_corners,
+    GradientAxis, GradientParcel, GuideId, LayerId, MatteRegion, Parcel, PerspectiveGuide,
+    PerspectiveMap, Place, SelectionMode, SelectionOp, SelectionShape, StrokeRecord, ToothParams,
+    WarpMap, affine_usable, rect_corners,
 };
 use stark_model::geom::{Affine2, IVec2, Vec2};
 use stark_model::gradient::{Gradient, GradientStop};
@@ -151,13 +151,13 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             carrier: None,
             at: Place::Bottom,
             region: MatteRegion::Everything,
-            paint: MattePaint::Gradient {
+            paint: Parcel::Gradient(GradientParcel {
                 gradient: ramp(),
                 axis,
-            },
+            }),
         },
         ActionKind::SetMatteRect(id, v, v),
-        ActionKind::SetMattePaint(id, MattePaint::Solid(Srgb::new([n, 0.5, 0.75]))),
+        ActionKind::SetMattePaint(id, Parcel::Solid(Srgb::new([n, 0.5, 0.75]))),
         ActionKind::SetSubstrateColor(Srgb::new([n, 0.25, 0.75])),
         ActionKind::Transform {
             layer: id,
@@ -382,8 +382,8 @@ fn every_default_is_already_sanitized() {
         assert_eq!(neutral.clone().sanitized(), neutral, "a neutral moved");
     }
     for paint in [
-        MattePaint::Solid(Srgb::new([0.25, 0.5, 0.75])),
-        MattePaint::Gradient {
+        Parcel::Solid(Srgb::new([0.25, 0.5, 0.75])),
+        Parcel::Gradient(GradientParcel {
             gradient: Gradient::new(vec![
                 GradientStop {
                     t: 0.0,
@@ -399,7 +399,7 @@ fn every_default_is_already_sanitized() {
                 center: Vec2::ZERO,
                 radius: 32.0,
             },
-        },
+        }),
     ] {
         assert_eq!(paint.clone().sanitized(), paint, "a matte paint moved");
     }
