@@ -1258,7 +1258,7 @@ mod tests {
         s.start_selection(Tool::SelectRect, Vec2::ZERO, has_selection);
         s.selection_to(Vec2::splat(10.0));
         match s.preview_shape().expect("the marquee encloses something") {
-            ShapeResult::Select(op) => op.mode,
+            ShapeResult::Select(op) => op.mode(),
             ShapeResult::Fill(_) => panic!("a selecting action does not fill"),
         }
     }

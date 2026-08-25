@@ -36,6 +36,19 @@ use stark_model::geom::{TileCoord, Vec2};
 /// says about a lasso is its vertex list and the bound on how long that may be
 /// (`SelectionShape`, `MAX_LASSO_POINTS`); turning one into edge texels is the
 /// shader's own business.
+fn lasso_edges(points: &[Vec2]) -> Vec<[f32; 4]> {
+    if points.len() < 3 {
+        return Vec::new();
+    }
+    (0..points.len())
+        .map(|i| {
+            let a = points[i];
+            let b = points[(i + 1) % points.len()];
+            [a.x, a.y, b.x, b.y]
+        })
+        .collect()
+}
+
 /// The narrowest `maxTextureDimension1D` a WebGPU adapter may report, and so the
 /// longest edge list [`SelectionRenderer::edge_texture`] can upload as one row.
 ///
@@ -57,19 +70,6 @@ const _: () = assert!(
     "a lasso can name more edges than a guaranteed 1-D texture row holds, so the \
      op would fail wgpu validation on some adapters instead of rasterizing"
 );
-
-fn lasso_edges(points: &[Vec2]) -> Vec<[f32; 4]> {
-    if points.len() < 3 {
-        return Vec::new();
-    }
-    (0..points.len())
-        .map(|i| {
-            let a = points[i];
-            let b = points[(i + 1) % points.len()];
-            [a.x, a.y, b.x, b.y]
-        })
-        .collect()
-}
 use stark_shaders::mirror::mask_region::decl as mrd;
 use stark_shaders::mirror::selection::binding as sb;
 use stark_shaders::mirror::selection::decl as sd;
@@ -295,13 +295,13 @@ impl SelectionRenderer {
     /// mask tiles — the caller leaves the selection alone rather than clipping it.
     pub fn apply(&self, pool: &TilePool, prev: &Selection, op: &SelectionOp) -> Option<Selection> {
         let plan = prev.plan(op)?;
-        let edges = match &op.shape {
+        let edges = match &op.shape() {
             SelectionShape::Lasso(points) => lasso_edges(points),
             _ => Vec::new(),
         };
         // A lasso that encloses nothing has no boundary; treat it as a no-op rather
         // than rasterizing an empty edge list (which would read as "all outside").
-        if matches!(op.shape, SelectionShape::Lasso(_)) && edges.is_empty() {
+        if matches!(op.shape(), SelectionShape::Lasso(_)) && edges.is_empty() {
             return Some(prev.clone());
         }
         let (_edge_tex, edge_view) = match edges.is_empty() {
@@ -332,7 +332,7 @@ impl SelectionRenderer {
                 hull: plan.hull,
                 b,
                 c,
-                feather: op.feather,
+                feather: op.feather(),
                 edges: &edge_view,
             },
         ))
@@ -665,7 +665,7 @@ pub(crate) fn shader_params(op: &SelectionOp, edges: usize) -> ([f32; 4], [f32; 
     // The kind codes are `selection.wesl`'s, generated from its declarations
     // (§6.10) — see `SelectionMode::code` for why they are not written here.
     use stark_shaders::mirror::selection as sel;
-    let (kind, b) = match &op.shape {
+    let (kind, b) = match &op.shape() {
         SelectionShape::All => (sel::KIND_ALL, [0.0; 4]),
         SelectionShape::Rect { min, max } => (sel::KIND_RECT, [min.x, min.y, max.x, max.y]),
         SelectionShape::Ellipse { center, radii } => (
@@ -676,7 +676,12 @@ pub(crate) fn shader_params(op: &SelectionOp, edges: usize) -> ([f32; 4], [f32; 
     };
     (
         b,
-        [kind as f32, mode_code(op.mode), edges as f32, op.opacity],
+        [
+            kind as f32,
+            mode_code(op.mode()),
+            edges as f32,
+            op.opacity(),
+        ],
     )
 }
 

@@ -8,7 +8,6 @@
 use serde::{Deserialize, Serialize};
 
 use super::brush::BrushParams;
-use super::fill::FillOp;
 use super::filter::Filter;
 use super::guide::{GuideId, PerspectiveGuide};
 use super::layer::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
@@ -648,16 +647,6 @@ impl ActionKind {
                 },
                 ..rec
             }),
-            ActionKind::Fill { layer, op } => ActionKind::Fill {
-                layer,
-                // The op's own invariants are held by its deserialization gate
-                // (`FillOp::with_paint`), so rebuilding through it is how they are
-                // stated once rather than twice.
-                op: FillOp::with_paint(op.shape, op.feather, op.paint, op.opacity),
-            },
-            ActionKind::Select(op) => {
-                ActionKind::Select(SelectionOp::at(op.mode, op.shape, op.feather, op.opacity))
-            }
             // A coverage weight every gating read multiplies by, so a NaN here would
             // take the whole mask with it. `clamp01` rather than `clamp`, for
             // `SelectionOp::at`'s reason: both of NaN's comparisons are false.
@@ -728,7 +717,17 @@ impl ActionKind {
             // three transforms have. So: a variant belongs here when its payload is
             // ids, flags, places, `bool`s and `String`s — and if it carries a float,
             // it belongs above, or beside a `usable` this comment can name.
-            ActionKind::AddLayer { .. }
+            // A fill and a selection carry numbers and are still here, which is the
+            // shape worth noticing rather than an oversight. Their fields are
+            // private and `FillOp::with_paint` / `SelectionOp::at` are the only
+            // doors — deserialization included — so an op in hand already holds its
+            // bounds and there is nothing for a second gate to do. These arms used
+            // to rebuild each op through its own constructor to say that; the
+            // constructor now says it, the way `Filter::sanitized`'s gradient arm
+            // stopped having a body once `Srgb` held the cube.
+            ActionKind::Fill { .. }
+            | ActionKind::Select(_)
+            | ActionKind::AddLayer { .. }
             // A placement carries pixels and an integer position: no float to be
             // non-finite, no knob to be out of range. What *could* be malformed about
             // an image — dimensions that disagree with the buffer, a size past the cap
@@ -824,7 +823,7 @@ pub struct Action {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{Parcel, SelectionMode, SelectionShape};
+    use crate::document::{FillOp, Parcel, SelectionMode, SelectionShape};
 
     /// The funnel reaches the payloads that carry numbers — the three that had no
     /// gate of their own before it existed (a stroke's brush, a fill's op, a
@@ -860,32 +859,35 @@ mod tests {
         assert_eq!(rec.brush.tooth.give, 1.0);
         assert_eq!(rec.start, 0.0);
 
+        // A fill and a selection are **not** repaired by the funnel, and no longer
+        // can be: their fields are private, so the hostile values below cannot get
+        // past the constructor to reach it. The op is already in range on the way
+        // in, and `sanitized` leaves it exactly as it is — which is the whole of
+        // what an arm here used to be doing by rebuilding it.
+        let op = FillOp::with_paint(
+            SelectionShape::All,
+            -1.0,
+            Parcel::Solid(Srgb::new([bad; 3])),
+            5.0,
+        );
+        assert_eq!((op.feather(), op.opacity()), (0.0, 1.0), "held at the door");
         let fill = ActionKind::Fill {
             layer: LayerId(0),
-            op: FillOp {
-                shape: SelectionShape::All,
-                feather: -1.0,
-                paint: Parcel::Solid(Srgb::new([bad; 3])),
-                opacity: 5.0,
-            },
+            op: op.clone(),
         }
         .sanitized();
-        let ActionKind::Fill { op, .. } = &fill else {
+        let ActionKind::Fill { op: after, .. } = &fill else {
             panic!("a fill stays a fill")
         };
-        assert_eq!((op.feather, op.opacity), (0.0, 1.0));
+        assert_eq!(after, &op, "and the funnel has nothing left to move");
 
-        let select = ActionKind::Select(SelectionOp {
-            mode: SelectionMode::Replace,
-            shape: SelectionShape::All,
-            feather: bad,
-            opacity: 0.5,
-        })
-        .sanitized();
-        let ActionKind::Select(op) = &select else {
+        let op = SelectionOp::at(SelectionMode::Replace, SelectionShape::All, bad, 0.5);
+        assert_eq!((op.feather(), op.opacity()), (0.0, 1.0), "held at the door");
+        let select = ActionKind::Select(op.clone()).sanitized();
+        let ActionKind::Select(after) = &select else {
             panic!("a select stays a select")
         };
-        assert_eq!((op.feather, op.opacity), (0.0, 1.0));
+        assert_eq!(after, &op, "and the funnel has nothing left to move");
 
         // A layer's opacity is a coverage weight the compositor multiplies by.
         let ActionKind::SetLayerOpacity(_, a) =

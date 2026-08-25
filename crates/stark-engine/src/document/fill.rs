@@ -54,7 +54,7 @@ pub(crate) fn plan(op: &FillOp, gate: &Selection) -> Option<Vec<TileCoord>> {
         }
         // `All`, or a lasso with no vertices. Only the gate can bound these.
         None => {
-            if !matches!(op.shape, SelectionShape::All) {
+            if !matches!(op.shape(), SelectionShape::All) {
                 return Some(Vec::new());
             }
             if !bounded {

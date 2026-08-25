@@ -183,12 +183,12 @@ pub struct FillOp {
     /// The region to fill. [`SelectionShape::All`] means "the selection", which is
     /// the selection bar's Fill button; it is refused when nothing is selected,
     /// since the canvas is unbounded.
-    pub shape: SelectionShape,
+    shape: SelectionShape,
     /// Edge softness in canvas px, read exactly as a selection op's is: 0 still
     /// antialiases.
-    pub feather: f32,
+    feather: f32,
     /// The paint to lay — one color, or a ramp read from position (§22.4).
-    pub paint: Parcel,
+    paint: Parcel,
     /// How strongly the fill covers where coverage is full: its **visible alpha**,
     /// in `0..=1`. The Select panel's Opacity slider, and the only strength knob a
     /// fill has.
@@ -211,7 +211,7 @@ pub struct FillOp {
     /// One opacity for the whole fill, gradient or not: the ramp varies the
     /// *color* of the paint, never how much of it there is — a transition in
     /// thickness would read as a lighting feature, not a color one (§22.4).
-    pub opacity: f32,
+    opacity: f32,
 }
 
 impl FillOp {
@@ -255,6 +255,29 @@ impl FillOp {
     /// [`Self::of_selection`].
     pub fn gradient_of_selection(parcel: GradientParcel) -> Self {
         Self::with_paint(SelectionShape::All, 0.0, Parcel::Gradient(parcel), 1.0)
+    }
+
+    /// The region to fill.
+    pub fn shape(&self) -> &SelectionShape {
+        &self.shape
+    }
+
+    /// Edge softness in canvas px — non-negative, by [`Self::with_paint`].
+    pub fn feather(&self) -> f32 {
+        self.feather
+    }
+
+    /// The paint to lay — one color, or a ramp on an axis the pass can evaluate.
+    pub fn paint(&self) -> &Parcel {
+        &self.paint
+    }
+
+    /// How strongly the fill covers where coverage is full — in `0..=1`, by
+    /// [`Self::with_paint`]. A fill lands paint whose mass is the *inverse* of the
+    /// coverage law (§6.1), so this being in range is not a matter of degree:
+    /// 1.0000001 is an infinite mass.
+    pub fn opacity(&self) -> f32 {
+        self.opacity
     }
 
     /// How far past the shape's own boundary its coverage can reach, in canvas px.

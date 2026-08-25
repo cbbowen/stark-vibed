@@ -233,11 +233,11 @@ impl SelectionMode {
 #[serde(from = "RawSelectionOp", into = "RawSelectionOp")]
 #[carbonite(as = "RawSelectionOp")]
 pub struct SelectionOp {
-    pub mode: SelectionMode,
-    pub shape: SelectionShape,
+    mode: SelectionMode,
+    shape: SelectionShape,
     /// Edge softness in canvas px: the width of the coverage ramp across the
     /// boundary. 0 still antialiases (the ramp floors at one pixel).
-    pub feather: f32,
+    feather: f32,
     /// The coverage the shape lands at where it fully covers, in `0..=1` — how
     /// *strongly* this region is selected, the Select panel's Opacity slider.
     ///
@@ -255,7 +255,7 @@ pub struct SelectionOp {
     /// for — "select all, at a half" is not a control anywhere — the constructor
     /// refuses to build it. A partial `outside` is still reachable, by inverting a
     /// partial selection, and that path is exact.
-    pub opacity: f32,
+    opacity: f32,
 }
 
 impl SelectionOp {
@@ -285,6 +285,27 @@ impl SelectionOp {
     /// canvas is indistinguishable from having none (and just as cheap).
     pub fn select_all() -> Self {
         Self::new(SelectionMode::Replace, SelectionShape::All, 0.0)
+    }
+
+    /// How this op combines with the selection already in force.
+    pub fn mode(&self) -> SelectionMode {
+        self.mode
+    }
+
+    /// The region it produces coverage from.
+    pub fn shape(&self) -> &SelectionShape {
+        &self.shape
+    }
+
+    /// Edge softness in canvas px — non-negative, by [`Self::at`].
+    pub fn feather(&self) -> f32 {
+        self.feather
+    }
+
+    /// The coverage the shape lands at where it fully covers — in `0..=1`, and
+    /// exactly 1 on the unbounded shape, by [`Self::at`].
+    pub fn opacity(&self) -> f32 {
+        self.opacity
     }
 }
 

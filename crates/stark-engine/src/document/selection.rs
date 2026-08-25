@@ -210,8 +210,8 @@ impl Selection {
     /// which of the current ones survive untouched, and the new `outside` flag.
     /// Pure — the GPU work is [`crate::gpu::selection::SelectionRenderer::apply`].
     pub(crate) fn plan(&self, op: &SelectionOp) -> Option<SelectionPlan> {
-        let shape_outside = op.shape.coverage_outside();
-        let outside = op.mode.combine(self.outside, shape_outside);
+        let shape_outside = op.shape().coverage_outside();
+        let outside = op.mode().combine(self.outside, shape_outside);
         // The result's peak. The same algebra as the coverage for three of the four
         // modes; `Subtract` is the exception, and deliberately so — subtracting
         // *removes* coverage, so what survives peaks no higher than it did, wherever
@@ -225,11 +225,11 @@ impl Selection {
         // "the complement, at the strength in play" reduces to when the strength is
         // none, and it is reachable only by deliberately asking to select nothing —
         // where Deselect is the way back.
-        let level = match op.mode {
-            SelectionMode::Replace => op.opacity,
-            SelectionMode::Union => self.level.max(op.opacity),
+        let level = match op.mode() {
+            SelectionMode::Replace => op.opacity(),
+            SelectionMode::Union => self.level.max(op.opacity()),
             SelectionMode::Subtract => self.level,
-            SelectionMode::Intersect => self.level * op.opacity,
+            SelectionMode::Intersect => self.level * op.opacity(),
         };
 
         // A shape that reaches to infinity has no boundary to rasterize: the result is
@@ -239,7 +239,7 @@ impl Selection {
         // ([`SelectionOp::opacity`]), which is exactly what keeps each of these four
         // constant and this branch as cheap as it always was.
         if shape_outside > 0.0 {
-            return Some(match op.mode {
+            return Some(match op.mode() {
                 // `s = 1` everywhere ⇒ Replace/Union give all-selected, Subtract
                 // all-deselected: constant, no tiles at all.
                 SelectionMode::Replace | SelectionMode::Union | SelectionMode::Subtract => {
@@ -253,7 +253,7 @@ impl Selection {
                         // strength; the opacity rides through every other op
                         // (see the field). Decided here rather than in the fold
                         // so replay, undo and a peer's copy agree by construction.
-                        opacity: if op.mode == SelectionMode::Replace {
+                        opacity: if op.mode() == SelectionMode::Replace {
                             1.0
                         } else {
                             self.opacity
@@ -273,13 +273,13 @@ impl Selection {
             });
         }
 
-        let (lo, hi) = op.shape.bounds()?;
+        let (lo, hi) = op.shape().bounds()?;
         // The hull under the soft-set algebra — conservative, per the field docs.
         // The op's coverage reaches half its (floored) feather ramp past the shape
         // boundary, so the box is padded to keep coverage ⊆ hull literal.
-        let pad = Vec2::splat(op.feather.max(1.0) * 0.5);
+        let pad = Vec2::splat(op.feather().max(1.0) * 0.5);
         let (slo, shi) = (lo - pad, hi + pad);
-        let hull = match op.mode {
+        let hull = match op.mode() {
             SelectionMode::Replace => Some((slo, shi)),
             // An unbounded previous hull stays unbounded under union.
             SelectionMode::Union => self.hull.map(|(a, b)| (a.min(slo), b.max(shi))),
@@ -300,7 +300,7 @@ impl Selection {
         // tiles than MAX_SELECTION_TILES is refused without the list ever being
         // built, which is the difference between refusing a shape the size of the
         // explored canvas and dying trying to describe it.
-        let pad = op.feather.max(1.0) + TILE_APRON as f32 + 1.0;
+        let pad = op.feather().max(1.0) + TILE_APRON as f32 + 1.0;
         let rasterize = tiles_covering(
             lo - Vec2::splat(pad),
             hi + Vec2::splat(pad),
@@ -314,7 +314,7 @@ impl Selection {
         // and Intersect collapse everything else to the constant `outside`, so the old
         // tiles are dropped rather than rewritten: a Replace over a big old selection
         // costs the new shape's tiles, not the union of both.
-        let keep_prev = match op.mode {
+        let keep_prev = match op.mode() {
             SelectionMode::Replace | SelectionMode::Intersect => false,
             SelectionMode::Union | SelectionMode::Subtract => true,
         };
@@ -414,15 +414,15 @@ mod tests {
     #[test]
     fn select_all_is_pinned_to_full_strength() {
         let op = SelectionOp::at(SelectionMode::Replace, SelectionShape::All, 0.0, 0.25);
-        assert_eq!(op.opacity, 1.0);
+        assert_eq!(op.opacity(), 1.0);
         // A bounded shape keeps whatever it was given, clamped.
         let rect = SelectionShape::rect_from_corners(Vec2::ZERO, Vec2::splat(10.0));
         assert_eq!(
-            SelectionOp::at(SelectionMode::Replace, rect.clone(), 0.0, 0.25).opacity,
+            SelectionOp::at(SelectionMode::Replace, rect.clone(), 0.0, 0.25).opacity(),
             0.25
         );
         assert_eq!(
-            SelectionOp::at(SelectionMode::Replace, rect, 0.0, 4.0).opacity,
+            SelectionOp::at(SelectionMode::Replace, rect, 0.0, 4.0).opacity(),
             1.0
         );
     }

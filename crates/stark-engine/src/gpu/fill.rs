@@ -162,12 +162,12 @@ impl FillRenderer {
         // selection rasterizer doing its ordinary job — the reason a fill's edge and
         // a marquee's edge cannot drift apart. `All` needs no rasterize: its
         // coverage is 1 everywhere, and the gate is then the whole boundary.
-        let region = match &op.shape {
+        let region = match op.shape() {
             SelectionShape::All => Selection::everything(),
             shape => self.selection.apply(
                 pool,
                 &Selection::everything(),
-                &SelectionOp::new(SelectionMode::Replace, shape.clone(), op.feather),
+                &SelectionOp::new(SelectionMode::Replace, shape.clone(), op.feather()),
             )?,
         };
 
@@ -179,13 +179,13 @@ impl FillRenderer {
         // what makes an Oklab ramp the library strip's and a Mixbox ramp a pigment
         // mixture (§22.4).
         let mut uniform = FillUniform::default();
-        uniform.p[0] = op.opacity;
+        uniform.p[0] = op.opacity();
         // How strongly the author's mask gates this fill (§6.8) — the whole mask's
         // opacity, which `gate`'s own texels do not carry. The fill's *region* takes
         // no such factor: it is this gesture's shape rasterized as a selection, and
         // has no opacity of its own.
         uniform.p[3] = gate.opacity();
-        match &op.paint {
+        match op.paint() {
             Parcel::Solid(color) => {
                 let channels = self.color_space.rgb_to_channels(*color);
                 let resid = self.color_space.rgb_to_resid(*color);
