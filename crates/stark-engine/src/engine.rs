@@ -469,11 +469,10 @@ pub struct ObservableState {
     /// How strongly a **fill** gesture's parcel will land, `0..=1` (§18.0.4).
     pub shape_opacity: f32,
     /// How strongly this client's whole selection mask gates, `0..=1` (§6.8) — the
-    /// Select panel's Opacity slider under any of the four selecting actions.
-    ///
-    /// Held even while nothing is masked, because that is what the next region drawn
-    /// will take ([`Selection::opacity`](crate::document::Selection::opacity)); what
-    /// it *gates* at meanwhile is 1.
+    /// Select panel's Opacity slider under any of the four selecting actions. 1
+    /// while nothing is masked, where there is nothing to dim
+    /// ([`Selection::opacity`](crate::document::Selection::opacity)); a frontend
+    /// disables the control there rather than showing a number that gates nothing.
     pub selection_opacity: f32,
     /// Whether collaborators' selection outlines are drawn (§17.3).
     pub show_peer_selections: bool,

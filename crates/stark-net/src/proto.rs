@@ -67,8 +67,13 @@ use crate::mirror::{Mirror, Served};
 /// effects carrying an `opacity` ceiling (§6.2), the brush color losing
 /// its per-unit alpha to it and then moving inside `PaintEffect` — an erasing
 /// brush carries no pigment at all: one reshaping of the struct every
-/// stroke gossips).
-pub(crate) const ALPN: &[u8] = b"stark/collab/12";
+/// stroke gossips);
+/// 13: the selection mask gained an opacity of its own, set after the region
+/// is drawn, so `ActionKind` gained `SetSelectionOpacity` (§6.8) — and the
+/// mask stopped being a lerp of a stroke's result and became the other
+/// factor of its opacity ceiling (§6.2), which is the meaning rule: the same
+/// log under a feathered selection renders differently.
+pub(crate) const ALPN: &[u8] = b"stark/collab/13";
 
 /// The first byte of every response.
 ///

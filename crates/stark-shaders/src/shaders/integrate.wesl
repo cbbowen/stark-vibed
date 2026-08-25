@@ -32,8 +32,12 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
 struct Integrate {
-    // The paint effect's opacity (`PaintEffect::opacity`, §6.2) in `.x`. 1 is the
-    // identity, and taken as an exact branch below. Incorporates the selection's strength (`Selection::strength`, §6.8): the whole mask's opacity, which every *gating* read of the mask is scaled by and which the mask texture itself does not carry.
+    // The stroke's ceiling in `.x`: the paint effect's opacity
+    // (`PaintEffect::opacity`, §6.2) with the selection mask's folded in
+    // (`stroke_constants`, §6.8) — the mask's overall opacity is not in the mask
+    // texture, and this is the one number it reaches the deposit through. 1 is
+    // the identity, and taken as an exact branch below. `.yzw` unused — the
+    // uniform's 16-byte round (§6.10).
     params: vec4<f32>,
 }
 
@@ -48,7 +52,8 @@ struct Integrate {
 // The selection's coverage over this tile (§6.8): 1 where the brush may
 // paint, 0 where it may not, feathered in between. Either this tile's own mask —
 // 1:1 with the destination, apron included — or a 1×1 texture holding the constant
-// coverage outside the mask's tile set; the clamped load below reads both.
+// coverage outside the mask's tile set; the clamped load below reads both. The
+// coverage alone: the mask's overall opacity arrives in `ig.params.x`.
 @group(0) @binding(4) var selection: texture_2d<f32>;
 // The residual halves of the two colors above (§6.7) — the layer's resident
 // paint and the stroke's parcel. Bound only by a space that has a residual, and
@@ -126,29 +131,30 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     var m1 = s_a.y;
     let col1 = latent_unpremult(s_col, s_c.a, PAINT_EPS);
 
-    // Gate by the selection: the tile keeps its base value where the mask is 0 and
-    // takes the stroke where it is 1 (§6.8). A *lerp of the result*, not a scaling of
-    // the stroke's coverage — a half-covered mask texel must read as half of the
-    // finished paint, which for an opaque brush is nothing like half its optical
-    // depth. That makes the mask's own antialiasing/feather the stroke's edge.
-    // Scaled by the whole mask's strength: the coverage a mask *holds* is what its
-    // ops struck, and how strongly that gates is one number on top of it (§6.8) —
-    // so the two are only a mask together, and this is where they meet.
-    let effective_opacity = ig.params.x * load1(selection, c).r;
+    // The ceiling at this texel (§6.2, §6.8): the stroke's — the dial with the
+    // mask's overall opacity folded in — times the mask's coverage here. **The
+    // selection is a factor of the ceiling, not a lerp of the result.** A lerp
+    // left a half-covered texel with half the *height* of an opaque stroke, which
+    // the slab law shows as very nearly all of it; the eye reads coverage, and
+    // through the ceiling a half-covered texel shows half of what the saturated
+    // stroke would — the same reading a fill makes of the same mask, and the
+    // same one a dial at a half makes with no mask at all. The mask's own
+    // antialiasing and feather are the stroke's edge either way.
+    let opacity = ig.params.x * load1(selection, c).r;
 
-    // The paint effect's opacity (§6.2): the whole parcel scaled as one laid
-    // amount, `erase.wesl`'s arithmetic run in the laying direction. The coverage
-    // the parcel would have laid saturates at 1 however long the stroke worked
-    // this spot — when it spans the pieces of a live stroke, the carry holds the
-    // accumulated parcel and re-derives every piece from pristine paint
-    // (`gpu::stroke::swept`), because a scaled coverage is neither of §6.2's two
-    // composable forms — so `opacity·w` is a ceiling, not a rate: a stroke
-    // crossing itself never outruns the dial.
+    // The ceiling: the whole parcel scaled as one laid amount, `erase.wesl`'s
+    // arithmetic run in the laying direction. The coverage the parcel would have
+    // laid saturates at 1 however long the stroke worked this spot — when it
+    // spans the pieces of a live stroke, the carry holds the accumulated parcel
+    // and re-derives every piece from pristine paint (`gpu::stroke::swept`),
+    // because a scaled coverage is neither of §6.2's two composable forms — so
+    // `opacity·w` is a ceiling, not a rate: a stroke crossing itself never
+    // outruns the dial, or the mask.
     //
     // An exact branch at 1, `integrate.wesl`'s own untouched-texel reason one
     // level up: the round trip below lands an ulp off now and then, and every
     // full-opacity stroke would pay it.
-    if effective_opacity != 1.0 {
+    if opacity != 1.0 {
         // The parcel's own coverage, from the unsaturated mass — the same number
         // the color target's `.a` carries, except that the saturated copy cannot
         // be inverted back.
@@ -156,7 +162,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // The scaled coverage, inverted through the slab law into the mass that
         // shows exactly that much. `1 − opacity·w ≥ 1 − opacity > 0` on this
         // branch, so nothing cancels and the log has an argument.
-        let ms = -log(1.0 - effective_opacity * w) / OPACITY_K;
+        let ms = -log(1.0 - opacity * w) / OPACITY_K;
         // Less of the same parcel (§6.1): the height falls in proportion, so the
         // per-unit opacity of what arrives is unchanged — a half-opacity stroke
         // is half a stroke, not full-bodied translucent material.

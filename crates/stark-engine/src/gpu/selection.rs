@@ -243,11 +243,14 @@ impl SelectionRenderer {
     /// reigns outside its tile set.
     ///
     /// **The coverage the mask holds**, and only that — the whole mask's opacity
-    /// ([`Selection::strength`]) is *not* folded in. What this serves is a reader
-    /// that wants the coverage itself: the transform carrying the mask under its own
-    /// map, and a fill's own region, which is a shape rasterized as a selection and
-    /// has no strength of its own. A reader deciding how much of what it does lands
-    /// wants [`gate_for`](Self::gate_for) instead.
+    /// ([`Selection::opacity`]) is *not* folded in, since it is not in the tiles.
+    /// Three kinds of reader want exactly this: one *carrying* the mask (the
+    /// transform's own mask pass), one reading a shape that is not a selection at
+    /// all (a fill's region, rasterized through the same shader), and one that has
+    /// **a ceiling of its own to fold the opacity into** — the stroke paths, whose
+    /// `stroke_constants` already multiplies it into the one ceiling both renderers
+    /// read (§6.2). A reader with no such ceiling takes [`gate_for`](Self::gate_for)
+    /// instead, so the scalar cannot be left on the floor.
     pub fn mask_for(&self, selection: &Selection, coord: TileCoord) -> wgpu::TextureView {
         match selection.tile(coord) {
             Some(handle) => handle.view().clone(),
@@ -255,8 +258,9 @@ impl SelectionRenderer {
         }
     }
 
-    /// The mask bound for `coord` **as a gate** — the coverage, and the strength
-    /// every read of it must be scaled by (§6.8).
+    /// The mask bound for `coord` **as a gate** — the coverage, and the opacity
+    /// every read of it must be scaled by (§6.8). For a pass with no ceiling of its
+    /// own to carry the opacity in; see [`mask_for`](Self::mask_for).
     pub fn gate_for(&self, selection: &Selection, coord: TileCoord) -> Gate {
         Gate {
             view: self.mask_for(selection, coord),
@@ -344,6 +348,10 @@ impl SelectionRenderer {
     /// region `stroke.rs` composited the paint into. Tiles the selection has no mask
     /// for are left at the clear value, so the pass draws only what actually exists.
     /// Returns the texture too, so the caller can register it for prompt destruction.
+    ///
+    /// The coverage alone, like [`mask_for`](Self::mask_for): the loop's ceiling
+    /// already carries the mask's opacity (`Stamp::opacity`), and a mask that
+    /// carried it too would gate the plane at its square.
     pub fn region_mask(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -352,7 +360,6 @@ impl SelectionRenderer {
         region_origin: Vec2,
         w: u32,
         h: u32,
-        factor_in_selection_opacity: bool,
     ) -> (wgpu::Texture, wgpu::TextureView) {
         let device = &self.ctx.device;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -371,15 +378,10 @@ impl SelectionRenderer {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let opacity = if factor_in_selection_opacity {
-            selection.opacity()
-        } else {
-            1.0
-        };
         let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark selection region uniform"),
             contents: bytemuck::bytes_of(&RegionUniform {
-                a: [w as f32, h as f32, MASK_TEX as f32, opacity],
+                a: [w as f32, h as f32, MASK_TEX as f32, 0.0],
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -421,14 +423,8 @@ impl SelectionRenderer {
 
         {
             // Everything the selection has no tile for takes the constant coverage
-            // that reigns there — at the mask's opacity, exactly as the copied
-            // tiles are (`mask_region.wesl`), since this is a *gating* read.
-            let outside = desc::clear_to(wgpu::Color {
-                r: f64::from(selection.outside() * selection.opacity()),
-                g: 0.0,
-                b: 0.0,
-                a: 0.0,
-            });
+            // that reigns there.
+            let outside = outside_clear(selection);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark selection region gather"),
                 color_attachments: &[Some(desc::attach(&view, outside))],
@@ -573,10 +569,12 @@ impl SelectionRenderer {
 ///
 /// One value rather than two returns, because the two halves are one fact. A pass
 /// that took the view alone would compile, run, and quietly ignore the Opacity
-/// slider — the failure mode the whole-mask strength invites, since the mask tiles
-/// look exactly the same at every strength ([`Selection::strength`]). Handing the
+/// slider — the failure mode the whole-mask opacity invites, since the mask tiles
+/// look exactly the same at every opacity ([`Selection::opacity`]). Handing the
 /// binding and its scale back together is what makes the second half hard to leave
-/// on the floor.
+/// on the floor. The stroke paths are the readers that legitimately take the view
+/// alone, and only because their ceiling took the scalar first
+/// (`SelectionRenderer::mask_for`).
 pub struct Gate {
     view: wgpu::TextureView,
     opacity: f32,

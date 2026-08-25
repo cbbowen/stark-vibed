@@ -363,8 +363,11 @@ impl StrokeRenderer {
             resid: [res[0], res[1], res[2], 0.0],
             // Clamped where the record becomes numbers, the color's rule: the
             // ceiling is quoted in [0, 1] (`BrushEffect::opacity`) and a wire
-            // value past it is nonsense, not a stronger setting.
-            opacity: (rec.brush.effect.opacity() * selection.opacity()).clamp(0.0, 1.0),
+            // value past it is nonsense, not a stronger setting. The mask's
+            // opacity is the ceiling's other factor (§6.8), folded in here so it
+            // reaches every place the dial does — the integrate, the erase, the
+            // loop's mint and the charge — through the one number.
+            opacity: rec.brush.effect.opacity().clamp(0.0, 1.0) * selection.opacity(),
             substrate_uv_scale: substrate.relief * substrate.uv_scale,
             tooth_softness: rec.brush.tooth.softness,
             nfreq,
@@ -406,12 +409,16 @@ struct StrokeConstants {
     /// whole color — both paths write this lane unconditionally, since the uniform it
     /// lands in is one Rust struct across both shader variants.
     resid: [f32; 4],
-    /// The effect's **opacity** (`BrushEffect::opacity`): the ceiling on what a
-    /// saturated stroke does, whichever effect and whichever path. Each path
-    /// applies it where its own law can hold it exactly — the swept integrate and
-    /// the erase pass scale the whole accumulated extent per stroke, the stamp
-    /// loop scales what it mints (§6.2) — but the number is one number, resolved
-    /// here so the paths cannot disagree about what the dial said.
+    /// The **stroke's ceiling**: the effect's opacity (`BrushEffect::opacity`)
+    /// times the selection mask's (`Selection::opacity`, §6.8) — the ceiling on
+    /// what a saturated stroke does, whichever effect and whichever path. Each
+    /// path applies it where its own law can hold it exactly — the swept
+    /// integrate and the erase pass scale the whole accumulated extent per
+    /// stroke, the stamp loop scales what it mints (§6.2) — but the number is one
+    /// number, resolved here so the paths cannot disagree about what the dial
+    /// said, and so the mask's dimming cannot be honoured by one and not the
+    /// other. The mask's *per-texel* coverage is the same ceiling's third factor,
+    /// and rides in the mask each pass binds.
     opacity: f32,
     /// Canvas px → substrate-tile uv (§6.4). Zero on a substrate with no relief — a `Flat`
     /// canvas, or one whose bytes have not arrived — which sends the tooth to exactly

@@ -8,8 +8,8 @@ use stark_model::Srgb;
 
 use crate::commands::Command;
 use crate::icons::{self, icon, icon_tinted, label};
-use crate::preview;
 use crate::layout::chrome_class;
+use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{CommandButton, Slider};
 use stark_engine::command::{DocCommand, ViewCommand};
@@ -72,14 +72,15 @@ pub fn SelectPanel() -> Element {
             o.selection_feather,
             o.shape_opacity,
             o.selection_opacity,
+            o.has_selection,
         )
     });
-    let (action, feather, fill_opacity, mask_opacity) =
-        arm().unwrap_or((ShapeAction::default(), 0.0, 1.0, 1.0));
+    let (action, feather, fill_opacity, mask_opacity, has_selection) =
+        arm().unwrap_or((ShapeAction::default(), 0.0, 1.0, 1.0, false));
     // Which of the two the Opacity row is asking about — see the row itself.
     let filling = action == ShapeAction::Fill;
     let opacity = if filling { fill_opacity } else { mask_opacity };
-    // What a settled drag of the mask's strength would lay (`preview::settle`).
+    // What a settled drag of the mask's opacity would lay (`preview::settle`).
     let dimming = use_signal(|| None::<f32>);
     // The hand's color, off the frontend's own brush signal — a fill lays it
     // whatever effect the brush held has (`BrushConfig::color`).
@@ -205,13 +206,20 @@ pub fn SelectPanel() -> Element {
         // this coverage land — asked of the two places coverage can land, which is
         // the same pairing the five chips above are built on.
         //
-        // Dimming the mask dims every tool that acts through it, since they all act
-        // through it in proportion: a half-strength selection is a half-strength
-        // brush, fill and transform inside it. That is also what the two
-        // whole-selection fills on the bar read — they lay opaque paint *through*
-        // the mask, so this one slider governs them without their having a knob of
-        // their own.
+        // Dimming the mask dims every tool that acts through it, and in the units
+        // the brush's own dial is quoted in: the mask is the other factor of the
+        // opacity ceiling (§6.2, §6.8), so a half-dimmed selection is a half-opacity
+        // brush, fill and eraser inside it — the same picture the Brush panel's
+        // slider at a half would make. That is also what the two whole-selection
+        // fills on the bar read: they lay opaque paint *through* the mask, so this
+        // one slider governs them without their having a knob of their own.
+        //
+        // Greyed out while nothing is selected, under the four selecting actions: a
+        // universal mask has no opacity to set (`Selection::opacity` pins it to 1),
+        // so the slider would move and change nothing, which reads as broken. The
+        // Fill action's number is the gesture's own and is always live.
         Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: opacity,
+            disabled: !filling && !has_selection,
             oninput: move |v| if filling {
                 dispatch(state, ViewCommand::SetShapeOpacity(v));
             } else {

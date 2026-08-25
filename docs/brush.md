@@ -1037,6 +1037,18 @@ not refund the local budget. The `charge` glob needs no budget lane: a finite
 source scaled at the mint *is* its own ceiling, everything it can ever deliver
 being the scaled glob (`run.rs`'s reservoir init).
 
+**The selection mask is the ceiling's other factor** (§6.8). A stroke's
+ceiling is the dial times the mask's overall opacity — folded in once, in
+`stroke_constants`, so it reaches the integrate, the erase, the loop's mint and
+the charge through the one number both renderers read — times the mask's
+coverage at the texel, read off the mask each pass binds. Not a lerp of the
+result: a half-selected texel shows half of what the saturated stroke would,
+the same reading a fill makes of the same mask. Which is why the carried shape
+above is taken under *any* mask and not only below full opacity: every rim is
+at least a pixel soft, and a texel under it scales the parcel exactly as a dial
+below 1 does. Moved paint takes the mask as a fraction instead, the one gate
+that conserves it.
+
 **Not built, and deliberately:** an `opacity` target in `PaintModulations`, for
 `EraseModulations`' reason exactly — a modulated ceiling cannot ride the
 integrate's one per-stroke uniform; it needs a second accumulator lane (a

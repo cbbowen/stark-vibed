@@ -124,12 +124,7 @@ use stark_shaders::mirror::transform::{
 
 /// One source tile's interior quad, drawn into `dest`'s texture (paint and mask
 /// tiles share the `TILE_TEX` geometry).
-fn quad_uniform(
-    affine: Affine2,
-    src: TileCoord,
-    dest: TileCoord,
-    strength: f32,
-) -> QuadUniform {
+fn quad_uniform(affine: Affine2, src: TileCoord, dest: TileCoord, opacity: f32) -> QuadUniform {
     let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
     let src_origin = src.origin();
     let src_tex_origin = src_origin - Vec2::splat(TILE_APRON as f32);
@@ -146,7 +141,7 @@ fn quad_uniform(
         // Shader rows: c.x = m.x·p.x + m.y·p.y; glam's Mat2 is column-major.
         m: [m.x_axis.x, m.y_axis.x, m.x_axis.y, m.y_axis.y],
         t: [t.x, t.y, src_tex_origin.x, src_tex_origin.y],
-        u: [src_origin.x, src_origin.y, TILE_SIZE as f32, strength],
+        u: [src_origin.x, src_origin.y, TILE_SIZE as f32, opacity],
         i: [im.x_axis.x, im.y_axis.x, im.x_axis.y, im.y_axis.y],
         j: [it.x, it.y, 0.0, 0.0],
     }
@@ -160,14 +155,14 @@ fn gated_uniform(
     inv: Option<&Homography>,
     rect: (Vec2, Vec2),
     dest: TileCoord,
-    strength: f32,
+    opacity: f32,
 ) -> GatedUniform {
     let mut u = gated_base(rect, dest);
     let c = &unit.corners;
     u.c0 = [c[0].x, c[0].y, c[1].x, c[1].y];
     u.c1 = [c[2].x, c[2].y, c[3].x, c[3].y];
     let src_tex_origin = unit.src.origin() - Vec2::splat(TILE_APRON as f32);
-    u.t = [src_tex_origin.x, src_tex_origin.y, strength, 0.0];
+    u.t = [src_tex_origin.x, src_tex_origin.y, opacity, 0.0];
     match &unit.frag {
         FragMap::Persp => {
             let h = inv.expect("perspective units carry a shared inverse");
@@ -212,19 +207,15 @@ fn set_rows(u: &mut GatedUniform, rows: &[[f32; 3]; 3]) {
 
 /// Whether (and where) the cut is gated by a source rect. The affine path binds the
 /// zero gate, whose arithmetic is untouched from before the gate existed.
-fn combine_uniform(
-    dest: TileCoord,
-    gate: Option<(Vec2, Vec2)>,
-    strength: f32,
-) -> CombineUniform {
+fn combine_uniform(dest: TileCoord, gate: Option<(Vec2, Vec2)>, opacity: f32) -> CombineUniform {
     let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
     match gate {
         Some(rect) => CombineUniform {
-            a: [dest_origin.x, dest_origin.y, 1.0, strength],
+            a: [dest_origin.x, dest_origin.y, 1.0, opacity],
             r: [rect.0.x, rect.0.y, rect.1.x, rect.1.y],
         },
         None => CombineUniform {
-            a: [dest_origin.x, dest_origin.y, 0.0, strength],
+            a: [dest_origin.x, dest_origin.y, 0.0, opacity],
             r: [0.0; 4],
         },
     }
@@ -556,8 +547,8 @@ impl TransformRenderer {
             let max = corners.iter().fold(corners[0], |a, p| a.max(*p));
             (min, max)
         });
-        // A transform *moves* coverage; it does not restrike it, so the strength
-        // the selection was drawn at rides through unchanged (§6.8).
+        // A transform *moves* coverage; it does not restrike it, so the opacity
+        // the selection is read at rides through unchanged (§6.8).
         let moved_selection = Selection::from_parts(
             mask_tiles,
             selection.outside(),
@@ -683,7 +674,7 @@ impl TransformRenderer {
                 .src_bgs
                 .entry(unit.src)
                 .or_insert_with(|| {
-                    // A gating read — the strength reaches `fs_parcel_gated`
+                    // A gating read — the opacity reaches `fs_parcel_gated`
                     // through the piece's uniform (`gated_uniform`).
                     let mask = self.selection.gate_for(from.selection, unit.src);
                     desc::bind_group_for(
@@ -767,7 +758,7 @@ impl TransformRenderer {
             let src = self.selection.mask_for(selection, unit.src);
             draws.push((
                 // The mask pass **carries** coverage rather than gating by it, so
-                // the strength rides on the moved `Selection` instead — passing it
+                // the opacity rides on the moved `Selection` instead — passing it
                 // here would apply it twice, once to the tiles and once to the
                 // reading of them (§6.8).
                 self.gated_bg(scope, unit, g.inv, g.rect, dest, 1.0),
@@ -798,7 +789,7 @@ impl TransformRenderer {
     }
 
     /// The group-0 bind for one gated piece draw.
-    /// `strength` is the author's mask strength (§6.8); the mask-carrying pass
+    /// `opacity` is the author's mask opacity (§6.8); the mask-carrying pass
     /// binds the same uniform and does not read it (`transform.wesl`).
     fn gated_bg(
         &self,
@@ -807,9 +798,9 @@ impl TransformRenderer {
         inv: Option<&Homography>,
         rect: (Vec2, Vec2),
         dest: TileCoord,
-        strength: f32,
+        opacity: f32,
     ) -> wgpu::BindGroup {
-        self.gated_uniform_bg(scope, gated_uniform(unit, inv, rect, dest, strength))
+        self.gated_uniform_bg(scope, gated_uniform(unit, inv, rect, dest, opacity))
     }
 
     /// The group-0 bind for the mask residue pass.
@@ -881,7 +872,7 @@ impl TransformRenderer {
                 .src_bgs
                 .entry(*src)
                 .or_insert_with(|| {
-                    // A gating read — the strength reaches `fs_parcel` through
+                    // A gating read — the opacity reaches `fs_parcel` through
                     // the quad's uniform (`quad_uniform`).
                     let mask = self.selection.gate_for(from.selection, *src);
                     desc::bind_group_for(
@@ -961,7 +952,7 @@ impl TransformRenderer {
             Some(tile) => (tile.color_view().clone(), tile.aux_view().clone()),
             None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
         };
-        // A gating read: the base is cut by `coverage · strength`, the identical
+        // A gating read: the base is cut by `coverage · opacity`, the identical
         // factor the parcel side took at the source (`combine_uniform` above).
         let base_mask = self.selection.gate_for(from.selection, dest);
         let (parcel_color, parcel_aux) = match parcel {
@@ -1042,7 +1033,7 @@ impl TransformRenderer {
                 |_| tex(handle.view()),
             );
             // 1.0: this pass carries the mask, it does not gate by it — the
-            // strength rides on the moved `Selection` (§6.8).
+            // opacity rides on the moved `Selection` (§6.8).
             draws.push((self.quad_bg(scope, affine, *src, dest, 1.0), src_bg));
         }
 
@@ -1081,13 +1072,13 @@ impl TransformRenderer {
         affine: Affine2,
         src: TileCoord,
         dest: TileCoord,
-        strength: f32,
+        opacity: f32,
     ) -> wgpu::BindGroup {
         let device = &self.ctx.device;
         let ubuf = scope.buffer(
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stark transform quad uniform"),
-                contents: bytemuck::bytes_of(&quad_uniform(affine, src, dest, strength)),
+                contents: bytemuck::bytes_of(&quad_uniform(affine, src, dest, opacity)),
                 usage: wgpu::BufferUsages::UNIFORM,
             }),
         );

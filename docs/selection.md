@@ -51,19 +51,31 @@ polygon: even-odd crossing for the sign, nearest-edge distance for the magnitude
 with the edge list uploaded as an `N×1` texture.
 
 **Where it applies to the brush.** At the *end* of each stroke path, never by
-clipping the extent:
+clipping the extent, and as **the other factor of the opacity ceiling** (§6.2)
+— the mask's coverage at a texel times the stroke's ceiling is the ceiling
+there, and the capped law does the rest:
 
-- The swept fast path masks in the **integrate** pass: `out = mix(base, merged, m)`
-  (`integrate.wesl`).
-- The dynamics stamp loop masks in **deposit**, lerping its whole
-  read-modify-write back toward the pre-segment snapshot, and scales **pickup**'s
-  lift by the same coverage (`dynamics.wesl`) — so paint outside the selection is
-  neither taken nor laid, and both sides of the transfer still balance (§6.1).
+- The swept fast path masks in the **integrate** pass (`integrate.wesl`) and the
+  eraser in its own (`erase.wesl`): `opacity = ig.params.x · m`, and the whole
+  accumulated parcel is scaled through the slab law to show exactly that much.
+- The dynamics stamp loop masks in **deposit** (`dynamics.wesl::lay_parcel`),
+  under the two laws a mask has: what the brush *mints* is capped at
+  `st.opacity · m` — the prefix differences of the same law, over raw totals that
+  advance by the whole attempt — and what *moves* moves in the fraction `m`: the
+  lift takes `m` of what a full lift would, the tool lays `m` of its carried
+  paint, and **pickup**'s lift is scaled by the same coverage, so paint outside
+  the selection is neither taken nor laid and both sides of the transfer still
+  balance (§6.1).
 
-Masking the *result* rather than the stroke's coverage is the whole point. A
-half-covered mask texel must read as half of the finished paint; scaling optical
-depth by 0.5 instead would barely fade an opaque brush at all, and a feathered
-selection would have a hard edge.
+The coverage is a factor of the *ceiling*, not a lerp of the *result*, and the
+difference is what the eye reads. A lerp left a half-covered texel with half the
+height of an opaque stroke, which the slab law shows as very nearly all of it —
+a feathered selection had a hard edge under thick paint. Through the ceiling a
+half-covered texel shows half of what the saturated stroke would: the reading a
+fill makes of the same mask, and the reading the brush's own dial at a half
+makes with no mask at all. Neither is a scaling of optical depth, which would
+barely fade an opaque brush; both are a scaling of what *shows*, inverted back
+into paint.
 
 Consumers never branch on whether a mask exists: where the selection has no tile,
 a **1×1 texture holding the constant** is bound and every read clamps to the
@@ -139,23 +151,62 @@ strongly they land is already written in the mask they come through. Taking no
 parameter is how "the slider applies once" is said structurally rather than
 remembered at three call sites.
 
-### A selection has a strength — `SelectionOp::opacity`
+### A selection has an opacity — `Selection::opacity`
 
-The Select panel's **Opacity** slider, above Feather, and the exact counterpart of
-it: one says how soft the edge is, the other how strong the whole region is; one
-is a ramp, the other a level, and they multiply. Both apply to whichever of the
-five actions the row is set to, because both describe the coverage the gesture
-*produces*, and the five actions differ only in where that coverage lands.
+The Select panel's **Opacity** slider, above Feather, and the counterpart of it:
+one says how soft the edge is, the other how strongly the whole mask gates; one
+is a ramp, the other a level, and they multiply. Under the four selecting actions
+the slider is the **whole mask's** opacity — `ActionKind::SetSelectionOpacity`,
+a logged, undoable, replicated edit that moves no tile — so it is set *after* the
+region is drawn and reaches a region already drawn; under Fill it is the fill's
+own opacity, chosen up front like the feather, because paint once laid is paint.
+One row, because it is one question — how strongly does this coverage land —
+asked of the two places coverage can land.
 
-**It cost nothing downstream, and that is the argument for putting it here.** The
-mask has always been a coverage field — feathered edges are already fractional
-values — so a partial selection is that field taking 0.4 where it used to take 1.
-`selection.wesl` multiplies the shape's ramp by the opacity and every consumer is
-untouched: a brush deposits at 0.4 (`integrate.wesl` lerps by the mask), a fill
-lands at 0.4, a transform carries 0.4 across. "Affects every tool" is not a list
-of tools that were changed; it is the absence of one.
+**Why on the mask and not on the shape.** Each `SelectionOp` still carries its own
+`opacity`, baked into the coverage it strikes, and the log keeps it: an old file
+selecting a rect at 0.4 still means that. But a per-shape number is a number the
+user has to set *before* drawing, and cannot change afterwards without redrawing
+— which is what made it confusing in practice, since the natural gesture is to
+draw the region first and then decide how strongly it should take paint. The UI
+no longer reaches the per-shape field (every gesture mints its op at 1); the two
+multiply where both exist. A universal mask has no opacity at all
+(`Selection::from_parts` pins it to 1): with nothing selected there is nothing to
+dim, so a deselect hands the canvas back at full strength whatever the slider
+said, and setting the slider with nothing selected logs nothing. That is what
+rules out "everything, at a third" as a state, rather than a rule each reader
+would have to remember.
 
-Three things did have to answer for it:
+**What the number means is the brush dial's own meaning.** The mask is the other
+factor of the **opacity ceiling** (§6.2): a stroke's ceiling is
+`BrushEffect::opacity × Selection::opacity × coverage`, resolved once per stroke
+for the first two (`stroke_constants`, so the dial and the mask cannot be honoured
+by one renderer and not the other) and per texel for the third, and applied through
+the capped law — `integrate.wesl` and `erase.wesl` on the swept path, the prefix
+differences of the same law at the texel's own coverage in the stamp loop's
+`lay_parcel`. So a half-dimmed selection is a half-opacity brush inside it, a
+saturated stroke through it *is* the region filled at a half, and a feathered rim
+is a ramp of the dial. This replaced a lerp of the stroke's *result* by the mask,
+which left a half-selected texel with half the height of an opaque stroke — nearly
+all of it, to the eye, under the slab law — and so read as nothing like half.
+
+Two consequences, one per kind of paint:
+
+- **Minted paint takes the mask as a ceiling.** A scaled parcel is not
+  piece-composable (§6.2), and every selection's rim is at least a pixel soft, so
+  the swept path takes its carried shape (`render_swept_scaled`) under *any* mask,
+  not only below full opacity — and the stamp loop carries its mint budget lanes
+  whenever a mask is in force (`DynamicsRun::capped`). The raw totals those lanes
+  hold advance by the whole attempt whatever the coverage; the ceiling, not the
+  lanes, is where the coverage decides what shows.
+- **Moved paint takes the mask as a fraction.** The lift, the tool's deposit of
+  carried paint, the bleed and the transform's cut conserve height, and a
+  fraction is the one gate that does: the canvas gives up `sel` of what a full
+  lift would take, the very fraction `exchange` scaled the tool's side by, so
+  the two halves of a transfer still balance.
+
+Three things had to answer for a mask being partial at all — they predate the
+whole-mask number, and it inherits them:
 
 - **The marching ants.** The outline is recovered by differencing the mask, and a
   selection at 0.4 has no 0.5-contour anywhere — the ants would simply not be
@@ -179,6 +230,9 @@ no boundary to rasterize, so a partial one would need a rewrite of every tile th
 selection has — for a state the UI cannot ask for, since the only `All` op is
 Deselect. Selections built entirely at full strength have `level == 1` and
 `outside ∈ {0,1}`, where every expression above reduces to exactly what it was.
+The whole-mask opacity needs none of this: it is not in the tiles, so `level`
+and the outline ignore it, and inversion carries it — the complement of a dimmed
+region is its outside, dimmed.
 
 **Add, over nothing, is New.** The one place the chrome's reading of a mode is
 allowed to differ from the algebra's, and it is a deliberate incorrectness.

@@ -18,8 +18,10 @@ use stark_engine::RgbaImage;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_model::Srgb;
 use stark_model::document::BrushDynamics;
-use stark_model::document::{BrushEffect, SelectionMode, SelectionOp, SelectionShape, ShapeAction};
+use stark_model::document::{BrushEffect, BrushParams, FillOp, SelectionMode, SelectionOp};
+use stark_model::document::{SelectionShape, ShapeAction};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
@@ -72,6 +74,33 @@ fn marquee(engine: &mut stark_engine::Engine, action: ShapeAction, min: Vec2, ma
         sample: InputSample::at(max),
     });
     engine.process(GestureCommand::End);
+}
+
+/// A stroke that saturates its parcel over the core in one pass — flow high, no
+/// drain — so a texel there reads the ceiling and not a half-built fringe
+/// (`tests/opacity.rs`'s construction). `deposit` off zero routes it through the
+/// stamp loop while moving no paint (`dynamics_setup`); zero keeps it on the swept
+/// path.
+fn washed(opacity: f32, deposit: f32) -> BrushParams {
+    let mut b = brush(RED, 14.0);
+    let d = &mut b.paint_mut().expect("a paint brush").dynamics;
+    d.flow = 2.5;
+    d.deposit = deposit;
+    b.effect.set_opacity(opacity);
+    b.drain = 0.0;
+    b
+}
+
+/// The three channels of the pixel at a canvas point.
+fn texel(img: &RgbaImage, canvas: Vec2) -> [i32; 3] {
+    let (x, y) = screen_of(canvas);
+    let c = img.pixel(x, y);
+    [c[0] as i32, c[1] as i32, c[2] as i32]
+}
+
+/// The worst per-channel distance between two texels.
+fn apart(a: [i32; 3], b: [i32; 3]) -> i32 {
+    a.iter().zip(b).map(|(x, y)| (x - y).abs()).max().unwrap()
 }
 
 /// A horizontal stroke that crosses the selection boundary at x = 0, so the same
@@ -827,6 +856,252 @@ fn feathered_edge_fades_the_stroke() {
     assert!(
         (redness(&soft, deep) - redness(&hard, deep)).abs() < 20,
         "feather must not change the selection's interior"
+    );
+}
+
+// --- the mask's opacity (§6.8) --------------------------------------------
+//
+// The Select panel's Opacity slider is the **whole mask's** opacity, set after the
+// region is drawn (`SetSelectionOpacity`), and it is quoted in the brush dial's own
+// units: the mask is the other factor of the opacity ceiling (§6.2). The claims
+// below are the ones that make that sentence true rather than a description — the
+// same picture three ways, the loop agreeing with the fast path across a feathered
+// rim, the live commit agreeing with its replay there, and the universal mask
+// having no opacity at all.
+
+/// **The mask is the dial's other factor.** A saturated stroke at dial 1 through a
+/// selection dimmed to a half is, texel for texel inside the region, the same
+/// stroke at dial ½ with no selection — and both are the region *filled* at ½,
+/// which is the fill's own reading of the same mask (`fill.wesl`). One law, three
+/// doors.
+#[test]
+fn a_dimmed_selection_is_the_dial_at_that_opacity() {
+    let path = [
+        Vec2::new(-30.0, 0.0),
+        Vec2::new(0.0, 0.0),
+        Vec2::new(30.0, 0.0),
+    ];
+    let probes = [
+        Vec2::new(-20.0, 0.0),
+        Vec2::new(-30.0, 4.0),
+        Vec2::new(-10.0, -4.0),
+    ];
+
+    let Some(mut dimmed) = engine_or_skip() else {
+        return;
+    };
+    select(&mut dimmed, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
+    dimmed.process(DocCommand::SetSelectionOpacity(0.5));
+    stroke_with(&mut dimmed, washed(1.0, 0.0), &path);
+    let dimmed = dimmed.render_to_image();
+
+    let mut dialed = engine_or_skip().expect("the adapter answered once already");
+    stroke_with(&mut dialed, washed(0.5, 0.0), &path);
+    let dialed = dialed.render_to_image();
+
+    let mut filled = engine_or_skip().expect("the adapter answered once already");
+    let layer = filled.observe().active_layer;
+    filled.process(DocCommand::Fill {
+        layer,
+        op: FillOp::new(rect(BOX_MIN, BOX_MAX), 0.0, Srgb::new(RED), 0.5),
+    });
+    let filled = filled.render_to_image();
+
+    for p in probes {
+        let (m, d, f) = (texel(&dimmed, p), texel(&dialed, p), texel(&filled, p));
+        assert!(
+            apart(m, d) <= 2,
+            "at {p:?} the stroke through the half-dimmed mask {m:?} must be the \
+             half-opacity stroke {d:?} — the mask is not the dial's other factor"
+        );
+        assert!(
+            apart(m, f) <= 2,
+            "at {p:?} the stroke through the half-dimmed mask {m:?} must be the \
+             half-covered fill {f:?} — a brush and a fill read the mask differently"
+        );
+    }
+    // …and the dimming did something, or three full-strength pictures just agreed.
+    let mut full = engine_or_skip().expect("the adapter answered once already");
+    select(&mut full, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
+    stroke_with(&mut full, washed(1.0, 0.0), &path);
+    assert!(
+        apart(
+            texel(&dimmed, probes[0]),
+            texel(&full.render_to_image(), probes[0])
+        ) > 20,
+        "the dimmed stroke reads as the full one, so this test measured nothing"
+    );
+}
+
+/// Dimming is a document edit that moves no tile: one undo step, and the region
+/// stays selected through it — which is what lets the slider reach a region
+/// already drawn, the whole point of the number living on the mask rather than
+/// on the shape (§6.8).
+#[test]
+fn dimming_is_an_undo_step_that_keeps_the_selection() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
+    let before = engine.render_to_image();
+    engine.process(DocCommand::SetSelectionOpacity(0.5));
+    let obs = engine.observe();
+    assert_eq!(obs.selection_opacity, 0.5);
+    assert!(obs.has_selection, "dimming must not deselect");
+    // The outline is drawn off the mask's own level, not its opacity, so the ants
+    // stay exactly where they were.
+    assert!(
+        images_match(&before, &engine.render_to_image(), 0),
+        "dimming the mask moved pixels — it should move one number"
+    );
+
+    engine.process(DocCommand::Undo);
+    let obs = engine.observe();
+    assert_eq!(obs.selection_opacity, 1.0, "undo restores the opacity");
+    assert!(
+        obs.has_selection,
+        "undoing the dimming must not undo the selection"
+    );
+    engine.process(DocCommand::Redo);
+    assert_eq!(engine.observe().selection_opacity, 0.5);
+}
+
+/// **A universal mask has no opacity.** Deselecting hands the canvas back at full
+/// strength whatever the slider said — "everything, at a third" is a state the
+/// engine cannot represent (`Selection::from_parts`) — and setting an opacity with
+/// nothing selected is the no-op it looks like: nothing is logged, nothing to undo.
+#[test]
+fn deselecting_forgets_the_dimming_and_nothing_selected_takes_none() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
+    engine.process(DocCommand::SetSelectionOpacity(0.3));
+    assert_eq!(engine.observe().selection_opacity, 0.3);
+    engine.process(DocCommand::Select(SelectionOp::select_all()));
+    let obs = engine.observe();
+    assert!(!obs.has_selection);
+    assert_eq!(
+        obs.selection_opacity, 1.0,
+        "a deselect lands on full strength"
+    );
+
+    // Nothing selected: the number has nothing to be the opacity of.
+    let revision = obs.doc_revision;
+    engine.process(DocCommand::SetSelectionOpacity(0.5));
+    let obs = engine.observe();
+    assert_eq!(obs.doc_revision, revision, "a no-op must not be logged");
+    assert_eq!(obs.selection_opacity, 1.0);
+
+    // …and the brush is at full strength: the same stroke as on a fresh document.
+    let path = [
+        Vec2::new(-30.0, 0.0),
+        Vec2::new(0.0, 0.0),
+        Vec2::new(30.0, 0.0),
+    ];
+    stroke_with(&mut engine, washed(1.0, 0.0), &path);
+    let after = engine.render_to_image();
+    let mut fresh = engine_or_skip().expect("the adapter answered once already");
+    stroke_with(&mut fresh, washed(1.0, 0.0), &path);
+    let fresh = fresh.render_to_image();
+    for p in [Vec2::new(-20.0, 0.0), Vec2::new(20.0, 0.0)] {
+        assert!(
+            apart(texel(&after, p), texel(&fresh, p)) <= 2,
+            "at {p:?} the stroke after a deselect {:?} is not the fresh stroke {:?} — \
+             the dimming survived the deselect",
+            texel(&after, p),
+            texel(&fresh, p)
+        );
+    }
+}
+
+/// **The stamp loop reads the mask as the fast path does**, across a feathered rim
+/// (§6.2, §6.8). The mask's coverage is a factor of the mint's ceiling on both
+/// paths — the loop mints the prefix differences of the capped law at the texel's
+/// own coverage, over raw totals that advance by the whole attempt — so a whisper
+/// of `deposit` routes the stroke without changing what the rim shows. Probed
+/// across the ramp rather than at the core, because the core is the claim
+/// `tests/opacity.rs` already holds and the rim is where the two paths had a
+/// different law each.
+#[test]
+fn the_loop_dims_under_a_feathered_mask_as_the_fast_path_does() {
+    let path = [
+        Vec2::new(-30.0, 0.0),
+        Vec2::new(0.0, 0.0),
+        Vec2::new(30.0, 0.0),
+    ];
+    let feathered = SelectionOp::new(SelectionMode::Replace, rect(BOX_MIN, BOX_MAX), 20.0);
+
+    let Some(mut looped) = engine_or_skip() else {
+        return;
+    };
+    looped.process(DocCommand::Select(feathered.clone()));
+    stroke_with(&mut looped, washed(1.0, 0.01), &path);
+    let looped = looped.render_to_image();
+
+    let mut swept = engine_or_skip().expect("the adapter answered once already");
+    swept.process(DocCommand::Select(feathered));
+    stroke_with(&mut swept, washed(1.0, 0.0), &path);
+    let swept = swept.render_to_image();
+
+    for x in [-20.0, -8.0, -4.0, -2.0, 0.0, 2.0, 4.0, 8.0] {
+        let p = Vec2::new(x, 0.0);
+        let (l, s) = (texel(&looped, p), texel(&swept, p));
+        assert!(
+            apart(l, s) <= 4,
+            "at {p:?} the loop's stroke {l:?} must be the fast path's {s:?} — the two \
+             paths read the feathered mask under different laws"
+        );
+    }
+    // …and the rim is a rim: the ramp has to be doing something for the agreement
+    // above to be about it.
+    assert!(
+        apart(
+            texel(&swept, Vec2::new(-20.0, 0.0)),
+            texel(&swept, Vec2::new(0.0, 0.0))
+        ) > 20,
+        "the feathered rim reads as the interior, so this test measured nothing"
+    );
+}
+
+/// A live stroke under a feathered mask commits what it previewed, to within the
+/// seam (§6.2). The rim scales the parcel exactly as a dial below 1 does, and a
+/// scaled parcel is not piece-composable — so the swept path has to take its
+/// carried shape under any mask at all, not only below full opacity. A ring of
+/// stateless pieces would cap each piece on its own across the ramp and let the
+/// stroke's crossings outrun the mask, and every peer replaying the log would
+/// see a different rim from the one the author committed.
+#[test]
+fn a_stroke_under_a_feathered_mask_commits_what_it_previewed() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.process(DocCommand::Select(SelectionOp::new(
+        SelectionMode::Replace,
+        rect(BOX_MIN, BOX_MAX),
+        20.0,
+    )));
+    // Back and forth through the ramp, so the crossings are what is measured.
+    stroke_with(
+        &mut engine,
+        washed(1.0, 0.0),
+        &[
+            Vec2::new(-30.0, 0.0),
+            Vec2::new(30.0, 0.0),
+            Vec2::new(-30.0, 6.0),
+            Vec2::new(30.0, 6.0),
+        ],
+    );
+    let live = engine.render_to_image();
+    let whole = whole_render(&mut engine);
+    let (_, worst) = diff_fraction(&live, &whole);
+    let frac = frac_exceeding(&live, &whole, SEAM_LEVELS);
+    assert!(
+        frac < 0.002 && worst <= 8,
+        "the live stroke under a feathered mask differs from its replay: {:.2}% of \
+         pixels by more than {SEAM_LEVELS} levels, worst {worst} — the rim is being \
+         capped per piece",
+        frac * 100.0
     );
 }
 

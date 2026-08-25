@@ -587,9 +587,13 @@ pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState, actor: ActorId) ->
         }
         // Asked of the author's own mask, since that is the only one an action can
         // address (§17.3) — and answerable at all only because this action moves no
-        // tiles: a slider dragged out and back logs nothing.
+        // tiles: a slider dragged out and back logs nothing. Asked of what the mask
+        // *would* read at, not of the number alone, so that with nothing selected —
+        // where a universal mask pins its opacity to 1 — every value is the no-op
+        // it is, rather than an undo step that changes nothing.
         ActionKind::SetSelectionOpacity(opacity) => {
-            state.selection_of(actor).opacity() == *opacity
+            let mask = state.selection_of(actor);
+            mask.with_opacity(*opacity).opacity() == mask.opacity()
         }
         ActionKind::SetLayerBlend(id, blend) => {
             layer(*id).is_some_and(|l| l.composite.blend == *blend)

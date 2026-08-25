@@ -94,6 +94,10 @@ pub fn slider_fill(min: f32, max: f32, value: f32) -> String {
 /// [`Preview::settle`](crate::preview::Preview::settle) for why it takes all three).
 /// A slider setting view state — most of them — leaves it out and has nothing to
 /// settle.
+///
+/// `disabled` greys the track out (`.slider:disabled`) for a value that has
+/// nothing to act on right now — the way a chip is disabled, and for the same
+/// reason: a control that can be moved and does nothing reads as broken.
 #[component]
 pub fn Slider(
     label: String,
@@ -103,6 +107,7 @@ pub fn Slider(
     value: f32,
     oninput: EventHandler<f32>,
     #[props(default)] onsettle: Option<EventHandler<()>>,
+    #[props(default)] disabled: bool,
 ) -> Element {
     let settle = move || {
         if let Some(h) = &onsettle {
@@ -121,6 +126,7 @@ pub fn Slider(
                 class: "slider",
                 style: slider_fill(min, max, value),
                 r#type: "range", min: "{min}", max: "{max}", step: "any", value: "{value}",
+                disabled,
                 oninput: move |e| {
                     if let Ok(v) = e.value().parse::<f32>() { oninput.call(v); }
                 },

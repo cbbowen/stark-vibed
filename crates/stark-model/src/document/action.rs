@@ -14,8 +14,8 @@ use super::guide::{GuideId, PerspectiveGuide};
 use super::layer::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
 use super::selection::SelectionOp;
 use crate::Srgb;
-use crate::geom::Vec2;
 use crate::clamp01;
+use crate::geom::Vec2;
 use crate::{SubstrateId, SubstrateScale};
 
 /// Identifies the author of an action: one local user, or a peer (§4).

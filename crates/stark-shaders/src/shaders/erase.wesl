@@ -32,10 +32,10 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
 struct Erase {
-    // The erase opacity (`EraseEffect::opacity`, §6.12) in `.x`, and the selection's
-    // strength (`Selection::strength`, §6.8) in `.y` — the whole mask's opacity,
-    // which the mask texture does not carry and every gating read of it is scaled
-    // by. `.zw` unused — the uniform's 16-byte round (§6.10).
+    // The stroke's ceiling in `.x`: the erase opacity (`EraseEffect::opacity`,
+    // §6.12) with the selection mask's folded in (`stroke_constants`, §6.8), as
+    // `integrate.wesl` carries it. `.yzw` unused — the uniform's 16-byte round
+    // (§6.10).
     params: vec4<f32>,
 }
 
@@ -51,7 +51,8 @@ struct Erase {
 @group(0) @binding(2) var accum: texture_2d<f32>;
 // The selection's coverage over this tile (§6.8): 1 where the stroke may act,
 // 0 where it may not, feathered in between — this tile's own mask or the 1×1
-// constant, exactly as `integrate.wesl` binds it.
+// constant, exactly as `integrate.wesl` binds it, and read the same way: as a
+// factor of the ceiling, never a lerp of the result.
 @group(0) @binding(3) var selection: texture_2d<f32>;
 @group(0) @binding(4) var<uniform> e: Erase;
 // The resident color's residual half (§6.7), in a space that has one. Bound
@@ -102,20 +103,17 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // profile its brush would have painted.
     let w = 1.0 - exp(-OPACITY_K * m_e);
 
-    // Opacity incorporating the brush opacity and selection mask.
-    //
-    // Gate by the selection (§6.8): a lerp of the *result*, `integrate.wesl`'s
-    // rule. Color and residual are the base's either way, so the height is the
-    // only lane with two answers to mix.
-    // At the mask's own strength, exactly as `integrate.wesl` reads it: the tiles
-    // hold what the ops struck, and how strongly that gates is one number on top.
-    let effective_opacity = e.params.x * load1(selection, c).r;
+    // The ceiling at this texel: the stroke's, times the selection's coverage
+    // here — `integrate.wesl`'s reading of the same mask, so a half-selected
+    // texel uncovers half of what the eraser would (§6.8). Color and residual are
+    // the base's either way; the height is the only lane the mask has a say in.
+    let opacity = e.params.x * load1(selection, c).r;
 
     // What must remain visible is `(1 − t0)·(1 − opacity·w)`; carried as what
     // shows *through* — the old transmittance plus the newly uncovered share —
     // so the small quantity is the one computed and nothing cancels where the
     // paint is nearly opaque.
-    let through = t0 + (1.0 - t0) * effective_opacity * w;
+    let through = t0 + (1.0 - t0) * opacity * w;
     // Inverted through the slab law into the mass that shows exactly that much
     // (`fill.wesl`'s inversion, run the other way). `through >= t0` by
     // construction, so `m1 <= m0` up to rounding — the `min` states it outright,

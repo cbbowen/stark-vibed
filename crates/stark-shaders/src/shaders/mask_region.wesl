@@ -10,16 +10,12 @@
 // coverage that reigns outside the mask's tile set, so the "everything outside is
 // deselected" (or, when inverted, "selected") case costs nothing.
 //
-// **The gather is where the stamp loop's strength is applied** (§6.8). The whole
-// mask has an opacity on top of the shape arithmetic, and every *gating* read of the
-// mask has to be scaled by it; the loop reads `sel_mask` in five places, and this
-// pass is the one texture all five come from — so the scale rides here, on the clear
-// and on the copy together, and the loop never learns there was one.
+// The coverage alone: the mask's overall opacity (§6.8) reaches the loop inside its
+// ceiling (`Stamp::opacity`), not through this texture — a copy that carried it too
+// would gate the plane at its square.
 
 struct Region {
-    // .xy = region size in px, .z = TILE_TEX, .w = the selection's strength
-    // (`Selection::strength`) — the whole mask's opacity, applied here so the
-    // stamp loop reads coverage that already carries it (see above).
+    // .xy = region size in px, .z = TILE_TEX, .w unused.
     a: vec4<f32>,
 }
 
@@ -49,5 +45,5 @@ fn vs_main(
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let c = vec2<i32>(floor(in.clip.xy) - in.origin);
-    return vec4<f32>(textureLoad(mask, c, 0).r * r.a.w, 0.0, 0.0, 0.0);
+    return vec4<f32>(textureLoad(mask, c, 0).r, 0.0, 0.0, 0.0);
 }

@@ -279,6 +279,16 @@ struct DynamicsRun<'a> {
 }
 
 impl<'a> DynamicsRun<'a> {
+    /// Whether the mint runs under a ceiling anywhere in this stroke, and so
+    /// whether its budget lanes have to be carried across pieces (§6.2): the
+    /// dial below 1, *or* a mask in force — whose rim is at least a pixel soft,
+    /// and a texel under it caps its mint exactly as a dial below 1 does (§6.8).
+    /// The mask's overall opacity is already inside `consts.opacity`
+    /// (`stroke_constants`); this is about its coverage.
+    fn capped(&self) -> bool {
+        self.consts.opacity < 1.0 || self.scene.selection.is_active()
+    }
+
     /// Open the run: resolve the brush's textures, and put the tool in the state the
     /// stroke arrives at this range with — resumed from `tool`, or freshly charged.
     fn new(
@@ -555,8 +565,8 @@ impl<'a> DynamicsRun<'a> {
         // totals are copied back over its block — the `.x` height rides along
         // bit-identical, being the very value the write-back sliced into the
         // tile the composite just re-laid. Nothing to seed at the identity
-        // opacity, where the shader never reads the lanes.
-        if self.consts.opacity < 1.0 {
+        // ceiling, where the shader never reads the lanes.
+        if self.capped() {
             for coord in coords {
                 let Some(kept) = self.fresh.get(coord) else {
                     continue;
@@ -644,7 +654,7 @@ impl<'a> DynamicsRun<'a> {
         // per touched tile, cut exactly as the write-back cuts paint — the
         // carried tiles themselves are never written, which is what lets the
         // live tail resume the same frozen totals every pointer move.
-        if self.consts.opacity < 1.0 {
+        if self.capped() {
             let r = self.r;
             for coord in coords {
                 let kept = r.scratch.keep(&r.ctx.device, fresh_key());
@@ -839,7 +849,6 @@ impl<'a> DynamicsRun<'a> {
                 region_origin,
                 w,
                 h,
-                false,
             );
             self.scope.texture(tex);
             view

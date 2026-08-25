@@ -156,13 +156,16 @@ struct Stamp {
     // `stroke_drain`). No per-unit opacity beside them: minted paint is opaque per
     // unit (§6.2), faded only by the drain.
     brush_lat: vec3<f32>,
-    // The paint effect's opacity (§6.2): the per-stroke ceiling on what the
-    // brush's own paint builds to. Applied where the mint lands (`lay_parcel`),
-    // as prefix differences of the capped law over the running raw totals the
-    // region aux's spare lanes carry — the very arithmetic the swept integrate
-    // applies to its whole accumulated parcel, so a brush whose axes are all
-    // zero but for a whisper of `deposit` lays exactly what the fast path lays.
-    // 1 is the identity, taken as an exact branch.
+    // The stroke's ceiling (§6.2): the paint effect's opacity with the selection
+    // mask's folded in (`stroke_constants`, §6.8) — the per-stroke ceiling on
+    // what the brush's own paint builds to. Applied where the mint lands
+    // (`lay_parcel`), as prefix differences of the capped law over the running
+    // raw totals the region aux's spare lanes carry — the very arithmetic the
+    // swept integrate applies to its whole accumulated parcel, so a brush whose
+    // axes are all zero but for a whisper of `deposit` lays exactly what the
+    // fast path lays. The mask's per-texel coverage is the same ceiling's third
+    // factor, taken from `sel_mask` at the texel. 1 is the identity, taken as
+    // an exact branch.
     opacity: f32,
     // The brush color's **residual** — the half of it the space's three channels cannot
     // express (§6.7). Undrained, like `brush_lat`. Zero for every space but Mixbox.
@@ -332,10 +335,14 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 @group(0) @binding(19) var bake_load: texture_2d<f32>;
 @group(0) @binding(20) var bake_latm: texture_2d<f32>;
 // The selection's coverage over the region (§6.8), 1:1 with it — or a 1×1
-// texture holding a constant when there is nothing to mask. Both the vertical fluxes
-// are gated by it: `exchange` scales what it lifts, `deposit` lerps its whole
-// read-modify-write back towards the untouched region, so paint outside the selection
-// is neither taken nor laid and the two sides of the transfer still balance.
+// texture holding a constant when there is nothing to mask. The coverage alone:
+// the mask's overall opacity is inside `st.opacity`. Both the vertical fluxes are
+// gated by it, under the two laws a mask has (`lay_parcel`): paint that *moves*
+// moves in that fraction — `exchange` scales what it lifts, the deposit takes the
+// same fraction of the lift and of the tool's carried paint, so paint outside the
+// selection is neither taken nor laid and the two sides of the transfer still
+// balance — and paint that is *minted* is capped at `st.opacity · sel`, the swept
+// integrate's own reading of the same texel.
 @group(0) @binding(21) var sel_mask: texture_2d<f32>;
 
 // The canvas substrate's tileable height map (§6.4) — height in `r` (the media pass's),
@@ -1265,9 +1272,10 @@ fn exchange(
 // own thread never writes (which is also why the snapshot's `outside_sweep` skip
 // still covers every texel this reads); the sweep's rim fades the flux out
 // smoothly; and the un-written partner of a pair straddling `e = 0` agrees the
-// flux was zero. The neighbour's selection gates its side the same way the final
-// `sel` lerp gates this one, so a feathered mask scales the pair's flux by both
-// coverages and deselected paint neither gives nor takes (§6.8).
+// flux was zero. The neighbour's selection gates its side and this texel's gates
+// this one, so a feathered mask scales the pair's flux by both coverages — the
+// same number from both threads — and deselected paint neither gives nor takes
+// (§6.8).
 //
 // **The axis is a diffusivity, and the reach is how it is spent.** Per unit of
 // exposure the stencil injects `σ² ≈ 2·k_bleed·Σ(share·d²)` texels² per axis, so
@@ -1462,16 +1470,23 @@ fn under_color_of(u: Under) -> Latent {
 
 // ---- The opacity ceiling on the mint (§6.2) --------------------------------------
 //
-// The paint effect's opacity caps what the brush's **own** paint builds to per
-// texel — the swept integrate's law, which this loop cannot apply to a finished
-// parcel because it has none: fresh paint lands per segment and is smeared into
-// the picture as it goes. What it can do is mint the *prefix differences* of the
+// The stroke's ceiling caps what the brush's **own** paint builds to per texel —
+// the swept integrate's law, which this loop cannot apply to a finished parcel
+// because it has none: fresh paint lands per segment and is smeared into the
+// picture as it goes. What it can do is mint the *prefix differences* of the
 // same law: the region aux's spare lanes carry the running **raw** totals the
 // uncapped source would have laid (`.y` height, `.z` mass), and each segment
 // lays `M(F + ΔF) − M(F)`. The differences telescope, so the per-texel total is
 // exactly the swept path's scaled parcel — mass and height, drain variation
 // included — and a brush routed here by a whisper of some other axis lays the
 // same paint the fast path lays.
+//
+// The ceiling is **per texel**: `st.opacity` times the selection's coverage there
+// (§6.8), the product the swept integrate reads off the same mask. So the raw
+// totals advance by the whole attempt whatever the coverage — they are what the
+// source *tried*, and the cap is what decides how much of that shows — and a
+// texel under a feathered rim converges to the rim's fraction of the dial, on
+// this path exactly as on the other.
 //
 // What the ceiling deliberately does not touch: **moved paint**. The lift's
 // removal, the tool's deposit of carried paint, the bleed and the settle all
@@ -1482,12 +1497,12 @@ fn under_color_of(u: Under) -> Latent {
 // deliver is the scaled glob — so the host scales it where it is minted
 // (`run.rs`'s reservoir init).
 
-// The capped law: the mass the ceiling lets a raw total `f` land as —
-// `−ln(1 − opacity·(1 − e^{−K·f}))/K`, the swept integrate's arithmetic
-// (`integrate.wesl`). `1 − opacity·w > 1 − opacity > 0` on the capped branch,
-// so the log has an argument and nothing cancels.
-fn capped_m(f: f32) -> f32 {
-    return -log(1.0 - st.opacity * (1.0 - exp(-OPACITY_K * f))) / OPACITY_K;
+// The capped law at ceiling `o`: the mass it lets a raw total `f` land as —
+// `−ln(1 − o·(1 − e^{−K·f}))/K`, the swept integrate's arithmetic
+// (`integrate.wesl`). `1 − o·w > 1 − o > 0` on the capped branch, so the log has
+// an argument and nothing cancels.
+fn capped_m(f: f32, o: f32) -> f32 {
+    return -log(1.0 - o * (1.0 - exp(-OPACITY_K * f))) / OPACITY_K;
 }
 
 // The capped height for raw totals `(fh, fm)`: `fh · M(fm)/fm` — the whole raw
@@ -1495,11 +1510,11 @@ fn capped_m(f: f32) -> f32 {
 // swept path's `h·(m′/m)` exactly. The ratio is taken through a two-term series
 // below `RATIO_SERIES_MAX_F`, where the direct quotient is a log of `1 − o·f·…`
 // with most of its digits cancelled — `src_share`'s cure, one function over.
-fn cap_ratio(f: f32) -> f32 {
+fn cap_ratio(f: f32, o: f32) -> f32 {
     if f < RATIO_SERIES_MAX_F {
-        return st.opacity * (1.0 + 0.5 * OPACITY_K * f * (st.opacity - 1.0));
+        return o * (1.0 + 0.5 * OPACITY_K * f * (o - 1.0));
     }
-    return capped_m(f) / f;
+    return capped_m(f, o) / f;
 }
 const RATIO_SERIES_MAX_F: f32 = 0.05;
 
@@ -1508,8 +1523,8 @@ const RATIO_SERIES_MAX_F: f32 = 0.05;
 // finite range, which is what the clamp is for.
 const F_MAX: f32 = 16000.0;
 
-fn capped_h(fh: f32, fm: f32) -> f32 {
-    return fh * cap_ratio(fm);
+fn capped_h(fh: f32, fm: f32, o: f32) -> f32 {
+    return fh * cap_ratio(fm, o);
 }
 
 // The shared tail: the lift, the parcel this slot lays, and the store.
@@ -1530,8 +1545,12 @@ fn lay_parcel(
 ) {
     // The lift's removal: height leaves; the remaining paint's latent and per-unit
     // opacity are unchanged — the source fades because its *thickness* drops,
-    // never because its alpha is scaled (§6.1).
-    var h = canvas.h * ex.keep;
+    // never because its alpha is scaled (§6.1). At the mask's fraction (§6.8):
+    // the canvas gives up `sel` of what a full lift would take, which is exactly
+    // the fraction `exchange` scaled the tool's side of the transfer by, so the
+    // two sides still balance.
+    let keep = 1.0 - sel * (1.0 - ex.keep);
+    var h = canvas.h * keep;
     var m = canvas.op * h;
 
     // How far along the stroke this texel sits, and what the brush has left to lay
@@ -1566,7 +1585,10 @@ fn lay_parcel(
     // The tool's per-unit opacity, from the two means it carries. Recovered here
     // rather than carried, so the one expression answers for both front halves.
     let tool_op = tool.m / max(tool.h, PAINT_EPS);
-    let dep_h = tool.h * ex.dep;
+    // Carried paint moves in the mask's fraction, like the lift above — moved
+    // paint is what the ceiling below does not touch, and a fraction is the one
+    // gate that conserves it (§6.8).
+    let dep_h = tool.h * ex.dep * sel;
     // No tooth factor here, and none on the deposit above: both already carry it,
     // because `ex` was solved at the exposure the substrate let through. Multiplying
     // again would charge the substrate twice — and would take the deposit out of the
@@ -1589,17 +1611,19 @@ fn lay_parcel(
     // a NaN the region keeps forever.
     let f_h = min(u.a.y + raw_h, F_MAX);
     let f_m = min(u.a.z + raw_m, F_MAX);
-    // At opacity 1 the capped law is the identity to the bit
-    // (`−ln(e^{−K·f})/K = f`), and the branch keeps even its rounding out of
-    // the master arithmetic below.
+    // The ceiling at this texel: the stroke's, times the mask's coverage here
+    // (§6.8) — the same product the swept integrate reads. At 1 the capped law
+    // is the identity to the bit (`−ln(e^{−K·f})/K = f`), and the branch keeps
+    // even its rounding out of the master arithmetic below.
+    let o = st.opacity * sel;
     var add_h = st.add * drain * ex.add_w;
     var add_m = own_op * add_h;
-    if st.opacity != 1.0 {
+    if o != 1.0 {
         // `e_src = 0` makes both differences exactly 0, so the guarded quotient
         // never decides anything — it only keeps the 0/0 out.
         let survive = ex.add_w / max(e_src, PAINT_EPS);
-        add_m = (capped_m(f_m) - capped_m(u.a.z)) * survive;
-        add_h = (capped_h(f_h, f_m) - capped_h(u.a.y, u.a.z)) * survive;
+        add_m = (capped_m(f_m, o) - capped_m(u.a.z, o)) * survive;
+        add_h = (capped_h(f_h, f_m, o) - capped_h(u.a.y, u.a.z, o)) * survive;
     }
     let par_h = dep_h + add_h;
     let par_m = tool_op * dep_h + add_m;
@@ -1617,7 +1641,7 @@ fn lay_parcel(
     // exactly 1, and any nonzero rate gives `keep < 1`), a zero parcel says
     // nothing landed, no flux says nothing moved sideways. What remains is the
     // identity, whose only observable effect is the rounding above.
-    if ex.keep == 1.0 && par_h == 0.0 && par_m == 0.0 && !canvas.bled {
+    if keep == 1.0 && par_h == 0.0 && par_m == 0.0 && !canvas.bled {
         return;
     }
     // The brush's own color. Its residual is **not** jittered, where the latent above
@@ -1637,26 +1661,19 @@ fn lay_parcel(
     m += par_m;
     let op = m / max(h, PAINT_EPS);
 
-    // Lerp the whole exchange back towards the snapshot by the selection coverage: at
-    // the mask's feathered edge the texel receives that fraction of everything this
-    // slot did — the lift as well as the deposit — which is exactly the fraction
-    // `exchange` scaled its own side of the transfer by.
-    // On the f16 lattice before it goes down (`lib::store`). The guard above skips the
-    // stores that change nothing at all; this is what keeps the ones that *do* land
-    // from each shaving a ULP off the region as a segment sweep passes over it.
-    textureStore(region_color_w, rt, f16_nearest4(mix(u.c, vec4<f32>(col.lat * op, op), sel)));
-    // The raw totals advance in the store's own lanes, through the same `sel`
-    // lerp as the height they budget — a feathered texel banks the fraction of
-    // the mint it received, so its budget saturates at the fraction of the cap
-    // the swept integrate's result-lerp converges to (§6.8).
-    textureStore(
-        region_aux_w, rt, f16_nearest4(mix(u.a, vec4<f32>(h, f_h, f_m, 0.0), sel)),
-    );
-    // Premultiplied by the same `op` and lerped by the same `sel` — the residual is
-    // stored exactly as the color beside it is.
-    @if(resid) textureStore(
-        region_resid_w, rt, f16_nearest4(mix(u.r, vec4<f32>(col.res * op, 0.0), sel)),
-    );
+    // The selection has already had its say — as the fraction on the moved paint
+    // and as the factor in the mint's ceiling — so the store is the result whole.
+    // On the f16 lattice before it goes down (`lib::store`). The guard above skips
+    // the stores that change nothing at all; this is what keeps the ones that *do*
+    // land from each shaving a ULP off the region as a segment sweep passes over it.
+    textureStore(region_color_w, rt, f16_nearest4(vec4<f32>(col.lat * op, op)));
+    // The raw totals advance in the store's own lanes by the whole attempt,
+    // whatever the coverage: they are what the source tried, and the ceiling
+    // above — not the lanes — is where the coverage decides what shows (§6.8).
+    textureStore(region_aux_w, rt, f16_nearest4(vec4<f32>(h, f_h, f_m, 0.0)));
+    // Premultiplied by the same `op` — the residual is stored exactly as the color
+    // beside it is.
+    @if(resid) textureStore(region_resid_w, rt, f16_nearest4(vec4<f32>(col.res * op, 0.0)));
 }
 
 @compute @workgroup_size(8, 8)
@@ -1806,8 +1823,11 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // prefix-τ difference, thirty-six times over, on an answer the thread
                 // one tap away was deriving at the same moment (`bleed_weight`).
                 let w_n = textureLoad(bleed_w, tn, 0).r;
+                // Both coverages, this texel's and the neighbour's: the pair's
+                // flux is moved paint, gated in the mask's fraction on each side,
+                // and the product is what both threads of the pair compute.
                 let seln = load1(sel_mask, rtn).r;
-                let c = share * min(w_t, w_n) * seln;
+                let c = share * min(w_t, w_n) * seln * sel;
                 if c > 0.0 {
                     let ucn = textureLoad(under_color, tn, 0);
                     let uan = textureLoad(under_aux, tn, 0);

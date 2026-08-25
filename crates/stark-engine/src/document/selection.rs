@@ -52,9 +52,19 @@ pub struct Selection {
     /// feature. [`SelectionOp::opacity`] is the same question asked of one shape,
     /// baked into that shape's coverage where it was struck; the two multiply.
     ///
-    /// Carried through the op algebra untouched: an op says where the mask is, never
-    /// how strongly the mask is read. [`Self::strength`] is the reading, and is where
-    /// the one exception lives.
+    /// What a reader does with the product is the reader's law, and there are two
+    /// (§6.8): paint that is *minted* takes it as the other factor of the brush's
+    /// opacity ceiling — `stroke_constants` folds it into the stroke's ceiling, and
+    /// a fill's stated coverage is scaled by it — and paint that is *moved* takes it
+    /// as the fraction of height that moves (the transform's cut, the loop's lift
+    /// and deposit of carried paint).
+    ///
+    /// **1 whenever the mask is universal**, by construction ([`Self::from_parts`],
+    /// [`Self::with_opacity`]) rather than by a rule each reader remembers: nothing
+    /// is masked there, so there is nothing for a number to be the opacity *of*,
+    /// and a deselect has to hand the canvas back at full strength. Carried through
+    /// the op algebra otherwise — an op says where the mask is, never how strongly
+    /// it is read — so a region drawn over a dimmed selection is dimmed too.
     opacity: f32,
     /// A conservative analytic bounding box of the selected coverage, in canvas px
     /// — `None` when the selection is unbounded (`outside`) or its extent is not
@@ -85,19 +95,6 @@ impl Selection {
         }
     }
 
-    /// Whether this is the selection a document starts with and a deselect returns
-    /// to — nothing masked, at full strength.
-    ///
-    /// [`Self::is_universal`] with the opacity asked as well, and the distinction is
-    /// the point: a mask that covers everything gates nothing whatever its opacity
-    /// says, but the number is still *held*, because the next region drawn takes it
-    /// (`plan` carries it forward). So this is the test for "worth storing at all"
-    /// — `DocState::with_selection`'s — and `is_universal` is the test for "gates
-    /// anything".
-    pub fn is_default(&self) -> bool {
-        self.is_universal() && self.opacity >= 1.0
-    }
-
     /// A conservative canvas-space bounding box of the selected coverage, or
     /// `None` when the selection is unbounded or its extent is unknown — see the
     /// field docs. Chrome-facing: the transform handles anchor to it.
@@ -122,13 +119,15 @@ impl Selection {
     }
 
     /// Coverage where there is no mask tile, as the shaders want it. The mask's own
-    /// number — [`Self::strength`] is not folded in, for the reason given there.
+    /// number: [`Self::opacity`] is not folded in, because the two kinds of reader
+    /// multiply it in under different laws (see there).
     pub fn outside(&self) -> f32 {
         self.outside
     }
 
     /// The whole mask's opacity — see the field docs. What the Select panel's slider
-    /// shows, and what a fresh selection inherits.
+    /// shows, what every gating reader multiplies its coverage by, and 1 while
+    /// nothing is masked.
     pub fn opacity(&self) -> f32 {
         self.opacity
     }
@@ -138,12 +137,17 @@ impl Selection {
     ///
     /// Unclamped here: the number arrives through `ActionKind::sanitized`, the one
     /// funnel an action passes into the document through, and a second bound would
-    /// be a second policy to keep in step (§8).
+    /// be a second policy to keep in step (§8). A universal mask stays at 1
+    /// ([`Self::from_parts`]): with nothing selected there is nothing to dim, and
+    /// the action is the no-op `is_noop_on` says it is.
     pub(crate) fn with_opacity(&self, opacity: f32) -> Self {
-        Self {
+        Self::from_parts(
+            self.tiles.clone(),
+            self.outside,
+            self.level,
             opacity,
-            ..self.clone()
-        }
+            self.hull,
+        )
     }
 
     /// The level whose half the outline traces, and that inversion reflects
@@ -183,13 +187,20 @@ impl Selection {
         // infinity has no such box, whatever a caller computed. *Any* coverage, not
         // just full: a plane selected at a half still reaches everywhere.
         let hull = if outside > 0.0 { None } else { hull };
-        Self {
+        let mut this = Self {
             tiles,
             outside,
             level,
             opacity,
             hull,
+        };
+        // The opacity's meaning is "how strongly the mask gates"; a mask that gates
+        // nothing has none, whatever a caller carried (see the field). Stated here,
+        // where every selection is built, so no reader has to know the case exists.
+        if this.is_universal() {
+            this.opacity = 1.0;
         }
+        this
     }
 
     /// Plan the effect of `op` on this selection: which tiles have to be rasterized,
@@ -355,8 +366,9 @@ pub(crate) struct SelectionPlan {
     pub level: f32,
     /// The result's overall opacity — the previous one, always. An op says where
     /// the mask is; how strongly it is read is a separate question with a separate
-    /// action (§6.8), and carrying it here is what keeps a strength set before the
-    /// shape was drawn from being thrown away by drawing it.
+    /// action (§6.8), and carrying it here is what keeps a region redrawn over a
+    /// dimmed selection dimmed. (A deselect lands on 1 all the same:
+    /// [`Selection::from_parts`] pins a universal result there.)
     pub opacity: f32,
     /// The result's analytic hull — see [`Selection::hull`].
     pub hull: Option<(Vec2, Vec2)>,
@@ -413,7 +425,8 @@ mod tests {
         assert_eq!(once.outside, 0.4);
         assert_eq!(once.level, 0.4);
 
-        let flipped = Selection::from_parts(HashTrieMap::new(), once.outside, once.level, 1.0, None);
+        let flipped =
+            Selection::from_parts(HashTrieMap::new(), once.outside, once.level, 1.0, None);
         assert_eq!(
             flipped.plan_invert().outside,
             0.0,

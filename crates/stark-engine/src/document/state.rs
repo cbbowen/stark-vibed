@@ -436,26 +436,20 @@ impl DocState {
             .is_some_and(Selection::is_active)
     }
 
-    /// Every actor **masking** something, in no particular order — filtered rather
-    /// than assumed, since an entry may be a universal mask parked here only to hold
-    /// the opacity a deselect must not forget
-    /// ([`Selection::is_default`](Selection::is_default)).
+    /// Every actor with a selection in force, in no particular order. Universal
+    /// selections are never stored, so nothing here is empty.
     pub fn selections(&self) -> impl Iterator<Item = (ActorId, &Selection)> {
-        self.selections
-            .iter()
-            .filter(|(_, s)| s.is_active())
-            .map(|(a, s)| (*a, s))
+        self.selections.iter().map(|(a, s)| (*a, s))
     }
 
     /// The same document with `actor`'s selection replaced (§6.8).
     ///
-    /// The **default** selection is removed rather than stored, so "nothing at all"
-    /// has exactly one representation and an actor who deselects stops costing
-    /// anything again. Deliberately not "universal": a deselect keeps the opacity
-    /// the slider is set to, because the next region drawn takes it, so a mask that
-    /// gates nothing is still worth an entry while that number is not 1 (§6.8).
+    /// A universal selection is *removed* rather than stored, so "no selection" has
+    /// exactly one representation: `selections()` never yields an empty mask, and an
+    /// actor who deselects stops costing anything again. Nothing is lost by it — a
+    /// universal mask carries no opacity to keep (`Selection::opacity`).
     pub fn with_selection(&self, actor: ActorId, selection: Selection) -> Self {
-        let selections = if selection.is_default() {
+        let selections = if selection.is_universal() {
             self.selections.remove(&actor)
         } else {
             self.selections.insert(actor, selection)
@@ -467,7 +461,8 @@ impl DocState {
     }
 
     /// The same document with `actor`'s mask read at `opacity` (§6.8) — no tile
-    /// moves, which is what lets the slider reach a region already drawn.
+    /// moves, which is what lets the slider reach a region already drawn. The
+    /// identity with nothing selected, where there is nothing to dim.
     pub fn with_selection_opacity(&self, actor: ActorId, opacity: f32) -> Self {
         self.with_selection(actor, self.selection_of(actor).with_opacity(opacity))
     }
