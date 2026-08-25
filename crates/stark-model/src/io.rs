@@ -134,8 +134,8 @@ pub struct CanvasMeta {
     /// mid-document switch is an `ActionKind::SetSubstrate` in the log, so this is not
     /// the current substrate and loading has to replay to learn that.
     ///
-    /// The image behind it rides in [`DocumentFile::substrates`]; this is only its
-    /// name.
+    /// The image behind it rides in [`DocumentFile::content`], under its own
+    /// [`AssetNeed`]; this is only its name.
     #[serde(default, alias = "surface")]
     pub substrate: SubstrateId,
 }

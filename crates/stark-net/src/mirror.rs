@@ -25,7 +25,6 @@ use bytes::Bytes;
 use iroh_blobs::Hash;
 use rpds::RedBlackTreeMapSync;
 use stark_model::AssetId;
-use stark_model::SubstrateId;
 use stark_model::document::{Action, ActionId};
 use stark_model::{BuildId, CanvasMeta, DocumentFile};
 
@@ -388,14 +387,5 @@ impl Mirror {
             .map(|(id, bytes)| (id, add(bytes)))
             .collect();
         self.hashes.extend(hashes);
-    }
-}
-
-/// The content hash a substrate transfers under — `None` for `Flat`, which is
-/// procedural and has no bytes to move.
-pub(crate) fn substrate_content_id(id: SubstrateId) -> Option<AssetId> {
-    match id {
-        SubstrateId::Flat => None,
-        SubstrateId::Image(asset) => Some(asset),
     }
 }
