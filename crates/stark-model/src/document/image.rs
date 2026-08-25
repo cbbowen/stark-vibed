@@ -29,13 +29,37 @@ pub const MAX_IMAGE_TILES: usize = {
     span * span
 };
 
-/// The picture's own extent in canvas px, `[lo, hi)`.
-fn extent(at: IVec2, picture: &Picture) -> (Vec2, Vec2) {
+/// How far from the origin a placement may sit and still be **exact**.
+///
+/// `PlaceImage` promises the image's texels land on canvas pixels one for one, with
+/// nothing filtered between the file and the tiles — which is why `at` is an
+/// [`IVec2`] and why scaling is a separate [`Transform`] where resampling is already
+/// pinned (§16.4). That promise is about the *arithmetic*, and the arithmetic goes
+/// through `f32`: every integer up to `2^24` is exactly representable, and past it
+/// the cast starts rounding — silently, to as much as a whole tile at the far end of
+/// the `i32` grid.
+///
+/// So this is the point at which the placement stops being the one it says it is.
+/// The picture's own span comes off the budget because [`extent`] adds it to `at`
+/// and that sum has to be exact too. About 16.7 million canvas px from the origin,
+/// which is four orders of magnitude past any painting and still a refusal rather
+/// than a rounding — the stance §16.1 takes for a transform that cannot be repaired
+/// into a different transform without changing what the author asked for.
+const MAX_EXACT_PLACEMENT: i32 = (1 << 24) - MAX_PICTURE_DIM as i32;
+
+/// The picture's own extent in canvas px, `[lo, hi)` — `None` for a placement too
+/// far from the origin to be stated exactly (see [`MAX_EXACT_PLACEMENT`]).
+fn extent(at: IVec2, picture: &Picture) -> Option<(Vec2, Vec2)> {
+    if at.x.unsigned_abs() > MAX_EXACT_PLACEMENT as u32
+        || at.y.unsigned_abs() > MAX_EXACT_PLACEMENT as u32
+    {
+        return None;
+    }
     let lo = Vec2::new(at.x as f32, at.y as f32);
-    (
+    Some((
         lo,
         lo + Vec2::new(picture.width as f32, picture.height as f32),
-    )
+    ))
 }
 
 /// Which tiles a placed picture writes, in order.
@@ -55,13 +79,16 @@ fn extent(at: IVec2, picture: &Picture) -> (Vec2, Vec2) {
 /// name the tile past it, and an all-zero tile is worse than no tile — it pollutes
 /// `bounds` and holds pool memory for a texel of nothing.
 ///
-/// `None` refuses the whole action, deterministically, for a placement so far from the
-/// origin that its box falls off the `i32` tile grid. [`MAX_IMAGE_TILES`] cannot be
+/// `None` refuses the whole action, deterministically, for a placement whose box
+/// falls off the `i32` tile grid — or, well before that, one too far from the origin
+/// for `f32` to state exactly (`MAX_EXACT_PLACEMENT`). Refused rather than rounded,
+/// because a placement is a promise about landing texels on pixels one for one and a
+/// rounded one is a different placement wearing the same numbers. [`MAX_IMAGE_TILES`] cannot be
 /// exceeded by a picture `stark_assetid::picture` admitted, so a `None` from
 /// [`tiles_of`] would be a bug in that arithmetic rather than a document to refuse —
 /// which is why the cap is derived and not chosen.
 pub fn image_tiles(at: IVec2, picture: &Picture) -> Option<Vec<TileCoord>> {
-    let (lo, hi) = extent(at, picture);
+    let (lo, hi) = extent(at, picture)?;
     let apron = Vec2::splat(TILE_APRON as f32);
     let mut tiles = tiles_of(
         TileRect::covering(lo - apron, hi + apron, 0)?,
@@ -98,6 +125,43 @@ mod tests {
     ///
     /// Stated against the tile's own interior rather than against the padded box the
     /// plan quantizes, so the two derivations are independent: a tile is named exactly
+    /// **A placement past what `f32` states exactly is refused, not rounded.**
+    ///
+    /// `PlaceImage` promises the picture's texels land on canvas pixels one for one
+    /// (§23). Past `2^24` the cast in [`extent`] starts rounding — quietly, and by up
+    /// to a whole tile out at the end of the `i32` grid — so the placement that
+    /// happens is not the placement the action names. The `i32` grid itself only runs
+    /// out four orders of magnitude later, which is why this bound has to be its own
+    /// and cannot be left to `TileRect::covering`.
+    #[test]
+    fn a_placement_too_far_out_to_state_exactly_is_refused() {
+        let img = picture(64, 64);
+        // The last exact placement, and the first one past it, on each axis and in
+        // each direction.
+        let ok = MAX_EXACT_PLACEMENT;
+        for at in [IVec2::new(ok, 0), IVec2::new(0, ok), IVec2::new(-ok, -ok)] {
+            assert!(
+                image_tiles(at, &img).is_some(),
+                "{at:?} is exactly representable and must still place",
+            );
+        }
+        for at in [
+            IVec2::new(ok + 1, 0),
+            IVec2::new(0, ok + 1),
+            IVec2::new(-ok - 1, 0),
+            IVec2::new(i32::MAX, i32::MAX),
+            IVec2::new(i32::MIN, i32::MIN),
+        ] {
+            assert!(image_tiles(at, &img).is_none(), "{at:?} should be refused");
+        }
+
+        // The bound is where it is because the *sum* has to be exact too: the
+        // picture's own span is added to `at` before anything is quantized.
+        let (lo, hi) = extent(IVec2::splat(ok), &img).expect("the last exact placement");
+        assert_eq!(lo.x as i32, ok, "the position survives the cast");
+        assert_eq!((hi.x - lo.x) as u32, img.width, "and so does the span");
+    }
+
     /// when its interior, grown by the apron it must show, meets the picture.
     #[test]
     fn the_plan_names_exactly_the_tiles_the_picture_touches() {
@@ -109,7 +173,7 @@ mod tests {
                 .expect("an ordinary placement")
                 .into_iter()
                 .collect();
-            let (lo, hi) = extent(at, &img);
+            let (lo, hi) = extent(at, &img).expect("an ordinary placement");
             // Every tile in a generous window around the picture, asked directly.
             let window = TileRect::covering(lo - Vec2::splat(600.0), hi + Vec2::splat(600.0), 0)
                 .expect("an ordinary box");
