@@ -385,8 +385,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
 
     // What the header's "Overwrite preset" can do (`presets::overwrite`), asked
     // of the library, the name in hand and the brush as they are *now* — so the
-    // button wakes with the first edit that moves the brush off its preset and
-    // goes dead again the moment it is written back.
+    // button wakes with the first edit that moves the brush off its preset.
     let in_hand = (state.preset_in_hand)();
     let verdict = presets::overwrite(&state.presets.read(), in_hand.as_deref(), &brush);
     let overwrite_ready = matches!(verdict, presets::Overwrite::Ready(_));
@@ -423,11 +422,11 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         span { class: "be-from", "{name}" }
                     }
                 }
-                // The three ways out of the dialog's work, in the order the work
-                // happens: keep the tuned brush where it came from, keep it under a
-                // new name, or just keep it in hand. Saving lives here rather than
-                // on the Brush panel because the brush worth keeping is the one that
-                // has just been tuned.
+                // The three ways out of the dialog, in the order the work happens:
+                // keep the tuned brush where it came from, keep it under a new name,
+                // or keep it only in hand. Each one closes the dialog — kept is done.
+                // Saving lives here rather than on the Brush panel because the brush
+                // worth keeping is the one that has just been tuned.
                 div { class: "be-header-actions",
                     // Dead in every arm of `presets::overwrite` but one, and the
                     // tooltip says which: a built-in is rebuilt next start, so the
@@ -437,13 +436,27 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         class: "btn btn-secondary",
                         disabled: !overwrite_ready,
                         title: "{overwrite_title}",
-                        onclick: move |_| presets::overwrite_in_hand(state),
+                        onclick: move |_| {
+                            // The tail of a drag may still be waiting out the
+                            // throttle (`edit`), and the snapshot has to be of the
+                            // brush as tuned — so it lands first. The `use_drop`
+                            // flush would land it too, a moment after the preset
+                            // had been written without it.
+                            let mut pending = preview.pending;
+                            if let Some(f) = pending.write().take() {
+                                update_brush(state, f);
+                            }
+                            presets::overwrite_in_hand(state);
+                            on_close.call(());
+                        },
                         {icon(icons::SAVE)}
                         "Overwrite preset"
                     }
                     // Its own words, the registry's act (§25.1): the command is
                     // what the palette and a chord reach, so the tooltip advertises
-                    // it, and the dialog it raises stacks over this one.
+                    // it. The dialog it raises stacks over this one and takes it
+                    // down with the name confirmed (`PresetSaveModal`); cancelled,
+                    // it leaves the editor as it was.
                     button {
                         class: "btn btn-secondary",
                         title: "{save_new_title}",

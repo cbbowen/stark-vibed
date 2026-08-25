@@ -202,8 +202,10 @@ fn PresetSection() -> Element {
 /// The "Save preset" dialog: the name a **new** preset takes. Opened by the brush
 /// editor's "Save new preset" button (and by the `Save preset…` command) and mounted
 /// at the app root (`main.rs`), after the editor, so it stacks over the dialog that
-/// raised it. The other save — writing the brush back over the preset it came from —
-/// asks for nothing and so has no dialog (`presets::overwrite_in_hand`).
+/// raised it — and takes the editor down with it once the name is confirmed, since a
+/// brush kept is the editor's work done; Cancel leaves the editor as it was. The
+/// other save — writing the brush back over the preset it came from — asks for
+/// nothing and so has no dialog (`presets::overwrite_in_hand`).
 ///
 /// Opens on the next free "Preset N" — selected, so typing replaces it. The default is
 /// visible and editable before it is committed, rather than applied silently to an
@@ -239,6 +241,12 @@ pub fn PresetSaveModal(on_close: EventHandler<()>) -> Element {
             return;
         }
         presets::save_current(state, name);
+        // A name confirmed is the brush kept, and the editor's work is done with
+        // it: the editor this dialog was raised from goes down too. Lowering the
+        // flag is its close (`AppState::root_dialogs`), and a no-op when the
+        // command raised this dialog with no editor up. Cancel leaves it as it was.
+        let mut editor = state.brush_editor_open;
+        editor.set(false);
         on_close.call(());
     };
 
