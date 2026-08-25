@@ -72,8 +72,12 @@ use crate::mirror::{Mirror, Served};
 /// is drawn, so `ActionKind` gained `SetSelectionOpacity` (§6.8) — and the
 /// mask stopped being a lerp of a stroke's result and became the other
 /// factor of its opacity ceiling (§6.2), which is the meaning rule: the same
-/// log under a feathered selection renders differently.
-pub(crate) const ALPN: &[u8] = b"stark/collab/13";
+/// log under a feathered selection renders differently;
+/// 14: a universal mask keeps its opacity (§6.8) — `SetSelectionOpacity` with
+/// nothing selected stores where it used to discard, every later stroke and
+/// the next region read at it, and a deselect is what lands on full strength:
+/// the meaning rule again, with no shape touched.
+pub(crate) const ALPN: &[u8] = b"stark/collab/14";
 
 /// The first byte of every response.
 ///

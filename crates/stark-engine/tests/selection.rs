@@ -867,7 +867,7 @@ fn feathered_edge_fades_the_stroke() {
 // below are the ones that make that sentence true rather than a description — the
 // same picture three ways, the loop agreeing with the fast path across a feathered
 // rim, the live commit agreeing with its replay there, and the universal mask
-// having no opacity at all.
+// keeping the number so it can be set before the region is drawn.
 
 /// **The mask is the dial's other factor.** A saturated stroke at dial 1 through a
 /// selection dimmed to a half is, texel for texel inside the region, the same
@@ -966,12 +966,12 @@ fn dimming_is_an_undo_step_that_keeps_the_selection() {
     assert_eq!(engine.observe().selection_opacity, 0.5);
 }
 
-/// **A universal mask has no opacity.** Deselecting hands the canvas back at full
-/// strength whatever the slider said — "everything, at a third" is a state the
-/// engine cannot represent (`Selection::from_parts`) — and setting an opacity with
-/// nothing selected is the no-op it looks like: nothing is logged, nothing to undo.
+/// **Deselecting lands on full strength.** The mask's opacity rides through every
+/// op but one: `Replace` with `All` — a deselect — puts it back to 1
+/// (`Selection::plan`), so a dimming never outlives its selection by accident, and
+/// the stroke after a deselect is the fresh document's stroke.
 #[test]
-fn deselecting_forgets_the_dimming_and_nothing_selected_takes_none() {
+fn deselecting_lands_on_full_strength() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -985,13 +985,6 @@ fn deselecting_forgets_the_dimming_and_nothing_selected_takes_none() {
         obs.selection_opacity, 1.0,
         "a deselect lands on full strength"
     );
-
-    // Nothing selected: the number has nothing to be the opacity of.
-    let revision = obs.doc_revision;
-    engine.process(DocCommand::SetSelectionOpacity(0.5));
-    let obs = engine.observe();
-    assert_eq!(obs.doc_revision, revision, "a no-op must not be logged");
-    assert_eq!(obs.selection_opacity, 1.0);
 
     // …and the brush is at full strength: the same stroke as on a fresh document.
     let path = [
@@ -1013,6 +1006,81 @@ fn deselecting_forgets_the_dimming_and_nothing_selected_takes_none() {
             texel(&fresh, p)
         );
     }
+}
+
+/// **A universal mask keeps its opacity** (§6.8). Set with nothing selected it is
+/// a logged edit — the strength the next region will take — and until one is
+/// drawn it is the whole canvas at that strength: a saturated stroke at dial 1 is
+/// then the dial-½ stroke, texel for texel, and the region drawn afterwards is
+/// already dimmed. `has_selection` stays false throughout: nothing is masked,
+/// only gated.
+#[test]
+fn nothing_selected_still_takes_an_opacity() {
+    let path = [
+        Vec2::new(-30.0, 0.0),
+        Vec2::new(0.0, 0.0),
+        Vec2::new(30.0, 0.0),
+    ];
+    let probes = [
+        Vec2::new(-20.0, 0.0),
+        Vec2::new(-30.0, 4.0),
+        Vec2::new(-10.0, -4.0),
+    ];
+
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let revision = engine.observe().doc_revision;
+    engine.process(DocCommand::SetSelectionOpacity(0.5));
+    let obs = engine.observe();
+    assert_ne!(
+        obs.doc_revision, revision,
+        "dimming with nothing selected is an edit"
+    );
+    assert!(!obs.has_selection, "a dimmed universal mask masks nothing");
+    assert_eq!(obs.selection_opacity, 0.5);
+
+    stroke_with(&mut engine, washed(1.0, 0.0), &path);
+    let dimmed = engine.render_to_image();
+    let mut dialed = engine_or_skip().expect("the adapter answered once already");
+    stroke_with(&mut dialed, washed(0.5, 0.0), &path);
+    let dialed = dialed.render_to_image();
+    for p in probes {
+        let (m, d) = (texel(&dimmed, p), texel(&dialed, p));
+        assert!(
+            apart(m, d) <= 2,
+            "at {p:?} the stroke under the dimmed universal mask {m:?} must be the \
+             half-opacity stroke {d:?} — the number was not read with nothing selected"
+        );
+    }
+    // …and the dimming did something, or two full-strength pictures just agreed.
+    let mut full = engine_or_skip().expect("the adapter answered once already");
+    stroke_with(&mut full, washed(1.0, 0.0), &path);
+    assert!(
+        apart(
+            texel(&dimmed, probes[0]),
+            texel(&full.render_to_image(), probes[0])
+        ) > 20,
+        "the dimmed stroke reads as the full one, so this test measured nothing"
+    );
+
+    // The region drawn next is already at that strength — the number was set
+    // before it, which is the point of the bar being up while a tool is armed.
+    select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
+    let obs = engine.observe();
+    assert!(obs.has_selection);
+    assert_eq!(
+        obs.selection_opacity, 0.5,
+        "the next region takes the strength set before it"
+    );
+
+    // Back through the selection, the stroke and the dimming: a fresh document.
+    for _ in 0..3 {
+        engine.process(DocCommand::Undo);
+    }
+    let obs = engine.observe();
+    assert!(!obs.has_selection);
+    assert_eq!(obs.selection_opacity, 1.0, "undo restores full strength");
 }
 
 /// **The stamp loop reads the mask as the fast path does**, across a feathered rim

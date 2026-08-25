@@ -4071,8 +4071,10 @@ button.layer-remove:hover {
   cursor: grab;
 }
 
-/* The guide bar's inline sliders: narrow enough that the bar stays a bar. */
-.guide-bar .slider {
+/* A bar's inline sliders (the guide bar's, the selection bar's opacity): narrow
+   enough that the bar stays a bar. */
+.guide-bar .slider,
+.selection-bar .slider {
   width: 84px;
   flex: none;
 }

@@ -1244,8 +1244,9 @@ impl Command {
     }
 
     /// Whether the chrome should offer this command right now — the menu's
-    /// greyed rows, read off the projection so a disabled entry is a fact about
-    /// the document ("nothing to undo") rather than a mood.
+    /// greyed rows and a bar's greyed chips (`widgets::CommandButton`), read
+    /// off the projection so a disabled entry is a fact about the document
+    /// ("nothing to undo", "nothing selected") rather than a mood.
     ///
     /// **Presentation only.** The act's own gate lives on [`run`](Self::run)
     /// and asks different questions, deliberately: undo during playback is

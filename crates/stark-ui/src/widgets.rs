@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 
 use crate::commands::Command;
 use crate::icons::{icon, label as label_span};
-use crate::state::AppState;
+use crate::state::{AppState, use_obs_opt};
 
 /// A button that runs a [`Command`], wearing the command's own mark, word and
 /// tooltip (`crate::commands`) — so a control and the act it reaches cannot
@@ -25,20 +25,31 @@ use crate::state::AppState;
 /// answer the lit mark a menu row and a palette row both wear already reads
 /// from the registry. A command with no such state (`None`) is never lit,
 /// which is every act on a bar today.
+///
+/// Whether it is **greyed** comes off [`Command::enabled`] the same way, and
+/// for the same reason the menu's rows and the rail's read it there: a bar can
+/// stand before the thing its acts need exists — the selection bar from the
+/// moment a shape tool is armed (§6.8) — and a chip that can be pressed to do
+/// nothing reads as broken. The act's own gate is still `run`'s; this is
+/// presentation, as `enabled` says.
 #[component]
 pub fn CommandButton(
     command: Command,
     #[props(default = String::from("chip"))] class: String,
 ) -> Element {
     let state = use_context::<AppState>();
-    // A memo, for `CmdItem`'s reason: `active` reads the projection, which
-    // moves at pointer rate during a stroke, and this button's answer is one
-    // bool that almost never changes. Re-render on the bool, not on the read.
-    let lit = use_memo(move || command.active(state) == Some(true));
+    // One memo, for `CmdItem`'s reason: both answers read the projection, which
+    // moves at pointer rate during a stroke, and this button's pair of bools
+    // almost never changes. Re-render on the bools, not on the read.
+    let look = use_obs_opt(state, move |o| {
+        (command.enabled(o), command.active(state) == Some(true))
+    });
+    let (enabled, lit) = look();
     rsx! {
         button {
             class: "{class}",
-            class: if lit() { "active" },
+            class: if lit { "active" },
+            disabled: !enabled,
             title: command.tooltip(&state.bindings.read()),
             onclick: move |_| command.run(state),
             {icon(command.icon())}

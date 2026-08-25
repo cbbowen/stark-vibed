@@ -235,8 +235,8 @@ lanes — branching on stop count, not restructuring — so the fill golden did
 not move.
 
 **The composing mode is the transform's, aimed at a fill** (§16.6). The
-Selection bar — the fill needs a mask to be bounded by, and the bar exists
-exactly when there is one — gains a **Gradient** button. It swaps in a bar of
+Selection bar — the fill needs a mask to be bounded by, and the bar's acts are
+enabled exactly when there is one — gains a **Gradient** button. It swaps in a bar of
 its own (the ramp in hand as the library's well, §22.3, then Linear/Radial,
 Done) and a full-viewport catcher where the drag composes the axis. An empty
 library does not disable the entry: the mode opens with an empty well, nothing

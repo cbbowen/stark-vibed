@@ -608,14 +608,16 @@ pub enum ViewCommand {
     SetSelectionFeather(f32),
     /// How strongly a **fill** gesture's parcel lands, `0..=1`
     /// ([`FillOp::opacity`](stark_model::document::FillOp), §18.0.4) — the Select
-    /// panel's Opacity slider under the Fill action.
+    /// panel's Opacity slider, mounted under the Fill action.
     ///
-    /// Not what a *selecting* gesture lands at any more: a selection's strength is
-    /// the whole mask's and is set after the fact
-    /// ([`DocCommand::SetSelectionOpacity`], §6.8). The two share a row on the panel
-    /// because they answer the same question — how strongly does this coverage land
-    /// — of the two places coverage can land, which is the same pairing the row of
-    /// five actions is built on.
+    /// Not what a *selecting* gesture lands at: a selection's strength is the
+    /// whole mask's and is set after the fact
+    /// ([`DocCommand::SetSelectionOpacity`], §6.8), which is why that one is the
+    /// selection bar's slider rather than the panel's. One question — how
+    /// strongly does this coverage land — asked of the two places coverage can
+    /// land, and each answer given where its moment is: this one before the
+    /// gesture, with the gesture's other settings; the mask's after, with the
+    /// acts on the whole selection.
     SetShapeOpacity(f32),
 
     /// Whether collaborators' selection outlines are drawn over the canvas

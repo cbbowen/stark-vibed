@@ -557,8 +557,9 @@ fn app() -> Element {
                 // visibility, cell count, opacity — while a perspective grid is
                 // being composed (§20.5).
                 PerspectiveGuideBar {}
-                // The whole-selection commands, present only while there is a
-                // selection — so it doubles as the "canvas is masked" indicator.
+                // The whole selection's opacity and commands, present while
+                // there is a selection or a shape tool is armed to make one — so
+                // it doubles as the "canvas is masked" indicator.
                 SelectionBar {}
                 // The frame's composition controls, present only while a frame is
                 // selected for composing (§15.7).

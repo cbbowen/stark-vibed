@@ -153,22 +153,27 @@ remembered at three call sites.
 
 ### A selection has an opacity — `Selection::opacity`
 
-The Select panel's **Opacity** slider, the counterpart of Feather: one says how
-soft the edge is, the other how strongly the whole mask gates; one is a ramp,
-the other a level, and they multiply. Under the four selecting actions the
-slider is the **whole mask's** opacity — `ActionKind::SetSelectionOpacity`, a
-logged, undoable, replicated edit that moves no tile — so it is set *after* the
-region is drawn and reaches a region already drawn; under Fill it is the fill's
-own opacity, chosen up front like the feather, because paint once laid is paint.
-One row, because it is one question — how strongly does this coverage land —
-asked of the two places coverage can land.
+The selection bar's **Opacity** slider, the counterpart of the panel's Feather:
+one says how soft the edge is, the other how strongly the whole mask gates; one
+is a ramp, the other a level, and they multiply. It is the **whole mask's**
+opacity — `ActionKind::SetSelectionOpacity`, a logged, undoable, replicated
+edit that moves no tile — so it is set *after* the region is drawn and reaches
+a region already drawn. The same question — how strongly does this coverage
+land — asked of the other place coverage can land is the Select panel's own
+Opacity slider, mounted under the Fill action: the fill's opacity, chosen up
+front like the feather, because paint once laid is paint.
 
-That *after* is also why the two sliders are not neighbours. Feather is chosen
-before the gesture, so it sits under the three tool chips and is mounted only
-while one of them is armed: it is a fact about the gesture that tool is about to
-make, shown next to the tool for as long as the gesture is pending (under Fill
-the tool stays armed, so the feather stays with it). Opacity is always mounted,
-since its ordinary use is with no tool in hand, on a region already drawn.
+That *after* is what puts the two answers in different places. Feather and a
+fill's opacity are chosen before the gesture, so they sit in the panel with the
+gesture's other settings — Feather under the three tool chips and mounted only
+while one of them is armed, a fact about the gesture that tool is about to make
+(under Fill the tool stays armed, so the feather stays with it). The mask's
+opacity is set with no tool in hand, on a region already drawn, so it lives on
+the selection bar with the other acts on the whole selection — live before
+anything is selected, unlike them, since the number is then the strength the
+coming region will take. The bar itself stands from the moment a shape tool is
+armed — a selection about to be made — so the marquee drawn under it lights its
+commands rather than raising a bar under the hand.
 
 **Why on the mask and not on the shape.** Each `SelectionOp` still carries its own
 `opacity`, baked into the coverage it strikes, and the log keeps it: an old file
@@ -177,12 +182,15 @@ user has to set *before* drawing, and cannot change afterwards without redrawing
 — which is what made it confusing in practice, since the natural gesture is to
 draw the region first and then decide how strongly it should take paint. The UI
 no longer reaches the per-shape field (every gesture mints its op at 1); the two
-multiply where both exist. A universal mask has no opacity at all
-(`Selection::from_parts` pins it to 1): with nothing selected there is nothing to
-dim, so a deselect hands the canvas back at full strength whatever the slider
-said, and setting the slider with nothing selected logs nothing. That is what
-rules out "everything, at a third" as a state, rather than a rule each reader
-would have to remember.
+multiply where both exist. A universal mask keeps the number too: set with
+nothing selected — the bar is up from the moment a tool is armed — it is the
+strength the coming region will take, and until one is drawn it is "everything,
+at a third": the whole canvas taking paint at that strength, the dial's other
+factor everywhere. What keeps a dimming from outliving its selection by
+accident is the **deselect**: `Replace` with `All` is the one op that lands the
+opacity back on 1 (`Selection::plan`), so a deselect hands the canvas back at
+full strength whatever the slider said, while every other op carries the
+number through.
 
 **What the number means is the brush dial's own meaning.** The mask is the other
 factor of the **opacity ceiling** (§6.2): a stroke's ceiling is
@@ -782,7 +790,7 @@ press to the active layer instead of re-targeting it. A selection is drawn
 against paint the artist is looking at, on a layer they have in mind; a press
 that went looking would cut a *different* layer through their lasso. A
 universal selection is not one for this purpose: select-all and deselect are
-the same state (`DocState::with_selection` stores neither), which is the
+the same state (`DocState::has_selection` counts neither), which is the
 reading that makes sense — "everything is selected" says nothing about a
 layer.
 

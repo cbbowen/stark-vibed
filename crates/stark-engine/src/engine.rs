@@ -469,10 +469,10 @@ pub struct ObservableState {
     /// How strongly a **fill** gesture's parcel will land, `0..=1` (§18.0.4).
     pub shape_opacity: f32,
     /// How strongly this client's whole selection mask gates, `0..=1` (§6.8) — the
-    /// Select panel's Opacity slider under any of the four selecting actions. 1
-    /// while nothing is masked, where there is nothing to dim
-    /// ([`Selection::opacity`](crate::document::Selection::opacity)); a frontend
-    /// disables the control there rather than showing a number that gates nothing.
+    /// selection bar's Opacity slider. Live with nothing selected too: there it is
+    /// the strength the next region will take, and the whole canvas's until one is
+    /// drawn ([`Selection::opacity`](crate::document::Selection::opacity)); a
+    /// deselect puts it back to 1.
     pub selection_opacity: f32,
     /// Whether collaborators' selection outlines are drawn (§17.3).
     pub show_peer_selections: bool,
@@ -1902,7 +1902,7 @@ impl Engine {
             has_selection: doc.has_selection(self.actor()),
             selection_hull: doc.selection_of(self.actor()).hull(),
             // Off the *shown* document, unlike the two above: this one previews
-            // (`PreviewSelectionOpacity`), and a panel reading the committed number
+            // (`PreviewSelectionOpacity`), and a bar reading the committed number
             // would fight its own slider mid-drag (§6.8).
             selection_opacity: shown.selection_of(self.actor()).opacity(),
             shape_action: self.session.shape_action,

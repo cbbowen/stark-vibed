@@ -43,7 +43,7 @@ pub struct Selection {
     /// the plain hard-edged answer for it.
     level: f32,
     /// The **whole** mask's opacity, on top of the shape arithmetic (§6.8) — the
-    /// Select panel's Opacity slider, and what
+    /// selection bar's Opacity slider, and what
     /// [`ActionKind::SetSelectionOpacity`](stark_model::document::ActionKind) sets.
     ///
     /// Not in the tiles, and that is the point. The mask holds whatever the ops
@@ -59,12 +59,14 @@ pub struct Selection {
     /// as the fraction of height that moves (the transform's cut, the loop's lift
     /// and deposit of carried paint).
     ///
-    /// **1 whenever the mask is universal**, by construction ([`Self::from_parts`],
-    /// [`Self::with_opacity`]) rather than by a rule each reader remembers: nothing
-    /// is masked there, so there is nothing for a number to be the opacity *of*,
-    /// and a deselect has to hand the canvas back at full strength. Carried through
-    /// the op algebra otherwise — an op says where the mask is, never how strongly
-    /// it is read — so a region drawn over a dimmed selection is dimmed too.
+    /// Carried through the op algebra — an op says where the mask is, never how
+    /// strongly it is read — so a region drawn over a dimmed selection is dimmed
+    /// too, and a universal mask keeps the number as well: set before anything is
+    /// selected, it is the strength the coming region will take, and until one is
+    /// drawn it is the whole canvas taking paint at that strength — the dial's
+    /// other factor, everywhere. The one op that resets it is a **deselect**,
+    /// `Replace` with `All` ([`Self::plan`]), which hands the canvas back at full
+    /// strength so a dimming never outlives its selection by accident.
     opacity: f32,
     /// A conservative analytic bounding box of the selected coverage, in canvas px
     /// — `None` when the selection is unbounded (`outside`) or its extent is not
@@ -118,6 +120,15 @@ impl Selection {
         !self.is_universal()
     }
 
+    /// Whether this is [`Self::everything`] exactly — nothing masked *and* full
+    /// strength: the state of a fresh document, the one a deselect lands on, and
+    /// the one `DocState` does not store. A universal mask read below 1 is not
+    /// it: it masks nothing and gates everything, which is a state with a number
+    /// to keep (see [`opacity`](Self::opacity)).
+    pub fn is_everything(&self) -> bool {
+        self.is_universal() && self.opacity >= 1.0
+    }
+
     /// Coverage where there is no mask tile, as the shaders want it. The mask's own
     /// number: [`Self::opacity`] is not folded in, because the two kinds of reader
     /// multiply it in under different laws (see there).
@@ -125,9 +136,9 @@ impl Selection {
         self.outside
     }
 
-    /// The whole mask's opacity — see the field docs. What the Select panel's slider
-    /// shows, what every gating reader multiplies its coverage by, and 1 while
-    /// nothing is masked.
+    /// The whole mask's opacity — see the field docs. What the selection bar's slider
+    /// shows, and what every gating reader multiplies its coverage by — under a
+    /// universal mask too, where it is the dial's other factor everywhere.
     pub fn opacity(&self) -> f32 {
         self.opacity
     }
@@ -137,9 +148,8 @@ impl Selection {
     ///
     /// Unclamped here: the number arrives through `ActionKind::sanitized`, the one
     /// funnel an action passes into the document through, and a second bound would
-    /// be a second policy to keep in step (§8). A universal mask stays at 1
-    /// ([`Self::from_parts`]): with nothing selected there is nothing to dim, and
-    /// the action is the no-op `is_noop_on` says it is.
+    /// be a second policy to keep in step (§8). A universal mask takes it like any
+    /// other — see the field.
     pub(crate) fn with_opacity(&self, opacity: f32) -> Self {
         Self::from_parts(
             self.tiles.clone(),
@@ -187,20 +197,13 @@ impl Selection {
         // infinity has no such box, whatever a caller computed. *Any* coverage, not
         // just full: a plane selected at a half still reaches everywhere.
         let hull = if outside > 0.0 { None } else { hull };
-        let mut this = Self {
+        Self {
             tiles,
             outside,
             level,
             opacity,
             hull,
-        };
-        // The opacity's meaning is "how strongly the mask gates"; a mask that gates
-        // nothing has none, whatever a caller carried (see the field). Stated here,
-        // where every selection is built, so no reader has to know the case exists.
-        if this.is_universal() {
-            this.opacity = 1.0;
         }
-        this
     }
 
     /// Plan the effect of `op` on this selection: which tiles have to be rasterized,
@@ -245,7 +248,16 @@ impl Selection {
                         rasterize: Vec::new(),
                         outside,
                         level,
-                        opacity: self.opacity,
+                        // A deselect — Replace with All, the one op whose whole
+                        // meaning is "hand the canvas back" — lands on full
+                        // strength; the opacity rides through every other op
+                        // (see the field). Decided here rather than in the fold
+                        // so replay, undo and a peer's copy agree by construction.
+                        opacity: if op.mode == SelectionMode::Replace {
+                            1.0
+                        } else {
+                            self.opacity
+                        },
                         hull: None,
                     }
                 }
@@ -457,12 +469,33 @@ mod tests {
         assert_eq!(sel.plan(&cut).expect("planned").level, 0.5);
     }
 
+    /// A deselect is the one op that resets the mask's opacity; a universal mask
+    /// otherwise keeps whatever it was read at, that being the strength the next
+    /// region will take (§6.8).
     #[test]
-    fn replacing_with_all_deselects() {
+    fn replacing_with_all_deselects_and_lands_on_full_strength() {
         let sel = Selection::everything();
         let plan = sel.plan(&SelectionOp::select_all()).expect("planned");
         assert_eq!(plan.outside, 1.0);
         assert!(plan.rasterize.is_empty());
+
+        let dimmed = Selection::everything().with_opacity(0.4);
+        assert!(dimmed.is_universal() && !dimmed.is_everything());
+        assert_eq!(dimmed.opacity(), 0.4, "a universal mask keeps its opacity");
+        assert_eq!(
+            dimmed
+                .plan(&SelectionOp::select_all())
+                .expect("planned")
+                .opacity,
+            1.0,
+            "a deselect lands on full strength"
+        );
+        let all = SelectionOp::new(SelectionMode::Union, SelectionShape::All, 0.0);
+        assert_eq!(
+            dimmed.plan(&all).expect("planned").opacity,
+            0.4,
+            "only a deselect resets it"
+        );
     }
 
     #[test]

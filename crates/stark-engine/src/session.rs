@@ -286,8 +286,8 @@ pub struct Session {
     /// The counterpart of [`selection_feather`](Self::selection_feather) only for
     /// that one action: one says how soft the coverage's edge is, this says how
     /// strong the paint it lays is. Under the four *selecting* actions the same
-    /// slider asks the same question of the mask instead — and that answer is
-    /// document state, because it reaches the region already drawn
+    /// question is asked of the mask instead, by the selection bar's slider — and
+    /// that answer is document state, because it reaches the region already drawn
     /// (`ActionKind::SetSelectionOpacity`, §6.8).
     pub shape_opacity: f32,
     /// Whether collaborators' selection outlines are drawn (§17.3).

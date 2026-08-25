@@ -1,5 +1,6 @@
 //! The floating Select panel: shape tool and the feather it strikes, what the
-//! shape *does*, and how strongly it lands (§6.8, §18.0.4).
+//! shape *does*, and how strongly a fill lands (§6.8, §18.0.4) — and the
+//! selection bar, which carries the whole mask's opacity and the acts on it.
 
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
@@ -11,7 +12,7 @@ use crate::icons::{self, icon, icon_tinted, label};
 use crate::layout::chrome_class;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
-use crate::widgets::{CommandButton, Slider};
+use crate::widgets::{CommandButton, Slider, slider_fill};
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{FillOp, SelectionMode, ShapeAction};
 
@@ -63,7 +64,7 @@ use stark_model::document::{FillOp, SelectionMode, ShapeAction};
 #[component]
 pub fn SelectPanel() -> Element {
     let state = use_context::<AppState>();
-    // One memo over everything the panel shows (`state::use_obs`). All six are
+    // One memo over everything the panel shows (`state::use_obs`). All four are
     // *tool* state — what the next gesture will do — so they move together and
     // never at pointer rate; read straight off `obs` the panel re-rendered on
     // every pan and every sample of the stroke it is describing.
@@ -72,18 +73,13 @@ pub fn SelectPanel() -> Element {
             o.shape_action,
             o.selection_feather,
             o.shape_opacity,
-            o.selection_opacity,
-            o.has_selection,
             o.tool.is_selection(),
         )
     });
-    let (action, feather, fill_opacity, mask_opacity, has_selection, armed) =
-        arm().unwrap_or((ShapeAction::default(), 0.0, 1.0, 1.0, false, false));
-    // Which of the two the Opacity row is asking about — see the row itself.
+    let (action, feather, fill_opacity, armed) =
+        arm().unwrap_or((ShapeAction::default(), 0.0, 1.0, false));
+    // Whether the Opacity row is mounted — see the row itself.
     let filling = action == ShapeAction::Fill;
-    let opacity = if filling { fill_opacity } else { mask_opacity };
-    // What a settled drag of the mask's opacity would lay (`preview::settle`).
-    let dimming = use_signal(|| None::<f32>);
     // The hand's color, off the frontend's own brush signal — a fill lays it
     // whatever effect the brush held has (`BrushConfig::color`).
     let brush_color = (state.brush)().color();
@@ -165,15 +161,14 @@ pub fn SelectPanel() -> Element {
                 CommandButton { key: "{command:?}", command }
             }
         }
-        // Under the tool row rather than beside Opacity below, and mounted only
-        // while one of the three is in hand: feather is the edge the rasterizer
-        // strikes, so it is chosen *before* the gesture — a fact about the
-        // gesture the armed tool is about to make — and it is shown as one, next
-        // to that tool, for exactly as long as the gesture is pending. Opacity's
-        // ordinary use is the other way round (see it), which is why it stays.
-        // Under Fill the tool stays armed after a gesture (§18.0.4), so the
-        // feather stays with it; under the four selecting actions the gesture's
-        // disarm takes it away along with the tool.
+        // Under the tool row, and mounted only while one of the three is in
+        // hand: feather is the edge the rasterizer strikes, so it is chosen
+        // *before* the gesture — a fact about the gesture the armed tool is
+        // about to make — and it is shown as one, next to that tool, for
+        // exactly as long as the gesture is pending. Under Fill the tool stays
+        // armed after a gesture (§18.0.4), so the feather stays with it; under
+        // the four selecting actions the gesture's disarm takes it away along
+        // with the tool.
         if armed {
             Slider { label: "Feather", glyph: icons::FEATHER, min: 0.0, max: 64.0, value: feather,
                 oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
@@ -203,78 +198,63 @@ pub fn SelectPanel() -> Element {
                 }
             }
         }
-        // The exact counterpart of Feather, above: *how soft at the edge*, then
-        // *how strong*. Both apply to whichever of the five actions the row is
-        // set to, because both describe the coverage the gesture produces and the
-        // five actions differ only in where that coverage lands (§6.8).
-        //
-        // Where they differ is *when* the answer is given, and that is what puts
-        // them in different places. Feather has to be chosen before the gesture —
-        // it is the edge the rasterizer strikes — so it sits with the tool that
-        // will strike it and leaves with it. Strength does not: under the four
-        // selecting actions this is the **whole mask's** opacity, one number on
-        // top of the shape arithmetic, so it reaches a region already drawn and
-        // the ordinary way to use it is to draw first and then dim, with no tool
-        // in hand — which is why this row is always mounted. Under Fill it is the
-        // fill's own opacity, chosen up front like the feather, because paint once
-        // laid is paint.
-        //
-        // So the row reads one value or the other and lays it down two ways: a view
-        // command for the fill, a previewed document action for the mask. What it
-        // is *not* is two rows. The question is one question — how strongly does
-        // this coverage land — asked of the two places coverage can land, which is
-        // the same pairing the five chips above are built on.
-        //
-        // Dimming the mask dims every tool that acts through it, and in the units
-        // the brush's own dial is quoted in: the mask is the other factor of the
-        // opacity ceiling (§6.2, §6.8), so a half-dimmed selection is a half-opacity
-        // brush, fill and eraser inside it — the same picture the Brush panel's
-        // slider at a half would make. That is also what the two whole-selection
-        // fills on the bar read: they lay opaque paint *through* the mask, so this
-        // one slider governs them without their having a knob of their own.
-        //
-        // Greyed out while nothing is selected, under the four selecting actions: a
-        // universal mask has no opacity to set (`Selection::opacity` pins it to 1),
-        // so the slider would move and change nothing, which reads as broken. The
-        // Fill action's number is the gesture's own and is always live.
-        Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: opacity,
-            disabled: !filling && !has_selection,
-            oninput: move |v| if filling {
-                dispatch(state, ViewCommand::SetShapeOpacity(v));
-            } else {
-                preview::SELECTION_OPACITY.during(state, dimming, v);
-            },
-            onsettle: move |_| if !filling {
-                preview::SELECTION_OPACITY.settle(state, dimming);
-            } }
+        // The fill's own opacity (§18.0.4), and Feather's counterpart for that
+        // one action: *how soft at the edge*, then *how strong* — both chosen up
+        // front, with the gesture's other settings, because paint once laid is
+        // paint. Mounted under Fill alone. Under the four selecting actions the
+        // same question — how strongly does this coverage land — is asked of
+        // the *mask*, and that answer is the selection bar's slider: the whole
+        // mask's opacity, one number on top of the shape arithmetic, set after
+        // the region is drawn and reaching a region already drawn (§6.8). Two
+        // places for one question because the answers are given at different
+        // times, and each sits where its time is: this one with the gesture's
+        // settings, the mask's with the acts on the whole selection.
+        if filling {
+            Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: fill_opacity,
+                oninput: move |v| dispatch(state, ViewCommand::SetShapeOpacity(v)) }
+        }
     }
 }
 
-/// A small floating bar carrying the two commands that act on a **whole** selection
-/// (§6.8). Mounted only while one is in force, which is the point: those
-/// commands are meaningless without a selection, and a bar that is simply present or
-/// absent says the canvas is masked more directly than a pair of permanently-visible
-/// buttons that happen to be greyed out — and without spending panel space the rest
-/// of the time.
+/// A small floating bar for the **whole** selection (§6.8): its opacity, and the
+/// commands that act on all of it. Mounted while one is in force — and from the
+/// moment a shape tool is armed, since that is a selection about to be made: the
+/// bar stands ready, its commands greyed until there is a mask to act on and its
+/// opacity already live so the strength can be set before the region is drawn,
+/// and the marquee drawn under it lights the rest rather than raising a bar under
+/// the hand. Nothing else mounts it, which keeps the point: with the brush in hand
+/// and no mask there is no bar, so a bar being present says the canvas is (or is
+/// about to be) masked more directly than a row of permanently-visible buttons
+/// that happen to be greyed out — and without spending panel space the rest of
+/// the time.
 ///
 /// Positioned by the shared `.bottom-bars` column in `main`, which it shares with
 /// the frame bar (built on the same argument) so the two stack rather than overlap.
 #[component]
 pub fn SelectionBar() -> Element {
     let state = use_context::<AppState>();
-    // The committed selection, not the in-flight preview — so the bar does not flicker
-    // in and out under a drag that has not been released yet.
+    // The committed selection, not the in-flight preview — so the bar's controls
+    // do not light and grey under a drag that has not been released yet. Read
+    // with it: whether a tool is armed, and the mask's opacity — the one number
+    // here that *does* preview (`PreviewSelectionOpacity`; the engine reports
+    // the previewed value back, so the track follows the pointer instead of
+    // snapping to the committed number under it).
     //
-    // Through a memo (`state::use_obs`): whether there is a selection changes on a
-    // commit, and the bar is mounted on it — so re-rendering per pointer sample of
-    // the very marquee drag it is waiting on would be to re-diff a bar that is not
-    // there yet.
+    // Through a memo (`state::use_obs`): all three move on a commit, an arm or a
+    // slider drag, never per pointer sample of the marquee drag the bar is
+    // standing over — so re-rendering on each sample would be to re-diff a bar
+    // whose answer has not changed.
     //
     // The bar's Fill lays the same paint the panel's Fill chip does, so it carries the
     // same loaded bucket: the brush's color is a property of the *act*, not of the
     // panel that happens to host the control.
-    let shown = use_obs(state, |o| o.has_selection);
-    let active = shown().unwrap_or(false);
+    let shown = use_obs(state, |o| {
+        (o.has_selection, o.tool.is_selection(), o.selection_opacity)
+    });
+    let (has_selection, armed, opacity) = shown().unwrap_or((false, false, 1.0));
+    let active = has_selection || armed;
+    // What a settled drag of the mask's opacity would lay (`preview::settle`).
+    let dimming = use_signal(|| None::<f32>);
     let brush_color = (state.brush)().color();
     // While any mode is composing, its own bar stands in for this one: the
     // whole-selection commands would fight the gesture (deselecting mid-transform
@@ -307,10 +287,64 @@ pub fn SelectionBar() -> Element {
 
                 span { class: "bar-sep" }
 
+                // The mask's opacity: how strongly the selection gates every tool
+                // inside it, in the units the brush's own dial is quoted in — the
+                // mask is the other factor of the opacity ceiling (§6.2, §6.8),
+                // so a half-dimmed selection is a half-opacity brush, fill and
+                // eraser inside it, the same picture the Brush panel's slider at
+                // a half would make. That is also what the two whole-selection
+                // fills on this bar read: they lay opaque paint *through* the
+                // mask, so this one slider governs them without their having a
+                // knob of their own.
+                //
+                // On the bar rather than in the Select panel because of *when*
+                // it is set: after the region is drawn, on a region already
+                // drawn — the one selection number that is, which is what makes
+                // it document state (`DocCommand::SetSelectionOpacity`) where
+                // the feather and a fill's opacity are the gesture's own. So it
+                // lives with the acts on the whole selection — but unlike them
+                // it is live with nothing selected: the number is then the
+                // strength the next region will take, and the whole canvas's
+                // until one is drawn (`Selection::opacity`), which is what lets
+                // it be set up front while the tool is armed. A deselect lands
+                // it back on 1 (`Selection::plan`), so a dimming never outlives
+                // its selection by accident.
+                //
+                // Previewed while dragging and committed once on release
+                // (`preview::SELECTION_OPACITY`): no pixel changes until
+                // something paints through the mask, but it is document state,
+                // so a drag that logged every value it crossed would spend an
+                // undo step per pointer move on an adjustment the hand made once.
+                span { class: "bar-sub",
+                    {icon(icons::OPACITY)}
+                    {label("Opacity")}
+                }
+                input {
+                    class: "slider",
+                    style: slider_fill(0.0, 1.0, opacity),
+                    r#type: "range", min: "0", max: "1", step: "any",
+                    value: "{opacity}",
+                    title: "How strongly the selection takes paint \u{2014} a half-dimmed \
+                            selection is a half-opacity brush, fill and eraser inside it",
+                    oninput: move |e| {
+                        if let Ok(v) = e.value().parse::<f32>() {
+                            preview::SELECTION_OPACITY.during(state, dimming, v);
+                        }
+                    },
+                    // All three, because none of them alone ends every drag
+                    // (`Preview::settle`, which is idempotent for this reason).
+                    onchange: move |_| preview::SELECTION_OPACITY.settle(state, dimming),
+                    onpointerup: move |_| preview::SELECTION_OPACITY.settle(state, dimming),
+                    onpointercancel: move |_| preview::SELECTION_OPACITY.settle(state, dimming),
+                }
+
+                span { class: "bar-sep" }
+
                 // Each chip is its command worn whole (`crate::commands`): the
-                // word, the mark, the tooltip with its advertised chord, and the
-                // gate the act asks are all the registry's, so the bar cannot
-                // say one thing about an act the menu says another about.
+                // word, the mark, the tooltip with its advertised chord, the
+                // gate the act asks and the greyed state while there is nothing
+                // selected are all the registry's, so the bar cannot say one
+                // thing about an act the menu says another about.
                 CommandButton { command: Command::Transform }
                 // The other reach for Fill's word. With a selection in force the
                 // region is already drawn, so a fill needs no gesture at all —
@@ -320,9 +354,14 @@ pub fn SelectionBar() -> Element {
                 // Hand-written where its neighbours are `CommandButton`s, for the
                 // tint alone: the bucket wears the brush's own paint
                 // (`icons::icon_tinted`), which is the one thing here the
-                // registry cannot say. The words still come off the command.
+                // registry cannot say. The words still come off the command,
+                // and so does the greyed state — `Command::FillSelection.enabled`
+                // is `has_selection`, read here off the bar's own memo rather
+                // than the projection so this button, like its neighbours, does
+                // not re-render at pointer rate.
                 button {
                     class: "chip",
+                    disabled: !has_selection,
                     title: Command::FillSelection.tooltip(&state.bindings.read()),
                     onclick: move |_| Command::FillSelection.run(state),
                     // At full strength: this fill's coverage is the mask's own
