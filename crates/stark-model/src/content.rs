@@ -22,7 +22,19 @@ use crate::io::DocumentFile;
 
 /// Content a document needs before it can be replayed faithfully, and which store
 /// it belongs in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    carbonite::Schema,
+)]
 pub enum AssetNeed {
     /// A brush shape a stroke stamps with.
     Brush(AssetId),
@@ -160,35 +172,27 @@ impl DocumentFile {
     /// deposits them through the flat stand-in, and those pixels are stored
     /// (§6.4).
     ///
-    /// **A need is answered by its own bag, never by the other one.** The two
-    /// bags are keyed separately because their bytes decode differently — a mask
-    /// is luminance × alpha, a substrate is channel 0 ([`DocumentFile::substrates`]) —
-    /// and an id is a *content* hash, so the same image imported once as a stamp
-    /// and once as a substrate carries one id in two bags that are not
-    /// interchangeable. Asking one flattened set whether the id is present
-    /// anywhere answers "bundled" for a substrate whose bytes are only in the brush
-    /// bag, and the miss is the silent one: nothing refuses the replay, and every
-    /// stroke made on that substrate deposits through the flat stand-in.
+    /// **A need is answered by its own store, and that is now a fact about the
+    /// type rather than a rule this function keeps.** The bundle was three
+    /// `Vec`s once — brushes, substrates, pictures — because their bytes decode
+    /// differently (a mask is luminance × alpha, a substrate is channel 0, a
+    /// picture is all four channels kept), and an [`AssetId`] is a *content* hash,
+    /// so one image imported as a stamp and placed as a picture carries one id in
+    /// two stores that cannot stand in for each other. Asking one flattened set
+    /// whether the id was present anywhere answered "bundled" for a substrate whose
+    /// bytes were only in the brush bag — and the miss was the silent one: nothing
+    /// refused the replay, and every stroke made on that substrate deposited
+    /// through the flat stand-in.
+    ///
+    /// The bag is keyed by [`AssetNeed`] now, which *is* "the id, plus which store
+    /// it belongs in". So the wrong answer is no longer something to avoid giving;
+    /// it is something there is no longer a way to ask for (§1).
     pub fn unbundled_content(&self) -> Vec<AssetNeed> {
-        let brushes: std::collections::HashSet<AssetId> =
-            self.assets.iter().map(|(id, _)| *id).collect();
-        let substrates: std::collections::HashSet<AssetId> = self
-            .substrates
-            .iter()
-            .filter_map(|(id, _)| AssetNeed::for_substrate(*id).map(AssetNeed::content))
-            .collect();
-        let pictures: std::collections::HashSet<AssetId> =
-            self.pictures.iter().map(|(id, _)| *id).collect();
+        let held: std::collections::HashSet<AssetNeed> =
+            self.content.iter().map(|(need, _)| *need).collect();
         self.required_content()
             .into_iter()
-            // Exhaustive, with no `_` arm, for [`action_content`]'s reason: a kind
-            // added later must say which bag answers it rather than inheriting a
-            // bag that cannot hold its bytes.
-            .filter(|need| match need {
-                AssetNeed::Brush(id) => !brushes.contains(id),
-                AssetNeed::Substrate(id) => !substrates.contains(id),
-                AssetNeed::Picture(id) => !pictures.contains(id),
-            })
+            .filter(|need| !held.contains(need))
             .collect()
     }
 }
@@ -221,27 +225,24 @@ mod tests {
         }))
     }
 
-    /// **A need is answered by its own bag and never by another one.**
+    /// **One content hash, three needs, and each answered only by its own.**
     ///
-    /// The bags are keyed apart because their bytes decode differently — a mask is
-    /// luminance × alpha, a substrate is channel 0, a picture is all four channels kept
-    /// — and an id is a *content* hash, so one image imported as a stamp, a substrate
-    /// and a picture carries one id in three bags that cannot stand in for each
-    /// other. Asked as one flattened set, a substrate whose bytes sit only in the brush
-    /// bag came back "bundled": the bill was short, nothing refused the replay, and
-    /// every stroke on that substrate deposited through the flat stand-in into stored
-    /// tiles (§6.4).
+    /// The hazard this guards is that an [`AssetId`] is a *content* hash, so one image
+    /// imported as a stamp, laid as a substrate and placed as a picture carries **one
+    /// id** filed three ways — and the three decode differently (luminance × alpha,
+    /// channel 0, all four channels kept). A bundle that answered "present" for any of
+    /// them because the id was somewhere was short by two, nothing refused the replay,
+    /// and every stroke on that substrate deposited through the flat stand-in (§6.4).
     ///
-    /// Driven over all three, because the hazard is not "the brush bag versus the
-    /// substrate bag" — it is that a bag which cannot decode these bytes will answer for
-    /// them anyway if anyone asks it, and a third bag is a third chance to ask wrong.
+    /// That used to be three `Vec`s and a three-armed match that had to remember not
+    /// to cross them. It is one bag keyed by [`AssetNeed`] now, so what is left to
+    /// check is not "does it remember" but "does it match" — the id *and* the kind
+    /// together, which is the whole content of the key.
     #[test]
-    fn a_need_is_not_answered_by_another_bag() {
+    fn one_id_filed_three_ways_is_three_separate_needs() {
         let id = AssetId([7u8; 32]);
         let bytes = vec![1u8, 2, 3];
 
-        // One document that stamps with `id`, paints on the substrate `id`, and places
-        // the picture `id` — the same content hash filed three ways.
         let doc = || {
             DocumentFile::new(vec![
                 stroke_with(BrushShape::Stamp(id)),
@@ -256,37 +257,28 @@ mod tests {
                 }),
             ])
         };
-        let brush = AssetNeed::Brush(id);
-        let substrate = AssetNeed::Substrate(id);
-        let picture = AssetNeed::Picture(id);
+        let all = [
+            AssetNeed::Brush(id),
+            AssetNeed::Substrate(id),
+            AssetNeed::Picture(id),
+        ];
 
-        // Each bag in turn: filling one leaves exactly the other two owed.
-        for (fill, owed) in [
-            (0usize, vec![substrate, picture]),
-            (1, vec![brush, picture]),
-            (2, vec![brush, substrate]),
-        ] {
+        // Each need in turn: carrying one leaves exactly the other two owed.
+        for held in all {
             let mut d = doc();
-            match fill {
-                0 => d.assets.push((id, bytes.clone())),
-                1 => d.substrates.push((SubstrateId::Image(id), bytes.clone())),
-                _ => d.pictures.push((id, bytes.clone())),
-            }
+            d.content.push((held, bytes.clone()));
             let mut got = d.unbundled_content();
             got.sort_unstable();
-            let mut want = owed;
+            let mut want: Vec<AssetNeed> = all.into_iter().filter(|n| *n != held).collect();
             want.sort_unstable();
-            assert_eq!(
-                got, want,
-                "bag {fill} answered for content it cannot decode"
-            );
+            assert_eq!(got, want, "{held:?} answered for a need that is not it");
         }
 
         // All three, and the bill is settled.
         let mut d = doc();
-        d.assets.push((id, bytes.clone()));
-        d.substrates.push((SubstrateId::Image(id), bytes.clone()));
-        d.pictures.push((id, bytes));
+        for need in all {
+            d.content.push((need, bytes.clone()));
+        }
         assert!(d.unbundled_content().is_empty());
     }
 

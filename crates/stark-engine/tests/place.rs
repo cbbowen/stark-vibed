@@ -209,7 +209,14 @@ fn placing_one_picture_twice_bundles_it_once() {
         2,
         "two placements",
     );
-    assert_eq!(file.pictures.len(), 1, "…and one picture between them");
+    assert_eq!(
+        file.content
+            .iter()
+            .filter(|(need, _)| matches!(need, stark_model::AssetNeed::Picture(_)))
+            .count(),
+        1,
+        "…and one picture between them",
+    );
 }
 
 /// A placement whose picture this session does not hold **adds the layer and leaves it

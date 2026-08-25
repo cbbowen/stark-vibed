@@ -58,6 +58,7 @@ use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
 use serde::{Deserialize, Serialize};
 
 use crate::AssetId;
+use crate::AssetNeed;
 use crate::ColorSpaceId;
 use crate::SubstrateId;
 use crate::document::Action;
@@ -153,46 +154,117 @@ impl Default for CanvasMeta {
 /// The advisory raster `checkpoints` of §8 are still to come, and are now an ordinary
 /// addition: a `#[serde(default)]` field that older files simply do not carry.
 #[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
+#[serde(from = "RawDocumentFile", into = "RawDocumentFile")]
+#[carbonite(as = "RawDocumentFile")]
 pub struct DocumentFile {
     pub app_build: BuildId,
     pub canvas: CanvasMeta,
     pub actions: Vec<Action>,
-    /// Brush-shape images any stroke references, content-addressed and stored as
-    /// compact grayscale PNGs (§6.6, §8). Bundled so the file is
-    /// self-contained and replayable.
-    pub assets: Vec<(AssetId, Vec<u8>)>,
-    /// The canvas substrates the document names — `CanvasMeta::substrate` plus every
-    /// `SetSubstrate` in the log — as canonical grayscale height maps (§6.4, §8).
+    /// **Everything the log names that is not in the log**, each entry saying which
+    /// store its bytes belong in: the brush shapes strokes stamp with (§6.6), the
+    /// canvas substrates a `SetSubstrate` moves onto (§6.4), and the pictures a
+    /// `PlaceImage` lands (§23). Bundled so the file is self-contained and replayable.
     ///
-    /// Here for the same reason `assets` is, and it took the deposition tooth to
-    /// make that visible: once the substrate gates how much paint lands, a height map
-    /// is a *replay input*, no different from a brush's coverage mask, and a file
-    /// that omits one does not contain its own painting. Keyed separately from
-    /// `assets` because the two decode differently — a mask is luminance × alpha,
-    /// a substrate is channel 0 — so a single bag would hand each store the other's
-    /// bytes to reinterpret.
+    /// # One bag, keyed by the thing that knows which store
     ///
-    /// `Flat` contributes nothing: it is procedural, and the empty vector of a
-    /// document that never left it is the honest encoding of that.
-    #[serde(alias = "surfaces")]
-    pub substrates: Vec<(SubstrateId, Vec<u8>)>,
-    /// The pictures the document places (§23), as canonical RGBA PNGs — one entry
-    /// per `PlaceImage` in the log, deduplicated by content id.
+    /// It was three, because the three decode differently — a mask is luminance ×
+    /// alpha, a substrate is channel 0, a picture is all four channels kept — so a
+    /// single bag *keyed by id* would hand each store the others' bytes to
+    /// reinterpret. That is a real hazard and it is why the split existed: an
+    /// [`AssetId`] is a **content** hash, so one image imported as a stamp and placed
+    /// as a picture carries one id under two decodings that cannot stand in for each
+    /// other.
     ///
-    /// A **third** bag rather than a third use of `assets`, for the reason the second
-    /// one exists: the three decode differently — a mask is luminance × alpha, a
-    /// substrate is channel 0, a picture is all four channels kept — so a single bag
-    /// would hand each store the others' bytes to reinterpret. An id is a *content*
-    /// hash, so one image imported as a stamp and placed as a picture carries one id
-    /// in two bags that cannot stand in for each other, and
-    /// [`unbundled_content`](DocumentFile::unbundled_content) is where that is
-    /// enforced.
+    /// But [`AssetNeed`] already *is* "the id, plus which store it belongs in" — it
+    /// was invented for exactly that question and used everywhere else the question is
+    /// asked (`content.rs`, and `stark-net`'s transfers). Keying the bag by it says
+    /// what the three bags said, and says it in the types: there is no longer a way to
+    /// ask one store about another's bytes, so `unbundled_content` does not have to
+    /// remember not to, and the test that held that rule holds a property that cannot
+    /// be violated instead (§1).
     ///
-    /// This is what a document with placed images weighs, and by far the largest
-    /// thing in the container — which is the bargain §23 takes deliberately: the log
-    /// stays a log, and the pixels are content beside it, fetched and deduplicated
-    /// like every other kind.
-    pub pictures: Vec<(AssetId, Vec<u8>)>,
+    /// This is by far the largest thing in the container when a document places
+    /// pictures, which is the bargain §23 takes deliberately: the log stays a log, and
+    /// the pixels are content beside it, fetched and deduplicated like every other
+    /// kind.
+    pub content: Vec<(AssetNeed, Vec<u8>)>,
+}
+
+/// The container's wire shape, which is [`DocumentFile`] plus **three tombstones**
+/// (§8).
+///
+/// `assets`, `substrates` and `pictures` are what the bundle was before one bag keyed
+/// by [`AssetNeed`] replaced them. They are kept, hollow, for the reason §8 keeps a
+/// retired action's variant: a field this build no longer declares is one an older
+/// file's bytes are silently *dropped* through, and a document that loads without the
+/// brush shape its strokes stamp with is worse than one that refuses — the stroke
+/// degrades to a round tip, the substrate to a flat deposit, and nothing says why.
+///
+/// So they are read and folded into `content`, and written empty. When no
+/// three-bag files are left to open, the three go together — exactly as
+/// `LAST_VERSIONED_SCHEMA` will.
+#[derive(Serialize, Deserialize, carbonite::Schema)]
+#[serde(rename = "DocumentFile")]
+struct RawDocumentFile {
+    app_build: BuildId,
+    canvas: CanvasMeta,
+    actions: Vec<Action>,
+    #[serde(default)]
+    content: Vec<(AssetNeed, Vec<u8>)>,
+    /// Brush shapes, in the bag a pre-`content` document wrote them to.
+    #[serde(default)]
+    assets: Vec<(AssetId, Vec<u8>)>,
+    /// Canvas substrates, keyed by [`SubstrateId`] as that bundle was.
+    #[serde(default, alias = "surfaces")]
+    substrates: Vec<(SubstrateId, Vec<u8>)>,
+    /// Placed pictures (§23).
+    #[serde(default)]
+    pictures: Vec<(AssetId, Vec<u8>)>,
+}
+
+impl From<RawDocumentFile> for DocumentFile {
+    /// Folds the tombstoned bags in, each under the need its own store answers —
+    /// which is the whole of the migration, and is only expressible because the
+    /// *old* shape said which store it meant by which field it used.
+    fn from(raw: RawDocumentFile) -> Self {
+        let mut content = raw.content;
+        content.extend(
+            raw.assets
+                .into_iter()
+                .map(|(id, b)| (AssetNeed::Brush(id), b)),
+        );
+        content.extend(
+            raw.substrates
+                .into_iter()
+                .filter_map(|(id, b)| AssetNeed::for_substrate(id).map(|n| (n, b))),
+        );
+        content.extend(
+            raw.pictures
+                .into_iter()
+                .map(|(id, b)| (AssetNeed::Picture(id), b)),
+        );
+        Self {
+            app_build: raw.app_build,
+            canvas: raw.canvas,
+            actions: raw.actions,
+            content,
+        }
+    }
+}
+
+impl From<DocumentFile> for RawDocumentFile {
+    /// The tombstones go out empty — see [`RawDocumentFile`].
+    fn from(file: DocumentFile) -> Self {
+        Self {
+            app_build: file.app_build,
+            canvas: file.canvas,
+            actions: file.actions,
+            content: file.content,
+            assets: Vec::new(),
+            substrates: Vec::new(),
+            pictures: Vec::new(),
+        }
+    }
 }
 
 impl DocumentFile {
@@ -201,9 +273,7 @@ impl DocumentFile {
             app_build: BuildId::default(),
             canvas: CanvasMeta::default(),
             actions,
-            assets: Vec::new(),
-            substrates: Vec::new(),
-            pictures: Vec::new(),
+            content: Vec::new(),
         }
     }
 
@@ -634,7 +704,12 @@ mod tests {
         );
         assert_eq!(back.actions.len(), 1);
         assert_eq!(back.actions[0].id.lamport, 3);
-        assert_eq!(back.pictures.len(), 1, "and the fields both shapes share");
-        assert_eq!(back.pictures[0].1, vec![1, 2, 3]);
+        // …and the bundle both shapes share, folded out of the tombstoned bag it was
+        // written to and into the one keyed by need.
+        assert_eq!(
+            back.content,
+            vec![(AssetNeed::Picture(AssetId([3; 32])), vec![1, 2, 3])],
+            "a pre-`content` bundle has to survive the way in",
+        );
     }
 }

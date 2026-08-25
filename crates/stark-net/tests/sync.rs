@@ -696,7 +696,10 @@ async fn a_promised_substrate_is_left_out_of_the_snapshot_and_still_replays() {
         .expect("join session");
 
     assert!(
-        snapshot.substrates.is_empty(),
+        !snapshot
+            .content
+            .iter()
+            .any(|(need, _)| need.substrate().is_some()),
         "the host still sent a substrate the joiner said it had"
     );
     assert!(

@@ -361,7 +361,11 @@ fn a_document_bundles_every_substrate_it_names() {
     engine.process(DocCommand::SetSubstrate(SubstrateId::Flat));
 
     let file = engine.document_file();
-    let bundled: Vec<SubstrateId> = file.substrates.iter().map(|(id, _)| *id).collect();
+    let bundled: Vec<SubstrateId> = file
+        .content
+        .iter()
+        .filter_map(|(need, _)| need.substrate())
+        .collect();
     assert!(
         bundled.contains(&linen) && bundled.contains(&rough),
         "both substrates the log names must ride with it, got {bundled:?}"
@@ -370,17 +374,16 @@ fn a_document_bundles_every_substrate_it_names() {
         !bundled.contains(&SubstrateId::Flat),
         "`Flat` is procedural and has no bytes to bundle"
     );
-    for (id, bytes) in &file.substrates {
-        assert!(!bytes.is_empty(), "{id:?} was bundled with no height map");
+    for (need, bytes) in &file.content {
+        assert!(!bytes.is_empty(), "{need:?} was bundled with no bytes");
     }
 
     // And the bundle survives the container, which is what a loader reads.
     let encoded = engine.save_bytes().expect("serialize");
     let back = stark_model::DocumentFile::from_bytes(&encoded).expect("deserialize");
     assert_eq!(
-        back.substrates.len(),
-        file.substrates.len(),
-        "the substrates must survive the round trip"
+        back.content, file.content,
+        "the bundle must survive the round trip"
     );
 }
 
@@ -456,7 +459,10 @@ fn a_lean_file_replays_identically_once_its_content_is_resolved() {
 
     let file = stark_model::DocumentFile::from_bytes(&lean).expect("decode");
     assert!(
-        file.substrates.is_empty(),
+        !file
+            .content
+            .iter()
+            .any(|(need, _)| need.substrate().is_some()),
         "the substrate was promised, so it should not be in the bundle"
     );
 

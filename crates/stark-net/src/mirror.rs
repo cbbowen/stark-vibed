@@ -169,23 +169,40 @@ impl Snapshot {
         let mut file = DocumentFile::new(self.actions.iter().map(|(_, a)| a.clone()).collect());
         file.app_build = self.build;
         file.canvas = self.canvas;
-        file.assets = self
+        // The container's bundle is one bag keyed by [`AssetNeed`] (§8); the mirror
+        // keeps the three apart because the transport fetches them from three stores.
+        // This is the one place the two shapes meet, and the key is what says which
+        // is which.
+        file.content = self
             .assets
             .into_iter()
-            .map(|(id, b)| (id, b.to_vec()))
-            .collect();
-        file.substrates = self
-            .substrates
-            .into_iter()
-            .map(|(id, b)| (SubstrateId::Image(id), b.to_vec()))
-            .collect();
-        file.pictures = self
-            .pictures
-            .into_iter()
-            .map(|(id, b)| (id, b.to_vec()))
+            .map(|(id, b)| (AssetNeed::Brush(id), b.to_vec()))
+            .chain(
+                self.substrates
+                    .into_iter()
+                    .map(|(id, b)| (AssetNeed::Substrate(id), b.to_vec())),
+            )
+            .chain(
+                self.pictures
+                    .into_iter()
+                    .map(|(id, b)| (AssetNeed::Picture(id), b.to_vec())),
+            )
             .collect();
         file
     }
+}
+
+/// The bundle entries of one kind, by content id — [`Mirror::from_file`]'s way of
+/// taking a bag keyed by [`AssetNeed`] apart into the three stores the transport
+/// fetches from.
+fn by_kind(
+    file: &DocumentFile,
+    which: impl Fn(&AssetNeed) -> Option<AssetId>,
+) -> HashMap<AssetId, Bytes> {
+    file.content
+        .iter()
+        .filter_map(|(need, bytes)| Some((which(need)?, Bytes::from(bytes.clone()))))
+        .collect()
 }
 
 impl Mirror {
@@ -194,24 +211,23 @@ impl Mirror {
             build: file.app_build.clone(),
             canvas: file.canvas.clone(),
             actions: file.actions.iter().map(|a| (a.id, a.clone())).collect(),
-            assets: file
-                .assets
-                .iter()
-                .map(|(id, b)| (*id, Bytes::from(b.clone())))
-                .collect(),
-            // A `Flat` entry would carry no bytes and name no content; the save
-            // format cannot produce one, and skipping it is what keeps every
-            // substrate in here fetchable.
-            substrates: file
-                .substrates
-                .iter()
-                .filter_map(|(id, b)| Some((substrate_content_id(*id)?, Bytes::from(b.clone()))))
-                .collect(),
-            pictures: file
-                .pictures
-                .iter()
-                .map(|(id, b)| (*id, Bytes::from(b.clone())))
-                .collect(),
+            // One bag in, three stores out — the need's own kind is what sorts them,
+            // where this used to read three separately-keyed fields. A `Flat`
+            // substrate cannot appear: it names no content, so `AssetNeed` has no
+            // variant for it (`AssetNeed::for_substrate`), which is the same thing
+            // the old `filter_map` was doing by hand.
+            assets: by_kind(file, |need| match need {
+                AssetNeed::Brush(id) => Some(*id),
+                _ => None,
+            }),
+            substrates: by_kind(file, |need| match need {
+                AssetNeed::Substrate(id) => Some(*id),
+                _ => None,
+            }),
+            pictures: by_kind(file, |need| match need {
+                AssetNeed::Picture(id) => Some(*id),
+                _ => None,
+            }),
             hashes: HashMap::new(),
             revision: 0,
             encoded: None,

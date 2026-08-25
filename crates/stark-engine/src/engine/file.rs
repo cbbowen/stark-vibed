@@ -51,28 +51,17 @@ impl Engine {
         // named by the container rather than by any action, and is otherwise the one
         // piece of content nothing asks for.
         file.canvas.substrate = self.initial_substrate;
+        // One bag, keyed by the need itself, so a store is asked only for the bytes
+        // it can decode (§8). The match is over *which store*, not over which bag to
+        // push to — the key carries that.
         for need in file.required_content() {
-            match need {
-                AssetNeed::Brush(id) => {
-                    if let Some(bytes) = self.asset_bytes(id) {
-                        file.assets.push((id, bytes));
-                    }
-                }
-                AssetNeed::Substrate(_) => {
-                    if let Some(id) = need.substrate()
-                        && let Some(bytes) = self.substrate_bytes(id)
-                    {
-                        file.substrates.push((id, bytes));
-                    }
-                }
-                // The third bag (§23). Its own, for the reason the substrate has one:
-                // the bytes decode differently, so a single bag would hand each
-                // store the others' to reinterpret (§8).
-                AssetNeed::Picture(id) => {
-                    if let Some(bytes) = self.shared.apply.pictures.bytes(id) {
-                        file.pictures.push((id, bytes));
-                    }
-                }
+            let bytes = match need {
+                AssetNeed::Brush(id) => self.asset_bytes(id),
+                AssetNeed::Substrate(_) => need.substrate().and_then(|id| self.substrate_bytes(id)),
+                AssetNeed::Picture(id) => self.shared.apply.pictures.bytes(id),
+            };
+            if let Some(bytes) = bytes {
+                file.content.push((need, bytes));
             }
         }
         file
@@ -100,15 +89,14 @@ impl Engine {
     /// so passing an empty slice is [`Engine::save_bytes`].
     pub fn save_bytes_resolvable(&self, resolvable: &[AssetId]) -> Result<Vec<u8>> {
         let mut file = self.document_file();
-        let keep = |id: &AssetId| !resolvable.contains(id);
-        file.assets.retain(|(id, _)| keep(id));
-        file.substrates
-            .retain(|(id, _)| AssetNeed::for_substrate(*id).is_none_or(|n| keep(&n.content())));
-        // Pictures are *not* retained against this list, and cannot be: `resolvable`
+        // Pictures are *not* dropped against this list, and cannot be: `resolvable`
         // is what the opening app ships with (§12.4), and a picture is by definition
         // something someone brought in — no build ships one. Filtering it anyway
         // would be a rule that can only ever fire on an id collision.
-        file.pictures.retain(|(id, _)| keep(id));
+        file.content.retain(|(need, _)| match need {
+            AssetNeed::Picture(_) => true,
+            other => !resolvable.contains(&other.content()),
+        });
         Ok(file.to_bytes()?)
     }
 
@@ -157,20 +145,29 @@ impl Engine {
                 .expect("a document whose space this build lacks is refused before adoption");
             self.rebuild_gpu_for(cs);
         }
-        for (_, bytes) in &file.assets {
-            if let Err(e) = self.shared.apply.assets.insert_bytes(bytes) {
-                tracing::warn!("skipping unreadable brush asset: {e}");
-            }
-        }
-        for (id, bytes) in &file.substrates {
-            if let Err(e) = self.accept_substrate(*id, bytes) {
-                tracing::warn!("skipping a canvas substrate this document names: {e}");
-            }
-        }
-        for (id, bytes) in &file.pictures {
-            match self.accept_picture(*id, bytes) {
-                Ok(()) => {}
-                Err(e) => tracing::warn!("skipping a picture this document places: {e}"),
+        // Each entry to the store its need names, which is the whole reason the bundle
+        // is keyed by one: a substrate handed to the brush store decodes as luminance
+        // × alpha rather than channel 0, and nothing downstream can tell (§8).
+        for (need, bytes) in &file.content {
+            let handed = match need {
+                AssetNeed::Brush(_) => self
+                    .shared
+                    .apply
+                    .assets
+                    .insert_bytes(bytes)
+                    .map(|_| ())
+                    .map_err(|e| format!("brush asset: {e}")),
+                AssetNeed::Substrate(id) => self
+                    .accept_substrate(SubstrateId::Image(*id), bytes)
+                    .map(|_| ())
+                    .map_err(|e| format!("canvas substrate: {e}")),
+                AssetNeed::Picture(id) => self
+                    .accept_picture(*id, bytes)
+                    .map(|_| ())
+                    .map_err(|e| format!("placed picture: {e}")),
+            };
+            if let Err(e) = handed {
+                tracing::warn!("skipping content this document names — {e}");
             }
         }
         // Reachable only from a collaboration join now — [`Engine::load_document`] and
