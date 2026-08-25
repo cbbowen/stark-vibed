@@ -151,11 +151,12 @@ struct Stamp {
     lambda_bleed: f32,
     // The segment's signed curvature, 1/region px; 0 is a straight sweep.
     curvature: f32,
-    // The brush's own color channels and per-unit opacity. **Undrained** — the falloff
-    // is applied per fragment from its own arc length, not baked in per segment (see
-    // `stroke_drain`).
+    // The brush's own color channels. **Undrained** — the falloff is applied per
+    // fragment from its own arc length, not baked in per segment (see
+    // `stroke_drain`). No per-unit opacity beside them: minted paint is opaque per
+    // unit (§6.2), faded only by the drain, and the effect's opacity scales the
+    // `add` rate host-side before it reaches this uniform.
     brush_lat: vec3<f32>,
-    brush_op: f32,
     // The brush color's **residual** — the half of it the space's three channels cannot
     // express (§6.7). Undrained, like `brush_lat`. Zero for every space but Mixbox.
     //
@@ -164,7 +165,9 @@ struct Stamp {
     // no feature set to evaluate, so a member that came and went with the variant would
     // give one Rust struct two layouts.
     brush_res: vec3<f32>,
-    // The `add` source rate — height per unit exposure, undrained like `brush_op`.
+    // The `add` source rate — height per unit exposure, undrained like `brush_lat`.
+    // The effect's opacity is already folded in (§6.2): on this path the ceiling
+    // cannot be exact — moved paint moves whole — so it scales what the brush mints.
     add: f32,
     // Color dynamics (§6.2) for the brush's own `add` paint — the same field and domain
     // as the fast path's jitter, so the two paths agree. Frequency per lookup axis
@@ -589,7 +592,7 @@ fn exchange_at(e: f32) -> Exchange {
 // arc, and the texels behind the stroke's *start* sit at a negative one — the tip's
 // trailing half covers them at pen-down — so the unbounded form hands them more than a
 // full brush. That is meaningless on the load, and worse on the per-unit opacity it
-// multiplies: `src_m = brush_op·drain·src_h` lands mass above the height carrying it,
+// multiplies: `src_m = drain·src_h` lands mass above the height carrying it,
 // and `m ≤ h` is the invariant the region's storage rests on, since what it stores is
 // `m / h`. Both paths bound it identically (`stamp_common.wesl::stroke_drain`), so a
 // drained brush lays the same start cap whichever one draws it.
@@ -1192,7 +1195,7 @@ fn exchange(
         let arc = st.arc_at_start + f * travel_px() + (local.x * cs - local.y * sn) * st.radius;
         let drain = stroke_drain(arc);
         let src_h = st.add * drain * ex.src_w * sel;
-        let src_m = st.brush_op * drain * src_h;
+        let src_m = drain * src_h;
         // The brush's own paint. Its residual is **not** jittered, for the reason
         // `stamp.wesl` gives — color dynamics perturb the pigment mixture, and the
         // residual is precisely what no mixture of those pigments reaches — and here
@@ -1481,7 +1484,7 @@ fn lay_parcel(
     // (`stamp_common::Sweep`).
     let arc = st.arc_at_start + sw.local.x * st.radius;
     let drain = stroke_drain(arc);
-    let own_op = st.brush_op * drain;
+    let own_op = drain;
 
     // The brush's own color at this texel: the stroke color offset by the
     // color-dynamics field, sampled at the same stroke-local (lateral, arc) domain as

@@ -16,7 +16,7 @@ use stark_model::MAX_SHAPE_DIM;
 use stark_model::document::{BrushShape, OrientationSource};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
+const RED: [f32; 3] = [0.85, 0.1, 0.1];
 
 /// Encode a grayscale PNG of the given size with a soft radial blob — a stand-in
 /// for a user's scanned/painted brush-shape image.

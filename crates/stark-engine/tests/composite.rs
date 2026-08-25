@@ -33,11 +33,11 @@ use stark_model::Srgb;
 use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [0.85, 0.10, 0.10, 1.0];
-const BLUE: [f32; 4] = [0.10, 0.20, 0.85, 1.0];
+const RED: [f32; 3] = [0.85, 0.10, 0.10];
+const BLUE: [f32; 3] = [0.10, 0.20, 0.85];
 
 /// A very soft, wide tip — the shape whose faint fringe is the whole point.
-fn soft(color: [f32; 4], radius: f32) -> BrushParams {
+fn soft(color: [f32; 3], radius: f32) -> BrushParams {
     BrushParams {
         color,
         size: radius,

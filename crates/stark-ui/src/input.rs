@@ -254,7 +254,7 @@ pub fn pick_color(state: AppState, pos: Vec2) {
         // bracket is drawn tight around the one write, with no `await` inside it, so
         // it cannot still be open while something else moves the brush.
         crate::tutor::not_reaching(state, true);
-        update_brush(state, |br| br.color = [rgb[0], rgb[1], rgb[2], br.color[3]]);
+        update_brush(state, |br| br.color = [rgb[0], rgb[1], rgb[2]]);
         crate::tutor::not_reaching(state, false);
         // Tell the Color panel the color moved from outside its own picker, so its
         // markers follow (see `AppState::color_epoch`).

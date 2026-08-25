@@ -11,9 +11,9 @@ use stark_engine::{Engine, RgbaImage};
 use stark_model::document::ActorId;
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [0.9, 0.1, 0.1, 1.0];
-const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
-const BLUE: [f32; 4] = [0.1, 0.2, 0.9, 1.0];
+const RED: [f32; 3] = [0.9, 0.1, 0.1];
+const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
+const BLUE: [f32; 3] = [0.1, 0.2, 0.9];
 
 fn snap(e: &mut Engine) -> RgbaImage {
     e.render_to_image()

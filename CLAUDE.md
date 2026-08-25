@@ -181,9 +181,11 @@ uses, since goldens are adapter-specific). Deleting a golden re-blesses it.
   `1 − exp(−k·τ)`** (§6.2). Any other shape makes stroke weight depend on the
   *number* of segments — invisible under uniform sampling, immediate under
   adaptive.
-- **Conserve `height`, never alpha** (§6.1). Color alpha is per-unit opacity, a
-  material property; the amount of paint is the height channel. The two meet only
-  in the slab law `1 − exp(−K · opacity · thickness)`.
+- **Conserve `height`, never alpha** (§6.1). A tile's color alpha is per-unit
+  opacity, a material property; the amount of paint is the height channel. The
+  two meet only in the slab law `1 − exp(−K · opacity · thickness)`. The *brush*
+  color carries no alpha at all: minted paint is per-unit opaque, and "how much
+  shows" is `BrushEffect::opacity` — a per-stroke ceiling, not a material (§6.2).
 - **A new field in the log needs `#[serde(default)]`** (§8). The save format
   carries its own schema and reconciles it against today's types by *name*, so a
   variant may be inserted anywhere and a field may be added or removed — but a

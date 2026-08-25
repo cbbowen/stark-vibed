@@ -34,8 +34,8 @@ use crate::gpu::tile::TilePairHandle;
 /// own submit (see [`Kept`]).
 pub struct ToolState(pub(super) Carried);
 
-/// The two kinds of cross-piece stroke state, one per path that has any — the
-/// swept deposit carries nothing at all.
+/// The kinds of cross-piece stroke state, one per path that has any — the
+/// swept deposit at full opacity carries nothing at all.
 pub(super) enum Carried {
     /// The stamp loop's tool reservoir (§6.2). Boxed for size alone: three
     /// pooled leases dwarf the erase map's header, and a `ToolState` moves
@@ -43,6 +43,11 @@ pub(super) enum Carried {
     Loop(Box<Reservoir>),
     /// The erase pass's accumulated extent (§6.12).
     Erase(EraseCarry),
+    /// The swept deposit's accumulated parcel (§6.2), carried only below
+    /// full opacity — the one setting under which that path stops being
+    /// stateless, because a scaled parcel is not composable per piece
+    /// ([`SweepCarry`]).
+    Sweep(SweepCarry),
 }
 
 impl ToolState {
@@ -55,9 +60,9 @@ impl ToolState {
     pub(super) fn reservoir(&self) -> &Reservoir {
         match &self.0 {
             Carried::Loop(r) => r,
-            Carried::Erase(_) => {
+            Carried::Erase(_) | Carried::Sweep(_) => {
                 unreachable!(
-                    "an erase carry resumed the stamp loop; the path is a pure function of the brush (§6.2)"
+                    "another path's carry resumed the stamp loop; the path is a pure function of the brush (§6.2)"
                 )
             }
         }
@@ -68,9 +73,24 @@ impl ToolState {
     pub(super) fn erased(&self) -> &EraseCarry {
         match &self.0 {
             Carried::Erase(e) => e,
-            Carried::Loop(_) => {
+            Carried::Loop(_) | Carried::Sweep(_) => {
                 unreachable!(
-                    "a loop carry resumed the erase pass; the path is a pure function of the brush (§6.2)"
+                    "another path's carry resumed the erase pass; the path is a pure function of the brush (§6.2)"
+                )
+            }
+        }
+    }
+
+    /// The scaled swept deposit's accumulated parcel, on a carry it captured —
+    /// [`reservoir`](Self::reservoir)'s argument, from the third side. The
+    /// opacity is part of the brush, so whether the swept path carries at all is
+    /// as much a pure function of it as which path runs.
+    pub(super) fn swept(&self) -> &SweepCarry {
+        match &self.0 {
+            Carried::Sweep(s) => s,
+            Carried::Loop(_) | Carried::Erase(_) => {
+                unreachable!(
+                    "another path's carry resumed the scaled swept deposit; the path is a pure function of the brush (§6.2)"
                 )
             }
         }
@@ -129,6 +149,45 @@ pub(super) struct EraseTile {
     /// into a fresh working texture and extends that — so the tiles a piece does
     /// not touch ride forward as clones of the same lease.
     pub(super) accum: Arc<Kept>,
+}
+
+/// The swept deposit's carried state below full opacity (§6.2): per touched
+/// tile, the stroke's accumulated **parcel** and the tile it will land on.
+///
+/// [`EraseCarry`]'s design at the other end of the same theorem. The opacity
+/// scales the parcel's finished coverage, and a scaled coverage is neither
+/// additive in `τ` nor `1 − exp(−k·τ)` — so it cannot be applied per piece, and
+/// the parcel has to keep accumulating across the pieces of a live stroke with
+/// every piece re-deriving its tiles from pristine paint under the whole of it
+/// (`integrate.wesl`). At opacity 1 the integrate is the identity on the parcel,
+/// pieces compose by plain stacking, and the path carries nothing — which is why
+/// this exists only below it.
+pub(super) struct SweepCarry {
+    pub(super) tiles: BTreeMap<TileCoord, SweepTile>,
+}
+
+/// One tile's share of a [`SweepCarry`].
+pub(super) struct SweepTile {
+    /// The layer's tile as the stroke found it — [`EraseTile::pristine`]'s
+    /// contract exactly. `None` is bare canvas: unlike an erase, a deposit onto
+    /// nothing mints a tile, so the pass keeps painting and binds the 1×1 zeroes
+    /// as the base it re-derives from.
+    pub(super) pristine: Option<TilePairHandle>,
+    /// The stroke's parcel over this tile so far — the same scratch pair a
+    /// single-piece sweep accumulates, kept alive across pieces. Shared, never
+    /// rewritten: a resuming piece copies it into fresh working textures and
+    /// extends those ([`EraseTile::accum`]'s contract).
+    pub(super) accum: Arc<SweepAccum>,
+}
+
+/// The textures of one carried parcel tile: the over-blended premultiplied
+/// color, the additive wide aux (height, optical mass), and the residual in a
+/// space that has one — the same three targets `stamp.wesl`'s deposit writes,
+/// because this *is* that scratch, surviving its piece.
+pub(super) struct SweepAccum {
+    pub(super) color: Kept,
+    pub(super) aux: Kept,
+    pub(super) resid: Option<Kept>,
 }
 
 /// What a range render leaves behind for the range that resumes after it.

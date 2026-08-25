@@ -128,7 +128,7 @@ fn main() {
     let b = &rec.brush;
     println!(
         "last stroke: action #{last}, {} control points, radius {}, drain {}/radius, \
-         add {}, lift {}, deposit {}, charge {}, bleed {}, alpha {}",
+         add {}, lift {}, deposit {}, charge {}, bleed {}, opacity {}",
         rec.path.len(),
         b.size,
         b.drain,
@@ -137,7 +137,7 @@ fn main() {
         b.paint().expect("a paint brush").dynamics.deposit,
         b.paint().expect("a paint brush").dynamics.charge,
         b.paint().expect("a paint brush").dynamics.bleed,
-        b.color[3],
+        b.effect.opacity(),
     );
 
     // The stroke's bounding box (control points + radius), for the viewport.

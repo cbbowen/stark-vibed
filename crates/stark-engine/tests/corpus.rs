@@ -72,6 +72,7 @@ battery!(
     bleed,
     wide_smear,
     oversized_smear,
+    opacity,
     erase,
 );
 

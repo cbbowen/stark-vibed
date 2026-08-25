@@ -353,7 +353,7 @@ fn check(engine: &mut Engine, seen: &mut Seen, what: &str, before: &DocState) {
 /// snapshot has to span the whole of it.
 fn stroke(engine: &mut Engine, seen: &mut Seen, what: &str, points: &[Vec2]) {
     let before = engine.document().clone();
-    paint(engine, [0.8, 0.2, 0.3, 1.0], 12.0, points);
+    paint(engine, [0.8, 0.2, 0.3], 12.0, points);
     check(engine, seen, what, &before);
 }
 
@@ -876,7 +876,7 @@ fn the_check_rejects_a_footprint_that_under_claims() {
     let before = engine.document().clone();
     paint(
         &mut engine,
-        [0.8, 0.2, 0.3, 1.0],
+        [0.8, 0.2, 0.3],
         12.0,
         &[Vec2::new(20.0, 20.0), Vec2::new(400.0, 40.0)],
     );

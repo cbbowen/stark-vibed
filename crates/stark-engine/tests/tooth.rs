@@ -34,7 +34,7 @@ use stark_model::SubstrateId;
 use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, ToothParams};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 /// The contact transition every brush here is drawn through, and every bearing here is
 /// asked at (§6.4).
@@ -573,8 +573,17 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
             drain: 0.0,
             shape: BrushShape::Round { hardness: 0.9 },
             modulation: Default::default(),
-            ..brush([1.0, 0.0, 0.0, 0.25], 30.0)
+            ..brush([1.0, 0.0, 0.0], 30.0)
         }
+    };
+    // A quarter-strength glob (§6.2): the opacity scales the charge, so the
+    // delivered optical mass is what the old quarter-alpha glob delivered — the
+    // faint field the far-share thresholds below were calibrated on, kept faint
+    // so the un-toothed tool's tail stays under the visibility floor.
+    let glob = |give: f32| {
+        let mut b = glob(give);
+        b.effect.set_opacity(0.25);
+        b
     };
     let path = [Vec2::new(-150.0, 0.0), Vec2::new(150.0, 0.0)];
 

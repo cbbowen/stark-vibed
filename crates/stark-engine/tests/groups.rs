@@ -31,9 +31,9 @@ use stark_model::geom::Vec2;
 
 const ROOT: LayerId = LayerId(0);
 
-const WARM: [f32; 4] = [0.90, 0.35, 0.10, 1.0];
-const COOL: [f32; 4] = [0.10, 0.30, 0.85, 1.0];
-const PALE: [f32; 4] = [0.95, 0.90, 0.80, 1.0];
+const WARM: [f32; 3] = [0.90, 0.35, 0.10];
+const COOL: [f32; 3] = [0.10, 0.30, 0.85];
+const PALE: [f32; 3] = [0.95, 0.90, 0.80];
 
 const H_STROKE: &[Vec2] = &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)];
 const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 60.0)];

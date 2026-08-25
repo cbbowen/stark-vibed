@@ -207,7 +207,7 @@ pub fn engine_or_skip_studio() -> Option<Engine> {
     })
 }
 
-pub fn brush(color: [f32; 4], radius: f32) -> BrushParams {
+pub fn brush(color: [f32; 3], radius: f32) -> BrushParams {
     BrushParams {
         color,
         size: radius,
@@ -243,7 +243,7 @@ pub fn stroke_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
 }
 
 /// Paint and commit a stroke through the given canvas points with `color`.
-pub fn paint(engine: &mut Engine, color: [f32; 4], radius: f32, points: &[Vec2]) {
+pub fn paint(engine: &mut Engine, color: [f32; 3], radius: f32, points: &[Vec2]) {
     stroke_with(engine, brush(color, radius), points);
 }
 

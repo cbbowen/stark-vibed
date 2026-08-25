@@ -43,9 +43,17 @@ const MODES: [BlendMode; 3] = [
     BlendMode::Multiply,
 ];
 
-const WARM: [f32; 4] = [0.90, 0.35, 0.10, 1.0];
-const COOL: [f32; 4] = [0.10, 0.30, 0.85, 1.0];
-const PALE: [f32; 4] = [0.95, 0.90, 0.80, 0.55];
+const WARM: [f32; 3] = [0.90, 0.35, 0.10];
+const COOL: [f32; 3] = [0.10, 0.30, 0.85];
+const PALE: [f32; 3] = [0.95, 0.90, 0.80];
+
+/// PALE at just over half opacity: the merge identity must hold over partially
+/// covered paint too, not only where a stroke saturates.
+fn paint_pale(engine: &mut Engine, radius: f32, points: &[Vec2]) {
+    let mut b = brush(PALE, radius);
+    b.effect.set_opacity(0.55);
+    stroke_with(engine, b, points);
+}
 
 const H_STROKE: &[Vec2] = &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)];
 const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 60.0)];
@@ -303,7 +311,7 @@ fn translucent_paint_merges_onto_opaque_paint() {
     };
     paint(&mut engine, WARM, 44.0, H_STROKE);
     let top = add_layer(&mut engine);
-    paint(&mut engine, PALE, 44.0, V_STROKE);
+    paint_pale(&mut engine, 44.0, V_STROKE);
 
     let (before, after, _) = merged(&mut engine, top);
     unchanged(&before, &after, 1, "a translucent glaze");
@@ -408,7 +416,7 @@ fn an_unoffered_merge_changes_nothing() {
     };
     paint(&mut engine, WARM, 44.0, H_STROKE);
     let middle = add_layer(&mut engine);
-    paint(&mut engine, PALE, 44.0, H_STROKE);
+    paint_pale(&mut engine, 44.0, H_STROKE);
     let top = add_layer(&mut engine);
     paint(&mut engine, COOL, 44.0, V_STROKE);
     // Modes that **disagree**, above the foot of the stack where both are stated
@@ -542,7 +550,7 @@ fn siblings_sharing_a_mode_merge() {
         let Some(mut engine) = engine_or_skip_blue() else {
             return;
         };
-        paint(&mut engine, PALE, 60.0, H_STROKE);
+        paint_pale(&mut engine, 60.0, H_STROKE);
         let lower = add_layer(&mut engine);
         paint(&mut engine, WARM, 44.0, H_STROKE);
         engine.process(DocCommand::SetLayerBlend(lower, mode));
@@ -574,7 +582,7 @@ fn any_mode_merges_into_its_carrier() {
         let Some(mut engine) = engine_or_skip_blue() else {
             return;
         };
-        paint(&mut engine, PALE, 60.0, H_STROKE);
+        paint_pale(&mut engine, 60.0, H_STROKE);
         let base = add_layer(&mut engine);
         paint(&mut engine, WARM, 44.0, H_STROKE);
         let carried = add_layer(&mut engine);
@@ -609,7 +617,7 @@ fn a_faded_carrier_keeps_its_own_opacity() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
-    paint(&mut engine, PALE, 60.0, H_STROKE);
+    paint_pale(&mut engine, 60.0, H_STROKE);
     let base = add_layer(&mut engine);
     paint(&mut engine, WARM, 44.0, H_STROKE);
     let carried = add_layer(&mut engine);
@@ -637,7 +645,7 @@ fn a_clipped_member_merges_into_a_faded_carrier() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
-    paint(&mut engine, PALE, 60.0, H_STROKE);
+    paint_pale(&mut engine, 60.0, H_STROKE);
     let base = add_layer(&mut engine);
     paint(&mut engine, WARM, 44.0, H_STROKE);
     let carried = add_layer(&mut engine);
@@ -744,7 +752,7 @@ fn a_filter_merge_keeps_the_destinations_params_and_bakes_its_strength() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
-    paint(&mut engine, PALE, 60.0, H_STROKE);
+    paint_pale(&mut engine, 60.0, H_STROKE);
     let base = add_layer(&mut engine);
     paint(&mut engine, WARM, 44.0, V_STROKE);
     let filter = add_filter(&mut engine, Some(base), GREY);

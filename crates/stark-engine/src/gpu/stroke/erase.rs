@@ -7,11 +7,11 @@
 //! accumulating the stroke's transparency mass into one `R16Float` tile-sized
 //! accumulator per touched tile. The *integrate* (`erase.wesl`) then rewrites each
 //! tile from its **pristine** base — the paint the stroke found, not the previous
-//! piece's output — scaling what the eye sees by `1 − strength·w` and inverting
+//! piece's output — scaling what the eye sees by `1 − opacity·w` and inverting
 //! the slab law into a height (§6.1).
 //!
 //! **The accumulator spans the stroke, not the piece**, and that is the design.
-//! `1 − strength·w` is not exponential in swept depth, so applying it per piece
+//! `1 − opacity·w` is not exponential in swept depth, so applying it per piece
 //! would compound at every cut a live stroke makes (§6.2's two composable forms).
 //! Instead the mass keeps summing — additively, so re-cutting the path changes
 //! nothing — and every piece re-derives its tiles from pristine paint under the
@@ -28,7 +28,6 @@ use stark_model::geom::{TILE_TEX, TileCoord};
 use stark_shaders::mirror::erase::binding as eb;
 use stark_shaders::mirror::erase::decl as ed;
 use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
-use stark_shaders::mirror::stamp_common::binding as sc;
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::desc;
@@ -38,11 +37,11 @@ use crate::gpu::tile::{AllocSource, TileMap};
 use super::incremental::{Carried, EraseCarry, EraseTile};
 use super::scratch::Key;
 use super::segments::generate_segments_in;
-use super::swept::{NOISE_SLOTS, PREFIX_SLOTS, SweptKit, sweep_draws};
+use super::swept::{SweptKit, sweep_binds, sweep_draws};
 use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState, UNIFORM_STRIDE};
 
 /// The integrate's one group (`erase.wesl`): the pristine tile, the stroke's
-/// accumulated mass, the selection, and the strength uniform.
+/// accumulated mass, the selection, and the opacity uniform.
 const ERASE_SLOTS: &[Slot] = &[
     Slot::at(ed::BASE_COLOR),
     Slot::at(ed::BASE_AUX),
@@ -202,59 +201,27 @@ impl StrokeRenderer {
         let mut scope = self.scratch.scope(&self.ctx, "stark erase stroke");
         let device = &self.ctx.device;
 
-        // The brush's textures, bound exactly as the swept path binds them — the
-        // groups are the same layouts, and `fs_erase` reads the same prefix-τ,
+        // The brush's textures, bound exactly as the swept path binds them — one
+        // derivation (`sweep_binds`), and `fs_erase` reads the same prefix-τ,
         // substrate and stroke uniform (the noise field rides along unread).
-        let prefix_view = self.tips.prefix_view(assets, &rec.brush);
-        let prefix_bg = desc::bind_group_for(
-            device,
-            "stark erase prefix bg",
-            &self.swept.prefix_bgl,
-            PREFIX_SLOTS,
-            false,
-            |_| wgpu::BindingResource::TextureView(&prefix_view),
-        );
-        let noise_view = self.tips.noise_view(&rec.brush.color_dynamics());
-        let noise_bg = desc::bind_group_for(
-            device,
-            "stark erase noise bg",
-            &self.swept.noise_bgl,
-            NOISE_SLOTS,
-            false,
-            |b| match b {
-                sc::NOISE_TEX => wgpu::BindingResource::TextureView(&noise_view),
-                sc::NOISE_SAMP => wgpu::BindingResource::Sampler(&self.tips.noise_sampler),
-                sc::SUBSTRATE_TEX => wgpu::BindingResource::TextureView(&substrate.view),
-                other => unreachable!("`NOISE_SLOTS` lists no binding {other}"),
-            },
-        );
+        let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate);
         let draws = sweep_draws(self, &mut scope, rec, &k, &segments);
 
-        // The strength, once per piece — a stroke constant, clamped where the
-        // record becomes numbers, `StrokeConstants`' rule. The effect is this
-        // path's own by construction: `dynamics_setup` routed the stroke here off
-        // the very same variant, and the path is a pure function of the brush.
-        let strength = stark_shaders::mirror::erase::Erase {
-            params: [
-                rec.brush
-                    .erase()
-                    .expect("the erase pass draws erase brushes (§6.12)")
-                    .opacity
-                    .clamp(0.0, 1.0),
-                0.0,
-                0.0,
-                0.0,
-            ],
+        // The erase opacity, once per piece — `StrokeConstants` resolved it with
+        // the color, so this path cannot disagree with the others about what the
+        // dial said (`BrushEffect::opacity`).
+        let opacity = stark_shaders::mirror::erase::Erase {
+            params: [k.opacity, 0.0, 0.0, 0.0],
         };
-        let strength_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stark erase strength"),
-            size: std::mem::size_of_val(&strength) as u64,
+        let opacity_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stark erase opacity"),
+            size: std::mem::size_of_val(&opacity) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }));
         self.ctx
             .queue
-            .write_buffer(&strength_buf, 0, bytemuck::bytes_of(&strength));
+            .write_buffer(&opacity_buf, 0, bytemuck::bytes_of(&opacity));
 
         // The carry this piece hands on: everything the pieces before it
         // accumulated — shared, never rewritten — with this piece's tiles
@@ -349,7 +316,7 @@ impl StrokeRenderer {
                     eb::BASE_AUX => wgpu::BindingResource::TextureView(pristine.aux_view()),
                     eb::ACCUM => wgpu::BindingResource::TextureView(work.view()),
                     eb::SELECTION => wgpu::BindingResource::TextureView(&mask_view),
-                    eb::E => strength_buf.as_entire_binding(),
+                    eb::E => opacity_buf.as_entire_binding(),
                     eb::BASE_RESID => wgpu::BindingResource::TextureView(
                         pristine.resid_view().expect("a residual build has one"),
                     ),

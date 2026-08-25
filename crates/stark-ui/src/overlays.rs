@@ -246,7 +246,7 @@ pub fn PickLoupe() -> Element {
     let Some(at) = (state.pick.loupe)() else {
         return rsx! {};
     };
-    let [r, g, b, _] = color().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    let [r, g, b] = color().unwrap_or([0.0, 0.0, 0.0]);
     // Straight sRGB, which is what a brush color is (`panels::color`).
     let fill = format!(
         "background: rgb({:.1}% {:.1}% {:.1}%);",

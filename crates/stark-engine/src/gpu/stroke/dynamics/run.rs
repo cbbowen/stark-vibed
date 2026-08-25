@@ -343,8 +343,9 @@ impl<'a> DynamicsRun<'a> {
                 );
             }
         } else {
-            // Init: latent = the brush's own color, per-unit opacity = its alpha;
-            // the carried amount starts at the pre-`charge` glob (0 = empty tool).
+            // Init: latent = the brush's own color, per-unit opacity = exactly 1
+            // (minted paint is opaque per unit, §6.2); the carried amount starts
+            // at the pre-`charge` glob (0 = empty tool).
             let d = paint_effect(rec).dynamics;
             scope
                 .encoder()
@@ -357,7 +358,7 @@ impl<'a> DynamicsRun<'a> {
                                 r: consts.channels[0] as f64,
                                 g: consts.channels[1] as f64,
                                 b: consts.channels[2] as f64,
-                                a: consts.channels[3] as f64,
+                                a: 1.0,
                             }),
                         )),
                         Some(desc::attach(
@@ -365,8 +366,12 @@ impl<'a> DynamicsRun<'a> {
                             desc::clear_to(wgpu::Color {
                                 // Carried height = the pre-`charge` glob; the rest of
                                 // the reservoir aux is unused (height is the only
-                                // thing the tool carries, §6.1).
-                                r: d.charge as f64,
+                                // thing the tool carries, §6.1). The effect's opacity
+                                // scales the glob for the `add` rate's reason
+                                // (`plan.rs`): both are paint the brush *mints*, and
+                                // the ceiling this path cannot hold exactly scales
+                                // the mint instead (§6.2).
+                                r: (d.charge * consts.opacity) as f64,
                                 g: 0.0,
                                 b: 0.0,
                                 a: 0.0,

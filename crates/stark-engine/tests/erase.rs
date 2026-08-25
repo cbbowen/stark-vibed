@@ -3,7 +3,7 @@
 //! The claims worth pinning are the ones the pass exists for: the dial is quoted
 //! in what the eye sees (`erase = 0.5` under a saturated stroke leaves half the
 //! visible opacity — held here as *equality with the half-covered fill*, which is
-//! the same statement with no media arithmetic in it), the strength is a ceiling
+//! the same statement with no media arithmetic in it), the opacity is a ceiling
 //! a stroke cannot scrub past, separate strokes compound multiplicatively, a full
 //! erase is bare canvas again to the bit, and nothing outside the stroke's own
 //! extent moves at all. The piecewise-vs-whole and round-trip obligations ride
@@ -24,14 +24,14 @@ use stark_model::geom::Vec2;
 /// at the target coverage.
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
-/// An eraser (§6.12): `strength` is the dial, and its flow the rate — high
+/// An eraser (§6.12): `opacity` is the dial, and its flow the rate — high
 /// enough here that one pass saturates the bite to its ceiling over the stroke's
 /// core, so a test sampling the core is reading the dial and not a half-built
 /// fringe.
-fn eraser(strength: f32, radius: f32) -> BrushParams {
-    let mut b = brush([0.0, 0.0, 0.0, 1.0], radius);
+fn eraser(opacity: f32, radius: f32) -> BrushParams {
+    let mut b = brush([0.0, 0.0, 0.0], radius);
     b.effect = BrushEffect::Erase(EraseEffect {
-        opacity: strength,
+        opacity,
         flow: 2.5,
         ..EraseEffect::default()
     });

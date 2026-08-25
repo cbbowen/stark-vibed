@@ -74,7 +74,7 @@ pub fn SelectPanel() -> Element {
         )
     });
     let (action, feather, opacity, brush_color) =
-        arm().unwrap_or((ShapeAction::default(), 0.0, 1.0, [0.0; 4]));
+        arm().unwrap_or((ShapeAction::default(), 0.0, 1.0, [0.0; 3]));
 
     let chip = |on: bool| if on { "chip active" } else { "chip" };
     // Which tool is armed is deliberately *not* in the memo above: the three
@@ -165,7 +165,10 @@ pub fn SelectPanel() -> Element {
                     // than a separate swatch beside the word splitting them — and the
                     // row keeps five glyphs on one baseline.
                     if a == ShapeAction::Fill {
-                        {icon_tinted(glyph, brush_color)}
+                        // The wash's strength is the marquee fill's own opacity —
+                        // the slider below — since the brush color is three channels
+                        // of pigment and nothing about amount (§6.2).
+                        {icon_tinted(glyph, [brush_color[0], brush_color[1], brush_color[2], opacity])}
                     } else {
                         {icon(glyph)}
                     }
@@ -214,7 +217,7 @@ pub fn SelectionBar() -> Element {
     // same loaded bucket: the brush's color is a property of the *act*, not of the
     // panel that happens to host the control.
     let shown = use_obs(state, |o| (o.has_selection, o.brush.color));
-    let (active, brush_color) = shown().unwrap_or((false, [0.0; 4]));
+    let (active, brush_color) = shown().unwrap_or((false, [0.0; 3]));
     // While any mode is composing, its own bar stands in for this one: the
     // whole-selection commands would fight the gesture (deselecting mid-transform
     // would move the wrong region on "Done"). Every mode, not the two that hold a
@@ -264,7 +267,9 @@ pub fn SelectionBar() -> Element {
                     class: "chip",
                     title: Command::FillSelection.tooltip(&state.bindings.read()),
                     onclick: move |_| Command::FillSelection.run(state),
-                    {icon_tinted(icons::PAINT_BUCKET, brush_color)}
+                    // At full strength: this fill's coverage is the mask's own
+                    // (`FillOp::of_selection`), so there is no thinner wash to show.
+                    {icon_tinted(icons::PAINT_BUCKET, [brush_color[0], brush_color[1], brush_color[2], 1.0])}
                     {label(Command::FillSelection.word())}
                 }
                 // The same act as Fill with the parcel varying along a dragged
@@ -289,7 +294,7 @@ pub fn SelectionBar() -> Element {
 /// all — it fills the selection, so the selection's own coverage answers it
 /// ([`FillOp::of_selection`]).
 pub fn fill_selection(state: AppState) {
-    let Some((layer, [r, g, b, _])) = state
+    let Some((layer, [r, g, b])) = state
         .obs
         .peek()
         .as_ref()

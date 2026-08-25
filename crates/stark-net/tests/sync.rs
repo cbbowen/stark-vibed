@@ -35,7 +35,7 @@ fn engine_or_skip() -> Option<Engine> {
     }
 }
 
-fn paint(engine: &mut Engine, color: [f32; 4], points: &[Vec2]) {
+fn paint(engine: &mut Engine, color: [f32; 3], points: &[Vec2]) {
     let brush = BrushParams {
         color,
         size: 12.0,
@@ -148,7 +148,7 @@ async fn two_peers_converge_over_iroh() {
     // --- host side: paint before sharing, then share ---
     paint(
         &mut host,
-        [0.9, 0.1, 0.1, 1.0],
+        [0.9, 0.1, 0.1],
         &[Vec2::new(40.0, 60.0), Vec2::new(216.0, 60.0)],
     );
 
@@ -190,12 +190,12 @@ async fn two_peers_converge_over_iroh() {
     // --- concurrent edits, crossing on the canvas ---
     paint(
         &mut host,
-        [0.1, 0.8, 0.2, 1.0],
+        [0.1, 0.8, 0.2],
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
     );
     paint(
         &mut peer,
-        [0.1, 0.2, 0.9, 1.0],
+        [0.1, 0.2, 0.9],
         &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)],
     );
     flush_outbox(&mut host, &host_session).await;
@@ -342,7 +342,7 @@ async fn custom_shapes_replicate_mid_session() {
     paint_with(
         &mut host,
         BrushParams {
-            color: [0.8, 0.2, 0.1, 1.0],
+            color: [0.8, 0.2, 0.1],
             size: 20.0,
             shape: BrushShape::Stamp(committed),
             ..Default::default()
@@ -432,7 +432,7 @@ async fn a_peer_paints_on_a_substrate_it_has_never_seen() {
 
     // A dry brush: it reaches only for the peaks, so its mark *is* the substrate.
     let dry = BrushParams {
-        color: [0.85, 0.15, 0.1, 1.0],
+        color: [0.85, 0.15, 0.1],
         size: 30.0,
         tooth: stark_model::document::ToothParams {
             give: 0.45,
@@ -508,7 +508,7 @@ async fn a_stroke_whose_shape_was_never_registered_still_arrives() {
     paint_with(
         &mut host,
         BrushParams {
-            color: [0.2, 0.4, 0.9, 1.0],
+            color: [0.2, 0.4, 0.9],
             size: 22.0,
             shape: BrushShape::Stamp(orphan),
             ..Default::default()
@@ -580,7 +580,7 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
     paint_with(
         &mut host,
         BrushParams {
-            color: [0.1, 0.7, 0.3, 1.0],
+            color: [0.1, 0.7, 0.3],
             size: 18.0,
             shape: BrushShape::Stamp(shape),
             ..Default::default()
@@ -650,7 +650,7 @@ async fn a_promised_substrate_is_left_out_of_the_snapshot_and_still_replays() {
     paint_with(
         &mut host,
         BrushParams {
-            color: [0.85, 0.15, 0.1, 1.0],
+            color: [0.85, 0.15, 0.1],
             size: 30.0,
             tooth: stark_model::document::ToothParams {
                 give: 0.45,
@@ -797,7 +797,7 @@ async fn a_promised_substrate_is_asked_of_the_frontend_mid_session() {
     paint_with(
         &mut host,
         BrushParams {
-            color: [0.85, 0.15, 0.1, 1.0],
+            color: [0.85, 0.15, 0.1],
             size: 30.0,
             tooth: stark_model::document::ToothParams {
                 give: 0.45,

@@ -45,14 +45,13 @@ use crate::clamp01;
 ///
 /// # What is deliberately not one
 ///
-/// [`BrushParams::color`](crate::document::BrushParams::color) is RGBA and stays a
-/// bare `[f32; 4]`. Not an oversight and not only the extra channel: the frontend
-/// writes it a component at a time — an opacity slider assigns `color[3]`, a picker
-/// copies into `color[..3]` — so a wrapper there would need setters that re-clamp,
-/// which is the *other* design (a value you may mutate carefully) rather than this
-/// one (a value that cannot be built wrong). And a brush already has a funnel of its
-/// own in `BrushParams::sanitized`, which is exactly what the four sites here did
-/// not.
+/// [`BrushParams::color`](crate::document::BrushParams::color) stays a bare
+/// `[f32; 3]`. Not an oversight: the frontend writes it a component at a time —
+/// a channel slider assigns `color[1]` — so a wrapper there would need setters
+/// that re-clamp, which is the *other* design (a value you may mutate carefully)
+/// rather than this one (a value that cannot be built wrong). And a brush already
+/// has a funnel of its own in `BrushParams::sanitized`, which is exactly what the
+/// four sites here did not.
 ///
 /// # The wire
 ///

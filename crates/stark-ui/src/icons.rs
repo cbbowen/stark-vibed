@@ -513,8 +513,9 @@ pub fn icon_large(svg: &'static str) -> Element {
 /// The same icon holding a paint color rather than the color of its control — for
 /// the one glyph that has to say *which* paint the act would lay, not only which act.
 ///
-/// The color arrives as the brush's RGBA, and its alpha is the paint's opacity
-/// (per-unit, as everywhere in Stark), so a thin wash has to *look* thin. That is why
+/// The color arrives as the brush's RGB with the strength the act would lay it
+/// at in the fourth lane — the marquee fill's own opacity, or 1 for the
+/// mask-bounded fill — so a thin wash has to *look* thin. That is why
 /// the glyph is drawn twice, the paint over an untinted copy of itself: the copy
 /// underneath is the light base a 15% wash tints, the same job a swatch's white
 /// backing does. Laid straight onto the chip's dark ground the same wash comes out a dim grey

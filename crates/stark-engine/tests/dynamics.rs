@@ -12,11 +12,11 @@ use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
-const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+const RED: [f32; 3] = [1.0, 0.0, 0.0];
+const GREEN: [f32; 3] = [0.0, 1.0, 0.0];
 
 /// A brush with the given [`BrushDynamics`].
-fn dyn_brush(color: [f32; 4], radius: f32, dynamics: BrushDynamics) -> BrushParams {
+fn dyn_brush(color: [f32; 3], radius: f32, dynamics: BrushDynamics) -> BrushParams {
     BrushParams {
         effect: BrushEffect::paint_with(dynamics),
         ..brush(color, radius)
@@ -624,7 +624,9 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
         return;
     };
     // A broad field to smear inside, so nothing the tip carries leaves the region.
-    let mut faint = brush([1.0, 0.0, 0.0, 0.12], 110.0);
+    // Laid at low opacity (§6.2) so the render still shows height moving.
+    let mut faint = brush([1.0, 0.0, 0.0], 110.0);
+    faint.effect.set_opacity(0.12);
     faint.drain = 0.0;
     stroke_with(
         &mut engine,
@@ -1623,7 +1625,7 @@ fn the_settle_leaves_no_crease_across_the_last_stamp() {
     // A **hard** tip (0.95) on both, and a mid-tone paint: the settle's exposure ramps
     // across the whole radius, so what decides how sharply its corner registers is how
     // steeply the tip's own optical depth falls at the shoulder.
-    let paint = [0.5, 0.0, 0.0, 1.0];
+    let paint = [0.5, 0.0, 0.0];
     let hard = BrushShape::Round { hardness: 0.95 };
     let mut bed = brush(paint, 256.0);
     bed.drain = 0.0;
@@ -1846,7 +1848,7 @@ fn a_bleeding_strokes_preview_is_its_commit() {
     };
     // Two long parallel bands with a hard color step between them — structure for
     // the diffusion to move, everywhere along the stroke.
-    for (color, y) in [(GREEN, -22.0f32), ([0.95, 0.85, 0.1, 1.0], 22.0)] {
+    for (color, y) in [(GREEN, -22.0f32), ([0.95, 0.85, 0.1], 22.0)] {
         let mut b = brush(color, 26.0);
         b.drain = 0.0;
         stroke_with(&mut engine, b, &[Vec2::new(-620.0, y), Vec2::new(620.0, y)]);
@@ -1854,7 +1856,7 @@ fn a_bleeding_strokes_preview_is_its_commit() {
 
     // Pure lateral diffusion: no source, no vertical exchange — the loop runs for
     // the bleed alone, so every visible difference is the flux.
-    let mut b = brush([0.0, 0.0, 0.0, 0.0], 120.0);
+    let mut b = brush([0.0, 0.0, 0.0], 120.0);
     b.drain = 0.0;
     b.paint_mut().expect("a paint brush").dynamics.flow = 0.0;
     b.paint_mut().expect("a paint brush").dynamics.bleed = 1.0;

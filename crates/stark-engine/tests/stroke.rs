@@ -30,7 +30,7 @@ use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::BrushParams;
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 fn paint_stroke(engine: &mut Engine) {
     paint(
@@ -141,7 +141,7 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
 /// its one-way load switched off, since the default `drain` runs a stroke dry a few
 /// hundred px in and would leave the far end of the band bare.
 fn long_band(engine: &mut Engine, points: &[Vec2]) {
-    let mut b = brush([0.1, 0.9, 0.2, 1.0], 30.0);
+    let mut b = brush([0.1, 0.9, 0.2], 30.0);
     b.drain = 0.0;
     stroke_with(engine, b, points);
 }
@@ -177,7 +177,7 @@ fn a_stroke_too_wide_for_one_region_still_moves_paint() {
         "the undercoat did not land, so there is nothing to scrape"
     );
 
-    let mut scrape = brush([0.0, 0.0, 0.0, 0.0], 22.0);
+    let mut scrape = brush([0.0, 0.0, 0.0], 22.0);
     scrape.drain = 0.0;
     scrape.paint_mut().expect("a paint brush").dynamics.flow = 0.0;
     scrape.paint_mut().expect("a paint brush").dynamics.lift = 1.0;

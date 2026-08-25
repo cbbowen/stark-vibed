@@ -16,9 +16,9 @@ use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{ActorId, LayerId};
 use stark_model::geom::{Extent2, Vec2};
 
-const RED: [f32; 4] = [0.9, 0.1, 0.1, 1.0];
-const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
-const BLUE: [f32; 4] = [0.1, 0.2, 0.9, 1.0];
+const RED: [f32; 3] = [0.9, 0.1, 0.1];
+const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
+const BLUE: [f32; 3] = [0.1, 0.2, 0.9];
 
 /// A viewport wide enough to hold two tile columns (`TILE_SIZE` is 254 canvas
 /// px): same-layer strokes only commute when their padded extents share no
@@ -60,7 +60,7 @@ fn canonical_snap(of: &mut Engine, size: Extent2) -> Option<RgbaImage> {
 }
 
 /// A short horizontal stroke centred at `y`, in `x0..x1`.
-fn bar(e: &mut Engine, color: [f32; 4], (x0, x1): (f32, f32), y: f32) {
+fn bar(e: &mut Engine, color: [f32; 3], (x0, x1): (f32, f32), y: f32) {
     paint(e, color, 8.0, &[Vec2::new(x0, y), Vec2::new(x1, y)]);
 }
 

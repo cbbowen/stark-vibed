@@ -549,6 +549,12 @@ impl BrushModulations {
 /// of [`BrushDynamics`] (§6.2). With the effect they modulate
 /// ([`PaintEffect::modulation`]) rather than beside the tip's own mappings, so a
 /// mapping cannot name a knob its brush does not have.
+///
+/// [`opacity`](PaintEffect::opacity) is deliberately not a target, for
+/// [`EraseModulations`]' reason exactly: a modulated *ceiling* cannot ride the
+/// integrate's one per-stroke uniform — it needs a second accumulator lane (a
+/// mass-weighted opacity) to stay independent of how a live stroke is cut into
+/// pieces — so the knob the pen drives is the rate.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub struct PaintModulations {
     /// Scales [`BrushDynamics::flow`] — the brush's own paint, "Flow" in the UI.
@@ -770,8 +776,30 @@ impl ToothParams {
 /// The **painting** effect (§6.2): the brush lays its own paint and works
 /// what is already there — the everyday brush, the smudge, the knife, the blur,
 /// and every mixture of them.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct PaintEffect {
+    /// How much of a **full stroke** this stroke is, in [0, 1] — a ceiling on the
+    /// stroke's final laid amount, [`EraseEffect::opacity`]'s law run in the laying
+    /// direction. The whole stroke's parcel is scaled as one deposit: the coverage
+    /// `w` it would have laid saturates at 1 however long the stroke works one
+    /// spot, its visible alpha becomes `opacity · w`, and the height is scaled
+    /// through the slab law (§6.1) to the amount that shows exactly that — so at
+    /// 0.5 a saturated stroke covers half, scrubbing walks its soft edge toward
+    /// the cap rather than past it, and a stroke crossing itself never outruns the
+    /// dial. The knob a digital artist calls Opacity, beside the
+    /// [`flow`](BrushDynamics::flow) that is the rate.
+    ///
+    /// On a brush that also works existing paint (a nonzero
+    /// [`lift`](BrushDynamics::lift) / [`deposit`](BrushDynamics::deposit) /
+    /// [`bleed`](BrushDynamics::bleed) axis), the ceiling cannot be exact: what the
+    /// stroke moves it must move whole — conservation (§6.1) — and once fresh
+    /// paint is smeared into the picture there is no longer a "this stroke's
+    /// share" for a ceiling to scale. There the knob scales what the brush
+    /// **mints** — the flow's paint and the [`charge`](BrushDynamics::charge)'s
+    /// glob — by the same fraction, which agrees with the ceiling to first order
+    /// in the amount laid and exactly at 1.
+    #[serde(default = "PaintEffect::default_opacity")]
+    pub opacity: f32,
     /// The source rate and the four fluxes — the unified natural-media tool
     /// (§6.2).
     #[serde(default)]
@@ -785,6 +813,28 @@ pub struct PaintEffect {
     /// [`BrushParams::modulation`].
     #[serde(default)]
     pub modulation: PaintModulations,
+}
+
+impl Default for PaintEffect {
+    /// The everyday brush: a full stroke, plain flow, the constant color.
+    fn default() -> Self {
+        Self {
+            opacity: 1.0,
+            dynamics: BrushDynamics::default(),
+            color_dynamics: ColorDynamics::default(),
+            modulation: PaintModulations::default(),
+        }
+    }
+}
+
+impl PaintEffect {
+    /// The opacity a brush gets when it does not say
+    /// ([`opacity`](Self::opacity)): a full stroke — for
+    /// `#[serde(default = "…")]`, which takes a path to call and cannot name a
+    /// constant.
+    fn default_opacity() -> f32 {
+        1.0
+    }
 }
 
 /// The **erasing** effect (§6.12): the stroke lays nothing and instead
@@ -883,6 +933,26 @@ impl BrushEffect {
         }
     }
 
+    /// The effect's **opacity** — the ceiling on what a saturated stroke does,
+    /// whichever effect is in force: how much of a full stroke it lays
+    /// ([`PaintEffect::opacity`]) or removes ([`EraseEffect::opacity`]).
+    /// [`flow`](Self::flow)'s sibling, and one question for one slider for the
+    /// same reason.
+    pub fn opacity(&self) -> f32 {
+        match self {
+            Self::Paint(p) => p.opacity,
+            Self::Erase(e) => e.opacity,
+        }
+    }
+
+    /// Write the effect's opacity — [`opacity`](Self::opacity)'s other half.
+    pub fn set_opacity(&mut self, opacity: f32) {
+        match self {
+            Self::Paint(p) => p.opacity = opacity,
+            Self::Erase(e) => e.opacity = opacity,
+        }
+    }
+
     /// The steepest response across the effect's own pen mappings — the effect's
     /// share of [`BrushParams::max_slope`].
     pub fn max_slope(&self) -> f32 {
@@ -897,6 +967,9 @@ impl BrushEffect {
     pub fn sanitized(self) -> Self {
         match self {
             Self::Paint(p) => Self::Paint(PaintEffect {
+                // In `[0, 1]` by the field's own doc, for the erase twin's
+                // reason: a ceiling on the fraction laid, meaningless past 1.
+                opacity: clamp01(finite_or(p.opacity, 1.0)),
                 dynamics: p.dynamics.sanitized(),
                 color_dynamics: p.color_dynamics.sanitized(),
                 modulation: p.modulation.sanitized(),
@@ -915,18 +988,23 @@ impl BrushEffect {
     }
 }
 
-/// Brush configuration. `color` is straight **sRGB** RGBA; it is converted to
+/// Brush configuration. `color` is straight **sRGB**; it is converted to
 /// the Oklab working space at stamp time (§6.5).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct BrushParams {
-    /// Straight (un-premultiplied) sRGB RGBA, components in [0, 1].
+    /// sRGB, components in [0, 1] — the pigment, and nothing about how much of it
+    /// arrives. There is no fourth component: the paint a brush lays is per-unit
+    /// opaque, and "how much shows" is the effect's own
+    /// [`opacity`](BrushEffect::opacity) — a ceiling on the finished stroke —
+    /// where an alpha here scaled the *material* and so answered a question no
+    /// digital artist was asking (§6.2).
     ///
     /// On the brush rather than inside [`BrushEffect::Paint`], although only
     /// painting reads it: the color is the *hand's*, not the tool's (§18.1.8) —
     /// the Color panel writes it whatever brush is held, a quick-brush slot never
     /// carries it, and a color picked while the pen's eraser end is down has to
     /// have somewhere to land.
-    pub color: [f32; 4],
+    pub color: [f32; 3],
     /// Stamp radius in canvas pixels at full pressure.
     pub size: f32,
     /// Brush tip shape (§6.6).
@@ -1030,7 +1108,7 @@ pub struct BrushParams {
 impl Default for BrushParams {
     fn default() -> Self {
         Self {
-            color: [0.0, 0.0, 0.0, 1.0],
+            color: [0.0, 0.0, 0.0],
             size: 16.0,
             shape: BrushShape::default(),
             stretch: 0.0,
@@ -1181,7 +1259,7 @@ impl BrushParams {
     /// is for a filter (§21.5) and for the same two reasons.
     ///
     /// **It clamps only where this crate already states a range.** The three pickup
-    /// axes, the tooth's *give*, the erase *opacity*, the hardness and the color are
+    /// axes, the tooth's *give*, either effect's *opacity*, the hardness and the color are
     /// quoted in `[0, 1]` by their own field docs, and so is the deposit
     /// [`jitter`](Self::jitter), whose gate goes negative past 1; the stretch
     /// saturates at [`MAX_STRETCH`](Self::MAX_STRETCH) by construction. Everything
@@ -1440,7 +1518,7 @@ mod tests {
             ("start_taper", |b, f| b.start_taper_length = f),
             ("end_taper", |b, f| b.end_taper_length = f),
             ("color.r", |b, f| b.color[0] = f),
-            ("color.a", |b, f| b.color[3] = f),
+            ("paint.opacity", |b, f| paint(b).opacity = f),
             ("dynamics.add", |b, f| paint(b).dynamics.flow = f),
             ("dynamics.lift", |b, f| paint(b).dynamics.lift = f),
             ("dynamics.deposit", |b, f| paint(b).dynamics.deposit = f),
@@ -1468,6 +1546,7 @@ mod tests {
                 b.start_taper_length,
                 b.end_taper_length,
                 b.effect.flow(),
+                b.effect.opacity(),
             ];
             if let Some(p) = b.paint() {
                 v.extend([
@@ -1477,18 +1556,12 @@ mod tests {
                     p.dynamics.bleed,
                 ]);
             }
-            if let Some(e) = b.erase() {
-                v.push(e.opacity);
-            }
             v
         };
         let unit = |b: &BrushParams| {
-            let mut v = vec![b.tooth.give, b.color[0], b.color[3]];
+            let mut v = vec![b.tooth.give, b.color[0], b.effect.opacity()];
             if let Some(p) = b.paint() {
                 v.extend([p.dynamics.lift, p.dynamics.deposit, p.dynamics.bleed]);
-            }
-            if let Some(e) = b.erase() {
-                v.push(e.opacity);
             }
             v
         };
@@ -1525,6 +1598,7 @@ mod tests {
                 softness: 0.3,
             },
             effect: BrushEffect::Paint(PaintEffect {
+                opacity: 0.85,
                 dynamics: BrushDynamics {
                     flow: 2.5, // past the frontend's slider, and legitimately so
                     lift: 1.0,

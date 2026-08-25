@@ -3,7 +3,7 @@
 //!
 //! A preset is a whole brush **except the painting color**: applying one keeps
 //! the current RGB (color belongs to the Color panel) while everything else —
-//! including the brush's own opacity, `color[3]` — comes from the preset
+//! including the effect's own opacity (§6.2) — comes from the preset
 //! ([`wear`]).
 //!
 //! # Two kinds of entry, one list
@@ -185,6 +185,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 drain: 0.1,
                 shape: BrushShape::Round { hardness: 0.98 },
                 effect: BrushEffect::Paint(PaintEffect {
+                    opacity: 1.0,
                     dynamics: BrushDynamics {
                         flow: 3.0,
                         lift: 0.25,
@@ -221,6 +222,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 size: 100.0,
                 shape: shapes.bristles,
                 effect: BrushEffect::Paint(PaintEffect {
+                    opacity: 1.0,
                     dynamics: BrushDynamics {
                         flow: 3.0,
                         lift: 0.25,
@@ -315,6 +317,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     ..BrushModulations::default()
                 },
                 effect: BrushEffect::Paint(PaintEffect {
+                    opacity: 1.0,
                     dynamics: BrushDynamics {
                         flow: 0.4,
                         ..BrushDynamics::default()
@@ -348,6 +351,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     ..BrushModulations::default()
                 },
                 effect: BrushEffect::Paint(PaintEffect {
+                    opacity: 1.0,
                     dynamics: BrushDynamics {
                         flow: 0.1,
                         ..BrushDynamics::default()
@@ -377,6 +381,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 },
                 shape: BrushShape::Round { hardness: 0.8 },
                 effect: BrushEffect::Paint(PaintEffect {
+                    opacity: 1.0,
                     dynamics: BrushDynamics {
                         flow: 0.0,
                         lift: 0.25,
@@ -551,9 +556,9 @@ pub fn apply(state: AppState, name: &str) {
 /// one on the way out, would make the color a property of which key was last
 /// pressed.
 ///
-/// The RGB kept is the *live* one, so it survives every swap; the brush's own
-/// opacity (`color[3]`, a material property — §6.1) rides along with the tool,
-/// as does everything else.
+/// The RGB kept is the *live* one, so it survives every swap; the effect's own
+/// opacity (`BrushEffect::opacity`, part of what the tool does — §6.2) rides
+/// along with the tool, as does everything else.
 ///
 /// A stamp shape whose bytes are no longer anywhere (removed from the shape
 /// library, unseen by this document) falls back to the round tip rather than
@@ -581,9 +586,9 @@ pub fn wear(state: AppState, wearable: Wearable) {
     let mut amount = state.smoothing;
     amount.set(smoothing.clamp(0.0, 1.0));
     update_brush(state, move |b| {
-        let rgb = [b.color[0], b.color[1], b.color[2]];
+        let rgb = b.color;
         *b = brush;
-        b.color[..3].copy_from_slice(&rgb);
+        b.color = rgb;
     });
     crate::tutor::not_reaching(state, false);
 }
@@ -681,7 +686,7 @@ pub fn name_of(entries: &[PresetEntry], brush: &Wearable) -> Option<String> {
 /// smoothed differently is no longer that preset.
 pub fn matches(current: &Wearable, preset: &Wearable) -> bool {
     let mut p = *preset;
-    p.params.color[..3].copy_from_slice(&current.params.color[..3]);
+    p.params.color = current.params.color;
     p == *current
 }
 
@@ -805,10 +810,7 @@ mod tests {
             .params
             .erase()
             .expect("the pen's tail must erase, not paint");
-        assert!(
-            erase.opacity > 0.0,
-            "an eraser at no strength does nothing"
-        );
+        assert!(erase.opacity > 0.0, "an eraser at no strength does nothing");
         assert!(
             erase.flow > 0.0,
             "flow is the erase pass's rate; at zero the eraser would do nothing"

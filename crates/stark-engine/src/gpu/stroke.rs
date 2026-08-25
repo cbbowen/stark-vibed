@@ -259,7 +259,7 @@ impl StrokeRenderer {
                 }
                 self.render_dynamic(scene, rec, spans, tool, plan.tol)
             }
-            StrokePath::Swept => self.render_swept(scene, rec, spans, plan.tol),
+            StrokePath::Swept => self.render_swept(scene, rec, spans, plan.tol, tool),
             StrokePath::Erase => self.render_erase(scene, rec, spans, tool, plan.tol),
             StrokePath::TipTooLarge => {
                 // An error, not a warning: what lands is not a rougher version of the
@@ -289,7 +289,7 @@ impl StrokeRenderer {
                          nothing",
                     );
                 }
-                self.render_swept(scene, rec, spans, plan.tol)
+                self.render_swept(scene, rec, spans, plan.tol, tool)
             }
         }
     }
@@ -352,13 +352,17 @@ impl StrokeRenderer {
         // The brush keeps a bare RGBA because the frontend writes it a component
         // at a time (`Srgb`); this is the boundary where its RGB half becomes the
         // display color the conversion is defined on.
-        let rgb = Srgb::new([rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]]);
+        let rgb = Srgb::new(rec.brush.color);
         let ch = self.color_space.rgb_to_channels(rgb);
         let res = self.color_space.rgb_to_resid(rgb);
         let (nfreq, namp, noff) = noise_uniform(rec);
         StrokeConstants {
-            channels: [ch[0], ch[1], ch[2], rec.brush.color[3]],
+            channels: [ch[0], ch[1], ch[2]],
             resid: [res[0], res[1], res[2], 0.0],
+            // Clamped where the record becomes numbers, the color's rule: the
+            // ceiling is quoted in [0, 1] (`BrushEffect::opacity`) and a wire
+            // value past it is nonsense, not a stronger setting.
+            opacity: rec.brush.effect.opacity().clamp(0.0, 1.0),
             substrate_uv_scale: substrate.relief * substrate.uv_scale,
             tooth_softness: rec.brush.tooth.softness,
             nfreq,
@@ -390,15 +394,23 @@ impl StrokeRenderer {
 /// one place is what makes the agreement structural rather than a matter of two files
 /// happening to contain the same line.
 struct StrokeConstants {
-    /// The brush's own color in the working space, plus its per-unit opacity.
-    /// **Undrained** — both paths fade it per fragment from the fragment's own arc
-    /// length, never per segment.
-    channels: [f32; 4],
+    /// The brush's own color in the working space. No per-unit opacity beside it:
+    /// the paint a brush lays is opaque per unit, faded only by the `drain` —
+    /// which both paths apply per fragment from the fragment's own arc length,
+    /// never per segment.
+    channels: [f32; 3],
     /// The same color's **residual** (§6.7) in `.xyz`; `.w` unused. Zero in a space
     /// with no residual, and zero because that space's channels above are already the
     /// whole color — both paths write this lane unconditionally, since the uniform it
     /// lands in is one Rust struct across both shader variants.
     resid: [f32; 4],
+    /// The effect's **opacity** (`BrushEffect::opacity`): the ceiling on what a
+    /// saturated stroke does, whichever effect and whichever path. Each path
+    /// applies it where its own law can hold it exactly — the swept integrate and
+    /// the erase pass scale the whole accumulated extent per stroke, the stamp
+    /// loop scales what it mints (§6.2) — but the number is one number, resolved
+    /// here so the paths cannot disagree about what the dial said.
+    opacity: f32,
     /// Canvas px → substrate-tile uv (§6.4). Zero on a substrate with no relief — a `Flat`
     /// canvas, or one whose bytes have not arrived — which sends the tooth to exactly
     /// 1 and leaves the deposit bit-for-bit what it was before the tooth existed.

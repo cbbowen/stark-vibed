@@ -13,9 +13,12 @@ struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
     // params.z = 2 / TILE_TEX (full interior+apron maps to NDC); params.w unused.
     params: vec4<f32>,
-    // The brush's color in the color space's channels (.xyz) + its per-unit opacity
-    // (.w). Constant across the stroke — color dynamics (below) jitter the channels
-    // per fragment, and `drain` fades the opacity per fragment (see `stroke_drain`).
+    // The brush's color in the color space's channels (.xyz); .w unused. Constant
+    // across the stroke — color dynamics (below) jitter the channels per fragment.
+    // There is no per-unit opacity here: the paint a brush lays is per-unit opaque
+    // (§6.2), faded only by `drain` per fragment (see `stroke_drain`), and "how
+    // much shows" is the effect's own opacity, applied where the whole parcel
+    // lands (`integrate.wesl`).
     color: vec4<f32>,
     // The brush color's **residual** (.xyz) — what the space's three channels cannot
     // express (§6.7). Zero for every space but Mixbox, whose pigment

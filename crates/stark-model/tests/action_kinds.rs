@@ -154,7 +154,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
                 stretch: n,
                 drain: n,
                 start_taper_length: n,
-                color: [n, 0.5, 0.5, 1.0],
+                color: [n, 0.5, 0.5],
                 ..BrushParams::default()
             },
             path: vec![ControlPoint::at(Vec2::splat(4.0))],

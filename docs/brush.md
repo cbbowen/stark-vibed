@@ -426,10 +426,12 @@ multiplicative in `(1−α)`, hence additive in **optical depth** `τ = −ln(1�
 - Precompute, per brush, the **prefix integral of `τ` along the travel axis**.
   A length-`d` segment's swept depth at a point is `prefix(u) − prefix(u−d)` for
   that row — an O(1) lookup.
-- A segment quad lays a **parcel of paint**, not a coverage: `add · τ` of height
-  at the brush's own per-unit opacity, the two meeting only in the slab law
-  (§6.1). What the color target carries is therefore that parcel's *visible
-  alpha*, `α_seg = 1 − exp(−K · opacity · add · τ)`. Because the existing
+- A segment quad lays a **parcel of paint**, not a coverage: `add · τ` of height,
+  per-unit **opaque** — faded only by the drain; how much of the finished stroke
+  shows is the effect's own dial, applied where the whole parcel lands (the
+  opacity ceiling, below) — the two meeting only in the slab law (§6.1). What
+  the color target carries is therefore that parcel's *visible alpha*,
+  `α_seg = 1 − exp(−K · add · τ)`. Because the existing
   premultiplied-"over" blend across overlapping segment quads combines as
   `1 − ∏(1−α) = 1 − exp(−K·Σ m)`, it sums the parcels **exactly** — no
   double-counting at joints, no second pass — and the latent it carries stays
@@ -966,6 +968,64 @@ is the next structural win. *Paint never dries* — every texel stays as
 workable as the moment it was laid, which is what lets there be no wetness state
 at all; to glaze over "dry" paint the user adds a **new document layer**, which
 composites as if dry.
+
+### The opacity ceiling
+
+Both effects carry an **opacity** (`BrushEffect::opacity`): the ceiling on what
+a saturated stroke does. For paint it is §6.12's law run in the laying
+direction — the erase pass subtracts `opacity·w` of coverage, the paint
+integrate lays it:
+
+```text
+w  = 1 − exp(−K·Σm)          the coverage the whole parcel would lay
+m′ = −ln(1 − opacity·w)/K    the scaled coverage, inverted through the slab law
+h′ = h·(m′/m)                less of the same parcel; per-unit opacity unchanged
+```
+
+applied once per tile in `integrate.wesl`, before the parcel stacks on the
+base. `w` saturates at 1 however long the stroke works one spot, so what lands
+saturates at the dial: scrubbing walks the soft edge toward the cap, a stroke
+crossing itself never outruns it, and a saturated stroke at 0.5 over bare
+canvas is *pixel-equal to the fill at 0.5* (`tests/opacity.rs`). Separate
+strokes still compound as glazes — each stroke's scaled parcel stacks its mass
+through the shared law, so two saturated halves are the three-quarter fill. At
+1 the shader takes an exact branch and the path is bit-for-bit what it always
+was.
+
+**The brush color lost its alpha to this dial.** Minted paint is per-unit
+opaque (`m = h`, faded only by the drain): a per-unit alpha thinned the
+*material* — a translucency scrubbing would build straight through, at full
+relief however faint — which answered a question no digital artist was asking,
+and its one honest use (how much shows) is exactly what the ceiling states.
+`color` is three sRGB channels of pigment; everything about amount is the
+effect's.
+
+**Below 1 the swept path stops being stateless.** A scaled coverage is neither
+of the two piece-composable forms above, so the path takes the erase pass's
+shape (§6.12): the parcel — color, wide aux, residual — keeps accumulating
+across the pieces of a live stroke, and every piece's integrate re-derives its
+tiles from **pristine** paint under the whole of it (`SweepCarry`, beside the
+reservoir and the erase carry in `ToolState`; `render_swept_scaled`). Same
+copy-on-resume contract, same no-seam result; what it costs is a persistent
+scratch pair per touched tile for the stroke's lifetime and the scratch ring's
+overlap — which is why the branch is on the brush, and the full-opacity path
+never pays it.
+
+**On the stamp loop the ceiling cannot be exact, and does not pretend to be.**
+A wet brush moves paint, moved paint moves whole (§6.1), and once fresh paint
+is smeared into the picture there is no "this stroke's share" left for a
+ceiling to scale. There the dial scales what the brush **mints** — the `add`
+rate (`plan.rs`) and the `charge` glob — which agrees with the swept ceiling to
+first order in the amount laid and exactly at 1: a glaze at `flow f, opacity o`
+is the glaze at `flow o·f`. The two paths diverge only where a scrubbed
+dynamics brush approaches saturation, and the divergence is the honest one: the
+conserved path has no coverage cap to enforce.
+
+**Not built, and deliberately:** an `opacity` target in `PaintModulations`, for
+`EraseModulations`' reason exactly — a modulated ceiling cannot ride the
+integrate's one per-stroke uniform; it needs a second accumulator lane (a
+mass-weighted opacity) to stay independent of how a live stroke is cut into
+pieces. The pen drives the rate.
 
 ### Pen mapping — what drives which parameter
 
@@ -1795,8 +1855,9 @@ for the lasso. Each is local to the tow and its Start parameter.
 ## 6.12 The eraser — coverage subtracted through the slab law
 
 What a brush **does** is a sum type: `BrushParams::effect` is a
-`BrushEffect` — `Paint`, carrying the dynamics, the color dynamics and their pen
-mappings, or `Erase`, carrying a strength, its own flow and its own mappings.
+`BrushEffect` — `Paint`, carrying its opacity, the dynamics, the color
+dynamics and their pen mappings, or `Erase`, carrying its opacity, its own flow
+and its own mappings.
 Each variant holds exactly the knobs that exist under it, so an eraser has no
 `lift` for a pass to ignore and no color dynamics for a panel to show; what is
 left on `BrushParams` — the tip, the tooth, the jitter, the tapers, the drain —
@@ -1809,8 +1870,8 @@ of laid as paint. It exists because the conserved-flux eraser — `lift` up,
 per pass, and the slab law `1 − exp(−K·op·h)` (§6.1) is nearly flat in `h`
 wherever paint is thick, so the knob never meant anything in the units a
 digital artist reads. The erase pass acts in those units directly, and its dial
-is honest: `strength = 0.5` under a saturated stroke leaves half the opacity
-that was there.
+is honest: `opacity = 0.5` under a saturated stroke leaves half the visible
+opacity that was there.
 
 ### The law
 
@@ -1819,7 +1880,7 @@ stroke's accumulated **transparency mass** (below):
 
 ```text
 w  = 1 − exp(−K·m_e)                    the coverage the stroke would have covered by
-v₁ = v₀ · (1 − strength·w)              what must remain visible
+v₁ = v₀ · (1 − opacity·w)               what must remain visible
 m₁ = −ln(1 − v₁)/K,   h₁ = h₀·(m₁/m₀)   the slab law inverted; op, latent, residual untouched
 ```
 
@@ -1830,10 +1891,10 @@ Three properties are the design:
   prefix-τ sweep, the same drain, tooth and jitter gates — so an eraser's edge
   is exactly the soft edge its brush would have drawn, and its flow is a rate
   with the meaning Flow always has.
-- **`strength` is a ceiling, not a rate.** `w` saturates at 1 however long
-  the stroke works one spot, so a stroke removes at most `strength` of what it
+- **`opacity` is a ceiling, not a rate.** `w` saturates at 1 however long
+  the stroke works one spot, so a stroke removes at most `opacity` of what it
   finds; scrubbing walks the edge toward the cap rather than eating past it. A
-  second *stroke* takes `strength` of the remainder, which is what every
+  second *stroke* takes `opacity` of the remainder, which is what every
   buildup eraser does. The rate is the effect's own `flow`
   (`EraseEffect::flow`) — its own field, not a reading of the paint effect's,
   so switching a brush's effect never re-interprets a number that meant
@@ -1844,13 +1905,11 @@ Three properties are the design:
   textures pass through bit-for-bit.
 
 The brush's **color is ignored** — the erase parcel is "fully opaque
-transparency", mass = height, `fill.wesl`'s arithmetic — deliberately: the
-eraser slot never carries the painting color (§18.1.8), so a per-unit opacity
-read from the brush would let the Color panel's alpha quietly scale how hard
-the pen's other end erases — which is also why `color` stays on `BrushParams`
-rather than moving into `Paint`: it is the *hand's*, written by the Color panel
-whatever brush is held, and a color picked while the eraser end is down needs
-somewhere to land. That the dynamics axes do not run is the enum, not a rule: an
+transparency", mass = height, `fill.wesl`'s arithmetic: an eraser lays nothing
+for a color to be a property of. `color` still stays on `BrushParams` rather
+than moving into `Paint`, because it is the *hand's*, written by the Color
+panel whatever brush is held (§18.1.8), and a color picked while the eraser
+end is down needs somewhere to land. That the dynamics axes do not run is the enum, not a rule: an
 `Erase` brush has none. No region is ever needed either, so no tip is too large
 for this path (`dynamics_setup` answers `Erase` off the variant alone).
 
@@ -1895,7 +1954,7 @@ eraser is the digital artist's tool, calibrated in the coverage domain; paint
 as *material* answers to the knife (`lift`), which removes amount and conserves
 it. Both exist because they are different questions.
 
-**Not built, and deliberately:** a `strength` target in `EraseModulations` —
+**Not built, and deliberately:** an `opacity` target in `EraseModulations` —
 the pen drives an eraser through its flow (the rate, already a target there)
 and Size for now; a modulated *ceiling* needs a second accumulator lane
-(mass-weighted strength) to stay piece-independent, and is its own change.
+(mass-weighted opacity) to stay piece-independent, and is its own change.

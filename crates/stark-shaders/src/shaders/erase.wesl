@@ -3,7 +3,7 @@
 // one channel, the stroke's transparency mass, summed across segments *and* across
 // the pieces of a live stroke — and this fullscreen pass turns that whole extent on
 // the layer's resident paint at once: where the stroke would have covered the
-// canvas by `w`, the paint's **visible** opacity is scaled by `1 − strength·w`,
+// canvas by `w`, the paint's **visible** opacity is scaled by `1 − opacity·w`,
 // and the height becomes whatever the slab law (§6.1) needs in order to show
 // exactly that much. Acting on the visible opacity and inverting is the whole
 // point of the pass: a `lift`-built eraser removes *height*, of which thick
@@ -11,8 +11,8 @@
 // its knob never meant anything in the units an artist reads.
 //
 // Reading the **accumulated** extent rather than a per-piece parcel is what makes
-// `strength` a ceiling rather than a rate: `w` saturates at 1 however long the
-// stroke works one spot, so one stroke removes at most `strength` of what it
+// `opacity` a ceiling rather than a rate: `w` saturates at 1 however long the
+// stroke works one spot, so one stroke removes at most `opacity` of what it
 // finds — and a range cut anywhere gives the pieces' render exactly the whole's,
 // because the accumulator carries the same sums either way (§6.2's additive form,
 // held across pieces by `StrokeCarry`).
@@ -32,7 +32,7 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
 struct Erase {
-    // The erase strength (`EraseEffect::strength`, §6.12) in `.x`; `.yzw` unused —
+    // The erase opacity (`EraseEffect::opacity`, §6.12) in `.x`; `.yzw` unused —
     // the uniform's 16-byte round (§6.10).
     params: vec4<f32>,
 }
@@ -100,7 +100,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // profile its brush would have painted.
     let w = 1.0 - exp(-OPACITY_K * m_e);
 
-    // What must remain visible is `(1 − t0)·(1 − strength·w)`; carried as what
+    // What must remain visible is `(1 − t0)·(1 − opacity·w)`; carried as what
     // shows *through* — the old transmittance plus the newly uncovered share —
     // so the small quantity is the one computed and nothing cancels where the
     // paint is nearly opaque.

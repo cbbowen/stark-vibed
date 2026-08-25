@@ -136,7 +136,12 @@ fn fs_main(in: VsOut) -> FsOut {
     // The tooth gates the **height** and not the opacity beside it (§6.1), and the
     // jitter follows it: both decide how much paint arrives, not what the pigment is.
     let h = in.extra.w * drain * tooth * jitter * tau;
-    let op = xf.color.w * drain;
+    // Per-unit opacity: exactly 1, faded only by the drain — the paint a brush lays
+    // is opaque per unit (§6.2). "How much shows" is not a material property any
+    // more: the effect's own opacity scales the finished parcel where it lands
+    // (`integrate.wesl`), so a half-opacity stroke is half a stroke rather than
+    // full-bodied translucent material.
+    let op = drain;
     let m = op * h;
 
     var out: FsOut;
@@ -194,11 +199,9 @@ struct FsErase {
 // eraser's one rate), the drain, the tooth and the jitter, all factors on `τ`, so
 // the accumulated total is independent of how the path was cut (§6.2's two forms).
 //
-// **The brush's color is deliberately absent** — `xf.color.w` above scales the
-// deposit's mass and does not scale this one. An eraser lays nothing for a color to
-// be a property of, and the erase slot never carries the painting color (§18.1.8),
-// so a per-unit opacity read from `xf` here would make the Color panel's alpha
-// quietly scale how hard the *other* end of the pen erases.
+// **The brush's color is deliberately absent** — an eraser lays nothing for a
+// color to be a property of (`brush_color` is the one read of `xf.color`, and this
+// entry never makes it).
 @fragment
 fn fs_erase(in: VsOut) -> FsErase {
     let sw = sweep_of(in);

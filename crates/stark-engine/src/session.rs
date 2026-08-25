@@ -645,7 +645,7 @@ impl Session {
         // position the moment the hand lifted (§18.1.10).
         self.hover = None;
         self.gesture_ordinal += 1;
-        let [r, g, b, _] = self.brush.color;
+        let [r, g, b] = self.brush.color;
         self.selecting = Some(ShapeDrag {
             tool,
             action: against_selection(self.shape_action, has_selection),

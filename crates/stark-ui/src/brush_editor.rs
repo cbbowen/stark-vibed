@@ -58,8 +58,8 @@ const PREVIEW_CANVAS_ID: &str = "brush-preview-canvas";
 
 /// The test stroke's fixed RGB (straight sRGB): a pleasant blue, so it reads
 /// clearly over the red reference stroke beneath it — the preview is about the
-/// brush's *behaviour*, not its color. Only RGB is forced; the brush's own
-/// alpha (the Opacity slider) still applies.
+/// brush's *behaviour*, not its color. Only the color is forced; the effect's
+/// own opacity (the Opacity slider) still applies.
 const PREVIEW_STROKE_COLOR: [f32; 3] = [0.852, 0.645, 0.125];
 
 /// Fixed jitter seed for the previewed test stroke. Every edit re-strokes, and
@@ -549,16 +549,12 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                             onclick: move |_| set_effect(state, preview, stash_paint, stash_erase, true),
                             "Erase" }
                     }
-                    // The eraser's ceiling (§6.12): the fraction of the visible
-                    // opacity a saturated stroke removes — 0.5 really leaves half.
-                    // Not a rate: the rate is Flow below, exactly as it is for
-                    // paint, which is also where an eraser's pen mapping points.
-                    if let Some(e) = brush.erase() {
-                        Slider { label: "Strength", min: 0.0, max: 1.0, value: e.opacity,
-                            oninput: move |v| edit(state, preview, move |b| {
-                                if let Some(e) = b.erase_mut() { e.opacity = v; }
-                            }) }
-                    }
+                    // The effect's ceiling (§6.2, §6.12), whichever it is: the
+                    // fraction of a full stroke this stroke lays — or, erasing,
+                    // removes. 0.5 really shows (or leaves) half, however hard
+                    // the spot is scrubbed. Not a rate: the rate is Flow below.
+                    Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: brush.effect.opacity(),
+                        oninput: move |v| edit(state, preview, move |b| b.effect.set_opacity(v)) }
                     // `add` is the tool's only source term (§6.2) and its only amount
                     // knob: the paint height laid per unit swept optical depth — or,
                     // erasing, how fast the bite builds toward its ceiling (§6.12).
@@ -607,16 +603,6 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // the slider's end rather than to the quantity.
                     Slider { label: "Jitter", min: 0.0, max: 0.2, value: brush.jitter,
                         oninput: move |v| edit(state, preview, move |b| b.jitter = v) }
-                    // Per-unit opacity, independent of the amount laid (§6.1).
-                    // The ghost the Layers panel's opacity wears: the same question
-                    // — how much of what is under this shows through — asked of the
-                    // paint a stroke lays rather than of a whole layer. Painting
-                    // only: an eraser lays nothing for the pigment to be a property
-                    // of (§6.12).
-                    if !erases {
-                        Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: brush.color[3],
-                            oninput: move |v| edit(state, preview, move |b| b.color[3] = v) }
-                    }
                     // Depletion per *radius* travelled — the stroke runs dry. 0 is
                     // what a pen or a digital brush wants; not behind "Show more",
                     // because it is the only knob that decides whether a tool runs
@@ -1196,7 +1182,7 @@ fn paint_reference_stroke(r: &mut Renderer) {
         })
         .collect();
     let brush = BrushParams {
-        color: [0.82, 0.15, 0.12, 1.0],
+        color: [0.82, 0.15, 0.12],
         size: 75.0,
         shape: BrushShape::Round { hardness: 0.9 },
         drain: 0.0,
@@ -1222,11 +1208,11 @@ fn restroke(state: AppState, mut preview: Preview) {
         return;
     };
     // Force the test stroke to the fixed preview blue so it reads over the red
-    // reference stroke; the brush's own alpha (Opacity) is left untouched.
-    // A stamp shape needs no handing over: the preview engine shares the main
-    // engine's content-addressed asset store, so whatever the brush holds is
-    // already here.
-    brush.color[..3].copy_from_slice(&PREVIEW_STROKE_COLOR);
+    // reference stroke; the effect's own opacity (the Opacity slider) is left
+    // untouched. A stamp shape needs no handing over: the preview engine shares
+    // the main engine's content-addressed asset store, so whatever the brush
+    // holds is already here.
+    brush.color = PREVIEW_STROKE_COLOR;
     let samples = preview.samples.peek().clone();
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();

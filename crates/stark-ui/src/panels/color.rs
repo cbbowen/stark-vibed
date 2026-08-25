@@ -29,7 +29,7 @@ pub fn ColorPanel() -> Element {
         .obs
         .peek()
         .as_ref()
-        .map(|o| [o.brush.color[0], o.brush.color[1], o.brush.color[2]])
+        .map(|o| o.brush.color)
         .unwrap_or(INITIAL_COLOR);
     // Read reactively, unlike the color: this is how a pick — which sets the color
     // from outside the picker — gets the markers to move (see `AppState::color_epoch`).
@@ -40,9 +40,7 @@ pub fn ColorPanel() -> Element {
             init,
             seed,
             onchange: move |rgb: [f32; 3]| {
-                update_brush(state, move |br| {
-                    br.color = [rgb[0], rgb[1], rgb[2], br.color[3]];
-                });
+                update_brush(state, move |br| br.color = rgb);
             },
         }
     }

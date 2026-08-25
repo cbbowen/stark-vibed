@@ -22,7 +22,7 @@ use stark_model::Srgb;
 use stark_model::document::{LayerId, MattePaint, MatteRegion, Place};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
+const RED: [f32; 3] = [0.85, 0.1, 0.1];
 const BLACK: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// A frame around the middle of the 256² viewport. The canvas origin is at the

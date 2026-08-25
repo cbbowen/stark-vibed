@@ -24,8 +24,8 @@ use stark_model::document::{
 };
 use stark_model::geom::{Affine2, Vec2};
 
-const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
-const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
+const RED: [f32; 3] = [1.0, 0.0, 0.0];
+const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
 
 /// A pixel's screen position for a canvas point, under the tests' identity view.
 fn screen_of(canvas: Vec2) -> (u32, u32) {

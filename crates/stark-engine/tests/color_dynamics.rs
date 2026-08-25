@@ -19,7 +19,7 @@ use stark_model::geom::Vec2;
 
 /// A muted teal mid-tone: enough headroom in every Oklab channel for the jitter
 /// to wander both ways without everything clamping at the gamut edge.
-const TEAL: [f32; 4] = [0.25, 0.55, 0.55, 1.0];
+const TEAL: [f32; 3] = [0.25, 0.55, 0.55];
 
 /// The standard test stroke: a broad S-curve covering a good patch of canvas.
 const S_CURVE: [Vec2; 5] = [

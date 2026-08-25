@@ -25,7 +25,7 @@ use stark_engine::{MediaParams, RgbaImage};
 use stark_model::document::BrushDynamics;
 use stark_model::geom::{IVec2, Vec2};
 
-const RED: [f32; 4] = [0.85, 0.15, 0.1, 1.0];
+const RED: [f32; 3] = [0.85, 0.15, 0.1];
 
 /// Render a diagonal, height-bearing stroke offset by `shift` canvas px, viewed
 /// at 2× zoom centered on `shift` so the on-screen result is independent of

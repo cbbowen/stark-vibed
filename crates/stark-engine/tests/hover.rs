@@ -26,7 +26,7 @@ use stark_model::Srgb;
 use stark_model::document::{MattePaint, MatteRegion, Place};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
+const RED: [f32; 3] = [0.85, 0.1, 0.1];
 
 /// The two reports of the standard hover, ending with the cursor at the canvas
 /// origin — where [`center`] reads, and where the probe's touch-down lands.

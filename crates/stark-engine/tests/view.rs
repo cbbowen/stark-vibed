@@ -19,7 +19,7 @@ use stark_model::Srgb;
 use stark_model::document::{MattePaint, MatteRegion, Place};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 /// Channel dominance, with the margin `stroke.rs` justifies: over the blue substrate,
 /// this cleanly separates lit paint from lit substrate.
@@ -319,7 +319,7 @@ fn a_cached_draw_list_shows_every_change() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let red = brush([0.9, 0.1, 0.1, 1.0], 6.0);
+    let red = brush([0.9, 0.1, 0.1], 6.0);
     stroke_with(
         &mut engine,
         red,
@@ -330,7 +330,7 @@ fn a_cached_draw_list_shows_every_change() {
     // Each of these must change what is on screen, through a different term of the
     // key: a commit and an undo (doc_revision), a layer property (doc_revision), a
     // pan far enough to move the tile rect (visible).
-    let blue = brush([0.1, 0.1, 0.9, 1.0], 6.0);
+    let blue = brush([0.1, 0.1, 0.9], 6.0);
     /// One change to the document or the view, named for the failure message.
     type Mutation = (&'static str, Box<dyn Fn(&mut Engine)>);
 
@@ -409,7 +409,7 @@ fn a_live_stroke_reaches_a_cached_frame() {
     };
     let blank = engine.render_to_image();
 
-    engine.process(ViewCommand::SetBrush(brush([0.9, 0.1, 0.1, 1.0], 8.0)));
+    engine.process(ViewCommand::SetBrush(brush([0.9, 0.1, 0.1], 8.0)));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(30.0, 30.0)),
@@ -450,7 +450,7 @@ fn live_and_committed_do_not_share_a_cached_list() {
     let mut off = Offscreen::default();
     let view = engine.view();
 
-    engine.process(ViewCommand::SetBrush(brush([0.9, 0.1, 0.1, 1.0], 8.0)));
+    engine.process(ViewCommand::SetBrush(brush([0.9, 0.1, 0.1], 8.0)));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(30.0, 30.0)),

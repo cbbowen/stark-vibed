@@ -27,9 +27,16 @@
 // opacity × thickness — one level further down.
 
 import package::lib::latent::{Latent, latent_blend, latent_of, latent_scale, latent_unpremult};
-import package::lib::paint_common::{PAINT_EPS};
+import package::lib::paint_common::{OPACITY_K, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
+
+struct Integrate {
+    // The paint effect's opacity (`PaintEffect::opacity`, §6.2) in `.x`;
+    // `.yzw` unused — the uniform's 16-byte round (§6.10). 1 is the identity,
+    // and taken as an exact branch below.
+    params: vec4<f32>,
+}
 
 // The layer's resident paint under this tile — its own tile, or the 1×1 zero
 // standing in where the layer has none. The clamped load below reads both, which is
@@ -50,6 +57,7 @@ import package::lib::sample::{load1};
 // stroke onto bare canvas reads the 1×1 zero here exactly as it does for `base_color`.
 @if(resid) @group(0) @binding(5) var base_resid: texture_2d<f32>;
 @if(resid) @group(0) @binding(6) var scratch_resid: texture_2d<f32>;
+@group(0) @binding(7) var<uniform> ig: Integrate;
 
 struct FsOut {
     @location(0) color: vec4<f32>,
@@ -115,9 +123,37 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // out to `1 − exp(−K·Σm)`), which is what recovers the latent; the mass itself
     // rides unsaturated in the aux, because the merged per-unit opacity is `m/h` and
     // a saturated total cannot answer that.
-    let h1 = s_a.x;
-    let m1 = s_a.y;
+    var h1 = s_a.x;
+    var m1 = s_a.y;
     let col1 = latent_unpremult(s_col, s_c.a, PAINT_EPS);
+
+    // The paint effect's opacity (§6.2): the whole parcel scaled as one laid
+    // amount, `erase.wesl`'s arithmetic run in the laying direction. The coverage
+    // the parcel would have laid saturates at 1 however long the stroke worked
+    // this spot — when it spans the pieces of a live stroke, the carry holds the
+    // accumulated parcel and re-derives every piece from pristine paint
+    // (`gpu::stroke::swept`), because a scaled coverage is neither of §6.2's two
+    // composable forms — so `opacity·w` is a ceiling, not a rate: a stroke
+    // crossing itself never outruns the dial.
+    //
+    // An exact branch at 1, `integrate.wesl`'s own untouched-texel reason one
+    // level up: the round trip below lands an ulp off now and then, and every
+    // full-opacity stroke would pay it.
+    if ig.params.x != 1.0 {
+        // The parcel's own coverage, from the unsaturated mass — the same number
+        // the color target's `.a` carries, except that the saturated copy cannot
+        // be inverted back.
+        let w = 1.0 - exp(-OPACITY_K * m1);
+        // The scaled coverage, inverted through the slab law into the mass that
+        // shows exactly that much. `1 − opacity·w ≥ 1 − opacity > 0` on this
+        // branch, so nothing cancels and the log has an argument.
+        let ms = -log(1.0 - ig.params.x * w) / OPACITY_K;
+        // Less of the same parcel (§6.1): the height falls in proportion, so the
+        // per-unit opacity of what arrives is unchanged — a half-opacity stroke
+        // is half a stroke, not full-bodied translucent material.
+        h1 = h1 * (ms / max(m1, PAINT_EPS));
+        m1 = ms;
+    }
 
     // Stack the parcel on the resident paint (§6.1): height and mass are conserved
     // sums, the per-unit opacity is what the two together imply, and the latent

@@ -21,8 +21,8 @@ use stark_model::ColorSpaceId;
 use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
-const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+const RED: [f32; 3] = [1.0, 0.0, 0.0];
+const GREEN: [f32; 3] = [0.0, 1.0, 0.0];
 
 /// The **image-based** lighting path, on the one golden that runs it (§6.3).
 ///
@@ -52,9 +52,9 @@ fn golden_studio_environment() {
     b.drain = 0.0;
     b.paint_mut().expect("a paint brush").dynamics.flow = 1.2;
     for (color, y) in [
-        ([1.0, 0.35, 0.2, 1.0], -60.0),
-        ([0.2, 0.4, 0.9, 1.0], 0.0),
-        ([0.9, 0.88, 0.8, 1.0], 60.0),
+        ([1.0, 0.35, 0.2], -60.0),
+        ([0.2, 0.4, 0.9], 0.0),
+        ([0.9, 0.88, 0.8], 60.0),
     ] {
         b.color = color;
         stroke_with(
@@ -99,9 +99,9 @@ fn golden_mixbox_mix() {
     };
     // Blue and yellow crossing → Mixbox mixes them to green at the overlap (where
     // an RGB blend would give a muddy gray); a white bar over the lower half tints.
-    let blue = [0.10, 0.30, 0.80, 1.0];
-    let yellow = [0.92, 0.82, 0.10, 1.0];
-    let white = [0.96, 0.96, 0.96, 1.0];
+    let blue = [0.10, 0.30, 0.80];
+    let yellow = [0.92, 0.82, 0.10];
+    let white = [0.96, 0.96, 0.96];
 
     paint(
         &mut engine,
@@ -317,7 +317,7 @@ fn golden_straight_smear_into_paint() {
         ..Default::default()
     }));
 
-    let color = [0.5, 0.0, 0.0, 1.0];
+    let color = [0.5, 0.0, 0.0];
     let shape = BrushShape::Round { hardness: 0.95 };
 
     stroke_with(
@@ -367,7 +367,7 @@ fn golden_wiggly_smear_into_paint() {
         ..Default::default()
     }));
 
-    let color = [0.5, 0.0, 0.0, 1.0];
+    let color = [0.5, 0.0, 0.0];
     let shape = BrushShape::Round { hardness: 0.95 };
 
     stroke_with(

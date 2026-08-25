@@ -168,12 +168,12 @@ fn lookup(state: AppState, w: &Wearable) -> Option<String> {
 /// cache the preset list already filled, and shows nothing until a background
 /// render produces a byte-for-byte copy of the thumbnail sitting beside it.
 ///
-/// Alpha is deliberately untouched. `color[3]` is the brush's own opacity — a
-/// material property the stroke really is laid with (§6.1) — so two brushes that
-/// differ in it are two pictures and keep two entries.
+/// The effect's opacity is deliberately untouched: it is the brush's own — the
+/// stroke really is laid under it (§6.2) — so two brushes that differ in it are
+/// two pictures and keep two entries.
 fn keyed(w: &Wearable) -> Wearable {
     let mut w = *w;
-    w.params.color[..3].copy_from_slice(&STROKE_COLOR);
+    w.params.color = STROKE_COLOR;
     w
 }
 
@@ -415,7 +415,7 @@ fn test_stroke(view: &ViewTransform) -> Vec<InputSample> {
 mod tests {
     use super::*;
 
-    fn brush(color: [f32; 4]) -> Wearable {
+    fn brush(color: [f32; 3]) -> Wearable {
         Wearable {
             params: BrushParams {
                 color,
@@ -433,18 +433,17 @@ mod tests {
     #[test]
     fn two_painting_colors_of_one_brush_are_one_thumbnail() {
         assert_eq!(
-            keyed(&brush([0.9, 0.1, 0.1, 1.0])),
-            keyed(&brush([0.1, 0.2, 0.9, 1.0]))
+            keyed(&brush([0.9, 0.1, 0.1])),
+            keyed(&brush([0.1, 0.2, 0.9]))
         );
     }
 
-    /// Opacity is the brush's own — a material property the stroke really is laid
-    /// with (§6.1) — so two of them are two pictures and keep two entries.
+    /// Opacity is the brush's own — the stroke really is laid under it (§6.2) —
+    /// so two of them are two pictures and keep two entries.
     #[test]
     fn the_brush_opacity_is_part_of_the_picture_though() {
-        assert_ne!(
-            keyed(&brush([0.9, 0.1, 0.1, 1.0])),
-            keyed(&brush([0.9, 0.1, 0.1, 0.3]))
-        );
+        let mut thin = brush([0.9, 0.1, 0.1]);
+        thin.params.effect.set_opacity(0.3);
+        assert_ne!(keyed(&brush([0.9, 0.1, 0.1])), keyed(&thin));
     }
 }

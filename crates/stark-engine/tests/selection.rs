@@ -22,7 +22,7 @@ use stark_model::document::BrushDynamics;
 use stark_model::document::{BrushEffect, SelectionMode, SelectionOp, SelectionShape, ShapeAction};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 /// Canvas-space box the tests select and paint across. Comfortably inside the 256²
 /// viewport, which is centred on the canvas origin.
@@ -300,7 +300,7 @@ fn dynamics_brush_does_not_lift_paint_from_outside() {
     );
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
 
-    let mut smudge = brush([0.0, 0.0, 0.0, 1.0], 16.0);
+    let mut smudge = brush([0.0, 0.0, 0.0], 16.0);
     smudge.effect = BrushEffect::paint_with(BrushDynamics {
         flow: 0.0,
         lift: 0.9,
@@ -838,7 +838,7 @@ fn feathered_edge_fades_the_stroke() {
 /// boundary, and the bands run past the viewport so no stroke cap is mistaken for a
 /// mask edge.
 fn paint_stripes(engine: &mut stark_engine::Engine) {
-    const TEAL: [f32; 4] = [0.0, 0.55, 0.6, 1.0];
+    const TEAL: [f32; 3] = [0.0, 0.55, 0.6];
     for (i, y) in [-75.0f32, -25.0, 25.0, 75.0].into_iter().enumerate() {
         let color = if i % 2 == 0 { RED } else { TEAL };
         paint(
@@ -908,7 +908,7 @@ fn golden_selection_smear() {
 
     // A conservative smudge: no paint of its own, so everything that moves was lifted
     // from the canvas — and none of it may cross the boundary in either direction.
-    let mut smudge = brush([0.0, 0.0, 0.0, 1.0], 26.0);
+    let mut smudge = brush([0.0, 0.0, 0.0], 26.0);
     smudge.effect = BrushEffect::paint_with(BrushDynamics {
         flow: 0.0,
         lift: 0.7,

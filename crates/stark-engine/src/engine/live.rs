@@ -373,7 +373,7 @@ impl Preview {
 /// Full-opacity magenta: it has to read against paint of any hue, and against the
 /// stroke's own color in particular.
 #[cfg(feature = "debug-unfrozen")]
-const DEBUG_UNFROZEN_COLOR: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
+const DEBUG_UNFROZEN_COLOR: [f32; 3] = [1.0, 0.0, 1.0];
 
 /// The part of the in-flight stroke that has stopped changing, already composited
 /// onto the committed document.

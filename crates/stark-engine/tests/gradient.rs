@@ -13,8 +13,8 @@ use stark_engine::{Engine, PickOptions};
 use stark_model::Gradient;
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [0.85, 0.12, 0.1, 1.0];
-const BLUE: [f32; 4] = [0.1, 0.2, 0.8, 1.0];
+const RED: [f32; 3] = [0.85, 0.12, 0.1];
+const BLUE: [f32; 3] = [0.1, 0.2, 0.8];
 
 /// The capture the UI takes: a 5×5 patch per sample (§22.2).
 fn capture(engine: &mut Engine, path: &[Vec2]) -> Option<Gradient> {
@@ -27,7 +27,7 @@ fn capture(engine: &mut Engine, path: &[Vec2]) -> Option<Gradient> {
     ))
 }
 
-fn near(a: [f32; 3], b: [f32; 4], tol: f32) -> bool {
+fn near(a: [f32; 3], b: [f32; 3], tol: f32) -> bool {
     (0..3).all(|i| (a[i] - b[i]).abs() <= tol)
 }
 
@@ -81,7 +81,7 @@ fn a_trace_across_two_paints_ends_on_each() {
         ))
         .expect("paint at the trace's start");
         assert!(
-            near((start).get(), [picked[0], picked[1], picked[2], 1.0], 0.02),
+            near((start).get(), picked, 0.02),
             "{space:?}: capture start {start:?} vs pick {picked:?}"
         );
     }

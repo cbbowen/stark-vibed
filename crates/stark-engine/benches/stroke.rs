@@ -130,7 +130,7 @@ fn engine() -> Option<Engine> {
 fn smear(radius: f32) -> BrushParams {
     let mut b = BrushParams {
         size: radius,
-        color: [0.8, 0.2, 0.1, 0.9],
+        color: [0.8, 0.2, 0.1],
         ..BrushParams::default()
     };
     b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;

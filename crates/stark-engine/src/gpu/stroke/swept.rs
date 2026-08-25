@@ -49,21 +49,29 @@ pub(super) const NOISE_SLOTS: &[Slot] = &[
 ];
 
 /// The integrate pass (`integrate.wesl`, §6.2/§6.1): the layer's resident paint, the
-/// stroke's scratch parcel, and the selection each is gated by.
+/// stroke's scratch parcel, the selection each is gated by, and the paint
+/// effect's opacity — bound on every stroke, exactly 1 (the shader's identity
+/// branch) on the unscaled path.
 const INTEGRATE_SLOTS: &[Slot] = &[
     Slot::at(id::BASE_COLOR),
     Slot::at(id::BASE_AUX),
     Slot::at(id::SCRATCH_COLOR),
     Slot::at(id::SCRATCH_AUX),
     Slot::at(id::SELECTION),
+    Slot::at(id::IG),
     Slot::at(id::BASE_RESID),
     Slot::at(id::SCRATCH_RESID),
 ];
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use super::incremental::{Carried, SweepAccum, SweepCarry, SweepTile};
 use super::region::tiles_with_segments;
+use super::scratch::Key;
 use super::segments::{Segment, SegmentInstance, generate_segments_in};
-use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, UNIFORM_STRIDE};
+use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState, UNIFORM_STRIDE};
 
 // Vertices in one segment's swept geometry: a triangle strip of two rims across
 // `SWEEP_SLICES` steps along the travel, since a segment's centreline is an arc rather
@@ -219,6 +227,7 @@ impl StrokeRenderer {
         rec: &StrokeRecord,
         spans: StrokeSpans,
         tol: crate::path::FlattenTolerance,
+        tool: Option<&ToolState>,
     ) -> (TileMap, StrokeCarry) {
         // The control every dynamics row is read against: the same geometry, the
         // same tiles, one instanced draw instead of a dispatch chain per segment.
@@ -246,50 +255,31 @@ impl StrokeRenderer {
             );
         }
 
+        // Below full opacity the parcel's finished coverage is scaled, which is
+        // neither of §6.2's two piece-composable forms — so the path stops being
+        // stateless and takes the erase pass's shape instead: the parcel
+        // accumulates across pieces, every piece re-derived from pristine paint
+        // under the whole of it ([`SweepCarry`]). A branch on the brush, so a
+        // live tail and its commit make the same choice for free.
+        if k.opacity < 1.0 {
+            return self.render_swept_scaled(scene, rec, &k, &segments, end_dist, tool);
+        }
+
         // The submit scope: the per-stroke buffers and the shared scratch pair ride
         // in it, and only the `finish` that submits the commands naming them can
         // release them (`scratch::SubmitScope`). The ordering is the scope's shape,
         // not a pair of `drop`s placed after the submit and defended by a comment.
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke commit");
 
-        // Resolve the brush's prefix-τ texture: image brushes from the asset
-        // store; the round tip generated (and cached) from its hardness.
-        let prefix_view = self.tips.prefix_view(assets, &rec.brush);
-
         let device = &self.ctx.device;
-        let prefix_bg = desc::bind_group_for(
-            device,
-            "stark sweep prefix bg",
-            &self.swept.prefix_bgl,
-            PREFIX_SLOTS,
-            false,
-            |_| wgpu::BindingResource::TextureView(&prefix_view),
-        );
-
-        // Color dynamics (§6.2): the noise tile for this brush and
-        // the stroke's lookup parameters. An inactive brush binds the zero
-        // tile with zero amplitudes — the deposit is exactly the constant
-        // color.
-        let noise_view = self.tips.noise_view(&rec.brush.color_dynamics());
-        // The canvas substrate beside it (§6.4): the deposition tooth's height and the
-        // rise ahead of it, in the same group because it is the same kind of thing —
-        // a field the deposit samples per fragment.
-        let noise_bg = desc::bind_group_for(
-            device,
-            "stark sweep noise bg",
-            &self.swept.noise_bgl,
-            NOISE_SLOTS,
-            false,
-            |b| match b {
-                sc::NOISE_TEX => wgpu::BindingResource::TextureView(&noise_view),
-                sc::NOISE_SAMP => wgpu::BindingResource::Sampler(&self.tips.noise_sampler),
-                sc::SUBSTRATE_TEX => wgpu::BindingResource::TextureView(&substrate.view),
-                other => unreachable!("`NOISE_SLOTS` lists no binding {other}"),
-            },
-        );
+        let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate);
         // The per-tile draw list, instance buffer and transform slots — shared with
         // the erase pass ([`sweep_draws`]).
         let draws = sweep_draws(self, &mut scope, rec, &k, &segments);
+        // The integrate's opacity uniform, at this path's identity: the layout
+        // names it on every stroke, and the shader's exact branch at 1 is what
+        // keeps this path bit-for-bit what it was.
+        let opacity_buf = opacity_uniform(self, &mut scope, 1.0);
         let SweepDraws {
             coords,
             runs,
@@ -393,19 +383,20 @@ impl StrokeRenderer {
                 &self.swept.integrate_bgl,
                 INTEGRATE_SLOTS,
                 base_resid.is_some() && scratch.resid_view().is_some(),
-                |b| {
-                    wgpu::BindingResource::TextureView(match b {
-                        ib::BASE_COLOR => base_color,
-                        ib::BASE_AUX => base_aux,
-                        ib::SCRATCH_COLOR => scratch.color_view(),
-                        ib::SCRATCH_AUX => scratch.aux_view(),
-                        ib::SELECTION => &mask_view,
-                        ib::BASE_RESID => base_resid.expect("a residual build has one"),
-                        ib::SCRATCH_RESID => {
-                            scratch.resid_view().expect("a residual build has one")
-                        }
-                        other => unreachable!("`INTEGRATE_SLOTS` lists no binding {other}"),
-                    })
+                |b| match b {
+                    ib::BASE_COLOR => wgpu::BindingResource::TextureView(base_color),
+                    ib::BASE_AUX => wgpu::BindingResource::TextureView(base_aux),
+                    ib::SCRATCH_COLOR => wgpu::BindingResource::TextureView(scratch.color_view()),
+                    ib::SCRATCH_AUX => wgpu::BindingResource::TextureView(scratch.aux_view()),
+                    ib::SELECTION => wgpu::BindingResource::TextureView(&mask_view),
+                    ib::IG => opacity_buf.as_entire_binding(),
+                    ib::BASE_RESID => wgpu::BindingResource::TextureView(
+                        base_resid.expect("a residual build has one"),
+                    ),
+                    ib::SCRATCH_RESID => wgpu::BindingResource::TextureView(
+                        scratch.resid_view().expect("a residual build has one"),
+                    ),
+                    other => unreachable!("`INTEGRATE_SLOTS` lists no binding {other}"),
                 },
             );
             {
@@ -438,6 +429,306 @@ impl StrokeRenderer {
         scope.finish();
         (new_map, carry)
     }
+
+    /// [`Self::render_swept`] below full opacity (§6.2): the same sweep, but
+    /// into a **per-tile accumulator carried across the pieces of a live
+    /// stroke**, with every piece's integrate re-deriving its tiles from
+    /// pristine paint under the whole parcel — the erase pass's shape
+    /// (`erase.rs`), forced by the same theorem: the opacity scales the parcel's
+    /// finished coverage, which is not composable per piece, so pieces cannot
+    /// stack scaled parcels and be the whole.
+    ///
+    /// What that shape costs relative to the ring above: a persistent scratch
+    /// pair per touched tile for the stroke's lifetime, a copy per resumed tile
+    /// per piece, and no ring overlap. The full-opacity path — every stroke
+    /// whose dial is at 1 — never comes here, which is why the branch is on the
+    /// brush and not a uniform alone.
+    fn render_swept_scaled(
+        &self,
+        scene: StrokeScene<'_>,
+        rec: &StrokeRecord,
+        k: &super::StrokeConstants,
+        segments: &[Segment],
+        end_dist: f32,
+        tool: Option<&ToolState>,
+    ) -> (TileMap, StrokeCarry) {
+        let StrokeScene {
+            pool,
+            assets,
+            base,
+            selection,
+            substrate,
+        } = scene;
+        let mut scope = self.scratch.scope(&self.ctx, "stark stroke scaled commit");
+        let device = &self.ctx.device;
+        let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate);
+        let draws = sweep_draws(self, &mut scope, rec, k, segments);
+        let opacity_buf = opacity_uniform(self, &mut scope, k.opacity);
+
+        // The carry this piece hands on: everything the pieces before it
+        // accumulated — shared, never rewritten — with this piece's tiles
+        // replacing theirs below (`EraseCarry`'s contract).
+        let mut tiles: BTreeMap<TileCoord, SweepTile> = match tool.map(ToolState::swept) {
+            Some(prior) => prior
+                .tiles
+                .iter()
+                .map(|(c, t)| {
+                    (
+                        *c,
+                        SweepTile {
+                            pristine: t.pristine.clone(),
+                            accum: Arc::clone(&t.accum),
+                        },
+                    )
+                })
+                .collect(),
+            None => BTreeMap::new(),
+        };
+
+        let mut new_map = base.clone();
+        let mut dirty = Vec::new();
+        for (i, coord) in draws.coords.iter().enumerate() {
+            // The paint the stroke found under this tile: what an earlier piece
+            // recorded, or — for a tile this stroke reaches for the first time —
+            // the base itself, which no earlier piece can have rewritten. `None`
+            // is bare canvas, and unlike an erase the deposit keeps going: a
+            // stroke onto nothing mints a tile, over the 1×1 zeroes.
+            let pristine = match tiles.get(coord) {
+                Some(t) => t.pristine.clone(),
+                None => base.get(coord).cloned(),
+            };
+
+            // This piece's working parcel: the carried total copied in, or a
+            // clear for a first touch — either way every texel is written before
+            // the integrate reads it (the pool's no-zero-init contract). The
+            // carried textures themselves are only ever read: the live tail
+            // resumes the same frozen carry on every pointer move.
+            let work = SweepAccum {
+                color: self
+                    .scratch
+                    .keep(device, parcel_key(self.color_space.color_format())),
+                aux: self.scratch.keep(device, parcel_key(SCRATCH_AUX_FORMAT)),
+                resid: self
+                    .color_space
+                    .resid_format()
+                    .map(|f| self.scratch.keep(device, parcel_key(f))),
+            };
+            let resumed = tiles.get(coord).map(|t| Arc::clone(&t.accum));
+            if let Some(old) = &resumed {
+                for (src, dst) in [(&old.color, &work.color), (&old.aux, &work.aux)]
+                    .into_iter()
+                    .chain(old.resid.iter().zip(work.resid.iter()))
+                {
+                    scope.encoder().copy_texture_to_texture(
+                        src.tex().as_image_copy(),
+                        dst.tex().as_image_copy(),
+                        PARCEL_EXTENT,
+                    );
+                }
+            }
+            {
+                let ops = if resumed.is_some() {
+                    desc::LOAD
+                } else {
+                    desc::CLEAR
+                };
+                let att = [
+                    Some(desc::attach(work.color.view(), ops)),
+                    Some(desc::attach(work.aux.view(), ops)),
+                    work.resid.as_ref().map(|r| desc::attach(r.view(), ops)),
+                ];
+                let mut pass = scope
+                    .encoder()
+                    .begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("stark sweep pass"),
+                        color_attachments: &att[..2 + usize::from(work.resid.is_some())],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                pass.set_pipeline(&self.swept.pipeline);
+                pass.set_bind_group(0, &draws.xforms, &[(i * UNIFORM_STRIDE) as u32]);
+                pass.set_bind_group(1, &prefix_bg, &[]);
+                pass.set_bind_group(2, &noise_bg, &[]);
+                pass.set_vertex_buffer(0, draws.instances.slice(..));
+                pass.draw(0..SWEEP_VERTS, draws.runs[i].clone());
+            }
+
+            // The whole stroke's parcel so far, scaled and stacked on the
+            // pristine paint — never on the base in hand, which for a resumed
+            // tile is an earlier piece's output and would compound the scale
+            // per piece.
+            let dst = self.acquire_tile(pool, AllocSource::IntegrateDestination);
+            let (base_color, base_aux) = match &pristine {
+                Some(tile) => (tile.color_view(), tile.aux_view()),
+                None => (&self.zeroes.color, &self.zeroes.aux),
+            };
+            let base_resid = self.zeroes.resid.as_ref().map(|zero| {
+                pristine
+                    .as_ref()
+                    .and_then(|t| t.resid_view())
+                    .unwrap_or(zero)
+            });
+            let mask_view = self.selection.mask_for(selection, *coord);
+            let integrate_bg = desc::bind_group_for(
+                device,
+                "stark integrate bg",
+                &self.swept.integrate_bgl,
+                INTEGRATE_SLOTS,
+                base_resid.is_some() && work.resid.is_some(),
+                |b| match b {
+                    ib::BASE_COLOR => wgpu::BindingResource::TextureView(base_color),
+                    ib::BASE_AUX => wgpu::BindingResource::TextureView(base_aux),
+                    ib::SCRATCH_COLOR => wgpu::BindingResource::TextureView(work.color.view()),
+                    ib::SCRATCH_AUX => wgpu::BindingResource::TextureView(work.aux.view()),
+                    ib::SELECTION => wgpu::BindingResource::TextureView(&mask_view),
+                    ib::IG => opacity_buf.as_entire_binding(),
+                    ib::BASE_RESID => wgpu::BindingResource::TextureView(
+                        base_resid.expect("a residual build has one"),
+                    ),
+                    ib::SCRATCH_RESID => wgpu::BindingResource::TextureView(
+                        work.resid
+                            .as_ref()
+                            .expect("a residual build has one")
+                            .view(),
+                    ),
+                    other => unreachable!("`INTEGRATE_SLOTS` lists no binding {other}"),
+                },
+            );
+            {
+                let int_targets = dst.targets();
+                let int_att = int_targets.attachments(desc::CLEAR);
+                let mut pass = scope
+                    .encoder()
+                    .begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("stark integrate"),
+                        color_attachments: &int_att[..int_targets.count()],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                pass.set_pipeline(&self.swept.integrate_pipeline);
+                pass.set_bind_group(0, &integrate_bg, &[]);
+                pass.draw(0..3, 0..1);
+            }
+
+            new_map = new_map.insert(*coord, dst);
+            dirty.push(*coord);
+            tiles.insert(
+                *coord,
+                SweepTile {
+                    pristine,
+                    accum: Arc::new(work),
+                },
+            );
+        }
+
+        // Submit before the carry leaves this call: a `Kept` may reach the
+        // pool's free list only behind the submit of the commands naming it, and
+        // handing the carry out first would let a caller drop it ahead of one.
+        scope.finish();
+        (
+            new_map,
+            StrokeCarry {
+                dist: end_dist,
+                tool: Some(ToolState(Carried::Sweep(SweepCarry { tiles }))),
+                dirty,
+            },
+        )
+    }
+}
+
+/// One carried-parcel texture's pool key (`render_swept_scaled`): a full tile
+/// (interior + apron), renderable (the sweep accumulates into it), bindable (the
+/// integrate reads it), and copyable both ways (a resuming piece copies the
+/// carried total into its working texture) — the erase accumulator's key, at the
+/// parcel's own formats.
+fn parcel_key(format: wgpu::TextureFormat) -> Key {
+    Key {
+        size: (TILE_TEX, TILE_TEX),
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+        label: "stark sweep parcel",
+    }
+}
+
+/// One whole parcel texture, as a copy extent.
+const PARCEL_EXTENT: wgpu::Extent3d = wgpu::Extent3d {
+    width: TILE_TEX,
+    height: TILE_TEX,
+    depth_or_array_layers: 1,
+};
+
+/// The sweep's brush-resolved bind groups — the prefix-τ volume at group 1, the
+/// noise + substrate fields at group 2. One derivation for the three passes that
+/// rasterize the swept extent (the plain deposit, its scaled sibling and the
+/// erase sweep), for [`sweep_draws`]' reason: they draw the *same* extent, and a
+/// second copy of its inputs would be a place to disagree about what that is.
+pub(super) fn sweep_binds(
+    r: &StrokeRenderer,
+    assets: &crate::assets::AssetStore,
+    rec: &StrokeRecord,
+    substrate: &crate::gpu::substrate::SubstrateMap,
+) -> (wgpu::BindGroup, wgpu::BindGroup) {
+    let device = &r.ctx.device;
+    // Resolve the brush's prefix-τ texture: image brushes from the asset
+    // store; the round tip generated (and cached) from its hardness.
+    let prefix_view = r.tips.prefix_view(assets, &rec.brush);
+    let prefix_bg = desc::bind_group_for(
+        device,
+        "stark sweep prefix bg",
+        &r.swept.prefix_bgl,
+        PREFIX_SLOTS,
+        false,
+        |_| wgpu::BindingResource::TextureView(&prefix_view),
+    );
+    // Color dynamics (§6.2): the noise tile for this brush and the stroke's
+    // lookup parameters. An inactive brush binds the zero tile with zero
+    // amplitudes — the deposit is exactly the constant color. The canvas
+    // substrate beside it (§6.4): the deposition tooth's height and the rise
+    // ahead of it, in the same group because it is the same kind of thing — a
+    // field the deposit samples per fragment.
+    let noise_view = r.tips.noise_view(&rec.brush.color_dynamics());
+    let noise_bg = desc::bind_group_for(
+        device,
+        "stark sweep noise bg",
+        &r.swept.noise_bgl,
+        NOISE_SLOTS,
+        false,
+        |b| match b {
+            sc::NOISE_TEX => wgpu::BindingResource::TextureView(&noise_view),
+            sc::NOISE_SAMP => wgpu::BindingResource::Sampler(&r.tips.noise_sampler),
+            sc::SUBSTRATE_TEX => wgpu::BindingResource::TextureView(&substrate.view),
+            other => unreachable!("`NOISE_SLOTS` lists no binding {other}"),
+        },
+    );
+    (prefix_bg, noise_bg)
+}
+
+/// The integrate's opacity uniform (`integrate.wesl::Integrate`) for one piece:
+/// the paint effect's ceiling, or exactly 1 — the shader's identity branch — on
+/// the unscaled path, which binds it because the layout names it either way.
+pub(super) fn opacity_uniform(
+    r: &StrokeRenderer,
+    scope: &mut super::scratch::SubmitScope,
+    opacity: f32,
+) -> wgpu::Buffer {
+    let u = stark_shaders::mirror::integrate::Integrate {
+        params: [opacity, 0.0, 0.0, 0.0],
+    };
+    let buf = scope.buffer(r.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stark integrate opacity"),
+        size: std::mem::size_of_val(&u) as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    }));
+    r.ctx.queue.write_buffer(&buf, 0, bytemuck::bytes_of(&u));
+    buf
 }
 
 /// Everything one piece's sweep draws with, per tile: which tiles, each tile's
@@ -542,7 +833,7 @@ pub(super) fn sweep_draws(
                 2.0 / TILE_TEX as f32,
                 0.0,
             ],
-            color: k.channels,
+            color: [k.channels[0], k.channels[1], k.channels[2], 1.0],
             resid: k.resid,
             paint: [
                 rec.brush.drain_px(),

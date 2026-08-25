@@ -26,7 +26,7 @@ fn paint_a_session(engine: &mut Engine, strokes: usize) {
     for i in 0..strokes {
         let x = 20.0 + (i % 8) as f32 * 24.0;
         let y = 20.0 + (i / 8) as f32 * 24.0;
-        let b = brush([0.9, 0.1, 0.1, 1.0], 4.0);
+        let b = brush([0.9, 0.1, 0.1], 4.0);
         stroke_with(engine, b, &[Vec2::new(x, y), Vec2::new(x + 16.0, y + 16.0)]);
     }
 }

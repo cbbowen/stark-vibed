@@ -23,15 +23,9 @@ use stark_model::geom::Vec2;
 
 /// A fill's paint is color alone — how far it covers is `FillOp::opacity`,
 /// which the Select panel's slider sets (§18.0.4). These double as brush
-/// colors through [`opaque`], which is where a per-unit opacity still belongs.
+/// colors unchanged: a color is three channels for both (§6.2).
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
 const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
-
-/// The same color as a *brush's*, whose alpha is the pigment's per-unit opacity
-/// (§6.1) rather than anything a fill reads.
-fn opaque([r, g, b]: [f32; 3]) -> [f32; 4] {
-    [r, g, b, 1.0]
-}
 
 /// A pixel's screen position for a canvas point, under the tests' identity view.
 fn screen_of(canvas: Vec2) -> (u32, u32) {
@@ -103,7 +97,7 @@ fn fill_rect(
 /// that much still comes off the Color panel; how far it covers is the Select
 /// panel's own opacity, which defaults to a full one.
 fn arm_fill(engine: &mut stark_engine::Engine, color: [f32; 3]) {
-    engine.process(ViewCommand::SetBrush(brush(opaque(color), 16.0)));
+    engine.process(ViewCommand::SetBrush(brush(color, 16.0)));
     engine.process(ViewCommand::SetShapeAction(ShapeAction::Fill));
 }
 
@@ -234,7 +228,7 @@ fn a_fill_stacks_over_resident_paint_rather_than_replacing_it() {
     };
     paint(
         &mut engine,
-        opaque(GREEN),
+        GREEN,
         20.0,
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
@@ -305,7 +299,7 @@ fn opacity_one_covers_what_is_under_it_and_a_half_does_not() {
 
     paint(
         &mut engine,
-        opaque(GREEN),
+        GREEN,
         20.0,
         &[Vec2::new(-70.0, 0.0), Vec2::new(-30.0, 0.0)],
     );
@@ -483,7 +477,7 @@ fn undo_restores_exactly_what_the_fill_covered() {
     };
     paint(
         &mut engine,
-        opaque(GREEN),
+        GREEN,
         18.0,
         &[Vec2::new(-50.0, 20.0), Vec2::new(50.0, 20.0)],
     );
@@ -590,7 +584,7 @@ fn fill_golden() {
     // at once.
     paint(
         &mut engine,
-        opaque(GREEN),
+        GREEN,
         22.0,
         &[Vec2::new(-70.0, -30.0), Vec2::new(70.0, 30.0)],
     );
@@ -759,7 +753,7 @@ fn the_gradient_preview_matches_the_commit() {
     };
     paint(
         &mut engine,
-        opaque(GREEN),
+        GREEN,
         20.0,
         &[Vec2::new(-60.0, -20.0), Vec2::new(60.0, 20.0)],
     );

@@ -23,8 +23,8 @@ use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
 use stark_model::geom::Vec2;
 use stark_model::peer::{GestureFrame, PeerFrame, StrokeHead};
 
-const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
-const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
+const RED: [f32; 3] = [1.0, 0.0, 0.0];
+const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
 
 /// The half of the canvas actor A will select: everything left of x = 0.
 const LEFT_MIN: Vec2 = Vec2::new(-400.0, -400.0);
@@ -624,7 +624,7 @@ fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
 }
 
 /// Draw this client's live stroke along `points`, and leave the pointer down.
-fn start_live_stroke(engine: &mut Engine, color: [f32; 4], points: [Vec2; 2]) {
+fn start_live_stroke(engine: &mut Engine, color: [f32; 3], points: [Vec2; 2]) {
     engine.process(ViewCommand::SetBrush(common::brush(color, 12.0)));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,

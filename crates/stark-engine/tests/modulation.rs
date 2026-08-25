@@ -20,7 +20,7 @@ use stark_model::document::{
 };
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 /// A test brush with no `drain`: the run-dry falloff is the one *other* thing that
 /// varies along a stroke, and these tests are about what varies across one.

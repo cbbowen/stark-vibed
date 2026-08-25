@@ -264,7 +264,7 @@ fn a_placed_image_survives_a_save_and_reload() {
     // that followed — which is what makes this a replay test rather than a decode one.
     paint(
         &mut original,
-        [0.9, 0.9, 0.2, 1.0],
+        [0.9, 0.9, 0.2],
         14.0,
         &[Vec2::new(-40.0, 40.0), Vec2::new(40.0, -40.0)],
     );

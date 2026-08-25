@@ -28,7 +28,7 @@ use stark_model::geom::{Extent2, Vec2};
 
 use super::{SIZE, brush, engine_or_skip_sized, replay_with};
 
-const RED: [f32; 4] = [0.86, 0.16, 0.12, 1.0];
+const RED: [f32; 3] = [0.86, 0.16, 0.12];
 
 /// How far a case is allowed to move under each check. Per case rather than global
 /// because the answers differ by two orders of magnitude and *the differences are the
@@ -206,8 +206,8 @@ pub fn smear_brush(radius: f32) -> BrushParams {
 /// battery's exact round-trip would be measuring the undercoat rather than the case.
 fn undercoat(engine: &mut Engine, at: Vec2) {
     for (color, from, to) in [
-        ([0.1, 0.9, 0.2, 1.0], (-110.0, -40.0), (110.0, -10.0)),
-        ([0.95, 0.85, 0.1, 1.0], (-90.0, 50.0), (100.0, 20.0)),
+        ([0.1, 0.9, 0.2], (-110.0, -40.0), (110.0, -10.0)),
+        ([0.95, 0.85, 0.1], (-90.0, 50.0), (100.0, 20.0)),
     ] {
         let mut b = brush(color, 26.0);
         b.drain = 0.0;
@@ -740,7 +740,7 @@ pub const CASES: &[Case] = &[
             // A thick field to smear, laid flat so the smear's own structure is what
             // shows. Wider than the tip that will work it, so the mark stays inside it.
             // Replayed, as `undercoat` is and for its reason.
-            let mut lay = brush([0.0, 0.0, 0.0, 1.0], 260.0);
+            let mut lay = brush([0.0, 0.0, 0.0], 260.0);
             lay.paint_mut().expect("a paint brush").dynamics.flow = 1.5;
             lay.drain = 0.0;
             replay_with(
@@ -784,7 +784,7 @@ pub const CASES: &[Case] = &[
             height: 256,
         },
         prepare: |e, at| {
-            let mut lay = brush([0.1, 0.9, 0.2, 1.0], 30.0);
+            let mut lay = brush([0.1, 0.9, 0.2], 30.0);
             lay.drain = 0.0;
             let band: Vec<Vec2> = (0..220)
                 .map(|i| {
@@ -808,6 +808,37 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 12,
             refine: 0.12,
+            lift: 0.0,
+        },
+    },
+    Case {
+        name: "opacity",
+        what: "The paint effect's opacity (§6.2): a self-crossing recorded stroke \
+               over a painted band at 0.6, on the carried-parcel path the swept \
+               deposit takes below full opacity. The only cover for the scaled \
+               integrate — the crossing must cover once, not twice — and for the \
+               pristine-base rule every incremental piece re-derives from on the \
+               *paint* side of the theorem.",
+        view: SIZE,
+        prepare: |e, at| {
+            undercoat(e, at);
+            let mut b = brush([0.15, 0.25, 0.9], 24.0);
+            // Flow high enough that the parcel saturates over the stroke's core,
+            // so the crossing is a claim about the ceiling rather than about two
+            // half-built fringes stacking.
+            b.paint_mut().expect("a paint brush").dynamics.flow = 2.5;
+            b.effect.set_opacity(0.6);
+            b.drain = 0.0;
+            b
+        },
+        path: || centred(stark_testdata::LOOP_STROKE),
+        tol: Tol {
+            golden: 6,
+            // The erase case's figure, for its reason (§6.2): the carried parcel
+            // holds the same sums however the stroke is cut, so this bound is
+            // about f16 stores, not the pass.
+            seam: 4,
+            refine: 4.0,
             lift: 0.0,
         },
     },

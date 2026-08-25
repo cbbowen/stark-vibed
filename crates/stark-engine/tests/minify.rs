@@ -107,7 +107,7 @@ fn decimate(img: &RgbaImage, n: u32) -> RgbaImage {
 }
 
 /// A hard, thin tip: the content whose edges a single tap per pixel cannot represent.
-fn fine(color: [f32; 4]) -> BrushParams {
+fn fine(color: [f32; 3]) -> BrushParams {
     BrushParams {
         size: 2.0,
         shape: BrushShape::Round { hardness: 1.0 },
@@ -128,7 +128,7 @@ fn hatched(engine: &mut stark_engine::Engine) {
         let x = start + i as f32 * 9.0;
         stroke_with(
             engine,
-            fine([0.85, 0.10, 0.10, 1.0]),
+            fine([0.85, 0.10, 0.10]),
             &[Vec2::new(x, -HALF), Vec2::new(x + 34.0, HALF)],
         );
     }

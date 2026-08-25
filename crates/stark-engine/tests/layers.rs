@@ -10,8 +10,8 @@ use stark_model::Srgb;
 use stark_model::document::{BlendMode, DRAGO_K, LayerId, Place};
 use stark_model::geom::{Extent2, Vec2};
 
-const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
-const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
+const RED: [f32; 3] = [0.85, 0.1, 0.1];
+const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
 
 const ROOT: LayerId = LayerId(0);
 const TOP: LayerId = LayerId(1);

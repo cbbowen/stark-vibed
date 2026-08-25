@@ -779,7 +779,7 @@ mod tests {
             ..base.params
         });
         let recolored = w(BrushParams {
-            color: [0.9, 0.1, 0.2, entered.params.color[3]],
+            color: [0.9, 0.1, 0.2],
             ..entered.params
         });
         let (kept, _) = held(entered, base).settle(recolored);
@@ -788,20 +788,14 @@ mod tests {
 
     #[test]
     fn the_brush_opacity_is_part_of_a_slot_though() {
-        // `color[3]` is the brush's own opacity — a material property, not the
-        // color choice (§6.1) — and the preset library carries it for the same
+        // The opacity is the effect's own — part of what the tool does, not the
+        // color choice (§6.2) — and the preset library carries it for the same
         // reason. Dragging it under a hold has to reach the number.
         let base = w(BrushParams::default());
         let entered = base;
-        let thinned = w(BrushParams {
-            color: [
-                base.params.color[0],
-                base.params.color[1],
-                base.params.color[2],
-                0.4,
-            ],
-            ..base.params
-        });
+        let mut thinned_params = base.params;
+        thinned_params.effect.set_opacity(0.4);
+        let thinned = w(thinned_params);
         let (kept, _) = held(entered, base).settle(thinned);
         assert_eq!(kept, Some(thinned));
     }

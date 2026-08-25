@@ -2184,14 +2184,14 @@ mod tests {
         assert_eq!(brush_deed(&was, &looser), Some(Deed::TunedBrush));
 
         let mut red = was;
-        red.color = [1.0, 0.0, 0.0, was.color[3]];
+        red.color = [1.0, 0.0, 0.0];
         assert_eq!(brush_deed(&was, &red), Some(Deed::ChangedColor));
 
         // A preset: the size and the color both, plus whatever else it carries. Not
         // an adjustment of either, so it counts as neither.
         let mut preset = was;
         preset.size = was.size * 2.0;
-        preset.color = [1.0, 0.0, 0.0, was.color[3]];
+        preset.color = [1.0, 0.0, 0.0];
         assert_eq!(brush_deed(&was, &preset), None);
 
         // The command that changes nothing — a slider dragged back to where it

@@ -191,8 +191,10 @@ struct Slot {
     /// `λ = ln(1 − axis) ≤ 0`, clamped away from −∞. Zero is "no transfer".
     lambda_lift: f32,
     lambda_deposit: f32,
-    /// The brush's own color channels + per-unit opacity. **Undrained**.
-    channels: [f32; 4],
+    /// The brush's own color channels. **Undrained** — and no per-unit opacity
+    /// beside them: minted paint is opaque per unit, faded only by the drain
+    /// (§6.2).
+    channels: [f32; 3],
     /// The same color's **residual** (§6.7) in `.xyz`; `.w` unused. Undrained like
     /// `channels`, and zero in a space that has no residual to carry.
     resid: [f32; 4],
@@ -288,7 +290,7 @@ impl Default for Slot {
             travel_radii: 0.0,
             lambda_lift: 0.0,
             lambda_deposit: 0.0,
-            channels: [0.0; 4],
+            channels: [0.0; 3],
             resid: [0.0; 4],
             rect_origin: Vec2::ZERO,
             orient: 0.0,
@@ -346,8 +348,7 @@ impl Slot {
             lambda_deposit: self.lambda_deposit,
             lambda_bleed: self.lambda_bleed,
             curvature: self.curvature,
-            brush_lat: [self.channels[0], self.channels[1], self.channels[2]],
-            brush_op: self.channels[3],
+            brush_lat: self.channels,
             brush_res: [self.resid[0], self.resid[1], self.resid[2]],
             add: self.add,
             noise_freq: [self.noise_freq[0], self.noise_freq[1], self.noise_freq[2]],
@@ -744,19 +745,25 @@ pub(super) fn dynamics_plan(
                         orient: sw.orient,
                         stretch: sw.stretch,
                         drain: b.drain_px(),
-                        // The `add` source rate is passed through **unscaled**, exactly
-                        // as `stamp.wesl` takes it. A gain here would make the same
-                        // slider mean two different amounts of paint depending on
-                        // whether some *other* axis happened to be non-zero — nudging
-                        // `deposit` off zero would change the flow. Nor is one needed
-                        // to make `add = 1` lay a full-thickness deposit per pass: a
-                        // pass of the tip is `TAU_PER_PASS ≈ 6.9` of exposure, so
-                        // `add = 1` lays 6.9 of height, which the slab law reads as
-                        // 0.999 coverage.
+                        // The `add` source rate is passed through with **no gain but
+                        // the effect's opacity**, exactly as `stamp.wesl` takes it. Any
+                        // other gain here would make the same slider mean two different
+                        // amounts of paint depending on whether some *other* axis
+                        // happened to be non-zero — nudging `deposit` off zero would
+                        // change the flow. Nor is one needed to make `add = 1` lay a
+                        // full-thickness deposit per pass: a pass of the tip is
+                        // `TAU_PER_PASS ≈ 6.9` of exposure, so `add = 1` lays 6.9 of
+                        // height, which the slab law reads as 0.999 coverage.
+                        //
+                        // The opacity is the stated exception, and this is where the
+                        // loop applies it (§6.2): on this path the ceiling cannot be
+                        // exact — moved paint moves whole — so it scales what the
+                        // brush mints, which agrees with the swept integrate's scaled
+                        // parcel to first order in the amount laid and exactly at 1.
                         //
                         // Off the segment, since the pen can drive it (§6.2) — the same
                         // number the swept path now reads off its instance.
-                        add: paint.add,
+                        add: paint.add * consts.opacity,
                         curvature: sw.curvature,
                         tooth_give: paint.tooth_give,
                         cell: cell as f32,
@@ -1226,7 +1233,7 @@ mod tests {
             travel_radii: 6.0,
             lambda_lift: 7.0,
             lambda_deposit: 8.0,
-            channels: [9.0, 10.0, 11.0, 12.0],
+            channels: [9.0, 10.0, 11.0],
             rect_origin: Vec2::new(13.0, 14.0),
             orient: 15.0,
             drain: 16.0,
@@ -1273,7 +1280,6 @@ mod tests {
         assert_eq!(packed.bleed_reach, 19, "bleed_reach, as an integer");
         // The three the host keeps as one array and the shader splits.
         assert_eq!(packed.brush_lat, [9.0, 10.0, 11.0], "channels → brush_lat");
-        assert_eq!(packed.brush_op, 12.0, "channels[3] → brush_op");
         assert_eq!(packed.brush_res, [36.0, 37.0, 38.0], "resid (§6.7)");
         assert_eq!(packed.noise_freq, [20.0, 21.0, 22.0], "noise_freq");
         // And the ones whose names already match, so that a member never assigned at

@@ -25,7 +25,7 @@ use stark_model::document::{ChromaticAberration, ColorAdjust, Filter, LayerId, P
 use stark_model::geom::Vec2;
 use stark_model::gradient::{Gradient, GradientStop};
 
-const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
+const RED: [f32; 3] = [0.85, 0.1, 0.1];
 const STROKE: &[Vec2] = &[Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)];
 
 /// The neutral filter — what `AddFilter` lands.
@@ -517,7 +517,7 @@ fn a_filter_can_be_selected_but_takes_no_paint() {
     assert_eq!(info.filter, Some(NEUTRAL), "the filter itself is projected");
 
     let before = engine.render_to_image();
-    paint(&mut engine, [0.1, 0.1, 0.9, 1.0], 30.0, STROKE);
+    paint(&mut engine, [0.1, 0.1, 0.9], 30.0, STROKE);
     assert!(
         images_match(&before, &engine.render_to_image(), 0),
         "a stroke aimed at a filter layer laid paint",
@@ -963,7 +963,7 @@ fn a_gradient_map_repaints_the_paint_and_only_the_paint() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, [0.1, 0.1, 0.9, 1.0], 22.0, STROKE);
+    paint(&mut engine, [0.1, 0.1, 0.9], 22.0, STROKE);
     let before = engine.render_to_image();
     let off = (before.width / 2, before.height / 8); // well clear of the stroke
     assert!(
@@ -1038,7 +1038,7 @@ fn a_gradient_map_works_in_a_pigment_document() {
     let Some(mut engine) = engine_or_skip_with(stark_model::ColorSpaceId::Mixbox) else {
         return;
     };
-    paint(&mut engine, [0.1, 0.1, 0.9, 1.0], 22.0, STROKE);
+    paint(&mut engine, [0.1, 0.1, 0.9], 22.0, STROKE);
     add_filter(
         &mut engine,
         None,

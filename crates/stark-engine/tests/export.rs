@@ -18,7 +18,7 @@ use stark_model::document::LayerId;
 use stark_model::document::{MattePaint, MatteRegion, Place, SelectionOp};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
+const RED: [f32; 3] = [0.85, 0.1, 0.1];
 const BLACK: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// A 120×80 frame centred on the canvas origin.
@@ -669,7 +669,7 @@ fn export_is_rgba_whatever_the_target_format_is() {
 
     for engine in [&mut rgba, &mut bgra] {
         // A color with three distinct channels, so a swap cannot hide in it.
-        paint(engine, [0.9, 0.35, 0.1, 1.0], 30.0, WIDE);
+        paint(engine, [0.9, 0.35, 0.1], 30.0, WIDE);
         add_frame(engine);
     }
     let a = pollster::block_on(

@@ -37,8 +37,8 @@ const TOP: LayerId = LayerId(1);
 
 /// Two saturated lights that overlap in the middle of the canvas. Warm and cool so
 /// the overlap is unmistakably a *combination* rather than either one of them.
-const WARM: [f32; 4] = [0.90, 0.35, 0.10, 1.0];
-const COOL: [f32; 4] = [0.10, 0.30, 0.85, 1.0];
+const WARM: [f32; 3] = [0.90, 0.35, 0.10];
+const COOL: [f32; 3] = [0.10, 0.30, 0.85];
 
 const H_STROKE: &[Vec2] = &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)];
 const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 60.0)];
@@ -50,7 +50,7 @@ fn luma(c: [u8; 4]) -> f64 {
 }
 
 /// Add a layer above the current one and paint `color` along `points` on it.
-fn layer_with(engine: &mut Engine, color: [f32; 4], points: &[Vec2]) {
+fn layer_with(engine: &mut Engine, color: [f32; 3], points: &[Vec2]) {
     engine.process(DocCommand::AddLayer {
         carrier: None,
         above: None,
@@ -76,7 +76,7 @@ const COMBINING: [BlendMode; 3] = [BlendMode::Reinhard, RADIANCE, BlendMode::Mul
 /// flow. That is invisible for most purposes and decisive for two tests here, which
 /// are about the color algebra and would otherwise be measuring the coverage law
 /// instead.
-fn opaque(color: [f32; 4]) -> BrushParams {
+fn opaque(color: [f32; 3]) -> BrushParams {
     BrushParams {
         effect: BrushEffect::paint_with(BrushDynamics {
             flow: 6.0,
@@ -298,7 +298,7 @@ fn stacking_is_order_independent(mode: BlendMode) {
         &[Vec2::new(-50.0, -50.0), Vec2::new(50.0, 50.0)],
         &[Vec2::new(0.0, -70.0), Vec2::new(0.0, 70.0)],
     ];
-    let colors = [WARM, COOL, [0.20, 0.80, 0.35, 1.0]];
+    let colors = [WARM, COOL, [0.20, 0.80, 0.35]];
 
     let render = |order: [usize; 3]| -> Option<RgbaImage> {
         let mut engine = engine_or_skip_blue()?;
@@ -365,7 +365,7 @@ fn a_combining_layer_weighs_its_coverage_in_light() {
     };
     // An ordinary stroke, whose interior the slab law leaves well short of full
     // coverage — which is the condition under test rather than an edge case.
-    paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 70.0, H_STROKE);
+    paint(&mut engine, [0.0, 0.0, 0.0], 70.0, H_STROKE);
     layer_with(&mut engine, WARM, V_STROKE);
     let normal = center(&engine.render_to_image());
 
@@ -412,7 +412,7 @@ fn a_combining_layer_weighs_its_coverage_in_light() {
 fn black_is_the_identity_through_the_round_trip() {
     // A near-neutral and a saturated color, because the two spaces cost very
     // different amounts on each.
-    const MUTED: [f32; 4] = [0.55, 0.52, 0.48, 1.0];
+    const MUTED: [f32; 3] = [0.55, 0.52, 0.48];
     let cases = [
         // Oklab's round trip is a pair of matrices and a signed cube root: exact to
         // within the half-float the composite targets carry, whatever the color.
@@ -444,7 +444,7 @@ fn black_is_the_identity_through_the_round_trip() {
             };
             // A wide black substrate with the color laid over the middle of it, thick
             // enough to reach full coverage — see the note above.
-            paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 70.0, H_STROKE);
+            paint(&mut engine, [0.0, 0.0, 0.0], 70.0, H_STROKE);
             engine.process(DocCommand::AddLayer {
                 carrier: None,
                 above: None,
@@ -483,7 +483,7 @@ fn black_is_the_identity_through_the_round_trip() {
 /// cannot see.
 #[test]
 fn white_is_the_identity_through_the_round_trip() {
-    const MUTED: [f32; 4] = [0.55, 0.52, 0.48, 1.0];
+    const MUTED: [f32; 3] = [0.55, 0.52, 0.48];
     // Same colors and the same tolerances as the black case, and the same heavy
     // brush for the same reason: the cost under test is the round trip's, and at
     // partial coverage a combining mode's coverage law would be measured instead
@@ -503,7 +503,7 @@ fn white_is_the_identity_through_the_round_trip() {
         };
         // A wide white substrate with the color laid over the middle of it, thick
         // enough to reach full coverage — see the note on the black case.
-        paint(&mut engine, [1.0, 1.0, 1.0, 1.0], 70.0, H_STROKE);
+        paint(&mut engine, [1.0, 1.0, 1.0], 70.0, H_STROKE);
         engine.process(DocCommand::AddLayer {
             carrier: None,
             above: None,
@@ -538,14 +538,14 @@ fn white_is_the_identity_through_the_round_trip() {
 #[test]
 fn multiply_over_black_is_black() {
     // `(under Normal, under Multiply)` for one color laid over black.
-    let sample = |color: [f32; 4]| -> Option<([u8; 4], [u8; 4])> {
+    let sample = |color: [f32; 3]| -> Option<([u8; 4], [u8; 4])> {
         let mut engine = engine_or_skip()?;
         // The black laid **thick**: "multiply over black is black" is a claim about
         // where the black actually is, and an ordinary stroke's interior covers well
         // under half (the slab law never reaches 1). Where it does not cover there is
         // nothing under the glaze, so the glaze shows — correctly, and not what this
         // test is about.
-        stroke_with(&mut engine, opaque([0.0, 0.0, 0.0, 1.0]), H_STROKE);
+        stroke_with(&mut engine, opaque([0.0, 0.0, 0.0]), H_STROKE);
         engine.process(DocCommand::AddLayer {
             carrier: None,
             above: None,
@@ -586,7 +586,7 @@ fn multiply_over_black_is_black() {
 /// allowed to (and do) push into the roll-off.
 #[test]
 fn glow_leaves_headroom_where_radiance_does_not() {
-    let bright = [0.80, 0.80, 0.80, 1.0];
+    let bright = [0.80, 0.80, 0.80];
     let stack = |mode: BlendMode| -> Option<f64> {
         let mut engine = engine_or_skip()?;
         for n in 0..5 {
@@ -752,7 +752,7 @@ fn black_is_black_in_the_pigment_space() {
         let mut engine = engine_or_skip_with(space)?;
         engine.process(DocCommand::SetSubstrateColor(Srgb::new([0.0, 0.0, 0.0])));
         let substrate = center(&engine.render_to_image());
-        paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 70.0, H_STROKE);
+        paint(&mut engine, [0.0, 0.0, 0.0], 70.0, H_STROKE);
         Some((substrate, center(&engine.render_to_image())))
     };
     let (Some((ok_substrate, ok_paint)), Some((mix_substrate, mix_paint))) = (
@@ -789,11 +789,11 @@ const BLACK_BAND: &[Vec2] = &[Vec2::new(-70.0, -60.0), Vec2::new(70.0, -60.0)];
 #[cfg(feature = "mixbox")]
 const CARRY_DRAG: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 40.0)];
 
-/// A brush that lays nothing of its own and moves what it finds: `add = 0` and a fully
-/// transparent color, so anything it deposits it first picked up (§6.2).
+/// A brush that lays nothing of its own and moves what it finds: `add = 0`, so
+/// anything it deposits it first picked up (§6.2).
 #[cfg(feature = "mixbox")]
 fn carrying_brush() -> BrushParams {
-    let mut b = brush([0.0, 0.0, 0.0, 0.0], 26.0);
+    let mut b = brush([0.0, 0.0, 0.0], 26.0);
     b.drain = 0.0;
     b.paint_mut().expect("a paint brush").dynamics.flow = 0.0;
     b.paint_mut().expect("a paint brush").dynamics.lift = 0.9;
@@ -806,7 +806,7 @@ fn carrying_brush() -> BrushParams {
 fn carried_onto(space: ColorSpaceId, bg: [f32; 3]) -> Option<[u8; 4]> {
     let mut engine = engine_or_skip_with(space)?;
     engine.process(DocCommand::SetSubstrateColor(Srgb::new(bg)));
-    paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 30.0, BLACK_BAND);
+    paint(&mut engine, [0.0, 0.0, 0.0], 30.0, BLACK_BAND);
     stroke_with(&mut engine, carrying_brush(), CARRY_DRAG);
     Some(center(&engine.render_to_image()))
 }

@@ -29,8 +29,8 @@ use stark_model::Srgb;
 use stark_model::document::{LayerId, Place};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [0.85, 0.12, 0.1, 1.0];
-const BLUE: [f32; 4] = [0.1, 0.2, 0.8, 1.0];
+const RED: [f32; 3] = [0.85, 0.12, 0.1];
+const BLUE: [f32; 3] = [0.1, 0.2, 0.8];
 
 /// The layer every fresh document starts with.
 const ROOT: LayerId = LayerId(0);
@@ -56,11 +56,11 @@ fn over_substrate(radius: u32) -> PickOptions {
     }
 }
 
-fn near(a: [f32; 3], b: [f32; 4], tol: f32) -> bool {
+fn near(a: [f32; 3], b: [f32; 3], tol: f32) -> bool {
     (0..3).all(|i| (a[i] - b[i]).abs() <= tol)
 }
 
-fn assert_near(got: Option<[f32; 3]>, want: [f32; 4], tol: f32, what: &str) {
+fn assert_near(got: Option<[f32; 3]>, want: [f32; 3], tol: f32, what: &str) {
     let got = got.unwrap_or_else(|| panic!("{what}: nothing picked"));
     assert!(
         near(got, want, tol),
@@ -162,7 +162,7 @@ fn over_the_substrate_answers_with_the_canvas_color() {
 
     assert_near(
         pick(&mut engine, Vec2::ZERO, over_substrate(0)),
-        [SUBSTRATE[0], SUBSTRATE[1], SUBSTRATE[2], 1.0],
+        SUBSTRATE,
         0.02,
         "bare canvas is the canvas color",
     );
@@ -318,7 +318,7 @@ fn one_layer_ignores_its_own_opacity_until_it_reaches_zero() {
         engine.process(DocCommand::SetLayerOpacity(layer, opacity));
         assert_near(
             pick(&mut engine, Vec2::ZERO, source),
-            [full[0], full[1], full[2], 1.0],
+            [full[0], full[1], full[2]],
             0.02,
             &format!("the layer's paint at opacity {opacity}"),
         );
@@ -425,8 +425,8 @@ fn radius_averages_the_patch() {
     );
 }
 
-const GREEN: [f32; 4] = [0.1, 0.7, 0.2, 1.0];
-const YELLOW: [f32; 4] = [0.85, 0.8, 0.1, 1.0];
+const GREEN: [f32; 3] = [0.1, 0.7, 0.2];
+const YELLOW: [f32; 3] = [0.85, 0.8, 0.1];
 
 /// Bars for the scoped-source tests, spatially separated so a point sample says
 /// which layer answered.
@@ -593,13 +593,13 @@ fn the_below_source_cuts_the_stack_above_the_layer() {
     );
     assert_near(
         pick(&mut engine, Vec2::new(0.0, -200.0), below(m1)),
-        [SUBSTRATE[0], SUBSTRATE[1], SUBSTRATE[2], 1.0],
+        SUBSTRATE,
         0.02,
         "the substrate rides this source: bare canvas is the canvas color",
     );
     assert_near(
         pick(&mut engine, Vec2::new(0.0, 100.0), below(l0)),
-        [SUBSTRATE[0], SUBSTRATE[1], SUBSTRATE[2], 1.0],
+        SUBSTRATE,
         0.02,
         "below the bottom layer, everything else is switched off",
     );

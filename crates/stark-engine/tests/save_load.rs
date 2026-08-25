@@ -17,8 +17,8 @@ use stark_model::SubstrateId;
 use stark_model::document::BrushShape;
 use stark_model::geom::Vec2;
 
-const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
-const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
+const RED: [f32; 3] = [0.85, 0.1, 0.1];
+const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
 
 const STROKE_A: &[Vec2] = &[Vec2::new(-40.0, -20.0), Vec2::new(40.0, 20.0)];
 const STROKE_B: &[Vec2] = &[Vec2::new(-40.0, 40.0), Vec2::new(40.0, -40.0)];
