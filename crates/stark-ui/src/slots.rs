@@ -41,6 +41,16 @@
 //! changes the color you are painting with, and a color picked during a hold
 //! survives the release. A slot is a tool; color belongs to the Color panel.
 //!
+//! One thing is said about the **release** rather than the hold: a number
+//! **tapped twice** is picked rather than borrowed. The second press is a hold
+//! like any other — the rack comes up, the rule above is in force — and the one
+//! difference is that letting go keeps the slot's brush in hand instead of
+//! handing the displaced one back ([`Held::settle`]). It is what clicking the
+//! row does ([`pick`]), for a hand that has the keyboard and not the pin. Told
+//! apart by *count* rather than by length, which is what keeps a hold from ever
+//! being mistaken for it: the first tap is an ordinary hold, and an unused hold
+//! does nothing ([`Taps`]).
+//!
 //! Like the shape and preset libraries the rack follows this browser rather than
 //! the document (`localStorage`), and degrades to a per-session rack where
 //! storage is unavailable.
@@ -77,6 +87,45 @@ pub const ERASER: usize = 0;
 /// between the keyboard, the panel and storage.
 pub type Rack = [Option<BrushConfig>; COUNT];
 
+/// How close together two presses of one digit have to fall to read as a
+/// **double-tap**, seconds — measured press to press, which is how the desktop
+/// measures a double-click too.
+///
+/// Press to press rather than release to press because it then bounds the first
+/// press as well: a hold that lasted longer than this can never be the first of a
+/// pair, so a number held to draw under and pressed again for more is two holds
+/// and never a pick, however quick the second press. Shorter than the desktop's
+/// half-second for the same reason: a number under a painting hand is pressed in
+/// bursts, and the window has to close between them.
+pub const DOUBLE_TAP: f64 = 0.3;
+
+/// The last press of a number key — which digit and when — so the next press can
+/// tell whether it is the second of a pair ([`Taps::press`]).
+///
+/// Presses only, never releases: the window is press to press ([`DOUBLE_TAP`]),
+/// and a key's own auto-repeat never reaches here, since [`hold`] declines a
+/// press while a hold is in flight before it asks.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct Taps {
+    last: Option<(usize, f64)>,
+}
+
+impl Taps {
+    /// Record a press of `slot` at `now` (seconds, on any monotonic clock), and
+    /// say whether it is the second of a double-tap: the same digit, pressed
+    /// again within [`DOUBLE_TAP`] of the last press.
+    ///
+    /// A pair is spent by being reported, so a third press in the same window
+    /// starts over rather than pairing with the second: the count is exactly two.
+    pub fn press(&mut self, slot: usize, now: f64) -> bool {
+        let double = self
+            .last
+            .is_some_and(|(s, at)| s == slot && now - at < DOUBLE_TAP);
+        self.last = (!double).then_some((slot, now));
+        double
+    }
+}
+
 /// What is holding a slot down.
 ///
 /// Carried through the hold so a release can only be reported by the thing that
@@ -112,6 +161,11 @@ pub struct Held {
     /// Whether a whole tool was deliberately put on during the hold — a preset
     /// row clicked, or another slot's row ([`claim`]).
     claimed: bool,
+    /// Whether the release keeps the slot's brush in hand rather than putting
+    /// `base` back: the press that made this hold was the second of a
+    /// double-tap ([`Taps`]), which *picks* the number ([`pick`]) where a single
+    /// press borrows it.
+    picked: bool,
 }
 
 impl Held {
@@ -123,10 +177,11 @@ impl Held {
     }
 
     /// What the release does: the brush to keep in the slot (`None` when nothing
-    /// was changed), and the brush to put back.
+    /// was changed), and the brush to put back (`None` when the hold was a
+    /// double-tap's, and the hand keeps what it has).
     ///
     /// Split out as a pure function because it is the whole rule, and the rule is
-    /// the part worth being sure of. Three properties it has to have:
+    /// the part worth being sure of. Four properties it has to have:
     ///
     /// - **An unused hold keeps nothing.** Holding 5 and drawing must not quietly
     ///   make 5 the brush you happened to be holding — the numbers are assigned
@@ -147,9 +202,17 @@ impl Held {
     ///   from a hold nobody used, and the slot would stay empty. So a whole tool
     ///   arriving says so for itself ([`claim`]) rather than being inferred from
     ///   its effect.
-    fn settle(&self, current: BrushConfig) -> (Option<BrushConfig>, BrushConfig) {
+    /// - **A double-tap hands nothing back.** The second press of one is a hold
+    ///   in every other respect — what the number keeps is decided exactly as
+    ///   above — but its release leaves the slot's brush in hand, which is what
+    ///   makes tapping a number twice the same act as clicking its row
+    ///   ([`pick`]). Decided here rather than in [`release`] because "what comes
+    ///   back" is the other half of the rule, and the two halves are one
+    ///   function.
+    fn settle(&self, current: BrushConfig) -> (Option<BrushConfig>, Option<BrushConfig>) {
         let kept = (self.claimed || !presets::matches(&current, &self.entered)).then_some(current);
-        (kept, self.base)
+        let back = (!self.picked).then_some(self.base);
+        (kept, back)
     }
 
     /// What the number would keep if the hold ended **now** — the rule asked one
@@ -173,6 +236,14 @@ impl Held {
 /// A slot with nothing in it still enters the hold rather than declining: the
 /// hold *is* the arming, and holding an empty number while clicking a preset is
 /// how the number gets its first brush.
+///
+/// A **key** pressed twice within [`DOUBLE_TAP`] enters its second hold *picked*
+/// ([`Held::picked`]): the same hold, whose release keeps the slot's brush in
+/// hand instead of handing the displaced one back — the click's outcome
+/// ([`pick`]) by way of the keyboard. Counted below the guard on a hold in
+/// flight, so a held key's repeats are never presses; and counted for keys
+/// alone, since the pen's tail is on the glass or off it, and two dabs of it
+/// are two erase strokes.
 pub fn hold(state: AppState, slot: usize, grip: Grip) {
     if slot >= COUNT {
         return;
@@ -181,6 +252,8 @@ pub fn hold(state: AppState, slot: usize, grip: Grip) {
     if held.peek().is_some() {
         return;
     }
+    let mut taps = state.slots.taps;
+    let picked = grip == Grip::Key && taps.write().press(slot, crate::platform::now_seconds());
     // Each read is its own statement, so no guard is alive when `wear` dispatches
     // and rewrites the brush signal underneath it (`state::update_brush`).
     let base = presets::worn(state);
@@ -200,6 +273,7 @@ pub fn hold(state: AppState, slot: usize, grip: Grip) {
         base_from,
         entered,
         claimed: false,
+        picked,
     }));
 }
 
@@ -245,7 +319,11 @@ pub fn release(state: AppState, slot: usize, grip: Grip) {
     }
     // Back through the door it left by, with the name it had: the hold borrowed
     // the hand, and a preset chosen *during* it went to the slot, not to this.
-    presets::wear_from(state, back, h.base_from);
+    // Or not back at all, for a double-tap's hold, whose whole point is that the
+    // swap stands.
+    if let Some(back) = back {
+        presets::wear_from(state, back, h.base_from);
+    }
 }
 
 /// End whatever hold is in flight, whoever made it — for the one event that can
@@ -485,9 +563,9 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                     // eraser's names the pen rather than the key, because the thing
                     // that reaches it is already in the hand.
                     let title = match (slot, brush.is_some()) {
-                        (ERASER, true) => "Click to paint with this, or flip the pen over".to_string(),
+                        (ERASER, true) => "Click or tap 0 twice to paint with this, or flip the pen over".to_string(),
                         (ERASER, false) => "Empty. Hold 0 (or the pen's eraser end) and click a preset".to_string(),
-                        (n, true) => format!("Click to paint with this, or hold {n}"),
+                        (n, true) => format!("Click or tap {n} twice to paint with this; hold {n} to borrow it"),
                         (n, false) => format!("Empty. Hold {n} and click a preset to fill it"),
                     };
                     let trash = if arming_now == Some(slot) {
@@ -601,10 +679,15 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
 /// pen in one hand and a tablet under the other leaves no spare finger for the
 /// number row).
 ///
-/// Deliberately *not* what tapping the number key does. A tap and a hold are the
-/// same keystroke told apart only by how long it lasted, so binding them to
-/// different outcomes would make every hold a race against the user's own
-/// reflexes. A click is its own gesture and says what it means.
+/// Also where **tapping the number twice** arrives, by way of the hold itself:
+/// the second press enters a hold whose release keeps the slot's brush rather
+/// than putting the displaced one back ([`Held::picked`]), so this is not called
+/// for it and there is no second path to the same place. Deliberately *not*
+/// what a single tap does. A tap and a hold are the same keystroke told apart
+/// only by how long it lasted, so binding them to different outcomes would make
+/// every hold a race against the user's own reflexes; two presses are told apart
+/// by *count*, and the first is an ordinary hold that does nothing unused. A
+/// click is its own gesture and says what it means.
 ///
 /// Clicking a row *during* a hold is left to mean what the one rule already says
 /// it means: the click makes that slot's brush live, and the hold then keeps
@@ -809,6 +892,7 @@ mod tests {
             base_from: None,
             entered,
             claimed: false,
+            picked: false,
         }
     }
 
@@ -818,7 +902,7 @@ mod tests {
         let h = held(brush, brush);
         let (kept, back) = h.settle(brush);
         assert_eq!(kept, None, "an unused hold must not claim the slot");
-        assert_eq!(back, brush);
+        assert_eq!(back, Some(brush));
     }
 
     #[test]
@@ -831,7 +915,7 @@ mod tests {
         };
         let (kept, back) = held(entered, base).settle(dragged);
         assert_eq!(kept, Some(dragged));
-        assert_eq!(back, base, "the brush in hand comes back untouched");
+        assert_eq!(back, Some(base), "the brush in hand comes back untouched");
     }
 
     #[test]
@@ -884,7 +968,7 @@ mod tests {
         };
         let (kept, back) = h.settle(brush);
         assert_eq!(kept, Some(brush), "the tool was chosen, not inferred");
-        assert_eq!(back, brush);
+        assert_eq!(back, Some(brush));
     }
 
     #[test]
@@ -899,7 +983,83 @@ mod tests {
         };
         let (kept, back) = h.settle(entered);
         assert_eq!(kept, Some(entered));
-        assert_eq!(back, base);
+        assert_eq!(back, Some(base));
+    }
+
+    #[test]
+    fn a_double_tapped_number_stays_in_hand() {
+        // The click's outcome by way of the keyboard (`pick`): the hold hands
+        // nothing back, so what was swapped in at the press is what the hand
+        // keeps.
+        let base = BrushConfig::default();
+        let entered = BrushConfig { size: 40.0, ..base };
+        let h = Held {
+            picked: true,
+            ..held(entered, base)
+        };
+        let (kept, back) = h.settle(entered);
+        assert_eq!(
+            kept, None,
+            "untouched, the number keeps nothing, tapped twice or not"
+        );
+        assert_eq!(back, None, "the displaced brush is not put back");
+    }
+
+    #[test]
+    fn tuning_under_a_double_tap_reaches_the_number_and_stays() {
+        // The one rule is still in force for the second press: the change goes to
+        // the number — and, this once, stays in hand as well.
+        let base = BrushConfig::default();
+        let entered = BrushConfig { size: 40.0, ..base };
+        let dragged = BrushConfig {
+            size: 64.0,
+            ..entered
+        };
+        let h = Held {
+            picked: true,
+            ..held(entered, base)
+        };
+        let (kept, back) = h.settle(dragged);
+        assert_eq!(kept, Some(dragged));
+        assert_eq!(back, None);
+    }
+
+    #[test]
+    fn two_presses_of_one_digit_within_the_window_are_a_double_tap() {
+        let mut taps = Taps::default();
+        assert!(
+            !taps.press(3, 10.0),
+            "the first press of anything is a hold"
+        );
+        assert!(taps.press(3, 10.0 + DOUBLE_TAP / 2.0));
+    }
+
+    #[test]
+    fn a_slow_second_press_is_another_hold() {
+        let mut taps = Taps::default();
+        assert!(!taps.press(3, 10.0));
+        assert!(!taps.press(3, 10.0 + DOUBLE_TAP));
+        // ...and opens a window of its own.
+        assert!(taps.press(3, 10.0 + DOUBLE_TAP + 0.1));
+    }
+
+    #[test]
+    fn a_different_digit_never_pairs() {
+        // A hand rolling 3, 4 is two holds, however fast.
+        let mut taps = Taps::default();
+        assert!(!taps.press(3, 10.0));
+        assert!(!taps.press(4, 10.1));
+        // And the roll moved the window: 3 again is measured against the 4.
+        assert!(!taps.press(3, 10.2));
+    }
+
+    #[test]
+    fn a_pair_is_spent_by_being_reported() {
+        let mut taps = Taps::default();
+        assert!(!taps.press(3, 10.0));
+        assert!(taps.press(3, 10.1));
+        assert!(!taps.press(3, 10.2), "a third press starts over");
+        assert!(taps.press(3, 10.3), "...and pairs with the fourth");
     }
 
     #[test]

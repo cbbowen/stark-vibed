@@ -528,7 +528,8 @@ pinned, a row takes the pointer and clicking one applies that slot for good
 (`slots::pick`). It is the mouse-only way to a slot, and the reason the pin
 exists — the rule this whole feature is built on needs a keyboard, and a hand
 with a pen in it and a tablet under it has no spare finger for the number row.
-Tapping the key still does not apply a slot, for the reason below.
+Tapping the key once still does not apply a slot, for the reason below; tapping
+it **twice** does, for the reason after it.
 
 A filled row pinned also carries the **trash** every other roster in the app
 carries (`slots::clear`), hover-revealed and answering in the same red ink as the
@@ -604,11 +605,26 @@ does animate that move, which is the same rule turned over: it is already on
 screen, so the hold is a change to something the eye is on rather than an
 arrival.
 
-Tapping the key deliberately does not apply a slot, because a tap and a hold are
-one keystroke told apart by how long it lasted, and binding them to different
-outcomes would make every hold a race against the user's own reflexes. A click is
-its own gesture and says what it means — which is why the mouse's way in is a
-click on a pinned row and not a shorter press of the same key.
+Tapping the key **once** deliberately does not apply a slot, because a tap and a
+hold are one keystroke told apart by how long it lasted, and binding them to
+different outcomes would make every hold a race against the user's own reflexes.
+A click is its own gesture and says what it means — which is why the mouse's way
+in is a click on a pinned row and not a shorter press of the same key.
+
+Tapping it **twice** does (`slots::Taps`), and that is not the same race: two
+presses are told apart by *count*, and the first is an ordinary hold that, unused,
+does nothing. The second press enters a hold like any other — the rack comes up,
+the rule holds, a Size drag under it reaches the number — and the one thing the
+double-tap changes is the release, which keeps the slot's brush in hand instead of
+putting the displaced one back (`Held::picked`; `settle` answers "what comes
+back" with nothing). So the keyboard arrives where the click does without a
+second path to it. The window is measured press to press, the desktop's own
+measure of a double-click, and that is what bounds the *first* press as well: a
+hold that lasted longer than the window can never be the first of a pair, so a
+number held to draw under and pressed again for more is two holds and never a
+pick. It is shorter than the desktop's half-second (`DOUBLE_TAP`, 0.3 s) because
+a number under a painting hand is pressed in bursts, and the window has to close
+between them.
 
 Clicking a row *during* a hold is left meaning what the one rule already makes it
 mean: the click puts that slot's brush on, and the hold keeps whatever is live

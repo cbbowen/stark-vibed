@@ -153,8 +153,9 @@ fn handle_keydown(state: AppState, e: &platform::KeyEvent) {
     // row types under, and a hand resting on it should not silently disarm the
     // rack — where the table's chords are exact. `slots::hold` ignores a press
     // while a hold is in flight, which is what makes the key's own auto-repeat
-    // harmless. Alt is not tolerated: bare Alt is the eyedropper's, and only a
-    // bare digit is ours.
+    // harmless, and it is what counts a digit pressed twice in a beat
+    // (`slots::Taps`), so nothing here keeps time. Alt is not tolerated: bare
+    // Alt is the eyedropper's, and only a bare digit is ours.
     if !accel(m)
         && !m.contains(Modifiers::ALT)
         && let Some(slot) = slots::of_code(&e.code())

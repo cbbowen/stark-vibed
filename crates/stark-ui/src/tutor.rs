@@ -942,7 +942,7 @@ static LESSONS: &[Lesson] = &[
         anchor: Anchor::QuickSlots,
         side: Side::RightAtMiddle,
         title: "Brushes one key press away",
-        body: "Hold a number key to paint with a brush from this rack. Release to return to your previous brush. Change a slot while you hold the key and the slot keeps the change.",
+        body: "Hold a number key to paint with a brush from this rack. Release to return to your previous brush, or tap the number twice to stay on its brush. Change a slot while you hold the key and the slot keeps the change.",
     },
     Lesson {
         key: "shape-assist",

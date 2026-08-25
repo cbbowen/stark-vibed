@@ -533,6 +533,10 @@ pub struct SlotState {
     /// this (`slots::SlotOverlay`), and the release reads the brushes it has to
     /// restore from it.
     pub held: Signal<Option<crate::slots::Held>>,
+    /// The last press of a number key, so the next can tell whether it is the
+    /// second of a double-tap (`slots::Taps`, §18.1.8). Read and written by
+    /// `slots::hold` alone, and rendered by nothing.
+    pub taps: Signal<crate::slots::Taps>,
     /// Whether the rack is kept open with no key held — the visibility menu's
     /// "Quick brushes" (§18.1.8). What it buys is a rack that can be *clicked*,
     /// which is the only way to a slot for a hand with no keyboard under it.
@@ -893,6 +897,7 @@ impl SlotState {
         Self {
             brushes: root_signal(|| [None; crate::slots::COUNT]),
             held: root_signal(|| None),
+            taps: root_signal(crate::slots::Taps::default),
             // The rack's pin is one of the four entries of the visibility menu
             // this browser remembers (`crate::visibility`, §25.6).
             pinned: root_signal(|| {
