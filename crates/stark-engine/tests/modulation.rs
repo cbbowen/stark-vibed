@@ -49,7 +49,7 @@ fn stroke_pen(engine: &mut stark_engine::Engine, b: BrushParams, points: &[Vec2]
         tilt: Vec2::new(pen.1, 0.0),
         time: 0.0,
     };
-    engine.process(ViewCommand::SetBrush(b));
+    engine.process(ViewCommand::set_brush(b));
     let mut it = points.iter();
     let first = *it.next().expect("at least one point");
     engine.process(GestureCommand::Start {
@@ -233,6 +233,7 @@ fn deposit_follows_tilt_on_the_stamp_loop() {
     };
     let b = BrushParams {
         effect: BrushEffect::Paint(PaintEffect {
+            color: RED,
             dynamics: BrushDynamics {
                 flow: 0.0,
                 lift: 0.0,

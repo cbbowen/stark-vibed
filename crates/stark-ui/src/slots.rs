@@ -56,10 +56,11 @@
 
 use dioxus::prelude::*;
 
+use crate::brush_config::BrushConfig;
 use crate::icons::{self, icon};
 use crate::layout::chrome_class;
-use crate::presets::{self, Wearable};
-use crate::state::{AppState, use_obs};
+use crate::presets;
+use crate::state::AppState;
 use crate::storage::{self, Store};
 
 /// How many quick brushes there are — one per digit.
@@ -72,7 +73,7 @@ pub const ERASER: usize = 0;
 /// The rack: one optional brush per digit, indexed **by the digit itself**, so
 /// `rack[3]` is what the `3` key holds and there is no off-by-one to get wrong
 /// between the keyboard, the panel and storage.
-pub type Rack = [Option<Wearable>; COUNT];
+pub type Rack = [Option<BrushConfig>; COUNT];
 
 /// What is holding a slot down.
 ///
@@ -96,11 +97,11 @@ pub struct Held {
     pub slot: usize,
     grip: Grip,
     /// The brush the hold displaced — what comes back when it ends.
-    base: Wearable,
+    base: BrushConfig,
     /// The brush the hold *began* on, once the swap had happened. What the
     /// release compares against to decide whether anything was changed, and so
     /// whether the number has something new to keep.
-    entered: Wearable,
+    entered: BrushConfig,
     /// Whether a whole tool was deliberately put on during the hold — a preset
     /// row clicked, or another slot's row ([`claim`]).
     claimed: bool,
@@ -139,7 +140,7 @@ impl Held {
     ///   from a hold nobody used, and the slot would stay empty. So a whole tool
     ///   arriving says so for itself ([`claim`]) rather than being inferred from
     ///   its effect.
-    fn settle(&self, current: Wearable) -> (Option<Wearable>, Wearable) {
+    fn settle(&self, current: BrushConfig) -> (Option<BrushConfig>, BrushConfig) {
         let kept = (self.claimed || !presets::matches(&current, &self.entered)).then_some(current);
         (kept, self.base)
     }
@@ -153,7 +154,7 @@ impl Held {
     /// a transient rack is already gone, and the answer arrives only on the next
     /// press of the same key. One function, so what the row promises and what the
     /// release does cannot be two answers.
-    fn would_keep(&self, current: Wearable) -> Option<Wearable> {
+    fn would_keep(&self, current: BrushConfig) -> Option<BrushConfig> {
         self.settle(current).0
     }
 }
@@ -174,18 +175,16 @@ pub fn hold(state: AppState, slot: usize, grip: Grip) {
         return;
     }
     // Each read is its own statement, so no guard is alive when `wear` dispatches
-    // and rewrites the observable underneath it (`state::update_brush`).
-    let Some(base) = presets::worn(state) else {
-        return;
-    };
+    // and rewrites the brush signal underneath it (`state::update_brush`).
+    let base = presets::worn(state);
     let assigned = state.slots.brushes.peek()[slot];
     if let Some(brush) = assigned {
         presets::wear(state, brush);
     }
     // Read back rather than assumed: `wear` keeps the live color and resolves the
-    // stamp, so what the engine now holds is not what was handed to it — and it is
+    // stamp, so what the app now holds is not what was handed to it — and it is
     // what the release has to compare against.
-    let entered = presets::worn(state).unwrap_or(base);
+    let entered = presets::worn(state);
     held.set(Some(Held {
         slot,
         grip,
@@ -230,9 +229,7 @@ pub fn release(state: AppState, slot: usize, grip: Grip) {
         return;
     }
     held.set(None);
-    let Some(current) = presets::worn(state) else {
-        return;
-    };
+    let current = presets::worn(state);
     let (kept, back) = h.settle(current);
     if let Some(brush) = kept {
         assign(state, h.slot, brush);
@@ -357,20 +354,14 @@ pub fn SlotOverlay() -> Element {
 fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
     let state = use_context::<AppState>();
     let held = holding.map(|h| h.slot);
-    // The live brush, through a memo: reading the projection straight woke the
-    // rack on every engine write rather than on the tool it draws
-    // (`state::use_obs`).
-    let live_params = use_obs(state, |o| o.brush);
     let rack = (state.slots.brushes)();
-    // The whole tool, feel included (§6.11) — both halves subscribing, so the lit
-    // row tracks a smoothing drag exactly as it tracks a radius one.
-    let live = presets::Wearable {
-        params: live_params().unwrap_or_default(),
-        smoothing: (state.smoothing)(),
-    };
+    // The whole tool, feel and inactive effect included, off the frontend's own
+    // brush signal — so the lit row tracks a smoothing drag exactly as it tracks
+    // a radius one, and wakes for brush edits and nothing else.
+    let live = (state.brush)();
     // The rows are resolved against the library up front, so no read guard is
     // alive while the rows below read the thumbnail cache one by one.
-    let rows: Vec<(usize, Option<Wearable>, String)> = {
+    let rows: Vec<(usize, Option<BrushConfig>, String)> = {
         let library = state.presets.read();
         // The digits in the order they sit on the keyboard, with the eraser's own
         // slot last — where the `0` key is, and where a tenth of anything goes.
@@ -430,7 +421,7 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                     // being the one the library is already showing (`thumbs::keyed`
                     // is why: the painting color it now wears is not part of the
                     // key, because it is not part of the picture).
-                    let thumb = |b: Option<Wearable>| {
+                    let thumb = |b: Option<BrushConfig>| {
                         b.and_then(|b| crate::thumbs::url(state, &b))
                             .filter(|url| !url.is_empty())
                     };
@@ -570,7 +561,7 @@ pub fn set_pinned(state: AppState, pinned: bool) {
 }
 
 /// Put `brush` in `slot` and persist the rack.
-pub fn assign(state: AppState, slot: usize, brush: Wearable) {
+pub fn assign(state: AppState, slot: usize, brush: BrushConfig) {
     if slot >= COUNT {
         return;
     }
@@ -672,14 +663,15 @@ pub fn seed_defaults(state: AppState) {
 // skip-a-damaged-entry rule live there, so what is this module's own is that an entry
 // names its digit rather than sitting at a position: a rack with holes stores as the
 // few entries it has, and one whose digit is out of range is dropped instead of
-// shifting its neighbours. The brush is the preset library's own [`Wearable`], so the
-// two libraries cannot come to disagree about what a stored brush is.
+// shifting its neighbours. The brush is the frontend's own [`BrushConfig`], the same
+// shape the preset library stores, so the two cannot come to disagree about what a
+// stored brush is.
 
 /// One assigned slot.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct StoredSlot {
     digit: usize,
-    brush: Wearable,
+    brush: BrushConfig,
 }
 
 impl storage::Entry for StoredSlot {
@@ -722,20 +714,9 @@ fn read_storage() -> Option<Rack> {
 
 #[cfg(test)]
 mod tests {
-    use stark_model::document::BrushParams;
-
     use super::*;
 
-    /// A whole tool from bare params — the tests' brushes carry no smoothing
-    /// unless the feel is the point of the test.
-    fn w(params: BrushParams) -> Wearable {
-        Wearable {
-            params,
-            smoothing: 0.0,
-        }
-    }
-
-    fn held(entered: Wearable, base: Wearable) -> Held {
+    fn held(entered: BrushConfig, base: BrushConfig) -> Held {
         Held {
             slot: 3,
             grip: Grip::Key,
@@ -747,7 +728,7 @@ mod tests {
 
     #[test]
     fn a_hold_that_changed_nothing_keeps_nothing() {
-        let brush = w(BrushParams::default());
+        let brush = BrushConfig::default();
         let h = held(brush, brush);
         let (kept, back) = h.settle(brush);
         assert_eq!(kept, None, "an unused hold must not claim the slot");
@@ -756,15 +737,12 @@ mod tests {
 
     #[test]
     fn a_changed_brush_stays_with_the_number() {
-        let base = w(BrushParams::default());
-        let entered = w(BrushParams {
-            size: 40.0,
-            ..base.params
-        });
-        let dragged = w(BrushParams {
+        let base = BrushConfig::default();
+        let entered = BrushConfig { size: 40.0, ..base };
+        let dragged = BrushConfig {
             size: 64.0,
-            ..entered.params
-        });
+            ..entered
+        };
         let (kept, back) = held(entered, base).settle(dragged);
         assert_eq!(kept, Some(dragged));
         assert_eq!(back, base, "the brush in hand comes back untouched");
@@ -773,15 +751,10 @@ mod tests {
     #[test]
     fn a_color_picked_mid_hold_is_not_a_change() {
         // The one edit a slot is defined not to carry (see `presets::wear`).
-        let base = w(BrushParams::default());
-        let entered = w(BrushParams {
-            size: 40.0,
-            ..base.params
-        });
-        let recolored = w(BrushParams {
-            color: [0.9, 0.1, 0.2],
-            ..entered.params
-        });
+        let base = BrushConfig::default();
+        let entered = BrushConfig { size: 40.0, ..base };
+        let mut recolored = entered;
+        recolored.paint.color = [0.9, 0.1, 0.2];
         let (kept, _) = held(entered, base).settle(recolored);
         assert_eq!(kept, None, "color is not part of a slot");
     }
@@ -791,11 +764,10 @@ mod tests {
         // The opacity is the effect's own — part of what the tool does, not the
         // color choice (§6.2) — and the preset library carries it for the same
         // reason. Dragging it under a hold has to reach the number.
-        let base = w(BrushParams::default());
+        let base = BrushConfig::default();
         let entered = base;
-        let mut thinned_params = base.params;
-        thinned_params.effect.set_opacity(0.4);
-        let thinned = w(thinned_params);
+        let mut thinned = base;
+        thinned.set_opacity(0.4);
         let (kept, _) = held(entered, base).settle(thinned);
         assert_eq!(kept, Some(thinned));
     }
@@ -804,9 +776,9 @@ mod tests {
     fn a_smoothing_drag_mid_hold_stays_with_the_number() {
         // The feel is part of what a tool *is* (§6.11): smoothing tuned under a
         // hold reaches the number exactly as a radius drag does.
-        let base = w(BrushParams::default());
+        let base = BrushConfig::default();
         let entered = base;
-        let smoothed = Wearable {
+        let smoothed = BrushConfig {
             smoothing: 0.6,
             ..entered
         };
@@ -819,7 +791,7 @@ mod tests {
         // The reported bug, and the case the value comparison cannot see: hold an
         // empty 3 and click the preset you are already painting with. Nothing
         // changes, and the slot has to end up holding it all the same.
-        let brush = w(BrushParams::default());
+        let brush = BrushConfig::default();
         let h = Held {
             claimed: true,
             ..held(brush, brush)
@@ -833,11 +805,8 @@ mod tests {
     fn a_claim_still_hands_the_displaced_brush_back() {
         // The half of the rule the claim must not touch: what the number keeps is
         // one question, what comes back to the hand is the other.
-        let base = w(BrushParams::default());
-        let entered = w(BrushParams {
-            size: 40.0,
-            ..base.params
-        });
+        let base = BrushConfig::default();
+        let entered = BrushConfig { size: 40.0, ..base };
         let h = Held {
             claimed: true,
             ..held(entered, base)

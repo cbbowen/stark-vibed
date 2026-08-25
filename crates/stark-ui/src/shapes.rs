@@ -370,12 +370,7 @@ pub fn remove(state: AppState, id: AssetId) {
     // costs a shape that cannot be painted with.
     spawn_forever(async move { storage::blob_remove::<ShapeEntry>(id).await });
 
-    let selected = state
-        .obs
-        .peek()
-        .as_ref()
-        .map(|o| o.brush.shape == BrushShape::Stamp(id))
-        .unwrap_or(false);
+    let selected = state.brush.peek().shape == BrushShape::Stamp(id);
     if selected {
         update_brush(state, |b| b.shape = BrushShape::default());
     }

@@ -213,7 +213,7 @@ fn jittered_live_preview_matches_commit() {
     };
     let jb = jitter_brush(NoiseKind::Simplex, [2.0, 3.0], [0.15, 0.1, 0.1]);
 
-    live.process(ViewCommand::SetBrush(jb));
+    live.process(ViewCommand::set_brush(jb));
     let mut it = S_CURVE.iter();
     live.process(GestureCommand::Start {
         tool: Tool::Brush,

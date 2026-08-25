@@ -348,7 +348,7 @@ fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
 
     // A draws, publishing as it goes; B reassembles and previews.
     let brush = common::brush(RED, 12.0);
-    a.process(stark_engine::command::ViewCommand::SetBrush(brush));
+    a.process(stark_engine::command::ViewCommand::set_brush(brush));
     a.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(CROSSING[0]),
@@ -406,7 +406,7 @@ fn a_slow_receiver_pump_keeps_a_live_stroke_alive() {
     a.start_collaboration(ActorId(1));
     b.join_collaboration(&a.document_file(), ActorId(2));
 
-    a.process(ViewCommand::SetBrush(common::brush(RED, 12.0)));
+    a.process(ViewCommand::set_brush(common::brush(RED, 12.0)));
     a.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(CROSSING[0]),
@@ -557,7 +557,7 @@ fn a_settled_head_does_not_outlive_its_gesture() {
         return;
     };
     engine.start_collaboration(ActorId(1));
-    engine.process(ViewCommand::SetBrush(common::brush(RED, 12.0)));
+    engine.process(ViewCommand::set_brush(common::brush(RED, 12.0)));
     assert_eq!(engine.live_head_count(), 0, "nobody is drawing yet");
 
     // This client starts a stroke...
@@ -625,7 +625,7 @@ fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
 
 /// Draw this client's live stroke along `points`, and leave the pointer down.
 fn start_live_stroke(engine: &mut Engine, color: [f32; 3], points: [Vec2; 2]) {
-    engine.process(ViewCommand::SetBrush(common::brush(color, 12.0)));
+    engine.process(ViewCommand::set_brush(common::brush(color, 12.0)));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(points[0]),
@@ -720,7 +720,7 @@ fn every_replacement_of_the_preview_base_moves_the_epoch() {
     let e1 = moved(&mut engine, e0, "installing a drag preview");
 
     // A commit, obviously — and it supersedes the drag, which is the other half.
-    engine.process(ViewCommand::SetBrush(common::brush(RED, 12.0)));
+    engine.process(ViewCommand::set_brush(common::brush(RED, 12.0)));
     paint(&mut engine, RED, 12.0, &CROSSING);
     let e2 = moved(&mut engine, e1, "a commit");
 

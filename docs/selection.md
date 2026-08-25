@@ -127,9 +127,11 @@ and lays fully opaque paint of exactly that mass, capped at the thickness the
 matte slab calls opaque (§15.4). So 1 covers, ½ covers half, and the feather ramp
 lands on the canvas as precisely the ramp `selection.wesl` rasterized, because the
 coverage asked for is linear in the mask and only the paint that delivers it is
-not. The brush's color is still the fill's color; only its *alpha* stopped being
-consulted, that being a fact about the pigment rather than about how much of the
-picture this covers.
+not. The **hand's** color is still the fill's color (`Session::color` — the
+Color panel's number, which a fill lays even while the brush in force is an
+eraser and so carries no pigment of its own, §6.12); no alpha is consulted,
+that being a fact about the pigment rather than about how much of the picture
+this covers.
 
 **And the two whole-selection fills do not ask at all.** `FillOp::of_selection`
 and its gradient sibling take no opacity: their region *is* the selection, so how

@@ -86,7 +86,7 @@ fn a_capped_shape_paints_and_survives_save_load() {
         .expect("import");
     let mut brush = brush(RED, 60.0);
     brush.shape = BrushShape::Stamp(id);
-    original.process(ViewCommand::SetBrush(brush));
+    original.process(ViewCommand::set_brush(brush));
     original.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-70.0, 0.0)),
@@ -153,7 +153,7 @@ fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
         // the corpus draws.
         b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;
         b.paint_mut().expect("a paint brush").dynamics.deposit = 0.6;
-        engine.process(ViewCommand::SetBrush(b));
+        engine.process(ViewCommand::set_brush(b));
         engine.process(GestureCommand::Start {
             tool: Tool::Brush,
             sample: InputSample::at(Vec2::new(-70.0, 0.0)),

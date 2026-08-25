@@ -9,7 +9,7 @@ use common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape};
+use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, PaintEffect};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
@@ -18,7 +18,7 @@ const GREEN: [f32; 3] = [0.0, 1.0, 0.0];
 /// A brush with the given [`BrushDynamics`].
 fn dyn_brush(color: [f32; 3], radius: f32, dynamics: BrushDynamics) -> BrushParams {
     BrushParams {
-        effect: BrushEffect::paint_with(dynamics),
+        effect: BrushEffect::paint_with(color, dynamics),
         ..brush(color, radius)
     }
 }
@@ -467,7 +467,7 @@ fn golden_self_smear() {
         },
     );
     // Down through the bar, loop around, and back across its own trail.
-    engine.process(ViewCommand::SetBrush(b));
+    engine.process(ViewCommand::set_brush(b));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-40.0, -70.0)),
@@ -648,7 +648,7 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
             ..Default::default()
         },
     );
-    engine.process(ViewCommand::SetBrush(smear));
+    engine.process(ViewCommand::set_brush(smear));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-70.0, 0.0)),
@@ -786,16 +786,19 @@ fn a_barely_lifting_brush_reads_as_one_that_does_not_lift() {
         return;
     };
     let smear = |lift: f32| BrushParams {
-        color: RED,
         size: 30.0,
         shape: BrushShape::Round { hardness: 0.9 },
-        effect: BrushEffect::paint_with(BrushDynamics {
-            flow: 0.6,
-            lift,
-            // High enough to empty the tool every segment: with nothing lifted to
-            // refill it, whatever the source hands back is all it carries.
-            deposit: 0.95,
-            ..BrushDynamics::default()
+        effect: BrushEffect::Paint(PaintEffect {
+            color: RED,
+            dynamics: BrushDynamics {
+                flow: 0.6,
+                lift,
+                // High enough to empty the tool every segment: with nothing lifted
+                // to refill it, whatever the source hands back is all it carries.
+                deposit: 0.95,
+                ..BrushDynamics::default()
+            },
+            ..Default::default()
         }),
         ..brush(RED, 30.0)
     };
@@ -869,12 +872,16 @@ fn a_carried_stroke_is_independent_of_how_the_path_was_cut() {
         shape: BrushShape::Round { hardness: 0.95 },
         // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
         drain: 0.4,
-        effect: BrushEffect::paint_with(BrushDynamics {
-            flow: 1.0,
-            lift: 0.95,
-            deposit: 0.95,
-            ..BrushDynamics::default()
-        }),
+        // Black, as `BrushParams::default()` always painted here.
+        effect: BrushEffect::paint_with(
+            [0.0; 3],
+            BrushDynamics {
+                flow: 1.0,
+                lift: 0.95,
+                deposit: 0.95,
+                ..BrushDynamics::default()
+            },
+        ),
         ..BrushParams::default()
     };
     let renders: Vec<stark_engine::RgbaImage> = [200.0f32, 300.0, 400.0, 500.0, 600.0]
@@ -1462,7 +1469,7 @@ fn a_bleeding_stroke_previews_as_it_commits() {
             ..Default::default()
         },
     );
-    engine.process(ViewCommand::SetBrush(b));
+    engine.process(ViewCommand::set_brush(b));
     let path: Vec<Vec2> = (0..140)
         .map(|i| {
             let t = i as f32 * 0.05;
@@ -1708,12 +1715,16 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
         shape: BrushShape::Round { hardness: 0.95 },
         // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
         drain: 0.4,
-        effect: BrushEffect::paint_with(BrushDynamics {
-            flow: 1.0,
-            lift: 0.95,
-            deposit: 0.95,
-            ..BrushDynamics::default()
-        }),
+        // Black, as `BrushParams::default()` always painted here.
+        effect: BrushEffect::paint_with(
+            [0.0; 3],
+            BrushDynamics {
+                flow: 1.0,
+                lift: 0.95,
+                deposit: 0.95,
+                ..BrushDynamics::default()
+            },
+        ),
         ..BrushParams::default()
     };
     // Two regimes: the fifteen-radius stroke (the brush bone dry for
@@ -1860,7 +1871,7 @@ fn a_bleeding_strokes_preview_is_its_commit() {
     b.drain = 0.0;
     b.paint_mut().expect("a paint brush").dynamics.flow = 0.0;
     b.paint_mut().expect("a paint brush").dynamics.bleed = 1.0;
-    engine.process(ViewCommand::SetBrush(b));
+    engine.process(ViewCommand::set_brush(b));
 
     let samples: Vec<InputSample> = (0..200)
         .map(|i| {

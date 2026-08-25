@@ -415,6 +415,7 @@ mod tests {
                 softness: f32::NEG_INFINITY,
             },
             effect: stark_model::document::BrushEffect::paint_with(
+                [0.0; 3],
                 stark_model::document::BrushDynamics {
                     lift: f32::INFINITY,
                     ..Default::default()

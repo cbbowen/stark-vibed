@@ -255,13 +255,16 @@ fn selection_gates_the_brush_dynamics_path() {
     // exact "keeps its value" exit whatever gates the exposure, which is the very
     // thing this test pins.
     let mut b = brush(RED, 14.0);
-    b.effect = BrushEffect::paint_with(BrushDynamics {
-        flow: 1.0,
-        lift: 0.3,
-        deposit: 0.8,
-        charge: 0.5,
-        bleed: 0.0,
-    });
+    b.effect = BrushEffect::paint_with(
+        RED,
+        BrushDynamics {
+            flow: 1.0,
+            lift: 0.3,
+            deposit: 0.8,
+            charge: 0.5,
+            bleed: 0.0,
+        },
+    );
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
     stroke_with(
         &mut engine,
@@ -301,12 +304,15 @@ fn dynamics_brush_does_not_lift_paint_from_outside() {
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
 
     let mut smudge = brush([0.0, 0.0, 0.0], 16.0);
-    smudge.effect = BrushEffect::paint_with(BrushDynamics {
-        flow: 0.0,
-        lift: 0.9,
-        deposit: 0.9,
-        ..BrushDynamics::default()
-    });
+    smudge.effect = BrushEffect::paint_with(
+        [0.0, 0.0, 0.0],
+        BrushDynamics {
+            flow: 0.0,
+            lift: 0.9,
+            deposit: 0.9,
+            ..BrushDynamics::default()
+        },
+    );
     // Drag right-to-left, from the painted bar into the selected empty region.
     stroke_with(
         &mut engine,
@@ -580,7 +586,7 @@ fn a_stroke_after_a_selection_paints_rather_than_reselecting() {
 
     // Drive the next gesture with whatever tool the engine now reports, exactly as a
     // frontend does — no explicit switch back to the brush anywhere.
-    engine.process(ViewCommand::SetBrush(brush(RED, 14.0)));
+    engine.process(ViewCommand::set_brush(brush(RED, 14.0)));
     let tool = engine.observe().tool;
     engine.process(GestureCommand::Start {
         tool,
@@ -909,12 +915,15 @@ fn golden_selection_smear() {
     // A conservative smudge: no paint of its own, so everything that moves was lifted
     // from the canvas — and none of it may cross the boundary in either direction.
     let mut smudge = brush([0.0, 0.0, 0.0], 26.0);
-    smudge.effect = BrushEffect::paint_with(BrushDynamics {
-        flow: 0.0,
-        lift: 0.7,
-        deposit: 0.85,
-        ..BrushDynamics::default()
-    });
+    smudge.effect = BrushEffect::paint_with(
+        [0.0, 0.0, 0.0],
+        BrushDynamics {
+            flow: 0.0,
+            lift: 0.7,
+            deposit: 0.85,
+            ..BrushDynamics::default()
+        },
+    );
     stroke_with(
         &mut engine,
         smudge,

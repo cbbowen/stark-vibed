@@ -7,7 +7,7 @@ use crate::commands::Command;
 use crate::icons::{self, icon};
 use crate::platform::select_all;
 use crate::presets;
-use crate::state::{AppState, update_brush, use_obs};
+use crate::state::{AppState, update_brush};
 use crate::widgets::{CommandButton, Modal, Slider};
 use stark_model::document::{BrushShape, OrientationSource};
 
@@ -50,11 +50,10 @@ pub const MAX_TOOTH_SOFTNESS: f32 = 1.0;
 #[component]
 pub fn BrushPanel() -> Element {
     let state = use_context::<AppState>();
-    // The one field the panel is about, through a memo: reading the projection
-    // straight woke these two sliders on every engine write — a layer opacity
-    // drag, a selection command — to redraw the numbers they were already
-    // showing (`state::use_obs`).
-    let brush = use_obs(state, |o| o.brush)().unwrap_or_default();
+    // The brush signal is the frontend's own (`state::AppState::brush`), so the
+    // sliders wake for brush edits and nothing else — the engine's projection
+    // never carries a brush back.
+    let brush = (state.brush)();
 
     rsx! {
         // The panel's two sliders are the two knobs a hand reaches for without looking
@@ -69,8 +68,8 @@ pub fn BrushPanel() -> Element {
         // "Flow" is the effect's own source rate — how much a paint brush lays,
         // or how fast an eraser's bite builds (§6.12) — so the slider tunes
         // the tool in hand whichever it is (`BrushEffect::flow`).
-        Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: MAX_FLOW, value: brush.effect.flow(),
-            oninput: move |v| update_brush(state, move |b| b.effect.set_flow(v)) }
+        Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: MAX_FLOW, value: brush.flow(),
+            oninput: move |v| update_brush(state, move |b| b.set_flow(v)) }
         // The panel's two doors, side by side: adjust the brush you have, or keep it.
         // One line rather than two because they are the same size of thing — a button
         // that opens a dialog — and the panel's scarcest dimension is height, which
@@ -112,14 +111,9 @@ pub fn BrushPanel() -> Element {
 fn PresetSection() -> Element {
     let state = use_context::<AppState>();
     let entries = (state.presets)();
-    // The whole tool, feel included (§6.11), so a row goes out when the
-    // smoothing moves off its snapshot like it does for any other knob.
-    // Through a memo, like the panel above: the roster's lit row moves with the
-    // brush and with nothing else the projection carries (`state::use_obs`).
-    let brush = presets::Wearable {
-        params: use_obs(state, |o| o.brush)().unwrap_or_default(),
-        smoothing: (state.smoothing)(),
-    };
+    // The whole tool — feel and inactive effect included — so a row goes out
+    // when the smoothing moves off its snapshot like it does for any other knob.
+    let brush = (state.brush)();
 
     rsx! {
         // `panel-grow`: the part of the panel that takes its spare height (and gives

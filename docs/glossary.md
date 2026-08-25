@@ -57,6 +57,7 @@ these should appear in code again.
 | Term | What it is | Defined in |
 |---|---|---|
 | **tip** | The brush at one instant: a position, a radius, an angle. `BrushShape` is the tip's shape. | [`stark-model/src/document/brush.rs`](../crates/stark-model/src/document/brush.rs) |
+| **`BrushConfig`** | The brush as the *frontend* carries it: the shared tip knobs beside **both** effects' configurations with one in force, plus the smoothing feel (§6.11) — what the live brush signal, the preset library and the quick-brush rack all hold. `BrushParams` is its projection: the record's shape, the effect in force alone, the pigment inside `PaintEffect`. | [`stark-ui/src/brush_config.rs`](../crates/stark-ui/src/brush_config.rs) |
 | **extent** | The texels a tip covers at one instant — the area the deposit may reach. `extent_cell` is the square the exchange is evaluated over. Formerly "footprint", which now means only the two things below. | [`stark-engine/src/gpu/stroke/budget.rs`](../crates/stark-engine/src/gpu/stroke/budget.rs) |
 | **sweep** | One segment's swept capsule: the tip dragged from one sample to the next. | [`stark-engine/src/gpu/stroke/segments.rs`](../crates/stark-engine/src/gpu/stroke/segments.rs) |
 | **piece** | A cut of one stroke, sized so the stamp loop fits its budget. One stroke becomes several pieces. | [`stark-engine/src/gpu/stroke/region.rs`](../crates/stark-engine/src/gpu/stroke/region.rs) |

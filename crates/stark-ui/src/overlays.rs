@@ -96,19 +96,23 @@ pub fn PeerCursors() -> Element {
 pub fn BrushCursor() -> Element {
     let state = use_context::<AppState>();
     // The memo ahead of the early returns — a hook, like any `use_*`.
+    // The size half comes off the frontend's own brush signal; the projection
+    // supplies what only the engine knows (the zoom, the layer, the tool).
+    let size = (state.brush)().size;
     let look = use_obs(state, |o| {
         let paintable = o
             .layers
             .iter()
             .any(|l| l.id == o.active_layer && l.is_paintable());
-        (o.brush.size * o.view.zoom, paintable, o.tool)
+        (o.view.zoom, paintable, o.tool)
     });
     let Some(at) = (state.brush_cursor)() else {
         return rsx! {};
     };
-    let Some((r, paintable, tool)) = look() else {
+    let Some((zoom, paintable, tool)) = look() else {
         return rsx! {};
     };
+    let r = size * zoom;
     // Shown exactly where the crosshair itself promises paint: not over a layer
     // that takes none (the cursor already says not-allowed — §15.7), not under a
     // marquee tool, whose mark is the shape dragged rather than the brush, and
@@ -240,13 +244,11 @@ fn flow_bar(bar: FlowBar) -> Element {
 #[component]
 pub fn PickLoupe() -> Element {
     let state = use_context::<AppState>();
-    // Unconditionally, ahead of the early return: a hook that ran only while the
-    // loupe is up would be a different hook list on the frames it is not.
-    let color = use_obs(state, |o| o.brush.color);
+    let color = (state.brush)().color();
     let Some(at) = (state.pick.loupe)() else {
         return rsx! {};
     };
-    let [r, g, b] = color().unwrap_or([0.0, 0.0, 0.0]);
+    let [r, g, b] = color;
     // Straight sRGB, which is what a brush color is (`panels::color`).
     let fill = format!(
         "background: rgb({:.1}% {:.1}% {:.1}%);",

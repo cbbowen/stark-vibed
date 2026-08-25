@@ -58,8 +58,8 @@ use crate::view::ViewTransform;
 use stark_model::AssetId;
 use stark_model::ColorSpaceId;
 use stark_model::document::{
-    Action, ActionId, ActionKind, ActorId, BrushParams, GuideId, LayerId, PerspectiveGuide,
-    Scaffold, ShapeAction, StrokeRecord,
+    Action, ActionId, ActionKind, ActorId, GuideId, LayerId, PerspectiveGuide, Scaffold,
+    ShapeAction, StrokeRecord,
 };
 use stark_model::geom::Extent2;
 use stark_model::{SubstrateId, SubstrateScale};
@@ -420,7 +420,6 @@ pub struct ObservableState {
     pub can_redo: bool,
     pub is_stroking: bool,
     pub tool: Tool,
-    pub brush: BrushParams,
     pub view: ViewTransform,
     pub bounds: CanvasBounds,
     /// A counter that changes whenever the **committed** document does — a commit,
@@ -1425,8 +1424,9 @@ impl Engine {
                 self.session.tool = tool;
                 self.mark_live_stale();
             }
-            ViewCommand::SetBrush(brush) => {
+            ViewCommand::SetBrush { brush, color } => {
                 self.session.brush = brush;
+                self.session.color = color;
                 self.mark_live_stale();
             }
             // Grab-and-drag: content follows the cursor, so the view center moves
@@ -1866,7 +1866,6 @@ impl Engine {
             can_redo: self.timeline.can_redo(),
             is_stroking: self.session.is_stroking(),
             tool: self.session.tool,
-            brush: self.session.brush,
             view: self.session.view,
             bounds: doc.bounds(),
             doc_revision: self.doc_revision,

@@ -75,7 +75,7 @@ fn wait_idle(engine: &stark_engine::Engine) {
 fn smear_brush(radius: f32) -> BrushParams {
     let mut b = BrushParams {
         size: radius,
-        color: [0.8, 0.2, 0.1],
+        effect: stark_model::document::BrushEffect::painted([0.8, 0.2, 0.1]),
         ..BrushParams::default()
     };
     b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;
@@ -99,7 +99,7 @@ fn samples(n: usize) -> Vec<InputSample> {
 }
 
 fn bench_live(engine: &mut stark_engine::Engine, brush: BrushParams, n: usize) -> (f64, f64, f64) {
-    engine.process(ViewCommand::SetBrush(brush));
+    engine.process(ViewCommand::set_brush(brush));
     let pts = samples(n);
     let mut it = pts.iter();
     engine.process(GestureCommand::Start {
@@ -132,7 +132,7 @@ fn bench_live(engine: &mut stark_engine::Engine, brush: BrushParams, n: usize) -
 }
 
 fn bench_commit(engine: &mut stark_engine::Engine, brush: BrushParams, n: usize) -> f64 {
-    engine.process(ViewCommand::SetBrush(brush));
+    engine.process(ViewCommand::set_brush(brush));
     let pts = samples(n);
     wait_idle(engine);
     let t = Instant::now();

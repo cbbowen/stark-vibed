@@ -256,6 +256,14 @@ pub struct Session {
     pub view: ViewTransform,
     pub tool: Tool,
     pub brush: BrushParams,
+    /// The **hand's** color — straight sRGB, the Color panel's number. Its own
+    /// field rather than a reading of the brush because the brush does not
+    /// always have one: an erasing brush carries no pigment, and a fill drawn
+    /// while one is held still lays the color you have in hand
+    /// ([`start_selection`](Self::start_selection)). While the brush paints, the
+    /// frontend keeps this equal to the paint effect's own color
+    /// (`ViewCommand::SetBrush` carries both together).
+    pub color: [f32; 3],
     pub active_layer: LayerId,
     /// What the next shape gesture does with the region it encloses (§6.8,
     /// §18.0.4) — one of the four ways to combine it into the
@@ -379,6 +387,7 @@ impl Session {
             view,
             tool: Tool::Brush,
             brush: BrushParams::default(),
+            color: [0.0, 0.0, 0.0],
             active_layer,
             shape_action: ShapeAction::default(),
             selection_feather: 0.0,
@@ -645,12 +654,13 @@ impl Session {
         // position the moment the hand lifted (§18.1.10).
         self.hover = None;
         self.gesture_ordinal += 1;
-        let [r, g, b] = self.brush.color;
+        let [r, g, b] = self.color;
         self.selecting = Some(ShapeDrag {
             tool,
             action: against_selection(self.shape_action, has_selection),
             feather: self.selection_feather,
-            // The color is the brush's — a fill lays the paint you have in hand.
+            // The color is the hand's ([`color`](Self::color)) — a fill lays the
+            // paint you have in hand, even while the brush held is an eraser.
             // Its *alpha* is not: that is the brush's pigment talking, and how
             // strongly this gesture lands is the panel's own question (see
             // [`shape_opacity`](Self::shape_opacity)).

@@ -71,7 +71,7 @@ fn live_preview_shows_stroke_before_commit() {
         return;
     };
     // Build an in-flight stroke without ending it.
-    engine.process(ViewCommand::SetBrush(brush(RED, 40.0)));
+    engine.process(ViewCommand::set_brush(brush(RED, 40.0)));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-30.0, 0.0)),
@@ -96,7 +96,7 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
-    engine.process(ViewCommand::SetBrush(brush(RED, 12.0)));
+    engine.process(ViewCommand::set_brush(brush(RED, 12.0)));
     let path: Vec<Vec2> = (0..60)
         .map(|i| Vec2::new(i as f32 * 2.0 - 60.0, (i as f32 * 0.1).sin() * 20.0))
         .collect();
@@ -410,7 +410,7 @@ fn a_click_paints_nothing_and_commits_nothing() {
     // Tapered as well as not: the taper compresses on short strokes rather
     // than gating them, so it must not resurrect a mark here either.
     for b in [brush(RED, 40.0), inking_brush(6.0, 6.0)] {
-        engine.process(ViewCommand::SetBrush(b));
+        engine.process(ViewCommand::set_brush(b));
         let before = engine.render_to_image();
         // The committed document as it stands — `engine_or_skip_blue` already
         // banked a `SetSubstrateColor`, so "nothing committed" is a revision that
@@ -440,7 +440,7 @@ fn a_click_paints_nothing_and_commits_nothing() {
 /// a kept head plus a live tail rather than one range — the case a commit that
 /// re-rendered the stroke would pay for in full.
 fn draw_long_stroke(engine: &mut Engine) {
-    engine.process(ViewCommand::SetBrush(brush(RED, 14.0)));
+    engine.process(ViewCommand::set_brush(brush(RED, 14.0)));
     let mut it = long_wave().into_iter();
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
@@ -500,7 +500,7 @@ fn a_stroke_commits_the_tiles_it_previewed() {
         "what landed is not, to the bit, what was previewed"
     );
 
-    replayed.process(ViewCommand::SetBrush(brush(RED, 14.0)));
+    replayed.process(ViewCommand::set_brush(brush(RED, 14.0)));
     let samples: Vec<InputSample> = long_wave().into_iter().map(InputSample::at).collect();
     replayed.replay_stroke(Tool::Brush, &samples);
     assert_eq!(
@@ -538,7 +538,7 @@ fn a_stroke_committed_without_fast_commit_is_the_replay() {
     );
     let committed = live.render_to_image();
 
-    replayed.process(ViewCommand::SetBrush(brush(RED, 14.0)));
+    replayed.process(ViewCommand::set_brush(brush(RED, 14.0)));
     let samples: Vec<InputSample> = long_wave().into_iter().map(InputSample::at).collect();
     replayed.replay_stroke(Tool::Brush, &samples);
 
@@ -650,7 +650,7 @@ fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
         eprintln!("skipping GPU test");
         return (1.0, 1.0);
     };
-    engine.process(ViewCommand::SetBrush(b));
+    engine.process(ViewCommand::set_brush(b));
     let n = 900usize;
     let path: Vec<Vec2> = (0..n)
         .map(|i| {

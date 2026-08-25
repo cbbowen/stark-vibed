@@ -172,7 +172,7 @@ fn a_stroke_lands_under_the_pen_on_a_turned_canvas() {
     let up = engine.view().rotation_for_up(Vec2::new(-1.0, 0.0)).unwrap();
     engine.process(ViewCommand::SetRotation(up));
     engine.process(ViewCommand::MirrorH);
-    engine.process(ViewCommand::SetBrush(brush(RED, 14.0)));
+    engine.process(ViewCommand::set_brush(brush(RED, 14.0)));
 
     // Two screen points, mapped to canvas the way the frontend maps a pointer.
     let view = engine.view();
@@ -409,7 +409,7 @@ fn a_live_stroke_reaches_a_cached_frame() {
     };
     let blank = engine.render_to_image();
 
-    engine.process(ViewCommand::SetBrush(brush([0.9, 0.1, 0.1], 8.0)));
+    engine.process(ViewCommand::set_brush(brush([0.9, 0.1, 0.1], 8.0)));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(30.0, 30.0)),
@@ -450,7 +450,7 @@ fn live_and_committed_do_not_share_a_cached_list() {
     let mut off = Offscreen::default();
     let view = engine.view();
 
-    engine.process(ViewCommand::SetBrush(brush([0.9, 0.1, 0.1], 8.0)));
+    engine.process(ViewCommand::set_brush(brush([0.9, 0.1, 0.1], 8.0)));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(30.0, 30.0)),

@@ -1262,14 +1262,18 @@ fn read(state: AppState, command: &InputCommand) -> Vec<Deed> {
         InputCommand::Doc(DocCommand::Redo) => one(Deed::Redo, !playing(state)),
         InputCommand::Doc(DocCommand::Undo) => one(Deed::Undo, !playing(state)),
         // Not one that anybody reached for a control to make — see [`not_reaching`].
-        InputCommand::View(ViewCommand::SetBrush(_)) if *state.tutor.not_reaching.peek() > 0 => {
+        InputCommand::View(ViewCommand::SetBrush { .. })
+            if *state.tutor.not_reaching.peek() > 0 =>
+        {
             Vec::new()
         }
-        InputCommand::View(ViewCommand::SetBrush(next)) => {
-            let Some(held) = state.obs.peek().as_ref().map(|o| o.brush) else {
-                return Vec::new();
-            };
-            brush_deed(&held, next).into_iter().collect()
+        InputCommand::View(ViewCommand::SetBrush { brush, color }) => {
+            // The brush still held: `update_brush` dispatches before it moves
+            // the signal, so this read is the *previous* configuration.
+            let held = *state.brush.peek();
+            brush_deed(&held.params(), held.color(), brush, *color)
+                .into_iter()
+                .collect()
         }
         // Both shapes of pan the app can make: the one-pointer drags and the last
         // finger of a two-finger gesture arrive as `Pan`, and the pair itself as
@@ -1361,20 +1365,35 @@ fn stroke(state: AppState) -> Vec<Deed> {
 /// Written by copying the old brush and grafting the candidate fields onto it, so
 /// "everything else is equal" is one `==` against the real type rather than a list
 /// of comparisons that a brush parameter added later would silently fall out of.
-fn brush_deed(was: &BrushParams, now: &BrushParams) -> Option<Deed> {
+///
+/// The hand's color rides beside the params on the command (`SetBrush`), because
+/// an erasing brush carries none of its own — so it is compared beside them too:
+/// a color picked while the eraser is held moves *only* the side channel, and
+/// still has to read as the eyedropper rather than as nothing.
+fn brush_deed(
+    was: &BrushParams,
+    was_color: [f32; 3],
+    now: &BrushParams,
+    now_color: [f32; 3],
+) -> Option<Deed> {
     let mut tuned = *was;
     tuned.size = now.size;
     // The effect's own flow, grafted onto the effect `was` has — so a change of
     // *effect* is never read as a tune, `set_flow` writing the old kind's rate
     // and the `==` below seeing the kinds differ.
     tuned.effect.set_flow(now.effect.flow());
-    if tuned == *now && (was.size != now.size || was.effect.flow() != now.effect.flow()) {
+    if tuned == *now
+        && was_color == now_color
+        && (was.size != now.size || was.effect.flow() != now.effect.flow())
+    {
         return Some(Deed::TunedBrush);
     }
 
     let mut colored = *was;
-    colored.color = now.color;
-    if colored == *now && was.color != now.color {
+    if let Some(p) = colored.paint_mut() {
+        p.color = now.paint().map_or(p.color, |n| n.color);
+    }
+    if colored == *now && was_color != now_color {
         return Some(Deed::ChangedColor);
     }
 
@@ -2174,35 +2193,67 @@ mod tests {
     #[test]
     fn a_brush_change_counts_only_where_it_is_confined() {
         let was = BrushParams::default();
+        // The hand's color as `update_brush` sends it beside the params: the
+        // paint side's own.
+        let color = |b: &BrushParams| b.paint().expect("these brushes paint").color;
+        // Recolor both places a color pick writes: the paint effect's pigment
+        // and the side channel it is projected onto.
+        let recolor = |b: &mut BrushParams| {
+            b.paint_mut().expect("these brushes paint").color = [1.0, 0.0, 0.0];
+        };
 
         let mut bigger = was;
         bigger.size = was.size * 2.0;
-        assert_eq!(brush_deed(&was, &bigger), Some(Deed::TunedBrush));
+        assert_eq!(
+            brush_deed(&was, color(&was), &bigger, color(&bigger)),
+            Some(Deed::TunedBrush)
+        );
 
         let mut looser = was;
         looser.effect.set_flow(was.effect.flow() + 0.5);
-        assert_eq!(brush_deed(&was, &looser), Some(Deed::TunedBrush));
+        assert_eq!(
+            brush_deed(&was, color(&was), &looser, color(&looser)),
+            Some(Deed::TunedBrush)
+        );
 
         let mut red = was;
-        red.color = [1.0, 0.0, 0.0];
-        assert_eq!(brush_deed(&was, &red), Some(Deed::ChangedColor));
+        recolor(&mut red);
+        assert_eq!(
+            brush_deed(&was, color(&was), &red, color(&red)),
+            Some(Deed::ChangedColor)
+        );
+
+        // A color picked while the eraser is held: the params move not at all —
+        // an erasing brush carries no pigment — and the side channel alone
+        // still reads as the eyedropper.
+        let erasing = BrushParams {
+            effect: stark_model::document::BrushEffect::Erase(Default::default()),
+            ..BrushParams::default()
+        };
+        assert_eq!(
+            brush_deed(&erasing, [0.0; 3], &erasing, [1.0, 0.0, 0.0]),
+            Some(Deed::ChangedColor)
+        );
 
         // A preset: the size and the color both, plus whatever else it carries. Not
         // an adjustment of either, so it counts as neither.
         let mut preset = was;
         preset.size = was.size * 2.0;
-        preset.color = [1.0, 0.0, 0.0];
-        assert_eq!(brush_deed(&was, &preset), None);
+        recolor(&mut preset);
+        assert_eq!(brush_deed(&was, color(&was), &preset, color(&preset)), None);
 
         // The command that changes nothing — a slider dragged back to where it
         // started — is not a deed either.
-        assert_eq!(brush_deed(&was, &was), None);
+        assert_eq!(brush_deed(&was, color(&was), &was, color(&was)), None);
 
         // And a field that is neither size, flow nor color is somebody else's
         // business entirely.
         let mut drained = was;
         drained.drain = was.drain + 1.0;
-        assert_eq!(brush_deed(&was, &drained), None);
+        assert_eq!(
+            brush_deed(&was, color(&was), &drained, color(&drained)),
+            None
+        );
     }
 
     /// A ledger written by a build that counted something this one does not still

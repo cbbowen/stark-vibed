@@ -64,8 +64,9 @@ use crate::mirror::{Mirror, Served};
 /// 12: what a brush *does* became `BrushEffect` — `Paint` or the new `Erase`
 /// (§6.12) — with the dynamics, the color dynamics and the modulations
 /// regrouped around it, the tooth's pair folded into `ToothParams`, both
-/// effects carrying an `opacity` ceiling (§6.2) and the brush color losing
-/// its per-unit alpha to it (`[f32; 3]`): one reshaping of the struct every
+/// effects carrying an `opacity` ceiling (§6.2), the brush color losing
+/// its per-unit alpha to it and then moving inside `PaintEffect` — an erasing
+/// brush carries no pigment at all: one reshaping of the struct every
 /// stroke gossips).
 pub(crate) const ALPN: &[u8] = b"stark/collab/12";
 

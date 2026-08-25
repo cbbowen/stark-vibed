@@ -57,7 +57,7 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
     // the shifted renders.
     let mut b = brush(RED, 28.0);
     b.jitter = 0.0;
-    engine.process(ViewCommand::SetBrush(b));
+    engine.process(ViewCommand::set_brush(b));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),
@@ -207,7 +207,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     // canvas-anchored (§6.2) and this test compares shifted renders.
     let mut field = brush(RED, 60.0);
     field.jitter = 0.0;
-    engine.process(ViewCommand::SetBrush(field));
+    engine.process(ViewCommand::set_brush(field));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(-60.0, -60.0)),
@@ -222,13 +222,16 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     // The smudge under test, through the same 4-tile corner.
     let mut smudge = brush(RED, 28.0);
     smudge.jitter = 0.0;
-    smudge.effect = stark_model::document::BrushEffect::paint_with(BrushDynamics {
-        flow: 0.0,
-        lift: 0.6,
-        deposit: 0.5,
-        ..Default::default()
-    });
-    engine.process(ViewCommand::SetBrush(smudge));
+    smudge.effect = stark_model::document::BrushEffect::paint_with(
+        RED,
+        BrushDynamics {
+            flow: 0.0,
+            lift: 0.6,
+            deposit: 0.5,
+            ..Default::default()
+        },
+    );
+    engine.process(ViewCommand::set_brush(smudge));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),

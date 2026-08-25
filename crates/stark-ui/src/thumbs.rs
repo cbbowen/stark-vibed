@@ -49,11 +49,11 @@ use stark_engine::{
     Background, Engine, EnvironmentId, InputSample, MediaParams, Offscreen, Rendered,
 };
 use stark_model::SubstrateId;
-use stark_model::document::{BrushParams, FillOp, SelectionShape};
+use stark_model::document::{FillOp, SelectionShape};
 use stark_model::geom::{Extent2, Vec2};
 
+use crate::brush_config::BrushConfig;
 use crate::platform::base64_encode;
-use crate::presets::Wearable;
 use crate::state::{AppState, root_signal};
 
 /// Thumbnail pixel size: 2× the box a preset row shows it in (a full-bleed row,
@@ -85,7 +85,7 @@ const DARK_PAINT: [f32; 3] = [0.28, 0.28, 0.28];
 pub struct ThumbState {
     /// Finished thumbnails: a `data:image/png` URL per brush snapshot, found by
     /// comparing the snapshot itself ([`lookup`]).
-    pub cache: Signal<Vec<(Wearable, String)>>,
+    pub cache: Signal<Vec<(BrushConfig, String)>>,
     /// The kept engine + offscreen attachments; `None` until first use.
     pub rig: Signal<Option<Rig>>,
     /// The device and compiled pipelines to build that rig on, published once the
@@ -129,9 +129,9 @@ pub struct Rig {
 /// ([`keyed`] first, which is the one field the picture does not take from it).
 ///
 /// There is no digest, and that is the point. A cache key has one job — say
-/// whether two brushes would render the same picture — and `Wearable` already
+/// whether two brushes would render the same picture — and `BrushConfig` already
 /// answers it exactly, by a derived `PartialEq` the compiler extends whenever
-/// `BrushParams` gains a field. Every alternative is a second, hand-maintained
+/// the brush gains a field. Every alternative is a second, hand-maintained
 /// opinion about what a brush *is*: a hand-written hash silently ignores the new
 /// field and serves a stale thumbnail for a brush that has changed, which is a
 /// wrong picture with nothing anywhere to say so.
@@ -142,7 +142,7 @@ pub struct Rig {
 /// structs is cheaper than one of those serializations, so nothing was bought with
 /// it. `Renderer::builtins` is a `Vec` looked up the same way and for the same
 /// reason.
-fn lookup(state: AppState, w: &Wearable) -> Option<String> {
+fn lookup(state: AppState, w: &BrushConfig) -> Option<String> {
     let key = keyed(w);
     state
         .thumbs
@@ -171,15 +171,15 @@ fn lookup(state: AppState, w: &Wearable) -> Option<String> {
 /// The effect's opacity is deliberately untouched: it is the brush's own — the
 /// stroke really is laid under it (§6.2) — so two brushes that differ in it are
 /// two pictures and keep two entries.
-fn keyed(w: &Wearable) -> Wearable {
+fn keyed(w: &BrushConfig) -> BrushConfig {
     let mut w = *w;
-    w.params.color = STROKE_COLOR;
+    w.paint.color = STROKE_COLOR;
     w
 }
 
 /// The thumbnail for `w`, if it has been generated. Subscribes, so a row showing
 /// a placeholder re-renders when its image lands.
-pub fn url(state: AppState, w: &Wearable) -> Option<String> {
+pub fn url(state: AppState, w: &BrushConfig) -> Option<String> {
     lookup(state, w)
 }
 
@@ -234,7 +234,7 @@ pub fn refresh(state: AppState) {
 /// first, so the list a user is looking at fills in before the rack they have to
 /// hold a key to see — and a slot that *did* come from a preset costs nothing
 /// here, since the two hash to one key.
-fn next_missing(state: AppState) -> Option<Wearable> {
+fn next_missing(state: AppState) -> Option<BrushConfig> {
     let cache = state.thumbs.cache.peek();
     let presets = state.presets.peek();
     let rack = state.slots.brushes.peek();
@@ -255,7 +255,7 @@ fn next_missing(state: AppState) -> Option<Wearable> {
 /// renderer to share an engine from yet — the one condition worth stopping for;
 /// a preset whose render fails for its own reasons is skipped by caching a blank
 /// entry rather than retried forever.
-async fn generate(state: AppState, w: Wearable) -> bool {
+async fn generate(state: AppState, w: BrushConfig) -> bool {
     // Everything up to the readback happens under the rig borrow, which must end
     // before the await — the same borrow bargain as `Engine::export` itself.
     let readback = {
@@ -282,7 +282,7 @@ async fn generate(state: AppState, w: Wearable) -> bool {
             });
         }
         let rig = guard.as_mut().expect("just built");
-        let view = thumb_view(&w.params);
+        let view = thumb_view(w.size);
         // The scene, in stack order: the two paint slabs the stroke acts on —
         // the whole substrate is paint, so smearing, lifting and bleeding read
         // everywhere along the run — then the stroke itself, towed through the
@@ -309,7 +309,11 @@ async fn generate(state: AppState, w: Wearable) -> bool {
         }
         // The brush the cache will file this under, which is the brush the stroke
         // is laid with: one statement of "the color a thumbnail is painted in".
-        rig.engine.process(ViewCommand::SetBrush(keyed(&w).params));
+        let keyed_brush = keyed(&w);
+        rig.engine.process(ViewCommand::SetBrush {
+            brush: keyed_brush.params(),
+            color: keyed_brush.color(),
+        });
         let rope = crate::input::rope_in(view, w.smoothing);
         rig.engine
             .replay_stroke_seeded(Tool::Brush, &test_stroke(&view), THUMB_SEED, rope);
@@ -353,8 +357,8 @@ async fn generate(state: AppState, w: Wearable) -> bool {
 /// stroke runs ~18 radii, so the same view shows a pen as a line and an airbrush
 /// as the soft mass it is, each filling the thumbnail rather than being drawn at
 /// some one zoom that suits neither.
-fn thumb_view(b: &BrushParams) -> ViewTransform {
-    let r = b.size.max(1.0);
+fn thumb_view(size: f32) -> ViewTransform {
+    let r = size.max(1.0);
     // Canvas-space width shown; the wide row's aspect leaves the height ~3
     // radii, which is what bounds the S's swing in `test_stroke`.
     let span = 22.0 * r;
@@ -415,14 +419,10 @@ fn test_stroke(view: &ViewTransform) -> Vec<InputSample> {
 mod tests {
     use super::*;
 
-    fn brush(color: [f32; 3]) -> Wearable {
-        Wearable {
-            params: BrushParams {
-                color,
-                ..BrushParams::default()
-            },
-            smoothing: 0.0,
-        }
+    fn brush(color: [f32; 3]) -> BrushConfig {
+        let mut b = BrushConfig::default();
+        b.paint.color = color;
+        b
     }
 
     /// The blank row this key exists to rule out: `presets::wear` keeps the live
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn the_brush_opacity_is_part_of_the_picture_though() {
         let mut thin = brush([0.9, 0.1, 0.1]);
-        thin.params.effect.set_opacity(0.3);
+        thin.set_opacity(0.3);
         assert_ne!(keyed(&brush([0.9, 0.1, 0.1])), keyed(&thin));
     }
 }

@@ -18,7 +18,7 @@ use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand
 use stark_engine::path::DEFAULT_TOLERANCE;
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
-use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape};
+use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, PaintEffect};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
@@ -56,7 +56,7 @@ fn golden_studio_environment() {
         ([0.2, 0.4, 0.9], 0.0),
         ([0.9, 0.88, 0.8], 60.0),
     ] {
-        b.color = color;
+        b.paint_mut().expect("a paint brush").color = color;
         stroke_with(
             &mut engine,
             b,
@@ -138,7 +138,7 @@ fn golden_bristle_stroke() {
     let mut brush = brush(RED, 70.0);
     brush.shape = BrushShape::Stamp(id);
     brush.drain = 0.0;
-    engine.process(ViewCommand::SetBrush(brush));
+    engine.process(ViewCommand::set_brush(brush));
 
     // A horizontal stroke; the worn-bristle mask should break up its coverage.
     engine.process(GestureCommand::Start {
@@ -181,7 +181,7 @@ fn golden_canvas_substrate() {
     let mut brush = brush(RED, 60.0);
     // Per radius (§6.2): 0.3 over a 60px tip is the 0.005 per canvas px this was.
     brush.drain = 0.3;
-    engine.process(ViewCommand::SetBrush(brush));
+    engine.process(ViewCommand::set_brush(brush));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-95.0, 0.0)),
@@ -207,12 +207,17 @@ fn golden_lift_end_regression() {
         shape: BrushShape::Round { hardness: 0.95 },
         // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
         drain: 0.4,
-        effect: BrushEffect::paint_with(BrushDynamics {
-            flow: 1.0,
-            lift: 0.95,
-            deposit: 0.95,
-            ..BrushDynamics::default()
-        }),
+        // Black, as `BrushParams::default()` always painted here — the blessed
+        // pixels are of a black smear.
+        effect: BrushEffect::paint_with(
+            [0.0; 3],
+            BrushDynamics {
+                flow: 1.0,
+                lift: 0.95,
+                deposit: 0.95,
+                ..BrushDynamics::default()
+            },
+        ),
         ..BrushParams::default()
     };
     for (i, x) in [-200.0, -300.0, -400.0].into_iter().enumerate() {
@@ -243,10 +248,13 @@ fn golden_heavy_smear_regression() {
         BrushParams {
             size: 200.0,
             shape,
-            effect: BrushEffect::paint_with(BrushDynamics {
-                flow: 1.5,
-                ..BrushDynamics::default()
-            }),
+            effect: BrushEffect::paint_with(
+                [0.0; 3],
+                BrushDynamics {
+                    flow: 1.5,
+                    ..BrushDynamics::default()
+                },
+            ),
             ..BrushParams::default()
         },
         &points,
@@ -256,12 +264,15 @@ fn golden_heavy_smear_regression() {
         BrushParams {
             size: 50.0,
             shape,
-            effect: BrushEffect::paint_with(BrushDynamics {
-                flow: 0.0,
-                lift: 0.95,
-                deposit: 0.95,
-                ..BrushDynamics::default()
-            }),
+            effect: BrushEffect::paint_with(
+                [0.0; 3],
+                BrushDynamics {
+                    flow: 0.0,
+                    lift: 0.95,
+                    deposit: 0.95,
+                    ..BrushDynamics::default()
+                },
+            ),
             ..BrushParams::default()
         },
         &points,
@@ -281,12 +292,17 @@ fn golden_drained_brush_length_independent() {
         shape: BrushShape::Round { hardness: 0.95 },
         // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
         drain: 0.4,
-        effect: BrushEffect::paint_with(BrushDynamics {
-            flow: 1.0,
-            lift: 0.95,
-            deposit: 0.95,
-            ..BrushDynamics::default()
-        }),
+        // Black, as `BrushParams::default()` always painted here — the blessed
+        // pixels are of a black smear.
+        effect: BrushEffect::paint_with(
+            [0.0; 3],
+            BrushDynamics {
+                flow: 1.0,
+                lift: 0.95,
+                deposit: 0.95,
+                ..BrushDynamics::default()
+            },
+        ),
         ..BrushParams::default()
     };
     // These should all be visually indistiguishable because the brush runs out of paint before the end of the stroke (which is also off the edge of the image).
@@ -323,11 +339,14 @@ fn golden_straight_smear_into_paint() {
     stroke_with(
         &mut engine,
         BrushParams {
-            color,
             size: 256.0,
             shape,
-            effect: BrushEffect::paint_with(BrushDynamics {
-                flow: 2.0,
+            effect: BrushEffect::Paint(PaintEffect {
+                color,
+                dynamics: BrushDynamics {
+                    flow: 2.0,
+                    ..Default::default()
+                },
                 ..Default::default()
             }),
             ..Default::default()
@@ -338,13 +357,16 @@ fn golden_straight_smear_into_paint() {
     stroke_with(
         &mut engine,
         BrushParams {
-            color,
             size: 64.0,
             shape,
-            effect: BrushEffect::paint_with(BrushDynamics {
-                flow: 0.0,
-                lift: 0.5,
-                deposit: 0.95,
+            effect: BrushEffect::Paint(PaintEffect {
+                color,
+                dynamics: BrushDynamics {
+                    flow: 0.0,
+                    lift: 0.5,
+                    deposit: 0.95,
+                    ..Default::default()
+                },
                 ..Default::default()
             }),
             ..Default::default()
@@ -373,11 +395,14 @@ fn golden_wiggly_smear_into_paint() {
     stroke_with(
         &mut engine,
         BrushParams {
-            color,
             size: 256.0,
             shape,
-            effect: BrushEffect::paint_with(BrushDynamics {
-                flow: 2.0,
+            effect: BrushEffect::Paint(PaintEffect {
+                color,
+                dynamics: BrushDynamics {
+                    flow: 2.0,
+                    ..Default::default()
+                },
                 ..Default::default()
             }),
             ..Default::default()
@@ -395,13 +420,16 @@ fn golden_wiggly_smear_into_paint() {
     stroke_with(
         &mut engine,
         BrushParams {
-            color,
             size: 64.0,
             shape,
-            effect: BrushEffect::paint_with(BrushDynamics {
-                flow: 0.0,
-                lift: 0.5,
-                deposit: 0.95,
+            effect: BrushEffect::Paint(PaintEffect {
+                color,
+                dynamics: BrushDynamics {
+                    flow: 0.0,
+                    lift: 0.5,
+                    deposit: 0.95,
+                    ..Default::default()
+                },
                 ..Default::default()
             }),
             ..Default::default()

@@ -37,7 +37,7 @@ fn engine_or_skip() -> Option<Engine> {
 
 fn paint(engine: &mut Engine, color: [f32; 3], points: &[Vec2]) {
     let brush = BrushParams {
-        color,
+        effect: stark_model::document::BrushEffect::painted(color),
         size: 12.0,
         ..Default::default()
     };
@@ -45,7 +45,7 @@ fn paint(engine: &mut Engine, color: [f32; 3], points: &[Vec2]) {
 }
 
 fn paint_with(engine: &mut Engine, brush: BrushParams, points: &[Vec2]) {
-    engine.process(ViewCommand::SetBrush(brush));
+    engine.process(ViewCommand::set_brush(brush));
     let mut it = points.iter();
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
@@ -342,7 +342,7 @@ async fn custom_shapes_replicate_mid_session() {
     paint_with(
         &mut host,
         BrushParams {
-            color: [0.8, 0.2, 0.1],
+            effect: stark_model::document::BrushEffect::painted([0.8, 0.2, 0.1]),
             size: 20.0,
             shape: BrushShape::Stamp(committed),
             ..Default::default()
@@ -432,7 +432,7 @@ async fn a_peer_paints_on_a_substrate_it_has_never_seen() {
 
     // A dry brush: it reaches only for the peaks, so its mark *is* the substrate.
     let dry = BrushParams {
-        color: [0.85, 0.15, 0.1],
+        effect: stark_model::document::BrushEffect::painted([0.85, 0.15, 0.1]),
         size: 30.0,
         tooth: stark_model::document::ToothParams {
             give: 0.45,
@@ -508,7 +508,7 @@ async fn a_stroke_whose_shape_was_never_registered_still_arrives() {
     paint_with(
         &mut host,
         BrushParams {
-            color: [0.2, 0.4, 0.9],
+            effect: stark_model::document::BrushEffect::painted([0.2, 0.4, 0.9]),
             size: 22.0,
             shape: BrushShape::Stamp(orphan),
             ..Default::default()
@@ -580,7 +580,7 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
     paint_with(
         &mut host,
         BrushParams {
-            color: [0.1, 0.7, 0.3],
+            effect: stark_model::document::BrushEffect::painted([0.1, 0.7, 0.3]),
             size: 18.0,
             shape: BrushShape::Stamp(shape),
             ..Default::default()
@@ -650,7 +650,7 @@ async fn a_promised_substrate_is_left_out_of_the_snapshot_and_still_replays() {
     paint_with(
         &mut host,
         BrushParams {
-            color: [0.85, 0.15, 0.1],
+            effect: stark_model::document::BrushEffect::painted([0.85, 0.15, 0.1]),
             size: 30.0,
             tooth: stark_model::document::ToothParams {
                 give: 0.45,
@@ -797,7 +797,7 @@ async fn a_promised_substrate_is_asked_of_the_frontend_mid_session() {
     paint_with(
         &mut host,
         BrushParams {
-            color: [0.85, 0.15, 0.1],
+            effect: stark_model::document::BrushEffect::painted([0.85, 0.15, 0.1]),
             size: 30.0,
             tooth: stark_model::document::ToothParams {
                 give: 0.45,

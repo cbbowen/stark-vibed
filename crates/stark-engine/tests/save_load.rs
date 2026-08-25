@@ -29,7 +29,7 @@ fn paint_toothed(engine: &mut Engine) {
     stroke_with(
         engine,
         stark_model::document::BrushParams {
-            color: RED,
+            effect: stark_model::document::BrushEffect::painted(RED),
             size: 30.0,
             tooth: stark_model::document::ToothParams {
                 give: 0.45,
@@ -216,7 +216,7 @@ fn brush_assets_survive_save_load() {
         .expect("import");
     let mut brush = brush(RED, 60.0);
     brush.shape = BrushShape::Stamp(id);
-    original.process(ViewCommand::SetBrush(brush));
+    original.process(ViewCommand::set_brush(brush));
     original.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-70.0, 0.0)),

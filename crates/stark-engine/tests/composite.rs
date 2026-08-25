@@ -30,7 +30,7 @@ use stark_engine::command::DocCommand;
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
 use stark_model::Srgb;
-use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape};
+use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, PaintEffect};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [0.85, 0.10, 0.10];
@@ -39,12 +39,15 @@ const BLUE: [f32; 3] = [0.10, 0.20, 0.85];
 /// A very soft, wide tip — the shape whose faint fringe is the whole point.
 fn soft(color: [f32; 3], radius: f32) -> BrushParams {
     BrushParams {
-        color,
         size: radius,
         shape: BrushShape::Round { hardness: 0.0 },
         drain: 0.0,
-        effect: BrushEffect::paint_with(BrushDynamics {
-            flow: 0.6,
+        effect: BrushEffect::Paint(PaintEffect {
+            color,
+            dynamics: BrushDynamics {
+                flow: 0.6,
+                ..Default::default()
+            },
             ..Default::default()
         }),
         ..Default::default()

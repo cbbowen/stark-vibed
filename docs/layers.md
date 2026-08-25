@@ -1023,7 +1023,7 @@ opacity, ordering, naming, undo, save and collaboration for nothing (§15.3). A 
 makes the same trade for a different kind of not-paint.
 
 The fill (in `LayerContent::Matte`, §5.1) is a **`MattePaint`**: one flat
-straight-sRGB color like `BrushParams::color`, or a gradient — a §22.1
+straight-sRGB color like `PaintEffect::color`, or a gradient — a §22.1
 `Gradient` along a `GradientAxis`, the very pair the gradient fill lays
 (§22.4), embedded by value the same way and edited through the same gradient
 bar. Either converts to working-space channels at composite time, so the log

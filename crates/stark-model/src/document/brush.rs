@@ -778,6 +778,25 @@ impl ToothParams {
 /// and every mixture of them.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct PaintEffect {
+    /// The pigment: straight **sRGB**, components in [0, 1], converted to the
+    /// Oklab working space at stamp time (§6.5). Nothing here says how much of it
+    /// arrives — the paint a brush lays is per-unit opaque, and "how much shows"
+    /// is [`opacity`](Self::opacity) below, a ceiling on the finished stroke —
+    /// and there is no fourth component for the same reason: an alpha here scaled
+    /// the *material* and so answered a question no digital artist was asking
+    /// (§6.2).
+    ///
+    /// Inside the effect rather than on [`BrushParams`], because this is the one
+    /// brush parameter only painting consumes: an eraser lays nothing a color
+    /// could be a property of (§6.12), so a stored erase stroke carries no color
+    /// at all. The *hand* still has one while the eraser is in force — that is
+    /// frontend state (`stark-ui`'s `BrushConfig`), which remembers the whole
+    /// paint effect across the toggle and hands the color to fills besides.
+    ///
+    /// A file from before this field replays its strokes in the default brush's
+    /// pigment (black) — the bare `#[serde(default)]` (§8).
+    #[serde(default)]
+    pub color: [f32; 3],
     /// How much of a **full stroke** this stroke is, in [0, 1] — a ceiling on the
     /// stroke's final laid amount, [`EraseEffect::opacity`]'s law run in the laying
     /// direction. The whole stroke's parcel is scaled as one deposit: the coverage
@@ -816,9 +835,10 @@ pub struct PaintEffect {
 }
 
 impl Default for PaintEffect {
-    /// The everyday brush: a full stroke, plain flow, the constant color.
+    /// The everyday brush: black, a full stroke, plain flow, the constant color.
     fn default() -> Self {
         Self {
+            color: [0.0, 0.0, 0.0],
             opacity: 1.0,
             dynamics: BrushDynamics::default(),
             color_dynamics: ColorDynamics::default(),
@@ -828,6 +848,15 @@ impl Default for PaintEffect {
 }
 
 impl PaintEffect {
+    /// A paint effect of just a color — the shorthand a test or a preset reaches
+    /// for when everything but the pigment is the default.
+    pub fn colored(color: [f32; 3]) -> Self {
+        Self {
+            color,
+            ..Self::default()
+        }
+    }
+
     /// The opacity a brush gets when it does not say
     /// ([`opacity`](Self::opacity)): a full stroke — for
     /// `#[serde(default = "…")]`, which takes a path to call and cannot name a
@@ -904,13 +933,26 @@ impl Default for BrushEffect {
 }
 
 impl BrushEffect {
-    /// A paint effect of just these axes — the shorthand a preset or a test
-    /// reaches for when the color dynamics and the pen mappings are the defaults.
-    pub fn paint_with(dynamics: BrushDynamics) -> Self {
+    /// A paint effect of a pigment and its axes — the shorthand a test reaches
+    /// for when the color dynamics and the pen mappings are the defaults.
+    ///
+    /// The color is a parameter and not a default on purpose: the pigment lives
+    /// *inside* the paint effect, so a constructor that let a caller build one
+    /// without saying a color would be the door through which
+    /// `effect: paint_with(..), ..brush(color, r)` silently paints black —
+    /// the spread's colored effect replaced whole, with nothing left to say so.
+    pub fn paint_with(color: [f32; 3], dynamics: BrushDynamics) -> Self {
         Self::Paint(PaintEffect {
+            color,
             dynamics,
             ..PaintEffect::default()
         })
+    }
+
+    /// [`Paint`](Self::Paint) of just a color — [`paint_with`](Self::paint_with)
+    /// from the pigment side.
+    pub fn painted(color: [f32; 3]) -> Self {
+        Self::Paint(PaintEffect::colored(color))
     }
 
     /// The effect's **source rate** — "Flow" in the UI, whichever effect is in
@@ -967,6 +1009,7 @@ impl BrushEffect {
     pub fn sanitized(self) -> Self {
         match self {
             Self::Paint(p) => Self::Paint(PaintEffect {
+                color: p.color.map(clamp01),
                 // In `[0, 1]` by the field's own doc, for the erase twin's
                 // reason: a ceiling on the fraction laid, meaningless past 1.
                 opacity: clamp01(finite_or(p.opacity, 1.0)),
@@ -988,23 +1031,13 @@ impl BrushEffect {
     }
 }
 
-/// Brush configuration. `color` is straight **sRGB**; it is converted to
-/// the Oklab working space at stamp time (§6.5).
+/// Brush configuration: what a stroke's record carries — the shape of the
+/// tip, how the swept extent builds, and the effect it has on the canvas.
+/// Every field here is read whatever the [`effect`](Self::effect); a knob only
+/// one effect consumes lives inside that effect's own variant, the pigment
+/// ([`PaintEffect::color`]) above all.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct BrushParams {
-    /// sRGB, components in [0, 1] — the pigment, and nothing about how much of it
-    /// arrives. There is no fourth component: the paint a brush lays is per-unit
-    /// opaque, and "how much shows" is the effect's own
-    /// [`opacity`](BrushEffect::opacity) — a ceiling on the finished stroke —
-    /// where an alpha here scaled the *material* and so answered a question no
-    /// digital artist was asking (§6.2).
-    ///
-    /// On the brush rather than inside [`BrushEffect::Paint`], although only
-    /// painting reads it: the color is the *hand's*, not the tool's (§18.1.8) —
-    /// the Color panel writes it whatever brush is held, a quick-brush slot never
-    /// carries it, and a color picked while the pen's eraser end is down has to
-    /// have somewhere to land.
-    pub color: [f32; 3],
     /// Stamp radius in canvas pixels at full pressure.
     pub size: f32,
     /// Brush tip shape (§6.6).
@@ -1108,7 +1141,6 @@ pub struct BrushParams {
 impl Default for BrushParams {
     fn default() -> Self {
         Self {
-            color: [0.0, 0.0, 0.0],
             size: 16.0,
             shape: BrushShape::default(),
             stretch: 0.0,
@@ -1276,7 +1308,6 @@ impl BrushParams {
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         Self {
-            color: self.color.map(clamp01),
             size: at_least_zero(self.size, d.size),
             shape: self.shape.sanitized(),
             // Bounded at the knob's own saturation point rather than at 1: past
@@ -1517,7 +1548,7 @@ mod tests {
             ("stretch", |b, f| b.stretch = f),
             ("start_taper", |b, f| b.start_taper_length = f),
             ("end_taper", |b, f| b.end_taper_length = f),
-            ("color.r", |b, f| b.color[0] = f),
+            ("color.r", |b, f| paint(b).color[0] = f),
             ("paint.opacity", |b, f| paint(b).opacity = f),
             ("dynamics.add", |b, f| paint(b).dynamics.flow = f),
             ("dynamics.lift", |b, f| paint(b).dynamics.lift = f),
@@ -1559,9 +1590,14 @@ mod tests {
             v
         };
         let unit = |b: &BrushParams| {
-            let mut v = vec![b.tooth.give, b.color[0], b.effect.opacity()];
+            let mut v = vec![b.tooth.give, b.effect.opacity()];
             if let Some(p) = b.paint() {
-                v.extend([p.dynamics.lift, p.dynamics.deposit, p.dynamics.bleed]);
+                v.extend([
+                    p.color[0],
+                    p.dynamics.lift,
+                    p.dynamics.deposit,
+                    p.dynamics.bleed,
+                ]);
             }
             v
         };

@@ -490,7 +490,18 @@ pub enum DocCommand {
 #[derive(Clone, Debug)]
 pub enum ViewCommand {
     SetTool(Tool),
-    SetBrush(BrushParams),
+    /// The brush in hand, and beside it the hand's **color** — which is not
+    /// always the brush's: an erasing brush carries no pigment
+    /// (`PaintEffect::color` is the paint effect's own), while a fill still lays
+    /// the color you have in hand ([`Session::start_selection`]). One command
+    /// rather than two, so the frontend's brush state reaches the session
+    /// through one door and the two can never arrive out of step.
+    ///
+    /// [`Session::start_selection`]: crate::session::Session::start_selection
+    SetBrush {
+        brush: BrushParams,
+        color: [f32; 3],
+    },
     /// Pan the view by a screen-pixel drag delta.
     Pan {
         delta: Vec2,
@@ -820,6 +831,20 @@ pub enum ViewCommand {
     /// — accepts the seam a cut costs (a level or two, `Tol::seam` in the corpus)
     /// and gives back the hitch at the end of a long stroke.
     SetFastCommit(bool),
+}
+
+impl ViewCommand {
+    /// [`SetBrush`](Self::SetBrush) with the hand's color taken from the brush's
+    /// own pigment — right for every caller whose hand holds nothing beside the
+    /// brush: tests, benches, the thumbnail rig. The frontend does **not** come
+    /// through here: its hand keeps a color an erasing brush does not carry
+    /// (`stark-ui`'s `BrushConfig`), and sends it alongside explicitly.
+    pub fn set_brush(brush: BrushParams) -> Self {
+        Self::SetBrush {
+            color: brush.paint().map_or([0.0; 3], |p| p.color),
+            brush,
+        }
+    }
 }
 
 /// Mutations of **presence**: per-client and never logged — undo does not reach

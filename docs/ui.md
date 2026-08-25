@@ -35,7 +35,20 @@ which the engine draws into directly. DOM chrome surrounds it.
   fourth, `Hold`, is sent by the dwell watcher when the pointer stops moving
   mid-stroke — the drawing assist (§6.9). It is the frontend that has the clock,
   and the moves after it are still plain `To`s.
-- **Navigation is one vocabulary, asked three times.** `input::Nav` owns every
+- **The brush is the frontend's, and the engine holds a projection.** The model's
+  `BrushParams` is shaped for what a stroke's record needs — the shared tip knobs
+  and *the* effect in force (§6.2, §6.12) — but a brush is *edited* across that
+  line: both effects stay configured while one is in force, so toggling Paint ↔
+  Erase forgets nothing (the hand's color above all — an erasing brush carries no
+  pigment of its own), and the stroke-smoothing feel (§6.11) travels with the
+  brush though the record must not carry it. `brush_config::BrushConfig` is that
+  editing shape, held in `AppState::brush`; the preset library and the
+  quick-brush rack store it whole, and `state::update_brush` is the one door down
+  — it writes the signal and dispatches `ViewCommand::SetBrush` with the
+  projection (`BrushConfig::params`) and the hand's color beside it, which is
+  what a fill lays even mid-erase (`Session::color`). Nothing reads a brush back
+  off `ObservableState`: what the engine cannot represent never has to
+  round-trip through it. `input::Nav` owns every
   binding that moves the view — the two-finger gesture (§18.1.7), middle-drag and
   space-drag pan, wheel zoom — and every surface over the canvas makes its own
   (the canvas, the transform mode's catcher). Its three entry points are a

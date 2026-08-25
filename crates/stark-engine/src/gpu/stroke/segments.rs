@@ -1835,11 +1835,14 @@ mod tests {
         use stark_model::document::BrushDynamics;
         BrushParams {
             size: radius,
-            effect: stark_model::document::BrushEffect::paint_with(BrushDynamics {
-                lift: 0.8,
-                deposit: 0.8,
-                ..BrushDynamics::default()
-            }),
+            effect: stark_model::document::BrushEffect::paint_with(
+                [0.0; 3],
+                BrushDynamics {
+                    lift: 0.8,
+                    deposit: 0.8,
+                    ..BrushDynamics::default()
+                },
+            ),
             ..BrushParams::default()
         }
     }
@@ -1875,12 +1878,15 @@ mod tests {
         let at = |lift: f32, deposit: f32, charge: f32| {
             flatten_tolerance(&BrushParams {
                 size: 100.0,
-                effect: stark_model::document::BrushEffect::paint_with(BrushDynamics {
-                    lift,
-                    deposit,
-                    charge,
-                    ..BrushDynamics::default()
-                }),
+                effect: stark_model::document::BrushEffect::paint_with(
+                    [0.0; 3],
+                    BrushDynamics {
+                        lift,
+                        deposit,
+                        charge,
+                        ..BrushDynamics::default()
+                    },
+                ),
                 ..BrushParams::default()
             })
             .max_len

@@ -38,6 +38,7 @@
 #![cfg_attr(test, feature(variant_count))]
 
 mod anchor;
+mod brush_config;
 mod brush_editor;
 mod builtin_ids;
 mod builtins;
@@ -312,16 +313,17 @@ fn app() -> Element {
             slots::seed_defaults(state);
 
             // The brush this app start begins on: the library's first preset (an
-            // empty library leaves the engine's default brush), and then the
-            // color the Color panel is already showing — the panel mounted
-            // before the engine existed, so it seeded its picker from
-            // `INITIAL_COLOR` alone, and pushing the same color here is what
-            // keeps the engine from painting black under a red marker. Both go
-            // through `ViewCommand::SetBrush`, which is session state, so
-            // neither leaves a step in the undo history. Once per app start, not
-            // per document: a new document keeps the brush the user is holding.
+            // empty library leaves the app's default brush), and then the color
+            // the Color panel is already showing — the brush signal is seeded
+            // with `INITIAL_COLOR` (`state::Signals::new`) so the picker the
+            // panel mounted before the engine existed shows it, and the
+            // identity write here is what pushes the same configuration to the
+            // engine, which opened on black. Both go through
+            // `ViewCommand::SetBrush`, which is session state, so neither
+            // leaves a step in the undo history. Once per app start, not per
+            // document: a new document keeps the brush the user is holding.
             presets::apply_first(state);
-            update_brush(state, |b| b.color = panels::color::INITIAL_COLOR);
+            update_brush(state, |b| b.paint.color = panels::color::INITIAL_COLOR);
 
             // The settings that live in the engine rather than in a signal — there is
             // one, and it is read by the session this block may be about to join, so it

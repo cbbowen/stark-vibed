@@ -97,7 +97,7 @@ fn fill_rect(
 /// that much still comes off the Color panel; how far it covers is the Select
 /// panel's own opacity, which defaults to a full one.
 fn arm_fill(engine: &mut stark_engine::Engine, color: [f32; 3]) {
-    engine.process(ViewCommand::SetBrush(brush(color, 16.0)));
+    engine.process(ViewCommand::set_brush(brush(color, 16.0)));
     engine.process(ViewCommand::SetShapeAction(ShapeAction::Fill));
 }
 
@@ -524,13 +524,17 @@ fn a_filled_region_can_be_scraped_back_by_a_lift_brush() {
     // pass of a scraper out-runs eight units of it.
     let scraper = BrushParams {
         size: 24.0,
-        effect: BrushEffect::paint_with(BrushDynamics {
-            flow: 0.0,
-            lift: 1.0,
-            deposit: 0.0,
-            charge: 0.0,
-            bleed: 0.0,
-        }),
+        // A pure scraper mints nothing, so its pigment is never seen.
+        effect: BrushEffect::paint_with(
+            [0.0; 3],
+            BrushDynamics {
+                flow: 0.0,
+                lift: 1.0,
+                deposit: 0.0,
+                charge: 0.0,
+                bleed: 0.0,
+            },
+        ),
         ..BrushParams::default()
     };
     stroke_with(

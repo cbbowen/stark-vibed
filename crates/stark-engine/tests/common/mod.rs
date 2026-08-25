@@ -209,7 +209,7 @@ pub fn engine_or_skip_studio() -> Option<Engine> {
 
 pub fn brush(color: [f32; 3], radius: f32) -> BrushParams {
     BrushParams {
-        color,
+        effect: stark_model::document::BrushEffect::painted(color),
         size: radius,
         // `drain` is quoted per *radius* (§6.2), and this helper's radius is its
         // caller's — so the old flat `0.0015` per canvas px is written as the product
@@ -225,7 +225,7 @@ pub fn brush(color: [f32; 3], radius: f32) -> BrushParams {
 
 /// Paint and commit a stroke through `points` with an explicit brush.
 pub fn stroke_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
-    engine.process(ViewCommand::SetBrush(b));
+    engine.process(ViewCommand::set_brush(b));
     let mut it = points.iter();
     let first = *it.next().expect("at least one point");
     engine.process(GestureCommand::Start {
@@ -255,7 +255,7 @@ pub fn paint(engine: &mut Engine, color: [f32; 3], radius: f32, points: &[Vec2])
 /// §6.2), which sit within [`SEAM_LEVELS`] of it. A test whose claim is about
 /// replay fidelity draws the reference side with this, so the claim stays exact.
 pub fn replay_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
-    engine.process(ViewCommand::SetBrush(b));
+    engine.process(ViewCommand::set_brush(b));
     let samples: Vec<InputSample> = points.iter().copied().map(InputSample::at).collect();
     engine.replay_stroke(Tool::Brush, &samples);
 }

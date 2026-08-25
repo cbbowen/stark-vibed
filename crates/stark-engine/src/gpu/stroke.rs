@@ -349,10 +349,11 @@ impl StrokeRenderer {
         rec: &StrokeRecord,
         substrate: &crate::gpu::substrate::SubstrateMap,
     ) -> StrokeConstants {
-        // The brush keeps a bare RGBA because the frontend writes it a component
-        // at a time (`Srgb`); this is the boundary where its RGB half becomes the
-        // display color the conversion is defined on.
-        let rgb = Srgb::new(rec.brush.color);
+        // The pigment is the paint effect's own (§6.2); an erase stroke has none,
+        // and zero is safe because every lane derived from it feeds passes the
+        // erase path never binds. This is the boundary where the stored sRGB
+        // becomes the display color the conversion is defined on.
+        let rgb = Srgb::new(rec.brush.paint().map_or([0.0; 3], |p| p.color));
         let ch = self.color_space.rgb_to_channels(rgb);
         let res = self.color_space.rgb_to_resid(rgb);
         let (nfreq, namp, noff) = noise_uniform(rec);

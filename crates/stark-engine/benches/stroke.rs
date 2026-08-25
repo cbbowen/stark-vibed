@@ -130,7 +130,7 @@ fn engine() -> Option<Engine> {
 fn smear(radius: f32) -> BrushParams {
     let mut b = BrushParams {
         size: radius,
-        color: [0.8, 0.2, 0.1],
+        effect: stark_model::document::BrushEffect::painted([0.8, 0.2, 0.1]),
         ..BrushParams::default()
     };
     b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;
@@ -202,7 +202,7 @@ fn commit(c: &mut Criterion) {
     // Warm-up outside any measurement: the first stroke builds pipelines and the
     // prefix-τ cache, which would otherwise land inside one benchmark's samples and
     // not the others'.
-    engine.process(ViewCommand::SetBrush(smear(30.0)));
+    engine.process(ViewCommand::set_brush(smear(30.0)));
     engine.replay_stroke(Tool::Brush, &pts);
     wait_idle(&engine);
     rewind(&mut engine);
@@ -234,7 +234,7 @@ fn commit(c: &mut Criterion) {
             if mode == "blender" && radius < 100.0 {
                 continue;
             }
-            engine.process(ViewCommand::SetBrush(brush));
+            engine.process(ViewCommand::set_brush(brush));
             // The warm-up above, and the previous configuration's samples, are not
             // this one's: clear them so the table describes the line criterion is
             // about to print and nothing else.
@@ -270,7 +270,7 @@ fn live(c: &mut Criterion) {
     install_timing();
     let Some(mut engine) = engine() else { return };
     let pts = samples();
-    engine.process(ViewCommand::SetBrush(smear(30.0)));
+    engine.process(ViewCommand::set_brush(smear(30.0)));
     engine.replay_stroke(Tool::Brush, &pts);
     wait_idle(&engine);
     rewind(&mut engine);
@@ -299,7 +299,7 @@ fn live(c: &mut Criterion) {
             if mode == "swept" && radius > 100.0 {
                 continue;
             }
-            engine.process(ViewCommand::SetBrush(brush));
+            engine.process(ViewCommand::set_brush(brush));
             timing::reset();
             g.bench_function(BenchmarkId::new(mode, radius), |b| {
                 b.iter_custom(|iters| {

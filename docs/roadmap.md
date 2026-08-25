@@ -478,8 +478,8 @@ Four things the rule has to get right, each a place a looser design goes wrong:
   Swapping never changes the color you are painting with, a color picked
   mid-hold survives the release, and the "was anything changed?" test is
   `presets::matches`, which is exactly *the same brush, color aside*. The
-  brush's own opacity (`color[3]`, a material property — §6.1) does travel, as it
-  does in a preset.
+  effect's own opacity (`BrushEffect::opacity`, part of what the tool does —
+  §6.2) does travel, as it does in a preset.
 - **A hold ends only for whoever made it.** The grip is carried through, so a
   keyup cannot end an eraser stroke and lifting the pen cannot release a key
   still under a finger; the slot is carried too, so a hand rolling from 3 to 4

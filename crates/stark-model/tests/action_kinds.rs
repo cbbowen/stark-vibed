@@ -28,10 +28,10 @@
 //! test.
 
 use stark_model::document::{
-    Action, ActionId, ActionKind, ActorId, BlendMode, BrushParams, FillOp, Filter, GradientAxis,
-    GradientParcel, GuideId, LayerId, MattePaint, MatteRegion, Parcel, PerspectiveGuide,
-    PerspectiveMap, Place, SelectionMode, SelectionOp, SelectionShape, StrokeRecord, ToothParams,
-    WarpMap, affine_usable, rect_corners,
+    Action, ActionId, ActionKind, ActorId, BlendMode, BrushEffect, BrushParams, FillOp, Filter,
+    GradientAxis, GradientParcel, GuideId, LayerId, MattePaint, MatteRegion, Parcel,
+    PerspectiveGuide, PerspectiveMap, Place, SelectionMode, SelectionOp, SelectionShape,
+    StrokeRecord, ToothParams, WarpMap, affine_usable, rect_corners,
 };
 use stark_model::geom::{Affine2, IVec2, Vec2};
 use stark_model::gradient::{Gradient, GradientStop};
@@ -154,7 +154,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
                 stretch: n,
                 drain: n,
                 start_taper_length: n,
-                color: [n, 0.5, 0.5],
+                effect: BrushEffect::painted([n, 0.5, 0.5]),
                 ..BrushParams::default()
             },
             path: vec![ControlPoint::at(Vec2::splat(4.0))],

@@ -254,7 +254,7 @@ pub fn pick_color(state: AppState, pos: Vec2) {
         // bracket is drawn tight around the one write, with no `await` inside it, so
         // it cannot still be open while something else moves the brush.
         crate::tutor::not_reaching(state, true);
-        update_brush(state, |br| br.color = [rgb[0], rgb[1], rgb[2]]);
+        update_brush(state, |br| br.paint.color = [rgb[0], rgb[1], rgb[2]]);
         crate::tutor::not_reaching(state, false);
         // Tell the Color panel the color moved from outside its own picker, so its
         // markers follow (see `AppState::color_epoch`).
@@ -453,7 +453,7 @@ pub fn rope_in(view: ViewTransform, amount: f32) -> f32 {
 /// at all) when the amount is zero or there is no view yet.
 pub fn input_rope(state: AppState) -> f32 {
     match view_of(state) {
-        Some(view) => rope_in(view, *state.smoothing.peek()),
+        Some(view) => rope_in(view, state.brush.peek().smoothing),
         None => 0.0,
     }
 }

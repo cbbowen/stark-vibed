@@ -66,15 +66,12 @@ pub fn SelectPanel() -> Element {
     // never at pointer rate; read straight off `obs` the panel re-rendered on
     // every pan and every sample of the stroke it is describing.
     let arm = use_obs(state, |o| {
-        (
-            o.shape_action,
-            o.selection_feather,
-            o.shape_opacity,
-            o.brush.color,
-        )
+        (o.shape_action, o.selection_feather, o.shape_opacity)
     });
-    let (action, feather, opacity, brush_color) =
-        arm().unwrap_or((ShapeAction::default(), 0.0, 1.0, [0.0; 3]));
+    let (action, feather, opacity) = arm().unwrap_or((ShapeAction::default(), 0.0, 1.0));
+    // The hand's color, off the frontend's own brush signal — a fill lays it
+    // whatever effect the brush held has (`BrushConfig::color`).
+    let brush_color = (state.brush)().color();
 
     let chip = |on: bool| if on { "chip active" } else { "chip" };
     // Which tool is armed is deliberately *not* in the memo above: the three
@@ -216,8 +213,9 @@ pub fn SelectionBar() -> Element {
     // The bar's Fill lays the same paint the panel's Fill chip does, so it carries the
     // same loaded bucket: the brush's color is a property of the *act*, not of the
     // panel that happens to host the control.
-    let shown = use_obs(state, |o| (o.has_selection, o.brush.color));
-    let (active, brush_color) = shown().unwrap_or((false, [0.0; 3]));
+    let shown = use_obs(state, |o| o.has_selection);
+    let active = shown().unwrap_or(false);
+    let brush_color = (state.brush)().color();
     // While any mode is composing, its own bar stands in for this one: the
     // whole-selection commands would fight the gesture (deselecting mid-transform
     // would move the wrong region on "Done"). Every mode, not the two that hold a
@@ -294,14 +292,10 @@ pub fn SelectionBar() -> Element {
 /// all — it fills the selection, so the selection's own coverage answers it
 /// ([`FillOp::of_selection`]).
 pub fn fill_selection(state: AppState) {
-    let Some((layer, [r, g, b])) = state
-        .obs
-        .peek()
-        .as_ref()
-        .map(|o| (o.active_layer, o.brush.color))
-    else {
+    let Some(layer) = state.obs.peek().as_ref().map(|o| o.active_layer) else {
         return;
     };
+    let [r, g, b] = state.brush.peek().color();
     dispatch(
         state,
         DocCommand::Fill {

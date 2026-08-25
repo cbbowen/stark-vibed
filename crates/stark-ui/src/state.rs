@@ -23,7 +23,7 @@ use crate::prefs::Prefs;
 use crate::render::Renderer;
 use stark_engine::command::{Tool, ViewCommand};
 use stark_engine::{InputCommand, ObservableState};
-use stark_model::document::{BrushParams, GuideId, LayerId};
+use stark_model::document::{GuideId, LayerId};
 use stark_model::geom::Vec2;
 
 /// Create one of [`AppState`]'s signals, owned by the **root** scope rather than by
@@ -277,12 +277,17 @@ pub struct Signals {
     /// bracket tap or a wheel notch resizes the circle where it stands, with no
     /// pointer move needed to notice.
     pub brush_cursor: Signal<Option<Vec2>>,
-    /// The live brush's stroke-smoothing amount, 0..=1 (§6.11). Frontend state
-    /// beside the engine's own `BrushParams`, never inside them: the stored
-    /// path already embodies the smoothing, so a field there would be one that
-    /// replay reads and ignores. It travels with every whole-brush snapshot
-    /// through [`presets::Wearable`](crate::presets::Wearable).
-    pub smoothing: Signal<f32>,
+    /// The live brush, as this frontend configures it
+    /// ([`BrushConfig`](crate::brush_config::BrushConfig)): the shared tip
+    /// knobs, **both** effects with the switch between them — so toggling
+    /// Paint ↔ Erase forgets nothing, the hand's color above all — and the
+    /// stroke-smoothing feel (§6.11).
+    ///
+    /// **The source of truth.** The engine holds only the projection, sent
+    /// through [`update_brush`] — the one door — so nothing here reads a brush
+    /// back off the observable, and what the engine cannot represent (the
+    /// inactive effect, the feel) never has to round-trip through it.
+    pub brush: Signal<crate::brush_config::BrushConfig>,
     /// The tow string on screen while a smoothing brush draws (§6.11), in the
     /// canvas element's own px — `None` when there is nothing to show. Its own
     /// signal for the reason [`tune_readout`](Self::tune_readout) is: only the
@@ -752,7 +757,16 @@ impl AppState {
             pick: PickState::new(),
             tune_readout: root_signal(|| None),
             brush_cursor: root_signal(|| None),
-            smoothing: root_signal(|| 0.0),
+            // Seeded with the Color panel's opening color rather than the model
+            // default's black: the panel reads its picker's seed off this signal
+            // at mount, before any engine exists, and the first stroke has to
+            // lay the color the marker shows (`main` pushes the same
+            // configuration to the engine once one is up).
+            brush: root_signal(|| {
+                let mut b = crate::brush_config::BrushConfig::default();
+                b.paint.color = crate::panels::color::INITIAL_COLOR;
+                b
+            }),
             tow: root_signal(|| None),
             assist: AssistState::new(),
             shape_tool: root_signal(|| Tool::SelectRect),
@@ -1528,8 +1542,13 @@ pub fn resize(state: AppState, width: u32, height: u32) {
     });
 }
 
-/// Read the current brush, mutate a copy, and commit it (releasing the `obs`
-/// read guard before `dispatch` writes — avoids an AlreadyBorrowed panic).
+/// Read the current [`BrushConfig`](crate::brush_config::BrushConfig), mutate a
+/// copy, and commit it: the signal takes the new configuration and the engine
+/// takes its projection (`ViewCommand::SetBrush`), in that door and no other —
+/// which is what keeps the two views of the brush the same brush.
+///
+/// The dispatch goes **first**: the tour reads a `SetBrush` beside the brush
+/// still held (§24), and the held one is this signal's.
 ///
 /// **The loud door, deliberately, even though this runs at pointer rate** — the
 /// brush-tuning drag and the eyedropper both come through here on every move.
@@ -1546,13 +1565,19 @@ pub fn resize(state: AppState, width: u32, height: u32) {
 /// cheaper trade by a wide margin: most of the thirty callers are `oninput` handlers
 /// where a returned value stops the closure coercing to the `Callback` the prop wants,
 /// so answering would cost a discarded value at every one of them.
-pub fn update_brush(state: AppState, f: impl FnOnce(&mut BrushParams)) {
-    let brush = state.obs.read().as_ref().map(|o| o.brush);
-    if let Some(mut brush) = brush {
-        f(&mut brush);
-        hold_the_tip_drawable(&mut brush);
-        dispatch(state, ViewCommand::SetBrush(brush));
-    }
+pub fn update_brush(state: AppState, f: impl FnOnce(&mut crate::brush_config::BrushConfig)) {
+    let mut config = *state.brush.peek();
+    f(&mut config);
+    hold_the_tip_drawable(&mut config);
+    dispatch(
+        state,
+        ViewCommand::SetBrush {
+            brush: config.params(),
+            color: config.color(),
+        },
+    );
+    let mut sig = state.brush;
+    sig.set(config);
 }
 
 /// Keep the brush inside what the renderer can actually draw: a tip reaching
@@ -1572,13 +1597,14 @@ pub fn update_brush(state: AppState, f: impl FnOnce(&mut BrushParams)) {
 /// what three of those four writers exist to move; a size drag that quietly shrank
 /// itself would be a fight. Stretch giving way is visible instead — the slider's own
 /// top moves with it, and the editor says why (`ModRow::range`).
-fn hold_the_tip_drawable(b: &mut BrushParams) {
-    b.stretch = b.stretch.min(stark_engine::max_stretch(b));
+fn hold_the_tip_drawable(b: &mut crate::brush_config::BrushConfig) {
+    b.stretch = b.stretch.min(stark_engine::max_stretch(&b.params()));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stark_model::document::BrushParams;
 
     /// **No brush this app can hold is one the renderer refuses to draw.**
     ///
@@ -1603,18 +1629,16 @@ mod tests {
         ] {
             for knob in [0.0, 0.25, 0.5, 0.75, BrushParams::MAX_STRETCH] {
                 for bleed in [0.0, 0.6] {
-                    let mut b = BrushParams {
+                    let mut b = crate::brush_config::BrushConfig {
                         size,
                         stretch: knob,
-                        ..BrushParams::default()
+                        ..Default::default()
                     };
-                    if let Some(p) = b.paint_mut() {
-                        p.dynamics.bleed = bleed;
-                    }
+                    b.paint.dynamics.bleed = bleed;
                     hold_the_tip_drawable(&mut b);
                     let reach = b.size * BrushParams::elongation(b.stretch);
                     assert!(
-                        reach <= stark_engine::max_tip_reach(&b),
+                        reach <= stark_engine::max_tip_reach(&b.params()),
                         "size {size}, stretch {knob}, bleed {bleed}: a reach of \
                          {reach} survived the clamp",
                     );
@@ -1638,10 +1662,10 @@ mod tests {
     #[test]
     fn the_clamp_leaves_a_small_tip_alone() {
         for size in [crate::panels::brush::MIN_RADIUS, 30.0, 110.0, 250.0, 400.0] {
-            let mut b = BrushParams {
+            let mut b = crate::brush_config::BrushConfig {
                 size,
                 stretch: BrushParams::MAX_STRETCH,
-                ..BrushParams::default()
+                ..Default::default()
             };
             hold_the_tip_drawable(&mut b);
             assert_eq!(

@@ -173,7 +173,7 @@ fn check_the_stroke_as_it_is_drawn(
     // Relative, because a case's undercoat is painted the same way and counts too.
     let reused_before = engine.strokes_reused();
 
-    engine.process(ViewCommand::SetBrush(brush));
+    engine.process(ViewCommand::set_brush(brush));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: *first,
@@ -191,7 +191,7 @@ fn check_the_stroke_as_it_is_drawn(
             continue;
         }
         let incremental = engine.render_to_image();
-        engine.process(ViewCommand::SetBrush(brush));
+        engine.process(ViewCommand::set_brush(brush));
         let fresh = engine.render_to_image();
         report.check(
             &format!("incremental preview at sample {i} vs a fresh render"),

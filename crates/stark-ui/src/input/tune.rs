@@ -165,9 +165,7 @@ impl Tune {
         let Some(view) = view_of(self.state) else {
             return false;
         };
-        let Some(radius) = self.state.obs.peek().as_ref().map(|o| o.brush.size) else {
-            return false;
-        };
+        let radius = self.state.brush.peek().size;
         e.prevent_default();
         e.stop_propagation();
         capture_pointer(e);
@@ -238,18 +236,15 @@ impl Tune {
             // Up is more, because up is more on every slider in the app — and page y
             // grows downward, which is the whole of why this reads as a subtraction.
             Some(Knob::Flow) => {
-                // Carried out of the write rather than peeked back off the projection:
-                // this knob is a rate, so what the brush ends up carrying is only known
-                // inside that closure, and the publish it queues has not landed yet.
-                // `None` where there was no engine to read a brush from — which is also
-                // when nothing was set, so there is nothing to show.
+                // Carried out of the write: this knob is a rate, so what the brush
+                // ends up carrying is only known inside that closure.
                 let mut flow = None;
                 update_brush(self.state, |b| {
                     // The effect's own rate, paint or eraser alike — the drag tunes
                     // the tool in hand (`BrushEffect::flow`, §6.12).
                     let stepped =
-                        (b.effect.flow() - step.y * MAX_FLOW / FLOW_DRAG_SPAN).clamp(0.0, MAX_FLOW);
-                    b.effect.set_flow(stepped);
+                        (b.flow() - step.y * MAX_FLOW / FLOW_DRAG_SPAN).clamp(0.0, MAX_FLOW);
+                    b.set_flow(stepped);
                     flow = Some(stepped);
                 });
                 // The ring does not have to be taken down first. It was the *size*

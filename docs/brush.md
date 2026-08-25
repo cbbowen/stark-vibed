@@ -1920,14 +1920,19 @@ Three properties are the design:
   paint* (§6.1), so the pass rewrites the height lane alone and the color
   textures pass through bit-for-bit.
 
-The brush's **color is ignored** — the erase parcel is "fully opaque
-transparency", mass = height, `fill.wesl`'s arithmetic: an eraser lays nothing
-for a color to be a property of. `color` still stays on `BrushParams` rather
-than moving into `Paint`, because it is the *hand's*, written by the Color
-panel whatever brush is held (§18.1.8), and a color picked while the eraser
-end is down needs somewhere to land. That the dynamics axes do not run is the enum, not a rule: an
-`Erase` brush has none. No region is ever needed either, so no tip is too large
-for this path (`dynamics_setup` answers `Erase` off the variant alone).
+An erasing brush **carries no color at all** — the erase parcel is "fully
+opaque transparency", mass = height, `fill.wesl`'s arithmetic: an eraser lays
+nothing for a color to be a property of, so the pigment lives inside the paint
+effect (`PaintEffect::color`) and a stored erase stroke simply has none. The
+*hand* still has one while the eraser is held — the Color panel writes it
+whatever brush is in force (§18.1.8) — but that is the frontend's fact:
+`stark-ui`'s `BrushConfig` holds both effects' configurations with one in
+force, so the color lands on the remembered paint side, and a fill drawn
+mid-erase still lays it (the hand's color rides beside the params on
+`ViewCommand::SetBrush`, into `Session::color`). That the dynamics axes do not
+run is the enum, not a rule: an `Erase` brush has none. No region is ever
+needed either, so no tip is too large for this path (`dynamics_setup` answers
+`Erase` off the variant alone).
 
 ### Why the extent accumulates across pieces
 

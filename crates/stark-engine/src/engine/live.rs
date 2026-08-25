@@ -351,7 +351,11 @@ impl Preview {
         #[cfg(feature = "debug-unfrozen")]
         let tinted = {
             let mut r = rec.clone();
-            r.brush.color = DEBUG_UNFROZEN_COLOR;
+            // An erase stroke has no pigment to tint; its tail simply stays
+            // undiagnosed, which the boundary this exists to show survives.
+            if let Some(p) = r.brush.paint_mut() {
+                p.color = DEBUG_UNFROZEN_COLOR;
+            }
             r
         };
         #[cfg(feature = "debug-unfrozen")]

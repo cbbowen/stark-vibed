@@ -78,10 +78,13 @@ const COMBINING: [BlendMode; 3] = [BlendMode::Reinhard, RADIANCE, BlendMode::Mul
 /// instead.
 fn opaque(color: [f32; 3]) -> BrushParams {
     BrushParams {
-        effect: BrushEffect::paint_with(BrushDynamics {
-            flow: 6.0,
-            ..Default::default()
-        }),
+        effect: BrushEffect::paint_with(
+            color,
+            BrushDynamics {
+                flow: 6.0,
+                ..Default::default()
+            },
+        ),
         shape: BrushShape::Round { hardness: 0.99 },
         ..brush(color, 44.0)
     }

@@ -1615,6 +1615,7 @@ mod tests {
         stark_model::document::BrushParams {
             size: radius,
             effect: stark_model::document::BrushEffect::paint_with(
+                [0.0; 3],
                 stark_model::document::BrushDynamics {
                     lift: 0.8,
                     deposit: 0.8,

@@ -161,7 +161,7 @@ impl Case {
         tolerance: f32,
         samples: &[InputSample],
     ) {
-        engine.process(ViewCommand::SetBrush(b));
+        engine.process(ViewCommand::set_brush(b));
         let (first, rest) = samples.split_first().expect("a case draws something");
         engine.process(GestureCommand::Start {
             tool: Tool::Brush,

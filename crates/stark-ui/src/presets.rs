@@ -1,4 +1,4 @@
-//! The brush preset library: named [`BrushParams`] snapshots, shown as a
+//! The brush preset library: named [`BrushConfig`] snapshots, shown as a
 //! section at the foot of the Brush panel.
 //!
 //! A preset is a whole brush **except the painting color**: applying one keeps
@@ -36,59 +36,21 @@
 use dioxus::prelude::*;
 
 use stark_model::document::{
-    BrushDynamics, BrushEffect, BrushModulations, BrushParams, BrushShape, ColorDynamics,
-    EraseEffect, EraseModulations, ModSource, Modulation, NoiseKind, OrientationSource,
-    PaintEffect, PaintModulations, ToothParams,
+    BrushDynamics, BrushModulations, BrushShape, ColorDynamics, EraseEffect, EraseModulations,
+    ModSource, Modulation, NoiseKind, OrientationSource, PaintEffect, PaintModulations,
+    ToothParams,
 };
 
+use crate::brush_config::{BrushConfig, BrushEffectType};
 use crate::builtins;
 use crate::slots;
 use crate::state::{AppState, update_brush};
 use crate::storage::{self, Store};
 
-/// A brush as the frontend carries it: the engine's own parameters plus the
-/// **feel** the frontend owns — today just the stroke-smoothing amount
-/// (§6.11).
-///
-/// One type rather than a field beside a field, so a whole-brush snapshot that
-/// lost its feel is unrepresentable: the preset library, the quick-brush rack
-/// (`crate::slots`) and a hold's swap all traffic in this. The feel is not on
-/// [`BrushParams`] because the stored path already embodies the smoothing — a
-/// field there would be one that replay reads and ignores, and the log's encoding makes
-/// appending it a wire-version bump (§8).
-///
-/// Serde, because this is what both the preset library and the quick-brush rack store —
-/// one stored shape for one type, so the two libraries cannot come to disagree about
-/// what a stored brush is.
-#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Wearable {
-    pub params: BrushParams,
-    /// Stroke smoothing, 0..=1 (§6.11) — the knob, not the rope. The rope is
-    /// derived at gesture start (`input::rope`), because the knob is
-    /// denominated in the hand's own screen px and only a live view converts
-    /// it.
-    ///
-    /// Defaulted so a brush stored before §6.11 reads as unsmoothed, and clamped on
-    /// the way in because the range **is** the number's meaning: a hand-edited store
-    /// must not be able to hand the fitter a rope it cannot use.
-    #[serde(default, deserialize_with = "stored_smoothing")]
-    pub smoothing: f32,
-}
-
-/// [`Wearable::smoothing`]'s gate — see the field.
-fn stored_smoothing<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
-    use serde::Deserialize;
-    Ok(f32::deserialize(d)?.clamp(0.0, 1.0))
-}
-
-/// The live brush as a [`Wearable`]: the engine's parameters beside the feel
-/// this frontend holds. `None` before the engine exists.
-pub fn worn(state: AppState) -> Option<Wearable> {
-    let params = state.obs.peek().as_ref().map(|o| o.brush)?;
-    Some(Wearable {
-        params,
-        smoothing: *state.smoothing.peek(),
-    })
+/// The live brush, snapshotted — [`BrushConfig`] is the frontend's own whole-brush
+/// type, so a snapshot is a copy of the signal and nothing needs assembling.
+pub fn worn(state: AppState) -> BrushConfig {
+    *state.brush.peek()
 }
 
 /// One named preset in the library.
@@ -98,7 +60,7 @@ pub struct PresetEntry {
     /// overwrites, and a name the app has already taken is refused).
     pub name: String,
     /// The snapshot applied by clicking the preset.
-    pub brush: Wearable,
+    pub brush: BrushConfig,
     /// The digit this preset **ships on**, if any — how a fresh quick-brush rack
     /// is filled (§18.1.8; `slots::seed_defaults`).
     ///
@@ -164,14 +126,12 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
     // sits on a digit" is a property of the list rather than five copies of two
     // fields that could drift apart. `smoothing` is the §6.11 amount, part of
     // what a tool *is*: the inker leans on the string, the pencil keeps every
-    // tremor because tremor is what a pencil is for.
+    // tremor because tremor is what a pencil is for — its own argument rather
+    // than a field in the definitions below, so no definition can forget to say.
     let shipped =
-        |name: &str, slot: Option<usize>, smoothing: f32, brush: BrushParams| PresetEntry {
+        |name: &str, slot: Option<usize>, smoothing: f32, brush: BrushConfig| PresetEntry {
             name: name.to_string(),
-            brush: Wearable {
-                params: brush,
-                smoothing,
-            },
+            brush: BrushConfig { smoothing, ..brush },
             slot,
             builtin: true,
         };
@@ -180,11 +140,11 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             "Hard Round",
             Some(1),
             0.15,
-            BrushParams {
+            BrushConfig {
                 size: 100.0,
                 drain: 0.1,
                 shape: BrushShape::Round { hardness: 0.98 },
-                effect: BrushEffect::Paint(PaintEffect {
+                paint: PaintEffect {
                     opacity: 1.0,
                     dynamics: BrushDynamics {
                         flow: 3.0,
@@ -202,7 +162,8 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                         flow: Some(Modulation::linear(ModSource::Pressure)),
                         ..PaintModulations::default()
                     },
-                }),
+                    ..PaintEffect::default()
+                },
                 modulation: BrushModulations {
                     size: Some(Modulation {
                         source: ModSource::Pressure,
@@ -211,17 +172,17 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     }),
                     ..BrushModulations::default()
                 },
-                ..BrushParams::default()
+                ..BrushConfig::default()
             },
         ),
         shipped(
             "Bristles",
             None,
             0.15,
-            BrushParams {
+            BrushConfig {
                 size: 100.0,
                 shape: shapes.bristles,
-                effect: BrushEffect::Paint(PaintEffect {
+                paint: PaintEffect {
                     opacity: 1.0,
                     dynamics: BrushDynamics {
                         flow: 3.0,
@@ -239,7 +200,8 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                         flow: Some(Modulation::linear(ModSource::Pressure)),
                         ..PaintModulations::default()
                     },
-                }),
+                    ..PaintEffect::default()
+                },
                 modulation: BrushModulations {
                     size: Some(Modulation {
                         source: ModSource::Pressure,
@@ -248,7 +210,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     }),
                     ..BrushModulations::default()
                 },
-                ..BrushParams::default()
+                ..BrushConfig::default()
             },
         ),
         // An inking pen: hard, opaque, never runs dry, and pointed at both ends —
@@ -258,16 +220,19 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             "Pen",
             Some(2),
             0.5,
-            BrushParams {
+            BrushConfig {
                 size: 18.0,
                 shape: BrushShape::Round { hardness: 0.95 },
                 start_taper_length: 5.0,
                 end_taper_length: 11.0,
-                effect: BrushEffect::paint_with(BrushDynamics {
-                    flow: 0.45,
-                    ..BrushDynamics::default()
-                }),
-                ..BrushParams::default()
+                paint: PaintEffect {
+                    dynamics: BrushDynamics {
+                        flow: 0.45,
+                        ..BrushDynamics::default()
+                    },
+                    ..PaintEffect::default()
+                },
+                ..BrushConfig::default()
             },
         ),
         // A pencil: a broken-edged stamp held at the pen's own angle, laying
@@ -293,7 +258,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             "Pencil",
             Some(3),
             0.0,
-            BrushParams {
+            BrushConfig {
                 size: 30.0,
                 shape: shapes.pencil,
                 jitter: 0.1,
@@ -316,7 +281,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     }),
                     ..BrushModulations::default()
                 },
-                effect: BrushEffect::Paint(PaintEffect {
+                paint: PaintEffect {
                     opacity: 1.0,
                     dynamics: BrushDynamics {
                         flow: 0.4,
@@ -331,15 +296,16 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                         flow: Some(Modulation::linear(ModSource::Pressure)),
                         ..PaintModulations::default()
                     },
-                }),
-                ..BrushParams::default()
+                    ..PaintEffect::default()
+                },
+                ..BrushConfig::default()
             },
         ),
         shipped(
             "Airbrush",
             Some(4),
             0.1,
-            BrushParams {
+            BrushConfig {
                 size: 500.0,
                 shape: BrushShape::Round { hardness: 0.5 },
                 modulation: BrushModulations {
@@ -350,7 +316,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     }),
                     ..BrushModulations::default()
                 },
-                effect: BrushEffect::Paint(PaintEffect {
+                paint: PaintEffect {
                     opacity: 1.0,
                     dynamics: BrushDynamics {
                         flow: 0.1,
@@ -365,22 +331,23 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                         flow: Some(Modulation::linear(ModSource::Pressure)),
                         ..PaintModulations::default()
                     },
-                }),
-                ..BrushParams::default()
+                    ..PaintEffect::default()
+                },
+                ..BrushConfig::default()
             },
         ),
         shipped(
             "Blender",
             Some(5),
             0.1,
-            BrushParams {
+            BrushConfig {
                 size: 100.0,
                 tooth: ToothParams {
                     give: 0.5,
                     ..ToothParams::default()
                 },
                 shape: BrushShape::Round { hardness: 0.8 },
-                effect: BrushEffect::Paint(PaintEffect {
+                paint: PaintEffect {
                     opacity: 1.0,
                     dynamics: BrushDynamics {
                         flow: 0.0,
@@ -403,8 +370,8 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                         ..PaintModulations::default()
                     },
                     ..PaintEffect::default()
-                }),
-                ..BrushParams::default()
+                },
+                ..BrushConfig::default()
             },
         ),
         // The eraser the pen's other end starts life holding (§18.1.8). An
@@ -416,10 +383,11 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             "Soft Eraser",
             Some(slots::ERASER),
             0.0,
-            BrushParams {
+            BrushConfig {
                 size: 80.0,
                 shape: BrushShape::Round { hardness: 0.25 },
-                effect: BrushEffect::Erase(EraseEffect {
+                effect: BrushEffectType::Erase,
+                erase: EraseEffect {
                     opacity: 1.0,
                     flow: 1.0,
                     modulation: EraseModulations {
@@ -429,22 +397,23 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                             curve: 1.0,
                         }),
                     },
-                }),
+                },
                 modulation: BrushModulations {
                     size: Some(Modulation::linear(ModSource::Pressure)),
                     ..BrushModulations::default()
                 },
-                ..BrushParams::default()
+                ..BrushConfig::default()
             },
         ),
         shipped(
             "Hard Eraser",
             None,
             0.0,
-            BrushParams {
+            BrushConfig {
                 size: 40.0,
                 shape: BrushShape::Round { hardness: 0.95 },
-                effect: BrushEffect::Erase(EraseEffect {
+                effect: BrushEffectType::Erase,
+                erase: EraseEffect {
                     opacity: 1.0,
                     // Enough that one pass saturates the bite to the tip's very
                     // shoulder — the hard edge the name promises.
@@ -456,12 +425,12 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                             curve: 0.0,
                         }),
                     },
-                }),
+                },
                 modulation: BrushModulations {
                     size: Some(Modulation::linear(ModSource::Pressure)),
                     ..BrushModulations::default()
                 },
-                ..BrushParams::default()
+                ..BrushConfig::default()
             },
         ),
     ]
@@ -563,32 +532,28 @@ pub fn apply(state: AppState, name: &str) {
 /// A stamp shape whose bytes are no longer anywhere (removed from the shape
 /// library, unseen by this document) falls back to the round tip rather than
 /// pointing at an asset the engine would silently substitute.
-pub fn wear(state: AppState, wearable: Wearable) {
+pub fn wear(state: AppState, brush: BrushConfig) {
     // A whole tool arriving is not an adjustment of the one you had — not even in
     // the case where it differs in nothing but its size, which the tour would
     // otherwise read as somebody reaching for the size slider (§24.2). This is the
     // one door every swap comes through, in both directions, which is what makes it
     // the place to say so.
     crate::tutor::not_reaching(state, true);
-    let Wearable {
-        params: mut brush,
-        smoothing,
-    } = wearable;
+    let mut brush = brush;
+    brush.smoothing = brush.smoothing.clamp(0.0, 1.0);
     brush.shape = match brush.shape {
         BrushShape::Stamp(id) => crate::shapes::ensure(state, id)
             .map(BrushShape::Stamp)
             .unwrap_or_default(),
         round @ BrushShape::Round { .. } => round,
     };
-    // The feel rides the same swap as the parameters (§6.11): it is part of
-    // what the tool *is*, so a slot or a preset that changed it hands it over
-    // and a release hands it back.
-    let mut amount = state.smoothing;
-    amount.set(smoothing.clamp(0.0, 1.0));
     update_brush(state, move |b| {
-        let rgb = b.color;
+        // The hand's color survives the swap — a tool is everything but it
+        // (§18.1.8), and the whole configuration around it moves as one,
+        // the feel (§6.11) and the inactive effect included.
+        let rgb = b.paint.color;
         *b = brush;
-        b.color = rgb;
+        b.paint.color = rgb;
     });
     crate::tutor::not_reaching(state, false);
 }
@@ -618,7 +583,6 @@ pub fn apply_first(state: AppState) {
 /// would have to be right if a second caller ever appeared.
 pub fn save_current(state: AppState, name: String) {
     let brush = worn(state);
-    let Some(brush) = brush else { return };
     // Its own statement, not inline in the `if`: a `peek` guard in a condition
     // stays borrowed through the body, and the body of the next one writes the
     // very signal being read.
@@ -672,7 +636,7 @@ pub fn next_name(entries: &[PresetEntry]) -> String {
 /// [`matches`] is the test, so this answers on exactly the terms the preset rows
 /// light on: a slot tuned away from what it was given gets no name back, which is
 /// the truth — it is not that preset any more.
-pub fn name_of(entries: &[PresetEntry], brush: &Wearable) -> Option<String> {
+pub fn name_of(entries: &[PresetEntry], brush: &BrushConfig) -> Option<String> {
     entries
         .iter()
         .find(|e| matches(brush, &e.brush))
@@ -684,9 +648,9 @@ pub fn name_of(entries: &[PresetEntry], brush: &Wearable) -> Option<String> {
 /// the row highlights until any knob moves off the preset, then goes out. The
 /// smoothing amount is one of the knobs (§6.11): a preset worn and then
 /// smoothed differently is no longer that preset.
-pub fn matches(current: &Wearable, preset: &Wearable) -> bool {
+pub fn matches(current: &BrushConfig, preset: &BrushConfig) -> bool {
     let mut p = *preset;
-    p.params.color = current.params.color;
+    p.paint.color = current.paint.color;
     p == *current
 }
 
@@ -703,8 +667,8 @@ pub fn matches(current: &Wearable, preset: &Wearable) -> bool {
 // provenance, and a stored copy of either would be a second opinion about a question
 // the code already answers.
 
-/// One stored preset: a name and a whole brush ([`Wearable`], which the rack stores
-/// too).
+/// One stored preset: a name and a whole brush ([`BrushConfig`], which the rack
+/// stores too).
 ///
 /// A type of its own rather than [`PresetEntry`] with two fields skipped, because
 /// provenance is the point: everything storage holds is the user's by definition, so
@@ -713,7 +677,7 @@ pub fn matches(current: &Wearable, preset: &Wearable) -> bool {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct StoredPreset {
     name: String,
-    brush: Wearable,
+    brush: BrushConfig,
 }
 
 impl storage::Entry for StoredPreset {
@@ -805,11 +769,12 @@ mod tests {
             .into_iter()
             .find(|e| e.slot == Some(slots::ERASER))
             .expect("an eraser ships on the pen's own slot");
-        let erase = e
-            .brush
-            .params
-            .erase()
-            .expect("the pen's tail must erase, not paint");
+        assert_eq!(
+            e.brush.effect,
+            BrushEffectType::Erase,
+            "the pen's tail must erase, not paint"
+        );
+        let erase = e.brush.erase;
         assert!(erase.opacity > 0.0, "an eraser at no strength does nothing");
         assert!(
             erase.flow > 0.0,

@@ -24,13 +24,11 @@ pub const INITIAL_COLOR: [f32; 3] = [0.61, 0.04, 0.02];
 #[component]
 pub fn ColorPanel() -> Element {
     let state = use_context::<AppState>();
-    // Seed from the brush's current color (peek → no re-render on every paint).
-    let init = state
-        .obs
-        .peek()
-        .as_ref()
-        .map(|o| o.brush.color)
-        .unwrap_or(INITIAL_COLOR);
+    // Seed from the hand's current color (peek → no re-render on every paint).
+    // The hand's is the paint side's, whatever effect is in force — which is
+    // what lets a color picked while the eraser is held land somewhere
+    // (`BrushConfig::paint`).
+    let init = state.brush.peek().color();
     // Read reactively, unlike the color: this is how a pick — which sets the color
     // from outside the picker — gets the markers to move (see `AppState::color_epoch`).
     let seed = (state.color_epoch)();
@@ -40,7 +38,7 @@ pub fn ColorPanel() -> Element {
             init,
             seed,
             onchange: move |rgb: [f32; 3]| {
-                update_brush(state, move |br| br.color = rgb);
+                update_brush(state, move |br| br.paint.color = rgb);
             },
         }
     }
