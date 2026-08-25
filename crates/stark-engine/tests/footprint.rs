@@ -23,12 +23,16 @@
 //! model's own suite until the day both copies missed the same variant — see its
 //! note for what that cost.
 //!
-//! Two things are deliberately out of scope. `ActionKind::Undo` is resolved by
-//! the timeline and never materialized through `apply` (which is *why* its
-//! footprint is empty), so a state change around one is a re-materialization
-//! rather than an application — `tests/commute.rs` guards that path. And
-//! `reads` are not checked: a read is not observable in a state diff, and
-//! catching an undeclared one needs a different instrument.
+//! `ActionKind::Undo` is deliberately out of scope: it is resolved by the timeline
+//! and never materialized through `apply` (which is *why* its footprint is empty),
+//! so a state change around one is a re-materialization rather than an application —
+//! `tests/commute.rs` guards that path.
+//!
+//! **`reads` are not checked here**, and cannot be: a read is not observable in a
+//! state diff. That instrument is `tests/commute_pairs.rs`, which asks the parent
+//! question instead — every pair the vocabulary claims commutes must produce the
+//! same document in either order — and so fails on an undeclared read and an
+//! undeclared write alike.
 
 mod common;
 
