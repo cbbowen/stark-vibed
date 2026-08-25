@@ -1,5 +1,5 @@
-//! The floating Select panel: shape tool, what the shape *does*, and feather
-//! (§6.8, §18.0.4).
+//! The floating Select panel: shape tool and the feather it strikes, what the
+//! shape *does*, and how strongly it lands (§6.8, §18.0.4).
 
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
@@ -30,14 +30,15 @@ use stark_model::document::{FillOp, SelectionMode, ShapeAction};
 /// reached from the chip, from the search palette and from a chord (R / E / L),
 /// and the lit state a chip shows is the one [`Command::active`] answers. The
 /// panel keeps what is genuinely its own — that these three sit in one
-/// `.segmented` run, above the row saying what their region *does*.
+/// `.segmented` run, with the feather they will strike beneath them, above the
+/// row saying what their region *does*.
 ///
 /// The **action** row is five answers to one question — *what does this shape do?* —
 /// rather than four ways of combining plus an odd one out. Rect, ellipse and lasso
 /// never produced selections; they produce **coverage**, and the four combine modes
 /// are only the four ways that coverage can land on the mask. `Fill` lands it on the
 /// paint instead (§18.0.4), and everything the row already had comes
-/// with it: the same shapes, the same rasterizer, the same feather slider below.
+/// with it: the same shapes, the same rasterizer, the same feather slider.
 ///
 /// Picking any of the five also **hands back a shape tool** to draw the region
 /// with ([`pick_action`]), since all five are answers about a gesture that has not
@@ -62,7 +63,7 @@ use stark_model::document::{FillOp, SelectionMode, ShapeAction};
 #[component]
 pub fn SelectPanel() -> Element {
     let state = use_context::<AppState>();
-    // One memo over everything the panel shows (`state::use_obs`). All five are
+    // One memo over everything the panel shows (`state::use_obs`). All six are
     // *tool* state — what the next gesture will do — so they move together and
     // never at pointer rate; read straight off `obs` the panel re-rendered on
     // every pan and every sample of the stroke it is describing.
@@ -73,10 +74,11 @@ pub fn SelectPanel() -> Element {
             o.shape_opacity,
             o.selection_opacity,
             o.has_selection,
+            o.tool.is_selection(),
         )
     });
-    let (action, feather, fill_opacity, mask_opacity, has_selection) =
-        arm().unwrap_or((ShapeAction::default(), 0.0, 1.0, 1.0, false));
+    let (action, feather, fill_opacity, mask_opacity, has_selection, armed) =
+        arm().unwrap_or((ShapeAction::default(), 0.0, 1.0, 1.0, false, false));
     // Which of the two the Opacity row is asking about — see the row itself.
     let filling = action == ShapeAction::Fill;
     let opacity = if filling { fill_opacity } else { mask_opacity };
@@ -87,10 +89,12 @@ pub fn SelectPanel() -> Element {
     let brush_color = (state.brush)().color();
 
     let chip = |on: bool| if on { "chip active" } else { "chip" };
-    // Which tool is armed is deliberately *not* in the memo above: the three
-    // chips are `CommandButton`s now, and each carries its own answer
-    // ([`Command::active`]) — so arming a tool re-renders three buttons rather
-    // than the panel and its two sliders.
+    // *Which* tool is armed is deliberately not in the memo above: the three
+    // chips are `CommandButton`s, and each carries its own answer
+    // ([`Command::active`]) — so moving the light from rect to ellipse
+    // re-renders two buttons rather than the panel and its sliders. *Whether*
+    // one is armed is in it, because the Feather row is mounted on that; it
+    // flips on an arm and on the gesture's disarm, never between chips.
     const TOOLS: [Command; 3] = [
         Command::SelectRect,
         Command::SelectEllipse,
@@ -161,6 +165,19 @@ pub fn SelectPanel() -> Element {
                 CommandButton { key: "{command:?}", command }
             }
         }
+        // Under the tool row rather than beside Opacity below, and mounted only
+        // while one of the three is in hand: feather is the edge the rasterizer
+        // strikes, so it is chosen *before* the gesture — a fact about the
+        // gesture the armed tool is about to make — and it is shown as one, next
+        // to that tool, for exactly as long as the gesture is pending. Opacity's
+        // ordinary use is the other way round (see it), which is why it stays.
+        // Under Fill the tool stays armed after a gesture (§18.0.4), so the
+        // feather stays with it; under the four selecting actions the gesture's
+        // disarm takes it away along with the tool.
+        if armed {
+            Slider { label: "Feather", glyph: icons::FEATHER, min: 0.0, max: 64.0, value: feather,
+                oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
+        }
         div { class: "tool-row stacked segmented",
             for (a, glyph, word, hint) in ACTIONS {
                 button {
@@ -186,19 +203,21 @@ pub fn SelectPanel() -> Element {
                 }
             }
         }
-        // Above Feather, and the exact counterpart of it: *how strong*, then *how
-        // soft at the edge*. Both apply to whichever of the five actions the row is
+        // The exact counterpart of Feather, above: *how soft at the edge*, then
+        // *how strong*. Both apply to whichever of the five actions the row is
         // set to, because both describe the coverage the gesture produces and the
         // five actions differ only in where that coverage lands (§6.8).
         //
-        // Where they differ is *when* the answer is given, and that is this row's
-        // whole subtlety. Feather has to be chosen before the gesture — it is the
-        // edge the rasterizer strikes. Strength does not: under the four selecting
-        // actions this is the **whole mask's** opacity, one number on top of the
-        // shape arithmetic, so it reaches a region already drawn and the ordinary
-        // way to use it is to draw first and then dim. Under Fill it is the fill's
-        // own opacity, chosen up front like the feather, because paint once laid is
-        // paint.
+        // Where they differ is *when* the answer is given, and that is what puts
+        // them in different places. Feather has to be chosen before the gesture —
+        // it is the edge the rasterizer strikes — so it sits with the tool that
+        // will strike it and leaves with it. Strength does not: under the four
+        // selecting actions this is the **whole mask's** opacity, one number on
+        // top of the shape arithmetic, so it reaches a region already drawn and
+        // the ordinary way to use it is to draw first and then dim, with no tool
+        // in hand — which is why this row is always mounted. Under Fill it is the
+        // fill's own opacity, chosen up front like the feather, because paint once
+        // laid is paint.
         //
         // So the row reads one value or the other and lays it down two ways: a view
         // command for the fill, a previewed document action for the mask. What it
@@ -228,8 +247,6 @@ pub fn SelectPanel() -> Element {
             onsettle: move |_| if !filling {
                 preview::SELECTION_OPACITY.settle(state, dimming);
             } }
-        Slider { label: "Feather", glyph: icons::FEATHER, min: 0.0, max: 64.0, value: feather,
-            oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
     }
 }
 

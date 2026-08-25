@@ -153,15 +153,22 @@ remembered at three call sites.
 
 ### A selection has an opacity — `Selection::opacity`
 
-The Select panel's **Opacity** slider, above Feather, and the counterpart of it:
-one says how soft the edge is, the other how strongly the whole mask gates; one
-is a ramp, the other a level, and they multiply. Under the four selecting actions
-the slider is the **whole mask's** opacity — `ActionKind::SetSelectionOpacity`,
-a logged, undoable, replicated edit that moves no tile — so it is set *after* the
+The Select panel's **Opacity** slider, the counterpart of Feather: one says how
+soft the edge is, the other how strongly the whole mask gates; one is a ramp,
+the other a level, and they multiply. Under the four selecting actions the
+slider is the **whole mask's** opacity — `ActionKind::SetSelectionOpacity`, a
+logged, undoable, replicated edit that moves no tile — so it is set *after* the
 region is drawn and reaches a region already drawn; under Fill it is the fill's
 own opacity, chosen up front like the feather, because paint once laid is paint.
 One row, because it is one question — how strongly does this coverage land —
 asked of the two places coverage can land.
+
+That *after* is also why the two sliders are not neighbours. Feather is chosen
+before the gesture, so it sits under the three tool chips and is mounted only
+while one of them is armed: it is a fact about the gesture that tool is about to
+make, shown next to the tool for as long as the gesture is pending (under Fill
+the tool stays armed, so the feather stays with it). Opacity is always mounted,
+since its ordinary use is with no tool in hand, on a region already drawn.
 
 **Why on the mask and not on the shape.** Each `SelectionOp` still carries its own
 `opacity`, baked into the coverage it strikes, and the log keeps it: an old file
