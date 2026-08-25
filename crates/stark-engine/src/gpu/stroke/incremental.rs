@@ -37,10 +37,11 @@ pub struct ToolState(pub(super) Carried);
 /// The kinds of cross-piece stroke state, one per path that has any — the
 /// swept deposit at full opacity carries nothing at all.
 pub(super) enum Carried {
-    /// The stamp loop's tool reservoir (§6.2). Boxed for size alone: three
-    /// pooled leases dwarf the erase map's header, and a `ToolState` moves
-    /// through `Option::or` on every fold.
-    Loop(Box<Reservoir>),
+    /// The stamp loop's state (§6.2, §6.12's pattern where it has a
+    /// canvas-local half). Boxed for size alone: three pooled leases dwarf the
+    /// erase map's header, and a `ToolState` moves through `Option::or` on
+    /// every fold.
+    Loop(Box<LoopCarry>),
     /// The erase pass's accumulated extent (§6.12).
     Erase(EraseCarry),
     /// The swept deposit's accumulated parcel (§6.2), carried only below
@@ -51,15 +52,15 @@ pub(super) enum Carried {
 }
 
 impl ToolState {
-    /// The loop's reservoir, on a carry the loop captured.
+    /// The loop's carried state, on a carry the loop captured.
     ///
-    /// The other kind is unreachable rather than an error to handle: which path a
+    /// The other kinds are unreachable rather than an error to handle: which path a
     /// stroke takes is a pure function of its brush (§6.2), a carry resumes only
     /// the stroke that captured it, and the brush is snapshotted when the gesture
     /// starts — so the loop can only ever be handed its own kind back.
-    pub(super) fn reservoir(&self) -> &Reservoir {
+    pub(super) fn looped(&self) -> &LoopCarry {
         match &self.0 {
-            Carried::Loop(r) => r,
+            Carried::Loop(l) => l,
             Carried::Erase(_) | Carried::Sweep(_) => {
                 unreachable!(
                     "another path's carry resumed the stamp loop; the path is a pure function of the brush (§6.2)"
@@ -68,7 +69,7 @@ impl ToolState {
         }
     }
 
-    /// The erase pass's accumulation, on a carry it captured — [`reservoir`](Self::reservoir)'s
+    /// The erase pass's accumulation, on a carry it captured — [`looped`](Self::looped)'s
     /// argument, from the other side.
     pub(super) fn erased(&self) -> &EraseCarry {
         match &self.0 {
@@ -82,7 +83,7 @@ impl ToolState {
     }
 
     /// The scaled swept deposit's accumulated parcel, on a carry it captured —
-    /// [`reservoir`](Self::reservoir)'s argument, from the third side. The
+    /// [`looped`](Self::looped)'s argument, from the third side. The
     /// opacity is part of the brush, so whether the swept path carries at all is
     /// as much a pure function of it as which path runs.
     pub(super) fn swept(&self) -> &SweepCarry {
@@ -97,7 +98,29 @@ impl ToolState {
     }
 }
 
-/// The stamp loop's carried state (§6.2).
+/// The stamp loop's carried state (§6.2): the tool reservoir, and — below full
+/// opacity — the mint budget's raw totals.
+pub(super) struct LoopCarry {
+    /// The brush-local half: what the tip is carrying.
+    pub(super) reservoir: Reservoir,
+    /// The canvas-local half: per touched tile, the opacity ceiling's running
+    /// **raw mint totals** — the region aux whose `.yz` lanes the capped mint
+    /// budgets against (`dynamics.wesl::lay_parcel`), cut per tile exactly as
+    /// the write-back cuts paint. Empty at full opacity, where the lanes are
+    /// never read: the identity ceiling needs no budget, and the common case
+    /// carries and copies nothing.
+    ///
+    /// [`EraseTile::accum`]'s sharing contract: a piece never writes a tile it
+    /// resumed from — it seeds its region by *copying* these in and extracts
+    /// fresh leases out — so the tiles a piece does not touch ride forward as
+    /// clones of the same lease, and the live tail re-renders from the same
+    /// frozen totals every pointer move. No pristine handle beside them, unlike
+    /// the erase and sweep carries: the loop does not re-derive from pristine
+    /// paint — the budget is running state, exactly like the reservoir.
+    pub(super) fresh: BTreeMap<TileCoord, Arc<Kept>>,
+}
+
+/// The loop's tool reservoir (§6.2).
 ///
 /// The sequential loop threads exactly two things from one segment to the next that
 /// do not already live on the canvas: the **tool reservoir** — what paint the tip is
@@ -109,7 +132,9 @@ impl ToolState {
 ///
 /// The reservoir is brush-*local*, which is why this works at all: it says nothing
 /// about where the stroke is, so the region rectangle may change completely between
-/// the piece that produced this state and the piece that resumes from it.
+/// the piece that produced this state and the piece that resumes from it. (The mint
+/// budget beside it in [`LoopCarry`] is the one canvas-local exception, and it is
+/// addressed by tile for exactly that reason.)
 pub(super) struct Reservoir {
     /// Reservoir color: per texel, the latent paint (rgb) and its per-unit opacity.
     pub(super) color: Kept,

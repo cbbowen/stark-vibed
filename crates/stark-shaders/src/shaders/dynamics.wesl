@@ -84,7 +84,7 @@ import package::lib::latent::{
     Latent, latent_add, latent_any, latent_blend, latent_div, latent_lerp, latent_of,
     latent_scale, latent_sub, latent_unpremult, latent_wsum, latent_zero,
 };
-import package::lib::paint_common::{substrate_texel_at, rise_ahead, tooth_gate, PAINT_EPS};
+import package::lib::paint_common::{substrate_texel_at, rise_ahead, tooth_gate, OPACITY_K, PAINT_EPS};
 import package::lib::sample::{load1, bilerp_taps, bilerp_mix};
 import package::lib::store::{f16_nearest4};
 
@@ -154,9 +154,16 @@ struct Stamp {
     // The brush's own color channels. **Undrained** — the falloff is applied per
     // fragment from its own arc length, not baked in per segment (see
     // `stroke_drain`). No per-unit opacity beside them: minted paint is opaque per
-    // unit (§6.2), faded only by the drain, and the effect's opacity scales the
-    // `add` rate host-side before it reaches this uniform.
+    // unit (§6.2), faded only by the drain.
     brush_lat: vec3<f32>,
+    // The paint effect's opacity (§6.2): the per-stroke ceiling on what the
+    // brush's own paint builds to. Applied where the mint lands (`lay_parcel`),
+    // as prefix differences of the capped law over the running raw totals the
+    // region aux's spare lanes carry — the very arithmetic the swept integrate
+    // applies to its whole accumulated parcel, so a brush whose axes are all
+    // zero but for a whisper of `deposit` lays exactly what the fast path lays.
+    // 1 is the identity, taken as an exact branch.
+    opacity: f32,
     // The brush color's **residual** — the half of it the space's three channels cannot
     // express (§6.7). Undrained, like `brush_lat`. Zero for every space but Mixbox.
     //
@@ -278,7 +285,10 @@ fn deposit_rate() -> f32 { return -st.lambda_deposit; }
 fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 
 // The stroke's canvas region: premultiplied color (latent·op, op) + wide aux
-// (height, _, _, _). Read by `snapshot` (textureLoad) and `exchange` (bilinear).
+// (height, raw mint height, raw mint mass, _) — the `.yz` lanes are the opacity
+// ceiling's running raw totals (§6.2, `lay_parcel`), zero at full opacity and
+// on every composited texel, carried across pieces by the host (`run.rs`).
+// Read by `snapshot` (textureLoad) and `exchange` (bilinear).
 @group(0) @binding(1) var region_color: texture_2d<f32>;
 @group(0) @binding(2) var region_aux: texture_2d<f32>;
 // Extent snapshot targets (written by `snapshot`).
@@ -1450,6 +1460,58 @@ fn under_color_of(u: Under) -> Latent {
     return col;
 }
 
+// ---- The opacity ceiling on the mint (§6.2) --------------------------------------
+//
+// The paint effect's opacity caps what the brush's **own** paint builds to per
+// texel — the swept integrate's law, which this loop cannot apply to a finished
+// parcel because it has none: fresh paint lands per segment and is smeared into
+// the picture as it goes. What it can do is mint the *prefix differences* of the
+// same law: the region aux's spare lanes carry the running **raw** totals the
+// uncapped source would have laid (`.y` height, `.z` mass), and each segment
+// lays `M(F + ΔF) − M(F)`. The differences telescope, so the per-texel total is
+// exactly the swept path's scaled parcel — mass and height, drain variation
+// included — and a brush routed here by a whisper of some other axis lays the
+// same paint the fast path lays.
+//
+// What the ceiling deliberately does not touch: **moved paint**. The lift's
+// removal, the tool's deposit of carried paint, the bleed and the settle all
+// conserve height (§6.1) — a ceiling on them would destroy paint — and once
+// fresh paint is smeared away it does not refund the local budget (the raw
+// totals only grow). The `charge` glob needs no lane of its own: a finite
+// source scaled at the mint *is* its own ceiling — everything it can ever
+// deliver is the scaled glob — so the host scales it where it is minted
+// (`run.rs`'s reservoir init).
+
+// The capped law: the mass the ceiling lets a raw total `f` land as —
+// `−ln(1 − opacity·(1 − e^{−K·f}))/K`, the swept integrate's arithmetic
+// (`integrate.wesl`). `1 − opacity·w > 1 − opacity > 0` on the capped branch,
+// so the log has an argument and nothing cancels.
+fn capped_m(f: f32) -> f32 {
+    return -log(1.0 - st.opacity * (1.0 - exp(-OPACITY_K * f))) / OPACITY_K;
+}
+
+// The capped height for raw totals `(fh, fm)`: `fh · M(fm)/fm` — the whole raw
+// height scaled by the mass ratio, which is what makes the telescoped total the
+// swept path's `h·(m′/m)` exactly. The ratio is taken through a two-term series
+// below `RATIO_SERIES_MAX_F`, where the direct quotient is a log of `1 − o·f·…`
+// with most of its digits cancelled — `src_share`'s cure, one function over.
+fn cap_ratio(f: f32) -> f32 {
+    if f < RATIO_SERIES_MAX_F {
+        return st.opacity * (1.0 + 0.5 * OPACITY_K * f * (st.opacity - 1.0));
+    }
+    return capped_m(f) / f;
+}
+const RATIO_SERIES_MAX_F: f32 = 0.05;
+
+// Where the raw totals stop accumulating (`lay_parcel`): far past the law's own
+// saturation — `e^{−K·f}` is exactly 0 in f32 by 90 — and safely inside f16's
+// finite range, which is what the clamp is for.
+const F_MAX: f32 = 16000.0;
+
+fn capped_h(fh: f32, fm: f32) -> f32 {
+    return fh * cap_ratio(fm);
+}
+
 // The shared tail: the lift, the parcel this slot lays, and the store.
 //
 // Everything here is per texel *by model* and stays so at either resolution — the
@@ -1509,9 +1571,38 @@ fn lay_parcel(
     // because `ex` was solved at the exposure the substrate let through. Multiplying
     // again would charge the substrate twice — and would take the deposit out of the
     // complement the tool's own dispatch computed, which is what would destroy paint.
-    let add_h = st.add * drain * ex.add_w;
+    //
+    // The budget advances by the **attempted** mint — the exposure's worth of
+    // source, `add_w + src_w = e` by the exchange's own contract — because that
+    // is the raw total that is independent of how the path was cut: exposures
+    // add across segments where the *net* share `add_w` does not (a lift takes
+    // back `O(k_lift·e²)` per segment, so a finer cut attempts the same and
+    // nets more). The capped increment is then scaled by this segment's own
+    // survival fraction, so what actually lands still carries the lift's
+    // in-flight shaping — and at `lift = 0` the two are one number.
+    let e_src = ex.add_w + ex.src_w;
+    let raw_h = st.add * drain * e_src;
+    let raw_m = own_op * raw_h;
+    // Clamped far past saturation — the capped law is flat to the last f32 bit
+    // well below this — so a stroke scrubbing one spot for hours cannot walk a
+    // lane into the f16 infinity, whose `inf·0` in `capped_h`'s ratio would be
+    // a NaN the region keeps forever.
+    let f_h = min(u.a.y + raw_h, F_MAX);
+    let f_m = min(u.a.z + raw_m, F_MAX);
+    // At opacity 1 the capped law is the identity to the bit
+    // (`−ln(e^{−K·f})/K = f`), and the branch keeps even its rounding out of
+    // the master arithmetic below.
+    var add_h = st.add * drain * ex.add_w;
+    var add_m = own_op * add_h;
+    if st.opacity != 1.0 {
+        // `e_src = 0` makes both differences exactly 0, so the guarded quotient
+        // never decides anything — it only keeps the 0/0 out.
+        let survive = ex.add_w / max(e_src, PAINT_EPS);
+        add_m = (capped_m(f_m) - capped_m(u.a.z)) * survive;
+        add_h = (capped_h(f_h, f_m) - capped_h(u.a.y, u.a.z)) * survive;
+    }
     let par_h = dep_h + add_h;
-    let par_m = tool_op * dep_h + own_op * add_h;
+    let par_m = tool_op * dep_h + add_m;
 
     // A texel this dispatch did not change must not be **re-stored** (§6.2). The
     // write itself is not neutral: a storage write re-encodes f32 → f16, and a
@@ -1536,11 +1627,9 @@ fn lay_parcel(
     if par_m > PAINT_EPS {
         // The same two masses weight both halves, so the parcel is one color rather
         // than two independently averaged ones — which one call states and two lines
-        // could only promise.
-        parcel = latent_div(
-            latent_wsum(tool.col, tool_op * dep_h, own, own_op * add_h),
-            par_m,
-        );
+        // could only promise. The own half weighs in at its *capped* mass — the
+        // mass that actually lands is the mass that carries its color.
+        parcel = latent_div(latent_wsum(tool.col, tool_op * dep_h, own, add_m), par_m);
     }
 
     let col = latent_blend(canvas.col, m, parcel, par_m);
@@ -1556,7 +1645,13 @@ fn lay_parcel(
     // stores that change nothing at all; this is what keeps the ones that *do* land
     // from each shaving a ULP off the region as a segment sweep passes over it.
     textureStore(region_color_w, rt, f16_nearest4(mix(u.c, vec4<f32>(col.lat * op, op), sel)));
-    textureStore(region_aux_w, rt, f16_nearest4(mix(u.a, vec4<f32>(h, 0.0, 0.0, 0.0), sel)));
+    // The raw totals advance in the store's own lanes, through the same `sel`
+    // lerp as the height they budget — a feathered texel banks the fraction of
+    // the mint it received, so its budget saturates at the fraction of the cap
+    // the swept integrate's result-lerp converges to (§6.8).
+    textureStore(
+        region_aux_w, rt, f16_nearest4(mix(u.a, vec4<f32>(h, f_h, f_m, 0.0), sel)),
+    );
     // Premultiplied by the same `op` and lerped by the same `sel` — the residual is
     // stored exactly as the color beside it is.
     @if(resid) textureStore(
@@ -2286,7 +2381,11 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     let op = m / max(h, PAINT_EPS);
 
     textureStore(region_color_w, rt, f16_nearest4(mix(uc, vec4<f32>(col.lat * op, op), sel)));
-    textureStore(region_aux_w, rt, f16_nearest4(mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel)));
+    // The mint-budget lanes pass through whole: a settle delivers carried paint,
+    // which the ceiling deliberately does not touch (§6.2, `lay_parcel`).
+    textureStore(
+        region_aux_w, rt, f16_nearest4(mix(ua, vec4<f32>(h, ua.y, ua.z, 0.0), sel)),
+    );
     @if(resid) textureStore(
         region_resid_w, rt, f16_nearest4(mix(u.r, vec4<f32>(col.res * op, 0.0), sel)),
     );

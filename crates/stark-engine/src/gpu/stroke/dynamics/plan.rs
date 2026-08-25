@@ -119,6 +119,11 @@ impl SlotCommon<'_> {
             // The other half of the same color (§6.7) — filled wherever `channels` is,
             // and zero in a space whose three channels already say everything.
             resid: self.k.resid,
+            // The paint effect's ceiling (§6.2), off `k` like the color: one
+            // resolution for every slot kind and for the swept path's integrate.
+            // Only a painting segment's mint reads it; a bleed or settle slot
+            // carries it inertly, the jitter's argument one field down.
+            opacity: self.k.opacity,
             substrate_uv_scale: self.substrate[0],
             substrate_uv_bias: Vec2::new(self.substrate[1], self.substrate[2]),
             // A stroke constant like the color above it, and off `k` for the same
@@ -195,6 +200,9 @@ struct Slot {
     /// beside them: minted paint is opaque per unit, faded only by the drain
     /// (§6.2).
     channels: [f32; 3],
+    /// The paint effect's opacity — the ceiling the mint's prefix-difference law
+    /// runs under in the shader (§6.2). 1 is the identity, exactly.
+    opacity: f32,
     /// The same color's **residual** (§6.7) in `.xyz`; `.w` unused. Undrained like
     /// `channels`, and zero in a space that has no residual to carry.
     resid: [f32; 4],
@@ -291,6 +299,10 @@ impl Default for Slot {
             lambda_lift: 0.0,
             lambda_deposit: 0.0,
             channels: [0.0; 3],
+            // A scale, so its neutral value is 1 — the identity the shader
+            // branches to exactly — not 0, which would be the strongest ceiling
+            // there is (`stretch`'s argument, one field over).
+            opacity: 1.0,
             resid: [0.0; 4],
             rect_origin: Vec2::ZERO,
             orient: 0.0,
@@ -349,6 +361,7 @@ impl Slot {
             lambda_bleed: self.lambda_bleed,
             curvature: self.curvature,
             brush_lat: self.channels,
+            opacity: self.opacity,
             brush_res: [self.resid[0], self.resid[1], self.resid[2]],
             add: self.add,
             noise_freq: [self.noise_freq[0], self.noise_freq[1], self.noise_freq[2]],
@@ -745,25 +758,23 @@ pub(super) fn dynamics_plan(
                         orient: sw.orient,
                         stretch: sw.stretch,
                         drain: b.drain_px(),
-                        // The `add` source rate is passed through with **no gain but
-                        // the effect's opacity**, exactly as `stamp.wesl` takes it. Any
-                        // other gain here would make the same slider mean two different
-                        // amounts of paint depending on whether some *other* axis
-                        // happened to be non-zero — nudging `deposit` off zero would
-                        // change the flow. Nor is one needed to make `add = 1` lay a
-                        // full-thickness deposit per pass: a pass of the tip is
-                        // `TAU_PER_PASS ≈ 6.9` of exposure, so `add = 1` lays 6.9 of
-                        // height, which the slab law reads as 0.999 coverage.
-                        //
-                        // The opacity is the stated exception, and this is where the
-                        // loop applies it (§6.2): on this path the ceiling cannot be
-                        // exact — moved paint moves whole — so it scales what the
-                        // brush mints, which agrees with the swept integrate's scaled
-                        // parcel to first order in the amount laid and exactly at 1.
+                        // The `add` source rate is passed through **unscaled**, exactly
+                        // as `stamp.wesl` takes it. A gain here would make the same
+                        // slider mean two different amounts of paint depending on
+                        // whether some *other* axis happened to be non-zero — nudging
+                        // `deposit` off zero would change the flow. Nor is one needed
+                        // to make `add = 1` lay a full-thickness deposit per pass: a
+                        // pass of the tip is `TAU_PER_PASS ≈ 6.9` of exposure, so
+                        // `add = 1` lays 6.9 of height, which the slab law reads as
+                        // 0.999 coverage. The effect's opacity is *not* folded in
+                        // either — the raw rate is exactly what the ceiling's
+                        // prefix-difference law must accumulate (§6.2,
+                        // `dynamics.wesl::lay_parcel`), and the ceiling rides the
+                        // slot's own lane.
                         //
                         // Off the segment, since the pen can drive it (§6.2) — the same
                         // number the swept path now reads off its instance.
-                        add: paint.add * consts.opacity,
+                        add: paint.add,
                         curvature: sw.curvature,
                         tooth_give: paint.tooth_give,
                         cell: cell as f32,
@@ -1234,6 +1245,7 @@ mod tests {
             lambda_lift: 7.0,
             lambda_deposit: 8.0,
             channels: [9.0, 10.0, 11.0],
+            opacity: 53.0,
             rect_origin: Vec2::new(13.0, 14.0),
             orient: 15.0,
             drain: 16.0,
@@ -1305,19 +1317,21 @@ mod tests {
         assert_eq!(packed.jitter_eps, 49.0, "the deposit jitter (§6.2)");
         assert_eq!(packed.jitter_seed, 50);
         assert_eq!(packed.canvas_origin, [51, 52]);
+        assert_eq!(packed.opacity, 53.0, "the effect's ceiling (§6.2)");
     }
 
-    /// The neutral slot is neutral *in the shader's terms*, which for five fields is
-    /// not zero. Four are **scales**, and a zeroed scale does not say "none of
+    /// The neutral slot is neutral *in the shader's terms*, which for six fields is
+    /// not zero. Five are **scales**, and a zeroed scale does not say "none of
     /// this" but "none of the thing it multiplies": a `bearing` of 0 books the tool's
     /// half of every transfer against no substrate at all — infinite tooth, not absent
-    /// tooth; a `cell` of 0 is no deposit grid rather than the exact one; and a
+    /// tooth; a `cell` of 0 is no deposit grid rather than the exact one; a
     /// zeroed stretch is a tip of no width whose every prefix difference is divided by
-    /// it (§6.6). The fifth, `tooth_give`, is not a scale but a knob that runs the
-    /// other way (`BrushParams::tooth_give`): zeroed it is the driest tip there is,
-    /// where 1 is the short-circuit a slot with no tooth wants. A derived `Default`
-    /// would make every slot kind that leaves one alone quietly wrong, and this is the
-    /// list that says which they are.
+    /// it (§6.6); and a zeroed `opacity` is the strongest ceiling there is where 1 is
+    /// the exact identity branch (§6.2). The sixth, `tooth_give`, is not a scale but
+    /// a knob that runs the other way (`BrushParams::tooth_give`): zeroed it is the
+    /// driest tip there is, where 1 is the short-circuit a slot with no tooth wants.
+    /// A derived `Default` would make every slot kind that leaves one alone quietly
+    /// wrong, and this is the list that says which they are.
     #[test]
     fn the_default_slot_is_neutral_rather_than_zeroed() {
         let d = Slot::default().pack();
@@ -1332,6 +1346,10 @@ mod tests {
             [1.0, 0.0, 1.0],
             "the default stretch must be the identity map, not zeroes"
         );
+        assert_eq!(
+            d.opacity, 1.0,
+            "the default opacity must be 1 — the identity ceiling — not 0"
+        );
         // And everything else is zero, which for the rest of the slot *is* neutral —
         // stated as the complement of the four above so a new member has to be
         // classified rather than silently joining whichever list it was written near.
@@ -1340,12 +1358,13 @@ mod tests {
             cell_px: 1,
             tooth_give: 1.0,
             stretch: [1.0, 0.0, 1.0],
+            opacity: 1.0,
             ..Default::default()
         };
         assert_eq!(
             bytemuck::bytes_of(&d),
             bytemuck::bytes_of(&z),
-            "a member of the default slot is neither zero nor one of the five neutrals",
+            "a member of the default slot is neither zero nor one of the six neutrals",
         );
     }
 

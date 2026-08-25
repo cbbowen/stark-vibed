@@ -6,7 +6,8 @@
 
 use wgpu::util::DeviceExt;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::gpu::channels::Targets;
 use crate::gpu::composite::view_uniform;
@@ -25,8 +26,9 @@ fn paint_effect(rec: &StrokeRecord) -> &PaintEffect {
 }
 use stark_shaders::mirror::composite::binding as cb;
 
+use super::super::incremental::{Carried, LoopCarry, Reservoir};
 use super::super::region::{RegionRect, chunk_segments, cover};
-use super::super::scratch::{Key, SubmitScope};
+use super::super::scratch::{Kept, Key, SubmitScope};
 use super::super::segments::{BleedFire, Segment, generate_segments_in};
 use super::super::{
     StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState, UNIFORM_STRIDE,
@@ -55,6 +57,32 @@ use stark_shaders::mirror::dynamics::binding as b;
 // per-instance record (§6.10) rather than a second `#[repr(C)]` copy of it declared
 // here under a different name.
 use stark_shaders::mirror::composite::Instance as TileInstance;
+
+/// One mint-budget tile (`LoopCarry::fresh`), as a copy extent: the full
+/// `TILE_TEX` block — interior plus apron — cut from and seeded into the region
+/// aux exactly as the write-back cuts paint tiles, so the two address the region
+/// with one rule. Adjacent blocks overlap by the apron; the overlaps are cut
+/// from one region, so seeding them back is writing identical texels twice.
+const FRESH_EXTENT: wgpu::Extent3d = wgpu::Extent3d {
+    width: stark_model::geom::TILE_TEX,
+    height: stark_model::geom::TILE_TEX,
+    depth_or_array_layers: 1,
+};
+
+/// The mint-budget tile's pool key: copies both ways, nothing else — no pass
+/// ever binds one, they exist purely to ferry the region aux's `.yz` lanes
+/// across pieces. The whole aux texel rides along (the `.x` height is the very
+/// value the write-back sliced into the base tile, so seeding it back over the
+/// freshly composited region is bit-identical), because a copy cannot address
+/// two lanes of a texel and a pass that could would cost more than the lanes.
+fn fresh_key() -> Key {
+    Key {
+        size: (stark_model::geom::TILE_TEX, stark_model::geom::TILE_TEX),
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+        label: "stark dynamics fresh",
+    }
+}
 
 /// Workgroup counts for the reservoir half of `exchange`, which is dispatched over
 /// these *plus* the slot's extent groups on x, since the snapshot shares its
@@ -243,6 +271,11 @@ struct DynamicsRun<'a> {
     /// The residual's own swept prefix, `∫res·m·dτ` — same format, same differencing,
     /// and recovered against the very denominator `bake_latm` is.
     bake_rlm: Option<wgpu::TextureView>,
+    /// The opacity ceiling's mint-budget tiles ([`LoopCarry::fresh`]), evolving
+    /// with the run: resumed entries first, each piece replacing the tiles it
+    /// touched with the leases it extracted. Untouched — and empty — at the
+    /// identity opacity.
+    fresh: BTreeMap<TileCoord, Arc<Kept>>,
 }
 
 impl<'a> DynamicsRun<'a> {
@@ -322,26 +355,31 @@ impl<'a> DynamicsRun<'a> {
             Some((t, v)) => (Some(t), Some(v)),
             None => (None, None),
         };
-        if let Some(t) = tool.map(ToolState::reservoir) {
+        // The carried mint budget (§6.2): shared forward — a piece only ever
+        // reads the tiles it resumed, seeding its region by copy and extracting
+        // fresh leases — so this clone is a refcount per tile. Empty at the
+        // identity opacity, and on a fresh tip.
+        let fresh: BTreeMap<TileCoord, Arc<Kept>> = if let Some(t) = tool.map(ToolState::looped) {
             // Resume: the tip arrives at this range carrying exactly what it carried
             // when the previous range stopped.
             scope.encoder().copy_texture_to_texture(
-                t.color.tex().as_image_copy(),
+                t.reservoir.color.tex().as_image_copy(),
                 brush_color_tex[0].as_image_copy(),
                 RESERVOIR_EXTENT,
             );
             scope.encoder().copy_texture_to_texture(
-                t.aux.tex().as_image_copy(),
+                t.reservoir.aux.tex().as_image_copy(),
                 brush_aux_tex[0].as_image_copy(),
                 RESERVOIR_EXTENT,
             );
-            if let (Some(src), Some(dst)) = (&t.resid, &brush_resid_tex) {
+            if let (Some(src), Some(dst)) = (&t.reservoir.resid, &brush_resid_tex) {
                 scope.encoder().copy_texture_to_texture(
                     src.tex().as_image_copy(),
                     dst[0].as_image_copy(),
                     RESERVOIR_EXTENT,
                 );
             }
+            t.fresh.iter().map(|(c, k)| (*c, Arc::clone(k))).collect()
         } else {
             // Init: latent = the brush's own color, per-unit opacity = exactly 1
             // (minted paint is opaque per unit, §6.2); the carried amount starts
@@ -367,10 +405,11 @@ impl<'a> DynamicsRun<'a> {
                                 // Carried height = the pre-`charge` glob; the rest of
                                 // the reservoir aux is unused (height is the only
                                 // thing the tool carries, §6.1). The effect's opacity
-                                // scales the glob for the `add` rate's reason
-                                // (`plan.rs`): both are paint the brush *mints*, and
-                                // the ceiling this path cannot hold exactly scales
-                                // the mint instead (§6.2).
+                                // scales the glob outright, and for a finite source
+                                // that *is* the ceiling: everything the glob can ever
+                                // deliver is the scaled glob, so no budget lane is
+                                // needed where the `add` rate's unbounded mint takes
+                                // one (§6.2, `dynamics.wesl::lay_parcel`).
                                 r: (d.charge * consts.opacity) as f64,
                                 g: 0.0,
                                 b: 0.0,
@@ -397,7 +436,8 @@ impl<'a> DynamicsRun<'a> {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-        }
+            BTreeMap::new()
+        };
         let mut bake = |label: &'static str| {
             scope
                 .take_run(Key {
@@ -435,6 +475,7 @@ impl<'a> DynamicsRun<'a> {
             bake_load,
             bake_latm,
             bake_rlm,
+            fresh,
         }
     }
 
@@ -509,6 +550,34 @@ impl<'a> DynamicsRun<'a> {
             crate::timing::span!("stroke.region");
             self.composite_region(base, &halo, region_origin, w, h)
         };
+        // Seed the opacity ceiling's mint budget (§6.2): the composite above
+        // laid zeros in the aux's `.yz` lanes, and a resumed tile's running
+        // totals are copied back over its block — the `.x` height rides along
+        // bit-identical, being the very value the write-back sliced into the
+        // tile the composite just re-laid. Nothing to seed at the identity
+        // opacity, where the shader never reads the lanes.
+        if self.consts.opacity < 1.0 {
+            for coord in coords {
+                let Some(kept) = self.fresh.get(coord) else {
+                    continue;
+                };
+                let off = coord.origin() - lo;
+                self.scope.encoder().copy_texture_to_texture(
+                    kept.tex().as_image_copy(),
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &region.aux_tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: off.x as u32,
+                            y: off.y as u32,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    FRESH_EXTENT,
+                );
+            }
+        }
 
         // ---- The dispatch plan, one slot per dispatch, uploaded as one buffer the
         // loop reads through dynamic offsets.
@@ -571,6 +640,33 @@ impl<'a> DynamicsRun<'a> {
             crate::timing::span!("stroke.loop");
             self.record_loop(&plan.slots, plan.dsize, &bind);
         }
+        // Extract the budget's new totals for the carry (§6.2): a fresh lease
+        // per touched tile, cut exactly as the write-back cuts paint — the
+        // carried tiles themselves are never written, which is what lets the
+        // live tail resume the same frozen totals every pointer move.
+        if self.consts.opacity < 1.0 {
+            let r = self.r;
+            for coord in coords {
+                let kept = r.scratch.keep(&r.ctx.device, fresh_key());
+                let off = coord.origin() - lo;
+                self.scope.encoder().copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &region.aux_tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: off.x as u32,
+                            y: off.y as u32,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    kept.tex().as_image_copy(),
+                    FRESH_EXTENT,
+                );
+                self.fresh.insert(*coord, Arc::new(kept));
+            }
+        }
+
         // Slicing the evolved region back into fresh CoW tiles — the write half,
         // paired with `stroke.region`'s read.
         crate::timing::span!("stroke.writeback");
@@ -597,10 +693,14 @@ impl<'a> DynamicsRun<'a> {
         let device = &r.ctx.device;
 
         // COPY_SRC because the write-back cuts the tiles straight out of these by
-        // texture copy ([`Self::write_back`]). Pooled: the composite's clearing load
+        // texture copy ([`Self::write_back`]); COPY_DST because the opacity
+        // ceiling's mint budget is seeded back *into* the aux the same way
+        // (§6.2, `LoopCarry::fresh`). Pooled: the composite's clearing load
         // op rewrites every texel, so stale contents never show (`scratch`).
-        let region_usage =
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | LOOP_USAGE;
+        let region_usage = wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST
+            | LOOP_USAGE;
         let mut region_tex = |label: &'static str| {
             self.scope.take_piece(Key {
                 size: (w, h),
@@ -610,7 +710,7 @@ impl<'a> DynamicsRun<'a> {
             })
         };
         let (color_tex, color) = region_tex("stark dynamics region color");
-        let (_, aux) = region_tex("stark dynamics region aux");
+        let (aux_tex, aux) = region_tex("stark dynamics region aux");
         // The region's residual (§6.7), in the same format for the same reason: it is
         // the rest of the color beside it, and the loop reads and writes the two at
         // exactly the same points.
@@ -747,6 +847,7 @@ impl<'a> DynamicsRun<'a> {
         Region {
             color_tex,
             color,
+            aux_tex,
             aux,
             resid_tex,
             resid,
@@ -1339,8 +1440,8 @@ impl<'a> DynamicsRun<'a> {
             );
             dst
         };
-        ToolState(super::super::incremental::Carried::Loop(Box::new(
-            super::super::incremental::Reservoir {
+        ToolState(Carried::Loop(Box::new(LoopCarry {
+            reservoir: Reservoir {
                 color: copy_out(&color_src, "stark tool state color"),
                 aux: copy_out(&aux_src, "stark tool state aux"),
                 // Carried across ranges with the color, and for the same reason: a tip
@@ -1350,7 +1451,11 @@ impl<'a> DynamicsRun<'a> {
                     .as_ref()
                     .map(|t| copy_out(t, "stark tool state resid")),
             },
-        )))
+            // The mint budget rides as the leases the last piece extracted —
+            // already copies of the run's own state, so nothing more to copy
+            // out here. Empty at the identity opacity.
+            fresh: std::mem::take(&mut self.fresh),
+        })))
     }
 
     /// Close the run: the scope submits what is still recorded, then releases
@@ -1373,6 +1478,10 @@ impl<'a> DynamicsRun<'a> {
 struct Region {
     color_tex: wgpu::Texture,
     color: wgpu::TextureView,
+    /// The aux's texture beside its view, the color's reason: the opacity
+    /// ceiling's mint budget is seeded into and extracted out of it by copy
+    /// (§6.2, `LoopCarry::fresh`).
+    aux_tex: wgpu::Texture,
     aux: wgpu::TextureView,
     /// The region's residual (§6.7), in a space that has one — evolved in place by the
     /// same dispatches that evolve the color, and sliced back with it.

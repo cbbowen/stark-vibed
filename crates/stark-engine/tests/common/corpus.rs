@@ -843,6 +843,39 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
+        name: "wet_opacity",
+        what: "The opacity ceiling on the stamp loop (§6.2): the smear's own brush, \
+               its flow raised so the mint actually climbs toward the cap, at \
+               opacity 0.6 over the same undercoat. The only cover for the capped \
+               mint's prefix-difference law, for the budget lanes riding the region \
+               aux through the lift, the deposit and the settle, and for the \
+               per-tile carry that keeps a live stroke's pieces on one budget.",
+        view: SIZE,
+        prepare: |e, at| {
+            undercoat(e, at);
+            let mut b = smear_brush(15.0);
+            b.paint_mut().expect("a paint brush").dynamics.flow = 2.0;
+            b.effect.set_opacity(0.6);
+            b
+        },
+        path: || sine_sweep(140, 124.0, 34.0, 1.3),
+        tol: Tol {
+            golden: 6,
+            // The smear's own figure: the budget crosses pieces by exact copies,
+            // so what remains is the loop's ordinary f16 seam behaviour.
+            seam: 12,
+            // Calibrated against this brush's own control, not the smear's: at
+            // four times the smear's flow the *uncapped* loop already moves
+            // 0.25% of the viewport under refinement (measured at opacity 1),
+            // and the ceiling halves that (0.095% at 0.6) — saturated mint
+            // stops responding to the cut at all. The margin is over the
+            // measured case, and a regression past the uncapped control would
+            // still fail loudly.
+            refine: 0.15,
+            lift: 0.0,
+        },
+    },
+    Case {
         name: "erase",
         what: "The erase pass (§6.12): a self-crossing recorded stroke through two \
                painted bands at half strength. The only cover for the accumulated \

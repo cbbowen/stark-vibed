@@ -5,11 +5,13 @@
 //! in what the eye sees (a saturated stroke at 0.5 covers half — held here as
 //! *equality with the half-covered fill*, the erase headline mirrored), the
 //! opacity is a ceiling a stroke cannot scrub past, separate strokes compound as
-//! glazes do, and on the stamp loop — where the ceiling cannot be exact, because
-//! moved paint moves whole — the dial scales what the brush mints. The
-//! piecewise-vs-whole and round-trip obligations ride the corpus (`corpus.rs`,
-//! case `opacity`), which is also what exercises the carried parcel a live
-//! stroke accumulates below full opacity.
+//! glazes do — and the fast path is an optimization, never a semantics: the
+//! stamp loop mints the prefix differences of the same capped law, so a whisper
+//! of `deposit` routes the stroke without changing the paint, and the `charge`
+//! glob is capped by being finite. The piecewise-vs-whole and round-trip
+//! obligations ride the corpus (`corpus.rs`, cases `opacity` and
+//! `wet_opacity`), which is also what exercises the carried parcel and the
+//! carried mint budget a live stroke accumulates below full opacity.
 
 mod common;
 
@@ -179,52 +181,94 @@ fn two_half_opacity_strokes_are_the_three_quarter_fill() {
     );
 }
 
-/// On the stamp loop the dial scales what the brush **mints** (§6.2): a glaze
-/// at `flow f, opacity o` lays what `flow o·f, opacity 1` lays. Not the exact
-/// ceiling — that cannot exist where moved paint moves whole — but the stated
-/// semantics, and this is the pin that says the loop reads the dial at all.
+/// **The fast path is an optimization, not a semantics** (§6.2): nudging
+/// `deposit` off zero routes the same brush through the stamp loop, and the
+/// paint must not change. Below full opacity that is the capped mint's whole
+/// job — the loop lays the prefix differences of the very law the swept
+/// integrate applies to its accumulated parcel, so the two renderers agree
+/// texel for texel, saturation included.
 #[test]
-fn a_loop_glaze_at_half_opacity_is_the_half_flow_glaze() {
-    let glaze = |flow: f32, opacity: f32| {
-        let mut b = brush(RED, 20.0);
-        b.drain = 0.0;
-        let p = b.paint_mut().expect("a paint brush");
-        p.dynamics.flow = flow;
+fn a_whisper_of_deposit_does_not_change_the_paint() {
+    let whisper = |opacity: f32| {
+        let mut b = washed(opacity, 20.0);
         // Off zero so the stroke takes the loop; with nothing lifted and nothing
         // charged, the axis itself moves no paint (`dynamics_setup`).
-        p.dynamics.deposit = 0.4;
-        b.effect.set_opacity(opacity);
+        b.paint_mut().expect("a paint brush").dynamics.deposit = 0.01;
         b
     };
     let path = [Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)];
 
-    let Some(mut dialed) = engine_or_skip() else {
+    let Some(mut looped) = engine_or_skip() else {
         return;
     };
-    stroke_with(&mut dialed, glaze(0.6, 0.5), &path);
-    let dialed = dialed.render_to_image();
+    stroke_with(&mut looped, whisper(0.5), &path);
+    let looped = looped.render_to_image();
 
-    let mut halved = engine_or_skip().expect("the adapter answered once already");
-    stroke_with(&mut halved, glaze(0.3, 1.0), &path);
-    let halved = halved.render_to_image();
+    let mut swept = engine_or_skip().expect("the adapter answered once already");
+    stroke_with(&mut swept, washed(0.5, 20.0), &path);
+    let swept = swept.render_to_image();
 
-    let (d, h) = (texel(&dialed, Vec2::ZERO), texel(&halved, Vec2::ZERO));
-    assert!(
-        apart(d, h) <= 2,
-        "the dialed glaze {d:?} must lay the half-flow glaze {h:?}"
-    );
-    // …and the dial moved something, or both were too faint to tell apart.
+    for p in [Vec2::ZERO, Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)] {
+        let (l, s) = (texel(&looped, p), texel(&swept, p));
+        assert!(
+            apart(l, s) <= 2,
+            "at {p:?} the loop's stroke {l:?} must be the fast path's {s:?} — \
+             the whisper of deposit changed the paint"
+        );
+    }
+    // …and the dial is doing something at all, or the agreement above is two
+    // full-strength strokes agreeing.
     let mut full = engine_or_skip().expect("the adapter answered once already");
-    stroke_with(&mut full, glaze(0.6, 1.0), &path);
+    stroke_with(&mut full, whisper(1.0), &path);
     assert!(
-        apart(d, texel(&full.render_to_image(), Vec2::ZERO)) > 10,
-        "the half-opacity glaze reads as the full one, so this test measured nothing"
+        apart(
+            texel(&looped, Vec2::ZERO),
+            texel(&full.render_to_image(), Vec2::ZERO)
+        ) > 20,
+        "the half-opacity stroke reads as the full one, so this test measured nothing"
     );
 }
 
-/// The `charge` glob is minted paint too (§6.2): a pre-loaded tool at half
-/// opacity delivers what half the glob delivers — the same statement as the
-/// glaze's, for the other source the brush brings.
+/// The ceiling holds on the loop as it holds on the fast path: a loop-routed
+/// stroke worrying one spot five times lands where the fast path's single
+/// clean pass lands — the budget lanes saturate the mint at the dial, across
+/// segments and across the stroke's own crossings (§6.2).
+#[test]
+fn scrubbing_the_loop_cannot_pass_the_dial() {
+    let mut whisper = washed(0.5, 20.0);
+    whisper.paint_mut().expect("a paint brush").dynamics.deposit = 0.01;
+
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let scrub: Vec<Vec2> = (0..5)
+        .map(|i| {
+            let x = if i % 2 == 0 { -80.0 } else { 80.0 };
+            Vec2::new(x, i as f32 * 0.25)
+        })
+        .collect();
+    stroke_with(&mut engine, whisper, &scrub);
+    let scrubbed = engine.render_to_image();
+
+    let mut once = engine_or_skip().expect("the adapter answered once already");
+    stroke_with(
+        &mut once,
+        washed(0.5, 20.0),
+        &[Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)],
+    );
+    let once = once.render_to_image();
+
+    let (s, o) = (texel(&scrubbed, Vec2::ZERO), texel(&once, Vec2::ZERO));
+    assert!(
+        apart(s, o) <= 2,
+        "the loop's scrubbed stroke {s:?} must land where the fast path's one \
+         pass lands {o:?}"
+    );
+}
+
+/// The `charge` glob is minted paint too (§6.2), and a finite source scaled at
+/// the mint is its own ceiling: a pre-loaded tool at half opacity delivers what
+/// half the glob delivers, everything it can ever deliver being the scaled glob.
 #[test]
 fn a_charged_glob_at_half_opacity_is_the_half_charge_glob() {
     let glob = |charge: f32, opacity: f32| {

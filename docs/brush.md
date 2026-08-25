@@ -1011,15 +1011,31 @@ scratch pair per touched tile for the stroke's lifetime and the scratch ring's
 overlap — which is why the branch is on the brush, and the full-opacity path
 never pays it.
 
-**On the stamp loop the ceiling cannot be exact, and does not pretend to be.**
-A wet brush moves paint, moved paint moves whole (§6.1), and once fresh paint
-is smeared into the picture there is no "this stroke's share" left for a
-ceiling to scale. There the dial scales what the brush **mints** — the `add`
-rate (`plan.rs`) and the `charge` glob — which agrees with the swept ceiling to
-first order in the amount laid and exactly at 1: a glaze at `flow f, opacity o`
-is the glaze at `flow o·f`. The two paths diverge only where a scrubbed
-dynamics brush approaches saturation, and the divergence is the honest one: the
-conserved path has no coverage cap to enforce.
+**The stamp loop mints the prefix differences of the same law**, because the
+fast path must be an optimization and never a semantics: nudge `deposit` off
+zero and the same brush must lay the same paint, opacity included. The loop has
+no finished parcel to scale — fresh paint lands per segment and is smeared into
+the picture as it goes — so instead the region aux's spare `.yz` lanes carry
+the running **raw totals** of the *attempted* mint — the exposure's worth of
+source, which is what stays independent of how the path is cut where the net
+share does not — and each segment mints `M(F+ΔF) − M(F)` of the capped law
+above, scaled by its own in-flight survival against the lift
+(`dynamics.wesl::lay_parcel`). The differences telescope, so the per-texel
+total is exactly the swept integrate's scaled parcel — mass *and* height,
+drain variation included — and the two renderers agree texel for texel
+wherever both can run the brush (`tests/opacity.rs`,
+`a_whisper_of_deposit_does_not_change_the_paint`). The totals ride the
+stroke's carry per touched tile (`LoopCarry::fresh`, cut from and seeded into
+the region by the write-back's own copies), so a live stroke's pieces spend
+one budget; at opacity 1 the law is the identity to the bit, the lanes are
+never read, and nothing is carried or copied.
+
+What the ceiling deliberately does not touch is **moved paint**: the lift, the
+tool's deposit of carried paint, the bleed and the settle conserve height
+(§6.1) — a cap on them would destroy paint — and fresh paint smeared away does
+not refund the local budget. The `charge` glob needs no budget lane: a finite
+source scaled at the mint *is* its own ceiling, everything it can ever deliver
+being the scaled glob (`run.rs`'s reservoir init).
 
 **Not built, and deliberately:** an `opacity` target in `PaintModulations`, for
 `EraseModulations`' reason exactly — a modulated ceiling cannot ride the
