@@ -1,5 +1,9 @@
 //! Shared test harness: headless engine setup and golden-image comparison
 //! (§9). Included by integration tests via `mod common;`.
+//!
+//! One of the two files in the workspace still named `mod.rs`: Cargo would take a
+//! `tests/common.rs` for an integration test of its own, so the harness has to hide
+//! in a directory. `examples/common` is the same case.
 
 #![expect(dead_code, reason = "not every test binary uses every helper")]
 
