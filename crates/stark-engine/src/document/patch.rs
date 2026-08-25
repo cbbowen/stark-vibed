@@ -24,7 +24,7 @@ use stark_model::SubstrateId;
 use stark_model::document::Filter;
 use stark_model::document::{Action, ActorId};
 use stark_model::document::{BlendMode, LayerId, MatteRegion};
-use stark_model::document::{Prop, Resource, footprint};
+use stark_model::document::{Footprint, Prop, Resource};
 use stark_model::geom::{TileCoord, TileRect};
 
 /// One restorable write. Each variant covers exactly one [`footprint
@@ -129,8 +129,13 @@ impl PatchOp {
 /// exactly when every action applied between the two commutes with `action`
 /// (the `Action::inverse` contract, which the history's commutation gate
 /// upholds).
-pub fn unapply(action: &Action, previous: &DocState, state: &DocState) -> DocState {
-    StatePatch::capture(action, previous, state).restore(state)
+pub fn unapply(
+    action: &Action,
+    footprint: &Footprint,
+    previous: &DocState,
+    state: &DocState,
+) -> DocState {
+    StatePatch::capture(action, footprint, previous, state).restore(state)
 }
 
 /// The written resources of one action, with the values they held in a chosen
@@ -153,7 +158,12 @@ impl StatePatch {
     ///
     /// `Undo` falls out rather than needing an arm: it is never materialized, which
     /// is why its footprint is empty, so it captures nothing.
-    fn capture(action: &Action, to: &DocState, from: &DocState) -> StatePatch {
+    fn capture(
+        action: &Action,
+        footprint: &Footprint,
+        to: &DocState,
+        from: &DocState,
+    ) -> StatePatch {
         let mut ops = Vec::new();
         // **Existence first**, whatever order a footprint happens to list its writes
         // in. A layer has to be back in the tree before anything can put its tiles,
@@ -162,8 +172,14 @@ impl StatePatch {
         // names but the state has lost. Partitioning here rather than relying on the
         // footprints being written that way is what keeps that from being a rule
         // `footprint.rs` has to remember.
-        let writes = footprint(action).writes;
-        let (existence, rest): (Vec<&Resource>, Vec<&Resource>) = writes
+        // The **cached** write list the `Logged` carries, handed down through
+        // `Materialize::unfold`. Derived here instead, it was a fresh derivation per
+        // `inverse` — once per cached state per shift, and for a `TransformWarp` a
+        // whole fine-lattice solve — which is the cost `Logged` holds a footprint to
+        // avoid. `action` stays because the arms below read what it *is*.
+        let _ = action;
+        let (existence, rest): (Vec<&Resource>, Vec<&Resource>) = footprint
+            .writes
             .iter()
             .partition(|r| matches!(r, Resource::Existence(_)));
         for resource in existence.into_iter().chain(rest) {
@@ -356,6 +372,18 @@ fn tile_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stark_model::document::compute_footprint;
+
+    /// [`unapply`] with the footprint its caller would have carried.
+    ///
+    /// Production hands the cached one down from the `Logged` (`Materialize::unfold`);
+    /// a test builds a bare `Action`, so this is where it is derived. One helper so
+    /// the derivation is not written out at every call — and so a test cannot
+    /// accidentally hand `unapply` a footprint that is not this action's, which is
+    /// the one way the new parameter could be got wrong.
+    fn undo(action: &Action, before: &DocState, after: &DocState) -> DocState {
+        unapply(action, &compute_footprint(action), before, after)
+    }
     use stark_model::SubstrateId;
     use stark_model::document::Place;
     use stark_model::document::{ActionId, ActionKind};
@@ -481,7 +509,7 @@ mod tests {
                 "{prop:?} was a no-op, so its round trip would prove nothing",
             );
 
-            let back = unapply(&action, &before, &after);
+            let back = undo(&action, &before, &after);
             let restored = props(back.layer(target).expect("target survives the restore"));
             assert_eq!(restored, was, "{prop:?} did not come back");
         }
@@ -502,7 +530,7 @@ mod tests {
             .set_layer_opacity(B, 0.25)
             .set_layer_name(C, Some("sky".into()));
 
-        let back = unapply(&action, &before, &after);
+        let back = undo(&action, &before, &after);
         assert_eq!(
             back.layer(B).expect("B").composite.opacity,
             1.0,
@@ -521,7 +549,7 @@ mod tests {
     fn existence_round_trips_in_both_directions() {
         let before = flat();
         let added = before.insert_layer(LayerId(9), None, Some(A));
-        let back = unapply(
+        let back = undo(
             &act(ActionKind::AddLayer {
                 id: LayerId(9),
                 carrier: None,
@@ -536,7 +564,7 @@ mod tests {
         let grouped = flat().move_layer(C, Some(B), Place::Top);
         let removed = grouped.remove_layer(B);
         assert!(removed.layer(C).is_none(), "the subtree went with its base");
-        let back = unapply(&act(ActionKind::RemoveLayer(B)), &grouped, &removed);
+        let back = undo(&act(ActionKind::RemoveLayer(B)), &grouped, &removed);
         assert_eq!(
             shape(&back),
             shape(&grouped),
@@ -559,7 +587,7 @@ mod tests {
             .move_layer(C, Some(A), Place::Top)
             .set_layer_name(C, Some("sky".into()));
 
-        let back = unapply(&action, &before, &after);
+        let back = undo(&action, &before, &after);
         assert_eq!(shape(&back), shape(&before), "the move came back out");
         assert_eq!(
             back.layer_name(C),
@@ -574,7 +602,7 @@ mod tests {
     fn the_canvas_round_trips() {
         let before = flat().with_substrate_color(Srgb::new([0.5, 0.5, 0.5]));
         let after = before.with_substrate_color(Srgb::new([0.1, 0.2, 0.3]));
-        let back = unapply(
+        let back = undo(
             &act(ActionKind::SetSubstrateColor(Srgb::new([0.1, 0.2, 0.3]))),
             &before,
             &after,
@@ -582,7 +610,7 @@ mod tests {
         assert_eq!(back.substrate_color, before.substrate_color);
 
         let after = before.with_substrate(SubstrateId::Flat);
-        let back = unapply(
+        let back = undo(
             &act(ActionKind::SetSubstrate(SubstrateId::Flat)),
             &before,
             &after,
@@ -598,7 +626,7 @@ mod tests {
     fn an_undo_action_captures_nothing() {
         let before = flat();
         let after = before.set_layer_opacity(B, 0.25);
-        let back = unapply(
+        let back = undo(
             &act(ActionKind::Undo(ActionId {
                 lamport: 1,
                 actor: ActorId(1),

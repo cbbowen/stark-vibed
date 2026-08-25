@@ -19,7 +19,6 @@ type Entry = Logged<DocState>;
 
 use super::apply::ApplyCtx;
 use super::state::DocState;
-use stark_model::document::footprint;
 use stark_model::document::{Action, ActionId, ActionKind, ActorId, Logged};
 
 /// A versioned document: the source of the current [`DocState`] plus undo/redo.
@@ -748,10 +747,17 @@ impl ReplicatedTimeline {
         {
             // The history doesn't report which path it took, and pixels can't
             // show it (that's the point) — so re-derive it for the stats.
+            //
+            // Off the **cached** footprints each `Logged` carries, not
+            // `compute_footprint`. `Logged` derefs to `Action`, so the free function
+            // used to resolve here silently and re-do the whole derivation over the
+            // commuting suffix — for a counter. A `TransformWarp` in that run is a
+            // 57×57 fine-lattice solve apiece, which is the exact cost `Logged` was
+            // given a cache to stop paying (see its note).
             let commuting = {
                 let mut suffix = self.history.actions().skip(diverge);
-                let fp = footprint(suffix.next().expect("diverge < mat.len()"));
-                suffix.take_while(|a| !fp.conflicts(&footprint(a))).count()
+                let fp = suffix.next().expect("diverge < mat.len()").footprint();
+                suffix.take_while(|a| !fp.conflicts(a.footprint())).count()
             };
             let suffix = mat.len() - diverge - 1;
             if commuting == suffix {

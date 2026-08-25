@@ -295,7 +295,7 @@ pub fn stroke_rect(rec: &StrokeRecord) -> TileRect {
 /// [`Action`]'s `apply` touches. `Undo` has an empty footprint because it is
 /// never materialized — the timeline resolves it into the effectiveness of its
 /// target instead.
-pub fn footprint(action: &Action) -> Footprint {
+pub fn compute_footprint(action: &Action) -> Footprint {
     let actor = action.id.actor;
     match &action.kind {
         // The **substrate** is read alongside the author's mask, and it is the one
@@ -600,7 +600,7 @@ mod tests {
     }
 
     fn commutes(a: &Action, b: &Action) -> bool {
-        !footprint(a).conflicts(&footprint(b))
+        !compute_footprint(a).conflicts(&compute_footprint(b))
     }
 
     /// [`Prop::ALL`] is what [`Resource::Layer`] expands to, so a property missing
@@ -889,7 +889,7 @@ mod tests {
     #[test]
     fn an_unboundable_stroke_claims_the_layer_rather_than_the_origin() {
         let elsewhere = stroke(2, LayerId(0), Vec2::splat(9000.0), Vec2::splat(9100.0), 8.0);
-        let claims_all = |a: &Action| match &footprint(a).writes[..] {
+        let claims_all = |a: &Action| match &compute_footprint(a).writes[..] {
             [Resource::Paint(_, rect)] => *rect == TileRect::ALL,
             _ => false,
         };

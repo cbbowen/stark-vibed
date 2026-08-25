@@ -27,7 +27,7 @@
 use std::marker::PhantomData;
 
 use super::action::Action;
-use super::footprint::{Footprint, footprint};
+use super::footprint::{Footprint, compute_footprint};
 
 /// A state an action log can be folded into.
 ///
@@ -55,8 +55,15 @@ pub trait Materialize: Clone {
     /// The default clones the whole previous state, which is always correct. An
     /// implementor that can restore only the part its footprint names makes history
     /// surgery cheaper (§12.6) without changing what it means.
-    fn unfold(&mut self, action: &Action, previous: &Self) {
-        let _ = action;
+    ///
+    /// **`footprint` is handed in rather than derived**, and it is the one the
+    /// [`Logged`] already carries. An implementor that restores by write list is
+    /// asking exactly the question this type was given a cached answer to, and the
+    /// engine's did derive it again — once per `inverse`, which is once per cached
+    /// state per shift. Passing it makes the cache reach its second consumer and
+    /// takes away the call site's chance to be wrong (see [`Logged`]'s note).
+    fn unfold(&mut self, action: &Action, footprint: &Footprint, previous: &Self) {
+        let _ = (action, footprint);
         self.clone_from(previous);
     }
 }
@@ -109,7 +116,7 @@ impl<S: Materialize> Logged<S> {
         // raw one it could claim a box the run never writes — harmless — or, where
         // a clamp pulls a value *down*, disagree with the pass in the direction
         // §12.6 cannot survive.
-        let footprint = footprint(&action);
+        let footprint = compute_footprint(&action);
         Self {
             action,
             footprint,
@@ -156,7 +163,7 @@ impl<S: Materialize> history::Action for Logged<S> {
     }
 
     fn inverse(&self, previous_state: &S, state: &mut S) {
-        state.unfold(&self.action, previous_state);
+        state.unfold(&self.action, &self.footprint, previous_state);
     }
 }
 

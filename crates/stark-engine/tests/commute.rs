@@ -321,11 +321,7 @@ fn undo_of_a_substrate_does_not_splice_past_the_strokes_it_toothed() {
     let mut biting = common::brush(RED, 8.0);
     biting.tooth.give = 0.2;
     for y in [60.0f32, 100.0, 140.0, 180.0, 220.0] {
-        common::stroke_with(
-            &mut b,
-            biting.clone(),
-            &[Vec2::new(20.0, y), Vec2::new(230.0, y)],
-        );
+        common::stroke_with(&mut b, biting, &[Vec2::new(20.0, y), Vec2::new(230.0, y)]);
     }
     sync(&mut a, &mut b);
 

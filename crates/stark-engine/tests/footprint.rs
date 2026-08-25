@@ -9,7 +9,7 @@
 //! diverge quietly, and the first symptom is a painting that differs between two
 //! people who watched each other make it.
 //!
-//! Rust's exhaustiveness gets us the *presence* of an arm in `footprint()` for
+//! Rust's exhaustiveness gets us the *presence* of an arm in `compute_footprint()` for
 //! every `ActionKind`. Nothing checks *correspondence* — that the arm names what
 //! the matching arm of `apply` goes on to touch. `tests/commute.rs` covers five
 //! hand-written scenarios end-to-end; this covers every action kind
@@ -43,7 +43,7 @@ use stark_model::AssetId;
 use stark_model::document::{
     ActionId, ActionKind, ActorId, BlendMode, ColorAdjust, FillOp, Filter, LayerId, MattePaint,
     MatteRegion, PerspectiveGuide, PerspectiveMap, Place, Prop, Resource, SelectionMode,
-    SelectionOp, SelectionShape, TransformMap, WarpMap, footprint, rect_corners,
+    SelectionOp, SelectionShape, TransformMap, WarpMap, compute_footprint, rect_corners,
 };
 use stark_model::geom::{Affine2, IVec2, TileCoord, Vec2};
 use stark_model::{SubstrateId, SubstrateScale};
@@ -253,7 +253,7 @@ fn check(engine: &mut Engine, seen: &mut Seen, what: &str, before: &DocState) {
     if matches!(action.kind, ActionKind::Undo(_)) {
         return; // Resolved by the timeline, never applied — see the module note.
     }
-    let writes = footprint(action).writes;
+    let writes = compute_footprint(action).writes;
     let undeclared: Vec<Diff> = differences(before, &after)
         .into_iter()
         .filter(|d| !covered(d, &writes))
@@ -811,7 +811,7 @@ fn the_check_rejects_a_footprint_that_under_claims() {
         !diffs.is_empty(),
         "a stroke has to show up as a difference at all"
     );
-    let honest = footprint(&action).writes;
+    let honest = compute_footprint(&action).writes;
     assert!(
         diffs.iter().all(|d| covered(d, &honest)),
         "the real footprint covers the real stroke"

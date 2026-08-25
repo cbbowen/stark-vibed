@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::gpu::substrate::Substrate;
 use stark_model::document::ActorId;
-use stark_model::document::{Action, ActionKind, GuideId, Materialize};
+use stark_model::document::{Action, ActionKind, Footprint, GuideId, Materialize};
 
 use super::layer::{Layer, LayerContent};
 use super::state::DocState;
@@ -303,8 +303,8 @@ impl Materialize for DocState {
     /// values under its footprint, nothing more, so the edits of commuting actions
     /// applied after it survive. Tiles come back as the same shared handles
     /// (copy-on-write means identity is equality), so this re-renders nothing.
-    fn unfold(&mut self, action: &Action, previous: &DocState) {
-        *self = super::patch::unapply(action, previous, self);
+    fn unfold(&mut self, action: &Action, footprint: &Footprint, previous: &DocState) {
+        *self = super::patch::unapply(action, footprint, previous, self);
     }
 }
 

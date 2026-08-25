@@ -572,7 +572,7 @@ fn every_action_reaching_a_state_has_been_through_the_funnel() {
 /// not worth it — recorded here so the question is not re-opened from intuition.
 #[test]
 fn a_footprint_stays_small_enough_for_a_nested_scan() {
-    use stark_model::document::{Footprint, Resource, footprint};
+    use stark_model::document::{Footprint, Resource, compute_footprint};
 
     const MAX_READS: usize = 3;
     const MAX_WRITES: usize = 7;
@@ -582,7 +582,7 @@ fn a_footprint_stays_small_enough_for_a_nested_scan() {
 
     for kind in kinds(0.5) {
         let label = kind.label();
-        let f = footprint(&Action {
+        let f = compute_footprint(&Action {
             id: ActionId {
                 lamport: 1,
                 actor: ActorId::SOLO,
