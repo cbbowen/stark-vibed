@@ -84,16 +84,34 @@ pub fn cell_point(g: &[Vec2; 4], u: f32, v: f32) -> Vec2 {
 /// multiple of a difference of deltas, so all-zero deltas give exactly zero and
 /// `f == 0` gives exactly `d[k]` — no reconstitution arithmetic to drift.
 fn hermite_axis(d: &[Vec2], k: usize, f: f32) -> Vec2 {
-    let (v1, v2) = (d[k], d[k + 1]);
+    hermite_axis_by(d.len(), |i| d[i], k, f)
+}
+
+/// [`hermite_axis`] over a sequence given by `at` rather than by a slice — for the
+/// caller that would have to *build* the slice first.
+///
+/// **It reads at most four of the `len` entries**: `k − 1`, `k`, `k + 1`, `k + 2`,
+/// clamped at the ends. That is the whole reason this shape exists.
+/// [`Prepared::eval`] evaluates a row-hermite per control row and then interpolates
+/// across them, and materializing every row to hand over as a slice meant computing
+/// all `rows` of them — plus a `Vec` — for the four it goes on to read. In the
+/// frontend's mesh drag that runs per sample of the hand, which is what
+/// [`WarpMap::prepared`] exists to keep cheap.
+///
+/// Bit-identical to feeding it the full slice, which §16.4 requires: the entries it
+/// does read are computed the same way and combined in the same order, and the ones
+/// it skips were never part of the answer.
+fn hermite_axis_by(len: usize, at: impl Fn(usize) -> Vec2, k: usize, f: f32) -> Vec2 {
+    let (v1, v2) = (at(k), at(k + 1));
     let m1 = if k > 0 {
-        (d[k + 1] - d[k - 1]) * 0.5
+        (at(k + 1) - at(k - 1)) * 0.5
     } else {
-        d[1] - d[0]
+        at(1) - at(0)
     };
-    let m2 = if k + 2 < d.len() {
-        (d[k + 2] - d[k]) * 0.5
+    let m2 = if k + 2 < len {
+        (at(k + 2) - at(k)) * 0.5
     } else {
-        d[k + 1] - d[k]
+        at(k + 1) - at(k)
     };
     let f2 = f * f;
     let h01 = f2 * (3.0 - 2.0 * f);
@@ -421,10 +439,15 @@ impl Prepared<'_> {
         let (cols, rows) = (self.map.cols as usize, self.map.rows as usize);
         let (kx, fx) = WarpMap::locate(t.x, cols);
         let (ky, fy) = WarpMap::locate(t.y, rows);
-        let row_dev: Vec<Vec2> = (0..rows)
-            .map(|j| hermite_axis(&self.deltas[j * cols..(j + 1) * cols], kx, fx))
-            .collect();
-        let delta = hermite_axis(&row_dev, ky, fy);
+        // Row deviations on demand rather than collected: the outer hermite reads
+        // four of the `rows` of them, so building all of them into a `Vec` was the
+        // allocation `prepared` removed from this loop, put straight back.
+        let delta = hermite_axis_by(
+            rows,
+            |j| hermite_axis(&self.deltas[j * cols..(j + 1) * cols], kx, fx),
+            ky,
+            fy,
+        );
         let base = self.map.base(kx as u32, 0);
         let next_x = self.map.base(kx as u32 + 1, 0);
         let bx = lerp1(base.x, next_x.x, fx);
@@ -542,6 +565,50 @@ mod tests {
         for i in 0..=8 {
             let t = Vec2::splat(i as f32 / 8.0);
             assert_eq!(flat_prepared.eval(t), flat.eval(t));
+        }
+    }
+
+    /// **Evaluating the row deviations on demand is bit-for-bit materializing
+    /// them**, which is what lets [`Prepared::eval`] read four rows instead of
+    /// building all of them (see [`hermite_axis_by`]).
+    ///
+    /// The eager version is spelled out here because it no longer exists anywhere
+    /// else — the whole point of the change was to have one path — so this is the
+    /// only thing standing between a future edit and a silent difference. §16.4 is
+    /// stated bitwise, so `assert_eq` rather than a tolerance.
+    ///
+    /// Driven over a mesh whose deviations are all *different*: on the identity mesh
+    /// every row deviation is zero, and lazy and eager cannot be told apart.
+    #[test]
+    fn evaluating_rows_on_demand_matches_materializing_them() {
+        let (min, max) = rect();
+        let mut map = WarpMap::identity(min, max, 5, 4);
+        for (n, p) in map.points.iter_mut().enumerate() {
+            let n = n as f32;
+            *p += Vec2::new(n.sin() * 23.0, n.cos() * 17.0);
+        }
+        let prepared = map.prepared();
+        let (cols, rows) = (map.cols as usize, map.rows as usize);
+
+        for j in 0..=20 {
+            for i in 0..=20 {
+                let t = Vec2::new(i as f32 / 20.0, j as f32 / 20.0);
+                let (kx, fx) = WarpMap::locate(t.x, cols);
+                let (ky, fy) = WarpMap::locate(t.y, rows);
+                // What `eval` used to do: every row deviation, collected, then the
+                // outer hermite over the slice.
+                let deviations: Vec<Vec2> = (0..rows)
+                    .map(|r| hermite_axis(&prepared.deltas[r * cols..(r + 1) * cols], kx, fx))
+                    .collect();
+                let eager = hermite_axis(&deviations, ky, fy);
+                let lazy = hermite_axis_by(
+                    rows,
+                    |r| hermite_axis(&prepared.deltas[r * cols..(r + 1) * cols], kx, fx),
+                    ky,
+                    fy,
+                );
+                assert_eq!(lazy, eager, "at {t:?}");
+            }
         }
     }
 
