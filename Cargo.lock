@@ -6526,6 +6526,7 @@ dependencies = [
  "history",
  "serde",
  "stark-assetid",
+ "stark-testdata",
  "thiserror 2.0.20",
 ]
 
@@ -6578,6 +6579,7 @@ name = "stark-testdata"
 version = "0.0.0"
 dependencies = [
  "stark-assetid",
+ "stark-model",
 ]
 
 [[package]]

@@ -28,6 +28,13 @@ history = { workspace = true }
 # exists one level up: an id must be derivable without a GPU (§19).
 stark-assetid = { workspace = true }
 
+[dev-dependencies]
+# `vocabulary`: the exhaustive match over `ActionKind` that `tests/action_kinds.rs`
+# and stark-engine's `tests/footprint.rs` both drive. A dev-dependency that depends
+# back on this crate — which cargo allows, and which is what lets the two suites
+# share one roster without either crate seeing the other's tests.
+stark-testdata = { path = "../stark-testdata" }
+
 # The shared lint set (root Cargo.toml).
 [lints]
 workspace = true

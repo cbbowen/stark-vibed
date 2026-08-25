@@ -12,6 +12,12 @@
 //! and nothing else.
 //!
 //! Each stroke is a sequence of `[x, y]` canvas positions, exactly as reported.
+//!
+//! The same containment holds two other fixtures no one crate can own: [`assets`],
+//! the app's bundled images by path, and [`vocabulary`], the roster of every action
+//! kind the document has a word for.
+
+pub mod vocabulary;
 
 /// A stroke the fitter visibly misfits, captured 2026-07-26: 305 reports over
 /// 334px of arc, a median step of about 1px, so slow and dense rather than fast.

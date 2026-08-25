@@ -4,28 +4,22 @@
 //!
 //! # Why this is a file rather than a `mod tests`
 //!
-//! It is the model's first integration test, and the reason it is one is that the
-//! device it carries is not about any single item in the crate. [`slot`] is an
-//! exhaustive match over the document's whole vocabulary; it exists so that a
-//! variant added to [`ActionKind`] **stops this file compiling** until it is given a
-//! place here, three lines from the run that has to drive it.
+//! It is the model's first integration test, and the reason it is one is that what
+//! drives it is not about any single item in the crate. [`kinds`] is one of every
+//! action the document has a word for; it is held to being *every* one by
+//! `stark_testdata::vocabulary`, whose exhaustive match stops compiling when a
+//! variant appears and whose roster is this array's declared length.
 //!
-//! That device already existed — in `stark-engine/tests/footprint.rs`, where it
-//! guards a different question (did a *run* reach every kind?) and needs a GPU to
-//! ask it. Which meant the model's own suite could not check the model's own funnel:
-//! `action.rs`'s idempotence test claimed in its doc comment to be
+//! That device is shared with `stark-engine/tests/footprint.rs`, which asks a
+//! different question of the same vocabulary (did a *run* reach every kind?) and
+//! needs a GPU to ask it — which is why the model's funnel cannot simply be checked
+//! beside it. It was written out twice, once per crate, and the two copies drifted
+//! the first time a variant landed: `stark_testdata::vocabulary`'s own note has
+//! what escaped and how. One roster now, in the crate both suites already depend on.
 //!
-//! > Driven off the same one-of-each list the footprint's exhaustiveness device uses
-//!
-//! and was a hand-written array of 24 of the 31, missing both rect-scoped transforms
-//! and all five guide kinds — which are exactly the ones whose payloads the funnel
-//! does transform. The claim was the reason nobody noticed. So the list is real now,
-//! it is here, and [`the_list_holds_one_of_every_kind`] pins it to the match.
-//!
-//! The engine keeps its own `slot` for its own question. Two exhaustive matches in
-//! two crates is not duplication to remove: each fails to compile when a variant
-//! appears, which is the entire point of both, and neither crate can see the other's
-//! test.
+//! What is still local is the list itself, and deliberately: an action's payload is
+//! the model's vocabulary spelled out, and the run that drives it is three lines
+//! below. [`the_list_holds_one_of_every_kind`] pins the two together.
 
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, BlendMode, BrushEffect, BrushParams, FillOp, Filter,
@@ -37,56 +31,7 @@ use stark_model::geom::{Affine2, IVec2, Vec2};
 use stark_model::gradient::{Gradient, GradientStop};
 use stark_model::path::ControlPoint;
 use stark_model::{AssetId, Srgb, SubstrateId, SubstrateScale};
-
-// ---------------------------------------------------------------------------
-// The vocabulary
-
-/// The slot of every action kind, in the order [`ActionKind`] declares them.
-///
-/// **Exhaustive, with no `_` arm, and that is the whole point of it.** A wildcard
-/// would give every future variant a slot it never asked for, and the run below
-/// would pass having never sanitized it — which is how the last two rounds of
-/// variants escaped the funnel's own test.
-fn slot(kind: &ActionKind) -> usize {
-    match kind {
-        ActionKind::CommitStroke(_) => 0,
-        ActionKind::AddLayer { .. } => 1,
-        ActionKind::RemoveLayer(_) => 2,
-        ActionKind::SetLayerBlend(..) => 3,
-        ActionKind::SetLayerOpacity(..) => 4,
-        ActionKind::SetLayerVisible(..) => 5,
-        ActionKind::MoveLayer { .. } => 6,
-        ActionKind::Undo(_) => 7,
-        ActionKind::SetSubstrate(_) => 8,
-        ActionKind::SetSubstrateScale(_) => 9,
-        ActionKind::Select(_) => 10,
-        ActionKind::InvertSelection => 11,
-        ActionKind::AddMatte { .. } => 12,
-        ActionKind::SetMatteRect(..) => 13,
-        ActionKind::SetMattePaint(..) => 14,
-        ActionKind::SetSubstrateColor(_) => 15,
-        ActionKind::Transform { .. } => 16,
-        ActionKind::SetLayerName(..) => 17,
-        ActionKind::Fill { .. } => 18,
-        ActionKind::SetLayerClip(..) => 19,
-        ActionKind::TransformPerspective { .. } => 20,
-        ActionKind::TransformWarp { .. } => 21,
-        ActionKind::DuplicateLayer { .. } => 22,
-        ActionKind::AddFilter { .. } => 23,
-        ActionKind::SetFilter(..) => 24,
-        ActionKind::MergeLayerDown { .. } => 25,
-        ActionKind::PlaceImage { .. } => 26,
-        ActionKind::AddGuide { .. } => 27,
-        ActionKind::SetGuide(..) => 28,
-        ActionKind::SetGuideName(..) => 29,
-        ActionKind::MoveGuide { .. } => 30,
-        ActionKind::RemoveGuide(_) => 31,
-        ActionKind::SetSelectionOpacity(_) => 32,
-    }
-}
-
-/// How many kinds there are — [`slot`]'s range, bumped with its last arm.
-const KINDS: usize = 32;
+use stark_testdata::vocabulary::{KINDS, LABELS, slot};
 
 // ---------------------------------------------------------------------------
 // One of each
@@ -193,6 +138,10 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             n,
         )),
         ActionKind::InvertSelection,
+        // The mask's own dial (§6.8), which carries no shape and rasterizes nothing,
+        // so `n` is the whole of what it holds — and the funnel is the only thing
+        // between a poisoned one and the ceiling every stroke is then capped at.
+        ActionKind::SetSelectionOpacity(n),
         // A **usable** region with poisoned paint: the region is gated at `apply`
         // rather than sanitized, and is checked as such by
         // `gated_geometry_is_refused_rather_than_repaired`. What this list asks of
@@ -270,13 +219,13 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             after: None,
             name: Some("two-point".into()),
         },
+        ActionKind::RemoveGuide(guide),
         ActionKind::SetGuide(guide, poisoned_guide(n)),
         ActionKind::SetGuideName(guide, None),
         ActionKind::MoveGuide {
             id: guide,
             after: None,
         },
-        ActionKind::RemoveGuide(guide),
     ]
 }
 
@@ -327,12 +276,26 @@ fn gated_at_apply(kind: &ActionKind) -> bool {
 // ---------------------------------------------------------------------------
 // The tests
 
-/// [`kinds`] is one of *every* kind, in [`slot`]'s order — which is what makes the
+/// [`kinds`] is one of *every* kind, in the roster's order — which is what makes the
 /// two runs below exhaustive rather than merely long.
+///
+/// The array is `[ActionKind; KINDS]`, so its *length* is already the roster's by the
+/// type. What is left to say is that it holds each kind **once**, in place, which is
+/// what a per-position `slot` says: a list of the right length with one kind twice is
+/// a list missing another.
+///
+/// It also pins the roster's captions to `ActionKind::label`'s own, so a failure in
+/// either suite names what the app names, and there is no second set of names to keep
+/// in step.
 #[test]
 fn the_list_holds_one_of_every_kind() {
     for (i, kind) in kinds(0.5).iter().enumerate() {
-        assert_eq!(slot(kind), i, "slot {i} holds a {} instead", kind.label(),);
+        assert_eq!(slot(kind), i, "slot {i} holds a {} instead", kind.label());
+        assert_eq!(
+            LABELS[i],
+            kind.label(),
+            "the roster calls slot {i} something else"
+        );
     }
 }
 

@@ -16,6 +16,13 @@
 //! structurally, by diffing the document across each commit and insisting every
 //! difference lands inside a resource the action declared.
 //!
+//! That it covers *every* kind is `stark_testdata::vocabulary`'s claim rather than
+//! this file's: the run collects what it reached by slot and insists at the end on
+//! the whole roster, and the roster is held complete by an exhaustive match no new
+//! variant can compile past. That match was written out here as well as in the
+//! model's own suite until the day both copies missed the same variant — see its
+//! note for what that cost.
+//!
 //! Two things are deliberately out of scope. `ActionKind::Undo` is resolved by
 //! the timeline and never materialized through `apply` (which is *why* its
 //! footprint is empty), so a state change around one is a re-materialization
@@ -40,6 +47,7 @@ use stark_model::document::{
 };
 use stark_model::geom::{Affine2, IVec2, TileCoord, Vec2};
 use stark_model::{SubstrateId, SubstrateScale};
+use stark_testdata::vocabulary::{KINDS, LABELS, slot};
 
 // ---------------------------------------------------------------------------
 // The state diff
@@ -207,99 +215,7 @@ fn covered(diff: &Diff, writes: &[Resource]) -> bool {
 // ---------------------------------------------------------------------------
 // The driver
 
-/// The slot of every action kind, in the order `ActionKind` declares them —
-/// which is also the order they are declared in (§8), so a slot is a fact
-/// about the wire form rather than a number invented here.
-///
-/// **Exhaustive, with no `_` arm, and that is the whole point of it.** What this
-/// replaces was a hand-written list of captions the run had to reach, which could
-/// not fail when a *new* kind appeared: an action added to the enum silenced its
-/// own coverage rather than failing, which is exactly how `MergeLayerDown`,
-/// `AddFilter` and `SetFilter` came to be unchecked here. Adding a variant now
-/// stops this file compiling, at this match, three lines from the run that has to
-/// drive it — the device `Modulations::all`'s `..`-free destructure already uses
-/// for a struct's fields.
-fn slot(kind: &ActionKind) -> usize {
-    match kind {
-        ActionKind::CommitStroke(_) => 0,
-        ActionKind::AddLayer { .. } => 1,
-        ActionKind::RemoveLayer(_) => 2,
-        ActionKind::SetLayerBlend(..) => 3,
-        ActionKind::SetLayerOpacity(..) => 4,
-        ActionKind::SetLayerVisible(..) => 5,
-        ActionKind::MoveLayer { .. } => 6,
-        ActionKind::Undo(_) => 7,
-        ActionKind::SetSubstrate(_) => 8,
-        ActionKind::SetSubstrateScale(_) => 9,
-        ActionKind::Select(_) => 10,
-        ActionKind::InvertSelection => 11,
-        ActionKind::AddMatte { .. } => 12,
-        ActionKind::SetMatteRect(..) => 13,
-        ActionKind::SetMattePaint(..) => 14,
-        ActionKind::SetSubstrateColor(_) => 15,
-        ActionKind::Transform { .. } => 16,
-        ActionKind::SetLayerName(..) => 17,
-        ActionKind::Fill { .. } => 18,
-        ActionKind::SetLayerClip(..) => 19,
-        ActionKind::TransformPerspective { .. } => 20,
-        ActionKind::TransformWarp { .. } => 21,
-        ActionKind::DuplicateLayer { .. } => 22,
-        ActionKind::AddFilter { .. } => 23,
-        ActionKind::SetFilter(..) => 24,
-        ActionKind::MergeLayerDown { .. } => 25,
-        ActionKind::PlaceImage { .. } => 26,
-        ActionKind::AddGuide { .. } => 27,
-        ActionKind::SetGuide(..) => 28,
-        ActionKind::SetGuideName(..) => 29,
-        ActionKind::MoveGuide { .. } => 30,
-        ActionKind::RemoveGuide(_) => 31,
-        ActionKind::SetSelectionOpacity(_) => 32,
-    }
-}
-
-/// How many kinds there are — `slot`'s range, bumped with its last arm. [`NAMES`]
-/// is indexed by slot and its length is held to this by the type, so a slot added
-/// without a name is a compile error rather than a worse failure message.
-const KINDS: usize = 32;
-
-/// What to call each slot when the run has missed one. `ActionKind::label`'s own
-/// captions, which is what a reader of the failure will go looking for.
-const NAMES: [&str; KINDS] = [
-    "Stroke",
-    "Add layer",
-    "Remove layer",
-    "Blend mode",
-    "Layer opacity",
-    "Layer visibility",
-    "Reorder layer",
-    "Undo",
-    "Canvas substrate",
-    "Substrate scale",
-    "Select",
-    "Invert selection",
-    "Add matte",
-    "Move frame",
-    "Matte paint",
-    "Canvas color",
-    "Transform",
-    "Rename layer",
-    "Fill",
-    "Clip layer",
-    "Perspective",
-    "Warp",
-    "Duplicate layer",
-    "Add filter",
-    "Filter",
-    "Merge down",
-    "Place image",
-    "Add guide",
-    "Perspective guide",
-    "Rename guide",
-    "Reorder guide",
-    "Remove guide",
-];
-
-/// The action kinds a run actually reached, by [`slot`].
+/// The action kinds a run actually reached, by their place in the roster.
 ///
 /// Collected because a step that logs nothing passes the check trivially, so
 /// without this the whole test could rot into vacuity — a command quietly
@@ -618,6 +534,12 @@ fn every_action_touches_only_what_it_declares() {
     step(
         &mut engine,
         seen,
+        "dim the selection",
+        DocCommand::SetSelectionOpacity(0.5),
+    );
+    step(
+        &mut engine,
+        seen,
         "select again",
         DocCommand::Select(SelectionOp::new(
             SelectionMode::Replace,
@@ -854,7 +776,7 @@ fn every_action_touches_only_what_it_declares() {
     }));
     let missed: Vec<&str> = (0..KINDS)
         .filter(|s| *s != exempt && !seen.contains(s))
-        .map(|s| NAMES[s])
+        .map(|s| LABELS[s])
         .collect();
     assert!(
         missed.is_empty(),
