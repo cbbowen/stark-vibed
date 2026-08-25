@@ -772,49 +772,121 @@ impl ActionKind {
         }
     }
 
-    /// What this action *is*, in two or three words — the caption a history
-    /// scrubber puts on the step it is about to cross (§18.2.4).
+    /// What this action *is*, in two or three words — see [`ActionTag::label`].
     ///
-    /// A `&'static str` and nothing more: a timeline showing a hundred steps needs
-    /// them by the hundred, and the point of the caption is to tell a stroke from a
-    /// layer change at a glance, not to describe either. Anything richer — which
-    /// layer, what color — is what the canvas beside it is for.
+    /// Delegated rather than matched again: the caption belongs to the *kind* and not
+    /// to any payload, so it lives on the roster with the rest of what a kind is.
     pub fn label(&self) -> &'static str {
-        match self {
-            ActionKind::CommitStroke(_) => "Stroke",
-            ActionKind::Fill { .. } => "Fill",
-            ActionKind::Transform { .. } => "Transform",
-            ActionKind::TransformPerspective { .. } => "Perspective",
-            ActionKind::TransformWarp { .. } => "Warp",
-            ActionKind::Select(_) => "Select",
-            ActionKind::InvertSelection => "Invert selection",
-            ActionKind::SetSelectionOpacity(_) => "Selection opacity",
-            ActionKind::AddLayer { .. } => "Add layer",
-            ActionKind::DuplicateLayer { .. } => "Duplicate layer",
-            ActionKind::RemoveLayer(_) => "Remove layer",
-            ActionKind::MergeLayerDown { .. } => "Merge down",
-            ActionKind::MoveLayer { .. } => "Reorder layer",
-            ActionKind::SetLayerBlend(..) => "Blend mode",
-            ActionKind::SetLayerClip(..) => "Clip layer",
-            ActionKind::SetLayerOpacity(..) => "Layer opacity",
-            ActionKind::SetLayerVisible(..) => "Layer visibility",
-            ActionKind::SetLayerName(..) => "Rename layer",
-            ActionKind::AddMatte { .. } => "Add matte",
-            ActionKind::PlaceImage { .. } => "Place image",
-            ActionKind::AddFilter { .. } => "Add filter",
-            ActionKind::SetFilter(..) => "Filter",
-            ActionKind::SetMatteRect(..) => "Move frame",
-            ActionKind::SetMattePaint(..) => "Matte paint",
-            ActionKind::SetSubstrateColor(_) => "Canvas color",
-            ActionKind::SetSubstrate(_) => "Canvas substrate",
-            ActionKind::SetSubstrateScale(_) => "Substrate scale",
-            ActionKind::AddGuide { .. } => "Add guide",
-            ActionKind::RemoveGuide(_) => "Remove guide",
-            ActionKind::SetGuide(..) => "Perspective guide",
-            ActionKind::SetGuideName(..) => "Rename guide",
-            ActionKind::MoveGuide { .. } => "Reorder guide",
-            ActionKind::Undo(_) => "Undo",
+        self.tag().label()
+    }
+}
+
+/// The document's vocabulary **as a roster**: one tag per [`ActionKind`], with no
+/// payload — what an action *is*, apart from what it says.
+///
+/// # Why this exists
+///
+/// `ActionKind` is matched exhaustively in a handful of places, and that is working
+/// as intended: a new variant does not compile until it says what it mints (§17.9),
+/// what it clamps (§21.5), what it reads and writes (§12.6) and what content it
+/// names (§23). Those are four different questions and they deserve four answers.
+///
+/// What did *not* deserve four answers was the roster itself. The enum's list of
+/// members was written out four times — `label`'s match here, and `LABELS`, `KINDS`
+/// and `slot` in `stark-testdata::vocabulary`, across a crate boundary — and only
+/// one of the four was compiler-checked. `vocabulary`'s own header records what that
+/// cost: `SetSelectionOpacity` got the arm the compiler demanded in each `slot` and
+/// was left out of every list those arms index, in two crates at once, and both
+/// suites went on passing having never driven it.
+///
+/// So the roster is **one list**, below, and everything else is derived from it: the
+/// enum, [`ALL`](Self::ALL), and [`label`](Self::label) all come out of the same
+/// macro invocation, and [`ActionKind::tag`] is the one exhaustive match that binds
+/// a variant to its tag. A new kind now fails to compile in exactly one place it did
+/// not before, and cannot be missing from a list at all, because there is no second
+/// list to be missing from.
+macro_rules! roster {
+    ($($variant:ident => $label:literal,)*) => {
+        #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub enum ActionTag { $($variant,)* }
+
+        impl ActionTag {
+            /// Every tag there is, in [`ActionKind`]'s declared order.
+            ///
+            /// Nothing rests on the order — a tag is identified by name, and the
+            /// indices are private to whoever iterates — but a roster wants *an*
+            /// order, and the enum's is the one already written down.
+            pub const ALL: &'static [ActionTag] = &[$(ActionTag::$variant,)*];
+
+            /// What this kind of action is, in two or three words — the caption a
+            /// history scrubber puts on the step it is about to cross (§18.2.4).
+            ///
+            /// A `&'static str` and nothing more: a timeline showing a hundred steps
+            /// needs them by the hundred, and the point is to tell a stroke from a
+            /// layer change at a glance, not to describe either. Anything richer —
+            /// which layer, what color — is what the canvas beside it is for.
+            pub fn label(self) -> &'static str {
+                match self { $(ActionTag::$variant => $label,)* }
+            }
         }
+
+        impl ActionKind {
+            /// Which kind of action this is, without its payload.
+            ///
+            /// **Exhaustive, with no `_` arm** — the one place a new variant has to
+            /// name itself, and the reason the roster above can be trusted to be
+            /// complete.
+            pub fn tag(&self) -> ActionTag {
+                match self { $(ActionKind::$variant { .. } => ActionTag::$variant,)* }
+            }
+        }
+    };
+}
+
+roster! {
+    CommitStroke => "Stroke",
+    AddLayer => "Add layer",
+    RemoveLayer => "Remove layer",
+    SetLayerBlend => "Blend mode",
+    SetLayerOpacity => "Layer opacity",
+    SetLayerVisible => "Layer visibility",
+    MoveLayer => "Reorder layer",
+    Undo => "Undo",
+    SetSubstrate => "Canvas substrate",
+    SetSubstrateScale => "Substrate scale",
+    Select => "Select",
+    InvertSelection => "Invert selection",
+    SetSelectionOpacity => "Selection opacity",
+    AddMatte => "Add matte",
+    SetMatteRect => "Move frame",
+    SetMattePaint => "Matte paint",
+    SetSubstrateColor => "Canvas color",
+    Transform => "Transform",
+    SetLayerName => "Rename layer",
+    Fill => "Fill",
+    SetLayerClip => "Clip layer",
+    TransformPerspective => "Perspective",
+    TransformWarp => "Warp",
+    DuplicateLayer => "Duplicate layer",
+    AddFilter => "Add filter",
+    SetFilter => "Filter",
+    MergeLayerDown => "Merge down",
+    PlaceImage => "Place image",
+    AddGuide => "Add guide",
+    RemoveGuide => "Remove guide",
+    SetGuide => "Perspective guide",
+    SetGuideName => "Rename guide",
+    MoveGuide => "Reorder guide",
+}
+
+impl ActionTag {
+    /// Where this tag sits in [`ALL`](Self::ALL) — a stable index for a suite that
+    /// wants the vocabulary as an array.
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|t| *t == self)
+            .expect("every tag is in ALL, which the macro builds from one list")
     }
 }
 

@@ -31,7 +31,7 @@ use stark_model::geom::{Affine2, IVec2, Vec2};
 use stark_model::gradient::{Gradient, GradientStop};
 use stark_model::path::ControlPoint;
 use stark_model::{AssetId, Srgb, SubstrateId, SubstrateScale};
-use stark_testdata::vocabulary::{KINDS, LABELS, slot};
+use stark_testdata::vocabulary::{KINDS, labels, slot};
 
 // ---------------------------------------------------------------------------
 // One of each
@@ -289,10 +289,11 @@ fn gated_at_apply(kind: &ActionKind) -> bool {
 /// in step.
 #[test]
 fn the_list_holds_one_of_every_kind() {
+    let names = labels();
     for (i, kind) in kinds(0.5).iter().enumerate() {
         assert_eq!(slot(kind), i, "slot {i} holds a {} instead", kind.label());
         assert_eq!(
-            LABELS[i],
+            names[i],
             kind.label(),
             "the roster calls slot {i} something else"
         );

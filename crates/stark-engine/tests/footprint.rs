@@ -51,7 +51,7 @@ use stark_model::document::{
 };
 use stark_model::geom::{Affine2, IVec2, TileCoord, Vec2};
 use stark_model::{SubstrateId, SubstrateScale};
-use stark_testdata::vocabulary::{KINDS, LABELS, slot};
+use stark_testdata::vocabulary::{KINDS, labels, slot};
 
 // ---------------------------------------------------------------------------
 // The state diff
@@ -780,7 +780,7 @@ fn every_action_touches_only_what_it_declares() {
     }));
     let missed: Vec<&str> = (0..KINDS)
         .filter(|s| *s != exempt && !seen.contains(s))
-        .map(|s| LABELS[s])
+        .map(|s| labels()[s])
         .collect();
     assert!(
         missed.is_empty(),
