@@ -153,7 +153,7 @@ fn jitter_is_deterministic_and_effective() {
 }
 
 /// Save → load replays the jittered stroke bit-for-bit (the dynamics live in the
-/// historized `BrushParams`; the lookup offset derives from the recorded seed).
+/// historized `BrushParams`; the field is baked from the recorded seed).
 /// Drawn as a replay on the saving side, so both pictures are whole renders and the
 /// claim is about the file alone.
 #[test]
@@ -240,5 +240,36 @@ fn jittered_live_preview_matches_commit() {
         images_match(&il, &ir, SEAM_LEVELS),
         "live jitter != committed jitter: worst {} levels",
         diff_fraction(&il, &ir).1
+    );
+}
+
+/// Each stroke's field is its own: the same gesture with the same brush lays two
+/// patterns under two seeds, and one pattern under one — replayed with explicit
+/// seeds, since a live stroke draws the clock's. A tile shared by every stroke
+/// would make a picture's mosaics the same thirty-six facets over and over
+/// (`noise.rs`).
+#[test]
+fn each_stroke_lays_its_own_field() {
+    let (Some(mut a), Some(mut b), Some(mut again)) =
+        (engine_or_skip(), engine_or_skip(), engine_or_skip())
+    else {
+        return;
+    };
+    let jb = jitter_brush(NoiseKind::Mosaic, [2.0, 1.0], [0.18, 0.14, 0.14]);
+    let samples: Vec<InputSample> = S_CURVE.iter().copied().map(InputSample::at).collect();
+    for (engine, seed) in [(&mut a, 1u64), (&mut b, 2), (&mut again, 1)] {
+        engine.process(ViewCommand::set_brush(jb));
+        engine.replay_stroke_seeded(Tool::Brush, &samples, seed, 0.0);
+    }
+
+    let (ia, ib, ic) = (
+        a.render_to_image(),
+        b.render_to_image(),
+        again.render_to_image(),
+    );
+    assert!(images_match(&ia, &ic, 0), "one seed laid two patterns");
+    assert!(
+        frac_exceeding(&ia, &ib, 10) > 0.01,
+        "two seeds laid one pattern"
     );
 }

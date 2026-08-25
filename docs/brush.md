@@ -1146,10 +1146,14 @@ holding a separate matrix against the sliders.
 The applied color can vary **across the brush and along the stroke**:
 `BrushParams.color_dynamics` (historized — it changes stored pixels) holds a
 noise kind plus two per-axis **frequency** and three per-channel **amplitude**
-factors. A 3-channel, exactly **tileable 2-D noise tile** is baked **once on the
-CPU with fixed constants** (`noise.rs`, `Rgba8Snorm` 64², or 256² for `Mosaic`;
-only correctly-rounded ops, no transcendentals ⇒ bit-reproducible across
-platforms) and sampled with a repeat sampler. The kinds:
+factors. A 3-channel, exactly **tileable 2-D noise tile** is baked **on the CPU,
+per stroke from the stroke's `seed`** (`noise.rs`, `Rgba8Snorm` 64², or 256² for
+`Mosaic`; only correctly-rounded ops, no transcendentals ⇒ bit-reproducible
+across platforms) and sampled with a repeat sampler. Per stroke because a tile
+is *one* field — the same `P²` clouds or facets — and strokes sharing one would
+lay the same polygons and drifts, shifted, however each translated its lookup;
+the bake is paid at pen-down, and the cellular kinds tabulate their sites once
+per bake to keep it there. The kinds:
 
 - `White` — per-texel hash.
 - `Simplex` — a periodic simplex lattice: gradients hashed from
@@ -1169,11 +1173,11 @@ platforms) and sampled with a repeat sampler. The kinds:
   owner could hide, and its tile is 256² because its walls are steps and so are
   only as sharp as the tile is fine.
 
-The lookup domain is **stroke-local**: `(lateral·f₀, arc·f₁)/NOISE_TILE_PX` plus
-a per-stroke translation derived from the stroke `seed`, where `lateral` is the
-signed offset from the centreline and `arc` the length along it, both in canvas
-px (brush-local y is in radius units, so it is scaled by the radius — the pattern
-keeps one scale whatever size the tip is). One axis varies color across the
+The lookup domain is **stroke-local**: `(lateral·f₀, arc·f₁)/NOISE_TILE_PX`,
+where `lateral` is the signed offset from the centreline and `arc` the length
+along it, both in canvas px (brush-local y is in radius units, so it is scaled
+by the radius — the pattern keeps one scale whatever size the tip is). One axis
+varies color across the
 extent, the other evolves it along the stroke. Anchoring to the stroke rather
 than the canvas makes the variation belong to the *gesture*, and costs nothing in
 determinism: both coordinates are still functions of the fragment's canvas
@@ -1219,9 +1223,10 @@ tool's dispatch is untouched and conservation holds in expectation over the
 extent. The bleed pair is never gated, for the tooth's own antisymmetry reason.
 White per-texel noise rather than the baked field's smooth structure, because
 the job is the opposite of a pattern: decorrelating neighbours. Per-stroke
-seeding (a second splitmix64 stream off the record's `seed`) keeps repeated
-glazes averaging out rather than compounding one texture; `ε = 0` is exactly
-the gate 1.0, bit-identical to the unjittered deposit.
+seeding (its own splitmix64 draw off the record's `seed`, beside the draw the
+color-dynamics tile is baked from) keeps repeated glazes averaging out rather
+than compounding one texture; `ε = 0` is exactly the gate 1.0, bit-identical to
+the unjittered deposit.
 
 
 ## 6.6 Brush shapes & the asset store

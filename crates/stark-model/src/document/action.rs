@@ -79,8 +79,12 @@ pub struct StrokeRecord {
     /// samples are never stored — not in the file, not in the action log, not
     /// on the wire.
     pub path: Vec<crate::path::ControlPoint>,
-    /// Seed for any brush jitter, making replay reproducible. Unused by the MVP
-    /// brush but recorded so the format is stable.
+    /// The seed every per-stroke randomness derives from (§6.2): the
+    /// color-dynamics field baked for the stroke and the deposit jitter's gate
+    /// are each their own draw off it, so replay reproduces both exactly. A
+    /// fresh one per stroke — the document clock at the press — unless a caller
+    /// pins it to re-render one stroke under the same jitter
+    /// (`Engine::replay_stroke_seeded`).
     pub seed: u64,
     /// Where on [`path`](Self::path)'s curve the stroke itself begins — a curve
     /// parameter in span units, `0 ≤ start ≤` the path's span count (§6.2).

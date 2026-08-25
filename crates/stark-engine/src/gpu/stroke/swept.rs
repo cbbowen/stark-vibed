@@ -278,7 +278,7 @@ impl StrokeRenderer {
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke commit");
 
         let device = &self.ctx.device;
-        let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate);
+        let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate, &k);
         // The per-tile draw list, instance buffer and transform slots — shared with
         // the erase pass ([`sweep_draws`]).
         let draws = sweep_draws(self, &mut scope, rec, &k, &segments);
@@ -469,7 +469,7 @@ impl StrokeRenderer {
         } = scene;
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke scaled commit");
         let device = &self.ctx.device;
-        let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate);
+        let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate, k);
         let draws = sweep_draws(self, &mut scope, rec, k, segments);
         let opacity_buf = opacity_uniform(self, &mut scope, k.opacity);
 
@@ -684,6 +684,7 @@ pub(super) fn sweep_binds(
     assets: &crate::assets::AssetStore,
     rec: &StrokeRecord,
     substrate: &crate::gpu::substrate::SubstrateMap,
+    k: &super::StrokeConstants,
 ) -> (wgpu::BindGroup, wgpu::BindGroup) {
     let device = &r.ctx.device;
     // Resolve the brush's prefix-τ texture: image brushes from the asset
@@ -697,13 +698,13 @@ pub(super) fn sweep_binds(
         false,
         |_| wgpu::BindingResource::TextureView(&prefix_view),
     );
-    // Color dynamics (§6.2): the noise tile for this brush and the stroke's
-    // lookup parameters. An inactive brush binds the zero tile with zero
-    // amplitudes — the deposit is exactly the constant color. The canvas
-    // substrate beside it (§6.4): the deposition tooth's height and the rise
-    // ahead of it, in the same group because it is the same kind of thing — a
-    // field the deposit samples per fragment.
-    let noise_view = r.tips.noise_view(&rec.brush.color_dynamics());
+    // Color dynamics (§6.2): the noise tile baked for this stroke, of the
+    // brush's kind. An inactive brush binds the zero tile with zero amplitudes
+    // — the deposit is exactly the constant color. The canvas substrate beside
+    // it (§6.4): the deposition tooth's height and the rise ahead of it, in the
+    // same group because it is the same kind of thing — a field the deposit
+    // samples per fragment.
+    let noise_view = r.tips.noise_view(&rec.brush.color_dynamics(), k.noise_seed);
     let noise_bg = desc::bind_group_for(
         device,
         "stark sweep noise bg",
@@ -854,13 +855,12 @@ pub(super) fn sweep_draws(
             ],
             noise_freq: k.nfreq,
             noise_amp: k.namp,
-            noise_off: k.noff,
             jitter_eps: k.jitter_eps,
             jitter_seed: k.jitter_seed,
             // The struct's own trailing padding, generated because the two
             // scalars above end 8 bytes short of the uniform's 16-byte round
             // (§6.10).
-            _pad_9: [0; 8],
+            _pad_8: [0; 8],
         };
         let at = i * UNIFORM_STRIDE;
         xform_data[at..at + XFORM_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&xform));

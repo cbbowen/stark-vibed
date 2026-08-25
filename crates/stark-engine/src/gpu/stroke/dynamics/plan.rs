@@ -90,8 +90,9 @@ pub(super) enum SlotKind {
 /// painting segment.
 struct SlotCommon<'a> {
     /// The stroke's own constants: `c` outright, and the color-dynamics lookup that
-    /// fills `f`, `g.xyz` and `h.xy`. Borrowed rather than copied out, so a slot and
-    /// the swept path's `TileXform` are demonstrably reading one resolution of them.
+    /// fills `noise_freq` and `noise_amp`. Borrowed rather than copied out, so a slot
+    /// and the swept path's `TileXform` are demonstrably reading one resolution of
+    /// them.
     k: &'a super::super::StrokeConstants,
     /// `i.yzw`: the region texel → substrate map, with the piece's origin already
     /// folded into the bias. Only `i.x` — how deep this slot's tip bites — varies.
@@ -151,11 +152,10 @@ impl SlotCommon<'_> {
     /// runs only on the dedicated bleed slots, so between firings the canvas takes the
     /// no-bleed path bit-for-bit (§6.2).
     fn painting(&self, dist: f32, bearing: f32) -> Slot {
-        let (namp, noff) = (self.k.namp, self.k.noff);
+        let namp = self.k.namp;
         Slot {
             noise_freq: self.k.nfreq,
             noise_amp: [namp[0], namp[1], namp[2]],
-            noise_off: [noff[0], noff[1]],
             dist,
             bearing,
             ..self.slot()
@@ -220,11 +220,10 @@ struct Slot {
     curvature: f32,
     /// The bleed stencil's longest tap in texels — nonzero **only** on a bleed slot.
     bleed_reach: f32,
-    /// The color-dynamics lookup (§6.2): frequency per axis + 1/NOISE_TILE_PX,
-    /// per-channel amplitude, and the per-stroke translation. All zero = no jitter.
+    /// The color-dynamics lookup (§6.2): frequency per axis + 1/NOISE_TILE_PX and
+    /// per-channel amplitude. All zero = no jitter.
     noise_freq: [f32; 4],
     noise_amp: [f32; 3],
-    noise_off: [f32; 2],
     /// Arc length at the slot's start (canvas px) — the noise's third axis.
     dist: f32,
     /// The tooth's bearing fraction: the share of the substrate a tip with this tooth,
@@ -312,7 +311,6 @@ impl Default for Slot {
             bleed_reach: 0.0,
             noise_freq: [0.0; 4],
             noise_amp: [0.0; 3],
-            noise_off: [0.0; 2],
             dist: 0.0,
             bearing: 1.0,
             lambda_bleed: 0.0,
@@ -374,7 +372,6 @@ impl Slot {
                 self.stretch.lateral,
             ],
             orientation: self.orient,
-            noise_off: self.noise_off,
             substrate_uv_bias: self.substrate_uv_bias.to_array(),
             rect_origin: [self.rect_origin.x as i32, self.rect_origin.y as i32],
             cell_anchor: [self.cell_anchor.x as i32, self.cell_anchor.y as i32],
@@ -1254,7 +1251,6 @@ mod tests {
             bleed_reach: 19.0,
             noise_freq: [20.0, 21.0, 22.0, 23.0],
             noise_amp: [24.0, 25.0, 26.0],
-            noise_off: [27.0, 28.0],
             dist: 29.0,
             bearing: 30.0,
             lambda_bleed: 31.0,
@@ -1306,7 +1302,6 @@ mod tests {
         assert_eq!(packed.add, 17.0);
         assert_eq!(packed.drain, 16.0);
         assert_eq!(packed.noise_amp, [24.0, 25.0, 26.0]);
-        assert_eq!(packed.noise_off, [27.0, 28.0]);
         assert_eq!(packed.tooth_give, 32.0);
         assert_eq!(packed.tooth_softness, 48.0);
         assert_eq!(

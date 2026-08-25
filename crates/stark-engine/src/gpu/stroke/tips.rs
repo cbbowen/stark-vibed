@@ -35,23 +35,30 @@ pub(super) const ROUND_RES: u32 = 256;
 /// banks ~320 KB of GPU texture per position and never hands it back.
 const ROUND_TIPS_KEPT: usize = 4;
 
+/// How many color-dynamics tiles [`TipCache`] keeps baked at once.
+///
+/// A tile is one stroke's (§6.2), so what has to stay hot is the stroke being
+/// *re*-rendered: the live one, per pointer move, and the brush editor's pinned
+/// preview per edit. A few more cover a peer's live stroke interleaving with it
+/// (§12). A replay reuses nothing — every stroke is a fresh seed — and bakes its
+/// way through whatever this says. Evicted tiles are `destroy()`ed rather than
+/// dropped: they go at the rate strokes do, and a dropped texture is not a freed
+/// one (`submit.rs`).
+const NOISE_TILES_KEPT: usize = 4;
+
 /// The brush textures both paths resolve, and the lazily-baked caches behind them.
 #[derive(Clone)]
 pub(super) struct TipCache {
     ctx: GpuContext,
     /// The round tips' baked textures, keyed by `hardness.to_bits()` (§6.6): an LRU
     /// of [`ROUND_TIPS_KEPT`], newest last.
-    ///
-    /// Bounded where [`noise_cache`](Self::noise_cache) below grows freely, and the
-    /// difference is the key: hardness is a continuous slider a live preview walks
-    /// through a fresh value per frame, while the noise kinds are a small enum whose
-    /// whole domain fits.
     round_tip: Arc<Mutex<Vec<(u32, RoundTip)>>>,
-    /// Color dynamics (§6.2): the shared wrap/linear sampler, the 1×1×1 zero volume
-    /// bound when a brush's jitter is off, and the lazily-baked per-kind fields.
+    /// Color dynamics (§6.2): the shared wrap/linear sampler, the 1×1 zero tile
+    /// bound when a brush's jitter is off, and the per-stroke baked fields — an LRU
+    /// of [`NOISE_TILES_KEPT`] keyed by (kind, stroke seed), newest last.
     pub(super) noise_sampler: wgpu::Sampler,
     dummy_noise: wgpu::TextureView,
-    noise_cache: Arc<Mutex<Vec<(NoiseKind, wgpu::TextureView)>>>,
+    noise_tiles: Arc<Mutex<Vec<(NoiseKey, NoiseTile)>>>,
 }
 
 impl TipCache {
@@ -71,7 +78,7 @@ impl TipCache {
             round_tip: Arc::new(Mutex::new(Vec::new())),
             noise_sampler,
             dummy_noise,
-            noise_cache: Arc::new(Mutex::new(Vec::new())),
+            noise_tiles: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -123,47 +130,74 @@ impl TipCache {
     /// Cached as one entry for a second reason — held apart, the stamp loop could find
     /// its prefix hot and its coverage cold, and pay the field again anyway.
     fn round_tip(&self, hardness: f32) -> RoundTip {
-        let key = hardness.to_bits();
         let mut cache = unpoisoned(self.round_tip.lock());
-        if let Some(i) = cache.iter().position(|(k, _)| *k == key) {
-            // Move the hit to the back — the eviction below takes from the front.
-            let hit = cache.remove(i);
-            let tip = hit.1.clone();
-            cache.push(hit);
-            return tip;
-        }
-        let cov = round_coverage(hardness, ROUND_RES);
-        // The round tip is rotation-invariant, so a single orientation layer suffices —
-        // the shader's wrapping lookup reads it for every orientation (§6.6).
-        let prefix = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, 1, &cov);
-        let bytes: Vec<u8> = cov.iter().map(|c| (c * 255.0).round() as u8).collect();
-        let coverage = build_coverage_r8(&self.ctx, ROUND_RES, ROUND_RES, &bytes);
-        let tip = RoundTip { prefix, coverage };
-        cache.push((key, tip.clone()));
-        if cache.len() > ROUND_TIPS_KEPT {
-            // Oldest first. Dropped rather than `destroy()`ed: unlike the per-stroke
-            // resources, evictions happen at the *rate the brush changes*, not per
-            // pointer move, so JS GC keeps up fine.
-            cache.remove(0);
-        }
+        let (tip, _evicted) = lru(&mut cache, hardness.to_bits(), ROUND_TIPS_KEPT, || {
+            let cov = round_coverage(hardness, ROUND_RES);
+            // The round tip is rotation-invariant, so a single orientation layer
+            // suffices — the shader's wrapping lookup reads it for every
+            // orientation (§6.6).
+            let prefix = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, 1, &cov);
+            let bytes: Vec<u8> = cov.iter().map(|c| (c * 255.0).round() as u8).collect();
+            let coverage = build_coverage_r8(&self.ctx, ROUND_RES, ROUND_RES, &bytes);
+            RoundTip { prefix, coverage }
+        });
+        // An eviction is dropped rather than `destroy()`ed: unlike the per-stroke
+        // resources, they happen at the *rate the brush changes*, not per pointer
+        // move, so JS GC keeps up fine.
         tip
     }
-    /// The color-dynamics noise tile for a brush: the baked field for its
-    /// kind (built once, cached — the bake is a fixed pure function, so at most
-    /// one texture per [`NoiseKind`] ever exists), or the 1×1 zero tile when
-    /// the jitter is off (amplitudes all 0 ⇒ the shader adds exactly nothing).
-    pub(super) fn noise_view(&self, cd: &ColorDynamics) -> wgpu::TextureView {
+
+    /// The color-dynamics noise tile for a brush on the stroke seeded `seed`: the
+    /// field baked for that stroke (`noise.rs`), cached so a live preview — which
+    /// re-renders per pointer move — bakes it once; or the 1×1 zero tile when the
+    /// jitter is off (amplitudes all 0 ⇒ the shader adds exactly nothing).
+    pub(super) fn noise_view(&self, cd: &ColorDynamics, seed: u32) -> wgpu::TextureView {
         if !cd.is_active() {
             return self.dummy_noise.clone();
         }
-        let mut cache = unpoisoned(self.noise_cache.lock());
-        if let Some((_, view)) = cache.iter().find(|(k, _)| *k == cd.noise) {
-            return view.clone();
+        let mut cache = unpoisoned(self.noise_tiles.lock());
+        let (tile, evicted) = lru(&mut cache, (cd.noise, seed), NOISE_TILES_KEPT, || {
+            let (texture, view) = crate::noise::build_noise_texture(&self.ctx, cd.noise, seed);
+            NoiseTile { texture, view }
+        });
+        if let Some(old) = evicted {
+            // Safe while its last reader is in flight: a stroke binds its tile and
+            // submits within one call, and a destroy defers behind submitted work
+            // (`submit.rs`).
+            old.texture.destroy();
         }
-        let (_tex, view) = crate::noise::build_noise_texture(&self.ctx, cd.noise);
-        cache.push((cd.noise, view.clone()));
-        view
+        tile.view
     }
+}
+
+/// `key`'s entry in a small LRU held as a `Vec` newest-last — the hit moved to the
+/// back, or `build`'s result pushed there — and, past `kept` entries, the oldest
+/// handed back for the caller to release. A GPU resource dropped is not one freed
+/// (`submit.rs`), so which release it gets is the caller's to say.
+fn lru<K: PartialEq, V: Clone>(
+    cache: &mut Vec<(K, V)>,
+    key: K,
+    kept: usize,
+    build: impl FnOnce() -> V,
+) -> (V, Option<V>) {
+    if let Some(i) = cache.iter().position(|(k, _)| *k == key) {
+        let hit = cache.remove(i);
+        let v = hit.1.clone();
+        cache.push(hit);
+        return (v, None);
+    }
+    let v = build();
+    cache.push((key, v.clone()));
+    let evicted = (cache.len() > kept).then(|| cache.remove(0).1);
+    (v, evicted)
+}
+
+/// One stroke's baked color-dynamics field: the texture kept beside its view so an
+/// eviction can `destroy()` it.
+#[derive(Clone)]
+struct NoiseTile {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
 }
 
 /// reservoir texels weight by.
@@ -176,3 +210,6 @@ struct RoundTip {
     prefix: wgpu::TextureView,
     coverage: wgpu::TextureView,
 }
+
+/// What a noise tile is cached by: the brush's kind and the stroke's seed.
+type NoiseKey = (NoiseKind, u32);

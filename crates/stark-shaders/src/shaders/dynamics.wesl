@@ -209,8 +209,6 @@ struct Stamp {
     // The shape's orientation in turns ∈ [0,1) — which picks the prefix-τ slice (§6.6)
     // and is the rotation `bake` and `exchange` take out of the travel frame.
     orientation: f32,
-    // The per-stroke noise lookup translation.
-    noise_off: vec2<f32>,
     // The map from this dispatch's *region* texel to the substrate:
     // `uv = rt·substrate_uv_scale + substrate_uv_bias`, with the piece's own canvas origin
     // already folded into the bias. The scale is zero on a substrate with no relief, which
@@ -1575,7 +1573,7 @@ fn lay_parcel(
         let lateral = sw.local.y * sw.radius;
         own_lat += color_jitter(
             dyn_noise_tex, dyn_noise_samp, vec2<f32>(lateral, arc),
-            st.noise_freq, st.noise_amp, st.noise_off,
+            st.noise_freq, st.noise_amp,
         );
     }
 

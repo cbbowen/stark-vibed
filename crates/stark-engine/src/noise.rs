@@ -1,13 +1,25 @@
 //! Tileable 2-D noise fields for color dynamics (§6.2).
 //!
-//! Each [`stark_model::document::NoiseKind`] is baked **once, on the CPU,
-//! with fixed constants** into a small `Rgba8Snorm` 2-D texture (three
+//! Each [`stark_model::document::NoiseKind`] is baked **on the CPU, per stroke
+//! from the stroke's seed**, into a small `Rgba8Snorm` 2-D texture (three
 //! independent signed channels; alpha unused) and sampled in the stamp shaders
 //! with a repeat sampler. Baking on the CPU keeps the field bit-identical across
 //! GPUs, runs, and peers — the same determinism contract as the sRGB↔Oklab
 //! constants (§6.5) — and the bake uses only IEEE add/mul/floor/sqrt (all
 //! correctly rounded, no transcendentals), so the bytes are reproducible across
 //! platforms.
+//!
+//! Per stroke rather than once, because a tile is *one* field: the same
+//! [`SIMPLEX_PERIOD`]² clouds, the same [`VORONOI_PERIOD`]² facets. A stroke
+//! that only translated its lookup into a shared tile would lay the very
+//! polygons and drifts every stroke beside it lays, shifted — visibly so for
+//! `Mosaic`, whose thirty-six facet colors would be the *same* thirty-six in
+//! every stroke of the picture. A seed of its own gives each stroke its own
+//! field. The bake is sized to be paid at pen-down: a few thousand texels for
+//! the smooth kinds, and the cellular kinds read their sites from a table
+//! hashed once per bake ([`Sites`]) rather than once per texel and neighbour —
+//! under a millisecond a stroke for every kind but `Mosaic`, whose 256² tile
+//! takes about two (release, native).
 //!
 //! Two axes are enough because the lookup is **stroke-local** — across the
 //! stroke and along it — so the field never has to resolve a third, canvas
@@ -72,21 +84,24 @@ const VORONOI_MEAN: f32 = 0.4;
 /// cells — inside the radius where the 3×3 search is exact (module docs), so the
 /// clamp can never expose a missed feature.
 const VORONOI_GAIN: f32 = 2.5;
-/// Fixed bake seeds, one per color channel.
-const CHANNEL_SEEDS: [u32; 3] = [0x51ab_1e01, 0x51ab_1e02, 0x51ab_1e03];
-/// Fixed mosaic bake seeds: one places the cell sites, one draws each cell's
-/// value. Both are shared by the three channels on purpose — one set of cells in
-/// every channel is what makes a facet a facet.
-const MOSAIC_SITE_SEED: u32 = 0x51ab_1e11;
-const MOSAIC_VALUE_SEED: u32 = 0x51ab_1e12;
+/// Per-channel salts, folded into the stroke's seed: the three channels are
+/// three independent draws of one stroke's field.
+const CHANNEL_SALTS: [u32; 3] = [0x51ab_1e01, 0x51ab_1e02, 0x51ab_1e03];
+/// The mosaic's salts: one places the cell sites, one draws each cell's value.
+/// Both are shared by the three channels on purpose — one set of cells in every
+/// channel is what makes a facet a facet.
+const MOSAIC_SITE_SALT: u32 = 0x51ab_1e11;
+const MOSAIC_VALUE_SALT: u32 = 0x51ab_1e12;
 
-/// Bake `kind` and upload it as an `Rgba8Snorm` 2-D texture.
+/// Bake `kind` for the stroke seeded `seed` and upload it as an `Rgba8Snorm`
+/// 2-D texture.
 pub fn build_noise_texture(
     ctx: &GpuContext,
     kind: NoiseKind,
+    seed: u32,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let res = tile_res(kind);
-    let bytes = bake(kind, res);
+    let bytes = bake(kind, res, seed);
     upload_2d(ctx, res, &bytes, "stark noise field")
 }
 
@@ -139,45 +154,16 @@ fn upload_2d(
     (texture, view)
 }
 
-/// Bake `kind` at `res`² texels: 4 bytes per texel (`Rgba8Snorm`), three signed
-/// noise channels in ≈[-1, 1] plus an unused alpha.
-fn bake(kind: NoiseKind, res: u32) -> Vec<u8> {
+/// Bake `kind` for the stroke seeded `seed` at `res`² texels: 4 bytes per texel
+/// (`Rgba8Snorm`), three signed noise channels in ≈[-1, 1] plus an unused alpha.
+fn bake(kind: NoiseKind, res: u32, seed: u32) -> Vec<u8> {
+    let field = Field::new(kind, seed);
     let n = res as usize;
     let mut out = vec![0u8; n * n * 4];
     for y in 0..n {
         for x in 0..n {
             let i = (y * n + x) * 4;
-            let v = match kind {
-                NoiseKind::White => white_at(x as u32, y as u32),
-                NoiseKind::Simplex => {
-                    // Texel centres over `SIMPLEX_PERIOD` lattice units per side,
-                    // on the `z = 0` plane of the periodic 3-D field (module docs).
-                    let s = SIMPLEX_PERIOD as f32 / res as f32;
-                    let p = [(x as f32 + 0.5) * s, (y as f32 + 0.5) * s, 0.0];
-                    [
-                        periodic_simplex(p, SIMPLEX_PERIOD, CHANNEL_SEEDS[0]),
-                        periodic_simplex(p, SIMPLEX_PERIOD, CHANNEL_SEEDS[1]),
-                        periodic_simplex(p, SIMPLEX_PERIOD, CHANNEL_SEEDS[2]),
-                    ]
-                }
-                NoiseKind::Voronoi => {
-                    // Texel centres over `VORONOI_PERIOD` cells per side.
-                    let s = VORONOI_PERIOD as f32 / res as f32;
-                    let p = [(x as f32 + 0.5) * s, (y as f32 + 0.5) * s];
-                    [
-                        periodic_voronoi(p, VORONOI_PERIOD, CHANNEL_SEEDS[0]),
-                        periodic_voronoi(p, VORONOI_PERIOD, CHANNEL_SEEDS[1]),
-                        periodic_voronoi(p, VORONOI_PERIOD, CHANNEL_SEEDS[2]),
-                    ]
-                }
-                NoiseKind::Mosaic => {
-                    // Same cells as `Voronoi`, read flat: all three channels come
-                    // from the owning cell, so the facets are whole polygons.
-                    let s = VORONOI_PERIOD as f32 / res as f32;
-                    let p = [(x as f32 + 0.5) * s, (y as f32 + 0.5) * s];
-                    periodic_mosaic(p, VORONOI_PERIOD)
-                }
-            };
+            let v = field.at(x as u32, y as u32, res);
             for (c, val) in v.iter().enumerate() {
                 out[i + c] = (val.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8;
             }
@@ -186,9 +172,61 @@ fn bake(kind: NoiseKind, res: u32) -> Vec<u8> {
     out
 }
 
+/// One stroke's field, prepared once per bake: the seeds its kind's hashes take,
+/// and for the cellular kinds the site tables those seeds fill.
+enum Field {
+    White(u32),
+    Simplex([u32; 3]),
+    Voronoi([Sites; 3]),
+    Mosaic { sites: Sites, values: u32 },
+}
+
+impl Field {
+    fn new(kind: NoiseKind, seed: u32) -> Self {
+        let seeds = CHANNEL_SALTS.map(|salt| salt ^ seed);
+        match kind {
+            NoiseKind::White => Field::White(seeds[0]),
+            NoiseKind::Simplex => Field::Simplex(seeds),
+            // The 3×3 search is exact for the continuous field, the 5×5 for the
+            // flat one — see `periodic_voronoi` and `periodic_mosaic`.
+            NoiseKind::Voronoi => Field::Voronoi(seeds.map(|s| Sites::new(VORONOI_PERIOD, s, 1))),
+            NoiseKind::Mosaic => Field::Mosaic {
+                sites: Sites::new(VORONOI_PERIOD, MOSAIC_SITE_SALT ^ seed, 2),
+                values: MOSAIC_VALUE_SALT ^ seed,
+            },
+        }
+    }
+
+    /// The three channels at texel `(x, y)` of a `res`² tile.
+    fn at(&self, x: u32, y: u32, res: u32) -> [f32; 3] {
+        // Texel centres over `period` lattice units (cells) per side.
+        let centre = |period: i32| {
+            let s = period as f32 / res as f32;
+            [(x as f32 + 0.5) * s, (y as f32 + 0.5) * s]
+        };
+        match self {
+            Field::White(seed) => white_at(x, y, *seed),
+            Field::Simplex(seeds) => {
+                // On the `z = 0` plane of the periodic 3-D field (module docs).
+                let [px, py] = centre(SIMPLEX_PERIOD);
+                seeds.map(|seed| periodic_simplex([px, py, 0.0], SIMPLEX_PERIOD, seed))
+            }
+            Field::Voronoi(sites) => {
+                let p = centre(VORONOI_PERIOD);
+                sites.each_ref().map(|s| periodic_voronoi(p, s))
+            }
+            // Same cells as `Voronoi`, read flat: all three channels come from
+            // the owning cell, so the facets are whole polygons.
+            Field::Mosaic { sites, values } => {
+                periodic_mosaic(centre(VORONOI_PERIOD), sites, *values)
+            }
+        }
+    }
+}
+
 /// Three independent white-noise channels for one texel, in [-1, 1].
-fn white_at(x: u32, y: u32) -> [f32; 3] {
-    let h = pcg4d([x, y, 0, CHANNEL_SEEDS[0]]);
+fn white_at(x: u32, y: u32, seed: u32) -> [f32; 3] {
+    let h = pcg4d([x, y, 0, seed]);
     [unit(h[0]), unit(h[1]), unit(h[2])].map(|u| u * 2.0 - 1.0)
 }
 
@@ -317,77 +355,144 @@ fn periodic_simplex(p: [f32; 3], period: i32, seed: u32) -> f32 {
     32.0 * total
 }
 
-/// Feature point of the cell with integer coords `(i, j)`, as an offset in
-/// [0, 1]² from the cell's corner, periodic with `period`: the hash reads the
-/// cell index reduced modulo the period, so cells a whole period apart carry the
-/// same point.
-fn voronoi_feature(i: i64, j: i64, period: i32, seed: u32) -> [f32; 2] {
-    let m = period as i64;
-    let h = pcg4d([i.rem_euclid(m) as u32, j.rem_euclid(m) as u32, 0, seed]);
-    [unit(h[0]), unit(h[1])]
+/// The feature points of a periodic jittered grid: one per cell, as an offset in
+/// [0, 1]² from the cell's corner, hashed from the cell index reduced modulo the
+/// period — so cells a whole period apart carry the same point and the field
+/// repeats exactly. The whole grid is translated by a per-seed constant, so
+/// three channels celled on three tables do not all put their walls near the
+/// same grid lines; a constant translation keeps the field periodic.
+///
+/// A table rather than a hash at the lookup, because the lookup runs per texel
+/// *and* per neighbour searched: `period`² hashes once per bake instead of 9 or
+/// 25 per texel of it. The wrap is folded into the table for the same reason —
+/// the modulo is an integer division, and two of them per neighbour would cost
+/// the mosaic more than its distances do — by tabulating a `ring` of wrapped
+/// copies around the period's own cells: every cell a search from inside the
+/// period can touch, indexed directly.
+struct Sites {
+    period: i64,
+    ring: i64,
+    shift: [f32; 2],
+    /// The `(period + 2·ring)`² cells, row-major from cell `(−ring, −ring)`.
+    cells: Vec<Site>,
+}
+
+/// One cell of a [`Sites`] table.
+#[derive(Clone, Copy)]
+struct Site {
+    /// The feature point, from the cell's corner.
+    offset: [f32; 2],
+    /// The cell's index reduced into the period — its identity, shared with
+    /// every wrapped copy of it.
+    cell: [u32; 2],
+}
+
+impl Sites {
+    /// `period` cells per side, searched `ring` cells out from a sample's own.
+    fn new(period: i32, seed: u32, ring: i64) -> Self {
+        let m = period as i64;
+        let o = pcg4d([seed, 0, 0, 0x9e37_79b9]);
+        let shift = [unit(o[0]) * period as f32, unit(o[1]) * period as f32];
+        let w = m + 2 * ring;
+        let cells = (0..w * w)
+            .map(|n| {
+                let (i, j) = (n % w - ring, n / w - ring);
+                let cell = [i.rem_euclid(m) as u32, j.rem_euclid(m) as u32];
+                let h = pcg4d([cell[0], cell[1], 0, seed]);
+                Site {
+                    offset: [unit(h[0]), unit(h[1])],
+                    cell,
+                }
+            })
+            .collect();
+        Self {
+            period: m,
+            ring,
+            shift,
+            cells,
+        }
+    }
+
+    /// The nearest feature point to `p` among the `(2·ring + 1)²` cells around
+    /// its own: the squared distance, and the cell it belongs to.
+    fn nearest(&self, p: [f32; 2]) -> (f32, [u32; 2]) {
+        let period = self.period as f32;
+        // Into the period, after the translation: exact when `p` is within a
+        // period or two of it (`v − k·period` by Sterbenz), which is every
+        // sample the bake and the tests make, and the field repeats exactly.
+        let p = [p[0] + self.shift[0], p[1] + self.shift[1]].map(|v| {
+            let v = v - period * (v / period).floor();
+            // A quotient rounded up to a whole makes the difference a hair
+            // negative; the wrap has to hold either way.
+            if v < 0.0 {
+                v + period
+            } else if v >= period {
+                v - period
+            } else {
+                v
+            }
+        });
+        let cell = (p[0].floor() as i64, p[1].floor() as i64);
+        // Widening squares, stopping at the first whose best is within `r`
+        // cells: every site outside it is more than `r` away along one axis, so
+        // none can beat that. The outer squares are the search's exactness, not
+        // its usual cost — a sample's own cell holds a site, so the first square
+        // settles nearly every sample, and the rescans it costs the rare
+        // widening are cheaper than a skip test in the loop that runs always.
+        for r in 1..=self.ring {
+            let found = self.within(p, cell, r);
+            if found.0 <= (r * r) as f32 || r == self.ring {
+                return found;
+            }
+        }
+        unreachable!("a table has at least one ring");
+    }
+
+    /// The nearest site among the `(2·r + 1)²` cells around `cell`.
+    fn within(&self, p: [f32; 2], (cx, cy): (i64, i64), r: i64) -> (f32, [u32; 2]) {
+        let w = self.period + 2 * self.ring;
+        let (mut nearest2, mut owner) = (f32::INFINITY, [0; 2]);
+        for j in cy - r..=cy + r {
+            for i in cx - r..=cx + r {
+                let site = self.cells[((j + self.ring) * w + (i + self.ring)) as usize];
+                let dx = (i as f32 + site.offset[0]) - p[0];
+                let dy = (j as f32 + site.offset[1]) - p[1];
+                let d2 = dx * dx + dy * dy;
+                if d2 < nearest2 {
+                    nearest2 = d2;
+                    owner = site.cell;
+                }
+            }
+        }
+        (nearest2, owner)
+    }
 }
 
 /// Voronoi (Worley F1) cellular noise on a periodic jittered grid, exactly
-/// periodic with `period` along both axes. Output in [-1, 1]: +1 on a feature
-/// point, falling off with distance to the nearest one, with a crease where two
-/// cells meet.
-fn periodic_voronoi(p: [f32; 2], period: i32, seed: u32) -> f32 {
-    // Shift the grid per seed so the three channels' cell walls don't all land
-    // on the same lines. A constant translation keeps the field periodic.
-    let o = pcg4d([seed, 0, 0, 0x9e37_79b9]);
-    let p = [
-        p[0] + unit(o[0]) * period as f32,
-        p[1] + unit(o[1]) * period as f32,
-    ];
-
-    let (cx, cy) = (p[0].floor(), p[1].floor());
-    let mut nearest2 = f32::INFINITY;
-    for dj in -1..=1i64 {
-        for di in -1..=1i64 {
-            let (i, j) = (cx as i64 + di, cy as i64 + dj);
-            let f = voronoi_feature(i, j, period, seed);
-            let dx = (i as f32 + f[0]) - p[0];
-            let dy = (j as f32 + f[1]) - p[1];
-            nearest2 = nearest2.min(dx * dx + dy * dy);
-        }
-    }
+/// periodic with the table's period along both axes. Output in [-1, 1]: +1 on
+/// a feature point, falling off with distance to the nearest one, with a crease
+/// where two cells meet. Its table is searched one ring out (3×3 cells), which
+/// is exact here (module docs).
+fn periodic_voronoi(p: [f32; 2], sites: &Sites) -> f32 {
+    let (nearest2, _) = sites.nearest(p);
     ((VORONOI_MEAN - nearest2.sqrt()) * VORONOI_GAIN).clamp(-1.0, 1.0)
 }
 
 /// The flat value of the Voronoi cell owning `p` — three channels from one hash
-/// of the owning cell, so all three share the *same* polygons (three
-/// independently celled channels would read as overlapping patchwork, not
-/// facets). Exactly periodic with `period` on both axes; output in [-1, 1].
+/// of the owning cell and `values`, so all three share the *same* polygons
+/// (three independently celled channels would read as overlapping patchwork,
+/// not facets). Exactly periodic with the table's period on both axes; output
+/// in [-1, 1].
 ///
-/// The search covers 5×5 cells where [`periodic_voronoi`] needs only 3×3: this
-/// field has no clamp behind which a missed feature could hide — picking the
-/// wrong owner would draw a wrong polygon, in full contrast. A sample's own cell
-/// always holds a site, so the true nearest is at most √2 cells away, while
-/// every site outside the 5×5 ring is more than 2 cells away: the owner is
-/// always found.
-fn periodic_mosaic(p: [f32; 2], period: i32) -> [f32; 3] {
-    let (cx, cy) = (p[0].floor(), p[1].floor());
-    let (mut nearest2, mut owner) = (f32::INFINITY, (0i64, 0i64));
-    for dj in -2..=2i64 {
-        for di in -2..=2i64 {
-            let (i, j) = (cx as i64 + di, cy as i64 + dj);
-            let f = voronoi_feature(i, j, period, MOSAIC_SITE_SEED);
-            let dx = (i as f32 + f[0]) - p[0];
-            let dy = (j as f32 + f[1]) - p[1];
-            let d2 = dx * dx + dy * dy;
-            if d2 < nearest2 {
-                nearest2 = d2;
-                owner = (i, j);
-            }
-        }
-    }
-    let m = period as i64;
-    let h = pcg4d([
-        owner.0.rem_euclid(m) as u32,
-        owner.1.rem_euclid(m) as u32,
-        0,
-        MOSAIC_VALUE_SEED,
-    ]);
+/// Its table is searched two rings out (5×5 cells) where [`periodic_voronoi`]
+/// needs only one: this field has no clamp behind which a missed feature could
+/// hide — picking the wrong owner would draw a wrong polygon, in full contrast.
+/// A sample's own cell always holds a site, so the true nearest is at most √2
+/// cells away, while every site outside the 5×5 ring is more than 2 cells away:
+/// the owner is always found.
+fn periodic_mosaic(p: [f32; 2], sites: &Sites, values: u32) -> [f32; 3] {
+    let (_, owner) = sites.nearest(p);
+    let h = pcg4d([owner[0], owner[1], 0, values]);
     [unit(h[0]), unit(h[1]), unit(h[2])].map(|u| u * 2.0 - 1.0)
 }
 
@@ -395,12 +500,16 @@ fn periodic_mosaic(p: [f32; 2], period: i32) -> [f32; 3] {
 mod tests {
     use super::*;
 
+    /// A few strokes' worth of seeds. The claims below are about how the fields
+    /// are *constructed*, so they have to hold whatever seed a stroke draws.
+    const SEEDS: [u32; 4] = [0, 1, 0x51ab_1e01, 0xdead_beef];
+
     /// The continuous simplex field must repeat exactly every `SIMPLEX_PERIOD`
-    /// along each axis — the property that makes the baked volume tileable.
+    /// along each axis — the property that makes the baked tile tileable.
     #[test]
     fn simplex_is_periodic() {
         let p = SIMPLEX_PERIOD as f32;
-        for seed in CHANNEL_SEEDS {
+        for seed in SEEDS {
             for n in 0..64 {
                 let h = pcg4d([n, 7, 11, seed]);
                 let base = [unit(h[0]) * p, unit(h[1]) * p, unit(h[2]) * p];
@@ -423,15 +532,16 @@ mod tests {
     #[test]
     fn voronoi_is_periodic() {
         let p = VORONOI_PERIOD as f32;
-        for seed in CHANNEL_SEEDS {
+        for seed in SEEDS {
+            let sites = Sites::new(VORONOI_PERIOD, seed, 1);
             for n in 0..64 {
                 let h = pcg4d([n, 7, 11, seed]);
                 let base = [unit(h[0]) * p, unit(h[1]) * p];
-                let v0 = periodic_voronoi(base, VORONOI_PERIOD, seed);
+                let v0 = periodic_voronoi(base, &sites);
                 for axis in 0..2 {
                     let mut q = base;
                     q[axis] += p;
-                    let v1 = periodic_voronoi(q, VORONOI_PERIOD, seed);
+                    let v1 = periodic_voronoi(q, &sites);
                     assert!(
                         (v0 - v1).abs() < 1e-3,
                         "seed {seed:#x} axis {axis} at {base:?}: {v0} vs {v1}"
@@ -447,26 +557,28 @@ mod tests {
     /// found — the failure mode the search bound rules out.
     #[test]
     fn voronoi_is_continuous() {
-        let seed = CHANNEL_SEEDS[0];
         let n = 4000;
         let step = VORONOI_PERIOD as f32 / n as f32;
-        for axis in 0..2 {
-            for line in 0..8u32 {
-                let h = pcg4d([line, 3, 5, 77]);
-                let mut p = [
-                    unit(h[0]) * VORONOI_PERIOD as f32,
-                    unit(h[1]) * VORONOI_PERIOD as f32,
-                ];
-                p[axis] = 0.0;
-                let mut prev = periodic_voronoi(p, VORONOI_PERIOD, seed);
-                for i in 0..n {
-                    p[axis] = (i as f32 + 1.0) * step;
-                    let v = periodic_voronoi(p, VORONOI_PERIOD, seed);
-                    assert!(
-                        (v - prev).abs() < 1.01 * VORONOI_GAIN * step,
-                        "discontinuity at {p:?} (axis {axis}): {prev} -> {v}"
-                    );
-                    prev = v;
+        for seed in SEEDS {
+            let sites = Sites::new(VORONOI_PERIOD, seed, 1);
+            for axis in 0..2 {
+                for line in 0..8u32 {
+                    let h = pcg4d([line, 3, 5, 77]);
+                    let mut p = [
+                        unit(h[0]) * VORONOI_PERIOD as f32,
+                        unit(h[1]) * VORONOI_PERIOD as f32,
+                    ];
+                    p[axis] = 0.0;
+                    let mut prev = periodic_voronoi(p, &sites);
+                    for i in 0..n {
+                        p[axis] = (i as f32 + 1.0) * step;
+                        let v = periodic_voronoi(p, &sites);
+                        assert!(
+                            (v - prev).abs() < 1.01 * VORONOI_GAIN * step,
+                            "seed {seed:#x}: discontinuity at {p:?} (axis {axis}): {prev} -> {v}"
+                        );
+                        prev = v;
+                    }
                 }
             }
         }
@@ -474,22 +586,33 @@ mod tests {
 
     /// The Voronoi shaping constants must keep the field centred and using its
     /// range: a field biased to one side would tint every stroke rather than let
-    /// the color wander both ways.
+    /// the color wander both ways. Centred over the *ensemble* of seeds — a
+    /// single stroke's thirty-six cells can lean either way, and that is
+    /// randomness, not a constant to correct — and every seed's field uses the
+    /// whole range.
     #[test]
     fn voronoi_is_centred_and_uses_its_range() {
         let n = 64usize;
-        let a = bake(NoiseKind::Voronoi, n as u32);
         for c in 0..3 {
-            let vals: Vec<f32> = a[c..]
-                .iter()
-                .step_by(4)
-                .map(|&b| b as i8 as f32 / 127.0)
-                .collect();
-            let mean = vals.iter().sum::<f32>() / vals.len() as f32;
-            let lo = vals.iter().cloned().fold(f32::INFINITY, f32::min);
-            let hi = vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let (mut sum, mut count) = (0.0f32, 0usize);
+            for seed in SEEDS {
+                let a = bake(NoiseKind::Voronoi, n as u32, seed);
+                let vals: Vec<f32> = a[c..]
+                    .iter()
+                    .step_by(4)
+                    .map(|&b| b as i8 as f32 / 127.0)
+                    .collect();
+                sum += vals.iter().sum::<f32>();
+                count += vals.len();
+                let lo = vals.iter().cloned().fold(f32::INFINITY, f32::min);
+                let hi = vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                assert!(
+                    lo < -0.8 && hi > 0.8,
+                    "seed {seed:#x} channel {c} range: [{lo}, {hi}]"
+                );
+            }
+            let mean = sum / count as f32;
             assert!(mean.abs() < 0.15, "channel {c} biased: mean {mean}");
-            assert!(lo < -0.8 && hi > 0.8, "channel {c} range: [{lo}, {hi}]");
         }
     }
 
@@ -499,15 +622,19 @@ mod tests {
     #[test]
     fn mosaic_is_periodic() {
         let p = VORONOI_PERIOD as f32;
-        for n in 0..256 {
-            let h = pcg4d([n, 7, 11, MOSAIC_SITE_SEED]);
-            let base = [unit(h[0]) * p, unit(h[1]) * p];
-            let v0 = periodic_mosaic(base, VORONOI_PERIOD);
-            for axis in 0..2 {
-                let mut q = base;
-                q[axis] += p;
-                let v1 = periodic_mosaic(q, VORONOI_PERIOD);
-                assert_eq!(v0, v1, "axis {axis} at {base:?}");
+        for seed in SEEDS {
+            let sites = Sites::new(VORONOI_PERIOD, MOSAIC_SITE_SALT ^ seed, 2);
+            let values = MOSAIC_VALUE_SALT ^ seed;
+            for n in 0..256 {
+                let h = pcg4d([n, 7, 11, seed]);
+                let base = [unit(h[0]) * p, unit(h[1]) * p];
+                let v0 = periodic_mosaic(base, &sites, values);
+                for axis in 0..2 {
+                    let mut q = base;
+                    q[axis] += p;
+                    let v1 = periodic_mosaic(q, &sites, values);
+                    assert_eq!(v0, v1, "seed {seed:#x} axis {axis} at {base:?}");
+                }
             }
         }
     }
@@ -519,16 +646,25 @@ mod tests {
     /// in-between values; fewer, a cell the sample grid never reaches.
     #[test]
     fn mosaic_is_one_flat_value_per_cell() {
-        let n = MOSAIC_RES as usize;
-        let a = bake(NoiseKind::Mosaic, n as u32);
-        let facets: std::collections::HashSet<[u8; 3]> = a
+        let cells = (VORONOI_PERIOD * VORONOI_PERIOD) as usize;
+        for seed in SEEDS {
+            let facets = mosaic_facets(MOSAIC_RES, seed);
+            assert_eq!(
+                facets.len(),
+                cells,
+                "seed {seed:#x}: distinct values vs {cells} cells"
+            );
+        }
+    }
+
+    /// The distinct texel values of a `res`² mosaic bake — its facet colors.
+    fn mosaic_facets(res: u32, seed: u32) -> std::collections::HashSet<[u8; 3]> {
+        bake(NoiseKind::Mosaic, res, seed)
             .as_chunks::<4>()
             .0
             .iter()
             .map(|t| [t[0], t[1], t[2]])
-            .collect();
-        let cells = (VORONOI_PERIOD * VORONOI_PERIOD) as usize;
-        assert_eq!(facets.len(), cells, "distinct values vs {cells} cells");
+            .collect()
     }
 
     /// The bake must be deterministic (replay/peers depend on it) and in range,
@@ -541,8 +677,8 @@ mod tests {
             NoiseKind::Voronoi,
             NoiseKind::Mosaic,
         ] {
-            let a = bake(kind, 16);
-            let b = bake(kind, 16);
+            let a = bake(kind, 16, SEEDS[2]);
+            let b = bake(kind, 16, SEEDS[2]);
             assert_eq!(a, b);
             for c in 0..3 {
                 let vals: Vec<i8> = a[c..].iter().step_by(4).map(|&b| b as i8).collect();
@@ -553,13 +689,34 @@ mod tests {
         }
     }
 
+    /// Two strokes' tiles are two fields, not one field twice: the bytes differ
+    /// for every kind, and for the mosaic the *facet colors* themselves — the
+    /// set no translation of a shared tile could have changed.
+    #[test]
+    fn a_seed_bakes_its_own_field() {
+        for kind in [
+            NoiseKind::White,
+            NoiseKind::Simplex,
+            NoiseKind::Voronoi,
+            NoiseKind::Mosaic,
+        ] {
+            let (a, b) = (bake(kind, 16, SEEDS[0]), bake(kind, 16, SEEDS[1]));
+            assert_ne!(a, b, "{kind:?} bakes one tile for two seeds");
+        }
+        assert_ne!(
+            mosaic_facets(64, SEEDS[0]),
+            mosaic_facets(64, SEEDS[1]),
+            "two seeds' mosaics are the same facets"
+        );
+    }
+
     /// The continuous simplex field must be smooth — no discontinuity anywhere,
     /// which would betray a broken periodic gradient hash or corner selection.
     /// A fine step (6/4000 lattice units) may move the value only by ~that step
     /// times the field's steepest slope (measured ≈ 5.5/unit for this kernel).
     #[test]
     fn simplex_is_continuous() {
-        let seed = CHANNEL_SEEDS[0];
+        let seed = SEEDS[2];
         let n = 4000;
         let step = SIMPLEX_PERIOD as f32 / n as f32;
         for axis in 0..3 {
@@ -593,33 +750,35 @@ mod tests {
     #[test]
     fn smooth_bake_seams_match_interior() {
         let n = 64usize;
-        for kind in [NoiseKind::Simplex, NoiseKind::Voronoi] {
-            let a = bake(kind, n as u32);
-            let texel = |x: usize, y: usize| a[(y * n + x) * 4] as i8 as i32;
-            let (mut interior_max, mut seam_max) = (0, 0);
-            for y in 0..n {
-                for x in 0..n {
-                    for (d, on_seam) in [
-                        ((texel(x, y) - texel((x + 1) % n, y)).abs(), x + 1 == n),
-                        ((texel(x, y) - texel(x, (y + 1) % n)).abs(), y + 1 == n),
-                    ] {
-                        if on_seam {
-                            seam_max = seam_max.max(d);
-                        } else {
-                            interior_max = interior_max.max(d);
+        for seed in SEEDS {
+            for kind in [NoiseKind::Simplex, NoiseKind::Voronoi] {
+                let a = bake(kind, n as u32, seed);
+                let texel = |x: usize, y: usize| a[(y * n + x) * 4] as i8 as i32;
+                let (mut interior_max, mut seam_max) = (0, 0);
+                for y in 0..n {
+                    for x in 0..n {
+                        for (d, on_seam) in [
+                            ((texel(x, y) - texel((x + 1) % n, y)).abs(), x + 1 == n),
+                            ((texel(x, y) - texel(x, (y + 1) % n)).abs(), y + 1 == n),
+                        ] {
+                            if on_seam {
+                                seam_max = seam_max.max(d);
+                            } else {
+                                interior_max = interior_max.max(d);
+                            }
                         }
                     }
                 }
+                assert!(
+                    seam_max <= interior_max,
+                    "{kind:?} seed {seed:#x}: wrap seam steps ({seam_max}) exceed interior steps ({interior_max})"
+                );
+                // And the field resolves its features: steps stay well under full range.
+                assert!(
+                    interior_max < 100,
+                    "{kind:?} seed {seed:#x}: field under-resolved: step {interior_max}"
+                );
             }
-            assert!(
-                seam_max <= interior_max,
-                "{kind:?} wrap seam steps ({seam_max}) exceed interior steps ({interior_max})"
-            );
-            // And the field resolves its features: steps stay well under full range.
-            assert!(
-                interior_max < 100,
-                "{kind:?} field under-resolved: step {interior_max}"
-            );
         }
     }
 }

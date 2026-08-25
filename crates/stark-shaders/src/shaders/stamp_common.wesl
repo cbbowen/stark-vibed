@@ -48,11 +48,9 @@ struct TileXform {
     noise_freq: vec4<f32>,
     // Per color-channel noise amplitude .xyz (all 0 = jitter off); .w unused.
     noise_amp: vec4<f32>,
-    // Per-stroke noise lookup translation .xy (from the stroke seed); .zw unused.
-    noise_off: vec4<f32>,
     // The deposit jitter (§6.2): the gate's half-range (0 = off, and then the
-    // deposit is bit-identical) and the stroke's own seed for it — a second
-    // stream off the same record seed `noise_off` is drawn from.
+    // deposit is bit-identical) and the stroke's own seed for it — a draw off
+    // the same record seed the noise tile (`noise_tex`) is baked from.
     jitter_eps: f32,
     jitter_seed: u32,
 }
@@ -597,7 +595,7 @@ fn brush_color(in: VsOut, sw: Sweep) -> vec3<f32> {
     let lateral = sw.local.y * sw.radius;
     let jitter = color_jitter(
         noise_tex, noise_samp, vec2<f32>(lateral, stroke_arc(in, sw)),
-        xf.noise_freq.xyz, xf.noise_amp.xyz, xf.noise_off.xy,
+        xf.noise_freq.xyz, xf.noise_amp.xyz,
     );
     return xf.color.xyz + jitter;
 }

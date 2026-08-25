@@ -2,19 +2,19 @@
 // (§6.2, §6.5).
 //
 // **Smooth noise is baked, white noise is hashed.** The color-dynamics field
-// (`color_jitter`) wants tileable spatial structure, so it is baked once on the
-// CPU into a small `Rgba8Snorm` texture (`stark-engine`'s `noise.rs`) and the
-// GPU only samples it — that is what keeps a *pattern* bit-identical across
-// GPUs, runs and peers, the same determinism contract as the sRGB↔Oklab
-// constants (§6.5). The two white-noise jobs want the opposite — one fresh
-// value per integer key, no spatial structure at all — and a baked texture of
-// either would be this hash with a footprint: `dither2` keys on the target
-// pixel to make the display encode's rounding stochastic (§6.5), and
-// `jitter` keys on the canvas texel to do the same for the paint a
-// stroke accumulates (§6.2). The hash holds the determinism contract on its
-// own terms: integer arithmetic is exact on every backend, and the one float
-// step (`_centered`) is a mantissa placement and a Sterbenz-exact subtraction,
-// so no operation ever rounds.
+// (`color_jitter`) wants tileable spatial structure, so it is baked on the CPU
+// — per stroke, from the stroke's seed — into a small `Rgba8Snorm` texture
+// (`stark-engine`'s `noise.rs`) and the GPU only samples it — that is what
+// keeps a *pattern* bit-identical across GPUs, runs and peers, the same
+// determinism contract as the sRGB↔Oklab constants (§6.5). The two white-noise
+// jobs want the opposite — one fresh value per integer key, no spatial
+// structure at all — and a baked texture of either would be this hash with a
+// footprint: `dither2` keys on the target pixel to make the display encode's
+// rounding stochastic (§6.5), and `jitter` keys on the canvas texel to do the
+// same for the paint a stroke accumulates (§6.2). The hash holds the
+// determinism contract on its own terms: integer arithmetic is exact on every
+// backend, and the one float step (`_centered`) is a mantissa placement and a
+// Sterbenz-exact subtraction, so no operation ever rounds.
 //
 // There is deliberately nothing else here — no `noise_N_to_M` wrapper family. A
 // hash the GPU never evaluates cannot change a pixel, which makes it exactly the
@@ -36,17 +36,18 @@
 //          A `vec3` because that is what the lookup is: the fourth lane the two
 //          callers used to spend on it was never read.
 //   amp:   per color-channel amplitude (0 = that channel holds still).
-//   off:   the per-stroke lookup translation (derived from the stroke seed).
-// The sampler must wrap (repeat) on both axes.
+// Nothing per stroke rides in here: the field bound is already the stroke's
+// own, baked from its seed (`noise.rs`), so the lookup is the same map for
+// every stroke and the tile is what differs. The sampler must wrap (repeat) on
+// both axes.
 fn color_jitter(
     tex: texture_2d<f32>,
     s: sampler,
     local: vec2<f32>,
     freq: vec3<f32>,
     amp: vec3<f32>,
-    off: vec2<f32>,
 ) -> vec3<f32> {
-    let q = local * freq.xy * freq.z + off;
+    let q = local * freq.xy * freq.z;
     return amp * textureSampleLevel(tex, s, q, 0.0).xyz;
 }
 

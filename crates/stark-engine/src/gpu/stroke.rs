@@ -357,7 +357,7 @@ impl StrokeRenderer {
         let rgb = Srgb::new(rec.brush.paint().map_or([0.0; 3], |p| p.color));
         let ch = self.color_space.rgb_to_channels(rgb);
         let res = self.color_space.rgb_to_resid(rgb);
-        let (nfreq, namp, noff) = noise_uniform(rec);
+        let (nfreq, namp) = noise_uniform(rec);
         StrokeConstants {
             channels: [ch[0], ch[1], ch[2]],
             resid: [res[0], res[1], res[2], 0.0],
@@ -372,7 +372,7 @@ impl StrokeRenderer {
             tooth_softness: rec.brush.tooth.softness,
             nfreq,
             namp,
-            noff,
+            noise_seed: noise_seed(rec.seed),
             // Clamped where the record becomes numbers, like the color above: the
             // gate is `1 + 2ε·centered` with `centered ∈ (−½, ½)`, so any ε ≤ 1
             // keeps it positive and a wire value beyond that is nonsense, not a
@@ -432,68 +432,65 @@ struct StrokeConstants {
     /// the tip is made of, and a charcoal stick does not go harder under the hand.
     tooth_softness: f32,
     /// The color-dynamics lookup (§6.2): per-axis frequency (across the stroke, along
-    /// it) + 1/NOISE_TILE_PX, per-channel amplitude, and the per-stroke translation.
-    /// Inactive jitter zeroes frequency *and* amplitude, so with the zero volume bound
-    /// the shader's early-out keeps the deposit bit-identical.
+    /// it) + 1/NOISE_TILE_PX, and per-channel amplitude. Inactive jitter zeroes
+    /// frequency *and* amplitude, so with the zero tile bound the shader's early-out
+    /// keeps the deposit bit-identical.
     nfreq: [f32; 4],
     namp: [f32; 4],
-    noff: [f32; 4],
+    /// The seed the stroke's own noise tile is baked from ([`noise_seed`]) — the
+    /// field `TipCache::noise_view` binds. Not a uniform lane, but resolved here
+    /// beside the lookup it feeds for the same reason as the rest: the two paths
+    /// must bind one field.
+    noise_seed: u32,
     /// The deposit jitter (§6.2): the gate's half-range
     /// (`BrushParams::jitter`, clamped) and the stroke's own seed for it
-    /// ([`jitter_seed`]). Resolved here like the color-dynamics triplet
+    /// ([`jitter_seed`]). Resolved here like the color-dynamics lookup
     /// above and for the same reason: the loop's `add` axis is the swept path's
     /// deposit, and the two must read one gate.
     jitter_eps: f32,
     jitter_seed: u32,
 }
 
-/// The stroke's color-dynamics uniform triplet — (per-axis frequency
-/// (across the stroke, along it) + 1/NOISE_TILE_PX,
-/// per-channel amplitude, per-stroke lookup translation) — shared by the sweep's
-/// `TileXform` and the dynamics loop's `Stamp` slots so both paths jitter
+/// The stroke's color-dynamics uniform pair — (per-axis frequency (across the
+/// stroke, along it) + 1/NOISE_TILE_PX, per-channel amplitude) — shared by the
+/// sweep's `TileXform` and the dynamics loop's `Stamp` slots so both paths jitter
 /// identically. Inactive jitter zeroes frequency *and* amplitude, so with the
-/// zero volume bound the shader's early-out keeps the deposit bit-identical.
-fn noise_uniform(rec: &StrokeRecord) -> ([f32; 4], [f32; 4], [f32; 4]) {
+/// zero tile bound the shader's early-out keeps the deposit bit-identical.
+fn noise_uniform(rec: &StrokeRecord) -> ([f32; 4], [f32; 4]) {
     let cd = rec.brush.color_dynamics();
     let (freq, amp) = if cd.is_active() {
         (cd.frequency, cd.amplitude)
     } else {
         ([0.0; 2], [0.0; 3])
     };
-    let off = noise_offset(rec.seed);
     (
         [freq[0], freq[1], 1.0 / NOISE_TILE_PX, 0.0],
         [amp[0], amp[1], amp[2], 0.0],
-        [off[0], off[1], 0.0, 0.0],
     )
 }
 
-/// The deposit jitter's per-stroke seed: the third draw of the same splitmix64
-/// stream [`noise_offset`] takes its two from, folded to the u32 the hash wants —
-/// deterministic from the record like everything else here (replay and
-/// live == committed hold, §6.2), and a fresh pattern per stroke, which is what
-/// keeps repeated glazes averaging out instead of compounding one texture.
-fn jitter_seed(seed: u64) -> u32 {
-    let state = seed.wrapping_add(0x9E3779B97F4A7C15u64.wrapping_mul(3));
-    let mut z = state;
+/// The `n`-th draw of the stroke's splitmix64 stream. Every per-stroke
+/// randomness is its own draw off the record's `seed`, so each is deterministic
+/// from the record (replay and live == committed hold, §6.2) and independent of
+/// the others.
+fn draw(seed: u64, n: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9E3779B97F4A7C15u64.wrapping_mul(n));
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-    z ^= z >> 31;
-    (z >> 32) as u32
+    z ^ (z >> 31)
 }
 
-/// The per-stroke noise lookup translation in [0, 1)², derived from the stroke
-/// seed via splitmix64 — each stroke samples a fresh part of the tileable field,
-/// deterministically (replay and live == committed hold, §6.2).
-fn noise_offset(seed: u64) -> [f32; 2] {
-    let mut state = seed;
-    [(); 2].map(|_| {
-        state = state.wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-        z ^= z >> 31;
-        // Top 24 bits → [0, 1): exact in f32, uniform.
-        (z >> 40) as f32 / (1u64 << 24) as f32
-    })
+/// The seed the stroke's color-dynamics tile is baked from (`noise.rs`): the
+/// stream's first draw, folded to the u32 the bake's hash takes. A field of its
+/// own per stroke is what keeps strokes side by side from laying one pattern.
+fn noise_seed(seed: u64) -> u32 {
+    (draw(seed, 1) >> 32) as u32
+}
+
+/// The deposit jitter's per-stroke seed: the stream's third draw, folded the same
+/// way. A draw of its own, so the gate's pattern is independent of the tile's,
+/// and a fresh one per stroke, which is what keeps repeated glazes averaging out
+/// instead of compounding one texture.
+fn jitter_seed(seed: u64) -> u32 {
+    (draw(seed, 3) >> 32) as u32
 }

@@ -204,7 +204,7 @@ impl StrokeRenderer {
         // The brush's textures, bound exactly as the swept path binds them — one
         // derivation (`sweep_binds`), and `fs_erase` reads the same prefix-τ,
         // substrate and stroke uniform (the noise field rides along unread).
-        let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate);
+        let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate, &k);
         let draws = sweep_draws(self, &mut scope, rec, &k, &segments);
 
         // The stroke's ceiling, once per piece — `StrokeConstants` resolved it with

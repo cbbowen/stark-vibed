@@ -192,9 +192,10 @@ impl BrushDynamics {
     }
 }
 
-/// The kind of noise field driving [`ColorDynamics`] (§6.2). Each kind
-/// is baked once into a small tileable 2-D texture (`noise.rs`), so lookups are
-/// cheap and deterministic across replay, peers, and builds.
+/// The kind of noise field driving [`ColorDynamics`] (§6.2). Each kind is
+/// baked into a small tileable 2-D texture (`noise.rs`) — per stroke, from the
+/// stroke's seed, and on the CPU, so lookups are cheap and deterministic across
+/// replay, peers, and builds.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub enum NoiseKind {
     /// Uncorrelated per-texel randomness — a fine speckle.
@@ -220,9 +221,8 @@ pub enum NoiseKind {
 /// gesture rather than to the patch of canvas under it: one axis spreads the
 /// color across the extent, the other evolves it along the stroke. The three
 /// noise channels offset the three color channels *of the current color space*
-/// (Oklab `L, a, b`; Mixbox pigment concentrations). The per-stroke `seed`
-/// translates the lookup so each stroke draws a fresh part of the field,
-/// deterministically.
+/// (Oklab `L, a, b`; Mixbox pigment concentrations). The field is baked from
+/// the per-stroke `seed`, so each stroke lays its own, deterministically.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct ColorDynamics {
     /// Which noise field to sample.

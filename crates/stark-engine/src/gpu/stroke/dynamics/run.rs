@@ -316,7 +316,9 @@ impl<'a> DynamicsRun<'a> {
         let cov = r.tips.coverage_view(scene.assets, &rec.brush);
         // Color dynamics for the brush's own `add` paint — the same field and
         // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
-        let noise = r.tips.noise_view(&rec.brush.color_dynamics());
+        let noise = r
+            .tips
+            .noise_view(&rec.brush.color_dynamics(), consts.noise_seed);
 
         // A stroke that starts fresh initializes its first reservoir by a render clear
         // (the driver does the f16 encode), hence RENDER_ATTACHMENT; one resuming from
