@@ -236,10 +236,11 @@ pub struct Signals {
     /// Whether the brush editor dialog is open (rendered at the app root so its
     /// backdrop escapes the panels' `backdrop-filter` containing blocks).
     pub brush_editor_open: Signal<bool>,
-    /// Whether the "Save preset" dialog is open. At the app root for the same reason
-    /// as the editor above: a panel is a `backdrop-filter` containing block, so a
-    /// dialog rendered inside one would be trapped in its box rather than covering
-    /// the window.
+    /// Whether the "Save preset" dialog is open — the name a new preset is asked
+    /// for, raised by the brush editor's "Save new preset" and by the command of
+    /// the same name. At the app root, and mounted *after* the editor there, so it
+    /// stacks over the one dialog that opens it rather than being trapped inside
+    /// its box.
     pub preset_save_open: Signal<bool>,
     /// Bumped whenever the brush color is set from **outside** the color picker —
     /// today only by the eyedropper.
@@ -370,6 +371,18 @@ pub struct Signals {
     /// The brush preset library (`crate::presets`), loaded from `localStorage`
     /// at startup like the shape library.
     pub presets: Signal<Vec<crate::presets::PresetEntry>>,
+    /// The preset the brush in hand was taken from, by name — and still, after
+    /// every edit since. That is what tells it apart from the Brush panel's
+    /// highlighted row (`presets::matches`): the row says the brush still *is* a
+    /// preset, this says which one it *descends from*, and the brush editor's
+    /// "Overwrite preset" is a question about the second. `None` when the tool
+    /// in hand came from no preset the library still has.
+    ///
+    /// Written only where a whole tool arrives (`presets::wear_from`), where a
+    /// name is given to the brush in hand (`presets::save_current`) and where
+    /// the named preset goes (`presets::remove`) — never by an edit, which is
+    /// the point of it.
+    pub preset_in_hand: Signal<Option<String>>,
     /// Rendered preset thumbnails and the offscreen rig that generates them
     /// (`crate::thumbs`).
     pub thumbs: crate::thumbs::ThumbState,
@@ -481,6 +494,12 @@ impl AppState {
     /// same edit that adds its field — the one list in the app that has to
     /// know every dialog, stated once. The GPU-failure modal is deliberately
     /// absent: it has no flag because it may not be dismissed (§5).
+    ///
+    /// **In stacking order**: the same order `main` mounts them in, so the last
+    /// flag up is the dialog on top — which is what Esc lowers, one per press
+    /// (`commands::close_dialogs`). Only the last pair ever actually stacks: the
+    /// preset-name dialog is raised by the brush editor and has to come down
+    /// without taking the editor with it.
     pub fn root_dialogs(self) -> [Signal<bool>; 9] {
         let d = self.dialogs;
         [
@@ -782,6 +801,7 @@ impl AppState {
             shapes: ShapesState::new(),
             substrates: SubstratesState::new(),
             presets: root_signal(Vec::new),
+            preset_in_hand: root_signal(|| None),
             thumbs: crate::thumbs::ThumbState::new(),
             layer_thumbs: crate::layer_thumbs::LayerThumbState::new(),
             gradients: crate::gradients::GradientsState::new(),

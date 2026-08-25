@@ -91,13 +91,18 @@ pub enum Grip {
 
 /// A hold in flight: which slot, what is holding it, and the two brushes the
 /// release is decided against.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Held {
     /// The digit being held.
     pub slot: usize,
     grip: Grip,
     /// The brush the hold displaced — what comes back when it ends.
     base: BrushConfig,
+    /// The preset `base` was taken from (`AppState::preset_in_hand`), put back
+    /// with it. Carried rather than re-derived at the release, because `base`
+    /// may have been edited off its preset — and a hold is a loan of the hand,
+    /// not the act that forgets where the brush in it came from.
+    base_from: Option<String>,
     /// The brush the hold *began* on, once the swap had happened. What the
     /// release compares against to decide whether anything was changed, and so
     /// whether the number has something new to keep.
@@ -177,6 +182,7 @@ pub fn hold(state: AppState, slot: usize, grip: Grip) {
     // Each read is its own statement, so no guard is alive when `wear` dispatches
     // and rewrites the brush signal underneath it (`state::update_brush`).
     let base = presets::worn(state);
+    let base_from = state.preset_in_hand.peek().clone();
     let assigned = state.slots.brushes.peek()[slot];
     if let Some(brush) = assigned {
         presets::wear(state, brush);
@@ -189,6 +195,7 @@ pub fn hold(state: AppState, slot: usize, grip: Grip) {
         slot,
         grip,
         base,
+        base_from,
         entered,
         claimed: false,
     }));
@@ -208,7 +215,7 @@ pub fn hold(state: AppState, slot: usize, grip: Grip) {
 /// A no-op with no hold in flight, which is every other click on those same rows.
 pub fn claim(state: AppState) {
     let mut held = state.slots.held;
-    let Some(h) = *held.peek() else { return };
+    let Some(h) = held.peek().clone() else { return };
     if h.claimed {
         return;
     }
@@ -224,7 +231,7 @@ pub fn claim(state: AppState) {
 /// rolling from 3 to 4 — from ending the hold that 3 still has.
 pub fn release(state: AppState, slot: usize, grip: Grip) {
     let mut held = state.slots.held;
-    let Some(h) = *held.peek() else { return };
+    let Some(h) = held.peek().clone() else { return };
     if h.slot != slot || h.grip != grip {
         return;
     }
@@ -234,7 +241,9 @@ pub fn release(state: AppState, slot: usize, grip: Grip) {
     if let Some(brush) = kept {
         assign(state, h.slot, brush);
     }
-    presets::wear(state, back);
+    // Back through the door it left by, with the name it had: the hold borrowed
+    // the hand, and a preset chosen *during* it went to the slot, not to this.
+    presets::wear_from(state, back, h.base_from);
 }
 
 /// End whatever hold is in flight, whoever made it — for the one event that can
@@ -246,7 +255,7 @@ pub fn release(state: AppState, slot: usize, grip: Grip) {
 /// rules out by re-reading the modifier set, ruled out here by the event that
 /// says the keyboard has gone.
 pub fn release_all(state: AppState) {
-    let held = *state.slots.held.peek();
+    let held = state.slots.held.peek().clone();
     if let Some(h) = held {
         release(state, h.slot, h.grip);
     }
@@ -327,7 +336,7 @@ pub fn SlotOverlay() -> Element {
     // The hold itself, not only its digit: the held row is drawn from the rule it
     // is under (`Held::would_keep`) rather than from what is stored.
     let holding = (state.slots.held)().filter(Held::by_key);
-    let held = holding.map(|h| h.slot);
+    let held = holding.as_ref().map(|h| h.slot);
     // Neither held nor pinned: read nothing else at all, so a rack, a library or a
     // brush that changes during a stroke cannot re-render anything.
     //
@@ -353,7 +362,7 @@ pub fn SlotOverlay() -> Element {
 #[component]
 fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
     let state = use_context::<AppState>();
-    let held = holding.map(|h| h.slot);
+    let held = holding.as_ref().map(|h| h.slot);
     let rack = (state.slots.brushes)();
     // The whole tool, feel and inactive effect included, off the frontend's own
     // brush signal — so the lit row tracks a smoothing drag exactly as it tracks
@@ -378,6 +387,7 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                 // press of that key. Falls back to the stored brush, which is what
                 // an untouched hold and every other row show.
                 let brush = holding
+                    .as_ref()
                     .filter(|h| h.slot == slot)
                     .and_then(|h| h.would_keep(live))
                     .or(rack[slot]);
@@ -721,6 +731,7 @@ mod tests {
             slot: 3,
             grip: Grip::Key,
             base,
+            base_from: None,
             entered,
             claimed: false,
         }

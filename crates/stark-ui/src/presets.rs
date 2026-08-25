@@ -16,8 +16,9 @@
 //!   engine's own parameters are still moving under them — a dynamics axis
 //!   rescaled, a mapping added — that is the difference between a default that
 //!   is *current* and one that is a fossil of whichever version first ran here.
-//! - **The user's own** — everything the Save button puts there, which is all
-//!   `localStorage` holds.
+//! - **The user's own** — everything the brush editor's two save buttons put
+//!   there ("Overwrite preset", "Save new preset"), which is all `localStorage`
+//!   holds.
 //!
 //! The rows differ by one control: the user's wear a trash, the app's wear a
 //! lock. The lock is not a rule the panel enforces, it is a fact it reports —
@@ -511,7 +512,7 @@ pub fn apply(state: AppState, name: &str) {
     // nothing, which is exactly the case of filling a slot with the brush already
     // in hand. Said here rather than in [`wear`], which the hold uses itself.
     slots::claim(state);
-    wear(state, entry.brush);
+    wear_from(state, entry.brush, Some(entry.name));
 }
 
 /// Put `brush` on: make it the live brush, **keeping the painting color** and
@@ -533,6 +534,20 @@ pub fn apply(state: AppState, name: &str) {
 /// library, unseen by this document) falls back to the round tip rather than
 /// pointing at an asset the engine would silently substitute.
 pub fn wear(state: AppState, brush: BrushConfig) {
+    // A snapshot's provenance is whichever preset it still is: a quick slot holds
+    // no name of its own (`PresetEntry::slot`), so this is the same answer the
+    // rack's overlay gives when it labels the row.
+    let from = name_of(&state.presets.peek(), &brush);
+    wear_from(state, brush, from);
+}
+
+/// [`wear`], told which preset the tool came from — what
+/// [`AppState::preset_in_hand`] takes. For the two callers that know better than
+/// a lookup by snapshot: a preset row clicked ([`apply`]), whose name is exact
+/// even where two entries hold the same brush, and a quick-slot hold ending
+/// (`slots::release`), which puts back a brush that may have been edited away
+/// from its preset and must not forget which one that was.
+pub fn wear_from(state: AppState, brush: BrushConfig, from: Option<String>) {
     // A whole tool arriving is not an adjustment of the one you had — not even in
     // the case where it differs in nothing but its size, which the tour would
     // otherwise read as somebody reaching for the size slider (§24.2). This is the
@@ -556,6 +571,8 @@ pub fn wear(state: AppState, brush: BrushConfig) {
         b.paint.color = rgb;
     });
     crate::tutor::not_reaching(state, false);
+    let mut in_hand = state.preset_in_hand;
+    in_hand.set(from);
 }
 
 /// Put the app on its startup brush: the first preset in the library, or — for a
@@ -596,7 +613,7 @@ pub fn save_current(state: AppState, name: String) {
         match list.iter_mut().find(|e| e.name == name) {
             Some(e) => e.brush = brush,
             None => list.push(PresetEntry {
-                name,
+                name: name.clone(),
                 brush,
                 // The user's own: no home on the rack, and storage's to keep.
                 slot: None,
@@ -605,6 +622,9 @@ pub fn save_current(state: AppState, name: String) {
         }
     }
     persist(&entries.read());
+    // The brush in hand now *is* this preset, whichever it was taken from.
+    let mut in_hand = state.preset_in_hand;
+    in_hand.set(Some(name));
 }
 
 /// Drop one of the user's presets from the library. The live brush is untouched
@@ -618,6 +638,15 @@ pub fn remove(state: AppState, name: &str) {
     let mut entries = state.presets;
     entries.write().retain(|e| e.builtin || e.name != name);
     persist(&entries.read());
+    // A brush taken from a preset that is gone descends from nothing the library
+    // has: no name to show for it, and nothing left to overwrite. Bound before the
+    // `if`: a `peek` in the condition stays borrowed through a body that writes
+    // the same signal.
+    let mut in_hand = state.preset_in_hand;
+    let was_in_hand = in_hand.peek().as_deref() == Some(name);
+    if was_in_hand {
+        in_hand.set(None);
+    }
 }
 
 /// The first free "Preset N" name — the default for a save with the name field
@@ -652,6 +681,58 @@ pub fn matches(current: &BrushConfig, preset: &BrushConfig) -> bool {
     let mut p = *preset;
     p.paint.color = current.paint.color;
     p == *current
+}
+
+/// What "Overwrite preset" can do with the brush in hand. The brush editor's
+/// button is drawn from this — dead in every arm but one, with the arm as its
+/// tooltip — and [`overwrite_in_hand`] acts on that one arm. A pure rule over the
+/// library, the name in hand ([`AppState::preset_in_hand`]) and the brush, so a
+/// test can reach it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Overwrite {
+    /// The brush was taken from no preset the library still has.
+    Nothing,
+    /// The preset in hand is one of the app's own, which is not on offer: the
+    /// next start rebuilds it from its definition, so the write would not last
+    /// (see [`save_current`]).
+    Builtin(String),
+    /// The preset in hand already *is* this brush (color aside): nothing to write.
+    Unchanged(String),
+    /// Replace the named preset's snapshot with the brush in hand.
+    Ready(String),
+}
+
+/// Decide [`Overwrite`] for the brush in hand.
+pub fn overwrite(entries: &[PresetEntry], in_hand: Option<&str>, brush: &BrushConfig) -> Overwrite {
+    let Some(entry) = in_hand.and_then(|name| entries.iter().find(|e| e.name == name)) else {
+        return Overwrite::Nothing;
+    };
+    let name = entry.name.clone();
+    if entry.builtin {
+        Overwrite::Builtin(name)
+    } else if matches(brush, &entry.brush) {
+        Overwrite::Unchanged(name)
+    } else {
+        Overwrite::Ready(name)
+    }
+}
+
+/// Write the brush in hand back over the preset it was taken from — the brush
+/// editor's "Overwrite preset". A no-op unless [`overwrite`] says
+/// [`Overwrite::Ready`]: the button is dead in every other case, and nothing else
+/// may do what the button would not.
+pub fn overwrite_in_hand(state: AppState) {
+    let brush = worn(state);
+    // Its own statement: the guards are `peek`s, and `save_current` writes the
+    // very signals being read.
+    let verdict = overwrite(
+        &state.presets.peek(),
+        state.preset_in_hand.peek().as_deref(),
+        &brush,
+    );
+    if let Overwrite::Ready(name) = verdict {
+        save_current(state, name);
+    }
 }
 
 // --- persistence ----------------------------------------------------------
@@ -789,5 +870,51 @@ mod tests {
         // two orders have to be checked against each other.
         let first = shipped().into_iter().next().expect("the app ships presets");
         assert_ne!(first.slot, Some(slots::ERASER));
+    }
+
+    #[test]
+    fn overwrite_answers_for_the_preset_in_hand() {
+        // The rule the brush editor's button is drawn from: dead with no name in
+        // hand or a name the library no longer has, dead on the app's own (the
+        // write would not outlast the next start), dead where there is nothing
+        // to write, and live only for the user's own preset the brush has moved
+        // off — by something a preset carries, which the color is not.
+        let mut entries = shipped();
+        let mine = BrushConfig {
+            size: 33.0,
+            ..BrushConfig::default()
+        };
+        entries.push(PresetEntry {
+            name: "Mine".into(),
+            brush: mine,
+            slot: None,
+            builtin: false,
+        });
+        let builtin = entries[0].name.clone();
+        let edited = BrushConfig { size: 34.0, ..mine };
+        let mut recolored = mine;
+        recolored.paint.color = [0.9, 0.1, 0.2];
+
+        assert_eq!(overwrite(&entries, None, &edited), Overwrite::Nothing);
+        assert_eq!(
+            overwrite(&entries, Some("Gone"), &edited),
+            Overwrite::Nothing
+        );
+        assert_eq!(
+            overwrite(&entries, Some(&builtin), &edited),
+            Overwrite::Builtin(builtin)
+        );
+        assert_eq!(
+            overwrite(&entries, Some("Mine"), &mine),
+            Overwrite::Unchanged("Mine".into())
+        );
+        assert_eq!(
+            overwrite(&entries, Some("Mine"), &recolored),
+            Overwrite::Unchanged("Mine".into())
+        );
+        assert_eq!(
+            overwrite(&entries, Some("Mine"), &edited),
+            Overwrite::Ready("Mine".into())
+        );
     }
 }

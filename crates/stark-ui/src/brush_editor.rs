@@ -44,11 +44,13 @@ use stark_model::geom::Vec2;
 use dioxus::html::HasFileData;
 
 use crate::brush_config::{BrushConfig, BrushEffectType};
+use crate::commands::{self, Command};
 use crate::icons::{self, icon};
 use crate::panels::brush::{
     MAX_FLOW, MAX_RADIUS, MAX_TAPER, MAX_TOOTH_SOFTNESS, MIN_RADIUS, set_orientation, set_shape,
 };
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
+use crate::presets;
 use crate::render::Renderer;
 use crate::state::{AppState, update_brush};
 use crate::widgets::{Modal, Slider};
@@ -381,13 +383,78 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         _ => ["Lightness", "Green \u{2194} red", "Blue \u{2194} yellow"],
     };
 
+    // What the header's "Overwrite preset" can do (`presets::overwrite`), asked
+    // of the library, the name in hand and the brush as they are *now* — so the
+    // button wakes with the first edit that moves the brush off its preset and
+    // goes dead again the moment it is written back.
+    let in_hand = (state.preset_in_hand)();
+    let verdict = presets::overwrite(&state.presets.read(), in_hand.as_deref(), &brush);
+    let overwrite_ready = matches!(verdict, presets::Overwrite::Ready(_));
+    let overwrite_title = match &verdict {
+        presets::Overwrite::Nothing => {
+            "The brush was not taken from a preset \u{2014} save a new one".to_string()
+        }
+        presets::Overwrite::Builtin(name) => format!(
+            "\u{201C}{name}\u{201D} is one of the app's own presets, which it keeps up to date \
+             \u{2014} save a new one instead"
+        ),
+        presets::Overwrite::Unchanged(name) => {
+            format!("\u{201C}{name}\u{201D} already is this brush")
+        }
+        presets::Overwrite::Ready(name) => {
+            format!("Replace \u{201C}{name}\u{201D} with the brush in hand")
+        }
+    };
+    let save_new_title = commands::advertised(
+        "Keep the brush in hand under a new name",
+        Command::SavePreset,
+        &state.bindings.read(),
+    );
+
     rsx! {
         Modal { class: "be-dialog", "data-be": "{BrushPart::Dialog.key()}", on_close,
             div { class: "be-header",
-                div { class: "modal-title", "Brush" }
-                button { class: "btn btn-primary", onclick: move |_| on_close.call(()),
-                    {icon(icons::DONE)}
-                    "Done"
+                div { class: "modal-title",
+                    "Brush"
+                    // Which preset the brush descends from — what "Overwrite preset"
+                    // would write over, said where it can be read without hovering
+                    // the button for it.
+                    if let Some(name) = &in_hand {
+                        span { class: "be-from", "{name}" }
+                    }
+                }
+                // The three ways out of the dialog's work, in the order the work
+                // happens: keep the tuned brush where it came from, keep it under a
+                // new name, or just keep it in hand. Saving lives here rather than
+                // on the Brush panel because the brush worth keeping is the one that
+                // has just been tuned.
+                div { class: "be-header-actions",
+                    // Dead in every arm of `presets::overwrite` but one, and the
+                    // tooltip says which: a built-in is rebuilt next start, so the
+                    // write would not last; a brush still equal to its preset has
+                    // nothing to write.
+                    button {
+                        class: "btn btn-secondary",
+                        disabled: !overwrite_ready,
+                        title: "{overwrite_title}",
+                        onclick: move |_| presets::overwrite_in_hand(state),
+                        {icon(icons::SAVE)}
+                        "Overwrite preset"
+                    }
+                    // Its own words, the registry's act (§25.1): the command is
+                    // what the palette and a chord reach, so the tooltip advertises
+                    // it, and the dialog it raises stacks over this one.
+                    button {
+                        class: "btn btn-secondary",
+                        title: "{save_new_title}",
+                        onclick: move |_| Command::SavePreset.run(state),
+                        {icon(icons::ADD)}
+                        "Save new preset"
+                    }
+                    button { class: "btn btn-primary", onclick: move |_| on_close.call(()),
+                        {icon(icons::DONE)}
+                        "Done"
+                    }
                 }
             }
 

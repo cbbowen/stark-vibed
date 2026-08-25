@@ -863,11 +863,8 @@ static LESSONS: &[Lesson] = &[
         // The panel's controls, all of them: the two sliders, the Edit brush… button
         // and a row of the library below. Touch any one and the panel has been found,
         // which is the only thing the card is there to say — so the rest of what it
-        // lists is a paragraph nobody needs read to them.
-        //
-        // The Save preset button is the one control missing from this list, and it is
-        // missing because there is no deed for it. It is also the one control nobody
-        // reaches before they have used the others.
+        // lists is a paragraph nobody needs read to them. (Saving a preset is the
+        // editor's act, reached through the same button.)
         answer: Answer::Known(&[
             Deed::TunedBrush,
             Deed::AppliedPreset,

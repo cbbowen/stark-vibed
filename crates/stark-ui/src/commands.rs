@@ -1590,18 +1590,26 @@ fn dialog_open(state: AppState) -> bool {
     state.root_dialogs().iter().any(|flag| *flag.peek())
 }
 
-/// Lower whichever root dialogs are up; `true` if any was. Lowering the flag
-/// *is* the dialog's own close — every `on_close` in `main` does nothing else
-/// (`AppState::root_dialogs`).
+/// Lower the root dialog on top, if one is up; `true` if one was. Lowering the
+/// flag *is* the dialog's own close — every `on_close` in `main` does nothing
+/// else (`AppState::root_dialogs`).
+///
+/// The topmost only, one per press: the list is in stacking order, and the
+/// preset-name dialog stands over the brush editor that raised it — an Esc
+/// meant for the name must not take the editor down with it.
 fn close_dialogs(state: AppState) -> bool {
-    let mut any = false;
-    for mut flag in state.root_dialogs() {
-        if *flag.peek() {
+    let top = state
+        .root_dialogs()
+        .into_iter()
+        .rev()
+        .find(|flag| *flag.peek());
+    match top {
+        Some(mut flag) => {
             flag.set(false);
-            any = true;
+            true
         }
+        None => false,
     }
-    any
 }
 
 /// Undo or redo, having first put down whatever was in hand.

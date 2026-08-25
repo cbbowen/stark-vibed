@@ -592,8 +592,10 @@ fn app() -> Element {
                 }
             }
 
-            // "Save preset", asked for by the Brush panel. Mounted only while open, so
-            // each open proposes a fresh name for the library as it stands now.
+            // The name for a new preset, asked for by the brush editor's "Save new
+            // preset" (and the command of that name) — after the editor, so it stacks
+            // over it (`AppState::root_dialogs`). Mounted only while open, so each
+            // open proposes a fresh name for the library as it stands now.
             if (state.preset_save_open)() {
                 PresetSaveModal {
                     on_close: move |_| {
