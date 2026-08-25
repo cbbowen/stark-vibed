@@ -542,6 +542,24 @@ to the last digit stays empty rather than re-seeding itself from the library on
 the next start — `storage::load_list` tells "never set" from "set to nothing"
 apart, which is the whole reason it returns an option of a vector.
 
+**The trash is held down, not clicked** — the only one in the app that is. Every
+other trash stands beside what it removes; this one rides on a control whose own
+tap is the commonest act on the rack, at the end of the row nearest the painting,
+which is the end a pen coming off the canvas meets first — and what it takes is a
+binding the action log never held, so no undo stands behind it. A tap that landed
+on it emptied the slot the hand was reaching for. So a tap on the trash is the
+row's own tap, and clearing takes the trash held down: the disc fills red around
+the icon for as long as it is pressed, and the slot goes when the fill closes.
+The fill *is* the clock — the rack clears on the animation's own end and keeps no
+timer, so the duration is written once, in the stylesheet, and what the disc
+shows and what happens cannot come apart. A tap shows the first sliver of it,
+which is how a hand that expected a click learns there is a hold to make;
+releasing, or sliding off, before it closes is a tap. The row, for its part,
+applies a slot only on a click that closes a press it heard — a dialog's rule
+(§25.7), for the same device: the hold removes the row while the pen is still
+down, and a pen's release is hit-tested afresh, so the click it makes lands on
+whichever row has moved up under it.
+
 Transient, it takes no pointer at all: the gesture it belongs to then is
 hold-*and-draw*, and the hand is very often painting directly under it. Pinning
 is the user asking for that strip to be a control and paying for it in canvas,

@@ -52,8 +52,10 @@
 //! is the whole of what a hand without one gets ([`pick`]) — that, and the one
 //! operation the rule cannot express, since a hold *assigns* and no length of
 //! holding can mean *nothing*: a filled row wears a trash that empties the slot
-//! ([`clear`]).
+//! when it is held down ([`clear`]) — held, because a tap on it is a tap on the
+//! row, and a row's tap picks.
 
+use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::brush_config::BrushConfig;
@@ -288,6 +290,25 @@ pub fn release_all(state: AppState) {
 /// for the reason the pin exists — this is the only place the rack is a list of
 /// controls rather than an answer to "what is on 4".
 ///
+/// **It is held, not clicked** — the one trash in the app that is. Everywhere else
+/// a trash stands beside the thing it removes; here it rides *on* a control whose
+/// own tap is the commonest act on the rack, at the end of the row nearest the
+/// painting, which is the end a pen coming off the canvas reaches first — and what
+/// it takes is a binding the action log never held, so there is no undo behind it.
+/// A tap that landed on it emptied the slot the hand was reaching for. So a tap on
+/// the trash is a tap on the row ([`pick`]), and clearing takes the trash held
+/// down: the disc fills red around the icon for as long as it is pressed, and the
+/// slot goes when the fill closes. The fill is the clock — `onanimationend` is
+/// what clears, so what the disc shows and what happens are one thing rather than
+/// a stylesheet duration and a timer agreeing — and a tap shows the first sliver
+/// of it, which is how a hand that expected a click finds out there is a hold to
+/// be made. Releasing, or sliding off, before the fill closes is a tap.
+///
+/// Which is why the rows arm on their own press, as a dialog's backdrop does
+/// (`widgets::Modal`, §25.7): the hold removes the row while the pen is still
+/// down, and a pen's release is hit-tested afresh, so the click it makes lands on
+/// whichever row has moved up under it — and would pick that.
+///
 /// Two things it deliberately does not do:
 ///
 /// - **It never takes the pointer while it is transient** (`pointer-events` in
@@ -362,6 +383,13 @@ pub fn SlotOverlay() -> Element {
 #[component]
 fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
     let state = use_context::<AppState>();
+    // Which row heard the press in flight, so a click applies a row only when it
+    // closes a press that landed there (see [`SlotOverlay`] on the pen's release).
+    let mut pressed: Signal<Option<usize>> = use_signal(|| None);
+    // The trash being held down right now, if any: its row wears the fill for as
+    // long as this says so, and nothing else keeps time.
+    let mut arming: Signal<Option<usize>> = use_signal(|| None);
+    let arming_now = arming();
     let held = holding.as_ref().map(|h| h.slot);
     let rack = (state.slots.brushes)();
     // The whole tool, feel and inactive effect included, off the frontend's own
@@ -462,6 +490,11 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                         (n, true) => format!("Click to paint with this, or hold {n}"),
                         (n, false) => format!("Empty. Hold {n} and click a preset to fill it"),
                     };
+                    let trash = if arming_now == Some(slot) {
+                        "slot-clear arming"
+                    } else {
+                        "slot-clear"
+                    };
                     rsx! {
                         div {
                             key: "{slot}",
@@ -473,7 +506,21 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                             // the same way faded chrome stops taking clicks
                             // (`.chrome.dimmed`) rather than by every handler
                             // asking whether it is visible.
-                            onclick: move |_| pick(state, slot),
+                            onpointerdown: move |_| pressed.set(Some(slot)),
+                            // Terminal, as every disarm is: a press that was
+                            // cancelled, or left the row, is not this row's click
+                            // whatever lands here next.
+                            onpointercancel: move |_| pressed.set(None),
+                            onpointerleave: move |_| pressed.set(None),
+                            onclick: move |_| {
+                                // Bound, not read in the `if`: the read would be
+                                // held through a body that writes the same signal.
+                                let heard_the_press = pressed() == Some(slot);
+                                pressed.set(None);
+                                if heard_the_press {
+                                    pick(state, slot);
+                                }
+                            },
                             span { class: "slot-row-digit",
                                 if slot == ERASER {
                                     {icon(icons::ERASER)}
@@ -501,13 +548,41 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                                 // stylesheet grants the pointer there and nowhere
                                 // else, so nothing here asks whether the rack is a
                                 // control right now.
+                                //
+                                // Held rather than clicked, alone among them: see
+                                // [`SlotOverlay`]. The press bubbles on to the row,
+                                // so a tap here is the row's own tap and needs no
+                                // click of its own. Nothing here keeps time — the
+                                // fill's own end is what clears, so a hold that
+                                // outlived its row could not fire, there being no
+                                // element left for an animation to end on.
                                 button {
-                                    class: "slot-clear",
-                                    title: "Clear this slot",
-                                    onclick: move |e| {
-                                        // The row beneath applies the slot; a
-                                        // click on the trash is not also that.
-                                        e.stop_propagation();
+                                    class: trash,
+                                    title: "Hold to clear this slot",
+                                    onpointerdown: move |e| {
+                                        if e.trigger_button() == Some(MouseButton::Primary) {
+                                            arming.set(Some(slot));
+                                        }
+                                    },
+                                    // The release ends it, or the pointer leaving —
+                                    // which is what sliding off a button has always
+                                    // meant. Taking the class off cancels the
+                                    // animation, and a cancelled animation never
+                                    // ends: a tap cannot clear.
+                                    onpointerup: move |_| arming.set(None),
+                                    onpointercancel: move |_| arming.set(None),
+                                    onpointerleave: move |_| arming.set(None),
+                                    // The fill closing is the act. By name, so an
+                                    // animation the icon inside might one day carry
+                                    // cannot end a hold by bubbling up to here.
+                                    onanimationend: move |e| {
+                                        if e.animation_name() != "slot-clear-arm" {
+                                            return;
+                                        }
+                                        arming.set(None);
+                                        // The press is spent: the release that
+                                        // follows is nobody's click.
+                                        pressed.set(None);
                                         clear(state, slot);
                                     },
                                     {icon(icons::REMOVE)}
@@ -580,8 +655,8 @@ pub fn assign(state: AppState, slot: usize, brush: BrushConfig) {
     persist(&brushes.read());
 }
 
-/// Empty `slot` and persist the rack — the trash on a pinned row
-/// ([`SlotOverlay`]).
+/// Empty `slot` and persist the rack — the trash on a pinned row, held down until
+/// its fill closes ([`SlotOverlay`]).
 ///
 /// The live brush is untouched, exactly as removing a preset leaves it
 /// (`presets::remove`): what goes is the *binding*, not the tool. A slot cleared

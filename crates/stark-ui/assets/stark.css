@@ -1461,7 +1461,8 @@ hr {
    gradient pop-out's rows joined for the same reason: another full-bleed picture with
    its trash overlaid on the far end, lifted off it the same way. What is not shared
    is what reveals it: a preset row is always a control, while a rack row is one only
-   while the rack is pinned. */
+   while the rack is pinned — and what fires it: the rack's is held down, not clicked
+   (`.slot-clear.arming`, with the rack below). */
 .preset-remove,
 .slot-clear,
 .gradient-remove {
@@ -1751,6 +1752,59 @@ hr {
 .slot-row-digit .icon svg {
   width: 11px;
   height: 11px;
+}
+
+/* The rack's trash is held, not clicked (`slots::SlotOverlay`): it rides on a row
+   whose own tap is the commonest act here, at the end nearest the painting, and
+   what it takes has no undo behind it. So a tap on it is the row's tap, and the
+   button says what holding it would do by doing it slowly: pressed, the disc fills
+   red around the icon, and the slot goes when the fill closes.
+
+   The fill is the clock. `slots.rs` clears on `animationend` and keeps no timer of
+   its own, so the duration is stated once, here, and what the disc shows and what
+   happens cannot be two things. Which is why this must never be shortened for
+   `prefers-reduced-motion` or the like: it is not decoration, it is the hold. A
+   tap shows its first sliver — a flick of red gone with the finger — which is how a
+   hand that expected a click finds out there is a hold to be made.
+
+   Linear, being a clock. The whole of the row's height answers to it (`::before`),
+   so a pen holding still on an 18px disc is not being asked to hold still to the
+   pixel, while sliding off to back out still means sliding off; a wider target
+   steals nothing from the row, since what it steals is a tap and a tap here is the
+   row's own. Written at the hover rule's own weight because it is under the pointer
+   for as long as it is armed, and the hover would otherwise ghost the fill. */
+@property --slot-clear-sweep {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.slot-clear {
+  position: relative;
+}
+
+.slot-clear::before {
+  content: "";
+  position: absolute;
+  inset: -9px;
+}
+
+.slot-overlay.pinned .slot-row .slot-clear.arming {
+  color: #fff;
+  opacity: 1;
+  background: conic-gradient(var(--danger) var(--slot-clear-sweep), #0000 0);
+  transform: scale(1.2);
+  transition: transform 120ms ease-out;
+  animation: slot-clear-arm 600ms linear forwards;
+}
+
+@keyframes slot-clear-arm {
+  from {
+    --slot-clear-sweep: 0deg;
+  }
+  to {
+    --slot-clear-sweep: 360deg;
+  }
 }
 
 /* A hint that is a refusal rather than a warning about what will happen. Amber, not
