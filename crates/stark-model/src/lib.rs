@@ -79,10 +79,16 @@ pub use substrate::{SubstrateId, SubstrateScale};
 /// [`Gradient`](gradient::Gradient) — a type outside `document` entirely. Every
 /// deserialization gate in the crate spells the bound this way now
 /// ([`SelectionOp::at`](document::SelectionOp::at),
-/// [`FillOp::with_paint`](document::FillOp::with_paint),
-/// `Gradient::clamped`), and each of them at some point spelled it `clamp` instead
-/// — passing a `NaN` opacity through the very funnel that exists to stop one. One
-/// definition, so the policy cannot be half-remembered at the next gate.
+/// [`FillOp::with_paint`](document::FillOp::with_paint)), and each of them at some
+/// point spelled it `clamp` instead — passing a `NaN` opacity through the very
+/// funnel that exists to stop one. One definition, so the policy cannot be
+/// half-remembered at the next gate.
+///
+/// A gradient used to be a third caller, through a `Gradient::clamped` that is gone:
+/// a ramp's stops are [`Srgb`]s, which cannot be built outside the cube, so the
+/// newtype holds there what this holds here (see
+/// [`Gradient::new`](gradient::Gradient::new)). That is the shape to prefer where a
+/// type can carry the bound — this is for the knobs that are bare `f32`s.
 pub(crate) const fn clamp01(x: f32) -> f32 {
     x.max(0.0).min(1.0)
 }
@@ -113,6 +119,31 @@ pub(crate) fn finite_or(x: f32, fallback: f32) -> f32 {
 /// drain and tapers, a selection's feather, a fill's feather.
 pub(crate) fn at_least_zero(x: f32, fallback: f32) -> f32 {
     finite_or(x, fallback).max(0.0)
+}
+
+/// `x` held to `[lo, hi]`, with a non-finite `x` landing on `neutral` —
+/// [`finite_or`]'s companion for a knob that has a range at **both** ends.
+///
+/// The third shape the crate's gates come in, and the one that was missing: every
+/// bounded knob spelled it inline instead, which is five copies of six lines and
+/// one of the two orderings that matter. `is_finite` **first**, then `clamp` — a
+/// bare `clamp` returns the `NaN` it exists to catch, since both of its comparisons
+/// against one are false ([`clamp01`] is the same argument for the unit interval,
+/// where `max`-then-`min` says it without a branch).
+///
+/// Falling back to `neutral` rather than to a bound is
+/// [`ColorAdjust::sanitized`](document::ColorAdjust)'s argument, and it is why this
+/// takes three numbers rather than two: `NaN` says nothing about which end was
+/// meant, so the answer is the setting that cannot make a picture worse — which for
+/// an exposure is 0, for a contrast 1, and for a blend's bend
+/// [`DRAGO_K`](document::DRAGO_K). A bound would have to pick one end and be wrong
+/// half the time.
+pub(crate) fn finite_in(x: f32, neutral: f32, (lo, hi): (f32, f32)) -> f32 {
+    if x.is_finite() {
+        x.clamp(lo, hi)
+    } else {
+        neutral
+    }
 }
 
 /// `i · span / out_of` — where the `i`th of `out_of` evenly-spaced picks lands in a

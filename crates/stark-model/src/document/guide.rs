@@ -89,6 +89,7 @@ use glam::{Mat3, Quat, Vec2, Vec3};
 
 use super::action::ActionId;
 use crate::geom::{Ellipse, principal_axis};
+use crate::{finite_in, finite_or};
 
 /// The shortest focal length a guide may hold, canvas px (`sanitized`).
 ///
@@ -356,12 +357,6 @@ impl PerspectiveGuide {
     /// divide by it.
     #[must_use]
     pub fn sanitized(self) -> Self {
-        /// A finite replacement, or the fallback — the same shape three times
-        /// below, and worth naming so the fallback reads beside what it stands in
-        /// for rather than after two lines of `is_finite`.
-        fn or(v: f32, fallback: f32) -> f32 {
-            if v.is_finite() { v } else { fallback }
-        }
         let default = Self::default();
         Self {
             center: if self.center.is_finite() {
@@ -369,7 +364,7 @@ impl PerspectiveGuide {
             } else {
                 default.center
             },
-            focal: or(self.focal, default.focal).max(MIN_FOCAL),
+            focal: finite_or(self.focal, default.focal).max(MIN_FOCAL),
             // Left untouched once it is a rotation, so this is idempotent. A
             // quaternion that is not one — un-normalized by a drag's accumulated
             // error past the tolerance, or `NaN` — is renormalized, and one with
@@ -387,7 +382,7 @@ impl PerspectiveGuide {
             } else {
                 default.lattice
             },
-            opacity: or(self.opacity, 1.0).clamp(0.0, 1.0),
+            opacity: finite_in(self.opacity, 1.0, (0.0, 1.0)),
             pairs: self.pairs,
         }
     }

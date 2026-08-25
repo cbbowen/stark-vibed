@@ -393,11 +393,7 @@ impl BlendMode {
     pub fn sanitized(self) -> Self {
         match self {
             Self::Drago { k } => Self::Drago {
-                k: if k.is_finite() {
-                    k.clamp(DRAGO_K_RANGE.0, DRAGO_K_RANGE.1)
-                } else {
-                    DRAGO_K
-                },
+                k: crate::finite_in(k, DRAGO_K, DRAGO_K_RANGE),
             },
             Self::Normal | Self::Reinhard | Self::Multiply => self,
         }

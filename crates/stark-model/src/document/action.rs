@@ -675,17 +675,12 @@ impl ActionKind {
                 above,
                 filter: filter.sanitized(),
             },
+            // A layer's opacity is a coverage weight the compositor multiplies by;
+            // a NaN would take the whole layer with it. Not `clamp01`, whose NaN
+            // lands on 0 — an opacity that says nothing should leave the layer
+            // *visible*, which is the neutral setting rather than the near end.
             ActionKind::SetLayerOpacity(id, a) => {
-                // A layer's opacity is a coverage weight the compositor multiplies
-                // by; a NaN would take the whole layer with it.
-                ActionKind::SetLayerOpacity(
-                    id,
-                    if a.is_finite() {
-                        a.clamp(0.0, 1.0)
-                    } else {
-                        1.0
-                    },
-                )
+                ActionKind::SetLayerOpacity(id, crate::finite_in(a, 1.0, (0.0, 1.0)))
             }
             // A guide's every number reaches the guide pass's uniform, and now
             // the saved log as well — `PerspectiveGuide::sanitized` is where what

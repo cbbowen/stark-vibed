@@ -27,6 +27,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::finite_in;
+
 /// What a filter layer does to the stack beneath it (§21.2).
 ///
 /// Three variants, because three are built. The enum is the seam the rest of §21.7
@@ -266,23 +268,16 @@ impl ColorAdjust {
     /// than to a bound: `NaN` says nothing about which end of the range was meant,
     /// and the identity is the one answer that cannot make a picture worse.
     pub fn sanitized(self) -> Self {
-        let clamp = |v: f32, neutral: f32, (lo, hi): (f32, f32)| {
-            if v.is_finite() {
-                v.clamp(lo, hi)
-            } else {
-                neutral
-            }
-        };
         Self {
-            exposure: clamp(self.exposure, 0.0, Self::EXPOSURE),
-            contrast: clamp(self.contrast, 1.0, Self::CONTRAST),
-            saturation: clamp(self.saturation, 1.0, Self::SATURATION),
-            hue: clamp(self.hue, 0.0, Self::HUE),
+            exposure: finite_in(self.exposure, 0.0, Self::EXPOSURE),
+            contrast: finite_in(self.contrast, 1.0, Self::CONTRAST),
+            saturation: finite_in(self.saturation, 1.0, Self::SATURATION),
+            hue: finite_in(self.hue, 0.0, Self::HUE),
             // Per component, so one unusable axis of a cast does not throw away the
             // other — the same reason each scalar knob falls back on its own.
             tint: [
-                clamp(self.tint[0], 0.0, Self::TINT),
-                clamp(self.tint[1], 0.0, Self::TINT),
+                finite_in(self.tint[0], 0.0, Self::TINT),
+                finite_in(self.tint[1], 0.0, Self::TINT),
             ],
         }
     }
@@ -350,16 +345,9 @@ impl ChromaticAberration {
     /// [`ColorAdjust::sanitized`]'s reason: `NaN` says nothing about which end of
     /// the range was meant, and the identity cannot make a picture worse.
     pub fn sanitized(self) -> Self {
-        let clamp = |v: f32, neutral: f32, (lo, hi): (f32, f32)| {
-            if v.is_finite() {
-                v.clamp(lo, hi)
-            } else {
-                neutral
-            }
-        };
         Self {
-            spread: clamp(self.spread, 0.0, Self::SPREAD),
-            angle: clamp(self.angle, 0.0, Self::ANGLE),
+            spread: finite_in(self.spread, 0.0, Self::SPREAD),
+            angle: finite_in(self.angle, 0.0, Self::ANGLE),
         }
     }
 }
