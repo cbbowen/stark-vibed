@@ -33,12 +33,7 @@ import package::lib::sample::{load1};
 
 struct Integrate {
     // The paint effect's opacity (`PaintEffect::opacity`, §6.2) in `.x`. 1 is the
-    // identity, and taken as an exact branch below.
-    //
-    // `.y` = the selection's strength (`Selection::strength`, §6.8): the whole
-    // mask's opacity, which every *gating* read of the mask is scaled by and which
-    // the mask texture itself does not carry. `.zw` unused — the uniform's 16-byte
-    // round (§6.10).
+    // identity, and taken as an exact branch below. Incorporates the selection's strength (`Selection::strength`, §6.8): the whole mask's opacity, which every *gating* read of the mask is scaled by and which the mask texture itself does not carry.
     params: vec4<f32>,
 }
 
@@ -131,6 +126,16 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     var m1 = s_a.y;
     let col1 = latent_unpremult(s_col, s_c.a, PAINT_EPS);
 
+    // Gate by the selection: the tile keeps its base value where the mask is 0 and
+    // takes the stroke where it is 1 (§6.8). A *lerp of the result*, not a scaling of
+    // the stroke's coverage — a half-covered mask texel must read as half of the
+    // finished paint, which for an opaque brush is nothing like half its optical
+    // depth. That makes the mask's own antialiasing/feather the stroke's edge.
+    // Scaled by the whole mask's strength: the coverage a mask *holds* is what its
+    // ops struck, and how strongly that gates is one number on top of it (§6.8) —
+    // so the two are only a mask together, and this is where they meet.
+    let effective_opacity = ig.params.x * load1(selection, c).r;
+
     // The paint effect's opacity (§6.2): the whole parcel scaled as one laid
     // amount, `erase.wesl`'s arithmetic run in the laying direction. The coverage
     // the parcel would have laid saturates at 1 however long the stroke worked
@@ -143,7 +148,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // An exact branch at 1, `integrate.wesl`'s own untouched-texel reason one
     // level up: the round trip below lands an ulp off now and then, and every
     // full-opacity stroke would pay it.
-    if ig.params.x != 1.0 {
+    if effective_opacity != 1.0 {
         // The parcel's own coverage, from the unsaturated mass — the same number
         // the color target's `.a` carries, except that the saturated copy cannot
         // be inverted back.
@@ -151,7 +156,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // The scaled coverage, inverted through the slab law into the mass that
         // shows exactly that much. `1 − opacity·w ≥ 1 − opacity > 0` on this
         // branch, so nothing cancels and the log has an argument.
-        let ms = -log(1.0 - ig.params.x * w) / OPACITY_K;
+        let ms = -log(1.0 - effective_opacity * w) / OPACITY_K;
         // Less of the same parcel (§6.1): the height falls in proportion, so the
         // per-unit opacity of what arrives is unchanged — a half-opacity stroke
         // is half a stroke, not full-bodied translucent material.
@@ -173,18 +178,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let merged_c = vec4<f32>(merged.lat, op);
     let merged_a = vec4<f32>(h, 0.0, 0.0, 0.0);
 
-    // Gate by the selection: the tile keeps its base value where the mask is 0 and
-    // takes the stroke where it is 1 (§6.8). A *lerp of the result*, not a scaling of
-    // the stroke's coverage — a half-covered mask texel must read as half of the
-    // finished paint, which for an opaque brush is nothing like half its optical
-    // depth. That makes the mask's own antialiasing/feather the stroke's edge.
-    // Scaled by the whole mask's strength: the coverage a mask *holds* is what its
-    // ops struck, and how strongly that gates is one number on top of it (§6.8) —
-    // so the two are only a mask together, and this is where they meet.
-    let sel = load1(selection, c).r * ig.params.y;
-
-    out.color = mix(base_c, merged_c, sel);
-    out.aux = mix(vec4<f32>(base_a.x, 0.0, 0.0, 0.0), merged_a, sel);
-    @if(resid) out.resid = mix(base_r, vec4<f32>(merged.res, op), sel);
+    out.color = merged_c;
+    out.aux = merged_a;
+    @if(resid) out.resid = vec4<f32>(merged.res, op);
     return out;
 }

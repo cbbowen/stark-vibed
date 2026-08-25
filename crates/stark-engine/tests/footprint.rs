@@ -253,6 +253,7 @@ fn slot(kind: &ActionKind) -> usize {
         ActionKind::SetGuideName(..) => 29,
         ActionKind::MoveGuide { .. } => 30,
         ActionKind::RemoveGuide(_) => 31,
+        ActionKind::SetSelectionOpacity(_) => 32,
     }
 }
 

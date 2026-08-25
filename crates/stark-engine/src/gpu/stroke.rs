@@ -348,6 +348,7 @@ impl StrokeRenderer {
         &self,
         rec: &StrokeRecord,
         substrate: &crate::gpu::substrate::SubstrateMap,
+        selection: &crate::document::Selection,
     ) -> StrokeConstants {
         // The pigment is the paint effect's own (§6.2); an erase stroke has none,
         // and zero is safe because every lane derived from it feeds passes the
@@ -363,7 +364,7 @@ impl StrokeRenderer {
             // Clamped where the record becomes numbers, the color's rule: the
             // ceiling is quoted in [0, 1] (`BrushEffect::opacity`) and a wire
             // value past it is nonsense, not a stronger setting.
-            opacity: rec.brush.effect.opacity().clamp(0.0, 1.0),
+            opacity: (rec.brush.effect.opacity() * selection.opacity()).clamp(0.0, 1.0),
             substrate_uv_scale: substrate.relief * substrate.uv_scale,
             tooth_softness: rec.brush.tooth.softness,
             nfreq,

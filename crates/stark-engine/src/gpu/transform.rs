@@ -707,7 +707,7 @@ impl TransformRenderer {
                 })
                 .clone();
             draws.push((
-                self.gated_bg(scope, unit, g.inv, g.rect, dest, from.selection.strength()),
+                self.gated_bg(scope, unit, g.inv, g.rect, dest, from.selection.opacity()),
                 src_bg,
             ));
         }
@@ -905,7 +905,7 @@ impl TransformRenderer {
                 })
                 .clone();
             draws.push((
-                self.quad_bg(scope, affine, *src, dest, from.selection.strength()),
+                self.quad_bg(scope, affine, *src, dest, from.selection.opacity()),
                 src_bg,
             ));
         }
@@ -952,7 +952,7 @@ impl TransformRenderer {
                 contents: bytemuck::bytes_of(&combine_uniform(
                     dest,
                     gate,
-                    from.selection.strength(),
+                    from.selection.opacity(),
                 )),
                 usage: wgpu::BufferUsages::UNIFORM,
             }),

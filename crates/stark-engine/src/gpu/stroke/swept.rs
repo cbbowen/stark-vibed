@@ -242,7 +242,7 @@ impl StrokeRenderer {
             substrate,
         } = scene;
         // Everything both paths share, resolved once (see [`StrokeConstants`]).
-        let k = self.stroke_constants(rec, substrate);
+        let k = self.stroke_constants(rec, substrate, selection);
         let (segments, end_dist) = generate_segments_in(rec, tol, spans);
         if segments.is_empty() {
             return (
@@ -279,7 +279,7 @@ impl StrokeRenderer {
         // The integrate's opacity uniform, at this path's identity: the layout
         // names it on every stroke, and the shader's exact branch at 1 is what
         // keeps this path bit-for-bit what it was.
-        let opacity_buf = opacity_uniform(self, &mut scope, 1.0, selection.strength());
+        let opacity_buf = opacity_uniform(self, &mut scope, 1.0);
         let SweepDraws {
             coords,
             runs,
@@ -465,7 +465,7 @@ impl StrokeRenderer {
         let device = &self.ctx.device;
         let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate);
         let draws = sweep_draws(self, &mut scope, rec, k, segments);
-        let opacity_buf = opacity_uniform(self, &mut scope, k.opacity, selection.strength());
+        let opacity_buf = opacity_uniform(self, &mut scope, k.opacity);
 
         // The carry this piece hands on: everything the pieces before it
         // accumulated — shared, never rewritten — with this piece's tiles
@@ -726,10 +726,9 @@ pub(super) fn opacity_uniform(
     r: &StrokeRenderer,
     scope: &mut super::scratch::SubmitScope,
     opacity: f32,
-    gate: f32,
 ) -> wgpu::Buffer {
     let u = stark_shaders::mirror::integrate::Integrate {
-        params: [opacity, gate, 0.0, 0.0],
+        params: [opacity, 0.0, 0.0, 0.0],
     };
     let buf = scope.buffer(r.ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("stark integrate opacity"),

@@ -28,7 +28,7 @@ fn classify(selection: &Selection, coord: TileCoord) -> Class {
     // lets a source tile be **dropped** rather than rewritten, and a plane selected
     // at a half moves half its paint, so calling it full would delete the half that
     // stayed.
-    let outside = selection.outside() * selection.strength();
+    let outside = selection.outside() * selection.opacity();
     match selection.tile(coord) {
         Some(_) => Class::Partial,
         // Thresholds on the value rather than either side of a half, now that a

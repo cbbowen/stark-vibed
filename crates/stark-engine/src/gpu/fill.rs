@@ -183,8 +183,8 @@ impl FillRenderer {
         // How strongly the author's mask gates this fill (§6.8) — the whole mask's
         // opacity, which `gate`'s own texels do not carry. The fill's *region* takes
         // no such factor: it is this gesture's shape rasterized as a selection, and
-        // has no strength of its own.
-        uniform.p[3] = gate.strength();
+        // has no opacity of its own.
+        uniform.p[3] = gate.opacity();
         match &op.paint {
             Parcel::Solid(color) => {
                 let channels = self.color_space.rgb_to_channels(*color);

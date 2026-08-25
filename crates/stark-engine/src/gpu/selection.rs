@@ -260,7 +260,7 @@ impl SelectionRenderer {
     pub fn gate_for(&self, selection: &Selection, coord: TileCoord) -> Gate {
         Gate {
             view: self.mask_for(selection, coord),
-            strength: selection.strength(),
+            opacity: selection.opacity(),
         }
     }
 
@@ -352,6 +352,7 @@ impl SelectionRenderer {
         region_origin: Vec2,
         w: u32,
         h: u32,
+        factor_in_selection_opacity: bool,
     ) -> (wgpu::Texture, wgpu::TextureView) {
         let device = &self.ctx.device;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -370,10 +371,15 @@ impl SelectionRenderer {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        let opacity = if factor_in_selection_opacity {
+            selection.opacity()
+        } else {
+            1.0
+        };
         let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark selection region uniform"),
             contents: bytemuck::bytes_of(&RegionUniform {
-                a: [w as f32, h as f32, MASK_TEX as f32, selection.strength()],
+                a: [w as f32, h as f32, MASK_TEX as f32, opacity],
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -415,10 +421,10 @@ impl SelectionRenderer {
 
         {
             // Everything the selection has no tile for takes the constant coverage
-            // that reigns there — at the mask's strength, exactly as the copied
+            // that reigns there — at the mask's opacity, exactly as the copied
             // tiles are (`mask_region.wesl`), since this is a *gating* read.
             let outside = desc::clear_to(wgpu::Color {
-                r: f64::from(selection.outside() * selection.strength()),
+                r: f64::from(selection.outside() * selection.opacity()),
                 g: 0.0,
                 b: 0.0,
                 a: 0.0,
@@ -573,7 +579,7 @@ impl SelectionRenderer {
 /// on the floor.
 pub struct Gate {
     view: wgpu::TextureView,
-    strength: f32,
+    opacity: f32,
 }
 
 impl Gate {
@@ -583,8 +589,8 @@ impl Gate {
     }
 
     /// The scalar to multiply every read of it by, for the pass's uniform.
-    pub fn strength(&self) -> f32 {
-        self.strength
+    pub fn opacity(&self) -> f32 {
+        self.opacity
     }
 }
 

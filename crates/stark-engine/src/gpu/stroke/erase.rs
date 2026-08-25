@@ -185,7 +185,7 @@ impl StrokeRenderer {
             selection,
             substrate,
         } = scene;
-        let k = self.stroke_constants(rec, substrate);
+        let k = self.stroke_constants(rec, substrate, scene.selection);
         let (segments, end_dist) = generate_segments_in(rec, tol, spans);
         if segments.is_empty() {
             return (
@@ -212,7 +212,7 @@ impl StrokeRenderer {
         // dial said (`BrushEffect::opacity`) — beside the strength the mask gates at
         // (§6.8), which the mask tiles this pass binds do not carry.
         let opacity = stark_shaders::mirror::erase::Erase {
-            params: [k.opacity, selection.strength(), 0.0, 0.0],
+            params: [k.opacity, 0.0, 0.0, 0.0],
         };
         let opacity_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stark erase opacity"),

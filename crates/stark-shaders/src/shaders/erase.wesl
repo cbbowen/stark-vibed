@@ -102,11 +102,20 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // profile its brush would have painted.
     let w = 1.0 - exp(-OPACITY_K * m_e);
 
+    // Opacity incorporating the brush opacity and selection mask.
+    //
+    // Gate by the selection (§6.8): a lerp of the *result*, `integrate.wesl`'s
+    // rule. Color and residual are the base's either way, so the height is the
+    // only lane with two answers to mix.
+    // At the mask's own strength, exactly as `integrate.wesl` reads it: the tiles
+    // hold what the ops struck, and how strongly that gates is one number on top.
+    let effective_opacity = e.params.x * load1(selection, c).r;
+
     // What must remain visible is `(1 − t0)·(1 − opacity·w)`; carried as what
     // shows *through* — the old transmittance plus the newly uncovered share —
     // so the small quantity is the one computed and nothing cancels where the
     // paint is nearly opaque.
-    let through = t0 + (1.0 - t0) * e.params.x * w;
+    let through = t0 + (1.0 - t0) * effective_opacity * w;
     // Inverted through the slab law into the mass that shows exactly that much
     // (`fill.wesl`'s inversion, run the other way). `through >= t0` by
     // construction, so `m1 <= m0` up to rounding — the `min` states it outright,
@@ -116,12 +125,6 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // The same per-unit opacity, less of it: only the amount falls (§6.1).
     let h1 = h0 * (m1 / max(m0, PAINT_EPS));
 
-    // Gate by the selection (§6.8): a lerp of the *result*, `integrate.wesl`'s
-    // rule. Color and residual are the base's either way, so the height is the
-    // only lane with two answers to mix.
-    // At the mask's own strength, exactly as `integrate.wesl` reads it: the tiles
-    // hold what the ops struck, and how strongly that gates is one number on top.
-    let sel = load1(selection, c).r * e.params.y;
-    out.aux = vec4<f32>(mix(h0, h1, sel), 0.0, 0.0, 0.0);
+    out.aux = vec4<f32>(h1, 0.0, 0.0, 0.0);
     return out;
 }

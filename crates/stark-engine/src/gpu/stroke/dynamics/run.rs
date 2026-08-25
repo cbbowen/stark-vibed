@@ -290,7 +290,7 @@ impl<'a> DynamicsRun<'a> {
     ) -> Self {
         let device = &r.ctx.device;
         let mut scope = r.scratch.scope(&r.ctx, "stark dynamics stroke");
-        let consts = r.stroke_constants(rec, scene.substrate);
+        let consts = r.stroke_constants(rec, scene.substrate, scene.selection);
 
         // The brush's swept-extent prefix-τ (shared with the fast path) and its
         // plain coverage mask (the reservoir texels' own extent weights).
@@ -839,6 +839,7 @@ impl<'a> DynamicsRun<'a> {
                 region_origin,
                 w,
                 h,
+                false,
             );
             self.scope.texture(tex);
             view

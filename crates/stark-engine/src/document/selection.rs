@@ -133,24 +133,6 @@ impl Selection {
         self.opacity
     }
 
-    /// **The scalar every *gating* read of this mask must multiply by** (§6.8).
-    ///
-    /// A pass that binds the mask to decide how much of what it does lands — the
-    /// stroke's integrate, the eraser, a fill's gate, a transform's cut — reads
-    /// `coverage · strength`, and one that binds the mask to *carry* it (the
-    /// transform's own mask pass) reads the coverage alone. That split is why the
-    /// opacity is not folded into `outside` or into the tiles: the mask has one
-    /// value, and the two kinds of reader ask it different questions.
-    ///
-    /// 1 while the mask is universal, whatever the opacity says. Nothing is masked
-    /// there, so there is nothing to weaken — a deselect has to hand the canvas back
-    /// at full strength, and "everything, at a half" is a state this engine
-    /// deliberately cannot reach (see [`SelectionOp::opacity`], which pins the
-    /// unbounded shape for the same reason).
-    pub fn strength(&self) -> f32 {
-        if self.is_universal() { 1.0 } else { self.opacity }
-    }
-
     /// The same selection read at `opacity` — [`ActionKind::SetSelectionOpacity`](stark_model::document::ActionKind)'s
     /// whole effect. No tile moves, which is what makes it retroactive.
     ///
@@ -426,12 +408,12 @@ mod tests {
     /// which `1 − m` would not have been.
     #[test]
     fn inverting_a_partial_selection_keeps_its_strength() {
-        let sel = Selection::from_parts(HashTrieMap::new(), 0.0, 0.4, None);
+        let sel = Selection::from_parts(HashTrieMap::new(), 0.0, 0.4, 1.0, None);
         let once = sel.plan_invert();
         assert_eq!(once.outside, 0.4);
         assert_eq!(once.level, 0.4);
 
-        let flipped = Selection::from_parts(HashTrieMap::new(), once.outside, once.level, None);
+        let flipped = Selection::from_parts(HashTrieMap::new(), once.outside, once.level, 1.0, None);
         assert_eq!(
             flipped.plan_invert().outside,
             0.0,
@@ -453,7 +435,7 @@ mod tests {
         let sel = Selection::everything();
         assert_eq!(sel.plan(&half).expect("planned").level, 0.5);
 
-        let sel = Selection::from_parts(HashTrieMap::new(), 0.0, 0.5, None);
+        let sel = Selection::from_parts(HashTrieMap::new(), 0.0, 0.5, 1.0, None);
         let cut = SelectionOp::new(
             SelectionMode::Subtract,
             SelectionShape::rect_from_corners(Vec2::splat(8.0), Vec2::splat(16.0)),
