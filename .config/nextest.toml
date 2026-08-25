@@ -58,6 +58,20 @@ test-group = 'gpu'
 filter = 'package(stark-engine) and test(/^gpu::/)'
 test-group = 'gpu'
 
+# `commute_pairs` is quadratic in the vocabulary by construction: it asks every pair
+# of actions that claims to commute to produce the same document in either order
+# (§12.6), which is two fresh documents and two renders per pair. ~18 s alone, ~100 s
+# under a full GPU group, against a default ceiling of 240 s — close enough to the
+# kill threshold on a smaller CI box to be worth stating rather than discovering.
+#
+# The cost is the *documents*, not the actions: every peer replays the base log, so
+# the engine builds dominate and trimming rows barely moves it. Raising the ceiling
+# here is therefore the honest lever — the alternative was dropping coverage from the
+# one test that checks the reads half of every footprint.
+[[profile.default.overrides]]
+filter = 'test(a_pair_that_claims_to_commute_does)'
+slow-timeout = { period = "120s", terminate-after = 5 }
+
 [profile.default]
 # A GPU that stops answering should fail the test that was waiting on it, by name,
 # rather than the job's own timeout — which reports that something hung and nothing

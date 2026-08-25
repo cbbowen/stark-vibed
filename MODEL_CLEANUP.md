@@ -3,38 +3,63 @@
 A critical review of `crates/stark-model` (~12.5k lines) and its seams into
 `stark-engine`, recorded 2026-08-25 against `6a4d198`.
 
-The crate is in good shape: the invariants are named, the funnels are real, the
-exhaustive-match-with-no-`_`-arm device is used consistently, and the doc comments
-carry arguments rather than restating the code. What follows is therefore specific
-rather than structural — one live divergence bug, one unverified half of §12.6, and
-a set of places where the crate does not yet hold itself to its own stated rules.
+**Status: settled.** Fourteen of the fifteen findings are fixed on this branch, and
+the fifteenth was withdrawn as wrong — see [N](#n-withdrawn-footprints-two-vecs-per-action).
+The table below carries the commit that closed each one, and each section keeps its
+original diagnosis so the reasoning stays readable next to the fix.
 
-**Nothing here has been fixed.** This is the bill.
+Two things made this the moment to spend it: §19's beta rung has not been claimed, so
+the save format was still free to change (which [G](#g-parcel-and-mattepaint-are-the-same-type-twice)
+and [H](#h-the-three-content-bags-should-be-one) both needed); and none of the
+findings needed a bit-identical result, so a wrong model could be fixed and the
+goldens re-blessed. In the event none of them moved a golden.
 
-Two things make now the moment to spend it: §19's beta rung has not been claimed, so
-the save format is still free to change; and none of the findings below need a
-bit-identical result, so the goldens can be re-blessed where the model was wrong
-(CLAUDE.md — *"when a model is wrong, fix the model and re-bless the goldens"*).
+## What it turned out to be about
+
+The headline finding was [A](#a-commitstroke-under-declares-its-footprint), and the
+shape of it is worth keeping: **a stroke reads the substrate and did not say so.**
+Both peers took the same splice and converged on the same *wrong* picture, so the
+failure was not a disagreement between clients — it was a document that had stopped
+being what its own log said, and changed the next time anyone opened the file.
+
+It survived a suite that already covered the splice because `shift_late` re-applies
+the single action at each cached state: one action shifted past comes out right by
+accident, whatever the footprint says, and only a *run* between two snapshots is left
+behind. That is why [B](#b-the-reads-half-of-every-footprint-is-unverified) exists and
+why its table carries five strokes.
 
 ## The order to spend it in
 
-| # | Finding | Kind | Cost |
+| # | Finding | Kind | Closed by |
 |---|---|---|---|
-| [A](#a-commitstroke-under-declares-its-footprint) | `CommitStroke` under-declares its footprint | **correctness** | one line |
-| [B](#b-the-reads-half-of-every-footprint-is-unverified) | `Footprint::reads` is structurally unverified | **correctness** | one test file |
-| [C](#c-lasso-decimation-overflows-usize-on-wasm32) | Lasso decimation overflows `usize` on wasm32 | **correctness** | two lines |
-| [D](#d-max_lasso_points-states-a-coupling-nothing-can-check) | `MAX_LASSO_POINTS`' texture bound is unenforceable | correctness | one export + one assert |
-| [E](#e-a-placement-loses-the-exactness-it-promises) | `image::extent` loses `PlaceImage`'s exactness | correctness | small |
-| [O](#o-23-rustdoc-warnings-and-no-ci-gate) | 23 rustdoc warnings, no CI gate | code health | one CI step + 23 sites |
-| [I](#i-fillop-and-selectionop-defeat-their-own-funnels) | `FillOp`/`SelectionOp` public fields | architecture | small |
-| [H](#h-the-three-content-bags-should-be-one) | Three content bags should be one | architecture | format change |
-| [G](#g-parcel-and-mattepaint-are-the-same-type-twice) | `Parcel` ≡ `MattePaint` | architecture | format change |
-| [L](#l-timelineresync-recomputes-footprints-for-statistics) | `resync` recomputes cached footprints | performance | two lines |
-| [M](#m-preparedeval-still-allocates-in-the-loop-it-was-made-for) | `Prepared::eval` allocates per call | performance | small |
-| [F](#f-the-actionkind-roster-tax) | The `ActionKind` roster tax | maintainability | medium |
-| [J](#j-documentguiders-is-2000-lines-of-two-different-things) | `guide.rs` is two modules in one file | maintainability | mechanical |
-| [K](#k-the-crates-nan-policy-has-five-private-re-implementations) | The NaN policy has five re-implementations | maintainability | small |
-| [N](#n-footprint-costs-two-allocations-per-action-for-the-life-of-the-session) | `Footprint`'s two `Vec`s per action | performance | small |
+| [A](#a-commitstroke-under-declares-its-footprint) | `CommitStroke` under-declares its footprint | **correctness** | `3fc17e1` |
+| [B](#b-the-reads-half-of-every-footprint-is-unverified) | `Footprint::reads` is structurally unverified | **correctness** | `dbfbfab` |
+| [C](#c-lasso-decimation-overflows-usize-on-wasm32) | Lasso decimation overflows `usize` on wasm32 | **correctness** | `fd0e943` |
+| [D](#d-max_lasso_points-states-a-coupling-nothing-can-check) | `MAX_LASSO_POINTS`' texture bound is unenforceable | correctness | `fd0e943` |
+| [E](#e-a-placement-loses-the-exactness-it-promises) | `image::extent` loses `PlaceImage`'s exactness | correctness | `0203a75` |
+| [O](#o-23-rustdoc-warnings-and-no-ci-gate) | 23 rustdoc warnings, no CI gate | code health | `f6c75f5` |
+| [I](#i-fillop-and-selectionop-defeat-their-own-funnels) | `FillOp`/`SelectionOp` public fields | architecture | `4e993a9` |
+| [H](#h-the-three-content-bags-should-be-one) | Three content bags should be one | architecture | `fa0ffd8`, `2c6985c` |
+| [G](#g-parcel-and-mattepaint-are-the-same-type-twice) | `Parcel` ≡ `MattePaint` | architecture | `9dcff3a` |
+| [L](#l-timelineresync-recomputes-footprints-for-statistics) | `resync` recomputes cached footprints | performance | `7aeb45c` |
+| [M](#m-preparedeval-still-allocates-in-the-loop-it-was-made-for) | `Prepared::eval` allocates per call | performance | `f6fe856` |
+| [F](#f-the-actionkind-roster-tax) | The `ActionKind` roster tax | maintainability | `8ad97a8` |
+| [J](#j-documentguiders-is-2000-lines-of-two-different-things) | `guide.rs` is two modules in one file | maintainability | `4c15bb9` |
+| [K](#k-the-crates-nan-policy-has-five-private-re-implementations) | The NaN policy has five re-implementations | maintainability | `171ea00` |
+| [N](#n-withdrawn-footprints-two-vecs-per-action) | ~~`Footprint`'s two `Vec`s per action~~ | **withdrawn** | — |
+
+## What is left
+
+Two follow-ups this branch names but does not take:
+
+- **The rustdoc gate covers `stark-model` only.** The workspace reports ~300
+  warnings, most of them the generated shader mirrors' `binding::*` links. Widening
+  it is a crate at a time, as each is brought to zero — see
+  [O](#o-23-rustdoc-warnings-and-no-ci-gate).
+- **A saved gradient *matte* no longer loads**, a deliberate cost of
+  [G](#g-parcel-and-mattepaint-are-the-same-type-twice). Solid mattes and gradient
+  fills are unaffected. Worth a line in the release notes whenever §19's rung is
+  claimed.
 
 ---
 
@@ -515,26 +540,27 @@ order is fine).
 Same for `Lattice::basis` and `axis_basis` (`warp.rs:109`, `:383`), both bounded at 9,
 which together allocate three `Vec<f32>` per evaluation on the exact-follow drag path.
 
-## N. `Footprint` costs two allocations per action, for the life of the session
+## N. ~~Withdrawn~~: `Footprint`'s two `Vec`s per action
 
-```rust
-pub struct Footprint {
-    pub reads: Vec<Resource>,
-    pub writes: Vec<Resource>,
-}
-```
+**This finding was wrong, and the codebase had already answered it.**
 
-Always materialized, never mutated after construction, and held for as long as the
-history holds the action. Almost every footprint has ≤ 8 resources across both
-halves; the largest (`MergeLayerDown`) has 9.
+The proposal was to replace `Footprint`'s two `Vec<Resource>` with a single
+`Box<[Resource]>` and a split index, halving the allocations. It turns out
+`stark-model/tests/action_kinds.rs::a_footprint_stays_small_enough_for_a_nested_scan`
+exists to settle exactly this, and its doc says so:
 
-A single `Box<[Resource]>` with a `writes_from: u8` split index halves the allocation
-count and drops `Vec`'s capacity slack, with no new dependency and no change to
-`conflicts`. Worth ~2 allocations × log length — modest, but it is pure overhead on a
-structure that is immutable from birth.
+> It also settles whether the two `Vec`s should be inline storage: at these lengths
+> the allocations are two per commit, amortized against the GPU work a commit already
+> does, and the scan is over nine elements. Inline storage would trade ~130 bytes per
+> logged action for that, and buy a dependency. **Measured, and not worth it —
+> recorded here so the question is not re-opened from intuition.**
 
-(`smallvec` would be the other answer and is the better one on paper, but the
-workspace carries no such dependency today and this does not need one.)
+Which is what this finding did: re-opened it from intuition, having read the test's
+assertions and not its argument. The test is the right shape and the answer stands.
+
+The one thing that did change is the number: `MAX_READS` moved from 2 to 3 when
+[A](#a-commitstroke-under-declares-its-footprint) gave a stroke its substrate read.
+The claim about storage is untouched.
 
 ---
 

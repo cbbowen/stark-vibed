@@ -200,8 +200,13 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
         }
     };
 
-    push("stroke-high", mint_stroke(file, 60.0));
-    push("stroke-low", mint_stroke(file, 200.0));
+    // **One stroke, not two.** A stroke is the most expensive row — it is rendered
+    // twice for every commuting pair it appears in — and the second one was here to
+    // ask whether two strokes on disjoint tiles commute, which
+    // `commute.rs::undo_and_redo_splice_past_disjoint_peer_strokes` already asks
+    // end-to-end. This table's job is breadth across the vocabulary; where a pair is
+    // covered better elsewhere, it does not need to pay for it here as well.
+    push("stroke", mint_stroke(file, 60.0));
     push(
         "fill",
         mint(
@@ -344,7 +349,7 @@ fn a_pair_that_claims_to_commute_does() {
     };
     let vocab = vocabulary(&file);
     assert!(
-        vocab.len() >= 18,
+        vocab.len() >= 17,
         "the table lost rows: {} actions minted",
         vocab.len(),
     );
@@ -373,7 +378,7 @@ fn a_pair_that_claims_to_commute_does() {
     // A vocabulary that conflicted with itself everywhere would pass the loop above
     // having checked nothing, so the shape of the table is asserted too.
     assert!(
-        commuting >= 40,
+        commuting >= 35,
         "only {commuting} pairs claim to commute ({conflicting} conflict); \
          this test is close to vacuous",
     );
