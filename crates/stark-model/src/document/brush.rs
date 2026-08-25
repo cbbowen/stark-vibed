@@ -81,9 +81,9 @@ pub enum OrientationSource {
 /// How a brush interacts with paint already on the canvas (§6.2). One
 /// **unified tool**, not a mode switch: every axis is a flux on the single conserved
 /// quantity — paint **height** (the amount; §6.1) — and the axes compose freely.
-/// [`add`](Self::add) is the only *source* (the brush's own paint); the rest move paint
-/// that is already on the canvas, so with `add = 0` the tool conserves height (it only
-/// moves paint around). The everyday brush is just `add` with the rest 0 (the default).
+/// [`flow`](Self::flow) is the only *source* (the brush's own paint); the rest move paint
+/// that is already on the canvas, so with `flow = 0` the tool conserves height (it only
+/// moves paint around). The everyday brush is just `flow` with the rest 0 (the default).
 ///
 /// Two axes are **vertical** flux between the canvas and a transient
 /// per-stroke *tool* reservoir — Lagrangian, giving crisp long-range *directed*
@@ -93,12 +93,12 @@ pub enum OrientationSource {
 ///
 /// One is **lateral** flux within the canvas itself, never touching the tool:
 /// - [`bleed`](Self::bleed) — the paint under the tip diffuses towards its
-///   neighbours (a blur brush alone; wet-softening under `add`).
+///   neighbours (a blur brush alone; wet-softening under `flow`).
 ///
 /// `lift`-only is a scraper — it takes paint as a knife does, by the *amount*;
 /// the tool an artist calls an eraser acts on what the eye sees instead and is
-/// [`BrushEffect::Erase`] (§6.12). `lift`+`deposit` (`add = 0`) is a
-/// conservative smudge; `bleed`-only a blur; `add`-only ordinary paint. All flow
+/// [`BrushEffect::Erase`] (§6.12). `lift`+`deposit` (`flow = 0`) is a
+/// conservative smudge; `bleed`-only a blur; `flow`-only ordinary paint. All flow
 /// runs with fixed iteration counts, so replay stays deterministic (§6.2).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct BrushDynamics {
@@ -130,7 +130,7 @@ pub struct BrushDynamics {
     /// height (the "load a glob on the palette knife" param). 0 = the tool starts empty (the
     /// historical behaviour). It depletes as the tool [`deposit`](Self::deposit)s and refills
     /// as it [`lift`](Self::lift)s — a finite carried amount, unlike the inexhaustible
-    /// [`add`](Self::add) source (§6.2).
+    /// [`flow`](Self::flow) source (§6.2).
     #[serde(default)]
     pub charge: f32,
     /// Canvas paint **diffusing under the tip**, in [0, 1]. The one **lateral** flux,
@@ -150,7 +150,7 @@ pub struct BrushDynamics {
     /// crosses per step clips at 1 and the axis would stop meaning anything well below
     /// full crank.
     ///
-    /// Alone it is a blur brush; alongside [`add`](Self::add) it melts the ridges of the
+    /// Alone it is a blur brush; alongside [`flow`](Self::flow) it melts the ridges of the
     /// strokes being painted over instead of leaving their height profile embossed
     /// through the new paint.
     #[serde(default)]
@@ -174,8 +174,8 @@ impl BrushDynamics {
     /// Every axis a number, and the three fractions inside the `[0, 1]` their own
     /// docs quote them in — see [`BrushParams::sanitized`].
     ///
-    /// `add` and `charge` are floored but not capped, because neither has a
-    /// documented ceiling *here*: `add` is a rate rather than a fraction (the
+    /// `flow` and `charge` are floored but not capped, because neither has a
+    /// documented ceiling *here*: `flow` is a rate rather than a fraction (the
     /// frontend's `MAX_FLOW` is where a slider stops, not where the quantity stops
     /// meaning something) and `charge` is a height. A bound this crate does not
     /// own is not a bound it may invent — clamping to one would silently rewrite
@@ -539,7 +539,7 @@ impl BrushModulations {
         }
     }
 
-    /// The steepest response across these targets ([`mod_slope`]).
+    /// The steepest response across these targets (`mod_slope`).
     pub fn max_slope(&self) -> f32 {
         mod_slope(&self.all())
     }
@@ -608,7 +608,7 @@ impl PaintModulations {
         }
     }
 
-    /// The steepest response across these targets ([`mod_slope`]).
+    /// The steepest response across these targets (`mod_slope`).
     pub fn max_slope(&self) -> f32 {
         mod_slope(&self.all())
     }
@@ -649,7 +649,7 @@ impl EraseModulations {
         Self { flow }
     }
 
-    /// The steepest response across these targets ([`mod_slope`]).
+    /// The steepest response across these targets (`mod_slope`).
     pub fn max_slope(&self) -> f32 {
         mod_slope(&self.all())
     }
@@ -1038,7 +1038,10 @@ impl BrushEffect {
 /// ([`PaintEffect::color`]) above all.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct BrushParams {
-    /// Stamp radius in canvas pixels at full pressure.
+    /// How large the mark is, in canvas pixels at full pressure: **the disc the
+    /// mark fits in**, for every shape (§6.6). Not a radius — a stamp is
+    /// normalized to this reach whatever its own aspect, which is what lets one
+    /// number mean the same thing across a round tip and an asset.
     pub size: f32,
     /// Brush tip shape (§6.6).
     pub shape: BrushShape,
@@ -1067,8 +1070,8 @@ pub struct BrushParams {
     #[serde(default)]
     pub stretch: f32,
     /// Length of the stroke's **leading taper** — the run over which the tip widens
-    /// from a point to its full [`radius`](Self::radius) — in *units of `radius`*,
-    /// so 4.0 means four brush radii of taper (§6.2). 0 = no taper: the
+    /// from a point to its full [`size`](Self::size) — in *units of `size`*,
+    /// so 4.0 means four brush sizes of taper (§6.2). 0 = no taper: the
     /// stroke starts at full width, which is the historical behaviour.
     ///
     /// In radii rather than canvas px so a brush keeps its *look* as it is resized:
@@ -1078,7 +1081,7 @@ pub struct BrushParams {
     #[serde(default)]
     pub start_taper_length: f32,
     /// Length of the stroke's **trailing taper**, in units of
-    /// [`radius`](Self::radius) — [`start_taper_length`](Self::start_taper_length)
+    /// [`size`](Self::size) — [`start_taper_length`](Self::start_taper_length)
     /// measured back from the end of the stroke, for the exit of an inked line.
     ///
     /// Together the two are held to the stroke's own length: if they would overlap
@@ -1093,7 +1096,7 @@ pub struct BrushParams {
     ///
     /// In radii rather than canvas px for the reason the tapers are
     /// ([`start_taper_length`](Self::start_taper_length)), and it is the stronger
-    /// case of the two: [`radius`](Self::radius) is meant to be a pure *scale* on
+    /// case of the two: [`size`](Self::size) is meant to be a pure *scale* on
     /// the mark, and a falloff quoted in canvas px is exactly what that scale does
     /// not carry — enlarge such a brush and it runs dry a fraction of the way into
     /// its own tip, which is not a bigger version of anything.
@@ -1228,7 +1231,7 @@ impl BrushParams {
     }
 
     /// The two taper lengths in **canvas px**: the stored lengths (in radii) scaled
-    /// by [`radius`](Self::radius). Negative or non-finite lengths read as 0 — the
+    /// by [`size`](Self::size). Negative or non-finite lengths read as 0 — the
     /// fields arrive from files, presets and peers, and a taper is a length.
     pub fn taper_px(&self) -> (f32, f32) {
         // `f32::max` returns the non-NaN operand, so this also normalizes NaN to 0.
@@ -1241,7 +1244,7 @@ impl BrushParams {
     }
 
     /// The drain falloff in **canvas px⁻¹**: the stored rate (per radius, see
-    /// [`drain`](Self::drain)) over [`radius`](Self::radius) — [`taper_px`](Self::taper_px)
+    /// [`drain`](Self::drain)) over [`size`](Self::size) — [`taper_px`](Self::taper_px)
     /// for the reciprocal quantity, and guarding itself the same way, because the
     /// number arrives from files, presets and peers.
     ///

@@ -45,7 +45,7 @@ use crate::clamp01;
 ///
 /// # What is deliberately not one
 ///
-/// [`BrushParams::color`](crate::document::BrushParams::color) stays a bare
+/// [`PaintEffect::color`](crate::document::PaintEffect::color) stays a bare
 /// `[f32; 3]`. Not an oversight: the frontend writes it a component at a time —
 /// a channel slider assigns `color[1]` — so a wrapper there would need setters
 /// that re-clamp, which is the *other* design (a value you may mutate carefully)
@@ -71,7 +71,7 @@ impl Srgb {
     /// The color `c`, held to the cube — the one door, and it cannot fail.
     ///
     /// `const`, so a palette or a default can be written as one. That rests on
-    /// [`clamp01`](crate::clamp01) being const, which rests on `f32::max`/`min`
+    /// `clamp01` being const, which rests on `f32::max`/`min`
     /// being const on this toolchain — the crate is on nightly for a different
     /// reason (§CLAUDE.md) and this is not a second one: written with comparisons
     /// instead it is the same function, and the `max`-then-`min` spelling is kept

@@ -147,7 +147,7 @@ impl SelectionShape {
     /// loop a loop — the first vertex is kept and the closing edge is implicit, so
     /// there is no end to pin the way a ramp's is.
     ///
-    /// The index goes through [`pick_index`](crate::pick_index) rather than being
+    /// The index goes through `pick_index` rather than being
     /// spelled `i * points.len() / MAX_LASSO_POINTS` here, and that is not
     /// tidiness: `usize` is 32 bits in the browser, so the product wraps on a loop
     /// past ~1.05M vertices and lands on a valid-but-wrong index — a different

@@ -63,7 +63,7 @@ pub struct ActionId {
 
 /// A fully-recorded stroke: enough to replay it bit-for-bit (§4).
 ///
-/// Deliberately does **not** carry the [`Tool`]. Only `Tool::Brush` can reach a
+/// Deliberately does **not** carry the tool. Only the brush tool can reach a
 /// stroke — the selection tools produce a [`SelectionOp`] instead — so the field
 /// held one value for every stroke of every document and no reader ever asked it
 /// (§8, wire version 5). A tool worth recording would be recorded by whatever
@@ -433,9 +433,14 @@ pub enum ActionKind {
     /// meaning nothing on their own. `AddMatte` already carries this shape: a layer
     /// arriving with content is one fact, not a layer and then its content.
     ///
-    /// The pixels are the payload, behind an [`Arc`](std::sync::Arc) and PNG-encoded
-    /// on the wire — see [`ImageRef`](super::ImageRef) for both, and for why this is
-    /// the one action that carries content rather than naming it.
+    /// **The pixels are not the payload.** The picture is named by content id, like
+    /// a stamp brush's shape, and travels beside the log — bundled in
+    /// `DocumentFile::pictures`, and over the wire on the blob ALPN (§23). It was
+    /// briefly built the other way, with the image in the action behind an `Arc`;
+    /// `docs/images.md` records why that was wrong in three places at once, of which
+    /// the sharpest is that an action is *cloned constantly* — a commit clones one
+    /// for the outbox, the history clones them while splicing an undo past what it
+    /// commutes with (§12.6) — and every one of those copies is thirty-two bytes now.
     ///
     /// **`at` is in whole canvas pixels, and that is a promise about resampling**: the
     /// image's texels land on canvas pixels one for one, so nothing is filtered and

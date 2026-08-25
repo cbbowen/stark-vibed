@@ -40,6 +40,23 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The doc graph is load-bearing here: the design lives in doc comments, and
+      # §-numbers are cited from ~1000 places. Nothing was checking it, so links
+      # rotted quietly — a `PlaceImage` doc still described a design that had been
+      # reversed, and five `BrushParams` fields linked to a `radius` renamed to
+      # `size`. A broken link is how that shows up first.
+      #
+      # **`stark-model` only, deliberately.** The workspace reports ~300 warnings,
+      # most of them the generated shader mirrors' `binding::*` links, and gating
+      # all of it would mean either a sweep this crate's cleanup did not cover or a
+      # gate nobody can turn on. This is a ratchet in the shape the lint table
+      # already uses: it costs nothing today, and it cannot fail this build — only
+      # a later one. Widen a crate at a time as each is brought to zero.
+      - name: Docs (stark-model)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc -p stark-model --no-deps
+
       # stark-ui is excluded from default-members (it is a wasm app), so nothing
       # else in this workflow would compile it for its real target. `dx build` is
       # reserved for the pages deploy; a plain cargo check catches wasm-only

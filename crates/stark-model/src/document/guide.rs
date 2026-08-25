@@ -402,7 +402,7 @@ impl PerspectiveGuide {
     /// cells (§20.3) — the guide's one world-metric datum, turned by the camera
     /// exactly as an axis is, which is why the drag never mentions it.
     ///
-    /// `None` for a corner sitting *on* the eye ([`LATTICE_EPS`]): there a cell
+    /// `None` for a corner sitting *on* the eye (`LATTICE_EPS`): there a cell
     /// has no angular size, all three planes pass through the eye at once, and
     /// what the fans would draw is not an inaccurate grid but the whole canvas.
     /// No grid rather than a bad one.
@@ -811,7 +811,7 @@ pub struct AxisPlane {
 
 impl AxisPlane {
     /// `p` in the plane's own coordinates, or `None` when it does not lie on the
-    /// plane in any useful sense — at or beyond [`PLANE_REACH`].
+    /// plane in any useful sense — at or beyond `PLANE_REACH`.
     pub fn to_plane(&self, p: Vec2) -> Option<Vec2> {
         self.charted(p).map(|(q, _)| q)
     }

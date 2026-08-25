@@ -252,7 +252,7 @@ impl DocumentFile {
     /// (§12.4), or any bytes whose author is not the person opening them.
     ///
     /// Identical to [`from_bytes`](Self::from_bytes) except that it refuses a body
-    /// expanding past [`MAX_DECOMPRESSED`], since deflate's ratio means a few
+    /// expanding past `MAX_DECOMPRESSED`, since deflate's ratio means a few
     /// kilobytes on the wire can name as many gigabytes as they like.
     pub fn from_untrusted_bytes(bytes: &[u8]) -> Result<Self> {
         Self::decode(bytes, Some(MAX_DECOMPRESSED))

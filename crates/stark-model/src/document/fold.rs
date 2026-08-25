@@ -79,7 +79,7 @@ pub trait Materialize: Clone {
 ///
 /// # What the door does
 ///
-/// **It sanitizes** ([`ActionKind::sanitized`]). Every action reaching a state
+/// **It sanitizes** ([`ActionKind::sanitized`](super::ActionKind::sanitized)). Every action reaching a state
 /// comes through here — a local commit, a replay from a file, a peer's action
 /// merged into the replicated log — and this is the "enters state" half of the
 /// funnel §21.5 describes, with `Engine::commit` the "is minted" half. Peers still
@@ -89,7 +89,7 @@ pub trait Materialize: Clone {
 ///
 /// **It computes the footprint once.** `history` builds a centralizer once per
 /// removal and then asks it about *each* later action
-/// (`History::try_remove_action_with`), so [`Centralizer::commutes`] used to
+/// (`History::try_remove_action_with`), so `Centralizer::commutes` used to
 /// rebuild the other action's footprint on every comparison — two `Vec`
 /// allocations always, a walk of the whole control-point list for a stroke, and
 /// for a `TransformWarp` an entire fine-lattice solve (`WarpMap::image_aabb`,

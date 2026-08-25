@@ -15,7 +15,8 @@
 //!
 //! An **id** is in the log; a **resource** is in the engine. The pairs were there
 //! before the crates were: [`AssetId`]/`AssetStore`, [`SubstrateId`]/`Surface`,
-//! [`ColorSpaceId`]/`ColorSpace`, [`LayerId`]/`Layer`, [`SelectionOp`]/`Selection`,
+//! [`ColorSpaceId`]/`ColorSpace`, [`LayerId`](document::LayerId)/`Layer`,
+//! [`SelectionOp`](document::SelectionOp)/`Selection`,
 //! [`Action`](document::Action)/`DocState`.
 //!
 //! The mechanical form of the same test is `#[derive(Serialize)]`: if a type is
