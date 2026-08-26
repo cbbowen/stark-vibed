@@ -18,6 +18,11 @@ because they are what the findings were *for*:
   the scale it is laid at, and `PatchOp::Substrate` carried only the id — so undoing
   a `SetSubstrateScale` through the commuting splice left the scale where the undone
   action had set it. Closed with A in `6313c00`.
+- **A build-cache hazard on this machine**, twice: a `rustc`
+  `STATUS_STACK_BUFFER_OVERRUN` poisons `target/debug/incremental`, and every unit
+  after it fails with "only metadata stub found for `std`" or "can't find crate for
+  `stark_engine`". It is not a code failure and no amount of reading the diff finds
+  it — `rm -rf target/debug/incremental` and re-run.
 - **What the golden hatch was hiding**, measured rather than guessed: six goldens
   were stale, five by ordinary drift and one — `transform_perspective_warp` — by a
   contiguous 22×51 strip at up to 24 levels, which is an edge that moved. Rendering
@@ -72,15 +77,15 @@ present.
 | [A](#a-a-groups-removelayer-under-declares-its-subtree) | A group's `RemoveLayer` under-declares its subtree | **correctness** | `6313c00` |
 | [B](#b-three-panics-reachable-from-outside-the-process) | Three panics reachable from outside the process | **correctness** | `ae27cb5` |
 | [C](#c-the-golden-comparator-and-a-test-that-passes-without-a-gpu) | The golden comparator and a test that passes without a GPU | **correctness** | `31a9993` |
-| [D](#d-footprint--apply-correspondence-is-held-by-discipline) | Footprint ↔ apply correspondence is held by discipline | **correctness** | |
+| [D](#d-footprint--apply-correspondence-is-held-by-discipline) | Footprint ↔ apply correspondence is held by discipline | **correctness** | `3974f8f` |
 | [E](#e-layerid-is-a-32-bit-fold-of-the-actor) | `LayerId` is a 32-bit fold of the actor | correctness | |
 | [F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree) | Three places where the code and the claim beside it disagree | correctness | F2 in `e8d2e78`+ |
-| [G](#g-the-compositors-generation-conflates-two-invalidations) | The compositor's `generation` conflates two invalidations | **performance** | |
+| [G](#g-the-compositors-generation-conflates-two-invalidations) | The compositor's `generation` conflates two invalidations | **performance** | `a9edfbf` |
 | [H](#h-the-stroke-hot-path-does-not-use-the-plumbing-built-for-it) | The stroke hot path does not use the plumbing built for it | **performance** | |
 | [I](#i-the-eyedropper-submits-once-per-sample-point) | The eyedropper submits once per sample point | performance | |
-| [J](#j-the-mixbox-lut-runs-twice-per-colour-per-texel-on-a-placed-image) | The Mixbox LUT runs twice per colour, per texel on a placed image | performance | |
+| [J](#j-the-mixbox-lut-runs-twice-per-colour-per-texel-on-a-placed-image) | The Mixbox LUT runs twice per colour, per texel on a placed image | performance | `a9edfbf` |
 | [K](#k-the-log-is-cloned-whole-on-every-save) | The log is cloned whole on every save | performance | |
-| [L](#l-smaller-measurable-costs) | Smaller measurable costs | performance | |
+| [L](#l-smaller-measurable-costs) | Smaller measurable costs | performance | `078c4ba` (3 of 14) |
 | [M](#m-engine-is-one-type-with-25-fields-and-65k-lines-of-impl) | `Engine` is one type with ~25 fields and ~6.5k lines of `impl` | architecture | |
 | [N](#n-boxdyn-timeline-is-a-two-mode-enum-with-silent-defaults) | `Box<dyn Timeline>` is a two-mode enum with silent defaults | architecture | |
 | [O](#o-the-accumulated-extent-render-loop-is-written-three-times) | The accumulated-extent render loop is written three times | maintainability | |
@@ -89,8 +94,8 @@ present.
 | [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need) | Two scratch pools and two submit scopes for one need | maintainability | |
 | [S](#s-four-copies-of-the-paint-edit-gate-and-uneven-minted-layer-claims) | Four copies of the paint-edit gate, and uneven minted-layer claims | maintainability | |
 | [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | |
-| [U](#u-comments-that-narrate-history-or-describe-code-that-is-gone) | Comments that narrate history, or describe code that is gone | maintainability | |
-| [V](#v-footprint-reads-are-checked-over-a-hand-picked-vocabulary) | Footprint *reads* are checked over a hand-picked vocabulary | tests | `6313c00` (part) |
+| [U](#u-comments-that-narrate-history-or-describe-code-that-is-gone) | Comments that narrate history, or describe code that is gone | maintainability | `dbf4dad` |
+| [V](#v-footprint-reads-are-checked-over-a-hand-picked-vocabulary) | Footprint *reads* are checked over a hand-picked vocabulary | tests | `6313c00`, `3974f8f` |
 | [W](#w-64-translation-invariance-is-guarded-for-strokes-only) | §6.4 translation invariance is guarded for strokes only | tests | |
 | [X](#x-what-the-suite-observes-only-through-the-lit-composite) | What the suite observes only through the lit composite | tests | |
 | [Y](#y-suite-infrastructure) | Suite infrastructure | tests | |

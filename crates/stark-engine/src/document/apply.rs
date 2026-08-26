@@ -144,6 +144,55 @@ impl ApplyCtx {
 /// folded over, the actor off the action's own id. A matte or absent layer
 /// refuses it, like a stroke; an unusable or oversized map is rejected
 /// deterministically, so peers and replays agree.
+/// **The gate every action that lays or moves paint passes through** — the layer's
+/// tiles, the author's mask, the renderer's answer, and the rewrite — in one place.
+///
+/// It was written out four times (a stroke, a fill, a transform, a merge), and the
+/// three things it settles are the three each copy had to get right on its own:
+///
+/// - a **matte or an absent layer refuses** the edit rather than swallowing it
+///   ([`paint_base`], §15.7) — here, in the engine, so replay and peers agree about a
+///   log that contains one;
+/// - the mask is the **author's**, keyed off `action.id.actor` and never off the
+///   session (§17.3), so a collaborator's lasso cannot clip this edit;
+/// - a renderer that declines leaves the state alone, **deterministically**, and says
+///   so once.
+///
+/// `edit` answers `None` to decline, or the new tiles and — for a transform, which
+/// carries the mask along with the paint (§16) — where the mask ended up.
+fn paint_edit(
+    state: DocState,
+    layer: LayerId,
+    actor: ActorId,
+    refused: &'static str,
+    edit: impl FnOnce(
+        &DocState,
+        &crate::gpu::tile::TileMap,
+        &super::selection::Selection,
+    ) -> Option<(
+        crate::gpu::tile::TileMap,
+        Option<super::selection::Selection>,
+    )>,
+) -> DocState {
+    let Some(base) = paint_base(&state, layer) else {
+        return state;
+    };
+    let selection = state.selection_of(actor);
+    match edit(&state, &base, &selection) {
+        Some((tiles, moved)) => {
+            let next = state.map_layer(layer, |l| l.with_tiles(tiles));
+            match moved {
+                Some(mask) => next.with_selection(actor, mask),
+                None => next,
+            }
+        }
+        None => {
+            tracing::warn!("{refused}");
+            state
+        }
+    }
+}
+
 fn transform_apply(
     state: DocState,
     ctx: &ApplyCtx,
@@ -151,19 +200,18 @@ fn transform_apply(
     layer: LayerId,
     map: &stark_model::document::TransformMap,
 ) -> DocState {
-    let Some(base) = paint_base(&state, layer) else {
-        return state;
-    };
-    let selection = state.selection_of(actor);
-    match ctx.transform.apply(&ctx.pool, &base, &selection, map) {
-        Some((tiles, moved_selection)) => state
-            .map_layer(layer, |l| l.with_tiles(tiles))
-            .with_selection(actor, moved_selection),
-        None => {
-            tracing::warn!("transform rejected (unusable map or too many tiles); ignored");
-            state
-        }
-    }
+    paint_edit(
+        state,
+        layer,
+        actor,
+        "transform rejected (unusable map or too many tiles); ignored",
+        |_, base, selection| {
+            ctx.transform
+                .apply(&ctx.pool, base, selection, map)
+                // The mask travels with the paint it gated (§16).
+                .map(|(tiles, moved)| (tiles, Some(moved)))
+        },
+    )
 }
 
 /// The body of [`ActionKind::MergeLayerDown`] (§14.11): fold `source` into the
@@ -331,41 +379,47 @@ impl Materialize for DocState {
 /// so every peer declines it identically (`Materialize::fold`).
 fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
     match &action.kind {
-        ActionKind::CommitStroke(rec) => {
-            let Some(base) = paint_base(&state, rec.layer) else {
-                return state;
-            };
-            // The preview's tiles, where the preview drew this very stroke over this
-            // very base — see `PreparedStroke`. Otherwise the stroke is rendered here,
-            // which is every replay, every peer's copy and every redo: the log carries
-            // the stroke, never its pixels.
-            let tiles = match ctx.prepared.take_if(|p| p.is_render_of(rec, &base)) {
-                Some(prepared) => prepared.tiles,
-                None => {
-                    // The **author's** selection, as it stood at this point in the
-                    // log, gates the stroke (§6.8, §17.3). Read from the state being
-                    // folded over, so replay reproduces it exactly; keyed by the
-                    // author, so a collaborator's lasso never clips this stroke.
-                    let selection = state.selection_of(action.id.actor);
-                    // The substrate this stroke was painted on, as the log stood here —
-                    // not as it stands now (§6.4). The tooth gates the deposit by it,
-                    // so a mid-document `SetSubstrate` changes what comes *after* it and
-                    // nothing before, on replay exactly as it did live.
-                    let substrate = ctx.substrate(state.substrate());
-                    ctx.stroke.render(
-                        crate::gpu::stroke::StrokeScene {
-                            pool: &ctx.pool,
-                            assets: &ctx.assets,
-                            base: &base,
-                            selection: &selection,
-                            substrate: &substrate,
-                        },
-                        rec,
-                    )
-                }
-            };
-            state.map_layer(rec.layer, |l| l.with_tiles(tiles))
-        }
+        // The **author's** mask gates the stroke, read from the state being folded
+        // over so replay reproduces it exactly and keyed by the author so a
+        // collaborator's lasso never clips it (§6.8, §17.3) — both of which
+        // [`paint_edit`] settles, along with the refusal on a matte.
+        ActionKind::CommitStroke(rec) => paint_edit(
+            state,
+            rec.layer,
+            action.id.actor,
+            // Unreachable: a stroke either takes the preview's tiles or renders, and
+            // neither declines. The gate above it — a matte, an absent layer — is
+            // `paint_edit`'s own and returns before this is read.
+            "stroke rendered nothing; ignored",
+            |state, base, selection| {
+                // The preview's tiles, where the preview drew this very stroke over
+                // this very base — see `PreparedStroke`. Otherwise the stroke is
+                // rendered here, which is every replay, every peer's copy and every
+                // redo: the log carries the stroke, never its pixels.
+                let tiles = match ctx.prepared.take_if(|p| p.is_render_of(rec, base)) {
+                    Some(prepared) => prepared.tiles,
+                    None => {
+                        // The substrate this stroke was painted on, as the log stood
+                        // here — not as it stands now (§6.4). The tooth gates the
+                        // deposit by it, so a mid-document `SetSubstrate` changes what
+                        // comes *after* it and nothing before, on replay exactly as it
+                        // did live.
+                        let substrate = ctx.substrate(state.substrate());
+                        ctx.stroke.render(
+                            crate::gpu::stroke::StrokeScene {
+                                pool: &ctx.pool,
+                                assets: &ctx.assets,
+                                base,
+                                selection,
+                                substrate: &substrate,
+                            },
+                            rec,
+                        )
+                    }
+                };
+                Some((tiles, None))
+            },
+        ),
         ActionKind::AddLayer { id, carrier, above } => state.insert_layer(*id, *carrier, *above),
         // An image from outside the document, as a layer holding it (§23). The layer
         // arrives first and by exactly the same call an `AddLayer` makes, so an unknown
@@ -561,19 +615,18 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         // (§18.0.4). Refused on a matte or absent layer like a stroke; refused
         // deterministically when unbounded or oversized, so peers and replays
         // agree about a log that contains one.
-        ActionKind::Fill { layer, op } => {
-            let Some(base) = paint_base(&state, *layer) else {
-                return state;
-            };
-            let selection = state.selection_of(action.id.actor);
-            match ctx.fill.apply(&ctx.pool, &base, &selection, op) {
-                Some(tiles) => state.map_layer(*layer, |l| l.with_tiles(tiles)),
-                None => {
-                    tracing::warn!("fill rejected (unbounded region or too many tiles); ignored");
-                    state
-                }
-            }
-        }
+        ActionKind::Fill { layer, op } => paint_edit(
+            state,
+            *layer,
+            action.id.actor,
+            "fill rejected (unbounded region or too many tiles); ignored",
+            |_, base, selection| {
+                ctx.fill
+                    .apply(&ctx.pool, base, selection, op)
+                    // A fill lays paint through a mask and never moves it.
+                    .map(|tiles| (tiles, None))
+            },
+        ),
     }
 }
 

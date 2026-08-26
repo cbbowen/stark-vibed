@@ -341,7 +341,12 @@ pub fn compute_footprint(action: &Action) -> Footprint {
                 .flatten()
                 .map(Resource::Existence)
                 .collect(),
-            writes: vec![Resource::Existence(*id), Resource::StackOrder],
+            // [`Resource::Layer`] for the minted id, as every action that mints one
+            // claims: what it writes is *everything about a layer that did not exist*,
+            // and naming that as `Existence` plus whichever finer resources the arm
+            // happens to touch is the same claim said three different ways — see
+            // `PlaceImage` below, which spelled out two of them.
+            writes: vec![Resource::Layer(*id), Resource::StackOrder],
         },
         // A placed image is an `AddLayer` that arrives with paint and a name in it
         // (§23), so it claims what one claims plus those two — and claims the paint as
@@ -362,12 +367,7 @@ pub fn compute_footprint(action: &Action) -> Footprint {
                 .flatten()
                 .map(Resource::Existence)
                 .collect(),
-            writes: vec![
-                Resource::Existence(*id),
-                Resource::StackOrder,
-                Resource::Paint(*id, TileRect::ALL),
-                Resource::Prop(*id, Prop::Name),
-            ],
+            writes: vec![Resource::Layer(*id), Resource::StackOrder],
         },
         ActionKind::AddMatte {
             id, carrier, at, ..
@@ -377,7 +377,7 @@ pub fn compute_footprint(action: &Action) -> Footprint {
                 .flatten()
                 .map(Resource::Existence)
                 .collect(),
-            writes: vec![Resource::Existence(*id), Resource::StackOrder],
+            writes: vec![Resource::Layer(*id), Resource::StackOrder],
         },
         // A copy is a function of *everything it copies* — every tile and every
         // property of every layer in the subtree — which is the whole reason the
@@ -392,7 +392,7 @@ pub fn compute_footprint(action: &Action) -> Footprint {
             reads: ids.iter().map(|(src, _)| Resource::Layer(*src)).collect(),
             writes: ids
                 .iter()
-                .map(|(_, copy)| Resource::Existence(*copy))
+                .map(|(_, copy)| Resource::Layer(*copy))
                 .chain([Resource::StackOrder])
                 .collect(),
         },
