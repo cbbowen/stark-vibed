@@ -6,10 +6,24 @@ removed. Same terms as that ledger: §19's beta rung is unclaimed, so the save f
 and the wire may change, and no finding needs a bit-identical result — a wrong model
 is fixed and the goldens re-blessed.
 
-**Status: open.** Nothing below has landed. The table carries a column for the
-commit that closes each finding; a finding that turns out to be wrong is struck
-through and kept, as [N](#n-withdrawn-footprints-two-vecs-per-action) was in the
-model's ledger.
+**Status: in progress.** The table carries the commit that closed each finding; a
+finding that turns out to be wrong is struck through and kept, as
+[N](#n-withdrawn-footprints-two-vecs-per-action) was in the model's ledger.
+
+Two things the work has turned up that are not in any row below, recorded here
+because they are what the findings were *for*:
+
+- **A second §12.6 break**, found by the guard [A](#a-a-groups-removelayer-under-declares-its-subtree)
+  asked for rather than by reading: `Resource::Substrate` names the substrate *and*
+  the scale it is laid at, and `PatchOp::Substrate` carried only the id — so undoing
+  a `SetSubstrateScale` through the commuting splice left the scale where the undone
+  action had set it. Closed with A in `6313c00`.
+- **What the golden hatch was hiding**, measured rather than guessed: six goldens
+  were stale, five by ordinary drift and one — `transform_perspective_warp` — by a
+  contiguous 22×51 strip at up to 24 levels, which is an edge that moved. Rendering
+  it at each commit since it was blessed puts the whole of that change in the
+  selection-opacity rework of 2026-08-25, and clears `f6fe856`'s bit-identity claim
+  (zero difference across it). Closed with C in `31a9993`.
 
 How it was read: the core — `engine.rs` and its children, `document/state.rs`,
 `document/timeline.rs`, `document/apply.rs`, `gpu/tile.rs`, `gpu/submit.rs`,
@@ -55,12 +69,12 @@ present.
 
 | # | Finding | Kind | Closed by |
 |---|---|---|---|
-| [A](#a-a-groups-removelayer-under-declares-its-subtree) | A group's `RemoveLayer` under-declares its subtree | **correctness** | |
-| [B](#b-three-panics-reachable-from-outside-the-process) | Three panics reachable from outside the process | **correctness** | |
-| [C](#c-the-golden-comparator-and-a-test-that-passes-without-a-gpu) | The golden comparator and a test that passes without a GPU | **correctness** | |
+| [A](#a-a-groups-removelayer-under-declares-its-subtree) | A group's `RemoveLayer` under-declares its subtree | **correctness** | `6313c00` |
+| [B](#b-three-panics-reachable-from-outside-the-process) | Three panics reachable from outside the process | **correctness** | `ae27cb5` |
+| [C](#c-the-golden-comparator-and-a-test-that-passes-without-a-gpu) | The golden comparator and a test that passes without a GPU | **correctness** | `31a9993` |
 | [D](#d-footprint--apply-correspondence-is-held-by-discipline) | Footprint ↔ apply correspondence is held by discipline | **correctness** | |
 | [E](#e-layerid-is-a-32-bit-fold-of-the-actor) | `LayerId` is a 32-bit fold of the actor | correctness | |
-| [F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree) | Three places where the code and the claim beside it disagree | correctness | |
+| [F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree) | Three places where the code and the claim beside it disagree | correctness | F2 in `e8d2e78`+ |
 | [G](#g-the-compositors-generation-conflates-two-invalidations) | The compositor's `generation` conflates two invalidations | **performance** | |
 | [H](#h-the-stroke-hot-path-does-not-use-the-plumbing-built-for-it) | The stroke hot path does not use the plumbing built for it | **performance** | |
 | [I](#i-the-eyedropper-submits-once-per-sample-point) | The eyedropper submits once per sample point | performance | |
@@ -76,18 +90,19 @@ present.
 | [S](#s-four-copies-of-the-paint-edit-gate-and-uneven-minted-layer-claims) | Four copies of the paint-edit gate, and uneven minted-layer claims | maintainability | |
 | [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | |
 | [U](#u-comments-that-narrate-history-or-describe-code-that-is-gone) | Comments that narrate history, or describe code that is gone | maintainability | |
-| [V](#v-footprint-reads-are-checked-over-a-hand-picked-vocabulary) | Footprint *reads* are checked over a hand-picked vocabulary | tests | |
+| [V](#v-footprint-reads-are-checked-over-a-hand-picked-vocabulary) | Footprint *reads* are checked over a hand-picked vocabulary | tests | `6313c00` (part) |
 | [W](#w-64-translation-invariance-is-guarded-for-strokes-only) | §6.4 translation invariance is guarded for strokes only | tests | |
 | [X](#x-what-the-suite-observes-only-through-the-lit-composite) | What the suite observes only through the lit composite | tests | |
 | [Y](#y-suite-infrastructure) | Suite infrastructure | tests | |
 
 ## What is left open on purpose
 
-- **Mixbox exposure** ([F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree)):
-  whether `Ferndale` was meant to render at 0.65 is a judgement about the picture,
-  not about the code. The ledger records the disagreement; somebody has to look.
 - **The nightly toolchain** ([T](#t-files-and-apis-that-carry-more-than-they-should)):
   the fix is upstream in `history`, not here.
+- **F1 and F3** ([F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree)):
+  the flattening determinism story is a decision about what Stark promises across
+  platforms, and `mean_error`'s map cannot be changed without re-tuning `KNOT_COST`.
+  Both want a sitting rather than a patch.
 
 ---
 

@@ -7,7 +7,7 @@
 //!   travelling with the message ([`codec`](crate::codec) says why). Actions are
 //!   small (fitted control points, ids, params); pixels and image bytes never ride
 //!   gossip, whatever kind of content names them.
-//! - **The `stark/collab/10` ALPN** answers [`Request`]s over one bi-stream per
+//! - **The session [`ALPN`]** answers [`Request`]s over one bi-stream per
 //!   request: the full session [`Snapshot`](Request::Snapshot) (the save-format
 //!   container, assets bundled) for joins. Every response opens with a one-byte
 //!   [tag](Tag) saying whether what follows is an answer at all.
@@ -76,8 +76,12 @@ use crate::mirror::{Mirror, Served};
 /// 14: a universal mask keeps its opacity (§6.8) — `SetSelectionOpacity` with
 /// nothing selected stores where it used to discard, every later stroke and
 /// the next region read at it, and a deselect is what lands on full strength:
-/// the meaning rule again, with no shape touched.
-pub(crate) const ALPN: &[u8] = b"stark/collab/14";
+/// the meaning rule again, with no shape touched;
+/// 15: `RemoveLayer` carries the subtree it takes, so it can declare the layers
+/// it writes (§12.6) — a reshaping *and* a meaning change, since a removal
+/// whose named subtree is not what the document holds is now declined. A build
+/// that sent the old shape would have its group removals read as a bare id.
+pub(crate) const ALPN: &[u8] = b"stark/collab/15";
 
 /// The first byte of every response.
 ///
