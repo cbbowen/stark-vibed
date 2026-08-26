@@ -682,9 +682,24 @@ surface §6.10 exists to remove, and it needs an 80-line test to pin it
 `offset_of` assertions.
 
 **Fix.** `impl Stamp { fn neutral() -> Self }` carrying the six non-zero neutrals;
-the three arms of `dynamics_plan` build `Stamp { start: p.to_array(), .. }` directly;
-keep `the_default_slot_is_neutral_rather_than_zeroed` against `neutral()`; delete
-`Slot`, `pack` and the lane-mapping test. About −180 lines.
+the five construction sites build `Stamp` directly; keep
+`the_default_slot_is_neutral_rather_than_zeroed` against `neutral()`; delete `Slot`,
+`pack` and the lane-mapping test. About −180 lines.
+
+**Revised on a closer look (2026-08-25).** The diagnosis above is right that `pack`
+is a rename, but it is not the *whole* of what `Slot` does: it also holds richer
+types than the uniform can — `Vec2` for `start`, `dir`, `rect_origin`, `cell_anchor`
+and `substrate_uv_bias`, a `Stretch` for the three stretch lanes, and floats for
+`cell`/`bleed_reach` that `pack` lowers with `as i32`. Deleting it pushes
+`.to_array()` and those casts out to five construction sites.
+
+So this is worth less than it first appeared, and the part of it that was genuinely a
+§6.10 hazard is **already gone**: the lane *map* is not transcribed here any more —
+`Stamp` is generated with named members and `pack` maps names to names, so the
+`lambda(lift)`/`lambda(deposit)` transposition the doc warns about cannot be written.
+What is left is one struct declared twice and a rename table a test pins. Still worth
+doing; no longer urgent, and whoever takes it should decide what to do about the
+ergonomics rather than discover them halfway.
 
 ## Q. The descriptor boilerplate `desc.rs` was written to end
 
@@ -915,6 +930,15 @@ and modulated strokes are uncovered.
 **Fix.** A `tests/common` helper over `read_many_rgba16f` so conservation and erase
 assert on height and alpha directly; run the corpus battery once with
 `SetFastCommit(false)`; one tow case in the corpus.
+
+**What the first half will run into (2026-08-25).** `read_many_rgba16f` reads
+*textures*, and a tile does not hand one out: `TexHandle` deliberately offers only a
+view, at length, because a consumer holding the texture could `destroy()` it and leave
+the pool's free list with a view onto nothing. So asserting on a tile's height and
+alpha needs a new engine-side reader — a `copy_texture_to_buffer` inside `tile.rs`,
+beside `copy_into` and for its stated reason — rather than a test helper. That is a
+small piece of design, not a test change, and it is why this one has not been taken
+here. The other two halves (fast-commit off, a tow case) are ordinary test work.
 
 ## Y. Suite infrastructure
 
