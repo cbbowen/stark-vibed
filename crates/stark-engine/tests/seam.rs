@@ -281,3 +281,193 @@ fn apron_makes_dynamics_writeback_seamless_under_zoom() {
         frac_big * 100.0
     );
 }
+
+// ---------------------------------------------------------------------------
+// The other tile writers
+//
+// §6.4 is a rule about **every pass that writes tiles**, and the three tests above
+// ask it of three of them: the swept stroke, the placed image, the dynamics
+// write-back. The rest — the fill, the selection mask every tool acts through, the
+// transform, the merge — were unguarded, and each is a pass that computes a texel
+// from a canvas position and can get the apron wrong in exactly the same way.
+//
+// One table rather than four more `render_shifted_*` functions, because what differs
+// between them is one closure: what to do at `shift`. The view treatment, the media
+// settings and the comparison belong to the invariant, not to the operation.
+
+/// The media settings a translation-invariance comparison has to run under, and why
+/// each is off: the canvas substrate is sampled in canvas space and the display dither
+/// is keyed to the screen pixel (§6.5), so both are *deliberately* not tile-grid
+/// invariant and would fog the measurement. Relief stays exaggerated, because a
+/// clamped normal at a tile edge is what a missing apron looks like.
+const SEAM_MEDIA: MediaParams = MediaParams {
+    height_strength: 2.5,
+    specular: 0.3,
+    substrate_strength: 0.0,
+    dither: false,
+};
+
+/// A brush whose mark is a pure function of canvas position: no deposit jitter, whose
+/// gate is keyed to the canvas texel (§6.2), and no tooth, which reads the substrate.
+fn flat_brush(color: [f32; 3], radius: f32) -> stark_model::document::BrushParams {
+    let mut b = brush(color, radius);
+    b.jitter = 0.0;
+    b.tooth.give = 1.0;
+    b
+}
+
+/// Run `op` at `shift`, viewed so that the screen mapping is identical for every
+/// `shift` — the whole of [`render_shifted`]'s treatment, with the operation lifted
+/// out.
+fn render_shifted_op(shift: Vec2, op: impl FnOnce(&mut stark_engine::Engine, Vec2)) -> RgbaImage {
+    let mut engine = engine_or_skip_blue().expect("engine (caller checked adapter)");
+    engine.process(ViewCommand::SetMediaParams(SEAM_MEDIA));
+    op(&mut engine, shift);
+    let center_px = Vec2::new(SIZE.width as f32 * 0.5, SIZE.height as f32 * 0.5);
+    engine.process(ViewCommand::Pan { delta: -shift });
+    engine.process(ViewCommand::Zoom {
+        anchor: center_px,
+        factor: 2.0,
+    });
+    engine.render_to_image()
+}
+
+/// An undercoat for the operations that move or fold paint rather than lay it.
+fn undercoat(engine: &mut stark_engine::Engine, shift: Vec2) {
+    stroke_with(
+        engine,
+        flat_brush(RED, 30.0),
+        &[
+            shift + Vec2::new(-60.0, -40.0),
+            shift + Vec2::new(60.0, 40.0),
+        ],
+    );
+}
+
+/// **Every tile-writing pass is a pure function of canvas position** (§6.4), asked of
+/// the four this file did not previously reach.
+///
+/// Each case does the same thing twice — once straddling the 4-tile corner at the
+/// origin, once shifted a half-tile into one tile's interior — and the two renders
+/// must agree. A pass that addressed a texel relative to *its tile* rather than to
+/// the canvas looks perfect at one alignment and seams at every boundary.
+///
+/// The comparison is sensitive to exactly that: dropping the `shift` from one case's
+/// region — so it addresses the canvas origin instead of the operation's own — takes
+/// it to 219 levels over 57% of the frame.
+#[test]
+fn every_tile_writer_is_translation_invariant() {
+    use stark_engine::command::PeerCommand;
+    use stark_model::Srgb;
+    use stark_model::document::{FillOp, SelectionMode, SelectionOp, SelectionShape, TransformMap};
+
+    if engine_or_skip_blue().is_none() {
+        return; // no usable GPU adapter
+    }
+
+    type Case = (&'static str, fn(&mut stark_engine::Engine, Vec2));
+    let cases: &[Case] = &[
+        // The fill pass: a feathered region laid straight onto bare canvas.
+        ("fill", |e, shift| {
+            e.process(DocCommand::Fill {
+                layer: e.observe().active_layer,
+                op: FillOp::new(
+                    SelectionShape::rect_from_corners(
+                        shift + Vec2::splat(-45.0),
+                        shift + Vec2::splat(45.0),
+                    ),
+                    6.0,
+                    Srgb::new([0.2, 0.7, 0.35]),
+                    1.0,
+                ),
+            });
+        }),
+        // The **selection mask** every tool acts through (§6.8), seen through a fill
+        // that covers far more than the mask does — so what shapes the result is the
+        // rasterized coverage rather than the fill's own region.
+        ("mask", |e, shift| {
+            e.process(DocCommand::Select(SelectionOp::new(
+                SelectionMode::Replace,
+                SelectionShape::ellipse_from_corners(
+                    shift + Vec2::splat(-40.0),
+                    shift + Vec2::splat(40.0),
+                ),
+                7.0,
+            )));
+            e.process(DocCommand::Fill {
+                layer: e.observe().active_layer,
+                op: FillOp::new(
+                    SelectionShape::rect_from_corners(
+                        shift + Vec2::splat(-120.0),
+                        shift + Vec2::splat(120.0),
+                    ),
+                    0.0,
+                    Srgb::new([0.85, 0.4, 0.1]),
+                    1.0,
+                ),
+            });
+        }),
+        // The transform's resample. The map is expressed in canvas coordinates and
+        // turns about `shift`, so the *content* it produces is the same picture at
+        // either alignment — only the tile grid under it moves.
+        ("transform", |e, shift| {
+            undercoat(e, shift);
+            let turn = stark_model::geom::Affine2::from_angle_translation(0.4, Vec2::ZERO);
+            let about = stark_model::geom::Affine2::from_angle_translation(0.0, shift)
+                * turn
+                * stark_model::geom::Affine2::from_angle_translation(0.0, -shift);
+            e.process(DocCommand::Transform {
+                layer: e.observe().active_layer,
+                map: TransformMap::Affine(about),
+            });
+        }),
+        // The merge's tile rewrite (§14.11): two painted layers folded into one.
+        ("merge", |e, shift| {
+            undercoat(e, shift);
+            let lower = e.observe().active_layer;
+            e.process(DocCommand::AddLayer {
+                carrier: None,
+                above: Some(lower),
+            });
+            let upper = e.observe().active_layer;
+            e.process(PeerCommand::SetActiveLayer(upper));
+            stroke_with(
+                e,
+                flat_brush([0.15, 0.35, 0.9], 24.0),
+                &[
+                    shift + Vec2::new(-60.0, 40.0),
+                    shift + Vec2::new(60.0, -40.0),
+                ],
+            );
+            e.process(DocCommand::MergeLayerDown(upper));
+        }),
+    ];
+
+    // Bare canvas under the same view and the same light — what each case is held
+    // against to prove it drew anything at all. Without it a case whose command was
+    // declined (a wrong layer id, a refused region) compares blank against blank and
+    // passes having measured nothing, which is how five tests in this suite came to
+    // be comparing paper with paper (see `corpus`'s `every_case_leaves_a_mark`).
+    let blank = render_shifted_op(Vec2::ZERO, |_, _| {});
+
+    for (name, op) in cases {
+        let corner = render_shifted_op(Vec2::ZERO, *op);
+        let interior = render_shifted_op(Vec2::new(128.0, 128.0), *op);
+        assert!(
+            !images_match(&corner, &blank, 8),
+            "{name}: left no mark, so the comparison below is blank against blank"
+        );
+        // The corpus's kind of bound rather than this file's older one: these passes
+        // write a texel from its own canvas position with no filtering across the
+        // boundary, so unlike the lit-relief comparisons above there is no sub-pixel
+        // residual to allow for. A seam is a contiguous band of tens of levels.
+        let (_, worst) = diff_fraction(&corner, &interior);
+        let frac_big = frac_exceeding(&corner, &interior, 12);
+        assert!(
+            worst <= 25 && frac_big < 0.005,
+            "{name}: corner vs interior differ by up to {worst} levels, {:.3}% of \
+             pixels by >12 — this pass is not a pure function of canvas position (§6.4)",
+            frac_big * 100.0,
+        );
+    }
+}
