@@ -86,7 +86,8 @@ impl Engine {
         // that was created on a non-default canvas doesn't silently move it.
         let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
         let ctx = &mut self.shared.apply;
-        self.timeline = Box::new(ReplicatedTimeline::from_log(actor, initial, log, ctx));
+        self.timeline =
+            Timeline::Replicated(ReplicatedTimeline::from_log(actor, initial, log, ctx));
         self.authoring.actor = actor;
         self.session.adopt_identity(identity);
         self.authoring.outbox = Some(Vec::new());
@@ -125,7 +126,7 @@ impl Engine {
         self.adopt(validated);
         let ctx = &mut self.shared.apply;
         let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
-        self.timeline = Box::new(ReplicatedTimeline::from_log(
+        self.timeline = Timeline::Replicated(ReplicatedTimeline::from_log(
             actor,
             initial,
             file.actions.clone(),
@@ -166,8 +167,7 @@ impl Engine {
         // shared log; the swap therefore needs somewhere to park, and an empty
         // timeline is the cheapest valid thing there is (a `DocState` is persistent
         // maps, §5.1).
-        let parked: Box<dyn Timeline> =
-            Box::new(LinearTimeline::new(DocState::with_layer(ROOT_LAYER)));
+        let parked = Timeline::Linear(LinearTimeline::new(DocState::with_layer(ROOT_LAYER)));
         self.timeline = std::mem::replace(&mut self.timeline, parked).unshare();
         // What the document's history *offers* moved with it: a peer's stroke is
         // this document's to undo now, and the scrubber comes back. Published for

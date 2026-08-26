@@ -17,7 +17,7 @@ use std::sync::Arc;
 use super::{Authoring, Engine, GpuBuild, GpuKeep, ROOT_LAYER, build_gpu};
 use crate::Result;
 use crate::colorspace::ColorSpace;
-use crate::document::{DocState, LinearTimeline, effective_actions};
+use crate::document::{DocState, LinearTimeline, Timeline, effective_actions};
 use crate::gpu::EnvironmentId;
 use crate::gpu::substrate::Substrate;
 use stark_model::AssetId;
@@ -668,7 +668,7 @@ impl Engine {
     /// leaves any shared session: the caller (UI/transport) tears down the
     /// network side; `join_collaboration` re-enables after its reset.
     fn reset_document(&mut self) {
-        self.timeline = Box::new(LinearTimeline::new(
+        self.timeline = Timeline::Linear(LinearTimeline::new(
             DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate),
         ));
         self.preview.clear();

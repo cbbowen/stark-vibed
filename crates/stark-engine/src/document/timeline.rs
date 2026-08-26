@@ -21,102 +21,197 @@ use super::apply::ApplyCtx;
 use super::state::DocState;
 use stark_model::document::{Action, ActionId, ActionKind, ActorId, Logged};
 
-/// A versioned document: the source of the current [`DocState`] plus undo/redo.
-pub trait Timeline {
+/// A versioned document: the source of the current [`DocState`] plus undo/redo —
+/// **solo or shared**, which are the only two it will ever be.
+///
+/// An enum rather than a trait object, and the difference is not style. There are two
+/// implementations and the engine already branches on which it holds at every point
+/// that matters — `is_shared()`, `undo_as_action().is_none()`, `scrub_range().is_none()`
+/// — so what the trait bought was not polymorphism but a place to hide the branch.
+/// What it *cost* was four methods whose default was to do nothing: a
+/// [`ReplicatedTimeline`] cannot [`seek`](Self::seek) or
+/// [`forget_oldest`](Self::forget_oldest) and a [`LinearTimeline`] has no
+/// [`merge`](Self::merge), and each of those refusals arrived as an inherited default
+/// nobody had written down at the implementation it applied to. A silent default is
+/// how a *new* operation comes to do nothing in one mode without anyone deciding it
+/// should: the arm that would have had to be written is the arm that never appears.
+///
+/// Every one of those refusals is an arm below now, with the reason beside it.
+pub enum Timeline {
+    /// One client's own history: a linear undo/redo stack (§5).
+    Linear(LinearTimeline),
+    /// A shared session's: a grow-only log, totally ordered, materialized through the
+    /// same `history::History` as a cache (§12).
+    Replicated(ReplicatedTimeline),
+}
+
+impl Timeline {
     /// The current document state (`O(1)`).
-    fn current(&self) -> &DocState;
+    pub fn current(&self) -> &DocState {
+        match self {
+            Timeline::Linear(t) => t.current(),
+            Timeline::Replicated(t) => t.current(),
+        }
+    }
 
     /// Commit an action, advancing the timeline. Clears any redo stack.
-    fn push(&mut self, action: Action, ctx: &mut ApplyCtx);
+    pub fn push(&mut self, action: Action, ctx: &mut ApplyCtx) {
+        match self {
+            Timeline::Linear(t) => t.push(action, ctx),
+            Timeline::Replicated(t) => {
+                t.insert(action, ctx);
+            }
+        }
+    }
 
     /// Step back one action if possible; returns whether anything was undone.
-    fn undo(&mut self, ctx: &mut ApplyCtx) -> bool;
+    ///
+    /// **Shared sessions never come through here.** Undo is a logged action there so
+    /// peers can order it (§12.3), and the engine asks
+    /// [`undo_as_action`](Self::undo_as_action) first — which answers `Some` for
+    /// exactly the timeline this arm refuses.
+    pub fn undo(&mut self, ctx: &mut ApplyCtx) -> bool {
+        match self {
+            Timeline::Linear(t) => t.undo(ctx),
+            Timeline::Replicated(_) => false,
+        }
+    }
 
     /// Re-apply the most recently undone action; returns whether anything was redone.
-    fn redo(&mut self, ctx: &mut ApplyCtx) -> bool;
+    /// Refused in a shared session for [`undo`](Self::undo)'s reason.
+    pub fn redo(&mut self, ctx: &mut ApplyCtx) -> bool {
+        match self {
+            Timeline::Linear(t) => t.redo(ctx),
+            Timeline::Replicated(_) => false,
+        }
+    }
 
-    fn can_undo(&self) -> bool;
-    fn can_redo(&self) -> bool;
+    pub fn can_undo(&self) -> bool {
+        match self {
+            Timeline::Linear(t) => t.can_undo(),
+            Timeline::Replicated(t) => t.targets.undo.is_some(),
+        }
+    }
+
+    pub fn can_redo(&self) -> bool {
+        match self {
+            Timeline::Linear(t) => t.can_redo(),
+            Timeline::Replicated(t) => t.targets.redo.is_some(),
+        }
+    }
 
     /// All committed actions, oldest to newest — the basis of the save format
-    /// (§8). For a replicated timeline this is the **full** log,
-    /// including `Undo` actions and the actions they suppress — exactly the
-    /// payload a joining peer needs (§12.4).
-    fn clone_actions(&self) -> Vec<Action>;
-
-    /// Shared-mode undo (§5.4): the action an "undo" should target by
-    /// logging an [`ActionKind::Undo`], or `None` if undo is plain timeline
-    /// navigation (the solo path). The engine asks this first and only falls
-    /// back to [`Timeline::undo`] when it returns `None`.
-    fn undo_as_action(&self) -> Option<ActionId> {
-        None
+    /// (§8). For a replicated timeline this is the **full** log, including `Undo`
+    /// actions and the actions they suppress — exactly the payload a joining peer
+    /// needs (§12.4).
+    pub fn clone_actions(&self) -> Vec<Action> {
+        match self {
+            Timeline::Linear(t) => t.actions().cloned().collect(),
+            Timeline::Replicated(t) => t.log.clone(),
+        }
     }
 
-    /// Shared-mode redo: the **`Undo` action** a "redo" should itself undo
-    /// (redo is an `Undo` of an `Undo`, §12.3), or `None`.
-    fn redo_as_action(&self) -> Option<ActionId> {
-        None
+    /// Shared-mode undo (§5.4): the action an "undo" should target by logging an
+    /// [`ActionKind::Undo`], or `None` if undo is plain timeline navigation (the solo
+    /// path). The engine asks this first and only falls back to [`undo`](Self::undo)
+    /// when it answers `None`.
+    pub fn undo_as_action(&self) -> Option<ActionId> {
+        match self {
+            Timeline::Linear(_) => None,
+            Timeline::Replicated(t) => t.targets.undo,
+        }
     }
 
-    /// Integrate an action authored elsewhere (§12.1). Returns whether
-    /// it was new (false = duplicate or unsupported by this timeline).
-    fn merge(&mut self, _action: Action, _ctx: &mut ApplyCtx) -> bool {
-        false
+    /// Shared-mode redo: the **`Undo` action** a "redo" should itself undo (redo is an
+    /// `Undo` of an `Undo`, §12.3), or `None`.
+    pub fn redo_as_action(&self) -> Option<ActionId> {
+        match self {
+            Timeline::Linear(_) => None,
+            Timeline::Replicated(t) => t.targets.redo,
+        }
     }
 
-    /// The same history, one client's own again, once the session that shared it
-    /// has ended (§12.3, §18.2.4). The engine goes on with what this answers.
+    /// Integrate an action authored elsewhere (§12.1). Returns whether it was new
+    /// (false = a duplicate, or a solo timeline, which has no peers to hear from).
+    pub fn merge(&mut self, action: Action, ctx: &mut ApplyCtx) -> bool {
+        match self {
+            Timeline::Linear(_) => false,
+            Timeline::Replicated(t) => t.insert(action, ctx),
+        }
+    }
+
+    /// The same history, one client's own again, once the session that shared it has
+    /// ended (§12.3, §18.2.4).
     ///
-    /// A [`LinearTimeline`] answers with itself — solo is what it already is. A
-    /// [`ReplicatedTimeline`] hands over its materialization, which *is* a linear
-    /// history: the effective sequence, applied in order, with the snapshots that
-    /// stepping back through it needs. So the walk comes back for the cost of a
-    /// move rather than of a replay.
+    /// A [`Linear`](Self::Linear) is already what this returns. A
+    /// [`Replicated`](Self::Replicated) hands over its **materialization**, which *is*
+    /// a linear history: the effective sequence, applied in order, with the snapshots
+    /// stepping back through it needs. So the walk comes back for the cost of a move
+    /// rather than of a replay — and the log does not come with it, because with
+    /// nobody left to merge, the `Undo` actions and the actions they suppress are
+    /// answers to a question nobody will ask again.
     ///
-    /// Consuming, and answering with a timeline rather than with a flag, because
-    /// the two are two types: nothing is left holding a shared log that nothing
-    /// materializes any more. Required rather than defaulted for the same reason —
-    /// what a timeline becomes when the sharing stops is not a question an
-    /// implementation should be able to leave unanswered.
-    fn unshare(self: Box<Self>) -> Box<dyn Timeline>;
+    /// Consuming, so nothing is left holding a shared log that nothing materializes.
+    pub fn unshare(self) -> Self {
+        match self {
+            Timeline::Linear(t) => Timeline::Linear(t),
+            Timeline::Replicated(t) => Timeline::Linear(LinearTimeline::from_history(t.history)),
+        }
+    }
 
-    /// Where the playhead stands and how far it can travel — `(applied, total)`,
-    /// both counted in actions — or `None` for a timeline that cannot be scrubbed
+    /// Where the playhead stands and how far it can travel — `(applied, total)`, both
+    /// counted in actions — or `None` for a timeline that cannot be scrubbed
     /// (§18.2.4).
     ///
-    /// `None` rather than `(n, n)` because the two say different things: a
-    /// timeline with nowhere to go is still a timeline, while a
-    /// [`ReplicatedTimeline`] has no single playhead to move at all — its
-    /// materialization is a function of a log that peers are still appending to,
-    /// so a scrub would be undone by the next arrival. The frontend needs to tell
-    /// "there is no history yet" from "this document's history is not yours alone
-    /// to walk", and only the second is a reason to say so.
-    fn scrub_range(&self) -> Option<(usize, usize)> {
-        None
+    /// `None` rather than `(n, n)` because the two say different things: a timeline
+    /// with nowhere to go is still a timeline, while a [`ReplicatedTimeline`] has no
+    /// single playhead to move at all — its materialization is a function of a log
+    /// peers are still appending to, so a scrub would be undone by the next arrival.
+    /// The frontend needs to tell "there is no history yet" from "this document's
+    /// history is not yours alone to walk", and only the second is a reason to say so.
+    pub fn scrub_range(&self) -> Option<(usize, usize)> {
+        match self {
+            Timeline::Linear(t) => Some((t.applied(), t.applied() + t.redo.len())),
+            Timeline::Replicated(_) => None,
+        }
     }
 
     /// Move the playhead to `to` (clamped to the range), applying or withdrawing
     /// whatever lies between. Returns whether the document changed.
     ///
-    /// The withdrawn actions are *kept*, in the same place undo keeps them, which
-    /// is the whole reason this is navigation rather than deletion: scrubbing back
-    /// and forward is lossless, and committing a fresh edit at a scrubbed-back
-    /// position truncates the future exactly as painting after an undo does.
-    fn seek(&mut self, _to: usize, _ctx: &mut ApplyCtx) -> bool {
-        false
+    /// The withdrawn actions are *kept*, in the same place undo keeps them, which is
+    /// the whole reason this is navigation rather than deletion: scrubbing back and
+    /// forward is lossless, and committing a fresh edit at a scrubbed-back position
+    /// truncates the future exactly as painting after an undo does.
+    ///
+    /// A shared session declines, and it is the same refusal
+    /// [`scrub_range`](Self::scrub_range) makes: there is no single playhead to move.
+    pub fn seek(&mut self, to: usize, ctx: &mut ApplyCtx) -> bool {
+        match self {
+            Timeline::Linear(t) => t.seek(to, ctx),
+            Timeline::Replicated(_) => false,
+        }
     }
 
     /// A caption per action, oldest first and spanning the **whole** range
-    /// [`scrub_range`](Self::scrub_range) reports — the withdrawn ones included,
-    /// since a scrubber has to label the steps it can travel *to*.
-    fn scrub_labels(&self) -> Vec<&'static str> {
-        Vec::new()
+    /// [`scrub_range`](Self::scrub_range) reports — the withdrawn ones included, since
+    /// a scrubber has to label the steps it can travel *to*. Empty where there is no
+    /// scrubber, which is the shared case.
+    pub fn scrub_labels(&self) -> Vec<&'static str> {
+        match self {
+            Timeline::Linear(t) => t.scrub_labels(),
+            Timeline::Replicated(_) => Vec::new(),
+        }
     }
 
-    /// How materializations have been serviced (§12.6). Solo timelines
-    /// report zeros — the counters exist for the replicated fast paths.
-    fn stats(&self) -> TimelineStats {
-        TimelineStats::default()
+    /// How materializations have been serviced (§12.6). A solo timeline reports zeros
+    /// — the counters exist for the replicated fast paths, and there are none here to
+    /// count.
+    pub fn stats(&self) -> TimelineStats {
+        match self {
+            Timeline::Linear(_) => TimelineStats::default(),
+            Timeline::Replicated(t) => t.stats,
+        }
     }
 
     /// Give up the ability to undo past the oldest `count` actions, folding them into
@@ -124,24 +219,24 @@ pub trait Timeline {
     ///
     /// **The log is not shortened — only the reach of undo is.** What is folded is
     /// still returned by [`clone_actions`](Self::clone_actions), so the file, a
-    /// timelapse and a joining peer all still get the whole painting; what goes is
-    /// the retained *snapshots* between here and there, and with them the tile
-    /// handles they were pinning. That distinction is the whole of why this is safe:
-    /// the document is its log (§1, §8), so a timeline that dropped actions would be
-    /// saving a different painting, silently, with nothing on screen to say so.
+    /// timelapse and a joining peer all still get the whole painting; what goes is the
+    /// retained *snapshots* between here and there, and with them the tile handles they
+    /// were pinning. That distinction is the whole of why this is safe: the document is
+    /// its log (§1, §8), so a timeline that dropped actions would be saving a different
+    /// painting, silently, with nothing on screen to say so.
     ///
-    /// May fold **fewer** than asked, or none: `history` only folds as far as a
-    /// cached state it can reach without replaying, and its cache is geometrically
-    /// spaced. Asking repeatedly as the history grows is what keeps it to a size.
+    /// May fold **fewer** than asked, or none: `history` only folds as far as a cached
+    /// state it can reach without replaying, and its cache is geometrically spaced.
     ///
-    /// Defaults to folding nothing, which is what a [`ReplicatedTimeline`] must do
-    /// and must be unable to forget to do. Its document is re-materialized from the
-    /// whole log on every arriving action (§12.2), so an action folded into a base
-    /// state is one the next merge cannot replay — the log is not this client's to
-    /// shorten in any sense at all. Declining here is the same structural refusal it
-    /// makes for [`seek`](Self::seek).
-    fn forget_oldest(&mut self, _count: usize) -> usize {
-        0
+    /// A shared session folds **nothing**, and must: its document is re-materialized
+    /// from the whole log on every arriving action (§12.2), so an action folded into a
+    /// base state is one the next merge cannot replay. The log is not this client's to
+    /// shorten in any sense at all.
+    pub fn forget_oldest(&mut self, count: usize) -> usize {
+        match self {
+            Timeline::Linear(t) => t.forget_oldest(count),
+            Timeline::Replicated(_) => 0,
+        }
     }
 }
 
@@ -233,7 +328,7 @@ impl LinearTimeline {
     }
 }
 
-impl Timeline for LinearTimeline {
+impl LinearTimeline {
     fn current(&self) -> &DocState {
         self.history.last_state()
     }
@@ -280,19 +375,6 @@ impl Timeline for LinearTimeline {
 
     fn can_redo(&self) -> bool {
         !self.redo.is_empty()
-    }
-
-    fn clone_actions(&self) -> Vec<Action> {
-        self.actions().cloned().collect()
-    }
-
-    fn unshare(self: Box<Self>) -> Box<dyn Timeline> {
-        self
-    }
-
-    fn scrub_range(&self) -> Option<(usize, usize)> {
-        let applied = self.applied();
-        Some((applied, applied + self.redo.len()))
     }
 
     /// Scrubbing **is** the undo/redo split, moved in bulk rather than one step at
@@ -785,64 +867,9 @@ impl ReplicatedTimeline {
     }
 }
 
-impl Timeline for ReplicatedTimeline {
+impl ReplicatedTimeline {
     fn current(&self) -> &DocState {
         self.history.last_state()
-    }
-
-    fn push(&mut self, action: Action, ctx: &mut ApplyCtx) {
-        self.insert(action, ctx);
-    }
-
-    /// Navigation undo doesn't exist in a shared session — undo is a logged
-    /// action so peers can order it (§12.3). The engine routes
-    /// through [`Timeline::undo_as_action`] first, so this is unreachable in
-    /// practice; it conservatively does nothing.
-    fn undo(&mut self, _ctx: &mut ApplyCtx) -> bool {
-        false
-    }
-
-    fn redo(&mut self, _ctx: &mut ApplyCtx) -> bool {
-        false
-    }
-
-    fn can_undo(&self) -> bool {
-        self.targets.undo.is_some()
-    }
-
-    fn can_redo(&self) -> bool {
-        self.targets.redo.is_some()
-    }
-
-    fn clone_actions(&self) -> Vec<Action> {
-        self.log.clone()
-    }
-
-    fn undo_as_action(&self) -> Option<ActionId> {
-        self.targets.undo
-    }
-
-    fn redo_as_action(&self) -> Option<ActionId> {
-        self.targets.redo
-    }
-
-    fn merge(&mut self, action: Action, ctx: &mut ApplyCtx) -> bool {
-        self.insert(action, ctx)
-    }
-
-    /// The materialization goes on alone; the log does not go with it.
-    ///
-    /// Which is the whole content of leaving: with no one left to merge, the two
-    /// things this type holds that a linear history does not — the `Undo` actions
-    /// and the actions they suppress — are answers to a question nobody will ask
-    /// again. Resolving them is what [`effective_actions`] already did, once, into
-    /// the very history handed over here.
-    fn unshare(self: Box<Self>) -> Box<dyn Timeline> {
-        Box::new(LinearTimeline::from_history(self.history))
-    }
-
-    fn stats(&self) -> TimelineStats {
-        self.stats
     }
 }
 

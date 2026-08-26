@@ -648,7 +648,7 @@ pub struct Engine {
     /// describes the empty document that the log is replayed onto, and is not
     /// itself a logged change.
     initial_substrate: SubstrateId,
-    timeline: Box<dyn Timeline>,
+    timeline: Timeline,
     session: crate::session::Session,
     /// Everyone else in the session (§17.4). Empty when solo.
     peers: Peers,
@@ -870,7 +870,7 @@ impl Engine {
 
         let initial = DocState::with_layer(ROOT_LAYER);
         let initial_substrate = initial.substrate;
-        let timeline: Box<dyn Timeline> = Box::new(LinearTimeline::new(initial));
+        let timeline = Timeline::Linear(LinearTimeline::new(initial));
         let session = crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER);
 
         let mut engine = Self {
@@ -952,7 +952,7 @@ impl Engine {
     pub fn on_shared(shared: EngineShared, viewport: Extent2) -> Self {
         let substrate = shared.apply.substrates.id();
         let initial_substrate = substrate.id;
-        let timeline: Box<dyn Timeline> = Box::new(LinearTimeline::new(
+        let timeline = Timeline::Linear(LinearTimeline::new(
             DocState::with_layer(ROOT_LAYER)
                 .with_substrate(initial_substrate)
                 .with_substrate_scale(substrate.scale),
@@ -2039,14 +2039,14 @@ impl Engine {
     /// afterwards are all things one arm could have grown and the other not.
     fn navigate(
         &mut self,
-        as_action: impl Fn(&dyn Timeline) -> Option<ActionId>,
-        step: impl Fn(&mut dyn Timeline, &mut ApplyCtx) -> bool,
+        as_action: impl Fn(&Timeline) -> Option<ActionId>,
+        step: impl Fn(&mut Timeline, &mut ApplyCtx) -> bool,
     ) {
         self.preview.set_doc(None);
-        if let Some(target) = as_action(self.timeline.as_ref()) {
+        if let Some(target) = as_action(&self.timeline) {
             self.commit(ActionKind::Undo(target));
         } else {
-            step(self.timeline.as_mut(), &mut self.shared.apply);
+            step(&mut self.timeline, &mut self.shared.apply);
             self.committed_changed();
         }
         // A step across a `SetSubstrate` — or a `SetSubstrateScale` — moves the
