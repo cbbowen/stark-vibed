@@ -23,7 +23,7 @@ use crate::gpu::stroke::StrokeRenderer;
 use crate::gpu::tile::TilePool;
 use stark_model::document::LayerId;
 
-/// Side-channel passed to [`history::Action::apply`]: the GPU resources needed
+/// Side-channel passed through [`Materialize::fold`]: the GPU resources needed
 /// to render a stroke (§5). It owns cheap `Arc`-backed clones, so it
 /// has no borrow lifetime — which is what lets it be the `Action::Context`.
 ///

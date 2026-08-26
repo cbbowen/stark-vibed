@@ -119,7 +119,7 @@ mod tests {
     /// wider, so a fill whose padded bound fell within a pixel of a tile boundary
     /// wrote a tile its action never declared: a peer-diverging under-claim through
     /// the commutation gate, and a tile undo could not take back, since
-    /// `patch::paint_rect` bounds the restore by the declared rect on purpose.
+    /// `patch::tile_diff` bounds the restore by the declared rect on purpose.
     ///
     /// Swept across a **whole tile stride** rather than checked at one alignment,
     /// because one alignment is precisely what hid it — `tests/footprint.rs` drives

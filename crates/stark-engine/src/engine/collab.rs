@@ -100,7 +100,7 @@ impl Engine {
     /// timeline resolves — and author future actions as `actor`.
     ///
     /// **Fails, and changes nothing, on a document whose color space this build
-    /// lacks** ([`DocError::UnsupportedColorSpace`]) — the same refusal
+    /// lacks** ([`DocError::UnsupportedColorSpace`](stark_model::DocError)) — the same refusal
     /// [`Engine::load_bytes`] makes about a file, for the same reason and now through
     /// the same door ([`ValidatedFile`]). It is a `Result` because of that: a session
     /// arrives over a transport, so this is the one adoption path whose input nobody

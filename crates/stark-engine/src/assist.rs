@@ -1098,12 +1098,11 @@ fn resample(trace: &[Vec2], n: usize) -> Option<Vec<Vec2>> {
     if trace.len() < 2 || n < 3 {
         return None;
     }
-    let ring: Vec<Vec2> = trace.to_vec();
     let cum = {
         let mut acc = 0.0;
-        let mut out = Vec::with_capacity(ring.len());
+        let mut out = Vec::with_capacity(trace.len());
         out.push(0.0);
-        for w in ring.windows(2) {
+        for w in trace.windows(2) {
             acc += w[0].distance(w[1]);
             out.push(acc);
         }
@@ -1117,14 +1116,14 @@ fn resample(trace: &[Vec2], n: usize) -> Option<Vec<Vec2>> {
         (0..n)
             .map(|i| {
                 let want = total * i as f32 / (n - 1) as f32;
-                let k = cum.partition_point(|&c| c < want).clamp(1, ring.len() - 1);
+                let k = cum.partition_point(|&c| c < want).clamp(1, trace.len() - 1);
                 let (lo, hi) = (cum[k - 1], cum[k]);
                 let u = if hi > lo {
                     (want - lo) / (hi - lo)
                 } else {
                     0.0
                 };
-                ring[k - 1].lerp(ring[k], u)
+                trace[k - 1].lerp(trace[k], u)
             })
             .collect(),
     )

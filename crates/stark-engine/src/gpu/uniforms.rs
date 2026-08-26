@@ -13,7 +13,13 @@
 //! It lived in `composite::blend` and was used only there, while three other call
 //! sites wrote a buffer *and* a bind group per draw for want of it: the transform's
 //! per-quad uniform, the fill's per-tile origin, the selection's per-tile params.
-//! `gpu::stroke` had a third copy of the law as a bare `UNIFORM_STRIDE` constant.
+//!
+//! **`gpu::stroke` still states the law itself**, as a bare `UNIFORM_STRIDE`, and
+//! packs against it by hand — so the stride is declared twice in this crate and the
+//! stroke path creates a buffer and a bind group per render where these types would
+//! give it a grown one. That is a known debt rather than a design (`ENGINE_CLEANUP.md`
+//! [H]); it is written here because the alternative is a reader concluding from this
+//! module's existence that nothing is left to move onto it.
 //!
 //! # Why the vertex side lives here too
 //!

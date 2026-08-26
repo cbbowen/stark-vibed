@@ -379,8 +379,8 @@ pub(crate) struct SelectionPlan {
     /// The result's overall opacity — the previous one, always. An op says where
     /// the mask is; how strongly it is read is a separate question with a separate
     /// action (§6.8), and carrying it here is what keeps a region redrawn over a
-    /// dimmed selection dimmed. (A deselect lands on 1 all the same:
-    /// [`Selection::from_parts`] pins a universal result there.)
+    /// dimmed selection dimmed. (A deselect lands on 1 all the same — [`Self::plan`]
+    /// pins `Replace` there, which is the only op that hands the canvas back.)
     pub opacity: f32,
     /// The result's analytic hull — see [`Selection::hull`].
     pub hull: Option<(Vec2, Vec2)>,

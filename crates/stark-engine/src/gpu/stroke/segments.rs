@@ -1209,8 +1209,8 @@ mod tests {
     /// the large brush a hundred times the small one for the same picture.
     ///
     /// Quoted as a ratio rather than two counts, because that is the claim — the
-    /// absolute numbers move with any retuning of [`MAX_RADIUS_RAMP`], the
-    /// independence does not.
+    /// absolute numbers move with any retuning of the ramp's own bounds
+    /// (`BrushDynamics::radius_ramp`), the independence does not.
     #[test]
     fn a_tapers_cost_does_not_grow_with_the_brush() {
         let count = |radius: f32| {
@@ -1678,7 +1678,7 @@ mod tests {
     }
 
     /// Every box a segment is measured by contains its whole arc, not just its two
-    /// ends. Under-reporting here is a clipped stroke: `affected_tiles` would leave a
+    /// ends. Under-reporting here is a clipped stroke: `region::cover` would leave a
     /// tile out of the render, and the dynamics loop would dispatch a rect too small
     /// for its own extent.
     #[test]

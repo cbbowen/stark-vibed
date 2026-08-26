@@ -123,8 +123,13 @@ pub struct MergeScene<'a> {
 
 impl MergeScene<'_> {
     /// Whether this merge is settled in tile space directly, with no trip out to the
-    /// composited representation and back — an unclipped `Normal` merge, which is the
-    /// ordinary one and the only one `merge.wesl` knows how to do.
+    /// composited representation and back — a `Normal` merge, clipped or not, which is
+    /// the ordinary one and the whole of what `merge.wesl` is written for (§14.11.3).
+    ///
+    /// The **clip is not a reason to go the long way round**: it rides as a flag the
+    /// shader branches on, so both of §14.11.3's two laws are settled here. Only the
+    /// blend mode decides, because only a mode needs the composited representation
+    /// the tile does not carry.
     fn is_direct(&self) -> bool {
         self.blend.is_normal()
     }

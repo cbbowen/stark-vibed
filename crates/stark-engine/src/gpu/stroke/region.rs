@@ -450,7 +450,7 @@ mod tests {
         })
     }
 
-    /// The per-tile segment lists cover exactly the tiles [`affected_tiles`] names, and
+    /// The per-tile segment lists cover exactly the tiles [`cover`] names, and
     /// a tile's list holds exactly the segments whose bounds reach it — in stroke
     /// order, which the `over` blend on the color target makes load-bearing.
     ///

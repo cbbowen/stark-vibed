@@ -233,7 +233,7 @@ pub struct StrokeCarry {
     ///
     /// A **superset** of the tiles whose pixels changed, deliberately. What the
     /// renderer enumerates is where the stroke's geometry *reaches*
-    /// (`segments::affected_tiles`), and a tile at the very edge of that reach can
+    /// (`region::cover`), and a tile at the very edge of that reach can
     /// receive a fresh copy-on-write tile whose every fragment differenced its prefix-τ
     /// taps to zero — bit-identical to the base, and still listed here. Narrowing it
     /// would mean comparing pixels, which is the whole cost this field exists to avoid.

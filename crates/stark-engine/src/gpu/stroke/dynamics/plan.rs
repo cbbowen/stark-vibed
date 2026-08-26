@@ -1877,14 +1877,4 @@ mod tests {
             )) >= with,
         );
     }
-
-    // `the_host_and_the_shader_agree_on_the_loops_constants` stood here, reading
-    // `BAKE_RES` out of the linked shader. It is generated now, so there is one
-    // declaration of it (§6.10).
-
-    // `the_stamp_struct_has_the_same_nine_lanes_on_both_sides` stood here, counting
-    // `vec4<f32>` in the shader source and comparing against [`SLOT`]. There is no
-    // longer a second declaration for it to disagree with: `Stamp` is generated from
-    // the WESL, and the generator emits `offset_of` assertions per lane, so a tenth
-    // lane moves both sides at once and a mistake in the layout is a build failure.
 }

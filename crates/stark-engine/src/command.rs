@@ -109,7 +109,7 @@ impl InputSample {
     /// this is a property of the sample rather than a check at each consumer. A
     /// pointer position is the frontend's `screen_to_canvas` of a pointer event, so
     /// it inherits whatever the view transform is — and a non-finite one used to be
-    /// reachable ([`ViewTransform`](stark_model::geom::ViewTransform), whose mutators now
+    /// reachable ([`ViewTransform`](crate::view::ViewTransform), whose mutators now
     /// refuse to store one). Downstream, `PathFitter` parameterizes its samples by
     /// arc length, a NaN spreads from `arc` into every curve parameter, and the
     /// normal equations it builds are then unsolvable at *any* ridge — which
@@ -531,7 +531,7 @@ pub enum ViewCommand {
     /// not independent: each anchors against the view it is applied to, so sent in
     /// sequence the last two would anchor against a view the hand never saw and the
     /// canvas would slide out from under it. What the fingers hold, they hold —
-    /// see [`ViewTransform::pinch`](stark_model::geom::ViewTransform::pinch).
+    /// see [`ViewTransform::pinch`](crate::view::ViewTransform::pinch).
     ///
     /// **Incremental**, unlike [`SetRotation`](Self::SetRotation), and for the
     /// opposite reason: a pinch does not know what angle it wants, only how far the
@@ -551,7 +551,7 @@ pub enum ViewCommand {
     /// gesture knows exactly where it wants the canvas, and an incremental command
     /// would have the frontend keep a copy of the angle to add to. What the *drag*
     /// gives is a direction, which
-    /// [`ViewTransform::rotation_for_up`](stark_model::geom::ViewTransform::rotation_for_up)
+    /// [`ViewTransform::rotation_for_up`](crate::view::ViewTransform::rotation_for_up)
     /// turns into an angle; the easing and the snap-to-square between the two are the
     /// frontend's, because they are properties of dragging with a hand.
     SetRotation(f32),
@@ -562,7 +562,7 @@ pub enum ViewCommand {
     /// A toggle rather than a setting, and **screen-relative**: it swaps the left of
     /// the screen with the right at any angle, so the check means the same thing
     /// however the easel is turned (see
-    /// [`ViewTransform::mirror_screen_h`](stark_model::geom::ViewTransform::mirror_screen_h)).
+    /// [`ViewTransform::mirror_screen_h`](crate::view::ViewTransform::mirror_screen_h)).
     /// View state, so it changes nothing about the painting and nobody else sees it.
     MirrorH,
 
@@ -579,7 +579,7 @@ pub enum ViewCommand {
     CenterOn(Vec2),
     /// Put the whole piece on screen: the canvas-space rect an export of `frame`
     /// would write (§15.6), centred and fitted to the viewport with the easel
-    /// straightened ([`ViewTransform::show_rect`](stark_model::geom::ViewTransform::show_rect)).
+    /// straightened ([`ViewTransform::show_rect`](crate::view::ViewTransform::show_rect)).
     ///
     /// `frame` names a matte layer whose rect is the piece, exactly as
     /// [`Engine::export_plan`](crate::Engine::export_plan) takes it, and the rect is

@@ -27,7 +27,7 @@ use super::slots;
 /// **Immutable throughout**, and the type says so rather than merely intending it: no
 /// cache lives here. The round tip's coverage cache and the rest of the lazily-baked
 /// brush textures sit together on the renderer
-/// ([`StrokeRenderer::round_tip`](super::StrokeRenderer)).
+/// ([`TipCache::round_tip`](super::super::tips::TipCache)).
 #[derive(Clone)]
 pub(in crate::gpu::stroke) struct DynamicsKit {
     // Region composite: base tiles → one 1:1 canvas region (color + wide aux).

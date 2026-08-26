@@ -186,7 +186,12 @@ impl StatePatch {
         // `Materialize::unfold`. Derived here instead, it was a fresh derivation per
         // `inverse` — once per cached state per shift, and for a `TransformWarp` a
         // whole fine-lattice solve — which is the cost `Logged` holds a footprint to
-        // avoid. `action` stays because the arms below read what it *is*.
+        // avoid.
+        //
+        // `action` is therefore unread: a patch is built from *what was written*, and
+        // the footprint is the whole of that. It stays in the signature because
+        // `Materialize::unfold` hands it down and a caller reading this line should
+        // see that ignoring it is the design rather than an omission.
         let _ = action;
         let (existence, rest): (Vec<&Resource>, Vec<&Resource>) = footprint
             .writes

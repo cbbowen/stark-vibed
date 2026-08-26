@@ -893,12 +893,6 @@ pub(super) fn sweep_draws(
     }
 }
 
-// `the_draw_call_and_the_strip_agree_on_the_vertex_count` stood here. It had to check
-// through `SWEEP_SLICES` rather than the shader's own `SWEEP_VERTS`, because the
-// shader states that one for the host's benefit and never computes with it — so the
-// linker stripped it and the check could not see it. Reading the *unlinked* source
-// retires that limitation, and the assertion above holds at compile time.
-
 /// Build the stroke integrate pipeline (`integrate` shader) — §6.2/§6.1. A
 /// fullscreen pass with four sampled tiles (base/scratch color/aux), writing the
 /// color+aux MRT of a fresh tile.

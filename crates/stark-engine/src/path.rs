@@ -1121,7 +1121,6 @@ fn window_indices(pts: &[Accepted], lo: usize) -> Vec<usize> {
     out
 }
 
-/// One candidate fit, before the growth rule has chosen between two of them.
 /// The control points a `(geom, attr)` pair stands for — one mapping shared by
 /// [`PathFitter::path`] and [`PathFitter::path_as_finished`], so the two cannot
 /// disagree about anything but which solve they read.
@@ -1144,6 +1143,7 @@ fn control_points(geom: &GeomCtrl, attr: &ChannelCtrl) -> Vec<ControlPoint> {
         .collect()
 }
 
+/// One candidate fit, before the growth rule has chosen between two of them.
 struct Fit {
     geom: GeomCtrl,
     attr: ChannelCtrl,

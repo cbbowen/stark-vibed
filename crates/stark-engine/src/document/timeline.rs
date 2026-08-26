@@ -464,7 +464,7 @@ fn effective_indices(log: &[Action], undone: &HashSet<ActionId>) -> Vec<usize> {
 /// except that a redone action sits at its reviving redo's slot, see
 /// [`revival_keys`]). This is what gets materialized (and what a solo load
 /// replays); the `Undo` actions themselves are resolved here and never reach
-/// [`history::Action::apply`].
+/// [`Materialize::fold`](stark_model::document::Materialize::fold).
 ///
 /// Sorts a copy of `log` by id first, so callers may pass a file's action list
 /// as-is (solo logs are already ordered; shared saves are written in total

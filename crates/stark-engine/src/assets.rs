@@ -1,9 +1,16 @@
 //! Content-addressed brush/image assets (§6.6).
 //!
-//! A brush *shape* is a grayscale coverage mask. Imported images are identified
-//! by the BLAKE3 hash of their bytes, so a `StrokeRecord` references a 32-byte
-//! [`AssetId`] rather than embedding pixels — keeping the action log tiny and
-//! giving deterministic, deduplicated, collaboration-friendly resolution.
+//! A brush *shape* is a grayscale coverage mask. Imported images are identified by
+//! the BLAKE3 hash of their **decoded, capped coverage** — not of the bytes they
+//! arrived in — so a `StrokeRecord` references a 32-byte [`AssetId`] rather than
+//! embedding pixels, keeping the action log tiny and giving deterministic,
+//! deduplicated, collaboration-friendly resolution.
+//!
+//! Hashing the canonical form rather than the file is what makes two encodings of one
+//! picture the same asset, and it is the identity contract §19 freezes: the cap and
+//! the decode are part of what an id *means*, which is why they live in
+//! `stark-assetid` where a build script can compute one without a GPU. See
+//! [`AssetStore::import`].
 //!
 //! The store decodes an image to a single-channel `R8` coverage texture and
 //! caches it on the GPU. It is `Clone` (`Arc`-backed) so it can ride inside the

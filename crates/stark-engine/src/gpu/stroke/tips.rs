@@ -200,7 +200,9 @@ struct NoiseTile {
     view: wgpu::TextureView,
 }
 
-/// reservoir texels weight by.
+/// A baked round tip: the **prefix-τ** volume both render paths integrate the swept
+/// deposit against, and the plain **coverage** mask the stamp loop's reservoir texels
+/// weight by.
 ///
 /// One type because they are one thing — the same coverage field, read two ways —
 /// and keeping them so is what makes a cache entry able to say it holds *the tip*

@@ -192,7 +192,8 @@ impl StrokeRenderer {
         // The pieces partition the segments, so the union of what each one enumerated
         // for itself *is* what the whole range touched — accumulated as they went
         // rather than walked a second time over every (segment, tile) pair, which is
-        // the very cost `region_of` exists to keep off a long stroke.
+        // the very cost cutting a stroke into region-sized pieces exists to keep off a
+        // long one (`region::chunk_segments`).
         let dirty = std::mem::take(&mut run.dirty).into_iter().collect();
         {
             // `queue.submit` plus the scratch releases that may only follow it
@@ -543,7 +544,7 @@ impl<'a> DynamicsRun<'a> {
         // unguarded by construction, and reuse is enough: the next acquire renders over
         // a texture this encoder is still compositing from.
         //
-        // Consecutive pieces share the tiles around their cut, because `affected_tiles`
+        // Consecutive pieces share the tiles around their cut, because `region::cover`
         // grows every segment's box by an apron — so this is the ordinary case for any
         // stroke long enough to be chunked, not a corner.
         //
