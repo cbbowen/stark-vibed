@@ -127,7 +127,8 @@ fn guides_reach_a_peer() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     let first = add(&mut a, distinctive(), Some("the ground"));
     let second = add(&mut a, PerspectiveGuide::default(), None);
@@ -224,7 +225,8 @@ fn an_eye_is_this_client_s_alone() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
     let id = add(&mut a, distinctive(), Some("the ground"));
     for action in a.take_outbox() {
         b.merge_remote(action);
@@ -311,7 +313,8 @@ fn concurrent_adds_cannot_collide() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     // Same lamport on both sides: neither has heard the other.
     add(&mut a, distinctive(), Some("mine"));

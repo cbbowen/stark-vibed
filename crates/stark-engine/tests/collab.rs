@@ -45,7 +45,8 @@ fn concurrent_strokes_converge() {
     };
 
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     // Concurrent, overlapping edits: same lamport, actor id breaks the tie, so
     // A's stroke orders before B's even though B applies it second.
@@ -71,7 +72,8 @@ fn concurrent_strokes_converge() {
     );
 
     // A late joiner catching up from the full shared log sees the same canvas.
-    c.join_collaboration(&a.document_file(), ActorId(3));
+    c.join_collaboration(&a.document_file(), ActorId(3))
+        .expect("join a session this build can render");
     let img_c = snap(&mut c);
     assert!(
         images_match(&img_a, &img_c, 0),
@@ -88,7 +90,8 @@ fn shared_undo_skips_peer_actions() {
     };
 
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     paint(
         &mut a,
@@ -135,7 +138,8 @@ fn shared_undo_skips_peer_actions() {
     let Some(mut c) = engine_or_skip() else {
         return;
     };
-    c.join_collaboration(&a.document_file(), ActorId(3));
+    c.join_collaboration(&a.document_file(), ActorId(3))
+        .expect("join a session this build can render");
     assert!(
         images_match(&img_a, &snap(&mut c), 0),
         "redo-at-top diverged from a late joiner's canonical materialization"
@@ -260,7 +264,8 @@ fn merge_is_idempotent() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     paint(
         &mut a,
@@ -332,7 +337,8 @@ fn leaving_a_session_hands_the_history_back() {
     };
 
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     paint(
         &mut a,
@@ -494,7 +500,8 @@ fn a_remote_merge_down_does_not_strand_the_active_layer() {
         &[Vec2::new(40.0, 100.0), Vec2::new(216.0, 100.0)],
     );
 
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
     b.process(PeerCommand::SetActiveLayer(top));
     assert_eq!(
         b.observe().active_layer,

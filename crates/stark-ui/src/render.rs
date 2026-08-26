@@ -292,9 +292,15 @@ impl Renderer {
         self.engine.environment_loaded(id)
     }
 
-    /// Register frontend-fetched HDR bytes for a lighting environment (§6.3).
-    pub fn register_environment(&mut self, id: EnvironmentId, hdr_bytes: Vec<u8>) {
-        self.engine.register_environment(id, hdr_bytes);
+    /// Register frontend-fetched HDR bytes for a lighting environment (§6.3) — or
+    /// `Err` if they are not an HDR this build can read, in which case nothing is
+    /// stored and the canvas keeps the light it has.
+    pub fn register_environment(
+        &mut self,
+        id: EnvironmentId,
+        hdr_bytes: Vec<u8>,
+    ) -> stark_engine::Result<()> {
+        self.engine.register_environment(id, hdr_bytes)
     }
 
     /// The surface's current size in CSS pixels.
@@ -542,13 +548,15 @@ impl Renderer {
         self.engine.start_collaboration(identity);
     }
 
-    /// Replace the document with a joined session's log.
+    /// Replace the document with a joined session's log — or `Err`, leaving this
+    /// client's own document alone, when the session is in a color space this build
+    /// cannot render (§6.7).
     pub fn join_collaboration(
         &mut self,
         file: &stark_model::DocumentFile,
         identity: impl Into<stark_engine::peer::Identity>,
-    ) {
-        self.engine.join_collaboration(file, identity);
+    ) -> stark_engine::Result<()> {
+        self.engine.join_collaboration(file, identity)
     }
 
     /// Leave a shared session (keep the canvas and its history, stop broadcasting).

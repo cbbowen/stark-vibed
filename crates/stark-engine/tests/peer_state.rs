@@ -81,7 +81,8 @@ fn one_peers_selection_does_not_clip_anothers_stroke() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     // A masks the left half of the canvas, and B hears about it.
     select_left(&mut a);
@@ -118,7 +119,8 @@ fn a_peers_stroke_is_reproduced_through_the_authors_own_mask() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     select_left(&mut a);
     paint(&mut a, RED, 12.0, &CROSSING);
@@ -147,7 +149,8 @@ fn peers_hold_independent_selections_and_still_converge() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     // A takes the left half, B the right.
     select_left(&mut a);
@@ -188,7 +191,8 @@ fn peers_hold_independent_selections_and_still_converge() {
 
     // A late joiner replays the whole log — both peers' masks and the strokes they
     // gated — and lands on the same pixels.
-    c.join_collaboration(&a.document_file(), ActorId(3));
+    c.join_collaboration(&a.document_file(), ActorId(3))
+        .expect("join a session this build can render");
     assert!(
         images_match(&img_a, &snap(&mut c), 0),
         "a late joiner must reconstruct every actor's mask from the log"
@@ -204,7 +208,8 @@ fn undoing_my_selection_leaves_yours() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     select_left(&mut a);
     b.process(DocCommand::Select(SelectionOp::new(
@@ -253,7 +258,8 @@ fn concurrent_layer_adds_do_not_collide() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     a.process(DocCommand::AddLayer {
         carrier: None,
@@ -306,7 +312,8 @@ fn a_remote_removal_repoints_the_active_layer() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     a.process(DocCommand::AddLayer {
         carrier: None,
@@ -344,7 +351,8 @@ fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     // A draws, publishing as it goes; B reassembles and previews.
     let brush = common::brush(RED, 12.0);
@@ -404,7 +412,8 @@ fn a_slow_receiver_pump_keeps_a_live_stroke_alive() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     a.process(ViewCommand::set_brush(common::brush(RED, 12.0)));
     a.process(GestureCommand::Start {
@@ -760,7 +769,8 @@ fn peer_selection_outlines_are_opt_in() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     // B is present and has a selection whose edge crosses the viewport.
     b.process(DocCommand::Select(SelectionOp::new(

@@ -94,10 +94,15 @@ impl Default for MediaParams {
 /// render into never come through here, but a future deep surface would — gets 0
 /// until it demonstrably bands, because dither a target does not need is only
 /// noise.
+///
+/// The sRGB-suffixed formats are **not** listed, and their absence is the same rule
+/// `CompositorPipeline::new` asserts: this pass encodes sRGB itself, so a target that
+/// encodes it again is one no compositor is built for. Listing them here said the
+/// opposite.
 pub(super) fn dither_step(format: wgpu::TextureFormat) -> f32 {
     use wgpu::TextureFormat as F;
     match format {
-        F::Rgba8Unorm | F::Rgba8UnormSrgb | F::Bgra8Unorm | F::Bgra8UnormSrgb => 1.0 / 255.0,
+        F::Rgba8Unorm | F::Bgra8Unorm => 1.0 / 255.0,
         _ => 0.0,
     }
 }

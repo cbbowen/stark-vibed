@@ -154,11 +154,14 @@ pub fn join(state: AppState, ticket_text: String) {
                 // `with_engine` takes it on the way out, and the inline paint stays
                 // for the reason `state::resize` keeps one — the peer's canvas
                 // should not wait a frame to appear.
-                let Some(assets) = crate::state::with_engine(state, |r| {
+                let joined = crate::state::with_engine(state, |r| {
                     for (need, bytes) in &owed_bytes {
                         crate::builtin_ids::install(r, *need, bytes);
                     }
-                    r.join_collaboration(&file, Identity::new(session.actor_id(), id.boot));
+                    // First, and fallible: a session painted in a color space this
+                    // build lacks is refused here, before anything of this client's
+                    // own document has been disturbed (§6.7).
+                    r.join_collaboration(&file, Identity::new(session.actor_id(), id.boot))?;
                     // Frame what arrived, the same as opening a file does
                     // (`files::open_bytes`): a view is per-client and never sent
                     // (§18.1.2), so a joiner starts at the origin at 1:1 while the
@@ -167,10 +170,23 @@ pub fn join(state: AppState, ticket_text: String) {
                     let frame = crate::panels::frame::piece_frame(&r.observe());
                     r.process(ViewCommand::ShowPiece(frame));
                     r.paint();
-                    r.all_asset_bytes()
-                }) else {
-                    set_phase(state, CollabPhase::Solo);
-                    return;
+                    stark_engine::Result::Ok(r.all_asset_bytes())
+                });
+                let assets = match joined {
+                    Some(Ok(assets)) => assets,
+                    // The renderer is gone (or the GPU is): nothing to say beyond
+                    // going back to solo, which is what every other guard here does.
+                    None => {
+                        set_phase(state, CollabPhase::Solo);
+                        return;
+                    }
+                    // The session is one this build cannot render. Worth saying out
+                    // loud rather than logging: the drawing on screen is untouched,
+                    // and the reason is about *this build*, not about the link.
+                    Some(Err(e)) => {
+                        fail(state, format!("cannot join this session: {e}"));
+                        return;
+                    }
                 };
                 for (id, bytes) in assets {
                     session.add_content(AssetNeed::Brush(id), bytes);

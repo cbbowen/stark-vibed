@@ -12,6 +12,7 @@
 //! these hooks, and `stark-net` owns the wire.
 
 use super::{Engine, ROOT_LAYER};
+use crate::Result;
 use crate::document::{DocState, LinearTimeline, ReplicatedTimeline, Timeline, TimelineStats};
 use crate::peer::{Identity, Peer};
 use stark_model::DocumentFile;
@@ -97,14 +98,31 @@ impl Engine {
     /// Join a shared session (the peer side): replace the document with the
     /// session's **full** log — including `Undo` actions, which the replicated
     /// timeline resolves — and author future actions as `actor`.
-    pub fn join_collaboration(&mut self, file: &DocumentFile, identity: impl Into<Identity>) {
+    ///
+    /// **Fails, and changes nothing, on a document whose color space this build
+    /// lacks** ([`DocError::UnsupportedColorSpace`]) — the same refusal
+    /// [`Engine::load_bytes`] makes about a file, for the same reason and now through
+    /// the same door ([`ValidatedFile`]). It is a `Result` because of that: a session
+    /// arrives over a transport, so this is the one adoption path whose input nobody
+    /// in this process has ever looked at, and it used to reach `adopt`'s `expect`
+    /// with the painting unsaved. A frontend shows the refusal and stays where it is.
+    ///
+    /// [`ValidatedFile`]: super::file::ValidatedFile
+    pub fn join_collaboration(
+        &mut self,
+        file: &DocumentFile,
+        identity: impl Into<Identity>,
+    ) -> Result<()> {
+        // Before anything is disturbed, which is the whole of what the type buys:
+        // `adopt` empties the document on its second line.
+        let validated = super::file::ValidatedFile::new(file)?;
         let identity = identity.into();
         let actor = identity.actor;
         // Everything the shared log needs before it can be replayed, in the order
         // that makes it a replay rather than an approximation ([`Self::adopt`]). A
         // joiner replays the whole painting, so this is where getting it wrong costs
         // the most.
-        self.adopt(file);
+        self.adopt(validated);
         let ctx = &mut self.shared.apply;
         let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
         self.timeline = Box::new(ReplicatedTimeline::from_log(
@@ -121,6 +139,7 @@ impl Engine {
         self.apply_document_substrate();
         self.committed_changed();
         self.mark_live_stale();
+        Ok(())
     }
 
     /// Leave a shared session: stop queueing broadcasts, forget everyone who was in

@@ -27,6 +27,52 @@ use stark_model::DocumentFile;
 use stark_model::SubstrateId;
 use stark_model::document::{Action, ActorId, LayerId};
 
+/// A [`DocumentFile`] whose color space **this build can honour** (§6.7) — the one
+/// question every adoption path has to settle before it touches the open document.
+///
+/// **The one place an untrusted color space enters.** Every `ColorSpaceId` decodes —
+/// the enum is unconditional so the save format's indices cannot shift with a build's
+/// features (§8, §19) — and what a build may lack is the *implementation*. So this is
+/// not a decode failure, and saying so is what lets a frontend offer "this document
+/// needs a Mixbox build" instead of "this file is corrupt". It is asked here rather
+/// than in [`DocumentFile::from_bytes`] because since the crate split (§2) the decoder
+/// cannot answer it: whether a space can be *honoured* is a fact about this build's
+/// renderer, and `stark-model` has no `mixbox` feature to consult.
+///
+/// **A type rather than a call each caller remembers**, and the difference is not
+/// theoretical. [`Engine::adopt`] begins by emptying the document and then resolves
+/// the space, so the question must be settled *before* it is reached — and it made
+/// that argument in a comment, naming the two callers that had settled it. There was
+/// a third. `join_collaboration` handed it a file straight off the wire, so a build
+/// without Mixbox joining a Mixbox session met the `expect` with the painting still
+/// unsaved — on the web, the tab. A comment can be given a third caller; a
+/// constructor cannot.
+///
+/// Borrowing rather than owning, because every caller already holds the file and the
+/// validation reads one field: this is a *proof*, not a container.
+#[derive(Clone, Copy)]
+pub(super) struct ValidatedFile<'a>(&'a DocumentFile);
+
+impl<'a> ValidatedFile<'a> {
+    /// Settle the space, or refuse with [`DocError::UnsupportedColorSpace`] — leaving
+    /// whatever is open alone, since nothing has been touched yet.
+    pub(super) fn new(file: &'a DocumentFile) -> Result<Self> {
+        if crate::colorspace::available(file.canvas.color_space) {
+            Ok(Self(file))
+        } else {
+            Err(DocError::UnsupportedColorSpace(file.canvas.color_space).into())
+        }
+    }
+}
+
+impl std::ops::Deref for ValidatedFile<'_> {
+    type Target = DocumentFile;
+
+    fn deref(&self) -> &DocumentFile {
+        self.0
+    }
+}
+
 impl Engine {
     /// Snapshot the document as a saveable [`DocumentFile`] (§8), bundling the
     /// brush-shape assets that strokes actually reference (§6.6) and the canvas
@@ -130,19 +176,16 @@ impl Engine {
     /// A substrate or a shape that fails to install is logged and skipped rather than
     /// fatal: the document still opens, degraded, which is the same bargain either
     /// asset gets.
-    pub(super) fn adopt(&mut self, file: &DocumentFile) {
+    pub(super) fn adopt(&mut self, file: ValidatedFile<'_>) {
         self.initial_substrate = file.canvas.substrate;
         self.reset_document();
         if file.canvas.color_space != self.shared.color_space.id() {
-            // A `DocumentFile` reaches here from exactly two places, and both have
-            // already settled this: one decoded from bytes was refused by
-            // [`require_color_space`](Self::require_color_space) if this build cannot
-            // honour its space, and one built in memory came from a live `Engine` in
-            // this same build, whose space therefore resolves by construction. So the
-            // `None` arm is not a case this function declines to handle — it is one
-            // that cannot arrive.
+            // Infallible because of the argument's *type*: a [`ValidatedFile`] is one
+            // whose space this build resolves, and there is no other way to spell one.
+            // This line used to be an `expect` under a comment naming the callers that
+            // had settled it — see [`ValidatedFile`] for the third caller that had not.
             let cs = crate::colorspace::make(file.canvas.color_space)
-                .expect("a document whose space this build lacks is refused before adoption");
+                .expect("a ValidatedFile's color space resolves, by construction");
             self.rebuild_gpu_for(cs);
         }
         // Each entry to the store its need names, which is the whole reason the bundle
@@ -176,7 +219,7 @@ impl Engine {
         // over the same transport as the blobs, and the waitlist parks a `SetSubstrate`
         // until its substrate lands (§12.4), so this is a statement about ordering in
         // flight rather than about a document that cannot be reproduced.
-        let missing = self.unresolved_content(file);
+        let missing = self.unresolved_content(&file);
         if !missing.is_empty() {
             tracing::warn!(
                 ?missing,
@@ -196,7 +239,8 @@ impl Engine {
     /// than inside it so a refusal leaves the open document alone: half-replacing a
     /// painting is worse than declining to.
     pub fn load_document(&mut self, file: &DocumentFile) -> Result<()> {
-        self.require_content(file)?;
+        let file = ValidatedFile::new(file)?;
+        self.require_content(&file)?;
         self.adopt(file);
         // Replay only the *effective* sequence: a file saved from a shared
         // session is the full log, including `Undo` actions and the actions
@@ -216,33 +260,7 @@ impl Engine {
     /// Decode and load a container produced by [`Engine::save_bytes`].
     pub fn load_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         let file = DocumentFile::from_bytes(bytes)?;
-        Self::require_color_space(&file)?;
         self.load_document(&file)
-    }
-
-    /// **The one place an untrusted color space enters.** Checked before anything is
-    /// adopted, for the reason the magic and the version are: this is the boundary
-    /// between bytes someone else wrote and a value the engine treats as its own, and
-    /// a refusal here leaves whatever is open alone.
-    ///
-    /// Every `ColorSpaceId` decodes — the enum is unconditional so the save format's
-    /// indices cannot shift with a build's features (§8, §19) — and what a build may
-    /// lack is the *implementation*. So this is not a decode failure, and saying so is
-    /// what lets a frontend offer "this document needs a Mixbox build" instead of
-    /// "this file is corrupt".
-    ///
-    /// It asks here rather than in [`DocumentFile::from_bytes`], where it used to,
-    /// because since the crate split (§2) the decoder cannot answer it: whether a
-    /// space can be *honoured* is a fact about this build's renderer, and
-    /// `stark-model` has no `mixbox` feature to consult. The property that mattered —
-    /// refuse before disturbing anything — is unchanged, because nothing between the
-    /// decode and here touches the open document.
-    fn require_color_space(file: &DocumentFile) -> Result<()> {
-        if crate::colorspace::available(file.canvas.color_space) {
-            Ok(())
-        } else {
-            Err(DocError::UnsupportedColorSpace(file.canvas.color_space).into())
-        }
     }
 
     /// `Err(MissingContent)` if anything `file`'s log names is neither bundled in it
@@ -271,7 +289,8 @@ impl Engine {
         file: &DocumentFile,
         mut on_frame: impl FnMut(crate::image::RgbaImage),
     ) -> Result<()> {
-        self.require_content(file)?;
+        let file = ValidatedFile::new(file)?;
+        self.require_content(&file)?;
         self.adopt(file);
         for action in effective_actions(&file.actions) {
             self.replay_one(action);
@@ -561,7 +580,22 @@ impl Engine {
 
     /// Provide (frontend-fetched) HDR bytes for an environment. If it's the one in
     /// use, it's rebuilt so the bytes take effect immediately.
-    pub fn register_environment(&mut self, id: EnvironmentId, hdr_bytes: Vec<u8>) {
+    ///
+    /// **The bytes are decoded here, before they are stored** — the shape
+    /// [`accept_substrate`](Self::accept_substrate) already takes, and for its reason.
+    /// An environment is fetched over the network and handed straight in, so this is
+    /// the boundary between bytes somebody else wrote and a value the engine treats
+    /// as its own: a truncated download or a file that is not an `.hdr` is refused
+    /// here, where the caller can say so and the canvas keeps the light it has.
+    /// Without this the first *use* of the id met a decoder panic on the render
+    /// thread — an abort on the web, with the painting unsaved.
+    ///
+    /// The decode is paid twice on the accepting path (once here, once in the build),
+    /// and that is the honest price of validating at the door: an HDR is registered a
+    /// handful of times in a session, where the build behind it is a mip chain.
+    pub fn register_environment(&mut self, id: EnvironmentId, hdr_bytes: Vec<u8>) -> Result<()> {
+        crate::gpu::Environment::decodes(&hdr_bytes)
+            .map_err(|e| DocError::Asset(format!("lighting environment: {e}")))?;
         if self
             .shared
             .environment
@@ -569,6 +603,7 @@ impl Engine {
         {
             self.apply_environment();
         }
+        Ok(())
     }
 
     /// Switch the lighting environment. A view setting, so this never touches the

@@ -379,6 +379,20 @@ impl CompositorPipeline {
         blend: Arc<BlendPass>,
         filter: Arc<FilterPass>,
     ) -> Self {
+        // **The target may not be an sRGB format**, and this is the one place that can
+        // say so. The media pass encodes display sRGB itself
+        // (`media_common.wesl::finish`) and the resolve averages in light around its
+        // own decode/encode pair — so a `*UnormSrgb` target has the hardware encode on
+        // top of that and decode on every `textureLoad`, and the frame comes out
+        // gamma-squared. Nothing *fails*: it is a picture, just the wrong one, which is
+        // exactly the class §1 spends structure to rule out rather than to document.
+        // The rule was real but lived in the frontend that happened to obey it
+        // (`stark-ui`'s surface configuration), so every other embedder — and one test
+        // — was free to get it wrong.
+        assert!(
+            !target_format.is_srgb(),
+            "a compositor renders to a linear target: the media pass encodes display              sRGB itself (§6.5), so {target_format:?} would be encoded twice",
+        );
         let device = &ctx.device;
         let formats = ChannelFormats::of(color_space);
         // Passes B–E all write the one target the frame is presented from.

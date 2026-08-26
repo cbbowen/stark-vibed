@@ -55,7 +55,9 @@ fn sync(a: &mut Engine, b: &mut Engine) {
 /// is the convergence claim of §12.6.
 fn canonical_snap(of: &mut Engine, size: Extent2) -> Option<RgbaImage> {
     let mut fresh = engine_or_skip_sized(size)?;
-    fresh.join_collaboration(&of.document_file(), ActorId(99));
+    fresh
+        .join_collaboration(&of.document_file(), ActorId(99))
+        .expect("join a session this build can render");
     Some(snap(&mut fresh))
 }
 
@@ -75,7 +77,8 @@ fn undo_and_redo_splice_past_disjoint_peer_strokes() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     // A paints in the left tile column; B concurrently paints two bars in the
     // right one (same layer, disjoint tiles). Absorbing A's earlier-ordered
@@ -151,7 +154,8 @@ fn late_arrival_replays_only_the_tail() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     bar(&mut a, RED, LEFT, 80.0);
     sync(&mut a, &mut b);
@@ -192,7 +196,8 @@ fn undo_splices_past_another_layers_stroke() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     paint(
         &mut a,
@@ -242,7 +247,8 @@ fn undo_splices_past_a_rename() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     bar(&mut a, RED, (20.0, 230.0), 128.0);
     sync(&mut a, &mut b);
@@ -316,7 +322,8 @@ fn undo_of_a_substrate_does_not_splice_past_the_strokes_it_toothed() {
         .import_substrate(&stark_testdata::assets::rough())
         .expect("the rough height map imports");
     a.process(DocCommand::SetSubstrate(rough));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     let mut biting = common::brush(RED, 8.0);
     biting.tooth.give = 0.2;
@@ -355,7 +362,8 @@ fn overlapping_strokes_fall_back_to_replay() {
         return;
     };
     a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
 
     // Crossing strokes through the canvas centre.
     paint(

@@ -137,7 +137,8 @@ fn grain() -> Vec<u8> {
 /// A fresh document at [`base`], ready to be handed actions.
 fn peer(file: &DocumentFile) -> Option<Engine> {
     let mut e = engine_or_skip()?;
-    e.join_collaboration(file, ACTOR);
+    e.join_collaboration(file, ACTOR)
+        .expect("join a session this build can render");
     let _ = e.take_outbox();
     Some(e)
 }

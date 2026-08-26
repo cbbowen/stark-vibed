@@ -290,7 +290,16 @@ pub fn set_environment(state: AppState, id: EnvironmentId) {
                     // Quiet: registering bytes readies a light without switching to
                     // it. The switch on the next line is the state change, and it is
                     // a command, so it publishes.
-                    with_engine_quiet(state, |r| r.register_environment(id, bytes));
+                    // A light that will not decode is reported and skipped, exactly
+                    // as one that would not fetch is on the arm below: the canvas
+                    // keeps the light it has rather than losing the tab to a
+                    // decoder panic.
+                    if let Some(Err(e)) =
+                        with_engine_quiet(state, |r| r.register_environment(id, bytes))
+                    {
+                        tracing::warn!(environment = ?id, "environment will not decode: {e}");
+                        return;
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("environment fetch failed: {e}");

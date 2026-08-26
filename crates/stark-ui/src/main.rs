@@ -270,8 +270,16 @@ fn app() -> Element {
             if let Some(asset) = environment_asset(DEFAULT_ENVIRONMENT)
                 && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
             {
-                r.register_environment(DEFAULT_ENVIRONMENT, bytes);
-                r.process(ViewCommand::SetEnvironment(DEFAULT_ENVIRONMENT));
+                // Switch only once the bytes are known to decode: the light this
+                // build ships should never fail here, and if it does the canvas
+                // stays on the procedural one rather than on a light that is not
+                // there.
+                match r.register_environment(DEFAULT_ENVIRONMENT, bytes) {
+                    Ok(()) => r.process(ViewCommand::SetEnvironment(DEFAULT_ENVIRONMENT)),
+                    Err(e) => {
+                        tracing::warn!("the bundled environment will not decode: {e}");
+                    }
+                }
             }
             // Every fetch above is a window in which the canvas can be laid out —
             // and any resize reported during it was dropped, because the signal

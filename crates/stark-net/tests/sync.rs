@@ -182,7 +182,8 @@ async fn two_peers_converge_over_iroh() {
     } = CollabSession::join(&ticket, NetOptions::local())
         .await
         .expect("join session");
-    peer.join_collaboration(&snapshot, peer_session.actor_id());
+    peer.join_collaboration(&snapshot, peer_session.actor_id())
+        .expect("join a session this build can render");
 
     // The pre-share stroke arrived via the snapshot.
     assert!(identical(&host.render_to_image(), &peer.render_to_image()));
@@ -283,7 +284,8 @@ async fn custom_shapes_replicate_mid_session() {
     } = CollabSession::join(&ticket, NetOptions::local())
         .await
         .expect("join session");
-    peer.join_collaboration(&snapshot, peer_session.actor_id());
+    peer.join_collaboration(&snapshot, peer_session.actor_id())
+        .expect("join a session this build can render");
 
     // --- live-preview path: a stroke head names a shape the peer lacks ---
     let live = host.import_brush(&blob_png(96)).expect("import live shape");
@@ -409,7 +411,8 @@ async fn a_peer_paints_on_a_substrate_it_has_never_seen() {
     } = CollabSession::join(&ticket, NetOptions::local())
         .await
         .expect("join session");
-    peer.join_collaboration(&snapshot, peer_session.actor_id());
+    peer.join_collaboration(&snapshot, peer_session.actor_id())
+        .expect("join a session this build can render");
 
     // The host takes up a substrate mid-session. The peer has never held these bytes:
     // it joined a document that was on `Flat`, and nothing has offered it since.
@@ -500,7 +503,8 @@ async fn a_stroke_whose_shape_was_never_registered_still_arrives() {
     } = CollabSession::join(&ticket, NetOptions::local())
         .await
         .expect("join session");
-    peer.join_collaboration(&snapshot, peer_session.actor_id());
+    peer.join_collaboration(&snapshot, peer_session.actor_id())
+        .expect("join a session this build can render");
 
     // Imported into the engine but deliberately NOT registered with the session:
     // the call `stark-ui` makes beside every import is the one being skipped.
@@ -569,7 +573,9 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
     } = CollabSession::join(&ticket(&host_session).await, NetOptions::local())
         .await
         .expect("middle joins the host");
-    middle.join_collaboration(&middle_doc, middle_session.actor_id());
+    middle
+        .join_collaboration(&middle_doc, middle_session.actor_id())
+        .expect("join a session this build can render");
 
     // The host paints with a shape imported mid-session; `middle` fetches it.
     let shape = host.import_brush(&blob_png(72)).expect("import shape");
@@ -604,7 +610,8 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
     } = CollabSession::join(&ticket(&middle_session).await, NetOptions::local())
         .await
         .expect("far joins through the intermediary");
-    far.join_collaboration(&far_doc, far_session.actor_id());
+    far.join_collaboration(&far_doc, far_session.actor_id())
+        .expect("join a session this build can render");
     drain_events(&mut far_events, &mut far);
 
     assert!(
@@ -720,7 +727,8 @@ async fn a_promised_substrate_is_left_out_of_the_snapshot_and_still_replays() {
         peer.accept_substrate(id, &rough_bytes)
             .expect("install the promised substrate");
     }
-    peer.join_collaboration(&snapshot, peer_session.actor_id());
+    peer.join_collaboration(&snapshot, peer_session.actor_id())
+        .expect("join a session this build can render");
 
     assert!(
         identical(&host.render_to_image(), &peer.render_to_image()),
@@ -785,7 +793,8 @@ async fn a_promised_substrate_is_asked_of_the_frontend_mid_session() {
     } = CollabSession::join(&ticket, promising(&[probe]))
         .await
         .expect("join session");
-    peer.join_collaboration(&snapshot, peer_session.actor_id());
+    peer.join_collaboration(&snapshot, peer_session.actor_id())
+        .expect("join a session this build can render");
 
     // The host takes it up mid-session and paints through a dry, toothed brush,
     // whose mark *is* the substrate.
