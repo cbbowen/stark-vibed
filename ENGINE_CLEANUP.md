@@ -379,14 +379,7 @@ pub fn exposure(self) -> f32 {
 }
 ```
 
-`docs/rendering.md:69, 108`: "`Neutral` is 1.0 and `Ferndale` 0.65 ... authored at
-0.65 — the value it was judged at." Either the doc is stale or the value was lost;
-the shape of the match suggests the latter. `tests/reference.rs` pins `Neutral`
-only. If 0.65 is meant, every HDR light renders ~1.5 stops over the exposure it was
-judged at, into the tonemap knee the doc says exposure exists to avoid.
-
-**Fix.** Decide, then make it structural: restore the per-light values or delete the
-method and its plumbing and fix the doc. Do not leave a match whose arms agree.
+**Fix.** Delete the method and its plumbing and fix the doc. Do not leave a match whose arms agree.
 
 ### F3. `mean_error` scores at a different map than its comment says — *reported*
 

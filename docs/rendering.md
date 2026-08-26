@@ -105,8 +105,7 @@ and `exposure` buys the headroom back — which is why it belongs to the *light*
 Dividing by `flat_irradiance` already makes 1.0 mean the same thing everywhere,
 but that is a statement about the diffuse response, not the peaks: a room with
 bright windows puts saturated paint over 1.0 long before a smooth grey dome does.
-So `Neutral` stays at 1.0, and `Ferndale` is authored at 0.65 — the value it was
-judged at. `tests/reference.rs` pins the invariant.
+So `Neutral` stays at 1.0. `tests/reference.rs` pins the invariant.
 
 **The blend modes** are deliberately not Photoshop's: each is ordinary **addition
 of light, conjugated by a tone curve** — `f(a,b) = T(T⁻¹(a) + T⁻¹(b))` —
