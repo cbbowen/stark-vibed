@@ -130,6 +130,9 @@ impl OverlayPass {
             // may differ from yours.
             let level = outline.selection.level();
             for (coord, handle) in outline.selection.tiles() {
+                if scene.visible.is_some_and(|r| !r.contains(*coord)) {
+                    continue;
+                }
                 records.push(OverlayInstance {
                     origin: coord.origin().to_array(),
                     tint,
@@ -180,4 +183,12 @@ pub(super) struct OverlayScene<'a> {
     /// The lit image to draw over: the supersampled target when there is one, so the
     /// ants go through the same resolve as the paint and come out antialiased.
     pub(super) target: &'a wgpu::TextureView,
+    /// The tiles this view can reach, or `None` to claim all of them — pass A's cull
+    /// (§6.3), applied to the ants for its reason.
+    ///
+    /// A selection may hold up to `MAX_SELECTION_TILES` of them and the outline is
+    /// redrawn every frame it is live, so a zoomed-in view was building an instance
+    /// and looking up a bind group for a thousand tiles to draw the two on screen.
+    /// Same rect, same conservatism, same "cannot measure it, so cull nothing".
+    pub(super) visible: Option<stark_model::geom::TileRect>,
 }

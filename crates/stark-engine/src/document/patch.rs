@@ -365,18 +365,43 @@ fn tile_diff(
         return;
     };
     let mut tiles = Vec::new();
-    for (coord, handle) in from_tiles.iter() {
-        if !rect.contains(*coord) {
-            continue;
+    // **Walk whichever side is smaller**: the rect the action declared, or the maps
+    // themselves. A stroke claims the handful of tiles it painted while the layer
+    // under it may hold thousands, and this runs once per cached state in a shift
+    // window — so scanning the map for a rect of four tiles was tens of thousands of
+    // lookups to find four. `TileRect::ALL` saturates its count, so a whole-layer
+    // claim (a transform, a removal) still takes the map walk, which is the smaller
+    // side there.
+    //
+    // Both walks answer identically: a coord outside `rect` is skipped by one and
+    // never visited by the other.
+    let span = rect.count();
+    if span < to_tiles.size() as u64 + from_tiles.size() as u64 {
+        for coord in rect.coords() {
+            let (old, new) = (to_tiles.get(&coord), from_tiles.get(&coord));
+            match (old, new) {
+                (_, Some(h)) if !old.is_some_and(|o| o.same(h)) => {
+                    tiles.push((coord, old.cloned()));
+                }
+                // Arrived where the earlier state had none: restoring means removing.
+                (Some(h), None) => tiles.push((coord, Some(h.clone()))),
+                _ => {}
+            }
         }
-        let old = to_tiles.get(coord);
-        if !old.is_some_and(|h| h.same(handle)) {
-            tiles.push((*coord, old.cloned()));
+    } else {
+        for (coord, handle) in from_tiles.iter() {
+            if !rect.contains(*coord) {
+                continue;
+            }
+            let old = to_tiles.get(coord);
+            if !old.is_some_and(|h| h.same(handle)) {
+                tiles.push((*coord, old.cloned()));
+            }
         }
-    }
-    for (coord, handle) in to_tiles.iter() {
-        if rect.contains(*coord) && from_tiles.get(coord).is_none() {
-            tiles.push((*coord, Some(handle.clone())));
+        for (coord, handle) in to_tiles.iter() {
+            if rect.contains(*coord) && from_tiles.get(coord).is_none() {
+                tiles.push((*coord, Some(handle.clone())));
+            }
         }
     }
     if !tiles.is_empty() {

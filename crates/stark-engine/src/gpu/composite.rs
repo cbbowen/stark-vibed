@@ -1089,6 +1089,7 @@ impl Compositor {
                 outlines,
                 view_bg: &self.view.overlay,
                 target: draw_target,
+                visible: crate::engine::render::visible_tiles(view),
             },
         );
 

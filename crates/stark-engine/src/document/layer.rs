@@ -378,9 +378,23 @@ impl Layer {
     }
 
     /// The same layer with its painted tiles replaced. A no-op on anything with no
-    /// tiles to replace.
+    /// tiles to replace — and on a map that is the one already there.
+    ///
+    /// **The identity case keeps the revision**, which is the whole reason it is
+    /// tested for. `PaintTiles::new` mints a fresh [`PaintTiles::revision`], and every
+    /// thumbnail in the layer panel is keyed on it (§14.6) — so a caller that hands
+    /// back the map it was given re-renders every one of them to show the same
+    /// picture. A merge with a neutral filter is exactly that caller: it is *defined*
+    /// as leaving the destination's texels alone (§14.11.7), and said so by passing
+    /// them straight through.
+    ///
+    /// `ptr_eq` rather than a comparison: the map is persistent, so sharing a root is
+    /// exactly "these are the same tiles" and costs one pointer test. Two maps that
+    /// are equal without sharing a root still mint — the safe direction, since the
+    /// cost is a re-render and the alternative is a stale thumbnail.
     pub fn with_tiles(&self, tiles: TileMap) -> Self {
         match &self.content {
+            LayerContent::Paint(current) if current.map().ptr_eq(&tiles) => self.clone(),
             LayerContent::Paint(_) => Self {
                 content: LayerContent::Paint(PaintTiles::new(tiles)),
                 ..self.clone()

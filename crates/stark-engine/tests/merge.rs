@@ -788,8 +788,27 @@ fn merging_a_neutral_filter_is_exact() {
     paint(&mut engine, WARM, 44.0, H_STROKE);
     let filter = add_filter(&mut engine, Some(ROOT), Filter::Color(ColorAdjust::NEUTRAL));
 
+    // What the destination's thumbnail is keyed on, read before and after: a merge
+    // that hands the tiles across untouched must hand the *revision* across too
+    // (§14.6). It did not, and every thumbnail in the panel re-rendered to show the
+    // same picture — the map was passed straight through and `with_tiles` minted a
+    // fresh number for it anyway.
+    let rev = |e: &stark_engine::Engine| {
+        e.observe()
+            .layers
+            .iter()
+            .find(|l| l.id == ROOT)
+            .expect("the destination is in the roster")
+            .content_revision
+    };
+    let before_rev = rev(&engine);
     let (before, after, _) = merged(&mut engine, filter);
     unchanged(&before, &after, 0, "a neutral filter");
+    assert_eq!(
+        rev(&engine),
+        before_rev,
+        "a neutral filter merge rewrote the destination's tiles, so every thumbnail          keyed on them is stale for nothing",
+    );
 }
 
 /// **A filter that resamples is never offered** (§14.11.7) — the refusal, seen from

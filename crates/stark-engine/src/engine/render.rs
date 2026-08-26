@@ -1336,7 +1336,7 @@ pub(super) struct DrawCache {
 /// that whole tiles fall off the `i32` grid). That is the "claim everything" answer
 /// [`TileRect::covering`] leaves to its callers: culling is an optimization, and an
 /// optimization that cannot measure its input must do nothing rather than guess.
-pub(super) fn visible_tiles(view: ViewTransform) -> Option<TileRect> {
+pub(crate) fn visible_tiles(view: ViewTransform) -> Option<TileRect> {
     let (lo, hi) = view.visible_bounds();
     TileRect::covering(lo, hi, 0)
 }

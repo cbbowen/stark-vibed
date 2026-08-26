@@ -27,7 +27,7 @@ mod collab;
 mod file;
 mod live;
 mod pick;
-mod render;
+pub(crate) mod render;
 
 use crate::command::Tool;
 use stark_model::DocError;
