@@ -355,12 +355,11 @@ impl StrokeRenderer {
         // erase path never binds. This is the boundary where the stored sRGB
         // becomes the display color the conversion is defined on.
         let rgb = Srgb::new(rec.brush.paint().map_or([0.0; 3], |p| p.color));
-        let ch = self.color_space.rgb_to_channels(rgb);
-        let res = self.color_space.rgb_to_resid(rgb);
+        let l = self.color_space.rgb_to_latent(rgb);
         let (nfreq, namp) = noise_uniform(rec);
         StrokeConstants {
-            channels: [ch[0], ch[1], ch[2]],
-            resid: [res[0], res[1], res[2], 0.0],
+            channels: l.lat,
+            resid: [l.res[0], l.res[1], l.res[2], 0.0],
             // Clamped where the record becomes numbers, the color's rule: the
             // ceiling is quoted in [0, 1] (`BrushEffect::opacity`) and a wire
             // value past it is nonsense, not a stronger setting. The mask's

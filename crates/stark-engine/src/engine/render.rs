@@ -319,11 +319,11 @@ impl Engine {
         // The substrate is document state now (§15.5), so the substrate a
         // piece was painted on travels with it instead of living in whichever
         // frontend happened to render it.
-        let bg_channels = self.shared.color_space.rgb_to_channels(doc.substrate_color);
-        let bg_resid = {
-            let r = self.shared.color_space.rgb_to_resid(doc.substrate_color);
-            [r[0], r[1], r[2], 0.0]
-        };
+        let bg = self.shared.color_space.rgb_to_latent(doc.substrate_color);
+        // The substrate is opaque paint under everything, so its per-unit opacity is
+        // 1; the residual target carries the same number (§6.7).
+        let bg_channels = [bg.lat[0], bg.lat[1], bg.lat[2], 1.0];
+        let bg_resid = [bg.res[0], bg.res[1], bg.res[2], 0.0];
         // Chrome never reaches a file: an exported image gets no selection outline
         // (§15.6). Keyed on `chrome`, deliberately *not* on the
         // background — a substrate export is still an export, and tying the two
@@ -1063,14 +1063,14 @@ impl Engine {
                 // every stop the same way, once per item build, and the shader
                 // interpolates in the working space (§22.4).
                 let (channels, resid, ramp) = match paint {
-                    stark_model::document::Parcel::Solid(color) => (
-                        self.shared.color_space.rgb_to_channels(*color),
-                        {
-                            let r = self.shared.color_space.rgb_to_resid(*color);
-                            [r[0], r[1], r[2], 0.0]
-                        },
-                        None,
-                    ),
+                    stark_model::document::Parcel::Solid(color) => {
+                        let l = self.shared.color_space.rgb_to_latent(*color);
+                        (
+                            [l.lat[0], l.lat[1], l.lat[2], 1.0],
+                            [l.res[0], l.res[1], l.res[2], 0.0],
+                            None,
+                        )
+                    }
                     stark_model::document::Parcel::Gradient(GradientParcel { gradient, axis }) => {
                         let mut ramp = stark_shaders::mirror::matte::Ramp::default();
                         let stops = gradient.stops();
@@ -1091,10 +1091,9 @@ impl Engine {
                         // hide a broken invariant behind a wrong picture; this way it
                         // is loud, at the site.
                         for (i, stop) in stops.iter().enumerate() {
-                            let c = self.shared.color_space.rgb_to_channels(stop.color);
-                            let r = self.shared.color_space.rgb_to_resid(stop.color);
-                            ramp.stop_c[i] = [c[0], c[1], c[2], stop.t];
-                            ramp.stop_r[i] = [r[0], r[1], r[2], 0.0];
+                            let l = self.shared.color_space.rgb_to_latent(stop.color);
+                            ramp.stop_c[i] = [l.lat[0], l.lat[1], l.lat[2], stop.t];
+                            ramp.stop_r[i] = [l.res[0], l.res[1], l.res[2], 0.0];
                         }
                         ([0.0; 4], [0.0; 4], Some(Box::new(ramp)))
                     }

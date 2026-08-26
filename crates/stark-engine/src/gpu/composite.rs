@@ -231,15 +231,14 @@ pub struct CompositorPipeline {
     substrate: SubstrateMap,
     // The HDR lighting environment sampled by the media pass (§6.3).
     environment: Environment,
-    /// A stamp for "the state a media bind group would be built against". Moved
-    /// whenever `substrate` or `environment` is swapped: both are bound *into* each
-    /// consumer's bind group, so each has to notice and rebuild — and a stamp is what
-    /// makes noticing structural rather than a fan-out of notifications that a new
-    /// consumer could be left out of.
+    /// A stamp for "the **pipeline** a consumer's attachments were built against".
+    /// Moved when this kit is built or rebuilt, and never by a setting — so a
+    /// consumer holding an older value is holding attachments whose *formats* may be
+    /// wrong, which is the only thing that can require reallocating them.
     ///
     /// Drawn from a **process-wide** counter rather than counted per pipeline, so no
     /// two states anywhere ever share a value: "same stamp" then implies "same
-    /// pipeline, same settings", and a consumer's decision to reuse cannot be wrong.
+    /// pipeline", and a consumer's decision to reuse cannot be wrong.
     ///
     /// The case that needs that is a color-space rebuild (§6.7), which does
     /// not mutate a pipeline but *replaces* it. A per-pipeline counter would start the
@@ -251,6 +250,30 @@ pub struct CompositorPipeline {
     /// `ColorSpace` trait deliberately leaves open ([`ColorSpace::color_format`]), and
     /// "correct because two implementations coincide" is not a property to build on.
     generation: u64,
+
+    /// A stamp for "the substrate and light a media bind group would name". Moved
+    /// whenever either is swapped.
+    ///
+    /// **Separate from [`generation`](Self::generation) because the two invalidate
+    /// different things**, and one stamp for both charged the swap the price of the
+    /// rebuild. A substrate or a light is *bound into* each consumer's media group
+    /// and named nowhere else: the accumulator trio is sized by the target and
+    /// carries the color space's formats, and the scratch levels' groups do not name
+    /// either. So a swap costs one `create_bind_group`
+    /// ([`media::Offscreen::rebind`]) — where it used to drop and rebuild the
+    /// accumulator, the supersampled target and the whole blend scratch, up to
+    /// `MAX_SUPERSAMPLED_BYTES`.
+    ///
+    /// What made that worth splitting is how ordinary the swap is: every undo or redo
+    /// across a logged `SetSubstrate` or `SetSubstrateScale`, every commit of the
+    /// scale slider, every switch in the Lighting panel and every late-arriving HDR
+    /// moves it — and on the web that reallocation is the destroy/create churn
+    /// [`Attachment`] warns about, at a rate.
+    ///
+    /// Process-wide for `generation`'s reason, and for one of its own: a rebuild
+    /// replaces the substrate and the light too, so a consumer must not mistake the
+    /// new kit's first binding state for the old kit's.
+    bindings: u64,
 }
 
 /// The next value for [`CompositorPipeline::generation`] — see there for why this is
@@ -293,8 +316,14 @@ pub struct Compositor {
     /// [`MediaPass`]'s reason: two engines sharing one pipeline kit light their
     /// canvases differently, and the bind group naming this was per-consumer already.
     media_buf: wgpu::Buffer,
-    /// The [`CompositorPipeline::generation`] [`Self::accum`] was built against.
+    /// The [`CompositorPipeline::generation`] [`Self::accum`] was built against — the
+    /// *pipeline*, so a mismatch means the attachments' formats may be wrong and they
+    /// have to be rebuilt.
     generation: u64,
+    /// The [`CompositorPipeline::bindings`] [`Self::accum`]'s media bind group names.
+    /// A mismatch is a swapped substrate or light, which the group is rebound for and
+    /// the attachments survive.
+    bindings: u64,
 
     /// Samples per axis the attachments are built for (§6.4). `1` — the
     /// zoomed-in and 1:1 case — means passes B–D write the caller's target directly
@@ -440,6 +469,7 @@ impl CompositorPipeline {
             substrate,
             environment,
             generation: next_generation(),
+            bindings: next_generation(),
         }
     }
 
@@ -462,17 +492,19 @@ impl CompositorPipeline {
     /// (§6.4). A view-time swap — the composited tiles are untouched.
     ///
     /// Each [`Compositor`] rebuilds its media bind group when it next notices the
-    /// generation moved, rather than being told: a swap has to reach every consumer,
-    /// and the one that would be forgotten is exactly the one nobody is looking at.
+    /// binding stamp moved, rather than being told: a swap has to reach every
+    /// consumer, and the one that would be forgotten is exactly the one nobody is
+    /// looking at. Its attachments are untouched — see
+    /// [`CompositorPipeline::bindings`].
     pub fn set_substrate(&mut self, substrate: SubstrateMap) {
         self.substrate = substrate;
-        self.generation = next_generation();
+        self.bindings = next_generation();
     }
 
     /// Swap the HDR lighting environment so the next render samples it (§6.3).
     pub fn set_environment(&mut self, environment: Environment) {
         self.environment = environment;
-        self.generation = next_generation();
+        self.bindings = next_generation();
     }
 
     /// The channel formats pass A writes (§6.7) — what a caller supplying its own
@@ -487,6 +519,19 @@ impl CompositorPipeline {
 
     /// The offscreen pair and the media bind group over it, at `size`. `media_buf`
     /// is the consumer's own uniform, which that bind group names.
+    /// Point an existing accumulator's media group at this pipeline's current
+    /// substrate and light, keeping its attachments — see
+    /// [`CompositorPipeline::bindings`].
+    fn rebind_media(&self, accum: &mut media::Offscreen, media_buf: &wgpu::Buffer) {
+        accum.rebind(
+            &self.ctx.device,
+            &self.media_pass,
+            media_buf,
+            &self.substrate,
+            &self.environment,
+        );
+    }
+
     fn offscreen(&self, size: Extent2, media_buf: &wgpu::Buffer) -> media::Offscreen {
         media::offscreen(media::OffscreenDesc {
             device: &self.ctx.device,
@@ -520,6 +565,7 @@ impl Compositor {
             media_buf: media::uniform_buffer(device),
             accum: None,
             generation: pipeline.generation,
+            bindings: pipeline.bindings,
             // 1:1 until a render says otherwise — `ensure_targets` is what decides,
             // because only a render knows the zoom.
             ss: 1,
@@ -544,10 +590,16 @@ impl Compositor {
     /// place that can build it.
     ///
     /// Called at the top of every render, so a resized target, a zoom that crossed a
-    /// supersampling threshold, a swapped canvas substrate, a swapped light and a whole
-    /// rebuilt pipeline (a color-space change, which changes the channel *formats*)
-    /// all land without anyone having to be notified — see
-    /// [`CompositorPipeline::generation`].
+    /// supersampling threshold, a swapped canvas substrate, a swapped light and a
+    /// whole rebuilt pipeline (a color-space change, which changes the channel
+    /// *formats*) all land without anyone having to be notified.
+    ///
+    /// **Two stamps, because two of those are not the same event.** A resize or a
+    /// rebuilt pipeline invalidates the attachments themselves
+    /// ([`CompositorPipeline::generation`]); a swapped substrate or light invalidates
+    /// only the group that names them ([`CompositorPipeline::bindings`]), and is
+    /// rebound in place. One stamp for both charged an undo across a `SetSubstrate` a
+    /// viewport of allocation to say that a texture view had moved.
     ///
     /// The blend scratch is dropped rather than kept through any of it: it is sized
     /// like the attachments and carries their formats, so "everything that depends on
@@ -566,10 +618,25 @@ impl Compositor {
             && size == self.size
             && ss == self.ss
             && self.generation == p.generation;
-        if !current {
+        if current {
+            // The cheap half: the attachments stand, and only the group naming the
+            // substrate and the light has to be rebuilt (see
+            // [`CompositorPipeline::bindings`]). Every undo across a `SetSubstrate`,
+            // every scale commit and every light switch lands here.
+            if self.bindings != p.bindings {
+                self.bindings = p.bindings;
+                let accum = self
+                    .accum
+                    .as_mut()
+                    .expect("`current` is false when the accumulator is absent");
+                p.rebind_media(accum, &self.media_buf);
+            }
+        } else {
             self.size = size;
             self.ss = ss;
             self.generation = p.generation;
+            // The rebuild names the current pair by construction.
+            self.bindings = p.bindings;
             // Released *before* their replacements are built, never by the assignment
             // that would drop them after ([`Attachment`] frees on drop, so the order is
             // now the difference between one set resident and two). A resize drag is

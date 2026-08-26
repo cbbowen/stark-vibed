@@ -307,6 +307,35 @@ pub(super) struct Offscreen {
 }
 
 impl Offscreen {
+    /// Point the media bind group at a different canvas substrate or light, keeping
+    /// the attachments (§6.3, §6.4).
+    ///
+    /// **The whole cost of a swap.** Both are *bound into* this group and nothing
+    /// else here names them, so a swapped substrate, a swapped light, a dragged
+    /// substrate scale committing, or an undo across any of those costs one bind
+    /// group — where rebuilding the `Offscreen` costs the accumulator trio, and with
+    /// it (in the caller) the supersampled target and the blend scratch, up to
+    /// `MAX_SUPERSAMPLED_BYTES` of allocation to say that a texture view moved.
+    pub(super) fn rebind(
+        &mut self,
+        device: &wgpu::Device,
+        media: &MediaPass,
+        media_buf: &wgpu::Buffer,
+        substrate: &SubstrateMap,
+        environment: &Environment,
+    ) {
+        self.bg = media_bind_group(
+            device,
+            media,
+            media_buf,
+            substrate,
+            environment,
+            &self.color,
+            &self.aux,
+            self.resid.as_ref(),
+        );
+    }
+
     /// The trio as pass A attaches it (§6.7) — the same three views the media bind
     /// group above reads, which is the invariant this type exists to hold together.
     pub(super) fn targets(&self) -> crate::gpu::channels::Targets<'_> {
@@ -335,7 +364,47 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
         .resid
         .map(|f| super::Attachment::new(device, size, f, "stark comp resid"));
 
-    let bg = desc::bind_group_for(
+    let bg = media_bind_group(
+        device,
+        media,
+        media_buf,
+        substrate,
+        environment,
+        &color,
+        &aux,
+        resid.as_ref(),
+    );
+    Offscreen {
+        color,
+        aux,
+        resid,
+        bg,
+    }
+}
+
+/// The media pass's bind group over one accumulator, its uniform, the canvas
+/// substrate and the light.
+///
+/// Split out because it is the **only** thing here that a substrate or a light swap
+/// invalidates: the attachments are sized by the target and carry the color space's
+/// formats, neither of which a swap touches. `Offscreen::rebind` is what that split
+/// buys — see [`Compositor::ensure_targets`](super::Compositor), where rebuilding
+/// the trio for a swap used to cost a viewport of memory.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments are the bind group's own bindings; each is a distinct type"
+)]
+fn media_bind_group(
+    device: &wgpu::Device,
+    media: &MediaPass,
+    media_buf: &wgpu::Buffer,
+    substrate: &SubstrateMap,
+    environment: &Environment,
+    color: &super::Attachment,
+    aux: &super::Attachment,
+    resid: Option<&super::Attachment>,
+) -> wgpu::BindGroup {
+    desc::bind_group_for(
         device,
         "stark media bg",
         &media.bgl,
@@ -350,16 +419,9 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
             mc::ENV => tex(&environment.view),
             mc::ENV_SAMP => wgpu::BindingResource::Sampler(&environment.sampler),
             mm::COMP_RESID => tex(resid
-                .as_ref()
                 .expect("a residual build has a composited residual")
                 .view()),
             other => unreachable!("`MEDIA_SLOTS` lists no binding {other}"),
         },
-    );
-    Offscreen {
-        color,
-        aux,
-        resid,
-        bg,
-    }
+    )
 }

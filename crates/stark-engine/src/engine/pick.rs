@@ -308,11 +308,12 @@ impl Engine {
             PickSource::CompositeOverSubstrate | PickSource::Below(_)
         )
         .then(|| {
-            let bg = self.presented().substrate_color;
-            (
-                self.shared.color_space.rgb_to_channels(bg),
-                self.shared.color_space.rgb_to_resid(bg),
-            )
+            let l = self
+                .shared
+                .color_space
+                .rgb_to_latent(self.presented().substrate_color);
+            // Opaque, like the substrate the screen composites over (`render.rs`).
+            ([l.lat[0], l.lat[1], l.lat[2], 1.0], l.res)
         });
 
         let formats = self.compositor_pipeline.channel_formats();

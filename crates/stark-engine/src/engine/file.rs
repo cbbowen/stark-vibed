@@ -561,7 +561,10 @@ impl Engine {
     }
 
     /// Rebind the current substrate in the media pass — the only thing that samples
-    /// it. No pipeline or pool rebuild, no document reset.
+    /// it. No pipeline or pool rebuild, no document reset, and **no reallocation of
+    /// the compositor's attachments**: what a swap costs is one bind group, which is
+    /// what the binding stamp beside the generation buys (`CompositorPipeline`).
+    /// This sentence was true of the pipeline and false of the frame until then.
     fn apply_substrate(&mut self) {
         self.compositor_pipeline
             .set_substrate(self.shared.apply.substrates.current());

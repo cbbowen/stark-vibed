@@ -196,8 +196,9 @@ fn texel(space: &dyn ColorSpace, rgba: [u8; 4]) -> Texel {
         rgba[1] as f32 / 255.0,
         rgba[2] as f32 / 255.0,
     ]);
-    let channels = space.rgb_to_channels(rgb);
-    let res = space.rgb_to_resid(rgb);
+    // **Once per texel**, which is why it is one call: this runs over every pixel of
+    // the imported image (§23).
+    let l = space.rgb_to_latent(rgb);
 
     // Where the slider ends, as mass: coverage is `1 − exp(−K·mass)` and reaches 1 only
     // in the limit, so a fully opaque pixel asks for `OPAQUE_MASS` rather than for the
@@ -210,9 +211,9 @@ fn texel(space: &dyn ColorSpace, rgba: [u8; 4]) -> Texel {
     // stated rather than implied.
     let op = 1.0;
     Texel {
-        color: [channels[0] * op, channels[1] * op, channels[2] * op, op],
+        color: [l.lat[0] * op, l.lat[1] * op, l.lat[2] * op, op],
         height,
-        resid: [res[0] * op, res[1] * op, res[2] * op, op],
+        resid: [l.res[0] * op, l.res[1] * op, l.res[2] * op, op],
     }
 }
 

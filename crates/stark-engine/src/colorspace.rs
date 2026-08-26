@@ -51,6 +51,26 @@ pub fn all_available() -> impl Iterator<Item = ColorSpaceId> {
         .filter(|id| available(*id))
 }
 
+/// A color as the working space stores it: the channels a tile's color target holds,
+/// and the residual a pigment space's third target holds beside them (§6.7).
+///
+/// Three and three, not four and four. The channels' fourth lane is per-unit opacity
+/// — a property of the *paint*, not of the color (§6.1) — and the residual's is the
+/// same opacity duplicated so the fixed-function "over" reads it on that target too.
+/// Both were constants at every call site and are written there, where what they mean
+/// is legible, rather than returned from a conversion that has no opinion about them.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct Latent {
+    /// The space's three color channels, pre-coverage: Oklab's `L, a, b`, or the
+    /// first three Mixbox pigment concentrations.
+    pub lat: [f32; 3],
+    /// What those channels cannot say, added back on the way out — `[0.0; 3]`
+    /// **exactly** in a space with no [`resid_format`](ColorSpace::resid_format),
+    /// which is the true answer rather than a placeholder: such a space's channels
+    /// already carry the whole color.
+    pub res: [f32; 3],
+}
+
 /// A color space: tile layout + blend + picker conversions + GPU shaders.
 pub trait ColorSpace {
     fn id(&self) -> ColorSpaceId;
@@ -86,22 +106,20 @@ pub trait ColorSpace {
     /// Blend for the aux target.
     fn aux_blend(&self) -> wgpu::BlendState;
 
-    /// Straight display RGB → the space's four color channels (pre-coverage).
+    /// Straight display RGB → the space's color channels **and** the residual they
+    /// leave behind (§6.7), in one conversion.
     ///
-    /// The parameter says "straight display RGB" in the type now rather than in this
+    /// The parameter says "straight display RGB" in the type rather than in this
     /// line: an [`Srgb`] is in the cube by construction, so neither implementation
     /// has to wonder whether it was handed one that is not (§6.5).
-    fn rgb_to_channels(&self, rgb: Srgb) -> [f32; 4];
-    /// Straight display RGB → the **residual** those channels leave behind (§6.7).
     ///
-    /// Zero for a space with no [`resid_format`](Self::resid_format), and zero
-    /// *exactly*: the default here is not a placeholder for an unimplemented
-    /// conversion but the true answer, since such a space's channels already say the
-    /// whole color. Callers write it unconditionally into a uniform lane, and for
-    /// Oklab that lane is genuinely zeroes rather than an unread field.
-    fn rgb_to_resid(&self, _rgb: Srgb) -> [f32; 3] {
-        [0.0; 3]
-    }
+    /// **One method because it is one evaluation.** These were two, and every caller
+    /// in the crate asked both back to back — which in Mixbox ran the pigment
+    /// polynomial twice over the same color, once for the concentrations and once for
+    /// the remainder it leaves. On a placed image that is per *texel*
+    /// (`gpu::place`), so a 4096² import evaluated it 33 million times to produce 16
+    /// million answers.
+    fn rgb_to_latent(&self, rgb: Srgb) -> Latent;
     /// The space's color channels **and residual** → straight display RGB (picker
     /// readout/export). The inverse of the two functions above, taken together.
     fn channels_to_rgb(&self, channels: [f32; 4], resid: [f32; 3]) -> [f32; 3];
@@ -178,14 +196,17 @@ impl ColorSpace for OkLabColorSpace {
         additive()
     }
 
-    fn rgb_to_channels(&self, rgb: Srgb) -> [f32; 4] {
+    fn rgb_to_latent(&self, rgb: Srgb) -> Latent {
         let lin = [
             color::srgb_to_linear(rgb[0]),
             color::srgb_to_linear(rgb[1]),
             color::srgb_to_linear(rgb[2]),
         ];
-        let lab = color::linear_srgb_to_oklab(lin);
-        [lab[0], lab[1], lab[2], 1.0]
+        Latent {
+            lat: color::linear_srgb_to_oklab(lin),
+            // Oklab reproduces every sRGB color, so there is nothing left over.
+            res: [0.0; 3],
+        }
     }
 
     /// `resid` is ignored, and is always `[0.0; 3]` for this space: Oklab reproduces
@@ -264,17 +285,15 @@ impl ColorSpace for MixboxColorSpace {
         additive()
     }
 
-    fn rgb_to_channels(&self, rgb: Srgb) -> [f32; 4] {
-        // Mixbox latent = [c0, c1, c2, c3, residual…]; keep the concentrations.
+    fn rgb_to_latent(&self, rgb: Srgb) -> Latent {
+        // Mixbox latent = [c0, c1, c2, c3, residual…]. The concentrations and the
+        // remainder `rgb − poly(c)` — which is what makes the round trip below exact
+        // rather than approximate — are two halves of **one** evaluation.
         let z = mixbox::float_rgb_to_latent(&rgb);
-        [z[0], z[1], z[2], 1.0]
-    }
-
-    fn rgb_to_resid(&self, rgb: Srgb) -> [f32; 3] {
-        // The other half of the same latent: `rgb − poly(c)`, which is what makes the
-        // round trip below exact rather than approximate.
-        let z = mixbox::float_rgb_to_latent(&rgb);
-        [z[4], z[5], z[6]]
+        Latent {
+            lat: [z[0], z[1], z[2]],
+            res: [z[4], z[5], z[6]],
+        }
     }
 
     fn channels_to_rgb(&self, channels: [f32; 4], resid: [f32; 3]) -> [f32; 3] {

@@ -187,10 +187,9 @@ impl FillRenderer {
         uniform.p[3] = gate.opacity();
         match op.paint() {
             Parcel::Solid(color) => {
-                let channels = self.color_space.rgb_to_channels(*color);
-                let resid = self.color_space.rgb_to_resid(*color);
-                uniform.c = [channels[0], channels[1], channels[2], 0.0];
-                uniform.r = [resid[0], resid[1], resid[2], 0.0];
+                let l = self.color_space.rgb_to_latent(*color);
+                uniform.c = [l.lat[0], l.lat[1], l.lat[2], 0.0];
+                uniform.r = [l.res[0], l.res[1], l.res[2], 0.0];
             }
             Parcel::Gradient(g) => {
                 let stops = g.gradient.stops();
@@ -203,10 +202,9 @@ impl FillRenderer {
                     }
                 };
                 for (i, stop) in stops.iter().enumerate() {
-                    let channels = self.color_space.rgb_to_channels(stop.color);
-                    let resid = self.color_space.rgb_to_resid(stop.color);
-                    uniform.stop_c[i] = [channels[0], channels[1], channels[2], stop.t];
-                    uniform.stop_r[i] = [resid[0], resid[1], resid[2], 0.0];
+                    let l = self.color_space.rgb_to_latent(stop.color);
+                    uniform.stop_c[i] = [l.lat[0], l.lat[1], l.lat[2], stop.t];
+                    uniform.stop_r[i] = [l.res[0], l.res[1], l.res[2], 0.0];
                 }
             }
         }

@@ -439,6 +439,11 @@ fn a_click_paints_nothing_and_commits_nothing() {
 /// Long enough that the fitter freezes spans behind the pointer, so the preview is
 /// a kept head plus a live tail rather than one range — the case a commit that
 /// re-rendered the stroke would pay for in full.
+///
+/// Gated with the two tests that use it: `debug-unfrozen` tints the live tail, so
+/// every preview-vs-commit test is off under it (see the module note) and these
+/// helpers would be dead code in that build.
+#[cfg(not(feature = "debug-unfrozen"))]
 fn draw_long_stroke(engine: &mut Engine) {
     engine.process(ViewCommand::set_brush(brush(RED, 14.0)));
     let mut it = long_wave().into_iter();
@@ -456,6 +461,7 @@ fn draw_long_stroke(engine: &mut Engine) {
     }
 }
 
+#[cfg(not(feature = "debug-unfrozen"))]
 fn long_wave() -> Vec<Vec2> {
     (0..200)
         .map(|i| {
