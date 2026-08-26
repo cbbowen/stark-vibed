@@ -96,7 +96,7 @@ present.
 | [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | |
 | [U](#u-comments-that-narrate-history-or-describe-code-that-is-gone) | Comments that narrate history, or describe code that is gone | maintainability | `dbf4dad` |
 | [V](#v-footprint-reads-are-checked-over-a-hand-picked-vocabulary) | Footprint *reads* are checked over a hand-picked vocabulary | tests | `6313c00`, `3974f8f` |
-| [W](#w-64-translation-invariance-is-guarded-for-strokes-only) | §6.4 translation invariance is guarded for strokes only | tests | `PENDING` |
+| [W](#w-64-translation-invariance-is-guarded-for-strokes-only) | §6.4 translation invariance is guarded for strokes only | tests | `4fb2e71` |
 | [X](#x-what-the-suite-observes-only-through-the-lit-composite) | What the suite observes only through the lit composite | tests | |
 | [Y](#y-suite-infrastructure) | Suite infrastructure | tests | |
 
