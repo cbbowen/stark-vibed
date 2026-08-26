@@ -153,10 +153,7 @@ impl GuidePass {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark guides pass"),
             color_attachments: &[Some(desc::attach(target, desc::LOAD))],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
+            ..Default::default()
         });
         pass.set_pipeline(&self.pipeline);
         for i in 0..scenes.len() as u32 {

@@ -8,12 +8,17 @@
 use crate::colorspace::ColorSpace;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Slot};
+use crate::gpu::environment::Environment;
+use crate::gpu::substrate::SubstrateMap;
 use crate::view::ViewTransform;
 use stark_model::geom::Extent2;
 use stark_shaders::mirror::media_common::binding as mc;
 use stark_shaders::mirror::media_common::decl as mcd;
 use stark_shaders::mirror::media_mixbox::binding as mm;
 use stark_shaders::mirror::media_mixbox::decl as mmd;
+
+// Generated from `media_common.wesl`'s own declaration (§6.7).
+pub(super) use stark_shaders::mirror::media_common::Media as MediaUniform;
 
 /// Which bindings the media pass reads, in layout order (§6.10).
 const MEDIA_SLOTS: &[Slot] = &[
@@ -31,16 +36,6 @@ const MEDIA_SLOTS: &[Slot] = &[
     // instead of a placeholder to bind (§6.7).
     Slot::at(mmd::COMP_RESID).only_with_resid(),
 ];
-
-/// A texture view as the resource a bind-group entry takes.
-fn tex(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
-    wgpu::BindingResource::TextureView(v)
-}
-use crate::gpu::environment::Environment;
-use crate::gpu::substrate::SubstrateMap;
-
-// Generated from `media_common.wesl`'s own declaration (§6.7).
-pub(super) use stark_shaders::mirror::media_common::Media as MediaUniform;
 
 /// Lighting parameters for the media pass (§6.3). The painting is lit by
 /// image-based lighting from an [`Environment`]; this is a single place to tune the
@@ -183,10 +178,7 @@ impl MediaPass {
                     wgpu::Color::BLACK
                 }),
             ))],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
+            ..Default::default()
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, accum_bg, &[]);
@@ -412,15 +404,17 @@ fn media_bind_group(
         resid.is_some(),
         |i| match i {
             mc::M => media_buf.as_entire_binding(),
-            mc::COMP_COLOR => tex(color.view()),
-            mc::COMP_AUX => tex(aux.view()),
-            mc::SUBSTRATE => tex(&substrate.view),
+            mc::COMP_COLOR => wgpu::BindingResource::TextureView(color.view()),
+            mc::COMP_AUX => wgpu::BindingResource::TextureView(aux.view()),
+            mc::SUBSTRATE => wgpu::BindingResource::TextureView(&substrate.view),
             mc::SUBSTRATE_SAMP => wgpu::BindingResource::Sampler(&substrate.sampler),
-            mc::ENV => tex(&environment.view),
+            mc::ENV => wgpu::BindingResource::TextureView(&environment.view),
             mc::ENV_SAMP => wgpu::BindingResource::Sampler(&environment.sampler),
-            mm::COMP_RESID => tex(resid
-                .expect("a residual build has a composited residual")
-                .view()),
+            mm::COMP_RESID => wgpu::BindingResource::TextureView(
+                resid
+                    .expect("a residual build has a composited residual")
+                    .view(),
+            ),
             other => unreachable!("`MEDIA_SLOTS` lists no binding {other}"),
         },
     )

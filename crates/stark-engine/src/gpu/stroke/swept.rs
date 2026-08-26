@@ -346,10 +346,7 @@ impl StrokeRenderer {
                     .begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("stark sweep pass"),
                         color_attachments: &sweep_att[..sweep_targets.count()],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
+                        ..Default::default()
                     });
                 pass.set_pipeline(&self.swept.pipeline);
                 pass.set_bind_group(0, bind_group, &[xform_off]);
@@ -415,10 +412,7 @@ impl StrokeRenderer {
                     .begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("stark integrate"),
                         color_attachments: &int_att[..int_targets.count()],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
+                        ..Default::default()
                     });
                 pass.set_pipeline(&self.swept.integrate_pipeline);
                 pass.set_bind_group(0, &integrate_bg, &[]);
@@ -550,10 +544,7 @@ impl StrokeRenderer {
                     .begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("stark sweep pass"),
                         color_attachments: &att[..2 + usize::from(work.resid.is_some())],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
+                        ..Default::default()
                     });
                 pass.set_pipeline(&self.swept.pipeline);
                 pass.set_bind_group(0, &draws.xforms, &[(i * UNIFORM_STRIDE) as u32]);
@@ -614,10 +605,7 @@ impl StrokeRenderer {
                     .begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("stark integrate"),
                         color_attachments: &int_att[..int_targets.count()],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
+                        ..Default::default()
                     });
                 pass.set_pipeline(&self.swept.integrate_pipeline);
                 pass.set_bind_group(0, &integrate_bg, &[]);

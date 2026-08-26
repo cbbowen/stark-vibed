@@ -286,10 +286,7 @@ impl StrokeRenderer {
                     .begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("stark erase sweep pass"),
                         color_attachments: &att,
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
+                        ..Default::default()
                     });
                 pass.set_pipeline(&self.erase.sweep);
                 pass.set_bind_group(0, &draws.xforms, &[(i * UNIFORM_STRIDE) as u32]);
@@ -333,10 +330,7 @@ impl StrokeRenderer {
                     .begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("stark erase integrate"),
                         color_attachments: &int_att[..int_targets.count()],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
+                        ..Default::default()
                     });
                 pass.set_pipeline(&self.erase.integrate);
                 pass.set_bind_group(0, &bg, &[]);

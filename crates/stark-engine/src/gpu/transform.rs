@@ -43,10 +43,16 @@ use crate::gpu::channels::{ChannelFormats, Channels};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::Slot;
 use crate::gpu::desc::{self, Zeroes};
+use crate::gpu::selection::{SelectionRenderer, outside_clear};
+use crate::gpu::submit::TileScope;
+use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool};
 use stark_model::document::{Homography, TransformMap};
 use stark_model::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use stark_shaders::mirror::transform::binding as t;
 use stark_shaders::mirror::transform::decl as td;
+use stark_shaders::mirror::transform::{
+    Combine as CombineUniform, Gated as GatedUniform, Quad as QuadUniform,
+};
 
 /// The affine's group: its map, and the bilinear clamp sampler.
 ///
@@ -105,22 +111,6 @@ const COMBINE_SLOTS: &[Slot] = &[
     Slot::at(td::BASE_RESID),
     Slot::at(td::PARCEL_RESID),
 ];
-
-/// A texture view as the resource a bind-group entry takes.
-fn tex(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
-    wgpu::BindingResource::TextureView(v)
-}
-use crate::gpu::selection::{SelectionRenderer, outside_clear};
-use crate::gpu::submit::TileScope;
-use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool};
-
-// Generated from `transform.wesl`'s own declarations (§6.7). The three constructors
-// below are free functions rather than inherent impls: the types live in
-// `stark-shaders` now, and an inherent impl on another crate's type is not allowed.
-// Each is still the only way one is built.
-use stark_shaders::mirror::transform::{
-    Combine as CombineUniform, Gated as GatedUniform, Quad as QuadUniform,
-};
 
 /// One source tile's interior quad, drawn into `dest`'s texture (paint and mask
 /// tiles share the `TILE_TEX` geometry).
@@ -684,7 +674,7 @@ impl TransformRenderer {
                         SRC_SLOTS,
                         tile.resid_view().is_some(),
                         |i| {
-                            tex(match i {
+                            wgpu::BindingResource::TextureView(match i {
                                 t::SRC_COLOR => tile.color_view(),
                                 t::SRC_AUX => tile.aux_view(),
                                 t::SRC_MASK => mask.view(),
@@ -710,10 +700,7 @@ impl TransformRenderer {
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark transform parcel gated"),
                 color_attachments: &parcel_att[..targets.count()],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
+                ..Default::default()
             });
         pass.set_pipeline(&self.parcel_gated_pipeline);
         for (quad_bg, src_bg) in &draws {
@@ -745,7 +732,7 @@ impl TransformRenderer {
                 &self.mask_src_bgl,
                 MASK_SRC_SLOTS,
                 false,
-                |_| tex(view),
+                |_| wgpu::BindingResource::TextureView(view),
             )
         };
         // The residue reads the destination's *old* coverage — a real tile or
@@ -771,10 +758,7 @@ impl TransformRenderer {
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark transform mask gated"),
                 color_attachments: &[Some(desc::attach(dst.view(), desc::CLEAR))],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
+                ..Default::default()
             });
         pass.set_pipeline(&self.mask_base_pipeline);
         pass.set_bind_group(0, &base_draw.0, &[]);
@@ -882,7 +866,7 @@ impl TransformRenderer {
                         SRC_SLOTS,
                         tile.resid_view().is_some(),
                         |i| {
-                            tex(match i {
+                            wgpu::BindingResource::TextureView(match i {
                                 t::SRC_COLOR => tile.color_view(),
                                 t::SRC_AUX => tile.aux_view(),
                                 t::SRC_MASK => mask.view(),
@@ -908,10 +892,7 @@ impl TransformRenderer {
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark transform parcel"),
                 color_attachments: &parcel_att[..targets.count()],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
+                ..Default::default()
             });
         pass.set_pipeline(&self.parcel_pipeline);
         for (quad_bg, src_bg) in &draws {
@@ -986,14 +967,18 @@ impl TransformRenderer {
             COMBINE_SLOTS,
             base_resid.is_some() && parcel_resid.is_some(),
             |i| match i {
-                t::BASE_COLOR => tex(&base_color),
-                t::BASE_AUX => tex(&base_aux),
-                t::BASE_MASK => tex(base_mask.view()),
-                t::PARCEL_COLOR => tex(&parcel_color),
-                t::PARCEL_AUX => tex(&parcel_aux),
+                t::BASE_COLOR => wgpu::BindingResource::TextureView(&base_color),
+                t::BASE_AUX => wgpu::BindingResource::TextureView(&base_aux),
+                t::BASE_MASK => wgpu::BindingResource::TextureView(base_mask.view()),
+                t::PARCEL_COLOR => wgpu::BindingResource::TextureView(&parcel_color),
+                t::PARCEL_AUX => wgpu::BindingResource::TextureView(&parcel_aux),
                 t::QC => ubuf.as_entire_binding(),
-                t::BASE_RESID => tex(base_resid.as_ref().expect("a residual build has one")),
-                t::PARCEL_RESID => tex(parcel_resid.as_ref().expect("a residual build has one")),
+                t::BASE_RESID => wgpu::BindingResource::TextureView(
+                    base_resid.as_ref().expect("a residual build has one"),
+                ),
+                t::PARCEL_RESID => wgpu::BindingResource::TextureView(
+                    parcel_resid.as_ref().expect("a residual build has one"),
+                ),
                 other => unreachable!("`COMBINE_SLOTS` lists no binding {other}"),
             },
         );
@@ -1030,7 +1015,7 @@ impl TransformRenderer {
                 &self.mask_src_bgl,
                 MASK_SRC_SLOTS,
                 false,
-                |_| tex(handle.view()),
+                |_| wgpu::BindingResource::TextureView(handle.view()),
             );
             // 1.0: this pass carries the mask, it does not gate by it — the
             // opacity rides on the moved `Selection` (§6.8).
@@ -1042,10 +1027,7 @@ impl TransformRenderer {
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark transform mask"),
                 color_attachments: &[Some(desc::attach(dst.view(), outside_clear(selection)))],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
+                ..Default::default()
             });
         pass.set_pipeline(&self.mask_pipeline);
         for (quad_bg, src_bg) in &draws {

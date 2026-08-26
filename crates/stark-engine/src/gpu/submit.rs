@@ -187,10 +187,7 @@ impl TileScope {
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(label),
                 color_attachments: &attachments[..into.count()],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
+                ..Default::default()
             });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bg, offsets);
@@ -294,10 +291,7 @@ mod tests {
                         scratch.view(),
                         crate::gpu::desc::CLEAR,
                     ))],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
+                    ..Default::default()
                 });
             scope.hold(scratch);
             scope.tile_done();

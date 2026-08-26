@@ -187,10 +187,7 @@ impl TilePass {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark composite pass"),
             color_attachments: &attachments[..into.count()],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
+            ..Default::default()
         });
         pass.set_bind_group(0, s.view_bg, &[]);
         let mut pipeline_is_matte = None;

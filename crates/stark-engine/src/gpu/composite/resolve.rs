@@ -179,10 +179,7 @@ impl ResolvePass {
             // Covers every texel and reads nothing back, so the load is a don't-care;
             // clearing says so rather than implying otherwise.
             color_attachments: &[Some(desc::attach(target, desc::CLEAR))],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
+            ..Default::default()
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &ss.bg, &[]);

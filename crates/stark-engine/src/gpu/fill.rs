@@ -60,11 +60,6 @@ const FILL_SLOTS: &[desc::Slot] = &[
     desc::Slot::dynamic(fd::TILE),
 ];
 
-/// A texture view as the resource a bind-group entry takes.
-fn tex(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
-    wgpu::BindingResource::TextureView(v)
-}
-
 // The shader's stop capacity is the ramp's own bound (§22.1) — asserted rather than
 // commented, since the two are declared in different crates and nothing else would
 // notice them parting (§6.10).
@@ -259,13 +254,15 @@ impl FillRenderer {
                 self.formats.has_resid(),
                 |b| match b {
                     f::F => ubuf.as_entire_binding(),
-                    f::BASE_COLOR => tex(&base_color),
-                    f::BASE_AUX => tex(&base_aux),
-                    f::REGION => tex(&region_mask),
-                    f::GATE => tex(gate_mask.view()),
-                    f::BASE_RESID => tex(base_resid
-                        .as_ref()
-                        .expect("a residual build has a base residual")),
+                    f::BASE_COLOR => wgpu::BindingResource::TextureView(&base_color),
+                    f::BASE_AUX => wgpu::BindingResource::TextureView(&base_aux),
+                    f::REGION => wgpu::BindingResource::TextureView(&region_mask),
+                    f::GATE => wgpu::BindingResource::TextureView(gate_mask.view()),
+                    f::BASE_RESID => wgpu::BindingResource::TextureView(
+                        base_resid
+                            .as_ref()
+                            .expect("a residual build has a base residual"),
+                    ),
                     f::TILE => tile_slots.resource(),
                     other => unreachable!("`FILL_SLOTS` lists no binding {other}"),
                 },

@@ -159,10 +159,7 @@ impl OverlayPass {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark selection overlay pass"),
             color_attachments: &[Some(desc::attach(scene.target, desc::LOAD))],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
+            ..Default::default()
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, scene.view_bg, &[]);

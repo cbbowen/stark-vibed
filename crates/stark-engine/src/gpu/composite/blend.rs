@@ -12,6 +12,8 @@ use crate::colorspace::ColorSpace;
 use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Slot};
+use crate::gpu::pigment::PigmentLut;
+use crate::gpu::uniforms::UniformSlots;
 use stark_model::document::BlendMode;
 use stark_model::geom::Extent2;
 use stark_shaders::mirror::blend_common::binding as bc;
@@ -20,6 +22,11 @@ use stark_shaders::mirror::blend_mixbox::binding as bm;
 use stark_shaders::mirror::blend_mixbox::decl as bmd;
 use stark_shaders::mirror::mixbox_lut::binding as ml;
 use stark_shaders::mirror::mixbox_lut::decl as mld;
+
+use super::plan::Phase;
+
+// Generated from `blend_common.wesl`'s own declaration (§6.7).
+pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
 
 /// Which bindings the blend pass reads, in layout order (§6.10).
 ///
@@ -45,18 +52,6 @@ pub(crate) const BLEND_SLOTS: &[Slot] = &[
     Slot::at(bmd::BACK_RESID).only_with_resid(),
     Slot::at(bmd::SRC_RESID).only_with_resid(),
 ];
-
-/// A texture view as the resource a bind-group entry takes.
-fn tex(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
-    wgpu::BindingResource::TextureView(v)
-}
-use crate::gpu::pigment::PigmentLut;
-use crate::gpu::uniforms::UniformSlots;
-
-use super::plan::Phase;
-
-// Generated from `blend_common.wesl`'s own declaration (§6.7).
-pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
 
 /// The shader ABI for [`BlendMode`], kept here rather than on the enum: which `u32`
 /// a mode is numbered is a fact about `blend_common.wesl`, not about the document.
@@ -181,14 +176,18 @@ impl BlendPass {
                 resid,
                 |i| match i {
                     bc::B => slots.resource(),
-                    bc::BACK_COLOR => tex(b.back.color),
-                    bc::BACK_AUX => tex(b.back.aux),
-                    bc::SRC_COLOR => tex(src.color),
-                    bc::SRC_AUX => tex(src.aux),
-                    ml::PIGMENT_LUT => tex(&self.pigment.view),
+                    bc::BACK_COLOR => wgpu::BindingResource::TextureView(b.back.color),
+                    bc::BACK_AUX => wgpu::BindingResource::TextureView(b.back.aux),
+                    bc::SRC_COLOR => wgpu::BindingResource::TextureView(src.color),
+                    bc::SRC_AUX => wgpu::BindingResource::TextureView(src.aux),
+                    ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&self.pigment.view),
                     ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&self.pigment.sampler),
-                    bm::BACK_RESID => tex(b.back.resid.expect("a residual build has one")),
-                    bm::SRC_RESID => tex(src.resid.expect("a residual build has one")),
+                    bm::BACK_RESID => wgpu::BindingResource::TextureView(
+                        b.back.resid.expect("a residual build has one"),
+                    ),
+                    bm::SRC_RESID => wgpu::BindingResource::TextureView(
+                        src.resid.expect("a residual build has one"),
+                    ),
                     other => unreachable!("`BLEND_SLOTS` lists no binding {other}"),
                 },
             )
@@ -246,10 +245,7 @@ impl Bounce<'_> {
             // bounce. So the load is a don't-care, and clearing states that rather
             // than implying the previous contents matter.
             color_attachments: &attachments[..self.out.count()],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
+            ..Default::default()
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bg, &[offset]);
@@ -447,9 +443,6 @@ pub(super) fn clear_targets(encoder: &mut wgpu::CommandEncoder, into: Targets<'_
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("stark composite clear"),
         color_attachments: &attachments[..into.count()],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
+        ..Default::default()
     });
 }

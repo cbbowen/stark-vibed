@@ -15,12 +15,18 @@
 use crate::colorspace::ColorSpace;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Slot};
+use crate::gpu::uniforms::UniformSlots;
 use stark_shaders::mirror::filter_common::binding as fc;
 use stark_shaders::mirror::filter_common::decl as fcd;
 use stark_shaders::mirror::filter_mixbox::binding as fm;
 use stark_shaders::mirror::filter_mixbox::decl as fmd;
 use stark_shaders::mirror::mixbox_lut::binding as ml;
 use stark_shaders::mirror::mixbox_lut::decl as mld;
+
+use super::blend::Bounce;
+
+// Generated from `filter_common.wesl`'s own declaration (§6.10).
+pub(crate) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
 
 /// Which bindings the filter pass reads, in layout order (§6.10).
 ///
@@ -47,17 +53,6 @@ pub(crate) const FILTER_SLOTS: &[Slot] = &[
     // taps as the color it belongs to.
     Slot::sampled(fmd::BACK_RESID).only_with_resid(),
 ];
-
-/// A texture view as the resource a bind-group entry takes.
-fn tex(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
-    wgpu::BindingResource::TextureView(v)
-}
-use crate::gpu::uniforms::UniformSlots;
-
-use super::blend::Bounce;
-
-// Generated from `filter_common.wesl`'s own declaration (§6.10).
-pub(crate) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
 
 /// The filter pass: one fullscreen draw rewriting the accumulator.
 ///
@@ -194,12 +189,14 @@ impl FilterPass {
                 b.back.resid.is_some(),
                 |i| match i {
                     fc::F => slots.resource(),
-                    fc::BACK_COLOR => tex(b.back.color),
-                    fc::BACK_AUX => tex(b.back.aux),
+                    fc::BACK_COLOR => wgpu::BindingResource::TextureView(b.back.color),
+                    fc::BACK_AUX => wgpu::BindingResource::TextureView(b.back.aux),
                     fc::BACK_SAMP => wgpu::BindingResource::Sampler(&self.sampler),
-                    ml::PIGMENT_LUT => tex(&pigment.view),
+                    ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&pigment.view),
                     ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&pigment.sampler),
-                    fm::BACK_RESID => tex(b.back.resid.expect("a residual build has one")),
+                    fm::BACK_RESID => wgpu::BindingResource::TextureView(
+                        b.back.resid.expect("a residual build has one"),
+                    ),
                     other => unreachable!("`FILTER_SLOTS` lists no binding {other}"),
                 },
             )

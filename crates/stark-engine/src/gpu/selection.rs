@@ -450,10 +450,7 @@ impl SelectionRenderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark selection region gather"),
                 color_attachments: &[Some(desc::attach(&view, outside))],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
+                ..Default::default()
             });
             if let Some(inst) = &instances {
                 pass.set_pipeline(&self.region_pipeline);
@@ -538,10 +535,7 @@ impl SelectionRenderer {
                     .begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("stark selection rasterize"),
                         color_attachments: &[Some(desc::attach(dst.view(), desc::CLEAR))],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
+                        ..Default::default()
                     });
                 pass.set_pipeline(&self.rasterize_pipeline);
                 pass.set_bind_group(0, &bg, &[UniformSlots::<MaskUniform>::offset(i as u32)]);

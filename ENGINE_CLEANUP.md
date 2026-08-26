@@ -742,11 +742,11 @@ ergonomics rather than discover them halfway.
 
 - `fn tex(&wgpu::TextureView) -> BindingResource` is defined six times
   (`blend.rs:50`, `media.rs:36`, `filter.rs:52`, `transform.rs:110`, `fill.rs:64`,
-  `merge.rs:74` as `view`).
+  `merge.rs:74` as `view`). It shouldn't be defined at all. `tex` is no better than `wgpu::BindingResource::TextureView` it replaces.
 - The five-field `wgpu::RenderPassDescriptor { label, color_attachments,
   depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
   multiview_mask: None }` appears 15 times in `gpu/` outside the stroke module.
-  `desc.rs:1` describes exactly this class as the module's reason to exist, and
+  It should use `..Default::default()` instead, and
   `TileScope::fullscreen_pass` solved it for the tile writers only.
 - `merge.rs:357-373` and `merge.rs:515-537` re-spell, arm for arm, the slot→resource
   matches of `blend.rs:176` and `filter.rs:189`. To allow it, `BlendPass`/
