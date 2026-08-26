@@ -40,7 +40,8 @@ pub const ENVIRONMENTS: &[(EnvironmentId, &str)] = &[
 
 /// What the app lights the canvas with on startup: the achromatic reference light,
 /// which is also what the engine boots on. Paint reads as its own color under it —
-/// at `Neutral`'s exposure of 1.0 the media pass is an identity (§6.3) — so
+/// normalized by the irradiance a flat canvas receives, the media pass is an
+/// identity under it (§6.3) — so
 /// what you mix is what you see, and the studio HDR is the deliberate switch into a
 /// room. Kept a named constant because the startup hook in `main.rs` fetches its
 /// bytes if it has any; `Neutral` is procedural, so today that fetch is skipped.

@@ -53,6 +53,15 @@ fn sync(a: &mut Engine, b: &mut Engine) {
 /// the full shared document, which rewinds nothing and splices nothing. The
 /// fast paths must produce *identical* pixels to this, tolerance zero — that
 /// is the convergence claim of §12.6.
+///
+/// **A scenario with a selection in it must not use this one.** The joiner has an
+/// actor of its own, and a selection is per-author (§17.3) whose outline is chrome
+/// drawn for its owner — `show_peer_selections` is off by default — so a stranger
+/// renders every selection without the outline the engine under test draws, and
+/// reports a difference about who is looking rather than about what the log says.
+/// The scenarios below are strokes, which no viewpoint changes.
+/// `commute_pairs::spliced_and_canonical` joins as the *authoring* actor for exactly
+/// this reason, and is the place to put a selection scenario.
 fn canonical_snap(of: &mut Engine, size: Extent2) -> Option<RgbaImage> {
     let mut fresh = engine_or_skip_sized(size)?;
     fresh

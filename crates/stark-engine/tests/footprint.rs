@@ -199,20 +199,25 @@ fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
 
 /// Whether the action's declared writes account for one difference.
 ///
-/// `Existence` is the one place a coarser resource stands in, and deliberately:
-/// a removal takes a whole subtree, so it writes the existence of layers it does
-/// not name, and `footprint.rs` declares `StackOrder` to cover them. Everything
-/// else has to be named exactly — a tile by a rect that contains it, a property
-/// by its own `Prop`.
+/// **Everything is named exactly**, through `Resource::overlaps` — a tile by a rect
+/// that contains it, a property by its own `Prop` or by the coarse
+/// [`Resource::Layer`] that stands for all of them.
+///
+/// `Existence` used to have an exemption: `StackOrder` was allowed to stand in for
+/// it, because "a removal takes a whole subtree, so it writes the existence of layers
+/// it does not name". That was the bug, not the reason for one — the removal also
+/// writes those layers' paint and properties, which the exemption did not cover and
+/// this check therefore never saw, since a departed layer is reported as `Existence`
+/// alone. `ActionKind::RemoveLayer` names its subtree now and claims a `Layer` for
+/// each of them, so there is nothing left to exempt.
 fn covered(diff: &Diff, writes: &[Resource]) -> bool {
     match diff {
-        Diff::Tile(layer, coord) => writes
-            .iter()
-            .any(|w| matches!(w, Resource::Paint(l, r) if l == layer && r.contains(*coord))),
-        Diff::Named(r @ Resource::Existence(_)) => {
-            writes.contains(r) || writes.contains(&Resource::StackOrder)
-        }
-        Diff::Named(r) => writes.contains(r),
+        Diff::Tile(layer, coord) => writes.iter().any(|w| match w {
+            Resource::Paint(l, r) => l == layer && r.contains(*coord),
+            Resource::Layer(l) => l == layer,
+            _ => false,
+        }),
+        Diff::Named(r) => writes.iter().any(|w| w.overlaps(r)),
     }
 }
 

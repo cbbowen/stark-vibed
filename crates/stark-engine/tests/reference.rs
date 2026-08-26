@@ -5,7 +5,7 @@
 //! reads a byte back and holds it against an expectation, and this is where the claim
 //! that the byte means what it says is checked.
 //!
-//! Under the procedural `Neutral` environment — whose exposure is 1.0 — with the
+//! Under the procedural `Neutral` environment — the achromatic one — with the
 //! relief flattened, the media pass is supposed to be an identity: what you painted is what
 //! you see. That is the whole claim the `Neutral` environment makes — it is the light
 //! you switch to in order to judge a color rather than enjoy it — and it is a claim
@@ -29,9 +29,9 @@ use stark_model::geom::Vec2;
 
 /// The reference configuration: no relief to tilt a normal, no substrate, no gloss,
 /// no display dither (§6.5) — every knob that could shape the output turned off, so
-/// what is left is only the lighting model itself. Exposure is not among them: it
-/// rides with the environment, and these tests run on `Neutral`, whose exposure is
-/// 1.0 for exactly this reason.
+/// what is left is only the lighting model itself. The light's own contribution is
+/// normalized away by its `flat_irradiance` in every environment, which is what makes
+/// `Neutral` an identity rather than merely a pale look.
 const REFERENCE: MediaParams = MediaParams {
     height_strength: 0.0,
     specular: 0.0,

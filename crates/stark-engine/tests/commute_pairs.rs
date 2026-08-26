@@ -51,8 +51,9 @@ use common::{engine_or_skip, images_match};
 use stark_engine::command::{DocCommand, InputCommand, PeerCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{
-    Action, ActionId, ActorId, BlendMode, ColorAdjust, FillOp, Filter, LayerId, MatteRegion,
-    Parcel, Place, SelectionMode, SelectionOp, SelectionShape, TransformMap, compute_footprint,
+    Action, ActionId, ActionKind, ActorId, BlendMode, ColorAdjust, FillOp, Filter, LayerId,
+    MatteRegion, Parcel, Place, SelectionMode, SelectionOp, SelectionShape, TransformMap,
+    compute_footprint,
 };
 use stark_model::geom::{Affine2, Vec2};
 use stark_model::io::DocumentFile;
@@ -67,9 +68,19 @@ const ACTOR: ActorId = ActorId(1);
 
 const A: LayerId = LayerId(0);
 
-/// A document both runs start from: two layers with paint on them, a selection, and
-/// a picture placed — enough that the pairs below have something to act on and
-/// something to disturb.
+/// The layer that **carries** [`INNER`] — a group, so the table can ask what a
+/// removal that takes a subtree commutes with (§14.2).
+const GROUP: LayerId = LayerId(1);
+
+/// A layer inside [`GROUP`], painted on. The pair `remove-group` × anything naming
+/// this is the one a footprint can get wrong without any pixel saying so: a removal
+/// that declared only its own id and `StackOrder` was judged to commute with a
+/// stroke in here, and the fast-path undo then put the pre-stroke subtree back.
+const INNER: LayerId = LayerId(2);
+
+/// A document both runs start from: two layers with paint on them, one of them
+/// carrying a third that is also painted, a selection, and a picture placed — enough
+/// that the pairs below have something to act on and something to disturb.
 fn base() -> Option<DocumentFile> {
     let mut e = engine_or_skip()?;
     e.start_collaboration(ACTOR);
@@ -99,6 +110,25 @@ fn base() -> Option<DocumentFile> {
             &[Vec2::new(20.0, y), Vec2::new(140.0, y)],
         );
     }
+    // A third layer, carried by the second, painted on — which is what makes
+    // `GROUP` a group and lets the table hold a subtree removal against an edit
+    // inside the subtree.
+    e.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    e.process(DocCommand::MoveLayer {
+        id: INNER,
+        carrier: Some(GROUP),
+        at: Place::Top,
+    });
+    e.process(PeerCommand::SetActiveLayer(INNER));
+    common::paint(
+        &mut e,
+        [0.2, 0.5, 0.8],
+        10.0,
+        &[Vec2::new(30.0, 200.0), Vec2::new(150.0, 200.0)],
+    );
     e.process(PeerCommand::SetActiveLayer(A));
     let _ = e.take_outbox();
     Some(e.document_file())
@@ -151,6 +181,17 @@ fn mint(file: &DocumentFile, command: impl Into<InputCommand>) -> Option<Action>
     e.take_outbox().into_iter().next()
 }
 
+/// [`mint_stroke`] aimed at a **named layer** rather than at whichever one the peer
+/// opens on — what a row inside a group needs, since the point of it is the layer.
+fn mint_on(file: &DocumentFile, layer: LayerId, path: &[Vec2]) -> Option<Action> {
+    let mut e = peer(file)?;
+    e.process(PeerCommand::SetActiveLayer(layer));
+    let mut brush = common::brush([0.9, 0.6, 0.1], 6.0);
+    brush.tooth.give = 0.25;
+    common::stroke_with(&mut e, brush, path);
+    e.take_outbox().into_iter().next()
+}
+
 /// The stroke a gesture commits — a command cannot spell one.
 fn mint_stroke(file: &DocumentFile, y: f32) -> Option<Action> {
     let mut e = peer(file)?;
@@ -183,6 +224,61 @@ fn ordered(file: &DocumentFile, first: &Action, second: &Action) -> Option<RgbaI
     e.merge_remote(at(first, 100));
     e.merge_remote(at(second, 101));
     Some(e.render_to_image())
+}
+
+/// The **inverse** half of the commutation claim: `first` applied, `second` applied
+/// over it, then `first` undone — beside the canonical materialization of the log
+/// that leaves behind.
+///
+/// This is the property the fast path actually rests on, and it is *not* the one
+/// [`ordered`] checks. `history`'s `Centralizer` contract is about the inverse:
+///
+/// > if `Centralizer::for_action(a).commutes(b)`, then for all `s`,
+/// > `a.inverse(b.apply(a.apply(s)))` must be equivalent to `b.apply(s)`.
+///
+/// Swapping two actions and getting the same picture does not imply it, and a group
+/// removal is the case that shows the gap: it wipes the paint whichever order it runs
+/// in, so the swap agrees — while the splice restores the subtree from a record taken
+/// before the stroke inside it, so the paint comes back and a canonical replay says
+/// it should not. That pair is why this exists. It is the shape every under-declared
+/// footprint produces, and [`ordered`] alone reports it as fine.
+///
+/// The undo is an explicit `ActionKind::Undo` naming `first` rather than
+/// `DocCommand::Undo`, because the table keeps one actor throughout (see [`ACTOR`])
+/// and a local undo would take the *later* of the two.
+fn spliced_and_canonical(
+    file: &DocumentFile,
+    first: &Action,
+    second: &Action,
+) -> Option<(RgbaImage, RgbaImage)> {
+    let mut e = peer(file)?;
+    let first = at(first, 100);
+    e.merge_remote(first.clone());
+    e.merge_remote(at(second, 101));
+    e.merge_remote(Action {
+        id: ActionId {
+            lamport: 102,
+            actor: ACTOR,
+        },
+        kind: ActionKind::Undo(first.id),
+    });
+    let spliced = e.render_to_image();
+    // A fresh peer joining the same log rewinds nothing and splices nothing, so what
+    // it draws is what the log *means* — the comparison §12.6 makes convergence out
+    // of, and the one `commute.rs` holds its own scenarios to.
+    //
+    // **Joining as [`ACTOR`], not as a stranger.** A selection is per-author (§17.3)
+    // and its outline is chrome drawn for its *owner* — `show_peer_selections` is off
+    // by default — so a canonical peer with an actor of its own would render every
+    // selection row without the outline the spliced engine draws, and report a
+    // difference of 216 levels that is about who is looking rather than about what
+    // the log says. The materialization is identical either way; only the viewpoint
+    // has to match.
+    let mut fresh = engine_or_skip()?;
+    fresh
+        .join_collaboration(&e.document_file(), ACTOR)
+        .expect("join a session this build can render");
+    Some((spliced, fresh.render_to_image()))
 }
 
 /// One of most things the vocabulary can do, as `(name, action)`.
@@ -277,9 +373,27 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
             },
         ),
     );
+    // A **group** removal, which takes `INNER` with it: the row whose footprint has
+    // to name the whole subtree, and the reason the three rows after it exist.
+    push("remove-group", mint(file, DocCommand::RemoveLayer(GROUP)));
+    // Edits *inside* that group. Each of these names a layer the removal never
+    // names, so each is a pair the old footprint declared commuting — a stroke,
+    // a property, and the layer's own departure by a second route.
     push(
-        "remove-layer",
-        mint(file, DocCommand::RemoveLayer(LayerId(1))),
+        "paint-in-group",
+        mint_on(
+            file,
+            INNER,
+            &[Vec2::new(40.0, 205.0), Vec2::new(120.0, 195.0)],
+        ),
+    );
+    push(
+        "opacity-in-group",
+        mint(file, DocCommand::SetLayerOpacity(INNER, 0.4)),
+    );
+    push(
+        "rename-in-group",
+        mint(file, DocCommand::SetLayerName(INNER, Some("inner".into()))),
     );
     push("duplicate", mint(file, DocCommand::DuplicateLayer(A)));
     push(
@@ -350,7 +464,7 @@ fn a_pair_that_claims_to_commute_does() {
     };
     let vocab = vocabulary(&file);
     assert!(
-        vocab.len() >= 17,
+        vocab.len() >= 20,
         "the table lost rows: {} actions minted",
         vocab.len(),
     );
@@ -373,6 +487,22 @@ fn a_pair_that_claims_to_commute_does() {
                 compute_footprint(a),
                 compute_footprint(b),
             );
+            // …and the half the fast path actually rests on, in both directions,
+            // since either of the pair may be the one undone
+            // ([`spliced_and_canonical`]).
+            for (x_name, x, y_name, y) in [(a_name, a, b_name, b), (b_name, b, a_name, a)] {
+                let Some((spliced, canonical)) = spliced_and_canonical(&file, x, y) else {
+                    return;
+                };
+                assert!(
+                    images_match(&spliced, &canonical, 0),
+                    "undoing {x_name} past {y_name} — declared to commute — does not \
+                     match a canonical replay of the same log.\n\
+                     {x_name} footprint: {:?}\n{y_name} footprint: {:?}",
+                    compute_footprint(x),
+                    compute_footprint(y),
+                );
+            }
         }
     }
 

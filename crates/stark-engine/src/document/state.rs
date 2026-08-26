@@ -790,6 +790,26 @@ impl DocState {
         })
     }
 
+    /// The layers `id` carries, at any depth, in composite order — or `None` when
+    /// there is no such layer. Empty for a leaf.
+    ///
+    /// **The one derivation of "what a group holds"**, used at both ends of a
+    /// removal: the engine mints [`ActionKind::RemoveLayer`]'s `carried` from it, and
+    /// `apply` checks the action against it before folding. Two walks that had to
+    /// agree would be the §12.6 hazard the field exists to remove, one level down.
+    ///
+    /// [`ActionKind::RemoveLayer`]: stark_model::document::ActionKind::RemoveLayer
+    pub fn carried_ids(&self, id: LayerId) -> Option<Vec<LayerId>> {
+        let layer = self.layer(id)?;
+        let mut out = Vec::new();
+        layer.visit(0, &mut |l, _| {
+            if l.id != id {
+                out.push(l.id);
+            }
+        });
+        Some(out)
+    }
+
     /// Remove the layer with the given id **and everything it carries** (no-op
     /// if absent).
     ///
@@ -799,6 +819,12 @@ impl DocState {
     /// that no longer exists. Promoting what it carries is a different
     /// operation, and it has its own command — see [`Self::move_layer`], which
     /// is what "release" is spelled with.
+    ///
+    /// Unconditional, and it has three callers that want it that way: the undo
+    /// patch putting a layer back to absent, the merge folding a source away, and
+    /// `apply`'s arm — which asks [`carried_ids`](Self::carried_ids) *first*,
+    /// because whether the action may remove this subtree is a question about the
+    /// action's footprint rather than about the tree surgery.
     pub fn remove_layer(&self, id: LayerId) -> Self {
         match remove_in(&self.layers, id) {
             Some((layers, _)) => self.with_layers(layers),

@@ -37,27 +37,6 @@ pub enum EnvironmentId {
     QwantaniDusk,
 }
 
-impl EnvironmentId {
-    /// The exposure this light is used at (§6.3).
-    ///
-    /// A property of the environment rather than a knob beside it, because there is
-    /// no single value that suits every light. Exposure is already normalized by
-    /// [`Environment::flat_irradiance`], so `1.0` means "a flat patch of paint comes
-    /// back its own color" in *any* environment — but that is a statement about the
-    /// diffuse response, not about the peaks. A room with bright windows in it puts
-    /// saturated paint over 1.0 and into the clip long before a smooth grey dome
-    /// does, and what buys the headroom back is exposure. So each light carries the
-    /// value it was judged at, and switching lights carries it along.
-    pub fn exposure(self) -> f32 {
-        match self {
-            // The reference point: `Neutral` exists to be an identity, and any value
-            // but 1.0 would make it a look. `tests/reference.rs` pins this.
-            EnvironmentId::Neutral => 1.0,
-            _ => 1.0,
-        }
-    }
-}
-
 /// A decoded, prefiltered environment ready for image-based lighting: an
 /// equirectangular `Rgba16Float` texture with a full mip chain (each level a box
 /// downsample of the last). The media pass samples a high mip in the substrate-normal
@@ -77,18 +56,15 @@ pub struct Environment {
     /// The irradiance a **flat** canvas receives — the diffuse mip sampled in the one
     /// direction an untilted normal faces (dead ahead, the equirect's centre), which
     /// is exactly what `finish` in `media_common.wesl` looks up when the relief is
-    /// flat. The media pass divides exposure by this, so `exposure = 1` means "a flat
-    /// canvas reads its own albedo" in *any* environment, procedural or HDR.
+    /// flat. **The media pass shades by its reciprocal**, which is what makes "a flat
+    /// canvas reads its own albedo" true in *any* environment, procedural or HDR —
+    /// and is the whole of the normalization now that no light carries an exposure of
+    /// its own (§6.3).
     ///
     /// Not the whole-image mean luminance, which only approximates it: a mean over
     /// equirect texels over-weights the poles and includes light no front-facing canvas
     /// ever sees, leaving a flat patch ~13% dark under the procedural environment.
     pub flat_irradiance: f32,
-    /// The exposure these pixels are shown at — [`EnvironmentId::exposure`] of
-    /// whichever id actually produced them. Carried on the built environment rather
-    /// than looked up from the id in use, so the procedural stand-in for an HDR whose
-    /// bytes have not arrived is lit at *its* exposure, not at the missing HDR's.
-    pub exposure: f32,
 }
 
 impl Environment {
@@ -98,11 +74,11 @@ impl Environment {
     /// is what makes it usable as a color reference next to [`Self::load`]ed HDRs.
     pub fn neutral(ctx: &GpuContext) -> Self {
         let (px, w, h) = neutral_equirect();
-        Self::from_equirect(ctx, &px, w, h, EnvironmentId::Neutral.exposure())
+        Self::from_equirect(ctx, &px, w, h)
     }
 
-    /// Decode a Radiance HDR and prefilter it for lighting, to be shown at `exposure`
-    /// — or `Err` with what the decoder made of the bytes.
+    /// Decode a Radiance HDR and prefilter it for lighting — or `Err` with what the
+    /// decoder made of the bytes.
     ///
     /// **Fallible because the bytes come from outside**: an environment is fetched at
     /// runtime and handed straight in, so a truncated download or a file that is not
@@ -115,9 +91,9 @@ impl Environment {
     ///
     /// [`Engine::register_environment`]: crate::Engine::register_environment
     /// [`Resource::build`]: crate::gpu::registry::Resource::build
-    pub fn load(ctx: &GpuContext, hdr_bytes: &[u8], exposure: f32) -> Result<Self, String> {
+    pub fn load(ctx: &GpuContext, hdr_bytes: &[u8]) -> Result<Self, String> {
         let (px, w, h) = decode_hdr(hdr_bytes)?;
-        Ok(Self::from_equirect(ctx, &px, w, h, exposure))
+        Ok(Self::from_equirect(ctx, &px, w, h))
     }
 
     /// Whether these bytes are an HDR this build can read, without building anything
@@ -134,7 +110,7 @@ impl Environment {
 
     /// Upload a linear-RGB equirect image as a mipped `Rgba16Float` texture, the
     /// mip chain box-downsampled on the CPU (it is built once per environment).
-    fn from_equirect(ctx: &GpuContext, base: &[[f32; 3]], w: u32, h: u32, exposure: f32) -> Self {
+    fn from_equirect(ctx: &GpuContext, base: &[[f32; 3]], w: u32, h: u32) -> Self {
         let mip_count = 32 - (w.max(h)).leading_zeros(); // floor(log2(max))+1
         let diffuse_lod = diffuse_lod(mip_count);
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
@@ -187,7 +163,6 @@ impl Environment {
             mip_count,
             diffuse_lod,
             flat_irradiance,
-            exposure,
         }
     }
 }
@@ -356,8 +331,8 @@ impl crate::gpu::registry::Resource for EnvironmentId {
         self == EnvironmentId::Neutral
     }
 
-    /// Each light is built at its own [`EnvironmentId::exposure`]. The fallback keeps
-    /// `Neutral`'s, since that is the light it actually is.
+    /// Every light is normalized by its own `flat_irradiance` and shown at no exposure
+    /// beyond that (§6.3), so building one is a decode and a mip chain and nothing else.
     fn build(self, gpu: &GpuContext, bytes: Option<&[u8]>) -> Environment {
         match bytes {
             // Bytes that will not decode fall back to the procedural light, exactly as
@@ -365,14 +340,15 @@ impl crate::gpu::registry::Resource for EnvironmentId {
             // panic here would take the document with it. `register_environment`
             // normally catches this at the boundary; reaching it means bytes were
             // registered by some other path.
-            Some(bytes) if !self.is_builtin() => Environment::load(gpu, bytes, self.exposure())
-                .unwrap_or_else(|e| {
+            Some(bytes) if !self.is_builtin() => {
+                Environment::load(gpu, bytes).unwrap_or_else(|e| {
                     tracing::warn!(
                         ?self,
                         "environment will not decode, lighting neutrally: {e}"
                     );
                     Environment::neutral(gpu)
-                }),
+                })
+            }
             _ => Environment::neutral(gpu),
         }
     }

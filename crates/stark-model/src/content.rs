@@ -114,7 +114,7 @@ pub fn action_content(action: &Action) -> Option<AssetNeed> {
         | ActionKind::AddMatte { .. }
         | ActionKind::AddFilter { .. }
         | ActionKind::DuplicateLayer { .. }
-        | ActionKind::RemoveLayer(_)
+        | ActionKind::RemoveLayer { .. }
         | ActionKind::MergeLayerDown { .. }
         | ActionKind::MoveLayer { .. }
         | ActionKind::SetLayerBlend(..)

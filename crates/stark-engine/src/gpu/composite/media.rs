@@ -242,11 +242,12 @@ impl MediaScene<'_> {
         // mip from roughness, spanning the whole chain (roughness 0 → mip 0 sharp;
         // roughness 1 → the diffuse level, the hemispherical average).
         let diffuse_lod = self.environment.diffuse_lod as f32;
-        // Exposure belongs to the light, not to a knob beside it: each environment is
-        // shown at the value it was judged at (§6.3). Normalized by the irradiance a
-        // *flat* canvas receives, so `1.0` means the same thing in every environment —
-        // an unrelieved patch of paint comes back out its own color.
-        let exposure = self.environment.exposure / self.environment.flat_irradiance;
+        // The one normalization the light gets: the reciprocal of the irradiance a
+        // *flat* canvas receives, so an unrelieved patch of paint comes back out its
+        // own color in every environment, procedural or HDR (§6.3). No light carries
+        // an exposure of its own — every one was 1.0, and a knob whose every setting
+        // is the same value is a knob that says nothing.
+        let exposure = self.environment.flat_irradiance.recip();
         MediaUniform {
             bg: self.substrate_color,
             bg_resid: self.substrate_resid,

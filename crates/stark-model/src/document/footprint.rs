@@ -146,7 +146,14 @@ pub enum Resource {
 }
 
 impl Resource {
-    fn overlaps(&self, other: &Resource) -> bool {
+    /// Whether these two name any state in common — the relation
+    /// [`Footprint::conflicts`] is built from.
+    ///
+    /// Public so a test can hold an `apply` to its declaration through the *same*
+    /// predicate the timeline commutes by (`stark-engine/tests/footprint.rs`).
+    /// Answering that question a second way in the test is how a coarse claim comes
+    /// to look finer than it is.
+    pub fn overlaps(&self, other: &Resource) -> bool {
         match (self, other) {
             (Resource::Paint(a, ra), Resource::Paint(b, rb)) => a == b && ra.intersects(rb),
             // The coarse claim meets every finer claim on the same layer — and, on
@@ -389,19 +396,26 @@ pub fn compute_footprint(action: &Action) -> Footprint {
                 .chain([Resource::StackOrder])
                 .collect(),
         },
-        // A removal takes the whole subtree, so it writes the existence of layers
-        // it does not name. `StackOrder` is the coarse resource that covers them:
-        // anything touching another layer's place in the tree conflicts here
-        // already, and a property edit on a carried layer commutes with the
-        // removal only in the sense that the restore puts the subtree back
-        // wholesale — which is exactly what `PatchOp::Present` does.
-        ActionKind::RemoveLayer(id) => Footprint {
+        // A removal takes the **whole subtree**, so it writes everything about every
+        // layer in it — which is why the action names them (`ActionKind::RemoveLayer`)
+        // and why each gets the coarse [`Resource::Layer`], the same claim
+        // `DuplicateLayer` makes about what it copied.
+        //
+        // `StackOrder` said this once and did not cover it. It is about the tree's
+        // *shape*, so it meets other structural edits and nothing else: a stroke on a
+        // carried layer claims `Paint(child, rect)` and a slider claims
+        // `Prop(child, _)`, neither of which overlaps `{Existence(id), StackOrder,
+        // Paint(id, ALL)}`. The pair was judged to commute, the undo's commuting
+        // splice put the pre-edit subtree back through `PatchOp::Present`, and the
+        // canonical replay kept the edit — divergence with no pixel able to report it
+        // (§12.6).
+        ActionKind::RemoveLayer { id, carried } => Footprint {
             reads: Vec::new(),
-            writes: vec![
-                Resource::Existence(*id),
-                Resource::StackOrder,
-                Resource::Paint(*id, TileRect::ALL),
-            ],
+            writes: std::iter::once(*id)
+                .chain(carried.iter().copied())
+                .map(Resource::Layer)
+                .chain([Resource::StackOrder])
+                .collect(),
         },
         ActionKind::MoveLayer { id, carrier, at } => Footprint {
             reads: [Some(*id), *carrier, at.anchor()]
@@ -688,7 +702,10 @@ mod tests {
             ActionKind::SetLayerOpacity(inner, 0.5),
             ActionKind::SetLayerVisible(inner, false),
             ActionKind::SetMattePaint(inner, crate::document::Parcel::Solid(crate::Srgb::BLACK)),
-            ActionKind::RemoveLayer(inner),
+            ActionKind::RemoveLayer {
+                id: inner,
+                carried: Vec::new(),
+            },
         ];
         for kind in edits {
             let other = act(2, kind);
@@ -733,7 +750,13 @@ mod tests {
     fn rename_commutes_with_strokes_but_not_with_removal() {
         let name = act(1, ActionKind::SetLayerName(LayerId(0), Some("wash".into())));
         let paint = stroke(2, LayerId(0), Vec2::ZERO, Vec2::splat(50.0), 8.0);
-        let remove = act(2, ActionKind::RemoveLayer(LayerId(0)));
+        let remove = act(
+            2,
+            ActionKind::RemoveLayer {
+                id: LayerId(0),
+                carried: Vec::new(),
+            },
+        );
         let other_name = act(2, ActionKind::SetLayerName(LayerId(0), None));
         assert!(commutes(&name, &paint));
         assert!(!commutes(&name, &remove));

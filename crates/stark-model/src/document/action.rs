@@ -176,7 +176,40 @@ pub enum ActionKind {
     /// Remove a layer **and everything it carries**: the subtree is the group
     /// (§14.2). Promoting what it carried instead is a
     /// [`MoveLayer`](Self::MoveLayer), which is what "release" is spelled with.
-    RemoveLayer(LayerId),
+    ///
+    /// **`carried` names the rest of the subtree**, for the reason
+    /// [`DuplicateLayer`](Self::DuplicateLayer)'s `ids` do and
+    /// [`MergeLayerDown`](Self::MergeLayerDown)'s `dest` does: a [`Footprint`] is
+    /// built from the action alone and cannot walk the tree for what a group held
+    /// (§12.6). Carried as a tuple variant it declared `id` and `StackOrder` and
+    /// wrote the existence, the paint and every property of layers it never named —
+    /// so a stroke inside the group was judged to *commute* with removing it, and
+    /// the fast-path undo put the pre-stroke subtree back while a canonical replay
+    /// kept the paint. Peers diverged, and §12.6's whole point is that no pixel can
+    /// say which materialization ran.
+    ///
+    /// Root first, then depth-first in composite order — the order
+    /// [`DocState::visit`] produces, so minting one is a walk and checking one is a
+    /// comparison.
+    ///
+    /// **Deterministically declined when the subtree is not what it names**, which is
+    /// what a concurrent add into the group looks like from here: `DuplicateLayer`
+    /// declines the same way, for the same reason, and every peer declines the same
+    /// action. A file written before this field existed carries an empty list, and a
+    /// group removal in one is therefore declined rather than silently taking layers
+    /// nothing declared — the honest reading, since the log genuinely does not say
+    /// what came out. A *leaf* removal is unaffected, which is nearly all of them.
+    ///
+    /// [`Footprint`]: super::footprint::Footprint
+    /// [`DocState::visit`]: crate::document::Materialize
+    RemoveLayer {
+        #[serde(alias = "0")]
+        id: LayerId,
+        /// Every layer the group carries, at any depth — empty for a leaf, and for
+        /// a file older than this field.
+        #[serde(default)]
+        carried: Vec<LayerId>,
+    },
     SetLayerBlend(LayerId, BlendMode),
     SetLayerOpacity(LayerId, f32),
     SetLayerVisible(LayerId, bool),
@@ -584,7 +617,7 @@ impl ActionKind {
             // why the map travels in the action (§14.8).
             ActionKind::DuplicateLayer { ids } => (None, ids),
             ActionKind::CommitStroke(_)
-            | ActionKind::RemoveLayer(_)
+            | ActionKind::RemoveLayer { .. }
             | ActionKind::SetLayerBlend(..)
             | ActionKind::SetLayerClip(..)
             | ActionKind::SetLayerOpacity(..)
@@ -741,7 +774,7 @@ impl ActionKind {
             // `ImageRef`'s constructor and at its decode instead (§23).
             | ActionKind::PlaceImage { .. }
             | ActionKind::DuplicateLayer { .. }
-            | ActionKind::RemoveLayer(_)
+            | ActionKind::RemoveLayer { .. }
             | ActionKind::MergeLayerDown { .. }
             | ActionKind::MoveLayer { .. }
             | ActionKind::SetLayerClip(..)

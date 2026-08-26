@@ -20,12 +20,12 @@ use super::selection::Selection;
 use super::state::{DocState, Guide, LayerSite};
 use crate::gpu::tile::TilePairHandle;
 use stark_model::Srgb;
-use stark_model::SubstrateId;
 use stark_model::document::Filter;
 use stark_model::document::{Action, ActorId};
 use stark_model::document::{BlendMode, LayerId, MatteRegion};
 use stark_model::document::{Footprint, Prop, Resource};
 use stark_model::geom::{TileCoord, TileRect};
+use stark_model::{SubstrateId, SubstrateScale};
 
 /// One restorable write. Each variant covers exactly one [`footprint
 /// resource`](stark_model::document::Resource), never more — a commuting action in
@@ -67,7 +67,17 @@ enum PatchOp {
     /// that writes them carries the filter entire.
     Filter(LayerId, Filter),
     Selection(ActorId, Selection),
-    Substrate(SubstrateId),
+    /// The canvas substrate **and the size it is laid at** — one op, because
+    /// `Resource::Substrate` is one resource for the two (§6.4): the tooth reads the
+    /// substrate's rise over a reach in canvas px, so which substrate and how large
+    /// it is laid decide a deposit together.
+    ///
+    /// Carrying only the id restored only the id, so undoing a `SetSubstrateScale`
+    /// through the commuting splice put the substrate back and left the *scale* where
+    /// the undone action had set it — a document holding a scale its own log no
+    /// longer contains, and a later stroke toothed against it. The two fields the
+    /// resource names are the two fields the op carries.
+    Substrate(SubstrateId, SubstrateScale),
     SubstrateColor(Srgb),
     /// The **whole drawing-guide roster** (§20.5): every guide and the order they
     /// were arranged in.
@@ -117,7 +127,7 @@ impl PatchOp {
                 .set_matte_paint(*id, paint.clone()),
             PatchOp::Filter(id, filter) => state.set_filter(*id, filter.clone()),
             PatchOp::Selection(actor, selection) => state.with_selection(*actor, selection.clone()),
-            PatchOp::Substrate(id) => state.with_substrate(*id),
+            PatchOp::Substrate(id, scale) => state.with_substrate(*id).with_substrate_scale(*scale),
             PatchOp::SubstrateColor(rgb) => state.with_substrate_color(*rgb),
             PatchOp::Guides(guides) => state.with_guides(guides.clone()),
         }
@@ -258,7 +268,7 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
         }
         Resource::StackOrder => ops.push(PatchOp::Structure(structure(to))),
         Resource::Selection(actor) => ops.push(PatchOp::Selection(*actor, to.selection_of(*actor))),
-        Resource::Substrate => ops.push(PatchOp::Substrate(to.substrate)),
+        Resource::Substrate => ops.push(PatchOp::Substrate(to.substrate, to.substrate_scale)),
         Resource::SubstrateColor => ops.push(PatchOp::SubstrateColor(to.substrate_color)),
         Resource::Guides => ops.push(PatchOp::Guides(to.guides().clone())),
     }
@@ -564,7 +574,14 @@ mod tests {
         let grouped = flat().move_layer(C, Some(B), Place::Top);
         let removed = grouped.remove_layer(B);
         assert!(removed.layer(C).is_none(), "the subtree went with its base");
-        let back = undo(&act(ActionKind::RemoveLayer(B)), &grouped, &removed);
+        let back = undo(
+            &act(ActionKind::RemoveLayer {
+                id: B,
+                carried: vec![C],
+            }),
+            &grouped,
+            &removed,
+        );
         assert_eq!(
             shape(&back),
             shape(&grouped),

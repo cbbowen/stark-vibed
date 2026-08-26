@@ -112,7 +112,10 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             carrier: None,
             above: None,
         },
-        ActionKind::RemoveLayer(id),
+        ActionKind::RemoveLayer {
+            id,
+            carried: Vec::new(),
+        },
         ActionKind::SetLayerBlend(id, BlendMode::Drago { k: n }),
         ActionKind::SetLayerOpacity(id, n),
         ActionKind::SetLayerVisible(id, true),

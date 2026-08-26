@@ -1347,7 +1347,14 @@ impl Engine {
                     }
                 }
             }
-            DocCommand::RemoveLayer(id) => self.commit(ActionKind::RemoveLayer(id)),
+            // The subtree travels in the action, read off the document the command
+            // was aimed at (§12.6) — see `ActionKind::RemoveLayer`. A layer that is
+            // not there mints an empty list and the fold declines it, which is what
+            // every other action naming an absent layer does.
+            DocCommand::RemoveLayer(id) => {
+                let carried = self.document().carried_ids(id).unwrap_or_default();
+                self.commit(ActionKind::RemoveLayer { id, carried })
+            }
             DocCommand::MergeLayerDown(id) => {
                 // Asked here rather than only inside `apply`, so a merge that cannot
                 // preserve the document's appearance never reaches the log at all —

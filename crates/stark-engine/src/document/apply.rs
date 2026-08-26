@@ -403,7 +403,28 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         // painted on — copy-on-write is what makes this a cheap action rather
         // than a re-render of everything under it (§5.2).
         ActionKind::DuplicateLayer { ids } => state.duplicate_layer(ids),
-        ActionKind::RemoveLayer(id) => state.remove_layer(*id),
+        // **Declined unless the subtree is what the action names** (§12.6). Every id
+        // in it is a `Resource::Layer` write, so a group holding one the action does
+        // not name — a peer's concurrent add — would write state nothing declared,
+        // which is the divergence `ActionKind::RemoveLayer` describes. Asked of the
+        // state being folded, so peers and replays decline the same action;
+        // `duplicate_layer` refuses on the same terms.
+        ActionKind::RemoveLayer { id, carried } => {
+            match state.carried_ids(*id) {
+                // Absent: nothing to remove, and the arm below would say the same.
+                None => state,
+                Some(holds) if holds == *carried => state.remove_layer(*id),
+                Some(holds) => {
+                    tracing::warn!(
+                        ?id,
+                        named = carried.len(),
+                        holds = holds.len(),
+                        "a group removal names a subtree the document no longer holds; ignored",
+                    );
+                    state
+                }
+            }
+        }
         ActionKind::SetLayerBlend(id, blend) => state.set_layer_blend(*id, *blend),
         ActionKind::SetLayerClip(id, clip) => state.set_layer_clip(*id, *clip),
         ActionKind::SetLayerOpacity(id, opacity) => state.set_layer_opacity(*id, *opacity),
@@ -672,7 +693,7 @@ pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState, actor: ActorId) ->
         | ActionKind::AddFilter { .. }
         | ActionKind::PlaceImage { .. }
         | ActionKind::DuplicateLayer { .. }
-        | ActionKind::RemoveLayer(_)
+        | ActionKind::RemoveLayer { .. }
         | ActionKind::MergeLayerDown { .. }
         | ActionKind::MoveLayer { .. }
         // An add always changes the roster; a remove of an absent guide answers
