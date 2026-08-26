@@ -199,7 +199,9 @@ pub fn engine_or_skip_with(id: ColorSpaceId) -> Option<Engine> {
 pub fn engine_or_skip_studio() -> Option<Engine> {
     engine_or_skip().map(|mut engine| {
         let hdr = stark_testdata::assets::studio_hdr();
-        engine.register_environment(stark_engine::EnvironmentId::Ferndale, hdr);
+        engine
+            .register_environment(stark_engine::EnvironmentId::Ferndale, hdr)
+            .expect("the bundled studio HDR decodes");
         engine.process(ViewCommand::SetEnvironment(
             stark_engine::EnvironmentId::Ferndale,
         ));
@@ -300,7 +302,12 @@ pub fn red_dominant(c: [u8; 4]) -> bool {
     c[0] as i32 > c[1] as i32 + 30 && c[0] as i32 > c[2] as i32 + 30
 }
 
-/// Fraction of pixels whose maximum per-channel difference exceeds `tol`.
+/// The fraction of pixels that differ **at all**, and the worst per-channel
+/// difference anywhere — in that order.
+///
+/// The two answer different questions and both callers want both: the fraction
+/// separates a contiguous seam from a speck, the worst says how far the seam
+/// went. [`frac_exceeding`] is the same fraction taken above a threshold.
 pub fn diff_fraction(a: &RgbaImage, b: &RgbaImage) -> (f64, u8) {
     assert_eq!(
         (a.width, a.height),
@@ -400,13 +407,32 @@ pub fn assert_golden(name: &str, img: &RgbaImage, tol: u8) {
         "golden {name}: size mismatch"
     );
 
-    let mut bad = 0u64;
-    for (a, b) in img
+    // **Worst-texel**, which is the same statistic the corpus battery holds every
+    // other one of its checks to (`corpus::Report::check`) and is here for that
+    // comparator's stated reason: "steps and seams are loud in the maximum and quiet
+    // in the average".
+    //
+    // This counted a *fraction* instead, and passed while up to 1% of the frame
+    // differed by any amount whatever. 1% of a 256² golden is 655 texels — a disc of
+    // radius 14, which is the size of the lift-end ring, the settle crease and the
+    // stranded glob, each of which has a bespoke test in `tests/dynamics.rs` because
+    // a golden did not catch it. The hatch also hid ordinary drift: `corpus_curve`
+    // and `corpus_bleed` were 456 and 559 texels out (max 10 and 8) against goldens
+    // nobody had re-blessed, and nothing said so for as long as it stayed under 1%.
+    //
+    // What the fraction was really absorbing is visible in that measurement's own
+    // shape — 2100 texels at 1 level, 3400 at 2, decaying to 2 at 10, scattered at
+    // ~3% density over the stroke. Legitimate numeric drift is a *decaying tail over
+    // a region*; an artifact is a *bump at high magnitude*. Only the maximum tells
+    // them apart, so only the maximum is read, and `tol` is the whole bound.
+    let mut worst = (0u32, 0usize);
+    for (i, (a, b)) in img
         .pixels
         .as_chunks::<4>()
         .0
         .iter()
         .zip(golden.pixels.as_chunks::<4>().0)
+        .enumerate()
     {
         let d = a
             .iter()
@@ -414,18 +440,18 @@ pub fn assert_golden(name: &str, img: &RgbaImage, tol: u8) {
             .map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs())
             .max()
             .unwrap_or(0);
-        if d as u8 > tol {
-            bad += 1;
+        if d > worst.0 {
+            worst = (d, i);
         }
     }
-    let total = (img.width * img.height) as u64;
-    let frac = bad as f64 / total as f64;
-    if frac > 0.01 {
+    let (d, i) = worst;
+    if d as u8 > tol {
         let actual = path.with_extension("actual.png");
         write_png(&actual, img);
         panic!(
-            "golden {name} mismatch: {bad}/{total} px exceed tol {tol} ({:.2}%); wrote {}",
-            frac * 100.0,
+            "golden {name} mismatch: worst {d} > tol {tol}, at ({}, {}); wrote {}",
+            i as u32 % img.width,
+            i as u32 / img.width,
             actual.display()
         );
     }

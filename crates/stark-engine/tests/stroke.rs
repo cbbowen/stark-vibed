@@ -638,18 +638,21 @@ fn stroke_spans_multiple_tiles_via_cow() {
 /// statistically the same at both ends, so what is left is what the test means to
 /// measure. It still catches the regression it exists for: a stroke re-rendered whole
 /// would climb from ~150 segments a move to several thousand.
-fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
+///
+/// **Answers `None` where there is no GPU**, rather than a pair — and the difference
+/// is the whole reason this does not build its own device. It used to, and returned
+/// `(1.0, 1.0)` when the build failed: the caller's `late < early * 2.0` then read
+/// `1.0 < 2.0` and the test reported `ok` having measured nothing, on a machine with
+/// no adapter at all. Going through [`common::engine_or_skip_sized`] is what puts it
+/// back under `STARK_ALLOW_NO_GPU` with every other test — a missing GPU is a
+/// *failure* unless the skip was asked for (CLAUDE.md), and this was the one place
+/// that had quietly opted out.
+fn measure_per_move_growth(b: BrushParams) -> Option<(f64, f64)> {
     let size = stark_model::geom::Extent2 {
         width: 1280,
         height: 800,
     };
-    let Ok(mut engine) = pollster::block_on(stark_engine::engine::headless_engine(
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-        size,
-    )) else {
-        eprintln!("skipping GPU test");
-        return (1.0, 1.0);
-    };
+    let mut engine = common::engine_or_skip_sized(size)?;
     engine.process(ViewCommand::set_brush(b));
     let n = 900usize;
     let path: Vec<Vec2> = (0..n)
@@ -686,7 +689,7 @@ fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
             nl += 1;
         }
     }
-    (early / ne as f64, late / nl as f64)
+    Some((early / ne as f64, late / nl as f64))
 }
 
 #[test]
@@ -695,7 +698,9 @@ fn per_move_cost_does_not_grow_with_stroke_length() {
         ("swept", brush(RED, 14.0)),
         ("stamp loop", common::corpus::smear_brush(14.0)),
     ] {
-        let (early, late) = measure_per_move_growth(b);
+        let Some((early, late)) = measure_per_move_growth(b) else {
+            return;
+        };
         // Generous, because this is a wall-clock measurement on a shared machine. What
         // it has to catch is *growth*, and the failure it guards against is severalfold.
         assert!(
