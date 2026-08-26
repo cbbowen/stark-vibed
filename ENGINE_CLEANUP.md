@@ -129,10 +129,9 @@ present.
 
 - **The nightly toolchain** ([T](#t-files-and-apis-that-carry-more-than-they-should)):
   the fix is upstream in `history`, not here.
-- **F1 and F3** ([F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree)):
-  the flattening determinism story is a decision about what Stark promises across
-  platforms, and `mean_error`'s map cannot be changed without re-tuning `KNOT_COST`.
-  Both want a sitting rather than a patch.
+- **F3** ([F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree)):
+  `mean_error`'s map cannot be changed without re-tuning `KNOT_COST`, so it wants a
+  sitting rather than a patch. **F1 is dropped** — see there.
 
 ---
 
@@ -383,7 +382,18 @@ free now.
 
 ## F. Three places where the code and the claim beside it disagree
 
-### F1. Libm-free flattening, undone by an `atan2` — verified
+### F1. ~~Libm-free flattening, undone by an `atan2`~~ — **dropped**
+
+**Dropped 2026-08-25, by the author's decision.** The observation below stands as a
+description of the code: the series and the `atan2` beside them do not buy the same
+guarantee. What it asks for is a decision about what Stark promises across platforms,
+and the answer is that it is not promising it — so there is nothing here to fix, and
+the finding is struck rather than left open to be rediscovered. The diagnosis is kept
+because the *next* person to read `sin_small` will have the same question.
+
+The original diagnosis follows.
+
+
 
 `crates/stark-engine/src/path.rs:1316` justifies three hand-rolled Maclaurin series
 (`sin_small`, `versin_small`, `asin_over_x`) because the cut decisions "have to agree
