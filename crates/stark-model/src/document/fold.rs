@@ -66,6 +66,37 @@ pub trait Materialize: Clone {
         let _ = (action, footprint);
         self.clone_from(previous);
     }
+
+    /// Check, in debug builds only, that folding `action` changed nothing outside
+    /// what its [`Footprint`] declared — the rule §12.6 opens with, asked of every
+    /// fold rather than of a table.
+    ///
+    /// **The rule is the one thing here that nothing structural holds.** Seven
+    /// exhaustive matches over `ActionKind` say every action *has* a footprint; none
+    /// of them says the footprint is the one its `apply` arm honours, and the
+    /// compiler cannot: the two are a walk of the tree and a list of resources.
+    /// `stark-engine/tests/footprint.rs` asked it of a hand-driven vocabulary, which
+    /// is a sample. This asks it of every action every test in the workspace folds.
+    ///
+    /// A no-op by default, and by default it also costs nothing: the caller only
+    /// clones the previous state when an implementor has something to compare. A
+    /// consumer whose state is a counter has no business paying for this.
+    ///
+    /// Debug-only because the comparison is a walk of the layer tree per action,
+    /// which is fine for a test and not for a release fold — and because a violation
+    /// is a bug in *this* crate's tables, not a state a shipped build should try to
+    /// survive.
+    #[cfg(debug_assertions)]
+    fn audit(_before: &Self, _after: &Self, _action: &Action, _footprint: &Footprint) {}
+
+    /// Whether [`audit`](Self::audit) has anything to say — and so whether the fold
+    /// should keep the previous state to hand it.
+    ///
+    /// `false` by default so the clone is not paid for a no-op audit. `DocState`'s
+    /// clone is a handful of `Arc` bumps (§5.1), which is what makes turning it on
+    /// affordable there.
+    #[cfg(debug_assertions)]
+    const AUDITED: bool = false;
 }
 
 /// An [`Action`] paired with the state it is to be folded into — the local type that
@@ -159,7 +190,16 @@ impl<S: Materialize> history::Action for Logged<S> {
     type Error = std::convert::Infallible;
 
     fn apply(&self, state: S, ctx: &mut S::Ctx) -> Result<S, Self::Error> {
-        Ok(state.fold(&self.action, ctx))
+        // Kept only where the implementor audits, so a state that does not is folded
+        // exactly as it was before this existed (see [`Materialize::audit`]).
+        #[cfg(debug_assertions)]
+        let before = S::AUDITED.then(|| state.clone());
+        let after = state.fold(&self.action, ctx);
+        #[cfg(debug_assertions)]
+        if let Some(before) = before {
+            S::audit(&before, &after, &self.action, &self.footprint);
+        }
+        Ok(after)
     }
 
     fn inverse(&self, previous_state: &S, state: &mut S) {

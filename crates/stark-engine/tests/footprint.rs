@@ -9,12 +9,16 @@
 //! diverge quietly, and the first symptom is a painting that differs between two
 //! people who watched each other make it.
 //!
-//! Rust's exhaustiveness gets us the *presence* of an arm in `compute_footprint()` for
-//! every `ActionKind`. Nothing checks *correspondence* — that the arm names what
-//! the matching arm of `apply` goes on to touch. `tests/commute.rs` covers five
-//! hand-written scenarios end-to-end; this covers every action kind
-//! structurally, by diffing the document across each commit and insisting every
-//! difference lands inside a resource the action declared.
+//! Rust's exhaustiveness gets us the *presence* of an arm in `compute_footprint()`
+//! for every `ActionKind`. Nothing checks *correspondence* — that the arm names what
+//! the matching arm of `apply` goes on to touch.
+//!
+//! **The correspondence is checked inside the fold now**, not here: `Materialize::audit`
+//! diffs every debug-build fold against the action's own footprint
+//! (`document::audit`), so every action every test in the workspace commits is held
+//! to it. What this file adds is **reach** — it drives the engine to commit one of
+//! *every kind in the roster*, and asserts at the end that it did, which is a claim
+//! about coverage that no amount of folding makes on its own.
 //!
 //! That it covers *every* kind is `stark_testdata::vocabulary`'s claim rather than
 //! this file's: the run collects what it reached by slot and insists at the end on
@@ -37,189 +41,21 @@
 mod common;
 
 use stark_model::Srgb;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use common::{engine_or_skip, paint};
 use stark_engine::Engine;
 use stark_engine::command::{DocCommand, InputCommand};
-use stark_engine::document::{DocState, Layer, LayerContent, Selection};
+use stark_engine::document::{DocState, undeclared};
 use stark_model::AssetId;
 use stark_model::document::{
-    ActionId, ActionKind, ActorId, BlendMode, ColorAdjust, FillOp, Filter, LayerId, MatteRegion,
-    Parcel, PerspectiveGuide, PerspectiveMap, Place, Prop, Resource, SelectionMode, SelectionOp,
+    ActionId, ActionKind, ActorId, BlendMode, ColorAdjust, FillOp, Filter, Footprint, MatteRegion,
+    Parcel, PerspectiveGuide, PerspectiveMap, Place, Resource, SelectionMode, SelectionOp,
     SelectionShape, TransformMap, WarpMap, compute_footprint, rect_corners,
 };
-use stark_model::geom::{Affine2, IVec2, TileCoord, Vec2};
+use stark_model::geom::{Affine2, IVec2, Vec2};
 use stark_model::{SubstrateId, SubstrateScale};
 use stark_testdata::vocabulary::{KINDS, labels, slot};
-
-// ---------------------------------------------------------------------------
-// The state diff
-//
-// One entry per *addressable* difference, named as the `Resource` that owns it —
-// the same vocabulary the footprint speaks, so coverage is a containment test
-// rather than an interpretation.
-
-#[derive(Debug, PartialEq)]
-enum Diff {
-    /// One tile of one layer's paint changed hands. Handle identity is the
-    /// change test, for the reason `patch.rs` diffs by it: a committed tile is
-    /// never rewritten in place, so a shared handle *is* an unchanged tile.
-    Tile(LayerId, TileCoord),
-    /// Everything else, named directly.
-    Named(Resource),
-}
-
-/// Every layer in the tree, by id — the traversal flattened so two states can be
-/// compared layer for layer regardless of how the tree was reshaped.
-fn layers(state: &DocState) -> BTreeMap<LayerId, Layer> {
-    let mut out = BTreeMap::new();
-    state.visit(&mut |l, _| {
-        out.insert(l.id, l.clone());
-    });
-    out
-}
-
-/// The tree's shape: every layer in composite order with its depth. Two states
-/// agreeing here have the same stacks, the same nesting and the same order.
-fn shape(state: &DocState) -> Vec<(LayerId, usize)> {
-    let mut out = Vec::new();
-    state.visit(&mut |l, depth| out.push((l.id, depth)));
-    out
-}
-
-fn matte_of(l: &Layer) -> Option<(MatteRegion, Parcel)> {
-    match &l.content {
-        LayerContent::Matte { region, paint } => Some((*region, paint.clone())),
-        LayerContent::Paint(_) | LayerContent::Filter(_) => None,
-    }
-}
-
-/// Which presentation properties differ — at exactly the granularity `Prop`
-/// splits them into, since that is the granularity undo restores them at.
-fn props(a: &Layer, b: &Layer) -> Vec<Prop> {
-    let mut out = Vec::new();
-    // Split finer than the struct: `CompositeParams` travels as one value through
-    // compositing, but undo restores each of the three on its own — a clip toggle has
-    // to commute with a blend change on the same layer (§12.6). One place where the
-    // grouping deliberately does not propagate.
-    if a.composite.blend != b.composite.blend {
-        out.push(Prop::Blend);
-    }
-    if a.composite.clip != b.composite.clip {
-        out.push(Prop::Clip);
-    }
-    if a.composite.opacity != b.composite.opacity {
-        out.push(Prop::Opacity);
-    }
-    if a.visible != b.visible {
-        out.push(Prop::Visible);
-    }
-    if a.name != b.name {
-        out.push(Prop::Name);
-    }
-    if matte_of(a) != matte_of(b) {
-        out.push(Prop::Matte);
-    }
-    if a.filter() != b.filter() {
-        out.push(Prop::Filter);
-    }
-    out
-}
-
-/// Whether two masks are the same selection. Mask tiles are rasterized afresh
-/// rather than rewritten, so handle identity is the content test here too.
-fn selections_agree(a: &Selection, b: &Selection) -> bool {
-    a.outside() == b.outside()
-        && a.tile_count() == b.tile_count()
-        && a.tiles()
-            .all(|(c, h)| b.tile(*c).is_some_and(|o| o.same(h)))
-}
-
-fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
-    let mut out = Vec::new();
-    if before.substrate != after.substrate {
-        out.push(Diff::Named(Resource::Substrate));
-    }
-    if before.substrate_color != after.substrate_color {
-        out.push(Diff::Named(Resource::SubstrateColor));
-    }
-    if shape(before) != shape(after) {
-        out.push(Diff::Named(Resource::StackOrder));
-    }
-    // The guide roster is one coarse resource (§20.5), so this compares it as one
-    // thing: every guide and the order they sit in. `Guide` is `PartialEq`, so the
-    // whole roster answers in a line — which is the point of the resource being
-    // coarse and the reason there is nothing finer here to miss.
-    if before.guides() != after.guides() {
-        out.push(Diff::Named(Resource::Guides));
-    }
-
-    // Every actor either state has a mask for. An absent entry *is* the
-    // unrestricted selection, and `selection_of` already says so, so an actor
-    // deselecting reads as a change rather than as a disappearance.
-    let actors: BTreeSet<ActorId> = before
-        .selections()
-        .chain(after.selections())
-        .map(|(a, _)| a)
-        .collect();
-    for actor in actors {
-        if !selections_agree(&before.selection_of(actor), &after.selection_of(actor)) {
-            out.push(Diff::Named(Resource::Selection(actor)));
-        }
-    }
-
-    let (a, b) = (layers(before), layers(after));
-    let ids: BTreeSet<LayerId> = a.keys().chain(b.keys()).copied().collect();
-    for id in ids {
-        let (Some(x), Some(y)) = (a.get(&id), b.get(&id)) else {
-            // Arrived or departed. A layer present on one side only has no
-            // properties to compare — its whole record is the difference.
-            out.push(Diff::Named(Resource::Existence(id)));
-            continue;
-        };
-        for p in props(x, y) {
-            out.push(Diff::Named(Resource::Prop(id, p)));
-        }
-        if let (Some(tx), Some(ty)) = (x.tiles(), y.tiles()) {
-            for (coord, handle) in tx.iter() {
-                if !ty.get(coord).is_some_and(|h| h.same(handle)) {
-                    out.push(Diff::Tile(id, *coord));
-                }
-            }
-            for coord in ty.keys() {
-                if tx.get(coord).is_none() {
-                    out.push(Diff::Tile(id, *coord));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Whether the action's declared writes account for one difference.
-///
-/// **Everything is named exactly**, through `Resource::overlaps` — a tile by a rect
-/// that contains it, a property by its own `Prop` or by the coarse
-/// [`Resource::Layer`] that stands for all of them.
-///
-/// `Existence` used to have an exemption: `StackOrder` was allowed to stand in for
-/// it, because "a removal takes a whole subtree, so it writes the existence of layers
-/// it does not name". That was the bug, not the reason for one — the removal also
-/// writes those layers' paint and properties, which the exemption did not cover and
-/// this check therefore never saw, since a departed layer is reported as `Existence`
-/// alone. `ActionKind::RemoveLayer` names its subtree now and claims a `Layer` for
-/// each of them, so there is nothing left to exempt.
-fn covered(diff: &Diff, writes: &[Resource]) -> bool {
-    match diff {
-        Diff::Tile(layer, coord) => writes.iter().any(|w| match w {
-            Resource::Paint(l, r) => l == layer && r.contains(*coord),
-            Resource::Layer(l) => l == layer,
-            _ => false,
-        }),
-        Diff::Named(r) => writes.iter().any(|w| w.overlaps(r)),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // The driver
@@ -251,28 +87,24 @@ fn check(engine: &mut Engine, seen: &mut Seen, what: &str, before: &DocState) {
         committed.len()
     );
     let Some(action) = committed.first() else {
+        // The claim the fold's own audit cannot make, because no fold happened: a
+        // command that declines to log must also leave the document alone, since an
+        // edit outside the log would not replay at all. An empty footprint declares
+        // nothing, so *any* difference is undeclared.
         assert_eq!(
-            differences(before, &after),
-            Vec::new(),
+            undeclared(before, &after, &Footprint::default()),
+            Vec::<String>::new(),
             "{what}: logged nothing, so it must have changed nothing"
         );
         return;
     };
     seen.insert(slot(&action.kind));
-    if matches!(action.kind, ActionKind::Undo(_)) {
-        return; // Resolved by the timeline, never applied — see the module note.
-    }
-    let writes = compute_footprint(action).writes;
-    let undeclared: Vec<Diff> = differences(before, &after)
-        .into_iter()
-        .filter(|d| !covered(d, &writes))
-        .collect();
-    assert!(
-        undeclared.is_empty(),
-        "{what}: {:?} changed {undeclared:?}, which its footprint does not declare.\n\
-         declared writes: {writes:?}",
-        action.kind,
-    );
+    // The diff against the footprint is **not** repeated here. `Materialize::audit`
+    // already ran it inside the fold this command performed — on the same two states,
+    // through the same `document::undeclared` — and would have panicked (§12.6). What
+    // this run contributes is *reach*: it drives every kind in the roster and asserts
+    // so below, where the audit contributes depth by holding every fold in the
+    // workspace to the same rule.
 }
 
 /// A stroke is a gesture rather than a command, so it commits on release; the
@@ -794,9 +626,10 @@ fn every_action_touches_only_what_it_declares() {
     );
 }
 
-/// The diff has to be able to *see* an escape, or the test above passes by being
-/// blind. Feeds a deliberately dishonest footprint — one tile column narrower
-/// than the stroke actually painted — and insists the check rejects it.
+/// The diff has to be able to *see* an escape, or every check built on it — the
+/// run above, and `Materialize::audit` on every fold in the workspace — passes by
+/// being blind. Feeds a deliberately dishonest footprint, one tile column narrower
+/// than the stroke actually painted, and insists `undeclared` reports it.
 #[test]
 fn the_check_rejects_a_footprint_that_under_claims() {
     let Some(mut engine) = engine_or_skip() else {
@@ -815,34 +648,43 @@ fn the_check_rejects_a_footprint_that_under_claims() {
     let after = engine.document().clone();
     let action = engine.take_outbox().pop().expect("the stroke was logged");
 
-    let diffs = differences(&before, &after);
+    // The stroke shows up at all — against a footprint that declares nothing,
+    // everything it did is undeclared.
     assert!(
-        !diffs.is_empty(),
+        !undeclared(&before, &after, &Footprint::default()).is_empty(),
         "a stroke has to show up as a difference at all"
     );
-    let honest = compute_footprint(&action).writes;
-    assert!(
-        diffs.iter().all(|d| covered(d, &honest)),
+    // …and its real footprint covers it. This is the assertion the fold already
+    // made when the stroke committed; repeated here so the two halves of the
+    // self-test read together.
+    let honest = compute_footprint(&action);
+    assert_eq!(
+        undeclared(&before, &after, &honest),
+        Vec::<String>::new(),
         "the real footprint covers the real stroke"
     );
 
     // Now shrink every claimed rect to a single tile at the origin — what the
     // pre-`TileRect::covering` quantizer produced for a non-finite radius.
-    let liar: Vec<Resource> = honest
-        .iter()
-        .map(|w| match w {
-            Resource::Paint(l, _) => Resource::Paint(
-                *l,
-                stark_model::geom::TileRect {
-                    min: (0, 0),
-                    max: (0, 0),
-                },
-            ),
-            other => other.clone(),
-        })
-        .collect();
+    let liar = Footprint {
+        reads: honest.reads.clone(),
+        writes: honest
+            .writes
+            .iter()
+            .map(|w| match w {
+                Resource::Paint(l, _) => Resource::Paint(
+                    *l,
+                    stark_model::geom::TileRect {
+                        min: (0, 0),
+                        max: (0, 0),
+                    },
+                ),
+                other => other.clone(),
+            })
+            .collect(),
+    };
     assert!(
-        diffs.iter().any(|d| !covered(d, &liar)),
+        !undeclared(&before, &after, &liar).is_empty(),
         "an under-claimed footprint has to be caught"
     );
 }

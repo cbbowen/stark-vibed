@@ -13,6 +13,8 @@
 //! never part of this list to begin with.
 
 pub(crate) mod apply;
+/// The §12.6 rule, checked on every fold of every debug build — see the module.
+pub(crate) mod audit;
 pub(crate) mod fill;
 pub(crate) mod layer;
 pub(crate) mod merge;
@@ -23,6 +25,8 @@ pub(crate) mod timeline;
 pub(crate) mod transform;
 
 pub use apply::{ApplyCtx, PreparedStroke};
+#[doc(hidden)]
+pub use audit::undeclared;
 pub use layer::{CompositeParams, Layer, LayerContent, PaintTiles};
 /// Merging a layer down onto the one beneath it (§14.11) — the rule for when that
 /// leaves the document looking the same, which is the whole of what a merge promises.

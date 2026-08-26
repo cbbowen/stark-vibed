@@ -299,6 +299,18 @@ impl Materialize for DocState {
         apply(action, self, ctx)
     }
 
+    /// Hold this fold to its own footprint (§12.6) — see [`super::audit`] for why the
+    /// check lives here rather than in a test, and what it costs.
+    #[cfg(debug_assertions)]
+    fn audit(before: &Self, after: &Self, action: &Action, footprint: &Footprint) {
+        super::audit::audit(before, after, action, footprint);
+    }
+
+    /// `DocState`'s clone is a handful of `Arc` bumps (§5.1), which is what makes
+    /// keeping the previous state to compare against affordable at all.
+    #[cfg(debug_assertions)]
+    const AUDITED: bool = true;
+
     /// Remove this action's effect by restoring what it wrote from `previous` — the
     /// values under its footprint, nothing more, so the edits of commuting actions
     /// applied after it survive. Tiles come back as the same shared handles
