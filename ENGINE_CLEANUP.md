@@ -10,6 +10,31 @@ is fixed and the goldens re-blessed.
 finding that turns out to be wrong is struck through and kept, as
 [N](#n-withdrawn-footprints-two-vecs-per-action) was in the model's ledger.
 
+Closed so far: [A](#a-a-groups-removelayer-under-declares-its-subtree),
+[B](#b-three-panics-reachable-from-outside-the-process),
+[C](#c-the-golden-comparator-and-a-test-that-passes-without-a-gpu),
+[D](#d-footprint--apply-correspondence-is-held-by-discipline),
+[F2](#f-three-places-where-the-code-and-the-claim-beside-it-disagree),
+[G](#g-the-compositors-generation-conflates-two-invalidations),
+[J](#j-the-mixbox-lut-runs-twice-per-colour-per-texel-on-a-placed-image),
+[S](#s-four-copies-of-the-paint-edit-gate-and-uneven-minted-layer-claims),
+[U](#u-comments-that-narrate-history-or-describe-code-that-is-gone),
+[V](#v-footprint-reads-are-checked-over-a-hand-picked-vocabulary),
+[W](#w-64-translation-invariance-is-guarded-for-strokes-only), and three of
+[L](#l-smaller-measurable-costs)'s fourteen rows. Every batch was verified with the
+full suite (`cargo nextest run --workspace`, 1187 green), clippy at `-D warnings` on
+the default *and* the no-default-features configuration, the wasm build on both, and
+the `cargo tree` licence claim.
+
+**The two findings that paid for the rest were the guards, not the fixes.** Tightening
+the golden comparator ([C](#c-the-golden-comparator-and-a-test-that-passes-without-a-gpu))
+and adding the inverse check to `commute_pairs`
+([A](#a-a-groups-removelayer-under-declares-its-subtree)) each found a defect nobody
+had gone looking for — a stale golden hiding a deliberate semantic change, and a
+second §12.6 break in the substrate patch. That is the argument for spending on
+instruments before spending on fixes, and it is worth remembering when picking up
+what is left.
+
 Two things the work has turned up that are not in any row below, recorded here
 because they are what the findings were *for*:
 
