@@ -250,12 +250,6 @@ uses, since goldens are adapter-specific). Deleting a golden re-blesses it.
   reports `ok`.
 - **Cite sections, not line numbers**, when referring to the docs from code
   (`§6.4`).
-- **Comments answer "why?", and describe the present.** A comment always
-  reflects the current state of the system, never the history of how it got
-  there. "What?" and "how?" are already answered by the code, so a comment only
-  provides the higher-level explanation the implementation cannot — never
-  details already apparent from it. For this reason, not every change requires
-  a comment.
 - **When a model is wrong, fix the model and re-bless the goldens.** No
   compensating fudge constants.
 - **Rule out a class rather than enumerate its instances.** Where a guarantee can

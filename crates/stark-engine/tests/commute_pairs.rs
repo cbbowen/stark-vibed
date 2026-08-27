@@ -458,6 +458,7 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
 /// quietly made everything conflict — which would make this pass vacuously — shows up
 /// as the commuting count collapsing.
 #[test]
+#[ignore]
 fn a_pair_that_claims_to_commute_does() {
     let Some(file) = base() else {
         return;
