@@ -647,19 +647,6 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                         Some(url) => format!("background-image: url({url});"),
                         None => "background-image: none;".to_string(),
                     };
-                    // Lit where this is the brush in hand, color aside — the size
-                    // and flow counted, since they are what a slot keeps of its
-                    // own. Held wins in the stylesheet: it is what the user is
-                    // doing right now rather than a state they are in.
-                    let mut class = String::from("slot-row");
-                    if brush.is_none() {
-                        class.push_str(" empty");
-                    } else if brush.is_some_and(|b| presets::same_brush(&live, &b)) {
-                        class.push_str(" active");
-                    }
-                    if Some(slot) == held {
-                        class.push_str(" held");
-                    }
                     // Says the binding a picture cannot, and only ever seen pinned
                     // — an element that takes no pointer is shown no tooltip. The
                     // eraser's names the pen rather than the key, because the thing
@@ -670,15 +657,17 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                         (n, true) => format!("Click or tap {n} twice to paint with this; hold {n} to borrow it"),
                         (n, false) => format!("Empty. Hold {n} and click a preset to fill it"),
                     };
-                    let trash = if arming_now == Some(slot) {
-                        "slot-clear arming"
-                    } else {
-                        "slot-clear"
-                    };
                     rsx! {
                         div {
                             key: "{slot}",
-                            class,
+                            class: "slot-row",
+                            // Lit where this is the brush in hand, color aside — the size
+                            // and flow counted, since they are what a slot keeps of its
+                            // own. Held wins in the stylesheet: it is what the user is
+                            // doing right now rather than a state they are in.
+                            class: if brush.is_none() { "empty" }
+                                   else if brush.is_some_and(|b| presets::same_brush(&live, &b)) { "active" },
+                            class: if Some(slot) == held { "held" },
                             style: "{bg}",
                             title,
                             // Reachable only while pinned, the stylesheet having
@@ -737,7 +726,8 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                                 // outlived its row could not fire, there being no
                                 // element left for an animation to end on.
                                 button {
-                                    class: trash,
+                                    class: "slot-clear",
+                                    class: if arming_now == Some(slot) { "arming" },
                                     title: "Hold to clear this slot",
                                     onpointerdown: move |e| {
                                         if e.trigger_button() == Some(MouseButton::Primary) {

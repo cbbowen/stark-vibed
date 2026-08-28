@@ -1562,7 +1562,6 @@ hr {
    everything the miniature left. */
 .left-chrome {
   position: absolute;
-  left: 14px;
   top: 148px;
   bottom: 14px;
   z-index: 20;
@@ -1625,7 +1624,6 @@ hr {
   flex-direction: column;
   justify-content: center;
   gap: 4px;
-  overflow: hidden;
   pointer-events: none;
 }
 
@@ -1655,7 +1653,7 @@ hr {
      up after the hand has gone somewhere else. */
   transition:
     opacity 160ms ease-out,
-    width 180ms ease-out;
+    transform 180ms ease-out;
 }
 
 /* Kept up by the Panels menu, where the rows are controls rather than a picture:
@@ -1697,20 +1695,19 @@ hr {
    answers rather than one because the two carry at different distances: the opacity
    is what the eye reading the rack sees, and the reach is what the eye on the
    *painting* catches at the corner of it, which is where that eye is for the gesture
-   this belongs to (hold-and-draw). It grows rather than sliding out, the rack being
-   anchored to the window's edge (`.left-chrome`): the digits stay in one column and
-   it is the picture that moves, so the index the hand is reading does not shift
-   under it. */
+   this belongs to (hold-and-draw). It slides right from the window edge rather than
+   growing: the rows keep one width, while the selected picture moves out from the
+   column the hand is reading. */
 .slot-row.held {
   box-shadow:
     0 0 0 2px #eee,
     0 2px 8px #0006;
   opacity: 1;
-  width: 300px;
+  transform: translateX(40px);
   /* The arrival, quicker than the departure declared above: the key is already down. */
   transition:
     opacity 70ms ease-out,
-    width 100ms ease-out;
+    transform 100ms ease-out;
 }
 
 /* A digit nobody has filled, shown only when it is the one being held: an outline
@@ -1786,7 +1783,6 @@ hr {
 .slot-clear::before {
   content: "";
   position: absolute;
-  inset: -9px;
 }
 
 .slot-overlay.pinned .slot-row .slot-clear.arming {
