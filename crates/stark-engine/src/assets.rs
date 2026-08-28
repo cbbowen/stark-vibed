@@ -60,6 +60,12 @@ struct Mask {
     coverage_view: wgpu::TextureView,
 }
 
+/// The two GPU readings of one loaded brush mask, resolved under one store lock.
+pub(crate) struct MaskViews {
+    pub(crate) prefix: wgpu::TextureView,
+    pub(crate) coverage: wgpu::TextureView,
+}
+
 #[derive(Default)]
 struct Inner {
     masks: HashMap<AssetId, Mask>,
@@ -182,6 +188,33 @@ impl AssetStore {
             .masks
             .get(&id)
             .map(|m| m.coverage_view.clone())
+    }
+
+    /// Resolve the prefix-Ï„ volume and plain coverage mask from the same loaded
+    /// asset state. The stroke renderer needs both for the dynamics path.
+    pub(crate) fn mask_views(
+        &self,
+        id: AssetId,
+        orientation: stark_model::document::OrientationSource,
+    ) -> Option<MaskViews> {
+        let mut inner = unpoisoned(self.inner.lock());
+        let mask = inner.masks.get_mut(&id)?;
+        let prefix = if orientation == stark_model::document::OrientationSource::FollowStroke {
+            mask.follow.clone()
+        } else {
+            if mask.pen.is_none() {
+                let (w, h) = (mask.width, mask.height);
+                let cov: Vec<f32> = mask.coverage.iter().map(|&b| b as f32 / 255.0).collect();
+                let layers = orientation_layers(w, h);
+                let rotated = rotate_layers(&cov, w, h, layers);
+                mask.pen = Some(build_prefix_tau(&self.ctx, w, h, layers, &rotated));
+            }
+            mask.pen.clone().expect("a pen prefix was built above")
+        };
+        Some(MaskViews {
+            prefix,
+            coverage: mask.coverage_view.clone(),
+        })
     }
 
     /// Whether `id` is loaded in this store.

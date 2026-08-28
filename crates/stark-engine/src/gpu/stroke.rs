@@ -57,7 +57,7 @@ use tips::TipCache;
 // file X happens to live in — the split below is about where a maintainer reads, not
 // about what the engine depends on.
 pub use budget::{max_stretch, max_tip_reach};
-pub use incremental::{StrokeCarry, StrokeSpans, ToolState};
+pub(crate) use incremental::{StrokeCarry, StrokeSpans, ToolState};
 // Not part of the module's public surface: the engine calls it, nothing outside the
 // crate does, and keeping it crate-visible is what lets its doc comment point at the
 // `segments` internals the rule is actually about.
@@ -219,7 +219,7 @@ impl StrokeRenderer {
     /// [`ToolState`] carries the only thing the loop threads between segments that is
     /// not already on the canvas. Adjacent ranges share exactly one flattened point
     /// (`path::flatten_spans`), so their segments tile with no gap and no overlap.
-    pub fn render_range(
+    pub(crate) fn render_range(
         &self,
         scene: StrokeScene<'_>,
         rec: &StrokeRecord,
@@ -237,6 +237,21 @@ impl StrokeRenderer {
         // the record, never from the piece in hand. A live tail and the commit that
         // eventually replaces it have to make the same choice, or releasing the pointer
         // would visibly redraw the stroke. See `dynamics_setup`.
+        let Some(_) = self.tips.resolve(scene.assets, &rec.brush) else {
+            if self.complain_once(rec.seed) {
+                tracing::warn!(
+                    "brush stamp asset is unavailable; deferring stroke until it is loaded",
+                );
+            }
+            return (
+                scene.base.clone(),
+                StrokeCarry {
+                    dist: spans.dist(),
+                    tool: None,
+                    dirty: Vec::new(),
+                },
+            );
+        };
         let plan = dynamics_setup(&rec.brush);
         match plan.path {
             StrokePath::Loop => {

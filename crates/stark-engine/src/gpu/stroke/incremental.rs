@@ -32,7 +32,7 @@ use crate::gpu::tile::TilePairHandle;
 /// same textures back on drop — which is sound *because* a run only ever borrows a
 /// `ToolState`, so the drop that returns a lease can only happen after the run's
 /// own submit (see [`Kept`]).
-pub struct ToolState(pub(super) Carried);
+pub(crate) struct ToolState(pub(super) Carried);
 
 /// The kinds of cross-piece stroke state, one per path that has any — the
 /// swept deposit at full opacity carries nothing at all.
@@ -216,7 +216,7 @@ pub(super) struct SweepAccum {
 }
 
 /// What a range render leaves behind for the range that resumes after it.
-pub struct StrokeCarry {
+pub(crate) struct StrokeCarry {
     /// Arc length at the end of the range. Not derivable from the span index — it is
     /// measured along the flattened polyline — and both the `drain` falloff and the
     /// color-dynamics noise read it, so restarting it at zero would make the middle
@@ -310,17 +310,41 @@ pub(crate) fn safe_frozen(rec: &StrokeRecord, frozen: usize) -> usize {
 /// parameterized by distance travelled: restarting it at zero would make the tail
 /// of a stroke look like the head of one.
 #[derive(Clone, Debug)]
-pub struct StrokeSpans {
-    pub range: std::ops::Range<usize>,
-    pub dist: f32,
+pub(crate) struct StrokeSpans {
+    pub(super) range: std::ops::Range<usize>,
+    pub(super) dist: f32,
 }
 
 impl StrokeSpans {
     /// The whole stroke, from the beginning.
-    pub fn whole(rec: &StrokeRecord) -> Self {
+    pub(crate) fn whole(rec: &StrokeRecord) -> Self {
         StrokeSpans {
             range: 0..crate::path::span_count(rec.path.len()),
             dist: 0.0,
         }
+    }
+
+    /// A checked cut through `rec`, carrying the arc distance already consumed by
+    /// its predecessor. Keeping construction here means a caller cannot resume a
+    /// stroke from an inverted/out-of-bounds span range or a non-finite distance.
+    pub(crate) fn from_parts(
+        rec: &StrokeRecord,
+        range: std::ops::Range<usize>,
+        dist: f32,
+    ) -> Self {
+        let last = crate::path::span_count(rec.path.len());
+        assert!(
+            range.start <= range.end && range.end <= last,
+            "stroke span range {range:?} is outside 0..{last}",
+        );
+        assert!(
+            dist.is_finite() && dist >= 0.0,
+            "stroke span distance must be finite and non-negative, got {dist}",
+        );
+        Self { range, dist }
+    }
+
+    pub(crate) fn dist(&self) -> f32 {
+        self.dist
     }
 }

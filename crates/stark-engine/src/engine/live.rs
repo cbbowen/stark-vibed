@@ -340,10 +340,7 @@ impl Preview {
         }
 
         let all = crate::path::span_count(rec.path.len());
-        let tail = StrokeSpans {
-            range: head.spans..all,
-            dist: head.dist,
-        };
+        let tail = StrokeSpans::from_parts(rec, head.spans..all, head.dist);
         // The diagnostic recolors only what this move actually redrew, so the seam
         // between tinted and untinted paint *is* the freezing boundary. Build-time
         // only (the `debug-unfrozen` feature): a shipping build has no code path that
@@ -609,10 +606,7 @@ fn advance_head(
     frozen: usize,
 ) -> FrozenHead {
     {
-        let spans = StrokeSpans {
-            range: head.spans..frozen,
-            dist: head.dist,
-        };
+        let spans = StrokeSpans::from_parts(rec, head.spans..frozen, head.dist);
         // The renderer reports where it stopped rather than the caller recomputing it:
         // arc length is accumulated along the *emitted* polyline, and only the renderer
         // knows the budget it flattened at (a dynamics brush may have coarsened it), so
@@ -659,7 +653,7 @@ fn render_span_range(
     // which refuses the stroke outright (§15.7). Preview and
     // commit agreeing is the §1.3 invariant, so the two refusals must line up.
     let Some(tiles_base) = base.layer(rec.layer).and_then(|l| l.tiles()) else {
-        return (base.clone(), carry_only(spans.dist));
+        return (base.clone(), carry_only(spans.dist()));
     };
     // The **author's** mask, exactly as the commit will read it — which is what
     // lets one client's live stroke be reproduced faithfully on another's screen

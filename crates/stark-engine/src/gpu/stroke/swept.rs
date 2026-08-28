@@ -278,7 +278,7 @@ impl StrokeRenderer {
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke commit");
 
         let device = &self.ctx.device;
-        let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate, &k);
+        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, assets, rec, substrate, &k);
         // The per-tile draw list, instance buffer and transform slots — shared with
         // the erase pass ([`sweep_draws`]).
         let draws = sweep_draws(self, &mut scope, rec, &k, &segments);
@@ -463,7 +463,7 @@ impl StrokeRenderer {
         } = scene;
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke scaled commit");
         let device = &self.ctx.device;
-        let (prefix_bg, noise_bg) = sweep_binds(self, assets, rec, substrate, k);
+        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, assets, rec, substrate, k);
         let draws = sweep_draws(self, &mut scope, rec, k, segments);
         let opacity_buf = opacity_uniform(self, &mut scope, k.opacity);
 
@@ -669,6 +669,7 @@ const PARCEL_EXTENT: wgpu::Extent3d = wgpu::Extent3d {
 /// second copy of its inputs would be a place to disagree about what that is.
 pub(super) fn sweep_binds(
     r: &StrokeRenderer,
+    scope: &mut super::scratch::SubmitScope,
     assets: &crate::assets::AssetStore,
     rec: &StrokeRecord,
     substrate: &crate::gpu::substrate::SubstrateMap,
@@ -677,7 +678,11 @@ pub(super) fn sweep_binds(
     let device = &r.ctx.device;
     // Resolve the brush's prefix-τ texture: image brushes from the asset
     // store; the round tip generated (and cached) from its hardness.
-    let prefix_view = r.tips.prefix_view(assets, &rec.brush);
+    let tip = r
+        .tips
+        .resolve(assets, &rec.brush)
+        .expect("render_range checked the stamp asset before starting the swept run");
+    let prefix_view = tip.prefix;
     let prefix_bg = desc::bind_group_for(
         device,
         "stark sweep prefix bg",
@@ -692,7 +697,8 @@ pub(super) fn sweep_binds(
     // it (§6.4): the deposition tooth's height and the rise ahead of it, in the
     // same group because it is the same kind of thing — a field the deposit
     // samples per fragment.
-    let noise_view = r.tips.noise_view(&rec.brush.color_dynamics(), k.noise_seed);
+    let noise = r.tips.noise(&rec.brush.color_dynamics(), k.noise_seed);
+    scope.hold(noise.clone());
     let noise_bg = desc::bind_group_for(
         device,
         "stark sweep noise bg",
@@ -700,7 +706,7 @@ pub(super) fn sweep_binds(
         NOISE_SLOTS,
         false,
         |b| match b {
-            sc::NOISE_TEX => wgpu::BindingResource::TextureView(&noise_view),
+            sc::NOISE_TEX => wgpu::BindingResource::TextureView(noise.view()),
             sc::NOISE_SAMP => wgpu::BindingResource::Sampler(&r.tips.noise_sampler),
             sc::SUBSTRATE_TEX => wgpu::BindingResource::TextureView(&substrate.view),
             other => unreachable!("`NOISE_SLOTS` lists no binding {other}"),

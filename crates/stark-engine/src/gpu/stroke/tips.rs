@@ -57,8 +57,8 @@ pub(super) struct TipCache {
     /// bound when a brush's jitter is off, and the per-stroke baked fields — an LRU
     /// of [`NOISE_TILES_KEPT`] keyed by (kind, stroke seed), newest last.
     pub(super) noise_sampler: wgpu::Sampler,
-    dummy_noise: wgpu::TextureView,
-    noise_tiles: Arc<Mutex<Vec<(NoiseKey, NoiseTile)>>>,
+    dummy_noise: Arc<NoiseTile>,
+    noise_tiles: Arc<Mutex<Vec<(NoiseKey, Arc<NoiseTile>)>>>,
 }
 
 impl TipCache {
@@ -72,12 +72,15 @@ impl TipCache {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let (_dummy_tex, dummy_noise) = crate::noise::dummy_noise_texture(ctx);
+        let (dummy_tex, dummy_noise) = crate::noise::dummy_noise_texture(ctx);
         Self {
             ctx: ctx.clone(),
             round_tip: Arc::new(Mutex::new(Vec::new())),
             noise_sampler,
-            dummy_noise,
+            dummy_noise: Arc::new(NoiseTile {
+                texture: dummy_tex,
+                view: dummy_noise,
+            }),
             noise_tiles: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -92,35 +95,29 @@ impl TipCache {
     /// follow-stroke reads a single identity layer, pen a stack of them. A round
     /// tip is rotation-invariant and answers both with the same one slice, which is why
     /// it is asked only for its hardness.
-    pub(super) fn prefix_view(
+    pub(super) fn resolve(
         &self,
         assets: &AssetStore,
         brush: &BrushParams,
-    ) -> wgpu::TextureView {
+    ) -> Option<ResolvedTip> {
         match brush.shape {
-            BrushShape::Stamp(id) => assets
-                .prefix_view(id, brush.orientation)
-                .unwrap_or_else(|| self.round_tip(BrushShape::DEFAULT_HARDNESS).prefix),
-            BrushShape::Round { hardness } => self.round_tip(hardness).prefix,
+            BrushShape::Stamp(id) => assets.mask_views(id, brush.orientation).map(|views| ResolvedTip {
+                prefix: views.prefix,
+                coverage: views.coverage,
+            }),
+            BrushShape::Round { hardness } => {
+                let tip = self.round_tip(hardness);
+                Some(ResolvedTip {
+                    prefix: tip.prefix,
+                    coverage: tip.coverage,
+                })
+            }
         }
     }
 
     /// The brush's plain coverage mask — the weights a reservoir texel carries
     /// (§6.2). Resolved exactly as [`Self::prefix_view`] is, from the same two
     /// sources; only the stamp loop asks for it.
-    pub(super) fn coverage_view(
-        &self,
-        assets: &AssetStore,
-        brush: &BrushParams,
-    ) -> wgpu::TextureView {
-        match brush.shape {
-            BrushShape::Stamp(id) => assets
-                .coverage_view(id)
-                .unwrap_or_else(|| self.round_tip(BrushShape::DEFAULT_HARDNESS).coverage),
-            BrushShape::Round { hardness } => self.round_tip(hardness).coverage,
-        }
-    }
-
     /// The round tip's baked textures for a given `hardness`, cached so live preview
     /// — which re-renders per pointer move — doesn't rebuild them each frame.
     ///
@@ -151,22 +148,17 @@ impl TipCache {
     /// field baked for that stroke (`noise.rs`), cached so a live preview — which
     /// re-renders per pointer move — bakes it once; or the 1×1 zero tile when the
     /// jitter is off (amplitudes all 0 ⇒ the shader adds exactly nothing).
-    pub(super) fn noise_view(&self, cd: &ColorDynamics, seed: u32) -> wgpu::TextureView {
+    pub(super) fn noise(&self, cd: &ColorDynamics, seed: u32) -> NoiseLease {
         if !cd.is_active() {
-            return self.dummy_noise.clone();
+            return NoiseLease(Arc::clone(&self.dummy_noise));
         }
         let mut cache = unpoisoned(self.noise_tiles.lock());
         let (tile, evicted) = lru(&mut cache, (cd.noise, seed), NOISE_TILES_KEPT, || {
             let (texture, view) = crate::noise::build_noise_texture(&self.ctx, cd.noise, seed);
-            NoiseTile { texture, view }
+            Arc::new(NoiseTile { texture, view })
         });
-        if let Some(old) = evicted {
-            // Safe while its last reader is in flight: a stroke binds its tile and
-            // submits within one call, and a destroy defers behind submitted work
-            // (`submit.rs`).
-            old.texture.destroy();
-        }
-        tile.view
+        drop(evicted);
+        NoiseLease(tile)
     }
 }
 
@@ -194,10 +186,36 @@ fn lru<K: PartialEq, V: Clone>(
 
 /// One stroke's baked color-dynamics field: the texture kept beside its view so an
 /// eviction can `destroy()` it.
-#[derive(Clone)]
 struct NoiseTile {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+}
+
+impl Drop for NoiseTile {
+    fn drop(&mut self) {
+        // A render holds a `NoiseLease` in its submit scope, so an LRU eviction can
+        // only destroy this texture after the last command buffer that names it has
+        // been submitted.
+        self.texture.destroy();
+    }
+}
+
+/// A color-dynamics texture kept alive until the command buffer that samples it is
+/// submitted. A texture view alone does not keep an LRU eviction from destroying its
+/// source texture.
+#[derive(Clone)]
+pub(super) struct NoiseLease(Arc<NoiseTile>);
+
+impl NoiseLease {
+    pub(super) fn view(&self) -> &wgpu::TextureView {
+        &self.0.view
+    }
+}
+
+/// The prefix volume and coverage mask selected together for one brush.
+pub(super) struct ResolvedTip {
+    pub(super) prefix: wgpu::TextureView,
+    pub(super) coverage: wgpu::TextureView,
 }
 
 /// A baked round tip: the **prefix-τ** volume both render paths integrate the swept

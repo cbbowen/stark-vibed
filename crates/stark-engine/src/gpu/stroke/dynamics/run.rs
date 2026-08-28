@@ -251,7 +251,7 @@ struct DynamicsRun<'a> {
     /// and the color-dynamics field the `add` paint is jittered against.
     prefix_bg: wgpu::BindGroup,
     cov: wgpu::TextureView,
-    noise: wgpu::TextureView,
+    noise: super::super::tips::NoiseLease,
     /// The tool reservoir ping-pong, and which half currently holds the tool.
     brush_color_tex: [wgpu::Texture; 2],
     brush_aux_tex: [wgpu::Texture; 2],
@@ -305,7 +305,11 @@ impl<'a> DynamicsRun<'a> {
 
         // The brush's swept-extent prefix-τ (shared with the fast path) and its
         // plain coverage mask (the reservoir texels' own extent weights).
-        let prefix_view = r.tips.prefix_view(scene.assets, &rec.brush);
+        let tip = r
+            .tips
+            .resolve(scene.assets, &rec.brush)
+            .expect("render_range checked the stamp asset before starting the dynamics run");
+        let prefix_view = tip.prefix;
         let prefix_bg = desc::bind_group_for(
             device,
             "stark dynamics prefix bg",
@@ -314,12 +318,11 @@ impl<'a> DynamicsRun<'a> {
             false,
             |_| wgpu::BindingResource::TextureView(&prefix_view),
         );
-        let cov = r.tips.coverage_view(scene.assets, &rec.brush);
+        let cov = tip.coverage;
         // Color dynamics for the brush's own `add` paint — the same field and
         // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
-        let noise = r
-            .tips
-            .noise_view(&rec.brush.color_dynamics(), consts.noise_seed);
+        let noise = r.tips.noise(&rec.brush.color_dynamics(), consts.noise_seed);
+        scope.hold(noise.clone());
 
         // A stroke that starts fresh initializes its first reservoir by a render clear
         // (the driver does the f16 encode), hence RENDER_ATTACHMENT; one resuming from
@@ -1032,7 +1035,7 @@ impl<'a> DynamicsRun<'a> {
                 // The real scratch on a piece that fires, the kit's 1×1 otherwise — a
                 // painting segment carries `lambda_bleed = 0` and never reads it.
                 b::BLEED_W => view(bleed.unwrap_or(&kit.bleed_placeholder)),
-                b::DYN_NOISE_TEX => view(&self.noise),
+                b::DYN_NOISE_TEX => view(self.noise.view()),
                 b::DYN_NOISE_SAMP => samp(&r.tips.noise_sampler),
                 _ => return None,
             })
