@@ -63,7 +63,7 @@ const EMIT_SPACING: f32 = 0.25;
 /// The bound is read off the tractrix rather than picked. The tip's offset from its
 /// straight asymptote is `2·rope·t/√(1+t²) ≤ 2·rope·t`, and the half-angle decays as
 /// `t = t₀·exp(−Δs/rope)` with `t₀ ≤ 1` — so the bend is under the input's own tolerance,
-/// and therefore invisible to the fit that tolerance prices ([`path::clamp_tolerance`]),
+/// and therefore invisible to the fit that tolerance prices ([`clamp_tolerance`](crate::path::clamp_tolerance)),
 /// after `rope · ln(2·rope/tolerance)`. Past it the run's final emission is the only one
 /// that carries anything.
 ///

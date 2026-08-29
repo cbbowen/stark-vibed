@@ -47,7 +47,7 @@ these should appear in code again.
 
 | Term | What it is | Defined in |
 |---|---|---|
-| **tolerance** | The input device's own positional resolution, in canvas px — how finely it can say *where*. One word in prose and in code, held to a usable range by the one door `clamp_tolerance`. It was also called "the grain"; that word now belongs to the substrate alone. `flatten_tolerance` is a *different* quantity — how finely a curve is flattened — and keeps its qualifier. | [`stark-engine/src/path.rs`](../crates/stark-engine/src/path.rs) |
+| **tolerance** | The input device's own positional resolution, in canvas px — how finely it can say *where*. One word in prose and in code, held to a usable range by the one door `clamp_tolerance`. It was also called "the grain"; that word now belongs to the substrate alone. `flatten_tolerance` is a *different* quantity — how finely a curve is flattened — and keeps its qualifier. | [`stark-engine/src/path/fit.rs`](../crates/stark-engine/src/path/fit.rs) |
 | **rope** | How far the towed tip lags the pointer, in canvas px — the stroke-smoothing knob (§6.11). | [`stark-engine/src/tow.rs`](../crates/stark-engine/src/tow.rs) |
 | **tow** | The smoothing itself: the tip dragged behind the pointer on a rope, emitting samples as it bends. | [`stark-engine/src/tow.rs`](../crates/stark-engine/src/tow.rs) |
 | **report** | One raw pointer event as the frontend hands it over. Distinct from an *emission* (what the tow produces from it) and from a *sample* (what the fitter consumes). | [`stark-engine/src/session.rs`](../crates/stark-engine/src/session.rs) |

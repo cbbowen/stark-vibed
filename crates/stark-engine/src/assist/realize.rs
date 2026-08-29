@@ -25,7 +25,7 @@ use std::f32::consts::TAU;
 /// 1.69px for a 200px circle on 30° legs, against `r·Δ²/8 = 6.85`. So the leg count
 /// solves `r·Δ²/24 ≤` this: the divisor is rounded *down* from the measured ratio, so
 /// the number below is a bound rather than an average of one.
-pub(super) const ELLIPSE_ERROR: f32 = 0.4;
+const ELLIPSE_ERROR: f32 = 0.4;
 
 /// Legs a snapped ellipse is built from, whatever [`ELLIPSE_ERROR`] asks for. The floor
 /// keeps a thumbnail ellipse from being a polygon; the ceiling keeps a canvas-wide one
@@ -112,7 +112,7 @@ impl AssistShape {
     /// *fewer* control points than the stroke it replaces, because the pen channels
     /// ride the same polygon as the geometry and a pressure profile needs somewhere to
     /// live. Geometry decides the floor and the pen decides nothing else — the same
-    /// split [`CubicBSpline::fit_channels`] draws.
+    /// split [`SplineIndex::fit_channels`] draws.
     ///
     /// The geometry of a **line** is placed in closed form (any collinear control
     /// polygon draws exactly that line, so there is nothing to solve and nothing to
@@ -151,27 +151,6 @@ impl AssistShape {
             }
         };
         realize(&seed, &targets, pen, fit_geometry)
-    }
-
-    /// A point of the shape's own parameterization, scaled about the centre by `bulge`
-    /// (1.0 for the shape itself). For a line the parameter is the fraction from `a`
-    /// to `b`; for an ellipse it is radians past the seam, signed by the winding.
-    pub(super) fn at(&self, t: f32, bulge: f32) -> Vec2 {
-        match *self {
-            Self::Line { a, b, .. } => a.lerp(b, t),
-            Self::Ellipse {
-                center,
-                radii,
-                angle,
-                phase,
-                winding,
-                ..
-            } => {
-                let u = phase + winding * t;
-                let local = Vec2::new(radii.x * u.cos(), radii.y * u.sin()) * bulge;
-                center + Vec2::from_angle(angle).rotate(local)
-            }
-        }
     }
 }
 
@@ -281,5 +260,81 @@ fn leg_count(radius: f32) -> usize {
         (legs as usize).clamp(MIN_LEGS, MAX_LEGS)
     } else {
         MAX_LEGS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The realized path has to *be* the shape, not merely resemble it — including at
+    /// the clamped ends, which is what the ellipse's least-squares placement buys.
+    #[test]
+    fn a_snapped_line_is_straight() {
+        let (a, b) = (Vec2::new(-50.0, 30.0), Vec2::new(250.0, 130.0));
+        let pen = PenProfile::of(&[ControlPoint::at(a), ControlPoint::at(b)]);
+        let path = AssistShape::Line {
+            a,
+            b,
+            on_axis: false,
+        }
+        .to_path(&pen, 12);
+        let poly = flatten(&path, FLATTEN_TOLERANCE);
+        let dir = (b - a).normalize();
+        let worst = poly
+            .iter()
+            .map(|s| (s.pos - a).perp_dot(dir).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 0.02, "drifted {worst}px off the line");
+    }
+
+    #[test]
+    fn a_snapped_ellipse_is_round() {
+        for radius in [40.0f32, 200.0, 1200.0] {
+            let shape = AssistShape::Ellipse {
+                center: Vec2::new(7.0, -13.0),
+                radii: Vec2::splat(radius),
+                angle: 0.0,
+                phase: 0.3,
+                winding: 1.0,
+                plane: None,
+            };
+            let pen = PenProfile::of(&[ControlPoint::at(Vec2::ZERO), ControlPoint::at(Vec2::X)]);
+            let path = shape.to_path(&pen, 8);
+            let poly = flatten(&path, FLATTEN_TOLERANCE);
+            let worst = poly
+                .iter()
+                .map(|s| (s.pos.distance(Vec2::new(7.0, -13.0)) - radius).abs())
+                .fold(0.0f32, f32::max);
+            assert!(worst <= ELLIPSE_ERROR, "radius {radius}: off by {worst}px");
+        }
+    }
+
+    /// The pen channels ride the ideal shape rather than being flattened out of it.
+    #[test]
+    fn a_snapped_stroke_keeps_its_pressure() {
+        let drawn: Vec<ControlPoint> = (0..9)
+            .map(|i| {
+                let t = i as f32 / 8.0;
+                ControlPoint {
+                    pos: Vec2::new(t * 300.0, 0.0),
+                    // A swell: light at both ends, full in the middle.
+                    pressure: 0.15 + 0.85 * (t * std::f32::consts::PI).sin(),
+                    tilt: Vec2::ZERO,
+                    time: t,
+                }
+            })
+            .collect();
+        let pen = PenProfile::of(&drawn);
+        let path = AssistShape::Line {
+            a: Vec2::ZERO,
+            b: Vec2::new(300.0, 0.0),
+            on_axis: false,
+        }
+        .to_path(&pen, drawn.len());
+        let mid = path[path.len() / 2].pressure;
+        let ends = path[0].pressure.max(path[path.len() - 1].pressure);
+        assert!(mid > 0.8, "the swell was flattened out (mid {mid})");
+        assert!(ends < 0.4, "the light ends were filled in (ends {ends})");
     }
 }

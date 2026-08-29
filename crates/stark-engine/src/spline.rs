@@ -64,7 +64,7 @@ pub struct CubicBSpline<'a, const D: usize> {
     control_points: &'a OMatrix<f32, Dyn, Const<D>>,
 }
 
-/// What one [`CubicBSpline::fit_channels`] is solved against: where each value sits on
+/// What one [`SplineIndex::fit_channels`] is solved against: where each value sits on
 /// the curve, what it is, and how much of the subject it stands for.
 #[derive(Copy, Clone)]
 pub struct Observations<'a, const E: usize> {

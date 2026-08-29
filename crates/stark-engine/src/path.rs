@@ -35,15 +35,21 @@
 //! **Three files, named for the three the banners already named.** This was one
 //! 2,738-line module holding a streaming fitter, an arc primitive and a flattener,
 //! which is three subjects and not one long one — every type belongs to exactly one of
-//! them (`PathFitter` and `Accepted` to the fit, `Arc` to the arcs,
-//! [`FlattenTolerance`] and [`IntermediateSample`] to the flattener), and the
-//! constants partition the same way. The public names are re-exported here, so
-//! `path::` still spells everything it used to.
+//! them (`PathFitter` and `Accepted` to the fit, [`Arc`] to the arcs,
+//! [`FlattenTolerance`] and [`IntermediateSample`] to the flattener). The public names
+//! are re-exported here, so `path::` still spells everything it used to.
 //!
-//! The tests stay in this file rather than moving with the code, because they are
-//! tests of the *pipeline*: most of them fit a stroke and then flatten what came out,
-//! and they share one set of builders. Splitting them would put a copy of those in
-//! each file.
+//! **What is left in this file is what belongs to none of them**: [`span_count`] and
+//! [`frozen_spans_for`] are statements about a control *polygon*, which the fit
+//! produces and the flattener consumes — leaving them in either made the other import
+//! from it, and the three modules a cycle. As it stands `arc` depends on nothing,
+//! `flatten` on `arc`, and both on this file.
+//!
+//! The tests went with the piece each exercises, which left ten here: those are the
+//! ones that genuinely span both — they fit a stroke and then flatten what came out,
+//! so they belong to the pipeline and not to either end of it. Eleven moved into `fit`
+//! and ten into `flatten`, which is what lets everything they assert on stay private.
+//! The cost is three small builders written twice.
 
 mod arc;
 mod fit;
@@ -57,24 +63,98 @@ pub use fit::{
 pub(crate) use fit::{arc_profile, param_at};
 pub use flatten::{
     FLATTEN_TOLERANCE, FlattenTolerance, IntermediateSample, flatten, flatten_spans,
-    flatten_spans_from, frozen_spans_for, point_at, span_count, span_end,
+    flatten_spans_from, point_at, span_end,
 };
+
+/// How many spans a control polygon has, and how many of them a prefix settles.
+///
+/// **Here rather than in one of the three**, because they belong to none of them: a
+/// span count is a statement about the *polygon*, which the fit produces and the
+/// flattener consumes, so putting it in either made the other import from it and the
+/// three modules a cycle. `spline` owns the knot view underneath; this is the pair the
+/// two pieces above ask in terms of.
+/// How many cubic spans the curve through `control_points` has.
+///
+/// The clamped end condition is expressed by *repeating* each end control point
+/// `degree` times in the conceptual control sequence (the clamped knot view, [`crate::spline`]),
+/// which pins the curve to them. Those repeats are spans too, so `m` control
+/// points give `m + 1` spans rather than the `m - 1` an interpolating spline would
+/// — the two extra sit at the ends, each covering the sixth of the first (last)
+/// leg that the clamp bends through. Fewer than two control points is not a curve:
+/// one is a click, zero is nothing.
+pub fn span_count(control_points: usize) -> usize {
+    // Asked of the knot view rather than restated as `m + 1`. The two agreed, and
+    // `span_form_matches_the_fitted_spline` is what said so — a test comparing two
+    // spellings of one number, which is the shape that only ever *reports* a drift
+    // (§13). `SplineIndex::new` is the same "fewer than two is not a curve" this arm
+    // used to spell for itself.
+    crate::spline::SplineIndex::new(control_points).map_or(0, |ix| ix.num_spans())
+}
+
+/// How many spans `frozen` frozen control points settle, out of a path of `total`.
+///
+/// A span reads at most two control points past its own index, so span `k` is final
+/// once control points `0..=k+1` are — hence `frozen - 1`. Split out from
+/// [`PathFitter::frozen_spans`] because a *received* stroke has the same question to
+/// answer without the fitter that produced it: a peer knows which of its control
+/// points are settled (everything the sender has stopped resending,
+/// §17.5) and needs the same incremental repaint from them.
+///
+/// **Strictly fewer than [`span_count`]`(total)`, for every `frozen <= total`**, and
+/// something downstream depends on it. A frozen head's range ends here, and the stroke
+/// renderer captures cross-piece brush state only for a range that does *not* reach the
+/// end of the stroke (`gpu::stroke::Resume`) — so a head range that could equal the
+/// span count would silently stop carrying the brush forward, and the tail would resume
+/// from a state one range stale. The bound holds because `frozen - 1 <= total - 1` and
+/// `span_count(total) = total + 1` for a curve: the `min` is never the term that binds.
+/// For `total < 2` there is no curve, `span_count` is 0, and no head range exists.
+pub fn frozen_spans_for(frozen: usize, total: usize) -> usize {
+    let out = frozen.saturating_sub(1).min(span_count(total));
+    debug_assert!(
+        out < span_count(total) || span_count(total) == 0,
+        "a frozen head reaching the stroke's end would stop carrying the brush",
+    );
+    out
+}
 
 #[cfg(test)]
 mod tests {
-    // The pieces' own internals the pipeline tests reach for. `Accepted`, the window
-    // constants and `window_indices` are the fit's bookkeeping — several tests here
-    // assert on the *window* rather than on the curve, which is the only way to say
-    // "thinning did not cost the fit its accuracy". `span` is the flattener's Bézier
-    // conversion, held against `spline`'s own evaluation.
-    use super::fit::{
-        Accepted, CHANNELS, FREE_CONTROL_POINTS, MAX_WINDOW_SAMPLES, point_segment_distance,
-        window_indices,
-    };
-    use super::flatten::span;
+    /// The worst distance from any sample to the flattened curve fitted through them.
+    /// `fit`'s test module has a copy — eleven of its tests measure this, and one of
+    /// this file's does.
+    fn fit_error(samples: &[InputSample]) -> f32 {
+        let path = fit(samples);
+        let poly = flatten(&path, FLATTEN_TOLERANCE);
+        samples
+            .iter()
+            .map(|s| {
+                poly.windows(2)
+                    .map(|w| point_segment_distance(s.pos, w[0].pos, w[1].pos))
+                    .fold(f32::INFINITY, f32::min)
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// Fit `samples` one report at a time, keeping every intermediate path and how much
+    /// of it the fitter called frozen. `fit`'s test module has a copy — this is the one
+    /// root test that streams, against eleven there.
+    fn fit_incrementally(samples: &[InputSample]) -> (PathFitter, Vec<(Vec<ControlPoint>, usize)>) {
+        let mut fitter = PathFitter::new();
+        let mut snaps = Vec::new();
+        for s in samples {
+            fitter.push(*s);
+            snaps.push((fitter.path().to_vec(), fitter.frozen_spans()));
+        }
+        (fitter, snaps)
+    }
+
+    // The one thing this module reaches across for: the distance a fit's error is
+    // measured with. The tests that wanted the fit's own bookkeeping — `Accepted`, the
+    // window constants, `window_indices` — moved into `fit` with the assertions that
+    // read them, so none of it is `pub(super)` any more.
+    use super::arc::point_segment_distance;
     use super::*;
     use crate::command::InputSample;
-    use crate::spline::CubicBSpline;
     use stark_model::geom::Vec2;
     use stark_model::path::ControlPoint;
 
@@ -84,80 +164,6 @@ mod tests {
 
     fn knot(x: f32, y: f32) -> ControlPoint {
         ControlPoint::at(Vec2::new(x, y))
-    }
-
-    /// `n` accepted reports `step` apart along the x axis — the shape
-    /// [`window_indices`] reads, without a fitter around it.
-    fn accepted(n: usize, step: f32) -> Vec<Accepted> {
-        (0..n)
-            .map(|i| Accepted {
-                pos: Vec2::new(i as f32 * step, 0.0),
-                channels: [0.0; CHANNELS],
-                arc: i as f32 * step,
-            })
-            .collect()
-    }
-
-    /// **Under budget the selection is the identity**, which is what makes this a
-    /// change to the pathological cases only. Ordinary painting keeps every report the
-    /// window admitted, `arc_weights` reduces to the rule it always was, and the fitted
-    /// curve is therefore bit-identical to what it was before the bound existed — so
-    /// no golden moves and no recorded stroke re-fits.
-    #[test]
-    fn a_window_under_budget_keeps_every_report() {
-        let pts = accepted(MAX_WINDOW_SAMPLES, 1.0);
-        for lo in [0, 1, 7, MAX_WINDOW_SAMPLES - 1] {
-            assert_eq!(
-                window_indices(&pts, lo),
-                (lo..pts.len()).collect::<Vec<_>>(),
-                "a window of {} was thinned",
-                pts.len() - lo,
-            );
-        }
-    }
-
-    /// Past the budget the window stops growing — the whole point. Both ends survive
-    /// whatever the budget: the leading report anchors against the frozen prefix, and
-    /// the trailing one is where the pen actually is.
-    #[test]
-    fn a_dense_window_is_capped_and_keeps_both_ends() {
-        for n in [MAX_WINDOW_SAMPLES + 1, 500, 20_000] {
-            let pts = accepted(n, 0.05);
-            let idx = window_indices(&pts, 0);
-            assert!(
-                idx.len() <= MAX_WINDOW_SAMPLES + 1,
-                "{n} reports produced a window of {}",
-                idx.len(),
-            );
-            assert_eq!(idx.first().copied(), Some(0), "the window lost its head");
-            assert_eq!(idx.last().copied(), Some(n - 1), "the window lost the pen");
-            assert!(
-                idx.windows(2).all(|w| w[0] < w[1]),
-                "the survivors are out of order",
-            );
-        }
-    }
-
-    /// The survivors are spread along the **arc**, not along the report index — so a
-    /// hand that paused cannot spend the whole budget on the pause.
-    ///
-    /// Half the reports here sit on one point and the other half cover the distance;
-    /// an index-even rule would put half the window in the dwell.
-    #[test]
-    fn a_dwell_does_not_swallow_the_window() {
-        let mut pts = accepted(200, 0.0);
-        for (i, p) in pts.iter_mut().enumerate().skip(100) {
-            let d = (i - 99) as f32;
-            p.pos = Vec2::new(d, 0.0);
-            p.arc = d;
-        }
-        let idx = window_indices(&pts, 0);
-        let in_dwell = idx.iter().filter(|&&i| i < 100).count();
-        assert!(
-            in_dwell <= 2,
-            "{in_dwell} of {} survivors were spent on a dwell",
-            idx.len(),
-        );
     }
 
     /// **Thinning the window does not cost the fit its accuracy** — the one risk the
@@ -224,174 +230,6 @@ mod tests {
         }
     }
 
-    /// Feed samples one at a time, snapshotting the fit after every push.
-    fn fit_incrementally(samples: &[InputSample]) -> (PathFitter, Vec<(Vec<ControlPoint>, usize)>) {
-        let mut f = PathFitter::new();
-        let mut snaps = Vec::new();
-        for s in samples {
-            f.push(*s);
-            snaps.push((f.path(), f.frozen_spans()));
-        }
-        f.finish();
-        (f, snaps)
-    }
-
-    /// **A non-finite report is dropped, not fitted** — and the stroke that comes out
-    /// is the one its finite reports describe, exactly as if the bad report had never
-    /// arrived.
-    ///
-    /// Both halves matter and the second is the sharper claim. Merely not panicking
-    /// would be satisfied by a fitter that swallowed the whole stroke; what has to
-    /// hold is that one bad report costs one report.
-    ///
-    /// The panic this rules out was real and three subsystems downstream: `arc`
-    /// accumulates the step to the bad sample, every curve parameter is derived from
-    /// `arc`, so `solve_window`'s normal equations go NaN — and they are then singular at
-    /// every ridge, which its solve reports with `unreachable!` because for
-    /// *admissible* input it genuinely cannot happen.
-    ///
-    /// **Finite is not admissible**, which is why the last two rows are finite. A
-    /// position a whole `f32` range from its neighbour makes `arc` accumulate an
-    /// infinite step and every parameter after it a NaN, by subtraction rather than
-    /// by anything the report itself carries — so a gate that asked only
-    /// `is_finite` let the same panic through the same door.
-    #[test]
-    fn an_inadmissible_report_is_dropped_rather_than_fitted() {
-        let clean: Vec<InputSample> = (0..24)
-            .map(|i| {
-                let t = i as f32;
-                sample(t * 7.0, (t * 0.4).sin() * 30.0)
-            })
-            .collect();
-
-        /// One way a report can be unusable: a name for the failure message, and the
-        /// channel it poisons.
-        type Poison = (&'static str, fn(InputSample) -> InputSample);
-
-        // Every channel a report has, and every way one can be unusable.
-        let poisons: [Poison; 7] = [
-            ("pos.x", |mut s| {
-                s.pos.x = f32::NAN;
-                s
-            }),
-            // Finite, and past the last tile an `i32` can address — the difference
-            // between this gate and a plain `is_finite`.
-            ("pos.x beyond the grid", |mut s| {
-                s.pos.x = 1.0e30;
-                s
-            }),
-            // The boundary itself, which `TileRect::covering` refuses: `COORD_LIMIT`
-            // is `2³¹` tiles out, and `2³¹` is one past `i32::MAX`.
-            ("pos.y at the limit", |mut s| {
-                s.pos.y = crate::command::COORD_LIMIT;
-                s
-            }),
-            ("pos.y", |mut s| {
-                s.pos.y = f32::INFINITY;
-                s
-            }),
-            ("pressure", |mut s| {
-                s.pressure = f32::NAN;
-                s
-            }),
-            ("tilt", |mut s| {
-                s.tilt = Vec2::splat(f32::NAN);
-                s
-            }),
-            ("time", |mut s| {
-                s.time = f64::NAN;
-                s
-            }),
-        ];
-
-        let reference = {
-            let mut f = PathFitter::new();
-            for s in &clean {
-                f.push(*s);
-            }
-            f.finish();
-            f.path()
-        };
-
-        for (name, poison) in poisons {
-            // Injected mid-stroke, where the fitter has state to corrupt, and again
-            // as the very first report, which is the case that seeds `t0` and the
-            // arc origin.
-            for at in [0usize, 12] {
-                let mut f = PathFitter::new();
-                for (i, s) in clean.iter().enumerate() {
-                    if i == at {
-                        f.push(poison(*s));
-                    }
-                    f.push(*s);
-                }
-                f.finish();
-                let got = f.path();
-                assert_eq!(
-                    got.len(),
-                    reference.len(),
-                    "{name} at {at} changed the fitted path's shape",
-                );
-                for (a, b) in got.iter().zip(&reference) {
-                    assert!(
-                        (a.pos - b.pos).length() < 1e-4
-                            && a.pressure.is_finite()
-                            && a.tilt.is_finite(),
-                        "{name} at {at} moved a control point: {a:?} vs {b:?}",
-                    );
-                }
-            }
-        }
-    }
-
-    /// The load-bearing link between the two halves of this module: the span form
-    /// used to *render* a stored path must be the same curve [`CubicBSpline`] **fitted**.
-    /// If these ever diverge, a stroke would be fitted to one curve and drawn as
-    /// another — silently, since both are smooth and pass through roughly the same
-    /// place.
-    #[test]
-    fn span_form_matches_the_fitted_spline() {
-        use nalgebra::{Const, Dyn, OMatrix};
-
-        for m in 2..9usize {
-            let ctrl: Vec<Vec2> = (0..m)
-                .map(|j| {
-                    let t = j as f32;
-                    Vec2::new(t * 13.0 + (t * 2.1).sin() * 4.0, (t * 0.8).cos() * 21.0)
-                })
-                .collect();
-            let knots: Vec<ControlPoint> = ctrl.iter().map(|&p| ControlPoint::at(p)).collect();
-
-            let rows =
-                OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
-                    if d == 0 { ctrl[j].x } else { ctrl[j].y }
-                });
-            let reference: CubicBSpline<'_, 2> = CubicBSpline::new(&rows).unwrap();
-
-            // Not a second spelling of the count any more — `span_count` asks
-            // `SplineIndex` — so this line is a tautology kept for one thing it still
-            // says: that `reference`, built from a matrix rather than from `m`, has the
-            // `m` this loop thinks it has. What the loop below checks is the part that
-            // was never arithmetic: that the Bézier conversion evaluates to the same
-            // curve.
-            assert_eq!(
-                span_count(m),
-                reference.num_spans(),
-                "span count disagrees at m = {m}"
-            );
-            for k in 0..span_count(m) {
-                let sp = span(&knots, k);
-                for i in 0..=8 {
-                    let u = i as f32 / 8.0;
-                    let want = reference.evaluate(k as f32 + u);
-                    let got = sp.eval(u).pos;
-                    let off = (got - Vec2::new(want[0], want[1])).length();
-                    assert!(off < 1e-3, "m={m} span {k} at u={u}: off by {off}");
-                }
-            }
-        }
-    }
-
     #[test]
     fn the_curve_is_pinned_to_its_end_control_points() {
         // What the clamped end condition buys: the stroke starts and finishes at the
@@ -410,84 +248,6 @@ mod tests {
 
     // ---- fitting -------------------------------------------------------
 
-    /// Largest distance (canvas px) from any input sample to the fitted curve.
-    fn fit_error(samples: &[InputSample]) -> f32 {
-        let poly = flatten(&fit(samples), FLATTEN_TOLERANCE);
-        samples
-            .iter()
-            .map(|s| {
-                if poly.len() < 2 {
-                    return (s.pos - poly[0].pos).length();
-                }
-                poly.windows(2)
-                    .map(|w| point_segment_distance(s.pos, w[0].pos, w[1].pos))
-                    .fold(f32::INFINITY, f32::min)
-            })
-            .fold(0.0, f32::max)
-    }
-
-    /// The fit may never ask for more control points than the samples can hold down.
-    ///
-    /// A fast pen reports tens of pixels apart, and a density policy that reads the
-    /// input's curvature will happily ask for detail the data cannot support;
-    /// granting it leaves the polygon under-determined and the curve wanders between
-    /// the samples it passes through. The bound is structural rather than an explicit
-    /// cap: a control point is only taken on if it *measurably* reduces the error, and
-    /// one the data cannot see does not.
-    #[test]
-    fn the_fit_never_outruns_its_data() {
-        for step in [4.0f32, 20.0, 50.0] {
-            let n = (1500.0 / step) as usize;
-            let pts: Vec<InputSample> = (0..n)
-                .map(|i| {
-                    let t = i as f32 * step;
-                    sample(t, (t * 0.004).sin() * 120.0)
-                })
-                .collect();
-            let m = fit(&pts).len();
-            assert!(
-                m <= pts.len(),
-                "step {step}: {m} control points for {n} samples"
-            );
-            let err = fit_error(&pts);
-            assert!(err < 16.0, "step {step}: err {err}");
-        }
-    }
-
-    /// While a stroke is live, exactly `FREE_CONTROL_POINTS` of the polygon are
-    /// still solvable — never zero, and never the whole thing.
-    ///
-    /// Both halves matter. Freezing that outruns the pointer leaves nothing able to
-    /// respond to what is drawn next, so the stroke stops following the pen; freezing
-    /// that never happens leaves the whole polygon re-solving on every report, which
-    /// is what makes a live stroke wobble along its length. A fixed-size window is
-    /// both at once, which is why growth and freezing are the same decision here.
-    #[test]
-    fn a_live_stroke_keeps_a_fixed_solvable_window() {
-        for (name, src) in [
-            ("spiral", stark_testdata::SPIRAL_STROKE),
-            ("big-C", stark_testdata::BIG_C_STROKE),
-            ("fast", stark_testdata::FAST_STROKE),
-        ] {
-            let pts: Vec<InputSample> = src.iter().map(|&[x, y]| sample(x, y)).collect();
-            let mut f = PathFitter::new();
-            let mut ever_froze = false;
-            for p in &pts {
-                f.push(*p);
-                let m = f.path().len();
-                if m > FREE_CONTROL_POINTS + 1 {
-                    let free = m - f.frozen_spans().max(1);
-                    assert!(
-                        free >= FREE_CONTROL_POINTS,
-                        "{name}: only {free} free of {m}"
-                    );
-                    ever_froze |= f.frozen_spans() > 0;
-                }
-            }
-            assert!(ever_froze, "{name}: nothing ever froze");
-        }
-    }
-
     #[test]
     fn fit_starts_and_ends_under_the_pointer() {
         // A least-squares fit does not pin its ends: an unassigned stretch of
@@ -502,28 +262,6 @@ mod tests {
         let poly = flatten(&fitted, FLATTEN_TOLERANCE);
         assert!((poly.first().unwrap().pos - pts.first().unwrap().pos).length() < 1e-3);
         assert!((poly.last().unwrap().pos - pts.last().unwrap().pos).length() < 1e-3);
-    }
-
-    #[test]
-    fn fit_collapses_pixel_staircase() {
-        // A diagonal drawn as 1-px right / 1-px up steps.
-        let mut stair = Vec::new();
-        for i in 0..10 {
-            stair.push(sample(i as f32, i as f32));
-            stair.push(sample(i as f32 + 1.0, i as f32));
-        }
-        let fitted = fit(&stair);
-        // The staircase hugs the diagonal within ~1px, so it collapses sharply.
-        // The substantive claim is the error bound below — that the curve splits the
-        // steps rather than following them. The count is a proxy and a loose one: six
-        // control points over 10px is denser than the shape needs, but they all sit
-        // on the diagonal.
-        assert!(
-            fitted.len() <= 8,
-            "staircase should collapse, got {} points",
-            fitted.len()
-        );
-        assert!(fit_error(&stair) < 1.5, "err {}", fit_error(&stair));
     }
 
     #[test]
@@ -615,71 +353,6 @@ mod tests {
         assert!(worst < 2.0, "smoothed off the diagonal: {worst}px");
     }
 
-    /// The point of letting the caller state the tolerance: one gesture, drawn at
-    /// different zoom levels, fits to one curve.
-    ///
-    /// Zoom scales canvas coordinates and the input's resolution *in* them by the
-    /// same factor, so a declared tolerance makes the fit scale-invariant — the error
-    /// price goes as its square and the spacing floor as its first power, which is
-    /// exactly how a uniform scaling moves the two quantities they are each compared
-    /// against. Priced in canvas px instead, the same stroke bought control points to
-    /// trace its own jitter zoomed in and lost real detail zoomed out.
-    #[test]
-    fn a_declared_tolerance_makes_the_fit_zoom_invariant() {
-        let screen: Vec<InputSample> = stark_testdata::BIG_C_STROKE
-            .iter()
-            .map(|&[x, y]| sample(x, y))
-            .collect();
-        let reference = fit_with_tolerance(&screen, DEFAULT_TOLERANCE);
-        // Powers of two, so scaling the input is exact in f32 and any difference
-        // that shows up is the growth rule's and not the arithmetic's.
-        for zoom in [0.25f32, 4.0, 16.0] {
-            let k = 1.0 / zoom;
-            let pts: Vec<InputSample> = screen
-                .iter()
-                .map(|s| InputSample {
-                    pos: s.pos * k,
-                    ..*s
-                })
-                .collect();
-            let got = fit_with_tolerance(&pts, DEFAULT_TOLERANCE * k);
-            assert_eq!(
-                got.len(),
-                reference.len(),
-                "zoom {zoom}: {} control points against {}",
-                got.len(),
-                reference.len()
-            );
-            for (i, (a, b)) in got.iter().zip(&reference).enumerate() {
-                let d = (a.pos - b.pos * k).length();
-                assert!(d < 1e-3 * k, "zoom {zoom}: control point {i} moved {d}");
-            }
-        }
-    }
-
-    /// The tolerance arrives from a frontend, so it is guarded rather than trusted.
-    /// Zero or negative would make a control point free of charge and the spacing
-    /// floor zero; huge would leave a stroke never growing the polygon, never
-    /// freezing, and re-solving against every sample it ever took. Held to the usable
-    /// range, each of these still fits a well-formed polygon bounded by its data (one
-    /// growth per report, from a polygon that starts at two).
-    #[test]
-    fn a_degenerate_tolerance_is_held_to_the_usable_range() {
-        let pts: Vec<InputSample> = (0..48).map(|i| sample(i as f32 * 3.0, 0.0)).collect();
-        for t in [0.0, -5.0, f32::NAN, f32::INFINITY, 1e9] {
-            let m = fit_with_tolerance(&pts, t).len();
-            assert!(
-                (2..=pts.len() + 1).contains(&m),
-                "tolerance {t}: {m} control points"
-            );
-        }
-        // A number that is not one falls back to the default rather than to an end of
-        // the range — there is nothing to read from it in either direction.
-        for t in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(fit_with_tolerance(&pts, t), fit(&pts), "tolerance {t}");
-        }
-    }
-
     #[test]
     fn fit_keeps_real_corners() {
         // An L-shape: the corner must survive. The polygon starts far coarser than
@@ -701,42 +374,6 @@ mod tests {
             nearest < 3.0,
             "corner lost: curve passes {nearest}px from it"
         );
-    }
-
-    #[test]
-    fn a_straight_stroke_stays_cheap_however_long_it_is() {
-        // The arc-length floor is what lets freezing advance on a stroke the fit is
-        // already perfect on, so a straight line does cost control points — but at
-        // the floor's rate, not the refinement's.
-        let long: Vec<InputSample> = (0..400).map(|i| sample(i as f32 * 7.5, 0.0)).collect();
-        let fitted = fit(&long);
-        // **Known weakness**, and the clearest statement of it: a dead-straight
-        // stroke should cost a handful of control points and costs ~400, one per
-        // sample. The growth rule is answering honestly — the arc-length guess is not
-        // how a clamped B-spline is parameterized, so even exact input leaves a
-        // residual, and a control point does reduce it. The fix is a correct
-        // arc-to-parameter map, not a different price.
-        assert!(
-            fitted.len() <= long.len(),
-            "more control points than samples"
-        );
-        assert!(
-            fit_error(&long) < 0.5,
-            "a straight line should still be straight"
-        );
-    }
-
-    #[test]
-    fn fit_streams_and_batches_alike() {
-        let pts: Vec<InputSample> = (0..40)
-            .map(|i| {
-                let t = i as f32 * 0.2;
-                sample(t * 10.0, (t * 1.3).sin() * 25.0)
-            })
-            .collect();
-        let (mut streamed, _) = fit_incrementally(&pts);
-        streamed.finish();
-        assert_eq!(streamed.path(), fit(&pts));
     }
 
     /// The guarantee incremental repaint rests on: whatever the fitter reports as
@@ -786,111 +423,6 @@ mod tests {
     // ---- flattening ----------------------------------------------------
 
     #[test]
-    fn the_curve_leaves_its_start_along_the_first_leg() {
-        // The clamped end repeats the first control point three times, so the very
-        // first Bézier point is a triple: the derivative *at* u = 0 is zero, and the
-        // direction only becomes readable just after. What matters is that it heads
-        // down the first leg once it does.
-        let knots = [knot(0.0, 0.0), knot(30.0, 0.0), knot(60.0, 20.0)];
-        let head = span(&knots, 0).eval(0.25);
-        assert!(head.vel.length() > 1e-3, "start derivative {:?}", head.vel);
-        assert!(head.vel.normalize().dot(Vec2::X) > 0.99);
-    }
-
-    #[test]
-    fn flatten_cost_follows_the_polygon_not_the_length() {
-        // The point of adaptive sampling: a straight run costs the same however long
-        // it is. Uniform arc-length sampling spent 500 samples on this one.
-        let short = flatten(&[knot(0.0, 0.0), knot(10.0, 0.0)], FLATTEN_TOLERANCE);
-        let long = flatten(&[knot(0.0, 0.0), knot(1000.0, 0.0)], FLATTEN_TOLERANCE);
-        assert_eq!(short.len(), long.len());
-        // One sample per span plus the start; two control points give three spans
-        // (`span_count`), of which the two clamped ends are geometrically slivers.
-        assert_eq!(long.len(), span_count(2) + 1, "got {} samples", long.len());
-        assert_eq!(long[0].pos, Vec2::ZERO);
-        // The end is the last control point, reached through the Bézier conversion,
-        // so it lands there to rounding rather than bit-exactly.
-        assert!((long.last().unwrap().pos - Vec2::new(1000.0, 0.0)).length() < 1e-3);
-        assert!((long.last().unwrap().dist - 1000.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn flatten_stays_within_the_position_budget() {
-        let knots = [
-            knot(0.0, 0.0),
-            knot(20.0, 30.0),
-            knot(60.0, 30.0),
-            knot(90.0, 0.0),
-            knot(120.0, -40.0),
-        ];
-        let poly = flatten(&knots, FLATTEN_TOLERANCE);
-        // Every point of the true curve is within the budget of the polyline (a
-        // little slack for the midpoint-only test the sampler uses).
-        for i in 0..knots.len() - 1 {
-            let sp = span(&knots, i);
-            for s in 0..=64 {
-                let p = sp.eval(s as f32 / 64.0).pos;
-                let d = poly
-                    .windows(2)
-                    .map(|w| point_segment_distance(p, w[0].pos, w[1].pos))
-                    .fold(f32::INFINITY, f32::min);
-                assert!(
-                    d < FLATTEN_TOLERANCE.position * 2.0,
-                    "curve point {p:?} is {d}px off the polyline",
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn flatten_spends_samples_where_the_curve_bends() {
-        // Two strokes of the same length: one gentle, one tight. The tight one
-        // must cost far more samples — the whole point of bounding error rather
-        // than arc length.
-        let gentle = [knot(0.0, 0.0), knot(200.0, 6.0), knot(400.0, 0.0)];
-        let tight = [knot(0.0, 0.0), knot(200.0, 160.0), knot(400.0, 0.0)];
-        let g = flatten(&gentle, FLATTEN_TOLERANCE).len();
-        let t = flatten(&tight, FLATTEN_TOLERANCE).len();
-        assert!(t > g * 3, "gentle {g} samples vs tight {t}");
-        // And both are far under what a uniform 2px walk would have cost (~200).
-        assert!(g < 40, "a gentle 400px stroke took {g} samples");
-    }
-
-    #[test]
-    fn flatten_honours_the_length_cap() {
-        let knots = [knot(0.0, 0.0), knot(300.0, 0.0)];
-        let tol = FlattenTolerance {
-            max_len: 10.0,
-            ..FLATTEN_TOLERANCE
-        };
-        let poly = flatten(&knots, tol);
-        for w in poly.windows(2) {
-            let d = (w[1].pos - w[0].pos).length();
-            assert!(d <= 10.0 + 1e-3, "segment of {d}px exceeds the 10px cap");
-        }
-    }
-
-    #[test]
-    fn flatten_splits_on_a_pressure_ramp() {
-        // A dead-straight stroke whose pressure sweeps 0 → 1: geometry alone would
-        // emit one segment, but radius follows pressure, so it must not.
-        let knots: Vec<ControlPoint> = (0..2)
-            .map(|i| ControlPoint {
-                pressure: i as f32,
-                ..knot(i as f32 * 200.0, 0.0)
-            })
-            .collect();
-        let poly = flatten(&knots, FLATTEN_TOLERANCE);
-        for w in poly.windows(2) {
-            let d = (w[1].pressure - w[0].pressure).abs();
-            assert!(
-                d <= FLATTEN_TOLERANCE.attribute + 1e-4,
-                "pressure step of {d} exceeds the budget",
-            );
-        }
-    }
-
-    #[test]
     fn flatten_spans_tile_the_whole_path() {
         let knots = [
             knot(0.0, 0.0),
@@ -917,82 +449,5 @@ mod tests {
                 head.iter().chain(tail[1..].iter()).copied().collect();
             assert_eq!(joined, whole, "cut at span {cut}");
         }
-    }
-
-    /// The marker trim (§6.2): [`flatten_spans_from`] starts the polyline at
-    /// exactly the asked parameter with the accumulator at `dist0`, leaves
-    /// everything behind it out, and still tiles with later ranges — while a
-    /// marker at or before the range is the untrimmed call, so every
-    /// `start == 0` record keeps the floats it always flattened to.
-    #[test]
-    fn flattening_from_a_marker_trims_and_only_trims() {
-        let knots = [
-            knot(0.0, 0.0),
-            knot(20.0, 30.0),
-            knot(60.0, 30.0),
-            knot(90.0, 0.0),
-            knot(120.0, -40.0),
-        ];
-        let all = span_count(knots.len());
-        let whole = flatten(&knots, FLATTEN_TOLERANCE);
-
-        let from = 2.4_f32;
-        let cut = flatten_spans_from(&knots, from, 0..all, 0.0, FLATTEN_TOLERANCE);
-        let first = cut.first().expect("a trimmed polyline still starts");
-        assert_eq!(
-            first.pos,
-            point_at(&knots, from),
-            "the polyline must start at the marker"
-        );
-        assert_eq!(first.dist, 0.0, "the accumulator reads dist0 at the marker");
-        assert!(
-            cut.windows(2).all(|w| w[0].dist <= w[1].dist),
-            "arc must accumulate along the trimmed polyline"
-        );
-        assert_eq!(
-            cut.last().unwrap().pos,
-            whole.last().unwrap().pos,
-            "the tail past the marker is untouched"
-        );
-
-        // A range entirely behind the marker: spans of the curve, none of the
-        // stroke. A marker past the whole curve leaves nothing at all.
-        assert!(flatten_spans_from(&knots, from, 0..2, 0.0, FLATTEN_TOLERANCE).is_empty());
-        assert!(flatten_spans_from(&knots, all as f32, 0..all, 0.0, FLATTEN_TOLERANCE).is_empty());
-
-        // Ranges still tile around a marker mid-range: the cut point is shared.
-        let head = flatten_spans_from(&knots, from, 0..4, 0.0, FLATTEN_TOLERANCE);
-        let tail = flatten_spans_from(
-            &knots,
-            from,
-            4..all,
-            head.last().unwrap().dist,
-            FLATTEN_TOLERANCE,
-        );
-        let joined: Vec<IntermediateSample> =
-            head.iter().chain(tail[1..].iter()).copied().collect();
-        assert_eq!(
-            joined, cut,
-            "trimmed head + tail must equal the trimmed whole"
-        );
-    }
-
-    #[test]
-    fn arc_length_accumulates_along_the_polyline() {
-        let knots = [knot(0.0, 0.0), knot(40.0, 40.0), knot(80.0, 0.0)];
-        let poly = flatten(&knots, FLATTEN_TOLERANCE);
-        assert_eq!(poly[0].dist, 0.0);
-        for w in poly.windows(2) {
-            let step = (w[1].pos - w[0].pos).length();
-            assert!((w[1].dist - w[0].dist - step).abs() < 1e-3);
-        }
-    }
-
-    #[test]
-    fn relaxing_the_budget_costs_fewer_samples() {
-        let knots = [knot(0.0, 0.0), knot(60.0, 80.0), knot(160.0, 0.0)];
-        let fine = flatten(&knots, FLATTEN_TOLERANCE).len();
-        let coarse = flatten(&knots, FLATTEN_TOLERANCE.relaxed(8.0)).len();
-        assert!(coarse < fine, "relaxed {coarse} vs fine {fine}");
     }
 }

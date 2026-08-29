@@ -112,6 +112,37 @@ because they are what the findings were *for*:
   survive. A run tier for buffers, and the four moved onto it. Recorded here because
   the lesson generalizes: **merging two types merges their reachable methods**, and an
   invariant that held by one caller's omission is not an invariant.
+- **`cargo doc` sees almost none of this crate**, found while acting on the review of
+  the module split. The check added earlier in this pass — and the "132 broken links"
+  entry below — was run without `--document-private-items`, and rustdoc does not render
+  a private module *at all*, so it never looked inside `gpu/`, `document/`, `engine/`,
+  or either of the modules just split. With private items included the crate has **61**
+  unresolved links, not zero. Nine were in the new files (relative paths that stopped
+  resolving one directory down); the rest are older, and one class is worth naming:
+  `CubicBSpline::fit_channels` appears in four places for a method that is
+  `SplineIndex`'s. **The flag is the check**; without it the pass measures the public
+  surface of a crate that is almost entirely private.
+- **A split is not a pure move, and the review priced it.** Three claims written into
+  the new module headers were false: that no helper is called from two pieces (`at` was,
+  which is why it was `pub(super)` — it is in the root now); that recognition is the
+  only part of assist that knows a guide exists (adjustment sizes a circle in its plane,
+  §20.7); and a constant count that was off by one. The load-bearing one was about the
+  *tests*: "almost every one draws a trace, recognizes it, steers it, and reads the path
+  out" described **no test in the file** — twenty of twenty-seven are recognition-only
+  and none calls `to_path` on a recognized shape. Keeping the tests in the root was
+  therefore paying `pub(super)` on eleven items for a sharing that was not happening.
+  Moving each test to the piece it exercises put **every one of them back to private**
+  bar two, at a cost of three four-line builders written twice. The lesson generalizes:
+  *a justification written at the moment of the split is a hypothesis about the tests,
+  and it is cheap to check by counting them.*
+- **`path/arc.rs` had no test at all**, which only became visible when it became a file
+  — everything in it was reached through `flatten`. It holds three hand-rolled Maclaurin
+  series whose own doc says replay, goldens and peers must agree on them to the last
+  bit. Writing that test corrected the doc: measured against an f64 reference the worst
+  relative errors are 8.1e-8, 1.2e-7 and 1.3e-7, so "better than 1e-7" was wrong for two
+  of the three and the true bound is an f32 ulp. It also confirmed why `versin_small`
+  exists in a way the prose only asserted — the f32 subtraction it replaces reaches a
+  relative error of **1.0** over the same range.
 - **A run tier that opted out of the guarantee it was made of**, found by the review
   of `f33b2f1` — the fix for the ring, one turn later. `take_run_buffer` did not set
   `piece_open`, on the reasoning that "a buffer taken before the first tile is recorded
@@ -151,6 +182,10 @@ because they are what the findings were *for*:
   `BrushParams::tooth_softness`), two naming the wrong crate, one naming a type across
   a dependency edge that points the other way. `stark-ui` still has ~50, untouched:
   they are that crate's, and this ledger is not.
+
+  **Seven was the public half only** — see the entry above. Run with
+  `--document-private-items` the same crate has 61, and this pass closed the nine the
+  module split had introduced.
 - **Two notions of "is there paint here", and it was twelve copies, not four.** The
   [Y](#y-suite-infrastructure) row said `is_red` ×4 at margin 60 against
   `common::red_dominant` at 30. Counting properly: **twelve** copies across nine test

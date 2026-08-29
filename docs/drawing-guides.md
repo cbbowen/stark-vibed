@@ -540,7 +540,7 @@ screen, the stroke that snaps is aimed exactly along that axis, and the rest of
 the drag runs the end out **along** it.
 
 **What a stroke aligns to is a pencil, not a direction.** `AxisPencil` — one
-axis of one guide — is the whole of a perspective guide that `assist.rs` sees,
+axis of one guide — is the whole of a perspective guide that `assist/recognize.rs` sees,
 and the one thing it can answer is a direction *at a point*:
 
 ```

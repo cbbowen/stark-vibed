@@ -4,6 +4,7 @@
 //! ([`FlattenTolerance`]) and the samples that come out ([`IntermediateSample`]).
 
 use super::arc::{fit_arc, point_arc_distance};
+use super::span_count;
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
 use std::ops::Range;
@@ -102,50 +103,6 @@ impl Default for FlattenTolerance {
 /// Max bisections of a single control span: 2^10 segments, the ceiling on what any
 /// one span can cost however pathological its knots.
 const MAX_SUBDIVISION_DEPTH: u32 = 10;
-
-/// How many cubic spans the curve through `control_points` has.
-///
-/// The clamped end condition is expressed by *repeating* each end control point
-/// `degree` times in the conceptual control sequence (the clamped knot view, [`crate::spline`]),
-/// which pins the curve to them. Those repeats are spans too, so `m` control
-/// points give `m + 1` spans rather than the `m - 1` an interpolating spline would
-/// — the two extra sit at the ends, each covering the sixth of the first (last)
-/// leg that the clamp bends through. Fewer than two control points is not a curve:
-/// one is a click, zero is nothing.
-pub fn span_count(control_points: usize) -> usize {
-    // Asked of the knot view rather than restated as `m + 1`. The two agreed, and
-    // `span_form_matches_the_fitted_spline` is what said so — a test comparing two
-    // spellings of one number, which is the shape that only ever *reports* a drift
-    // (§13). `SplineIndex::new` is the same "fewer than two is not a curve" this arm
-    // used to spell for itself.
-    crate::spline::SplineIndex::new(control_points).map_or(0, |ix| ix.num_spans())
-}
-
-/// How many spans `frozen` frozen control points settle, out of a path of `total`.
-///
-/// A span reads at most two control points past its own index, so span `k` is final
-/// once control points `0..=k+1` are — hence `frozen - 1`. Split out from
-/// [`PathFitter::frozen_spans`](super::PathFitter::frozen_spans) because a *received* stroke has the same question to
-/// answer without the fitter that produced it: a peer knows which of its control
-/// points are settled (everything the sender has stopped resending,
-/// §17.5) and needs the same incremental repaint from them.
-///
-/// **Strictly fewer than [`span_count`]`(total)`, for every `frozen <= total`**, and
-/// something downstream depends on it. A frozen head's range ends here, and the stroke
-/// renderer captures cross-piece brush state only for a range that does *not* reach the
-/// end of the stroke (`gpu::stroke::Resume`) — so a head range that could equal the
-/// span count would silently stop carrying the brush forward, and the tail would resume
-/// from a state one range stale. The bound holds because `frozen - 1 <= total - 1` and
-/// `span_count(total) = total + 1` for a curve: the `min` is never the term that binds.
-/// For `total < 2` there is no curve, `span_count` is 0, and no head range exists.
-pub fn frozen_spans_for(frozen: usize, total: usize) -> usize {
-    let out = frozen.saturating_sub(1).min(span_count(total));
-    debug_assert!(
-        out < span_count(total) || span_count(total) == 0,
-        "a frozen head reaching the stroke's end would stop carrying the brush",
-    );
-    out
-}
 
 /// The curve point at the **end** of span `k` — where span `k + 1` picks up. `k`
 /// past the last span gives the stroke's own end point.
@@ -381,7 +338,7 @@ fn turn(a: Vec2, b: Vec2) -> f32 {
 
 /// One cubic span of the path, in Bézier form: position *and* every pen attribute,
 /// since both are B-splines over the same control polygon (see [`span`]).
-pub(super) struct Span {
+struct Span {
     b: [ControlPoint; 4],
 }
 
@@ -390,7 +347,7 @@ impl Span {
     /// all the Bernstein form of the same four Bézier control points, so an
     /// attribute is read exactly where the curve is rather than lerped across the
     /// span.
-    pub(super) fn eval(&self, u: f32) -> IntermediateSample {
+    fn eval(&self, u: f32) -> IntermediateSample {
         let v = 1.0 - u;
         let at = blend(
             &self.b,
@@ -423,16 +380,16 @@ impl Span {
 /// ```
 ///
 /// The clamp at the two ends is not a special case here but a consequence of the
-/// control sequence [`CubicBSpline`] fits against, in which each end control point
+/// control sequence [`CubicBSpline`](crate::spline::CubicBSpline) fits against, in which each end control point
 /// appears `degree` times ([`SplineIndex`](crate::spline::SplineIndex)'s knot view).
 /// Repeating `Q0` collapses `b0`, `b1` and
 /// `b2` onto it, which is exactly what pins the curve to the first control point
 /// and starts it heading down the first leg.
 ///
 /// The attribute channels are B-splines over the same polygon and the same
-/// parameterization ([`PathFitter::fit_channels`]), so the identical conversion
+/// parameterization ([`SplineIndex::fit_channels`](crate::spline::SplineIndex::fit_channels)), so the identical conversion
 /// carries them: one `blend` per Bézier point does position and attributes at once.
-pub(super) fn span(knots: &[ControlPoint], k: usize) -> Span {
+fn span(knots: &[ControlPoint], k: usize) -> Span {
     // The clamped knot view, asked once for the four rows rather than four times. It is
     // `crate::spline`'s and not a copy of it: this file evaluates a *stored* path
     // without the fitter that produced it, which is a reason to have the evaluator here
@@ -471,4 +428,246 @@ fn blend(q: &[ControlPoint; 4], w: [f32; 4]) -> ControlPoint {
         out.time += p.time * w;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::arc::point_segment_distance;
+    use super::*;
+    use crate::spline::CubicBSpline;
+
+    /// One control point at a position. See [`sample`]'s note on the copies.
+    fn knot(x: f32, y: f32) -> ControlPoint {
+        ControlPoint::at(Vec2::new(x, y))
+    }
+
+    /// The load-bearing link between the two halves of this module: the span form
+    /// used to *render* a stored path must be the same curve [`CubicBSpline`](crate::spline::CubicBSpline) **fitted**.
+    /// If these ever diverge, a stroke would be fitted to one curve and drawn as
+    /// another — silently, since both are smooth and pass through roughly the same
+    /// place.
+    #[test]
+    fn span_form_matches_the_fitted_spline() {
+        use nalgebra::{Const, Dyn, OMatrix};
+
+        for m in 2..9usize {
+            let ctrl: Vec<Vec2> = (0..m)
+                .map(|j| {
+                    let t = j as f32;
+                    Vec2::new(t * 13.0 + (t * 2.1).sin() * 4.0, (t * 0.8).cos() * 21.0)
+                })
+                .collect();
+            let knots: Vec<ControlPoint> = ctrl.iter().map(|&p| ControlPoint::at(p)).collect();
+
+            let rows =
+                OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
+                    if d == 0 { ctrl[j].x } else { ctrl[j].y }
+                });
+            let reference: CubicBSpline<'_, 2> = CubicBSpline::new(&rows).unwrap();
+
+            // Not a second spelling of the count any more — `span_count` asks
+            // `SplineIndex` — so this line is a tautology kept for one thing it still
+            // says: that `reference`, built from a matrix rather than from `m`, has the
+            // `m` this loop thinks it has. What the loop below checks is the part that
+            // was never arithmetic: that the Bézier conversion evaluates to the same
+            // curve.
+            assert_eq!(
+                span_count(m),
+                reference.num_spans(),
+                "span count disagrees at m = {m}"
+            );
+            for k in 0..span_count(m) {
+                let sp = span(&knots, k);
+                for i in 0..=8 {
+                    let u = i as f32 / 8.0;
+                    let want = reference.evaluate(k as f32 + u);
+                    let got = sp.eval(u).pos;
+                    let off = (got - Vec2::new(want[0], want[1])).length();
+                    assert!(off < 1e-3, "m={m} span {k} at u={u}: off by {off}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_curve_leaves_its_start_along_the_first_leg() {
+        // The clamped end repeats the first control point three times, so the very
+        // first Bézier point is a triple: the derivative *at* u = 0 is zero, and the
+        // direction only becomes readable just after. What matters is that it heads
+        // down the first leg once it does.
+        let knots = [knot(0.0, 0.0), knot(30.0, 0.0), knot(60.0, 20.0)];
+        let head = span(&knots, 0).eval(0.25);
+        assert!(head.vel.length() > 1e-3, "start derivative {:?}", head.vel);
+        assert!(head.vel.normalize().dot(Vec2::X) > 0.99);
+    }
+
+    #[test]
+    fn flatten_cost_follows_the_polygon_not_the_length() {
+        // The point of adaptive sampling: a straight run costs the same however long
+        // it is. Uniform arc-length sampling spent 500 samples on this one.
+        let short = flatten(&[knot(0.0, 0.0), knot(10.0, 0.0)], FLATTEN_TOLERANCE);
+        let long = flatten(&[knot(0.0, 0.0), knot(1000.0, 0.0)], FLATTEN_TOLERANCE);
+        assert_eq!(short.len(), long.len());
+        // One sample per span plus the start; two control points give three spans
+        // (`span_count`), of which the two clamped ends are geometrically slivers.
+        assert_eq!(long.len(), span_count(2) + 1, "got {} samples", long.len());
+        assert_eq!(long[0].pos, Vec2::ZERO);
+        // The end is the last control point, reached through the Bézier conversion,
+        // so it lands there to rounding rather than bit-exactly.
+        assert!((long.last().unwrap().pos - Vec2::new(1000.0, 0.0)).length() < 1e-3);
+        assert!((long.last().unwrap().dist - 1000.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn flatten_stays_within_the_position_budget() {
+        let knots = [
+            knot(0.0, 0.0),
+            knot(20.0, 30.0),
+            knot(60.0, 30.0),
+            knot(90.0, 0.0),
+            knot(120.0, -40.0),
+        ];
+        let poly = flatten(&knots, FLATTEN_TOLERANCE);
+        // Every point of the true curve is within the budget of the polyline (a
+        // little slack for the midpoint-only test the sampler uses).
+        for i in 0..knots.len() - 1 {
+            let sp = span(&knots, i);
+            for s in 0..=64 {
+                let p = sp.eval(s as f32 / 64.0).pos;
+                let d = poly
+                    .windows(2)
+                    .map(|w| point_segment_distance(p, w[0].pos, w[1].pos))
+                    .fold(f32::INFINITY, f32::min);
+                assert!(
+                    d < FLATTEN_TOLERANCE.position * 2.0,
+                    "curve point {p:?} is {d}px off the polyline",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn flatten_spends_samples_where_the_curve_bends() {
+        // Two strokes of the same length: one gentle, one tight. The tight one
+        // must cost far more samples — the whole point of bounding error rather
+        // than arc length.
+        let gentle = [knot(0.0, 0.0), knot(200.0, 6.0), knot(400.0, 0.0)];
+        let tight = [knot(0.0, 0.0), knot(200.0, 160.0), knot(400.0, 0.0)];
+        let g = flatten(&gentle, FLATTEN_TOLERANCE).len();
+        let t = flatten(&tight, FLATTEN_TOLERANCE).len();
+        assert!(t > g * 3, "gentle {g} samples vs tight {t}");
+        // And both are far under what a uniform 2px walk would have cost (~200).
+        assert!(g < 40, "a gentle 400px stroke took {g} samples");
+    }
+
+    #[test]
+    fn flatten_honours_the_length_cap() {
+        let knots = [knot(0.0, 0.0), knot(300.0, 0.0)];
+        let tol = FlattenTolerance {
+            max_len: 10.0,
+            ..FLATTEN_TOLERANCE
+        };
+        let poly = flatten(&knots, tol);
+        for w in poly.windows(2) {
+            let d = (w[1].pos - w[0].pos).length();
+            assert!(d <= 10.0 + 1e-3, "segment of {d}px exceeds the 10px cap");
+        }
+    }
+
+    #[test]
+    fn flatten_splits_on_a_pressure_ramp() {
+        // A dead-straight stroke whose pressure sweeps 0 → 1: geometry alone would
+        // emit one segment, but radius follows pressure, so it must not.
+        let knots: Vec<ControlPoint> = (0..2)
+            .map(|i| ControlPoint {
+                pressure: i as f32,
+                ..knot(i as f32 * 200.0, 0.0)
+            })
+            .collect();
+        let poly = flatten(&knots, FLATTEN_TOLERANCE);
+        for w in poly.windows(2) {
+            let d = (w[1].pressure - w[0].pressure).abs();
+            assert!(
+                d <= FLATTEN_TOLERANCE.attribute + 1e-4,
+                "pressure step of {d} exceeds the budget",
+            );
+        }
+    }
+
+    /// The marker trim (§6.2): [`flatten_spans_from`] starts the polyline at
+    /// exactly the asked parameter with the accumulator at `dist0`, leaves
+    /// everything behind it out, and still tiles with later ranges — while a
+    /// marker at or before the range is the untrimmed call, so every
+    /// `start == 0` record keeps the floats it always flattened to.
+    #[test]
+    fn flattening_from_a_marker_trims_and_only_trims() {
+        let knots = [
+            knot(0.0, 0.0),
+            knot(20.0, 30.0),
+            knot(60.0, 30.0),
+            knot(90.0, 0.0),
+            knot(120.0, -40.0),
+        ];
+        let all = span_count(knots.len());
+        let whole = flatten(&knots, FLATTEN_TOLERANCE);
+
+        let from = 2.4_f32;
+        let cut = flatten_spans_from(&knots, from, 0..all, 0.0, FLATTEN_TOLERANCE);
+        let first = cut.first().expect("a trimmed polyline still starts");
+        assert_eq!(
+            first.pos,
+            point_at(&knots, from),
+            "the polyline must start at the marker"
+        );
+        assert_eq!(first.dist, 0.0, "the accumulator reads dist0 at the marker");
+        assert!(
+            cut.windows(2).all(|w| w[0].dist <= w[1].dist),
+            "arc must accumulate along the trimmed polyline"
+        );
+        assert_eq!(
+            cut.last().unwrap().pos,
+            whole.last().unwrap().pos,
+            "the tail past the marker is untouched"
+        );
+
+        // A range entirely behind the marker: spans of the curve, none of the
+        // stroke. A marker past the whole curve leaves nothing at all.
+        assert!(flatten_spans_from(&knots, from, 0..2, 0.0, FLATTEN_TOLERANCE).is_empty());
+        assert!(flatten_spans_from(&knots, all as f32, 0..all, 0.0, FLATTEN_TOLERANCE).is_empty());
+
+        // Ranges still tile around a marker mid-range: the cut point is shared.
+        let head = flatten_spans_from(&knots, from, 0..4, 0.0, FLATTEN_TOLERANCE);
+        let tail = flatten_spans_from(
+            &knots,
+            from,
+            4..all,
+            head.last().unwrap().dist,
+            FLATTEN_TOLERANCE,
+        );
+        let joined: Vec<IntermediateSample> =
+            head.iter().chain(tail[1..].iter()).copied().collect();
+        assert_eq!(
+            joined, cut,
+            "trimmed head + tail must equal the trimmed whole"
+        );
+    }
+
+    #[test]
+    fn arc_length_accumulates_along_the_polyline() {
+        let knots = [knot(0.0, 0.0), knot(40.0, 40.0), knot(80.0, 0.0)];
+        let poly = flatten(&knots, FLATTEN_TOLERANCE);
+        assert_eq!(poly[0].dist, 0.0);
+        for w in poly.windows(2) {
+            let step = (w[1].pos - w[0].pos).length();
+            assert!((w[1].dist - w[0].dist - step).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn relaxing_the_budget_costs_fewer_samples() {
+        let knots = [knot(0.0, 0.0), knot(60.0, 80.0), knot(160.0, 0.0)];
+        let fine = flatten(&knots, FLATTEN_TOLERANCE).len();
+        let coarse = flatten(&knots, FLATTEN_TOLERANCE.relaxed(8.0)).len();
+        assert!(coarse < fine, "relaxed {coarse} vs fine {fine}");
+    }
 }

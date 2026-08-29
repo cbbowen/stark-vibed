@@ -2,13 +2,8 @@
 //!
 //! A streaming least-squares fit — see the module note in [`super`] for where this
 //! sits between the three.
-//!
-//! `pub(super)`, fields and all, and that is what the split cost here: the pipeline
-//! tests live in `super` (see the module note there) and several of them assert on the
-//! *window* rather than on the curve, which is the only way to say that thinning the
-//! window did not cost the fit its accuracy. Nothing outside `path` can name it.
 
-use super::flatten::{frozen_spans_for, span_count};
+use super::{frozen_spans_for, span_count};
 use crate::command::InputSample;
 use crate::spline::{CubicBSpline, Observations};
 use nalgebra::{Const, Dyn, OMatrix};
@@ -23,7 +18,7 @@ use stark_model::path::ControlPoint;
 /// live stroke wobbling along its whole length — and it caps the solve at a handful
 /// of unknowns however long the stroke gets. Too short and the curve cannot round a
 /// corner before the corner is committed.
-pub(super) const FREE_CONTROL_POINTS: usize = 3;
+const FREE_CONTROL_POINTS: usize = 3;
 
 /// What a control point has to earn, in **mean** squared error over the samples in
 /// the window, before the fit will take one on — measured in units of the caller's
@@ -106,7 +101,7 @@ pub fn clamp_tolerance(tolerance: f32) -> f32 {
 }
 
 /// Curvature penalty on the control polygon, as a fraction of the data's own pull
-/// (see [`CubicBSpline::fit_channels`]).
+/// (see [`SplineIndex::fit_channels`](crate::spline::SplineIndex::fit_channels)).
 ///
 /// Least squares charges the curve for being far from a *point*, never for where it
 /// goes when no point is near — so a stretch the data does not constrain is free to
@@ -117,7 +112,7 @@ pub fn clamp_tolerance(tolerance: f32) -> f32 {
 const SMOOTHING: f32 = 0.05;
 
 /// Per-point channels carried alongside the geometry: pressure, tilt x/y, time.
-pub(super) const CHANNELS: usize = 4;
+const CHANNELS: usize = 4;
 
 /// Which of [`CHANNELS`] is the clock. The odd one out: the other three are pen state,
 /// which the tip's shape follows, while this one is only a stamp on the report — which
@@ -221,15 +216,11 @@ pub struct PathFitter {
 
 /// One accepted report: where it is, what the pen said, and how far along it sits.
 ///
-/// `pub(super)`, fields and all, and that is what the split cost here: the pipeline
-/// tests live in [`super`] (see the module note there) and several of them assert on
-/// the *window* rather than on the curve, which is the only way to say that thinning
-/// the window did not cost the fit its accuracy. Nothing outside `path` can name it.
 #[derive(Copy, Clone, Debug)]
-pub(super) struct Accepted {
-    pub(super) pos: Vec2,
-    pub(super) channels: [f32; CHANNELS],
-    pub(super) arc: f32,
+struct Accepted {
+    pos: Vec2,
+    channels: [f32; CHANNELS],
+    arc: f32,
 }
 
 impl std::fmt::Debug for PathFitter {
@@ -974,7 +965,7 @@ fn arc_weights(pts: &[Accepted], idx: &[usize]) -> Vec<f32> {
 /// back most of the win on the dense strokes that were quadratic. The accuracy this
 /// trades is measured rather than argued and it is under 0.1%
 /// (`thinning_the_window_does_not_cost_the_fit_its_accuracy`).
-pub(super) const MAX_WINDOW_SAMPLES: usize = 64;
+const MAX_WINDOW_SAMPLES: usize = 64;
 
 /// The reports `solve` minimizes over: `pts[lo..]`, thinned to at most
 /// [`MAX_WINDOW_SAMPLES`] chosen evenly along the **arc** they cover.
@@ -988,7 +979,7 @@ pub(super) const MAX_WINDOW_SAMPLES: usize = 64;
 /// Deterministic, and a pure function of the accepted reports — so a replay, a peer
 /// and a golden all decimate identically, which is what keeps this a performance
 /// change rather than a wire-format one (§1).
-pub(super) fn window_indices(pts: &[Accepted], lo: usize) -> Vec<usize> {
+fn window_indices(pts: &[Accepted], lo: usize) -> Vec<usize> {
     let n = pts.len();
     if lo >= n {
         return Vec::new();
@@ -1145,13 +1136,411 @@ pub fn fit_with_tolerance(samples: &[InputSample], tolerance: f32) -> Vec<Contro
     f.path()
 }
 
-pub(super) fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
-    let ab = b - a;
-    let len2 = ab.length_squared();
-    let t = if len2 < 1e-12 {
-        0.0
-    } else {
-        ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
-    };
-    (p - (a + ab * t)).length()
+#[cfg(test)]
+mod tests {
+    use super::super::arc::point_segment_distance;
+    use super::*;
+    use crate::path::{FLATTEN_TOLERANCE, flatten};
+
+    /// Largest distance (canvas px) from any input sample to the fitted curve.
+    fn fit_error(samples: &[InputSample]) -> f32 {
+        let poly = flatten(&fit(samples), FLATTEN_TOLERANCE);
+        samples
+            .iter()
+            .map(|s| {
+                if poly.len() < 2 {
+                    return (s.pos - poly[0].pos).length();
+                }
+                poly.windows(2)
+                    .map(|w| point_segment_distance(s.pos, w[0].pos, w[1].pos))
+                    .fold(f32::INFINITY, f32::min)
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// One pointer report at a position, with everything else at rest. The root's test
+    /// module has a copy, and so does `flatten`'s: two lines each against making a test
+    /// builder visible across three module boundaries.
+    fn sample(x: f32, y: f32) -> InputSample {
+        InputSample::at(Vec2::new(x, y))
+    }
+
+    /// `n` accepted reports `step` apart along the x axis — the shape
+    /// [`window_indices`] reads, without a fitter around it.
+    fn accepted(n: usize, step: f32) -> Vec<Accepted> {
+        (0..n)
+            .map(|i| Accepted {
+                pos: Vec2::new(i as f32 * step, 0.0),
+                channels: [0.0; CHANNELS],
+                arc: i as f32 * step,
+            })
+            .collect()
+    }
+
+    /// Feed samples one at a time, snapshotting the fit after every push.
+    fn fit_incrementally(samples: &[InputSample]) -> (PathFitter, Vec<(Vec<ControlPoint>, usize)>) {
+        let mut f = PathFitter::new();
+        let mut snaps = Vec::new();
+        for s in samples {
+            f.push(*s);
+            snaps.push((f.path(), f.frozen_spans()));
+        }
+        f.finish();
+        (f, snaps)
+    }
+
+    /// **Under budget the selection is the identity**, which is what makes this a
+    /// change to the pathological cases only. Ordinary painting keeps every report the
+    /// window admitted, `arc_weights` reduces to the rule it always was, and the fitted
+    /// curve is therefore bit-identical to what it was before the bound existed — so
+    /// no golden moves and no recorded stroke re-fits.
+    #[test]
+    fn a_window_under_budget_keeps_every_report() {
+        let pts = accepted(MAX_WINDOW_SAMPLES, 1.0);
+        for lo in [0, 1, 7, MAX_WINDOW_SAMPLES - 1] {
+            assert_eq!(
+                window_indices(&pts, lo),
+                (lo..pts.len()).collect::<Vec<_>>(),
+                "a window of {} was thinned",
+                pts.len() - lo,
+            );
+        }
+    }
+
+    /// Past the budget the window stops growing — the whole point. Both ends survive
+    /// whatever the budget: the leading report anchors against the frozen prefix, and
+    /// the trailing one is where the pen actually is.
+    #[test]
+    fn a_dense_window_is_capped_and_keeps_both_ends() {
+        for n in [MAX_WINDOW_SAMPLES + 1, 500, 20_000] {
+            let pts = accepted(n, 0.05);
+            let idx = window_indices(&pts, 0);
+            assert!(
+                idx.len() <= MAX_WINDOW_SAMPLES + 1,
+                "{n} reports produced a window of {}",
+                idx.len(),
+            );
+            assert_eq!(idx.first().copied(), Some(0), "the window lost its head");
+            assert_eq!(idx.last().copied(), Some(n - 1), "the window lost the pen");
+            assert!(
+                idx.windows(2).all(|w| w[0] < w[1]),
+                "the survivors are out of order",
+            );
+        }
+    }
+
+    /// The survivors are spread along the **arc**, not along the report index — so a
+    /// hand that paused cannot spend the whole budget on the pause.
+    ///
+    /// Half the reports here sit on one point and the other half cover the distance;
+    /// an index-even rule would put half the window in the dwell.
+    #[test]
+    fn a_dwell_does_not_swallow_the_window() {
+        let mut pts = accepted(200, 0.0);
+        for (i, p) in pts.iter_mut().enumerate().skip(100) {
+            let d = (i - 99) as f32;
+            p.pos = Vec2::new(d, 0.0);
+            p.arc = d;
+        }
+        let idx = window_indices(&pts, 0);
+        let in_dwell = idx.iter().filter(|&&i| i < 100).count();
+        assert!(
+            in_dwell <= 2,
+            "{in_dwell} of {} survivors were spent on a dwell",
+            idx.len(),
+        );
+    }
+
+    /// **A non-finite report is dropped, not fitted** — and the stroke that comes out
+    /// is the one its finite reports describe, exactly as if the bad report had never
+    /// arrived.
+    ///
+    /// Both halves matter and the second is the sharper claim. Merely not panicking
+    /// would be satisfied by a fitter that swallowed the whole stroke; what has to
+    /// hold is that one bad report costs one report.
+    ///
+    /// The panic this rules out was real and three subsystems downstream: `arc`
+    /// accumulates the step to the bad sample, every curve parameter is derived from
+    /// `arc`, so `solve_window`'s normal equations go NaN — and they are then singular at
+    /// every ridge, which its solve reports with `unreachable!` because for
+    /// *admissible* input it genuinely cannot happen.
+    ///
+    /// **Finite is not admissible**, which is why the last two rows are finite. A
+    /// position a whole `f32` range from its neighbour makes `arc` accumulate an
+    /// infinite step and every parameter after it a NaN, by subtraction rather than
+    /// by anything the report itself carries — so a gate that asked only
+    /// `is_finite` let the same panic through the same door.
+    #[test]
+    fn an_inadmissible_report_is_dropped_rather_than_fitted() {
+        let clean: Vec<InputSample> = (0..24)
+            .map(|i| {
+                let t = i as f32;
+                sample(t * 7.0, (t * 0.4).sin() * 30.0)
+            })
+            .collect();
+
+        /// One way a report can be unusable: a name for the failure message, and the
+        /// channel it poisons.
+        type Poison = (&'static str, fn(InputSample) -> InputSample);
+
+        // Every channel a report has, and every way one can be unusable.
+        let poisons: [Poison; 7] = [
+            ("pos.x", |mut s| {
+                s.pos.x = f32::NAN;
+                s
+            }),
+            // Finite, and past the last tile an `i32` can address — the difference
+            // between this gate and a plain `is_finite`.
+            ("pos.x beyond the grid", |mut s| {
+                s.pos.x = 1.0e30;
+                s
+            }),
+            // The boundary itself, which `TileRect::covering` refuses: `COORD_LIMIT`
+            // is `2³¹` tiles out, and `2³¹` is one past `i32::MAX`.
+            ("pos.y at the limit", |mut s| {
+                s.pos.y = crate::command::COORD_LIMIT;
+                s
+            }),
+            ("pos.y", |mut s| {
+                s.pos.y = f32::INFINITY;
+                s
+            }),
+            ("pressure", |mut s| {
+                s.pressure = f32::NAN;
+                s
+            }),
+            ("tilt", |mut s| {
+                s.tilt = Vec2::splat(f32::NAN);
+                s
+            }),
+            ("time", |mut s| {
+                s.time = f64::NAN;
+                s
+            }),
+        ];
+
+        let reference = {
+            let mut f = PathFitter::new();
+            for s in &clean {
+                f.push(*s);
+            }
+            f.finish();
+            f.path()
+        };
+
+        for (name, poison) in poisons {
+            // Injected mid-stroke, where the fitter has state to corrupt, and again
+            // as the very first report, which is the case that seeds `t0` and the
+            // arc origin.
+            for at in [0usize, 12] {
+                let mut f = PathFitter::new();
+                for (i, s) in clean.iter().enumerate() {
+                    if i == at {
+                        f.push(poison(*s));
+                    }
+                    f.push(*s);
+                }
+                f.finish();
+                let got = f.path();
+                assert_eq!(
+                    got.len(),
+                    reference.len(),
+                    "{name} at {at} changed the fitted path's shape",
+                );
+                for (a, b) in got.iter().zip(&reference) {
+                    assert!(
+                        (a.pos - b.pos).length() < 1e-4
+                            && a.pressure.is_finite()
+                            && a.tilt.is_finite(),
+                        "{name} at {at} moved a control point: {a:?} vs {b:?}",
+                    );
+                }
+            }
+        }
+    }
+
+    /// The fit may never ask for more control points than the samples can hold down.
+    ///
+    /// A fast pen reports tens of pixels apart, and a density policy that reads the
+    /// input's curvature will happily ask for detail the data cannot support;
+    /// granting it leaves the polygon under-determined and the curve wanders between
+    /// the samples it passes through. The bound is structural rather than an explicit
+    /// cap: a control point is only taken on if it *measurably* reduces the error, and
+    /// one the data cannot see does not.
+    #[test]
+    fn the_fit_never_outruns_its_data() {
+        for step in [4.0f32, 20.0, 50.0] {
+            let n = (1500.0 / step) as usize;
+            let pts: Vec<InputSample> = (0..n)
+                .map(|i| {
+                    let t = i as f32 * step;
+                    sample(t, (t * 0.004).sin() * 120.0)
+                })
+                .collect();
+            let m = fit(&pts).len();
+            assert!(
+                m <= pts.len(),
+                "step {step}: {m} control points for {n} samples"
+            );
+            let err = fit_error(&pts);
+            assert!(err < 16.0, "step {step}: err {err}");
+        }
+    }
+
+    /// While a stroke is live, exactly `FREE_CONTROL_POINTS` of the polygon are
+    /// still solvable — never zero, and never the whole thing.
+    ///
+    /// Both halves matter. Freezing that outruns the pointer leaves nothing able to
+    /// respond to what is drawn next, so the stroke stops following the pen; freezing
+    /// that never happens leaves the whole polygon re-solving on every report, which
+    /// is what makes a live stroke wobble along its length. A fixed-size window is
+    /// both at once, which is why growth and freezing are the same decision here.
+    #[test]
+    fn a_live_stroke_keeps_a_fixed_solvable_window() {
+        for (name, src) in [
+            ("spiral", stark_testdata::SPIRAL_STROKE),
+            ("big-C", stark_testdata::BIG_C_STROKE),
+            ("fast", stark_testdata::FAST_STROKE),
+        ] {
+            let pts: Vec<InputSample> = src.iter().map(|&[x, y]| sample(x, y)).collect();
+            let mut f = PathFitter::new();
+            let mut ever_froze = false;
+            for p in &pts {
+                f.push(*p);
+                let m = f.path().len();
+                if m > FREE_CONTROL_POINTS + 1 {
+                    let free = m - f.frozen_spans().max(1);
+                    assert!(
+                        free >= FREE_CONTROL_POINTS,
+                        "{name}: only {free} free of {m}"
+                    );
+                    ever_froze |= f.frozen_spans() > 0;
+                }
+            }
+            assert!(ever_froze, "{name}: nothing ever froze");
+        }
+    }
+
+    #[test]
+    fn fit_collapses_pixel_staircase() {
+        // A diagonal drawn as 1-px right / 1-px up steps.
+        let mut stair = Vec::new();
+        for i in 0..10 {
+            stair.push(sample(i as f32, i as f32));
+            stair.push(sample(i as f32 + 1.0, i as f32));
+        }
+        let fitted = fit(&stair);
+        // The staircase hugs the diagonal within ~1px, so it collapses sharply.
+        // The substantive claim is the error bound below — that the curve splits the
+        // steps rather than following them. The count is a proxy and a loose one: six
+        // control points over 10px is denser than the shape needs, but they all sit
+        // on the diagonal.
+        assert!(
+            fitted.len() <= 8,
+            "staircase should collapse, got {} points",
+            fitted.len()
+        );
+        assert!(fit_error(&stair) < 1.5, "err {}", fit_error(&stair));
+    }
+
+    /// The point of letting the caller state the tolerance: one gesture, drawn at
+    /// different zoom levels, fits to one curve.
+    ///
+    /// Zoom scales canvas coordinates and the input's resolution *in* them by the
+    /// same factor, so a declared tolerance makes the fit scale-invariant — the error
+    /// price goes as its square and the spacing floor as its first power, which is
+    /// exactly how a uniform scaling moves the two quantities they are each compared
+    /// against. Priced in canvas px instead, the same stroke bought control points to
+    /// trace its own jitter zoomed in and lost real detail zoomed out.
+    #[test]
+    fn a_declared_tolerance_makes_the_fit_zoom_invariant() {
+        let screen: Vec<InputSample> = stark_testdata::BIG_C_STROKE
+            .iter()
+            .map(|&[x, y]| sample(x, y))
+            .collect();
+        let reference = fit_with_tolerance(&screen, DEFAULT_TOLERANCE);
+        // Powers of two, so scaling the input is exact in f32 and any difference
+        // that shows up is the growth rule's and not the arithmetic's.
+        for zoom in [0.25f32, 4.0, 16.0] {
+            let k = 1.0 / zoom;
+            let pts: Vec<InputSample> = screen
+                .iter()
+                .map(|s| InputSample {
+                    pos: s.pos * k,
+                    ..*s
+                })
+                .collect();
+            let got = fit_with_tolerance(&pts, DEFAULT_TOLERANCE * k);
+            assert_eq!(
+                got.len(),
+                reference.len(),
+                "zoom {zoom}: {} control points against {}",
+                got.len(),
+                reference.len()
+            );
+            for (i, (a, b)) in got.iter().zip(&reference).enumerate() {
+                let d = (a.pos - b.pos * k).length();
+                assert!(d < 1e-3 * k, "zoom {zoom}: control point {i} moved {d}");
+            }
+        }
+    }
+
+    /// The tolerance arrives from a frontend, so it is guarded rather than trusted.
+    /// Zero or negative would make a control point free of charge and the spacing
+    /// floor zero; huge would leave a stroke never growing the polygon, never
+    /// freezing, and re-solving against every sample it ever took. Held to the usable
+    /// range, each of these still fits a well-formed polygon bounded by its data (one
+    /// growth per report, from a polygon that starts at two).
+    #[test]
+    fn a_degenerate_tolerance_is_held_to_the_usable_range() {
+        let pts: Vec<InputSample> = (0..48).map(|i| sample(i as f32 * 3.0, 0.0)).collect();
+        for t in [0.0, -5.0, f32::NAN, f32::INFINITY, 1e9] {
+            let m = fit_with_tolerance(&pts, t).len();
+            assert!(
+                (2..=pts.len() + 1).contains(&m),
+                "tolerance {t}: {m} control points"
+            );
+        }
+        // A number that is not one falls back to the default rather than to an end of
+        // the range — there is nothing to read from it in either direction.
+        for t in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(fit_with_tolerance(&pts, t), fit(&pts), "tolerance {t}");
+        }
+    }
+
+    #[test]
+    fn a_straight_stroke_stays_cheap_however_long_it_is() {
+        // The arc-length floor is what lets freezing advance on a stroke the fit is
+        // already perfect on, so a straight line does cost control points — but at
+        // the floor's rate, not the refinement's.
+        let long: Vec<InputSample> = (0..400).map(|i| sample(i as f32 * 7.5, 0.0)).collect();
+        let fitted = fit(&long);
+        // **Known weakness**, and the clearest statement of it: a dead-straight
+        // stroke should cost a handful of control points and costs ~400, one per
+        // sample. The growth rule is answering honestly — the arc-length guess is not
+        // how a clamped B-spline is parameterized, so even exact input leaves a
+        // residual, and a control point does reduce it. The fix is a correct
+        // arc-to-parameter map, not a different price.
+        assert!(
+            fitted.len() <= long.len(),
+            "more control points than samples"
+        );
+        assert!(
+            fit_error(&long) < 0.5,
+            "a straight line should still be straight"
+        );
+    }
+
+    #[test]
+    fn fit_streams_and_batches_alike() {
+        let pts: Vec<InputSample> = (0..40)
+            .map(|i| {
+                let t = i as f32 * 0.2;
+                sample(t * 10.0, (t * 1.3).sin() * 25.0)
+            })
+            .collect();
+        let (mut streamed, _) = fit_incrementally(&pts);
+        streamed.finish();
+        assert_eq!(streamed.path(), fit(&pts));
+    }
 }

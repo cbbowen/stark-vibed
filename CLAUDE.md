@@ -111,6 +111,11 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace   # the suite (`.config/nextest.toml`; see below)
 cargo test --workspace --doc    # doctests, which nextest cannot run (see below)
+# doc links. `--document-private-items` is not optional: rustdoc does not render a
+# private module at all, and this crate is almost entirely private modules — without
+# the flag it checks `pub` items only and reports a fraction of what is broken.
+RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
+  cargo doc --workspace --no-deps --document-private-items
 cargo check -p stark-ui --target wasm32-unknown-unknown
 dx serve --web -p stark-ui                  # run it (needs a WebGPU browser)
 cargo bench -p stark-engine --bench stroke    # criterion; the dynamics perf gate

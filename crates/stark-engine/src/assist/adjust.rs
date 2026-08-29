@@ -130,3 +130,90 @@ impl AssistShape {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A line's parts, or a panic naming what came back instead. The root's test module
+    /// has a copy: seven of its assertions want it and one of this file's does, and one
+    /// four-line `match` in each place is cheaper than making it visible across a
+    /// module boundary for a single caller.
+    fn as_line(shape: AssistShape) -> (Vec2, Vec2, bool) {
+        match shape {
+            AssistShape::Line { a, b, on_axis } => (a, b, on_axis),
+            other => panic!("adjusted into {other:?}, not a line"),
+        }
+    }
+
+    /// Adjustment is always measured from the shape as recognized, so the same total
+    /// travel means the same thing however it is broken up.
+    #[test]
+    fn adjustment_does_not_accumulate() {
+        let shape = AssistShape::Ellipse {
+            center: Vec2::ZERO,
+            radii: Vec2::new(100.0, 50.0),
+            angle: 0.0,
+            phase: 0.0,
+            winding: 1.0,
+            plane: None,
+        };
+        let grip = shape.grip();
+        let target = Vec2::new(0.0, 140.0);
+        let direct = shape.adjust(grip, target);
+        let stepped = (1..=8).fold(shape, |_, i| {
+            shape.adjust(grip, grip.lerp(target, i as f32 / 8.0))
+        });
+        assert_eq!(direct, stepped);
+    }
+
+    #[test]
+    fn a_line_adjustment_moves_the_held_end() {
+        let shape = AssistShape::Line {
+            a: Vec2::ZERO,
+            b: Vec2::new(100.0, 0.0),
+            on_axis: false,
+        };
+        let moved = shape.adjust(shape.grip(), Vec2::new(100.0, 60.0));
+        assert_eq!(
+            moved,
+            AssistShape::Line {
+                a: Vec2::ZERO,
+                b: Vec2::new(100.0, 60.0),
+                on_axis: false,
+            }
+        );
+    }
+
+    /// Steering a line that took an axis runs it out along that axis: the pointer's
+    /// travel across the line is dropped, and what it means is where along the line the
+    /// end lands. An alignment a sideways nudge could break would not be one.
+    #[test]
+    fn an_axis_line_is_steered_along_its_axis() {
+        let (a, b) = (Vec2::new(10.0, 10.0), Vec2::new(210.0, 110.0));
+        let shape = AssistShape::Line {
+            a,
+            b,
+            on_axis: true,
+        };
+        let u = (b - a).normalize();
+        // A pointer that has wandered a long way off the line, and some way along it.
+        let target = b + u * 90.0 + u.perp() * 140.0;
+        let (a2, b2, on) = as_line(shape.adjust(shape.grip(), target));
+        assert_eq!((a2, on), (a, true));
+        assert!(
+            (b2 - a).perp_dot(u).abs() < 1e-3,
+            "the end left the axis, at {b2}"
+        );
+        assert!(
+            ((b2 - a).dot(u) - ((b - a).length() + 90.0)).abs() < 1e-3,
+            "the end did not run out along the axis, at {b2}"
+        );
+
+        // And, like every adjustment, it is a function of the total travel (§16.6).
+        let stepped = (1..=8).fold(shape, |_, i| {
+            shape.adjust(shape.grip(), shape.grip().lerp(target, i as f32 / 8.0))
+        });
+        assert_eq!(shape.adjust(shape.grip(), target), stepped);
+    }
+}

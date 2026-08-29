@@ -120,7 +120,11 @@ stark/
 │   │   │   │   ├── transform.rs # the parcel / combine / mask passes (§16.5)
 │   │   │   │   ├── pigment.rs   # the Mixbox LUT (§6.7)
 │   │   │   │   └── readback.rs  # GPU→CPU texture readback (export, goldens)
-│   │   │   ├── path.rs         # the streaming B-spline fit + adaptive flatten (§6.2)
+│   │   │   ├── path/           # fit.rs, flatten.rs, arc.rs — three subjects the one
+│   │   │   │                   # file's own banners already named (§6.2). The root
+│   │   │   │                   # keeps what belongs to none of them: the span
+│   │   │   │                   # arithmetic both ends ask in terms of
+│   │   │   ├── assist/         # recognize.rs, adjust.rs, realize.rs (§6.9), likewise
 │   │   │   └── spline.rs       # clamped cardinal cubic B-spline + least-squares
 │   │   └── tests/
 │   │       └── golden/         # scripted command sequences + reference PNGs (§9)

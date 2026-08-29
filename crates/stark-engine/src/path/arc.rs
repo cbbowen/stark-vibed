@@ -1,9 +1,10 @@
 //! **Arcs**: what a flattened edge actually stands for (§6.2).
 //!
-//! [`flatten`] replaces a piece of curve with one edge, and the renderer sweeps that
-//! edge as a **circular arc** rather than a chord (§6.2). So this is where
-//! the arc is defined, and the flattening budget below is measured against it — the
-//! two have to be the same primitive or the budget is describing geometry nobody draws.
+//! [`super::flatten`] replaces a piece of curve with one edge, and the renderer sweeps
+//! that edge as a **circular arc** rather than a chord (§6.2). So this is where the arc
+//! is defined, and [`FlattenTolerance`](super::FlattenTolerance) is measured against it
+//! — the two have to be the same primitive, or the budget is describing geometry
+//! nobody draws.
 //!
 //! Which matters twice over. A chord's error is first order in the turn and its outline
 //! carries a curvature *impulse* at every joint — a round join of radius `r` spliced
@@ -13,7 +14,6 @@
 //! Measuring against the arc is therefore what lets segments grow: the same declared
 //! error now buys a much longer edge, and buys it without the facets back.
 
-use super::fit::point_segment_distance;
 use stark_model::geom::Vec2;
 
 /// The least sagitta (canvas px) an arc has to buy before an edge is bent at all.
@@ -23,8 +23,8 @@ use stark_model::geom::Vec2;
 const MIN_SAGITTA: f32 = 0.01;
 
 /// Cap on `sin(θ/2)` for the turn `θ` one edge may bend through — ~23°, far past the
-/// ~5.7° [`FLATTEN_TOLERANCE`]'s `angle` bound admits. A backstop on a pathological
-/// edge (a cusp, or a span that bottomed out [`MAX_SUBDIVISION_DEPTH`]) rather than a
+/// ~5.7° [`FLATTEN_TOLERANCE`](super::FLATTEN_TOLERANCE)'s `angle` bound admits. A backstop on a pathological
+/// edge (a cusp, or a span that bottomed out `flatten`'s subdivision cap) rather than a
 /// quality knob: past it the series below stop being the right approximation, and so
 /// does the annular sector the shaders rasterize a curved sweep as.
 const MAX_HALF_TURN_SIN: f32 = 0.2;
@@ -46,12 +46,17 @@ pub struct Arc {
 /// [`taper_profile`](crate::gpu::stroke) is one: these decide where segments are cut
 /// and so which pixels are stored, and replay, goldens and peers all have to agree on
 /// them to the last bit — which the transcendental library functions are not specified
-/// to. Each is a truncated Maclaurin series, accurate to better than 1e-7 relative
-/// over the range its caller is guarded to ([`MAX_HALF_TURN_SIN`]), well inside the
-/// f32 the result lands in.
+/// to. Each is a truncated Maclaurin series, accurate **to within an f32 ulp** over the
+/// range its caller is guarded to ([`MAX_HALF_TURN_SIN`]): measured against an f64
+/// reference, worst relative error 8.1e-8 for `sin`, 1.2e-7 for `versin` and 1.3e-7 for
+/// `asin/u`, against an `f32::EPSILON` of 1.19e-7. (This said "better than 1e-7" until
+/// the test below measured it; two of the three are a shade past that, and an ulp is
+/// both the true bound and the one that means something.)
 ///
-/// `versin` is `1 − cos(x)` evaluated *directly* rather than by subtraction: it is
-/// used where `x` is small and the difference would cancel away most of its digits.
+/// `versin` is `1 − cos(x)` evaluated *directly* rather than by subtraction, and that
+/// is not a nicety: over this same range the subtraction's relative error reaches
+/// **100%**, because near zero `cos(x)` rounds to exactly 1 and the difference cancels
+/// every digit it had. The series keeps them all.
 fn sin_small(x: f32) -> f32 {
     let x2 = x * x;
     x * (1.0 - x2 * (1.0 / 6.0 - x2 * (1.0 / 120.0 - x2 / 5040.0)))
@@ -159,7 +164,7 @@ pub fn arc_at(start: Vec2, dir: Vec2, curvature: f32, s: f32) -> (Vec2, Vec2) {
 }
 
 /// Distance from `p` to the arc leaving `start` — radially, which is the true distance
-/// for a point near the arc and all [`within`](super::flatten::within) needs it to be.
+/// for a point near the arc and all `flatten::within` needs it to be.
 pub(super) fn point_arc_distance(p: Vec2, start: Vec2, arc: &Arc) -> f32 {
     if arc.curvature == 0.0 {
         return point_segment_distance(p, start, start + arc.dir * arc.length);
@@ -168,4 +173,133 @@ pub(super) fn point_arc_distance(p: Vec2, start: Vec2, arc: &Arc) -> f32 {
     let r = 1.0 / arc.curvature;
     let centre = start + perp * r;
     ((p - centre).length() - r.abs()).abs()
+}
+
+pub(super) fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    let t = if len2 < 1e-12 {
+        0.0
+    } else {
+        ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+    };
+    (p - (a + ab * t)).length()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The three series against an **f64** reference, over the whole range their
+    /// callers are guarded to.
+    ///
+    /// **This file had no test of its own** until it became a file: everything here was
+    /// reached only through `flatten`, so what these polynomials are *for* — being
+    /// bit-reproducible where `f32::sin` is not specified to be — was covered only by
+    /// whichever pixels happened to move. The claim above is a numerical one and this is
+    /// where it is checked; writing it is what corrected the claim, which said 1e-7
+    /// where two of the three are a shade past it.
+    ///
+    /// The reference is f64 deliberately. Held against the *f32* library functions this
+    /// test would be measuring their error and not the series' — which is the whole
+    /// point of [`versin_small`], and is what the test below states outright.
+    #[test]
+    fn the_series_stay_within_an_f32_ulp() {
+        // A shade over `f32::EPSILON` (1.19e-7), which is what the measurements sit at.
+        const ULP: f64 = 1.5e-7;
+        let half_max = MAX_HALF_TURN_SIN.asin();
+        for i in 0..=2000 {
+            let x = -half_max + (i as f32 / 1000.0) * half_max;
+            let xd = x as f64;
+            let want = xd.sin();
+            if want != 0.0 {
+                let got = sin_small(x) as f64;
+                assert!(
+                    ((got - want) / want).abs() <= ULP,
+                    "sin_small({x}) = {got}, sin = {want}"
+                );
+            }
+            let want = 1.0 - xd.cos();
+            if want > 1e-12 {
+                let got = versin_small(x) as f64;
+                assert!(
+                    ((got - want) / want).abs() <= ULP,
+                    "versin_small({x}) = {got}, 1 - cos = {want}"
+                );
+            }
+            let u = -MAX_HALF_TURN_SIN + (i as f32 / 1000.0) * MAX_HALF_TURN_SIN;
+            let ud = u as f64;
+            let want = if ud == 0.0 { 1.0 } else { ud.asin() / ud };
+            let got = asin_over_x(u) as f64;
+            assert!(
+                ((got - want) / want).abs() <= ULP,
+                "asin_over_x({u}) = {got}, asin/u = {want}"
+            );
+        }
+    }
+
+    /// `versin_small` is `1 − cos` taken **directly**, and this is the whole reason it
+    /// exists: over the range above, the subtraction spent in f32 reaches a relative
+    /// error of 1.0 — every digit gone — where the series stays within an ulp.
+    #[test]
+    fn the_versine_keeps_digits_the_subtraction_loses() {
+        let half_max = MAX_HALF_TURN_SIN.asin();
+        let mut worst_naive = 0.0f64;
+        let mut worst_series = 0.0f64;
+        for i in 0..=2000 {
+            let x = -half_max + (i as f32 / 1000.0) * half_max;
+            let want = 1.0 - (x as f64).cos();
+            if want <= 1e-12 {
+                continue;
+            }
+            worst_naive = worst_naive.max((((1.0 - x.cos()) as f64 - want) / want).abs());
+            worst_series = worst_series.max(((versin_small(x) as f64 - want) / want).abs());
+        }
+        assert!(
+            worst_naive > 0.5,
+            "the subtraction was expected to cancel away most of its digits, worst {worst_naive}"
+        );
+        assert!(
+            worst_series < 2e-7,
+            "the series was expected to hold an ulp, worst {worst_series}"
+        );
+    }
+
+    /// An arc that leaves along the chord is straight, and one that leaves off it bends
+    /// through the far end — the two ends of what [`fit_arc`] answers.
+    #[test]
+    fn an_arc_leaves_along_the_tangent_and_reaches_the_far_end() {
+        let v = Vec2::new(40.0, 0.0);
+        let straight = fit_arc(Vec2::new(1.0, 0.0), v, 1.0);
+        assert_eq!(
+            straight.curvature, 0.0,
+            "a tangent along the chord is straight"
+        );
+        assert!((straight.length - 40.0).abs() < 1e-4);
+
+        let bent = fit_arc(Vec2::new(1.0, 0.0).rotate(Vec2::from_angle(0.1)), v, 1.0);
+        assert!(bent.curvature != 0.0, "a tangent off the chord bends");
+        let (end, _) = arc_at(Vec2::ZERO, bent.dir, bent.curvature, bent.length);
+        assert!(
+            (end - v).length() < 1e-3,
+            "the arc missed the far end by {}",
+            (end - v).length()
+        );
+    }
+
+    /// The sagitta an arc buys, against the geometry it is defined by: for a circle of
+    /// radius `r` turning through `θ`, the rise off the chord is `r(1 − cos(θ/2))`.
+    #[test]
+    fn the_sagitta_is_the_rise_off_the_chord() {
+        for &(curvature, length) in &[(0.02_f32, 30.0_f32), (0.005, 80.0), (-0.02, 30.0)] {
+            let r = 1.0 / curvature.abs();
+            let want = r * (1.0 - (0.5 * curvature * length).cos());
+            let got = arc_sagitta(curvature, length);
+            assert!(
+                (got - want).abs() < 1e-4 * want.max(1e-3),
+                "sagitta {got} against {want} at curvature {curvature}"
+            );
+        }
+        assert_eq!(arc_sagitta(0.0, 50.0), 0.0, "a straight edge rises nowhere");
+    }
 }
