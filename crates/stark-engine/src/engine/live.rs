@@ -649,6 +649,17 @@ fn advance_head(
         // reached — which `drain` and the color-dynamics noise would both show.
         let (state, carry) =
             render_span_range(ctx, author, &head.state, rec, spans, head.tool.as_ref());
+        // The range drew nothing and will have to be drawn again — the brush's stamp
+        // asset has not loaded. Freezing it would advance `spans` past geometry the
+        // preview never drew and leave `dist` where it was, and a head only ever
+        // grows: from then on every tail measures `drain` and the colour-dynamics
+        // noise from an arc length short by the whole deferred prefix, while the
+        // commit measures it correctly. Nothing bumps the epoch when the asset lands,
+        // because no document changed, so the head would never be rebuilt. Leave it
+        // exactly as it was and let the next move try again.
+        if carry.deferred {
+            return head;
+        }
         let mut dirty = head.dirty;
         dirty.extend(carry.dirty);
         FrozenHead {
@@ -679,11 +690,7 @@ fn render_span_range(
     spans: StrokeSpans,
     tool: Option<&crate::gpu::stroke::ToolState>,
 ) -> (DocState, crate::gpu::stroke::StrokeCarry) {
-    let carry_only = |dist| crate::gpu::stroke::StrokeCarry {
-        dist,
-        tool: None,
-        dirty: Vec::new(),
-    };
+    let carry_only = crate::gpu::stroke::StrokeCarry::unchanged;
     // A matte has no tile map, so it previews as nothing — matching the commit,
     // which refuses the stroke outright (§15.7). Preview and
     // commit agreeing is the §1.3 invariant, so the two refusals must line up.

@@ -278,14 +278,7 @@ impl StrokeRenderer {
         let k = self.stroke_constants(rec, substrate, selection);
         let (segments, end_dist) = generate_segments_in(rec, tol, spans);
         if segments.is_empty() {
-            return (
-                base.clone(),
-                StrokeCarry {
-                    dist: end_dist,
-                    tool: None,
-                    dirty: Vec::new(),
-                },
-            );
+            return (base.clone(), StrokeCarry::unchanged(end_dist));
         }
 
         // Below full opacity the parcel's finished coverage is scaled, which is
@@ -330,6 +323,7 @@ impl StrokeRenderer {
             dist: end_dist,
             tool: None,
             dirty: coords.clone(),
+            deferred: false,
         };
 
         // Extent → cleared scratch tile: within-stroke accumulation of the parcel
@@ -569,6 +563,7 @@ impl StrokeRenderer {
                 dist: end_dist,
                 tool: resume.capture.then(|| ToolState(Carried::Sweep(carry))),
                 dirty,
+                deferred: false,
             },
         )
     }

@@ -131,14 +131,7 @@ impl StrokeRenderer {
         // as it found it. Handing back `None` says "unchanged" — the caller keeps the
         // state it passed in rather than paying for a copy of it.
         if segments.is_empty() {
-            return (
-                scene.base.clone(),
-                StrokeCarry {
-                    dist: end_dist,
-                    tool: None,
-                    dirty: Vec::new(),
-                },
-            );
+            return (scene.base.clone(), StrokeCarry::unchanged(end_dist));
         }
 
         let mut run = DynamicsRun::new(self, scene, rec, tol, resume.prior);
@@ -198,6 +191,7 @@ impl StrokeRenderer {
                 dist: end_dist,
                 tool: tool_out,
                 dirty,
+                deferred: false,
             },
         )
     }

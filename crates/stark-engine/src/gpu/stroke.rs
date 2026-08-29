@@ -240,14 +240,11 @@ impl StrokeRenderer {
                     "brush stamp asset is unavailable; deferring stroke until it is loaded",
                 );
             }
-            return (
-                scene.base.clone(),
-                StrokeCarry {
-                    dist: spans.dist(),
-                    tool: None,
-                    dirty: Vec::new(),
-                },
-            );
+            // **Deferred, not finished.** `spans.dist()` is where the range *began*,
+            // which is still where the stroke has got to — nothing was drawn, so the
+            // arc clock did not move. The flag is what stops a caller freezing the
+            // range on the strength of that: see `StrokeCarry::deferred`.
+            return (scene.base.clone(), StrokeCarry::deferred(spans.dist()));
         };
         let plan = dynamics_setup(&rec.brush);
         // Both halves of "is this range resuming, and will it be resumed" — read once

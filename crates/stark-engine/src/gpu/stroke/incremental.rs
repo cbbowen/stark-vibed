@@ -230,6 +230,41 @@ pub(crate) struct StrokeCarry {
     /// committed document without diffing whole tile maps (§17.6), and a superset costs
     /// that a redundant composite rather than a wrong picture.
     pub dirty: Vec<TileCoord>,
+    /// **This range drew nothing, and will have to be drawn again** — the brush's
+    /// stamp asset has not arrived yet (`StrokeRenderer::render_range`).
+    ///
+    /// Distinct from a range that drew nothing because it *contained* nothing, which
+    /// is the ordinary empty return and is genuinely finished. A caller that freezes
+    /// ranges must not freeze this one: `dist` did not advance either, so a head that
+    /// took it would carry a span index past geometry the preview never drew, and
+    /// measure every later `drain` falloff and colour-dynamics tap from an arc length
+    /// short by the whole deferred prefix. The commit, which renders the stroke once
+    /// with the asset present, computes both correctly — so the two pictures differ,
+    /// which is the §1.3 invariant, and nothing bumps the preview's epoch to repair
+    /// it because no *document* changed when the asset landed.
+    pub deferred: bool,
+}
+
+impl StrokeCarry {
+    /// Nothing drawn because there was nothing to draw: the range is finished, the
+    /// arc clock stands at `dist`, and the brush is as it was found.
+    pub(crate) fn unchanged(dist: f32) -> Self {
+        Self {
+            dist,
+            tool: None,
+            dirty: Vec::new(),
+            deferred: false,
+        }
+    }
+
+    /// Nothing drawn *yet* — see [`deferred`](Self::deferred). `dist` is where the
+    /// range began, because that is still where the stroke has got to.
+    pub(crate) fn deferred(dist: f32) -> Self {
+        Self {
+            deferred: true,
+            ..Self::unchanged(dist)
+        }
+    }
 }
 
 /// How many leading spans of a *live* stroke may be rendered once and kept, given

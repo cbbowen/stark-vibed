@@ -181,14 +181,7 @@ impl StrokeRenderer {
         let k = self.stroke_constants(rec, substrate, scene.selection);
         let (segments, end_dist) = generate_segments_in(rec, tol, spans);
         if segments.is_empty() {
-            return (
-                base.clone(),
-                StrokeCarry {
-                    dist: end_dist,
-                    tool: None,
-                    dirty: Vec::new(),
-                },
-            );
+            return (base.clone(), StrokeCarry::unchanged(end_dist));
         }
 
         let mut scope = self.scratch.scope(&self.ctx, "stark erase stroke");
@@ -274,6 +267,7 @@ impl StrokeRenderer {
                 dist: end_dist,
                 tool: resume.capture.then(|| ToolState(Carried::Erase(carry))),
                 dirty,
+                deferred: false,
             },
         )
     }
