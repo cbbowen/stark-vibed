@@ -30,7 +30,11 @@ impl RgbaImage {
 
     /// The RGBA bytes at `(x, y)`. Panics if out of bounds.
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
-        let i = ((y * self.width + x) * 4) as usize;
+        // In `u64` like [`RgbaImage::new`]'s check, and for its reason: at the export
+        // ceiling `max_export_dim` now reports (`max_texture_dimension_2d`, commonly
+        // 32768), `y * width + x` crosses `u32::MAX` in the last rows — so the index
+        // this returns would wrap to a pixel somewhere else in the image.
+        let i = (u64::from(y) * u64::from(self.width) + u64::from(x)) as usize * 4;
         [
             self.pixels[i],
             self.pixels[i + 1],
