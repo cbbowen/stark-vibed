@@ -27,7 +27,7 @@ const DEGREE: usize = 3;
 
 /// Order = degree + 1: the number of control points supporting any one span, and the
 /// dimension of the basis matrix.
-const ORDER: usize = DEGREE + 1;
+pub(crate) const ORDER: usize = DEGREE + 1;
 
 /// The **index structure** of a clamped cardinal cubic B-spline over `m` control
 /// points: how many spans it has, which backing row each conceptual knot reads, and
@@ -103,6 +103,13 @@ impl SplineIndex {
             return Err(NotEnoughControlPoints(m));
         }
         Ok(Self { m })
+    }
+
+    /// Spans a polygon of `m` control points has, **or zero when it is not a curve**
+    /// — [`Self::new`] and [`Self::num_spans`] in the one expression every caller
+    /// outside this module actually wants (`path::span_count`).
+    pub fn spans_for(m: usize) -> usize {
+        Self::new(m).map_or(0, |ix| ix.num_spans())
     }
 
     /// Number of polynomial spans; the spline is parameterized over `[0, num_spans()]`.

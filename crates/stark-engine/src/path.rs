@@ -56,6 +56,11 @@ mod fit;
 mod flatten;
 
 pub use arc::{Arc, arc_at, arc_sagitta, fit_arc};
+// `KNOT_COST` and `KNOT_SPACING` have no code caller outside this crate, so they read
+// as over-exposed — but their only readers are *doc links* (`assist::realize` names
+// the spacing, `path`'s own prose names the cost), and a doc link cannot follow a
+// re-export the compiler has pruned as unused. Left `pub` deliberately: demoting them
+// buys a two-name-narrower surface and costs a navigable link.
 pub use fit::{
     DEFAULT_TOLERANCE, KNOT_COST, KNOT_SPACING, MAX_TOLERANCE, MIN_TOLERANCE, PathFitter,
     clamp_tolerance, fit, fit_with_tolerance,
@@ -88,7 +93,7 @@ pub fn span_count(control_points: usize) -> usize {
     // spellings of one number, which is the shape that only ever *reports* a drift
     // (§13). `SplineIndex::new` is the same "fewer than two is not a curve" this arm
     // used to spell for itself.
-    crate::spline::SplineIndex::new(control_points).map_or(0, |ix| ix.num_spans())
+    crate::spline::SplineIndex::spans_for(control_points)
 }
 
 /// How many spans `frozen` frozen control points settle, out of a path of `total`.

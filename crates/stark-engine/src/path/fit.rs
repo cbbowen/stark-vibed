@@ -46,6 +46,24 @@ const FREE_CONTROL_POINTS: usize = 3;
 /// `tolerance` leaves a residual whose *mean square* goes as `tolerance²`, so a
 /// price fixed in canvas px² would sit above the jitter at one zoom level and
 /// below it at another.
+/// Below this, a report is the same place as the one before it: no arc accrues and
+/// no sample is recorded. Also the floor under [`PathFitter::arc_total`], so the
+/// distance a fit divides by is never smaller than the step it refuses to measure.
+const MIN_STEP_PX: f32 = 1e-6;
+
+/// Control points held at their values for a polygon of `m`: everything but the free
+/// window at the live end, and the pinned endpoint inside it.
+///
+/// The one statement of the rule. `PathFitter::frozen` asks it of the polygon as it
+/// stands and publishes the answer — `frozen_points` goes on the wire (§17.5) and
+/// `frozen_spans` drives the renderer's cached head; `solve` asks it of a *candidate*
+/// polygon, which is `m` or `m + 1`. The two drifting means published control points
+/// the solve is still moving.
+fn frozen_at(m: usize) -> usize {
+    m.saturating_sub(FREE_CONTROL_POINTS + 1)
+        .max(usize::from(m > 0))
+}
+
 pub const KNOT_COST: f32 = 0.06;
 
 /// Distance after which the polygon gains a control point regardless of error, in
@@ -323,7 +341,7 @@ impl PathFitter {
             if let Some(prev) = self.pts.last() {
                 let step = (s.pos - prev.pos).length();
                 // The same zero-step gate `push` applies, for the same reason.
-                if step < 1e-6 {
+                if step < MIN_STEP_PX {
                     continue;
                 }
                 self.arc += step;
@@ -372,7 +390,7 @@ impl PathFitter {
             // loss: they apply to a zero-length piece of path. A press that
             // coincides with the run-up's newest report still marks the start —
             // the marker is a place on the curve, and the place exists.
-            if step < 1e-6 {
+            if step < MIN_STEP_PX {
                 if pressed {
                     self.start_arc = Some(self.arc);
                 }
@@ -557,10 +575,18 @@ impl PathFitter {
     /// Control points held at their values: everything but the window at the live
     /// end, and the pinned endpoint inside it.
     fn frozen(&self) -> usize {
-        self.geom
-            .nrows()
-            .saturating_sub(FREE_CONTROL_POINTS + 1)
-            .max(usize::from(self.geom.nrows() > 0))
+        frozen_at(self.geom.nrows())
+    }
+
+    /// The total arc the fit parameterizes against, floored off zero.
+    ///
+    /// The floor is what keeps `a / total` finite for the first report of a stroke,
+    /// where no distance has accumulated yet. Written three times before this, and it
+    /// is the denominator every sample's curve parameter goes through — so the three
+    /// disagreeing is the one way a sample could be assigned to a different place on
+    /// the curve depending on which of them asked.
+    fn arc_total(&self) -> f32 {
+        self.arc.max(MIN_STEP_PX)
     }
 
     /// Solve for the free window at a polygon of `m` control points, and report the
@@ -618,13 +644,17 @@ impl PathFitter {
             (spline.index(), spans, profile)
         };
         let (index, spans, profile) = index;
-        let total = self.arc.max(1e-6);
+        let total = self.arc_total();
         let param = |a: f32| param_at(&profile, spans, a / total);
 
         // A cubic B-spline's basis is local, so a sample sitting under the frozen
-        // prefix cannot influence any row still being solved.
-        let frozen = m.saturating_sub(FREE_CONTROL_POINTS + 1).max(1);
-        let cutoff = frozen as f32 - 2.0;
+        // prefix cannot influence any row still being solved. `m` is already `>= 2`
+        // here, which is why this and `Self::frozen` are one rule despite one of them
+        // having clamped to 1 and the other to 0 for the empty polygon.
+        let frozen = frozen_at(m);
+        // How far back a frozen row's support reaches, in control points: a cubic's
+        // basis touches `ORDER` of them, and the row itself is one of those.
+        let cutoff = frozen as f32 - (crate::spline::ORDER - 2) as f32;
         let mut lo = self.first_live.min(self.pts.len() - 1);
         while lo + 1 < self.pts.len() && param(self.pts[lo].arc) < cutoff {
             lo += 1;
@@ -710,7 +740,7 @@ impl PathFitter {
         // candidate per report to answer one number.
         let spline = CubicBSpline::new(&fit.geom).expect("at least two control points");
         let spans = spline.num_spans() as f32;
-        let total = self.arc.max(1e-6);
+        let total = self.arc_total();
         let lo = lo.min(self.pts.len() - 1);
         // **The same reports the solve minimized over**, decimated by the same rule.
         // This is the third thing the two have to agree about, beside where the samples
@@ -816,7 +846,7 @@ impl PathFitter {
             return 0.0;
         };
         let spans = ((profile.len() - 1) / ARC_SAMPLES_PER_SPAN) as f32;
-        param_at(profile, spans, a / self.arc.max(1e-6))
+        param_at(profile, spans, a / self.arc_total())
     }
 
     /// Whether the stroke has any travel of its own — reports accepted after
@@ -1047,6 +1077,14 @@ fn grow_rows<const E: usize>(
     seed: impl Fn(usize, usize) -> f32,
 ) -> OMatrix<f32, Dyn, Const<E>> {
     let have = rows.nrows();
+    // The name says "grow", and every caller means it: `solve` is called with the
+    // polygon's own row count or one more. Worth stating, because the early return
+    // hands back *more* rows than `m` if it is ever called with fewer — and `solve`
+    // then writes its pinned endpoint to `m - 1`, which would be the wrong row.
+    debug_assert!(
+        have <= m,
+        "grow_rows shrinks nothing: asked for {m} rows from {have}",
+    );
     if have >= m {
         return rows.clone();
     }

@@ -155,9 +155,11 @@ impl AssistShape {
 }
 
 /// `n` values of `f` spread over `[0, 1]` inclusive.
+///
+/// [`spread_scalar`] is the fractions themselves, and this is those mapped — written
+/// out separately, the two had the same off-by-one guard twice.
 fn spread(n: usize, f: impl Fn(f32) -> Vec2) -> Vec<Vec2> {
-    let last = n.saturating_sub(1).max(1) as f32;
-    (0..n).map(|i| f(i as f32 / last)).collect()
+    spread_scalar(n).into_iter().map(f).collect()
 }
 
 /// Fit `seed`'s control polygon to `targets`, and the pen channels alongside it.

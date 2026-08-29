@@ -108,7 +108,7 @@ impl AssistShape {
                 Self::Ellipse {
                     center,
                     radii: radii * (l1 / l0),
-                    angle: angle + from.perp_dot(to).atan2(from.dot(to)),
+                    angle: angle + from.angle_to(to),
                     phase,
                     winding,
                     plane: None,

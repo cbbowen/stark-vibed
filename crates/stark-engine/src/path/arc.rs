@@ -115,7 +115,7 @@ pub fn fit_arc(vel: Vec2, v: Vec2, max_curvature: f32) -> Arc {
         return straight;
     }
     let t = vel / speed;
-    let n = Vec2::new(-t.y, t.x);
+    let n = t.perp();
     let curvature = 2.0 * v.dot(n) / (chord * chord);
     if !curvature.is_finite() || curvature == 0.0 {
         return straight;
@@ -156,7 +156,7 @@ pub fn arc_at(start: Vec2, dir: Vec2, curvature: f32, s: f32) -> (Vec2, Vec2) {
     let turn = curvature * s;
     let sn = sin_small(turn);
     let vs = versin_small(turn);
-    let perp = Vec2::new(-dir.y, dir.x);
+    let perp = dir.perp();
     (
         start + dir * (sn / curvature) + perp * (vs / curvature),
         dir * (1.0 - vs) + perp * sn,
@@ -169,7 +169,7 @@ pub(super) fn point_arc_distance(p: Vec2, start: Vec2, arc: &Arc) -> f32 {
     if arc.curvature == 0.0 {
         return point_segment_distance(p, start, start + arc.dir * arc.length);
     }
-    let perp = Vec2::new(-arc.dir.y, arc.dir.x);
+    let perp = arc.dir.perp();
     let r = 1.0 / arc.curvature;
     let centre = start + perp * r;
     ((p - centre).length() - r.abs()).abs()

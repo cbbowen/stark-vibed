@@ -206,7 +206,7 @@ impl Tow {
         let p0 = prev.pos + u * s0;
         let w = (p0 - self.tip) / self.rope; // unit: tip → target, on the string
         let cos0 = w.dot(u).clamp(-1.0, 1.0);
-        let perp = Vec2::new(-u.y, u.x);
+        let perp = u.perp();
         let side = w.dot(perp);
         // The side the tip trails on is preserved: θ only decays, never
         // crosses zero.

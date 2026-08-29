@@ -39,8 +39,17 @@ pub fn make(id: ColorSpaceId) -> Option<Arc<dyn ColorSpace>> {
 
 /// Whether this build can open a document in `id`'s space — [`make`] without
 /// building anything. What a frontend asks to decide which spaces to offer.
+///
+/// Literally without building anything: it was `make(id).is_some()`, which allocates
+/// an `Arc` for a `ColorSpace` that is a ZST either way and drops it to return a
+/// `bool`. `all_available` did that twice per call. The `#[cfg]` is the whole answer,
+/// and stating it here keeps the two in step by construction — a space `make` cannot
+/// build is a space this reports unavailable, because both read the same feature.
 pub fn available(id: ColorSpaceId) -> bool {
-    make(id).is_some()
+    match id {
+        ColorSpaceId::Oklab => true,
+        ColorSpaceId::Mixbox => cfg!(feature = "mixbox"),
+    }
 }
 
 /// Every id this build can actually open, in a stable order — the list a "new
@@ -76,9 +85,20 @@ pub trait ColorSpace {
     fn id(&self) -> ColorSpaceId;
 
     /// Tile color channel texture format.
-    fn color_format(&self) -> wgpu::TextureFormat;
+    ///
+    /// Defaulted, along with [`aux_format`](Self::aux_format),
+    /// [`color_blend`](Self::color_blend) and [`aux_blend`](Self::aux_blend), because
+    /// both spaces answered all four identically and a third would have four more
+    /// chances to pick a format the tile pool was never sized for. What actually
+    /// distinguishes a space is [`resid_format`](Self::resid_format) — which already
+    /// had a default, and which is the one the rest of the engine branches on.
+    fn color_format(&self) -> wgpu::TextureFormat {
+        wgpu::TextureFormat::Rgba16Float
+    }
     /// Tile auxiliary channel texture format (paint height).
-    fn aux_format(&self) -> wgpu::TextureFormat;
+    fn aux_format(&self) -> wgpu::TextureFormat {
+        wgpu::TextureFormat::R16Float
+    }
     /// The tile's **residual** channel format, or `None` for a space that has no
     /// residual (§6.7).
     ///
@@ -102,9 +122,14 @@ pub trait ColorSpace {
         self.resid_format().is_some()
     }
     /// Blend for the color target when stamping/compositing.
-    fn color_blend(&self) -> wgpu::BlendState;
-    /// Blend for the aux target.
-    fn aux_blend(&self) -> wgpu::BlendState;
+    fn color_blend(&self) -> wgpu::BlendState {
+        over()
+    }
+    /// Blend for the aux target — additive, because what it carries is an *amount*
+    /// of paint and amounts add (§6.1).
+    fn aux_blend(&self) -> wgpu::BlendState {
+        additive()
+    }
 
     /// Straight display RGB → the space's color channels **and** the residual they
     /// leave behind (§6.7), in one conversion.
@@ -183,19 +208,6 @@ impl ColorSpace for OkLabColorSpace {
         ColorSpaceId::Oklab
     }
 
-    fn color_format(&self) -> wgpu::TextureFormat {
-        wgpu::TextureFormat::Rgba16Float
-    }
-    fn aux_format(&self) -> wgpu::TextureFormat {
-        wgpu::TextureFormat::R16Float
-    }
-    fn color_blend(&self) -> wgpu::BlendState {
-        over()
-    }
-    fn aux_blend(&self) -> wgpu::BlendState {
-        additive()
-    }
-
     fn rgb_to_latent(&self, rgb: Srgb) -> Latent {
         let lin = [
             color::srgb_to_linear(rgb[0]),
@@ -265,24 +277,12 @@ impl ColorSpace for MixboxColorSpace {
         ColorSpaceId::Mixbox
     }
 
-    fn color_format(&self) -> wgpu::TextureFormat {
-        wgpu::TextureFormat::Rgba16Float
-    }
-    fn aux_format(&self) -> wgpu::TextureFormat {
-        wgpu::TextureFormat::R16Float
-    }
     /// The residual's three components premultiplied by the same per-unit opacity the
     /// concentrations are, with that opacity duplicated into the fourth: not
     /// redundancy for its own sake, but because the fixed-function "over" reads *each*
     /// target's own alpha, so the target carrying the residual has to hold it too.
     fn resid_format(&self) -> Option<wgpu::TextureFormat> {
         Some(wgpu::TextureFormat::Rgba16Float)
-    }
-    fn color_blend(&self) -> wgpu::BlendState {
-        over()
-    }
-    fn aux_blend(&self) -> wgpu::BlendState {
-        additive()
     }
 
     fn rgb_to_latent(&self, rgb: Srgb) -> Latent {

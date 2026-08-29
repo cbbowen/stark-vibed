@@ -341,18 +341,19 @@ impl<'a> DynamicsRun<'a> {
             ["stark dynamics brush aux a", "stark dynamics brush aux b"],
         );
         // The residual's half of the ping-pong, allocated only where there is one.
-        let (brush_resid_tex, brush_resid) = match r.color_space.has_resid().then(|| {
-            brush_pair(
-                &mut scope,
-                [
-                    "stark dynamics brush resid a",
-                    "stark dynamics brush resid b",
-                ],
-            )
-        }) {
-            Some((t, v)) => (Some(t), Some(v)),
-            None => (None, None),
-        };
+        let (brush_resid_tex, brush_resid) = r
+            .color_space
+            .has_resid()
+            .then(|| {
+                brush_pair(
+                    &mut scope,
+                    [
+                        "stark dynamics brush resid a",
+                        "stark dynamics brush resid b",
+                    ],
+                )
+            })
+            .unzip();
         // The carried mint budget (§6.2): shared forward — a piece only ever
         // reads the tiles it resumed, seeding its region by copy and extracting
         // fresh leases — so this clone is a refcount per tile. Empty at the
@@ -721,14 +722,11 @@ impl<'a> DynamicsRun<'a> {
         // The region's residual (§6.7), in the same format for the same reason: it is
         // the rest of the color beside it, and the loop reads and writes the two at
         // exactly the same points.
-        let (resid_tex, resid) = match r
+        let (resid_tex, resid) = r
             .color_space
             .has_resid()
             .then(|| region_tex("stark dynamics region resid"))
-        {
-            Some((t, v)) => (Some(t), Some(v)),
-            None => (None, None),
-        };
+            .unzip();
 
         // Composite pass: base tiles → region, 1:1 with canvas px. The compositor's
         // own `ViewUniform` — this path binds its own buffer to the very same
