@@ -91,7 +91,7 @@ pub enum GroupContent {
   filter as one flip like any merge. `scratch_levels` already counts it, because
   `as_direct_run()` does not claim it.
 - **The same scratch.** A filter needs a level's `swap` and does not use its `iso` —
-  and a level allocates only the half its stack actually uses (`scratch_needs`), so a
+  and a level allocates only the half its stack actually uses (`Plan::scratch`), so a
   document whose *only* non-`Normal` thing is a filter pays for the ping-pong pair
   alone.
 - **No effect on a document without one.** Every existing golden is unchanged, which

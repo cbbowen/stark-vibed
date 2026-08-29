@@ -794,22 +794,6 @@ impl PoolInner {
     }
 }
 
-/// How many free slots an epoch ending in this state releases — the whole of the
-/// trim policy, as arithmetic with no GPU in it.
-///
-/// `capacity − peak` is what the pool owns beyond anything the epoch ever needed at
-/// once. Half of that goes back, and never more than is actually idle.
-///
-/// `free` is the count the trim may actually take: idle **and** past the quarantine
-/// ([`PoolInner::tick`]). Passing the eligible count rather than the whole free list
-/// is what keeps this function the only place the arithmetic lives — a young slot is
-/// simply not offered, rather than being subtracted somewhere else afterwards.
-///
-/// The `min` is not defensive padding: `free = capacity − in_use` and `in_use ≤ peak`
-/// together already prove `free ≥ surplus`, so the clamp is unreachable for the whole
-/// list. With the quarantine it is genuinely reachable — a pool whose surplus all
-/// came back this epoch offers nothing — and it is what turns that into "release
-/// nothing yet" instead of truncating a `Vec` past its length.
 /// Which free-list slots have served the trim's quarantine, oldest first: those
 /// returned before the current epoch opened ([`PoolInner::tick`]).
 ///
@@ -827,6 +811,22 @@ fn quarantine_passed(returns: &[u64], epoch_start: u64) -> Vec<usize> {
     passed
 }
 
+/// How many free slots an epoch ending in this state releases — the whole of the
+/// trim policy, as arithmetic with no GPU in it.
+///
+/// `capacity − peak` is what the pool owns beyond anything the epoch ever needed at
+/// once. Half of that goes back, and never more than is actually idle.
+///
+/// `free` is the count the trim may actually take: idle **and** past the quarantine
+/// ([`PoolInner::tick`]). Passing the eligible count rather than the whole free list
+/// is what keeps this function the only place the arithmetic lives — a young slot is
+/// simply not offered, rather than being subtracted somewhere else afterwards.
+///
+/// The `min` is not defensive padding: `free = capacity − in_use` and `in_use ≤ peak`
+/// together already prove `free ≥ surplus`, so the clamp is unreachable for the whole
+/// list. With the quarantine it is genuinely reachable — a pool whose surplus all
+/// came back this epoch offers nothing — and it is what turns that into "release
+/// nothing yet" instead of truncating a `Vec` past its length.
 fn surplus_to_release(capacity: usize, peak: usize, free: usize) -> usize {
     let surplus = capacity.saturating_sub(peak);
     (surplus / 2).min(free).min(MAX_RELEASE_PER_EPOCH)

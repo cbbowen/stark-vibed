@@ -148,14 +148,14 @@ impl GuidePass {
         // now the buffer's own business rather than a rule stated here.
         let layout = &self.bgl;
         let bg = slots.group(|slot| {
-            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark guides bg"),
+            desc::bind_group_for(
+                &ctx.device,
+                "stark guides bg",
                 layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: slot,
-                }],
-            })
+                GUIDE_SLOTS,
+                false,
+                |_| slot.clone(),
+            )
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark guides pass"),

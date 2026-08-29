@@ -371,7 +371,7 @@ impl ScratchLevel {
     pub(super) fn iso(&self) -> Targets<'_> {
         self.iso
             .as_ref()
-            .expect("a merge at a level allocated without iso scratch (scratch_needs)")
+            .expect("a merge at a level allocated without iso scratch (Plan::scratch)")
             .targets()
     }
 }
@@ -384,7 +384,7 @@ impl ScratchLevel {
 /// not one per group. Allocated only when a document contains something that has
 /// to be isolated at all — an ordinary painting never pays the ~40 MB — and each
 /// level allocates only the half its stack uses (`needs`, from
-/// [`scratch_needs`](super::group::scratch_needs)): a document whose only
+/// [`Plan::scratch`](super::plan::Plan::scratch)): a document whose only
 /// non-`Normal` thing is a filter pays for the ping-pong pair alone.
 pub(super) struct ScratchTargets {
     pub(super) size: Extent2,

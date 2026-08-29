@@ -806,14 +806,14 @@ impl Compositor {
             self.matte_ramps.write(device, queue, &plan.ramps);
             let layout = &p.tiles.ramp_bgl;
             self.matte_ramps.group(|slot| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark matte ramp bg"),
+                desc::bind_group_for(
+                    device,
+                    "stark matte ramp bg",
                     layout,
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: slot,
-                    }],
-                })
+                    tiles::RAMP_SLOTS,
+                    p.formats.has_resid(),
+                    |_| slot.clone(),
+                )
             });
         }
         // `None` when the frame has no matte, which is also when nothing above built
@@ -986,10 +986,10 @@ impl Compositor {
     /// use it: a pick viewport is a handful of texels, and letting the two share one
     /// cache would reallocate a target-sized pair twice a frame for the whole of an
     /// Alt-drag.
-    /// `needs` is [`scratch_needs`]' answer for this frame, computed by the caller
-    /// because the supersampling decision above wanted it first: how many levels there
-    /// are, and how many of them isolate, is most of what a zoomed-out frame costs in
-    /// memory (`resolve::attachment_bytes`).
+    /// `needs` is the frame's [`Plan::scratch`], computed by the caller because the
+    /// supersampling decision above wanted it first: how many levels there are, and
+    /// how many of them isolate, is most of what a zoomed-out frame costs in memory
+    /// (`resolve::attachment_bytes`).
     fn ensure_scratch(
         &mut self,
         p: &CompositorPipeline,

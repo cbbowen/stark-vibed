@@ -103,7 +103,8 @@ pub(super) fn supersample(
 /// - the **resolve target**, which only exists above 1× but is what the whole
 ///   question is about, so it is counted unconditionally;
 /// - **two trios per scratch level** that isolates and one per level that only
-///   ping-pongs, which is `scratch_needs`' answer read as memory (§18.0.4, §21.3).
+///   ping-pongs, which is [`Plan::scratch`](super::plan::Plan::scratch) read as
+///   memory (§18.0.4, §21.3).
 ///
 /// The last is the term a pixel count cannot express, and it is the one that
 /// dominates: a single blend group more than doubles the frame's memory footprint, and in a

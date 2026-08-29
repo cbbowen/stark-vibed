@@ -25,7 +25,10 @@ pub(crate) const VIEW_SLOTS: &[Slot] = &[
 
 /// The matte's gradient ramp at group 1, per matte where the view is per pass (§22.4).
 /// Fragment-only — the vertex stage has no use for it.
-const RAMP_SLOTS: &[Slot] = &[Slot::dynamic(md::RAMP)];
+///
+/// Left the module because the layout is built here and the group beside the ramps'
+/// upload, and one list is what keeps the two from disagreeing about the binding.
+pub(super) const RAMP_SLOTS: &[Slot] = &[Slot::dynamic(md::RAMP)];
 
 /// Pass A's **tile** group: one layer tile's channels, sampled through the view's
 /// sampler so the bilinear filter reaches into the apron at the edges (§6.4).
