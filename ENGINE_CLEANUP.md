@@ -10,21 +10,18 @@ is fixed and the goldens re-blessed.
 finding that turns out to be wrong is struck through and kept, as
 [N](#n-withdrawn-footprints-two-vecs-per-action) was in the model's ledger.
 
-Closed so far: [A](#a-a-groups-removelayer-under-declares-its-subtree),
-[B](#b-three-panics-reachable-from-outside-the-process),
-[C](#c-the-golden-comparator-and-a-test-that-passes-without-a-gpu),
-[D](#d-footprint--apply-correspondence-is-held-by-discipline),
-[F2](#f-three-places-where-the-code-and-the-claim-beside-it-disagree),
-[G](#g-the-compositors-generation-conflates-two-invalidations),
-[J](#j-the-mixbox-lut-runs-twice-per-colour-per-texel-on-a-placed-image),
-[S](#s-four-copies-of-the-paint-edit-gate-and-uneven-minted-layer-claims),
-[U](#u-comments-that-narrate-history-or-describe-code-that-is-gone),
-[V](#v-footprint-reads-are-checked-over-a-hand-picked-vocabulary),
-[W](#w-64-translation-invariance-is-guarded-for-strokes-only), and three of
-[L](#l-smaller-measurable-costs)'s fourteen rows. Every batch was verified with the
-full suite (`cargo nextest run --workspace`, 1187 green), clippy at `-D warnings` on
-the default *and* the no-default-features configuration, the wasm build on both, and
-the `cargo tree` licence claim.
+Closed: A, B, C, D, G, J, N, O, S, U, V, W, and — since — F's smaller correctness
+notes, H, I, Q, and most of T, X and Y. What is left open is [E](#e-layerid-is-a-32-bit-fold-of-the-actor),
+[F3](#f-three-places-where-the-code-and-the-claim-beside-it-disagree),
+[M](#m-engine-is-one-type-with-25-fields-and-65k-lines-of-impl),
+[P](#p-planslot-is-a-hand-maintained-twin-of-the-generated-stamp),
+[R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need), the module splits in
+[T](#t-files-and-apis-that-carry-more-than-they-should), seven rows of
+[L](#l-smaller-measurable-costs), and the height-readback half of
+[X](#x-what-the-suite-observes-only-through-the-lit-composite). Every batch was
+verified with the full suite (`cargo nextest run --workspace`, 1187 green), clippy at
+`-D warnings` on the default *and* the no-default-features configuration, the wasm
+build on both, and the `cargo tree` licence claim.
 
 **The two findings that paid for the rest were the guards, not the fixes.** Tightening
 the golden comparator ([C](#c-the-golden-comparator-and-a-test-that-passes-without-a-gpu))
@@ -48,6 +45,24 @@ because they are what the findings were *for*:
   after it fails with "only metadata stub found for `std`" or "can't find crate for
   `stark_engine`". It is not a code failure and no amount of reading the diff finds
   it — `rm -rf target/debug/incremental` and re-run.
+- **Two lease-lifetime defects the pooling work surfaced**, both found by review
+  rather than by a test, and both of one shape: a resource returned to its pool while
+  a *recorded but unsubmitted* encoder still names it. The stamp loop's mint budget
+  dropped the entry a later piece displaced (`BTreeMap::insert` drops what it
+  replaces), and a pick's blend scratch — whose `Attachment` drop `destroy()`s the
+  texture — went out of scope before the caller's submit once
+  [I](#i-the-eyedropper-submits-once-per-sample-point) moved that submit outward. The
+  first was latent before this work and made likelier by it; the second it introduced.
+  Both are `scope.hold`'s hazard, and the second has a regression test that fails
+  against the defect (`pick.rs::a_pick_over_a_blended_stack_still_answers`).
+- **The compositor's shared streams are a second slot law**, found while closing
+  [I](#i-the-eyedropper-submits-once-per-sample-point): the instance buffer, the matte
+  instances and ramps and the two uniform slot sets are one buffer apiece, so
+  *uploading* per patch before one submit is the same defect the view uniform had.
+  A pick prepares once and records many times; the hit test, whose candidates each
+  have their own draw list, submits per candidate and says why.
+- **Master was red on three counts before any of this**: two clippy warnings under
+  `-D warnings` and a `rustfmt` diff, from commits after the ledger was written.
 - **What the golden hatch was hiding**, measured rather than guessed: six goldens
   were stale, five by ordinary drift and one — `transform_perspective_warp` — by a
   contiguous 22×51 strip at up to 24 levels, which is an edge that moved. Rendering
@@ -104,25 +119,25 @@ present.
 | [C](#c-the-golden-comparator-and-a-test-that-passes-without-a-gpu) | The golden comparator and a test that passes without a GPU | **correctness** | `31a9993` |
 | [D](#d-footprint--apply-correspondence-is-held-by-discipline) | Footprint ↔ apply correspondence is held by discipline | **correctness** | `3974f8f` |
 | [E](#e-layerid-is-a-32-bit-fold-of-the-actor) | `LayerId` is a 32-bit fold of the actor | correctness | |
-| [F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree) | Three places where the code and the claim beside it disagree | correctness | F2 in `e8d2e78`+ |
+| [F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree) | Three places where the code and the claim beside it disagree | correctness | F2 in `e8d2e78`+, the smaller notes in `b323e97` |
 | [G](#g-the-compositors-generation-conflates-two-invalidations) | The compositor's `generation` conflates two invalidations | **performance** | `a9edfbf` |
-| [H](#h-the-stroke-hot-path-does-not-use-the-plumbing-built-for-it) | The stroke hot path does not use the plumbing built for it | **performance** | |
-| [I](#i-the-eyedropper-submits-once-per-sample-point) | The eyedropper submits once per sample point | performance | |
+| [H](#h-the-stroke-hot-path-does-not-use-the-plumbing-built-for-it) | The stroke hot path does not use the plumbing built for it | **performance** | `28c9fd2`, `35e60ff` |
+| [I](#i-the-eyedropper-submits-once-per-sample-point) | The eyedropper submits once per sample point | performance | `76c606d`, `2efbf05` |
 | [J](#j-the-mixbox-lut-runs-twice-per-colour-per-texel-on-a-placed-image) | The Mixbox LUT runs twice per colour, per texel on a placed image | performance | `a9edfbf` |
-| [L](#l-smaller-measurable-costs) | Smaller measurable costs | performance | `078c4ba` (3 of 14) |
+| [L](#l-smaller-measurable-costs) | Smaller measurable costs | performance | `078c4ba`, `b323e97` (7 of 14) |
 | [M](#m-engine-is-one-type-with-25-fields-and-65k-lines-of-impl) | `Engine` is one type with ~25 fields and ~6.5k lines of `impl` | architecture | |
-| [N](#n-boxdyn-timeline-is-a-two-mode-enum-with-silent-defaults) | `Box<dyn Timeline>` is a two-mode enum with silent defaults | architecture | |
-| [O](#o-the-accumulated-extent-render-loop-is-written-three-times) | The accumulated-extent render loop is written three times | maintainability | |
+| [N](#n-boxdyn-timeline-is-a-two-mode-enum-with-silent-defaults) | `Box<dyn Timeline>` is a two-mode enum with silent defaults | architecture | `6896e02` |
+| [O](#o-the-accumulated-extent-render-loop-is-written-three-times) | The accumulated-extent render loop is written three times | maintainability | `719a78f` |
 | [P](#p-planslot-is-a-hand-maintained-twin-of-the-generated-stamp) | `plan::Slot` is a hand-maintained twin of the generated `Stamp` | maintainability | |
-| [Q](#q-the-descriptor-boilerplate-descrs-was-written-to-end) | The descriptor boilerplate `desc.rs` was written to end | maintainability | |
+| [Q](#q-the-descriptor-boilerplate-descrs-was-written-to-end) | The descriptor boilerplate `desc.rs` was written to end | maintainability | `bdbe46c`, `2c581ae` |
 | [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need) | Two scratch pools and two submit scopes for one need | maintainability | |
 | [S](#s-four-copies-of-the-paint-edit-gate-and-uneven-minted-layer-claims) | Four copies of the paint-edit gate, and uneven minted-layer claims | maintainability | `2c6303b` |
-| [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | |
+| [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | `35e60ff`, `2efbf05` (module splits open) |
 | [U](#u-comments-that-narrate-history-or-describe-code-that-is-gone) | Comments that narrate history, or describe code that is gone | maintainability | `dbf4dad` |
 | [V](#v-footprint-reads-are-checked-over-a-hand-picked-vocabulary) | Footprint *reads* are checked over a hand-picked vocabulary | tests | `6313c00`, `3974f8f` |
 | [W](#w-64-translation-invariance-is-guarded-for-strokes-only) | §6.4 translation invariance is guarded for strokes only | tests | `4fb2e71` |
-| [X](#x-what-the-suite-observes-only-through-the-lit-composite) | What the suite observes only through the lit composite | tests | |
-| [Y](#y-suite-infrastructure) | Suite infrastructure | tests | |
+| [X](#x-what-the-suite-observes-only-through-the-lit-composite) | What the suite observes only through the lit composite | tests | `2efbf05` (height readback open) |
+| [Y](#y-suite-infrastructure) | Suite infrastructure | tests | `2efbf05` (helpers, proptests open) |
 
 ## What is left open on purpose
 
@@ -131,6 +146,17 @@ present.
 - **F3** ([F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree)):
   `mean_error`'s map cannot be changed without re-tuning `KNOT_COST`, so it wants a
   sitting rather than a patch. **F1 is dropped** — see there.
+- **The eyedropper's `(N·size)` strip** ([I](#i-the-eyedropper-submits-once-per-sample-point)):
+  the submits are gone without it, and what the strip saves beyond that is texture
+  *count* at the cost of folding the readback's per-texture results into sub-rects.
+- **The noise bind group's cache** ([H](#h-the-stroke-hot-path-does-not-use-the-plumbing-built-for-it)):
+  it names the canvas substrate as well as the noise tile, so a cache for it needs a
+  key that notices a `SetSubstrate`. Two objects per render; the prefix group beside
+  it is a pure function of the tip and could go on `TipCache` whenever somebody wants
+  it.
+- **A tow *case* in the corpus** ([X](#x-what-the-suite-observes-only-through-the-lit-composite)):
+  the tow is covered as a battery check over all sixteen cases instead, which costs no
+  golden and covers more.
 
 ---
 
@@ -446,7 +472,24 @@ the `ts` of the *pre-solve* profile (line 739) while `mean_error` recomputes
 re-tune. Either fix the comment or use `fit.profile` — which also drops two of the
 four curve walks per pointer report.
 
-### Smaller correctness notes
+### Smaller correctness notes — **all six closed in `b323e97`**
+
+Each turned out to be a check standing in the wrong place, and each moved rather than
+grew. The readback decodes four halves a texel, so *it* asserts the format, and the two
+`debug_assert`s a release build never ran are gone. `plan_invert` sorts, in the
+row-major order `TileRect::coords` walks — the other planners' order, which the first
+draft of the fix got wrong by reaching for `TileCoord`'s own `Ord` (x first).
+`Existence` says it stands for the layer's *minted* kind and, explicitly, **not** for
+whether it is a group: a leaf becomes one under `MoveLayer`, so what covers that is
+`StackOrder`. `Resource`'s own doc names `PlaceImage`'s out-of-log store as the one arm
+whose determinism is not a function of the log. `start_collaboration` says a
+scrubbed-away future does not survive the share.
+
+The last one grew a test rather than only a bound: `InputSample::is_finite` is
+`is_admissible`, because finite is not enough — arc length is a *difference*, and two
+finite reports a whole `f32` range apart differ by infinity. The bound is `COORD_LIMIT`,
+the first coordinate the `i32` tile grid cannot address, **exclusive**, and the poison
+table in `path.rs` gains a row at exactly that value which fails against `<=`.
 
 - `engine/pick.rs:322, 569` — a `debug_assert_eq!` guards a readback decode; in
   release a colour space storing colour otherwise mis-decodes silently. Type the
@@ -541,7 +584,25 @@ is per pointer move on a live stroke:
 The module's own header (`stroke.rs:70`) says the allocation *rate* is what JS GC
 cannot keep up with. `ScopedResources::destroy()` bounds the memory, not the rate.
 
-### Fix
+### What was done (`28c9fd2`, `35e60ff`)
+
+Everything above except the prefix and noise bind groups, and by a different route
+than the fix below proposes. The per-halo-tile group is the one the *tile* caches
+(`TilePairHandle::composite_bg`), which needed the stamp loop and pass A to name one
+`BindGroupLayout` rather than two structurally-equal ones. The region mask and every
+buffer **lease from the scratch pool**, which is stronger than the `Mutex<Streams>`
+below: a lease reaches the free list only through a submit, where shared streams would
+have rested on "every path submits before returning" — a fact about the call sequence,
+not about the types. `UNIFORM_STRIDE` is gone; what the stroke path takes from
+`UniformSlots` is the stride and not the buffer, and `uniforms.rs` says which half and
+why.
+
+**Left:** the prefix and noise groups, two per render. The prefix one is a pure
+function of the tip and could hang off `TipCache` beside the view it wraps; the noise
+one names the canvas **substrate** as well as the noise tile, so caching it needs a key
+that notices a `SetSubstrate` — which is why it was not done with the rest.
+
+### Fix (as originally proposed)
 
 A `Mutex<Streams>` on `StrokeRenderer` — shared across clones like `ScratchPool` —
 holding `InstanceStream<SegmentInstance>` and `UniformSlots` for `TileXform`,
@@ -572,6 +633,19 @@ being slotted.
 `&mut CommandEncoder` and a slot; render every patch of a trace into one
 `(N·size)`-wide strip in one submit; one readback.
 
+**Done in `76c606d`, `2efbf05`**, less the strip. The view is a slot, so what orders
+two patches is the offset rather than a submit, and a trace is one encoder and one
+submit. The strip was not taken: it would fold `read_many_rgba16f`'s per-texture
+results into sub-rects of one buffer, and what it saves beyond this is texture
+*count*, not round trips.
+
+**And it turned up a second slot law one level down.** The instance stream, the matte
+instances and ramps and the blend and filter uniform slots are one buffer apiece on the
+`Compositor`, so *uploading* per patch before one submit has the same defect the view
+had. A pick therefore prepares once — `prepare_pick` builds the plan, uploads the
+streams and holds the blend scratch — and records many times. The hit test's candidates
+each have their own draw list, so it prepares and submits per candidate, and says so.
+
 ## J. The Mixbox LUT runs twice per colour, per texel on a placed image
 
 **Verified.** `crates/stark-engine/src/colorspace.rs:267` — `rgb_to_channels`
@@ -587,23 +661,29 @@ fourth lane is `1.0` in both implementations and no caller reads it.
 
 ## L. Smaller measurable costs
 
+Eight of the fifteen rows are struck below and one is half closed. What stands is what
+needs a piece of design rather than a substitution: a `History::map_actions` upstream,
+a memoization with an invalidation rule, a banded solve, a bind-group cache keyed on a
+`moved` flag, building outside the registry's lock, and an `Arc<[u8]>` that reaches
+into the save format's own types.
+
 | Where | What | Change |
 |---|---|---|
-| `document/patch.rs:340` | `tile_diff` walks the whole layer's tile map per `inverse` per cached state; undoing a stroke over a 5,000-tile layer costs tens of thousands of lookups per cached state to find a handful of tiles. | Iterate `rect.coords()` when bounded; fall back to the walk for `TileRect::ALL`. |
+| ~~`document/patch.rs:340`~~ | *Closed in `078c4ba`.* `tile_diff` walks the whole layer's tile map per `inverse` per cached state; undoing a stroke over a 5,000-tile layer costs tens of thousands of lookups per cached state to find a handful of tiles. | Iterate `rect.coords()` when bounded; fall back to the walk for `TileRect::ALL`. |
 | `engine/collab.rs:68` | `start_collaboration` re-renders the whole document from empty (`ReplicatedTimeline::from_log`); `end_collaboration` adopts for free (`unshare`). The rewrite changes ids, not order; what blocks adoption is that `History` cannot re-key its `Logged` footprints. | `History::map_actions` + `ReplicatedTimeline::from_history`, the counterpart of `unshare`. |
-| `gpu/registry.rs:86, 168` | Substrate builds (PNG decode, two Gaussian passes, a 16-direction histogram) and environment builds (HDR decode + CPU mip chain) run under the registry mutex; sibling engines block in `current()`. | Check under the lock, build outside, insert under the lock — the pool's own pattern. |
-| `assets.rs:147` | The pen-orientation bake allocates two 64 MiB buffers and runs 16 M `ln` calls inside the store lock on the first pen-oriented stroke. No `asset.*` timing row exists (verified), so the Timing Stats table cannot see it. Cost estimated, not measured. | Add `timing::span!("asset.pen_bake")` first; then a τ LUT for the u8 follow layer, per-layer baking, or bake at import. |
+| `gpu/registry.rs:86, 168` | Substrate builds (PNG decode, two Gaussian passes, a 16-direction histogram) and environment builds (HDR decode + CPU mip chain) run under the registry mutex; sibling engines block in `current()`. **Half closed in `b323e97`**: the decode is now paid once at registration and kept (`Resource::Decoded`), so the *per-scale* rebuild no longer re-decodes — the substrate row below was the same fact from the other end. The bakes still run under the lock. | Check under the lock, build outside, insert under the lock — the pool's own pattern. |
+| ~~`assets.rs:147`~~ | *Closed in `b323e97`.* The pen-orientation bake allocates two 64 MiB buffers and runs 16 M `ln` calls inside the store lock on the first pen-oriented stroke. No `asset.*` timing row exists (verified), so the Timing Stats table cannot see it. Cost estimated, not measured. | Add `timing::span!("asset.pen_bake")` first; then a τ LUT for the u8 follow layer, per-layer baking, or bake at import. |
 | `session.rs:601, 885` | `as_finished()` — a full extra solve — runs twice per frame from the same fitter state (`gesture_source` and `gesture_view` both reach `fitted`). | Memoize in the fitter, invalidated by `push`/`finish`. |
 | `path.rs:477-545` | Per pointer report: two `solve`s and two `mean_error`s, ~25 heap allocations and four curve walks, times up to ~30 tow emissions per report; `grown` is fully built and dropped whenever `as_is` wins; `basis_matrix()` recomputed per `m_step`. *Reported.* | Persistent candidate buffers solved into in place; scratch `Vec`s; `basis_matrix` as a `const`. |
 | `session.rs:87` → `assist.rs:671` | Steering an ellipse solves a dense 101×101 Cholesky (bandwidth 4) twice per pointer move. *Reported.* | A banded solve, or first a `timing::span!("assist.steer")` to see if it matters. |
-| `document/apply.rs:253` | A neutral-filter merge returns `lower` unchanged but still goes through `with_tiles`, minting a fresh `PaintTiles::revision` for identical tiles — every thumbnail keyed on it re-renders. Same for a `Stack` merge whose `rewritten` set is empty. | Return the layer untouched when nothing was rewritten. |
-| `gpu/tile.rs:751` | `format_pools: HashMap<TextureFormat, _>` hashed on the hottest path in the crate (~4 acquires per tile per pointer move). | A fixed array indexed by a channel enum. |
+| ~~`document/apply.rs:253`~~ | *Closed in `078c4ba`.* A neutral-filter merge returns `lower` unchanged but still goes through `with_tiles`, minting a fresh `PaintTiles::revision` for identical tiles — every thumbnail keyed on it re-renders. Same for a `Stack` merge whose `rewritten` set is empty. | Return the layer untouched when nothing was rewritten. |
+| ~~`gpu/tile.rs:751`~~ | *Closed in `b323e97`.* `format_pools: HashMap<TextureFormat, _>` hashed on the hottest path in the crate (~4 acquires per tile per pointer move). | A fixed array indexed by a channel enum. |
 | `gpu/composite.rs:642`, `guides.rs:148` | Matte-ramp and guide bind groups rebuilt every frame. | Cache on `UniformSlots::write`'s `moved`, as `ScratchLevel` does. |
-| `gpu/composite/overlay.rs:120` | The selection overlay draws every mask tile of every visible selection, uncullled, while pass A is culled. | Cull by the same `TileRect`. |
-| `gpu/selection.rs:245` | `SelectionRenderer::constant` allocates and uploads a texture per call for partial coverage; `mask_for` calls it once per tile of every fill, transform and stroke over an inverted-partial selection. | An `Arc<Mutex<..>>` cache, as `Registry` already uses. |
-| `gpu/scratch.rs:70` | `Key.label` is part of the pool key, so identical `Rgba16Float` squares under different labels cannot serve one another, doubling the warm set the 256 MB budget holds. *Reported.* | Drop the label from the key. |
+| ~~`gpu/composite/overlay.rs:120`~~ | *Closed in `078c4ba`.* The selection overlay draws every mask tile of every visible selection, uncullled, while pass A is culled. | Cull by the same `TileRect`. |
+| ~~`gpu/selection.rs:245`~~ | *Closed in `b323e97`.* `SelectionRenderer::constant` allocates and uploads a texture per call for partial coverage; `mask_for` calls it once per tile of every fill, transform and stroke over an inverted-partial selection. | An `Arc<Mutex<..>>` cache, as `Registry` already uses. |
+| ~~`gpu/scratch.rs:70`~~ | *Closed in `b323e97`.* `Key.label` is part of the pool key, so identical `Rgba16Float` squares under different labels cannot serve one another, doubling the warm set the 256 MB budget holds. *Reported.* | Drop the label from the key. |
 | `assets.rs:187`, `pictures.rs:113` | `bytes()`/`all_bytes()` clone whole PNGs per call (a picture can be megabytes). | `Arc<[u8]>`. |
-| `gpu/substrate.rs:137` | The substrate PNG is decoded on `identify`, again on `load`, and again per scale bake. | Store the decoded `Canonical` beside the bytes. |
+| ~~`gpu/substrate.rs:137`~~ | *Closed in `b323e97`.* The substrate PNG is decoded on `identify`, again on `load`, and again per scale bake. | Store the decoded `Canonical` beside the bytes. |
 
 ---
 
@@ -759,6 +839,21 @@ ergonomics rather than discover them halfway.
   web; four identical "one whole texture" `Extent3d` constants and three
   near-identical tile `Key` builders across `run.rs`/`swept.rs`/`erase.rs`.
 
+**Done in `bdbe46c` and `2c581ae`.** `desc::tex` and the fifteen hand-written pass
+descriptors went first; then the merge stopped describing the screen's groups and
+started binding them — `BlendPass::bind_group` and `FilterPass::bind_group` are the
+sole constructors, both layouts and the filter's sampler are private again, the two
+slot-list re-exports are gone, and `merge.rs` imports no shader binding name at all.
+`blend_uniform` and `filter_uniform` are assembled in one place each; the merge's
+hand-rolled one-slot buffers are `UniformSlots`; `Zeroes::or` is the one answer to "a
+tile, or the 1×1 zeroes"; the readback is one implementation with three doors (−147
+lines, +118); the erase kit compiles no second copy of `stamp.wesl`; `PREFIX_SLOTS` is
+declared once; and `Key::tile` / `Key::extent` mean a copy takes its extent from the
+key that made the texture.
+
+**Open:** `transform.rs`'s `render_parcel` / `render_gated_parcel` pair, and the three
+owned trio types.
+
 **Fix.** In order of payoff: `BlendPass::bind_group(..)` /
 `FilterPass::bind_group(..)` as the sole constructors of their groups, fields
 private, slot-list re-exports gone (≈ −60 lines in `merge.rs` and the guarantee the
@@ -812,6 +907,18 @@ helper. Declare `Resource::Layer(id)` as the write for every minted layer; the
 patch arm becomes reached and tested.
 
 ## T. Files and APIs that carry more than they should
+
+**Done in `35e60ff` and `2efbf05`:** the stringly errors (`ExportError` with the
+numbers a frontend would need, `EngineError::Io` deleted for having no producer,
+`DocError::Misnamed` over the `AssetNeed` vocabulary, and the registry's door returning
+a `DocError` so a substrate's `AssetError` stays typed); `ControlPoint::clamped`;
+`LiveTail`; `Tow::new`'s gate; `encode_filter`'s never-`None` `Option`; `noise::unit`'s
+half-open interval; `RgbaImage::new`'s `u32` overflow; `timing`'s frozen-clock cost;
+and the public API's test hooks, which are `#[doc(hidden)]` beside a `testing` module
+that holds the harness's own shared piece.
+
+**Open:** the module splits (`path.rs`, `assist.rs`), `spline.rs`'s `m_step` naming,
+and the nightly toolchain, whose fix is upstream.
 
 - **Public API inflated by test hooks.** 377 `pub fn`. `flush_live`,
   `live_head_count`, `strokes_reused`, `preview_epoch`, `timeline_stats`,
@@ -951,6 +1058,15 @@ and modulated strokes are uncovered.
 assert on height and alpha directly; run the corpus battery once with
 `SetFastCommit(false)`; one tow case in the corpus.
 
+**The last two are done (`2efbf05`)**, as battery *checks* rather than as cases: every
+corpus stroke now commits once with fast commit off and must land the replay's pixels
+exactly, and every one draws again towed. The tow moves fifteen of the sixteen cases by
+0.3% to 20% of the viewport, so it is not vacuous; what it asserts is not the mark — a
+towed stroke is *meant* to differ — but that preview still equals committed with a
+`Tow` between the reports and the fitter. Checks rather than cases because a case costs
+a golden and sixteen field edits and covers one configuration, where a check covers all
+sixteen.
+
 **What the first half will run into (2026-08-25).** `read_many_rgba16f` reads
 *textures*, and a tile does not hand one out: `TexHandle` deliberately offers only a
 view, at length, because a consumer holding the texture could `destroy()` it and leave
@@ -961,6 +1077,15 @@ small piece of design, not a test change, and it is why this one has not been ta
 here. The other two halves (fast-commit off, a tow case) are ordinary test work.
 
 ## Y. Suite infrastructure
+
+**Done in `2efbf05`:** the acquire-or-skip decision (`stark_engine::testing::or_skip` —
+the judgement shared, the blocking and the caching left with each caller, since
+`pollster` is a dev-dependency), `diff_fraction`'s doc, `corpus.rs`'s "thirteen of the
+fourteen" for sixteen cases, and `docs/engine.md` §9's file list, which named
+twenty-five tests where there are thirty-nine and listed the benchmark among them.
+
+**Open:** the 21 helpers defined in two to five files each, the property-based tests
+(there are still none), and the written-to-pass shapes.
 
 - Device acquire-or-skip logic exists in four copies (`common/mod.rs:92`,
   `tile_pool.rs:16`, `benches/stroke.rs:115`, `stroke.rs:646` ungated).
