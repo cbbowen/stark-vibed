@@ -234,7 +234,7 @@ impl StrokeRenderer {
         // the record, never from the piece in hand. A live tail and the commit that
         // eventually replaces it have to make the same choice, or releasing the pointer
         // would visibly redraw the stroke. See `dynamics_setup`.
-        let Some(_) = self.tips.resolve(scene.assets, &rec.brush) else {
+        let Some(tip) = self.tips.resolve(scene.assets, &rec.brush) else {
             if self.complain_once(rec.seed) {
                 tracing::warn!(
                     "brush stamp asset is unavailable; deferring stroke until it is loaded",
@@ -252,7 +252,7 @@ impl StrokeRenderer {
         // the three paths that has cross-piece state (`Resume`).
         let resume = incremental::Resume::of(rec, &spans, tool);
         match plan.path {
-            StrokePath::Loop => {
+            StrokePath::Loop { dynamics } => {
                 // The fit was bought with shorter segments (`budget::fit_len`) —
                 // correct geometry, but a real cost, since the loop exchanges once
                 // per segment. Said once per stroke, like the error below and for
@@ -270,10 +270,14 @@ impl StrokeRenderer {
                         s.wanted / s.got,
                     );
                 }
-                self.render_dynamic(scene, rec, spans, resume, plan.tol)
+                let brush = dynamics::LoopBrush {
+                    tip: &tip,
+                    dynamics,
+                };
+                self.render_dynamic(scene, rec, spans, resume, plan.tol, brush)
             }
-            StrokePath::Swept => self.render_swept(scene, rec, spans, plan.tol, resume),
-            StrokePath::Erase => self.render_erase(scene, rec, spans, resume, plan.tol),
+            StrokePath::Swept => self.render_swept(scene, rec, spans, plan.tol, resume, &tip),
+            StrokePath::Erase => self.render_erase(scene, rec, spans, resume, plan.tol, &tip),
             StrokePath::TipTooLarge => {
                 // An error, not a warning: what lands is not a rougher version of the
                 // stroke that was asked for but a different brush — the swept deposit
@@ -302,7 +306,7 @@ impl StrokeRenderer {
                          nothing",
                     );
                 }
-                self.render_swept(scene, rec, spans, plan.tol, resume)
+                self.render_swept(scene, rec, spans, plan.tol, resume, &tip)
             }
         }
     }

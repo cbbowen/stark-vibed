@@ -11,26 +11,19 @@ use crate::gpu::channels::Targets;
 use crate::gpu::composite::view_uniform;
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TileMap};
-use stark_model::document::{PaintEffect, StrokeRecord};
+use stark_model::document::StrokeRecord;
 use stark_model::geom::{TileCoord, Vec2};
 
 /// The paint effect the loop is drawing — its own by construction:
-/// `dynamics_setup` routes a stroke here off the `Paint` variant's axes, and the
-/// path is a pure function of the brush (§6.2), so no other kind can arrive.
-fn paint_effect(rec: &StrokeRecord) -> &PaintEffect {
-    rec.brush
-        .paint()
-        .expect("the stamp loop draws paint brushes (§6.2)")
-}
 use stark_shaders::mirror::composite::binding as cb;
 
 use super::super::incremental::{Carried, LoopCarry, Reservoir, Resume};
 use super::super::region::{RegionRect, chunk_segments, cover};
 use super::super::segments::{BleedFire, Segment, generate_segments_in};
 use super::super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
+use super::bleed::bleed_fires;
 use super::plan::{
-    LoopDispatch, PlanCtx, SLOT, STAMP_STRIDE, SlotKind, bleed_fires, cell_scratch_size,
-    dynamics_plan,
+    LoopDispatch, PlanCtx, SLOT, STAMP_STRIDE, SlotKind, cell_scratch_size, dynamics_plan,
 };
 use super::slots;
 use crate::gpu::scratch::{BufKey, Kept, Key, SubmitScope};
@@ -55,6 +48,22 @@ use stark_shaders::mirror::dynamics::decl as d;
 // The region composite runs `composite.wesl`, so it draws that shader's own
 // per-instance record (§6.10) rather than a second `#[repr(C)]` copy of it declared
 // here under a different name.
+use crate::gpu::stroke::tips::ResolvedTip;
+
+/// The brush as [`StrokeRenderer::render_range`](crate::gpu::stroke::StrokeRenderer)'s
+/// gate resolved it, for the one path that needs both halves.
+///
+/// The tip every path binds, and the dynamics axes that chose *this* path. Both were
+/// re-derived inside the run behind an `expect` naming the gate that had already
+/// produced them — one re-resolving the tip through the LRU under its lock, the other
+/// unwrapping the `Paint` effect the plan had matched on to get here. Carried together
+/// because they arrive together and are exactly what "the gate said the loop runs"
+/// means.
+#[derive(Clone, Copy)]
+pub(in crate::gpu::stroke) struct LoopBrush<'a> {
+    pub(in crate::gpu::stroke) tip: &'a ResolvedTip,
+    pub(in crate::gpu::stroke) dynamics: stark_model::document::BrushDynamics,
+}
 use stark_shaders::mirror::composite::Instance as TileInstance;
 
 /// The mint-budget tile's pool key (`LoopCarry::fresh`): copies both ways, nothing
@@ -114,6 +123,7 @@ impl StrokeRenderer {
         spans: StrokeSpans,
         resume: Resume<'_>,
         tol: crate::path::FlattenTolerance,
+        brush: LoopBrush<'_>,
     ) -> (TileMap, StrokeCarry) {
         // The sequential stamp loop end to end. Everything below it — `stroke.piece`
         // and the four phases inside that — partitions this row, which is what makes
@@ -136,14 +146,27 @@ impl StrokeRenderer {
             return (scene.base.clone(), StrokeCarry::unchanged(end_dist));
         }
 
-        let mut run = DynamicsRun::new(self, scene, rec, tol, resume.prior);
+        let mut run = DynamicsRun::new(self, scene, rec, tol, resume.prior, brush);
         let mut map = scene.base.clone();
         // The bleed cadence's firings for the whole range (§6.2), computed once and
         // sliced per piece rather than re-derived inside each: the chunker must
         // measure every piece **with its windows** — a window can reach back a
         // quantum before the segment it fires after, which for a piece's first
         // segment is substrate no segment box covers ([`chunk_segments`]).
-        let fires = bleed_fires(paint_effect(rec).dynamics.bleed, &segments);
+        let (fires, bleed_capped) = bleed_fires(brush.dynamics.bleed, &segments);
+        // The third budget, said out loud like the other two. A segment wanting more
+        // than `MAX_BLEED_FIRES_PER_SEGMENT` firings gets the cap, and past it the axis
+        // "quietly under-delivers" — `bleed.rs`'s own words. The artist sees a bleed
+        // knob that stops meaning what it says at small modulated radii, with nothing
+        // in the log; the segment-shortening cap next door has been reported since it
+        // existed, on the same once-per-stroke gate and for the same reason.
+        if bleed_capped && self.complain_once(rec.seed) {
+            tracing::warn!(
+                radius = rec.brush.size,
+                cap = super::bleed::MAX_BLEED_FIRES_PER_SEGMENT,
+                "a segment wants more bleed firings than it may have: the bleed axis                  under-delivers on this stroke",
+            );
+        }
         // The pen-up settle (§6.2) belongs to the range that reaches the *stroke's* end,
         // and within it to the last piece — which is the same condition that says there
         // is no reservoir worth keeping. A range that stops short hands its tool on
@@ -283,6 +306,7 @@ impl<'a> DynamicsRun<'a> {
         rec: &'a StrokeRecord,
         tol: crate::path::FlattenTolerance,
         tool: Option<&ToolState>,
+        brush: LoopBrush<'_>,
     ) -> Self {
         let device = &r.ctx.device;
         let mut scope = r.scratch.scope(&r.ctx, "stark dynamics stroke");
@@ -290,11 +314,7 @@ impl<'a> DynamicsRun<'a> {
 
         // The brush's swept-extent prefix-τ (shared with the fast path) and its
         // plain coverage mask (the reservoir texels' own extent weights).
-        let tip = r
-            .tips
-            .resolve(scene.assets, &rec.brush)
-            .expect("render_range checked the stamp asset before starting the dynamics run");
-        let prefix_view = tip.prefix;
+        let prefix_view = brush.tip.prefix.clone();
         let prefix_bg = desc::bind_group_for(
             device,
             "stark dynamics prefix bg",
@@ -303,7 +323,7 @@ impl<'a> DynamicsRun<'a> {
             false,
             |_| wgpu::BindingResource::TextureView(&prefix_view),
         );
-        let cov = tip.coverage;
+        let cov = brush.tip.coverage.clone();
         // Color dynamics for the brush's own `add` paint — the same field and
         // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
         let noise = r.tips.noise(&rec.brush.color_dynamics(), consts.noise_seed);
@@ -386,7 +406,7 @@ impl<'a> DynamicsRun<'a> {
             // Init: latent = the brush's own color, per-unit opacity = exactly 1
             // (minted paint is opaque per unit, §6.2); the carried amount starts
             // at the pre-`charge` glob (0 = empty tool).
-            let d = paint_effect(rec).dynamics;
+            let d = brush.dynamics;
             scope
                 .encoder()
                 .begin_render_pass(&wgpu::RenderPassDescriptor {

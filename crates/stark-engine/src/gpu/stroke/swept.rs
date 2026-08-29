@@ -95,6 +95,7 @@ const _: () = assert!(
 // The per-tile uniform, generated from `stamp_common.wesl`'s own declaration
 // (§6.7): the tile *texture's* top-left in canvas px + canvas→NDC scale, plus the
 // brush's stroke-constant color channels.
+use super::tips::ResolvedTip;
 use stark_shaders::mirror::stamp_common::TileXform;
 
 /// One tile's window into the stroke's transform buffer — the `min_binding_size` the
@@ -261,6 +262,7 @@ impl StrokeRenderer {
         spans: StrokeSpans,
         tol: crate::path::FlattenTolerance,
         resume: Resume<'_>,
+        tip: &ResolvedTip,
     ) -> (TileMap, StrokeCarry) {
         // The control every dynamics row is read against: the same geometry, the
         // same tiles, one instanced draw instead of a dispatch chain per segment.
@@ -269,10 +271,10 @@ impl StrokeRenderer {
         crate::timing::span!("stroke.swept");
         let StrokeScene {
             pool,
-            assets,
             base,
             selection,
             substrate,
+            ..
         } = scene;
         // Everything both paths share, resolved once (see [`StrokeConstants`]).
         let k = self.stroke_constants(rec, substrate, selection);
@@ -294,7 +296,7 @@ impl StrokeRenderer {
         // does. A ring of stateless pieces there would cap each piece on its own
         // and let a stroke crossing itself outrun the mask.
         if k.opacity < 1.0 || selection.is_active() {
-            return self.render_swept_scaled(scene, rec, &k, &segments, end_dist, resume);
+            return self.render_swept_scaled(scene, rec, &k, &segments, end_dist, resume, tip);
         }
 
         // The submit scope: the per-stroke buffers and the shared scratch pair ride
@@ -304,7 +306,7 @@ impl StrokeRenderer {
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke commit");
 
         let device = &self.ctx.device;
-        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, assets, rec, substrate, &k);
+        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, &k);
         // The per-tile draw list, instance buffer and transform slots — shared with
         // the erase pass ([`sweep_draws`]).
         let draws = sweep_draws(self, &mut scope, rec, &k, &segments);
@@ -469,6 +471,10 @@ impl StrokeRenderer {
     /// per piece, and no ring overlap. The full-opacity path — every stroke
     /// whose dial is at 1 — never comes here, which is why the branch is on the
     /// brush and not a uniform alone.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every argument is a distinct type, so the transposition the lint guards cannot be written; the four beyond `scene` are what `render_swept` already flattened and resolved, and re-deriving any of them here is what this path exists to avoid"
+    )]
     fn render_swept_scaled(
         &self,
         scene: StrokeScene<'_>,
@@ -477,15 +483,14 @@ impl StrokeRenderer {
         segments: &[Segment],
         end_dist: f32,
         resume: Resume<'_>,
+        tip: &ResolvedTip,
     ) -> (TileMap, StrokeCarry) {
         // The pool and the selection are the accumulator's, as in `erase.rs`; the
         // base it reads pristine paint out of is too.
-        let StrokeScene {
-            assets, substrate, ..
-        } = scene;
+        let StrokeScene { substrate, .. } = scene;
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke scaled commit");
         let device = &self.ctx.device;
-        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, assets, rec, substrate, k);
+        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, k);
         let draws = sweep_draws(self, &mut scope, rec, k, segments);
         let opacity_buf = opacity_uniform(&mut scope, k.opacity);
 
@@ -625,19 +630,17 @@ impl RingSlot {
 pub(super) fn sweep_binds(
     r: &StrokeRenderer,
     scope: &mut crate::gpu::scratch::SubmitScope,
-    assets: &crate::assets::AssetStore,
+    tip: &ResolvedTip,
     rec: &StrokeRecord,
     substrate: &crate::gpu::substrate::SubstrateMap,
     k: &super::StrokeConstants,
 ) -> (wgpu::BindGroup, wgpu::BindGroup) {
     let device = &r.ctx.device;
-    // Resolve the brush's prefix-τ texture: image brushes from the asset
-    // store; the round tip generated (and cached) from its hardness.
-    let tip = r
-        .tips
-        .resolve(assets, &rec.brush)
-        .expect("render_range checked the stamp asset before starting the swept run");
-    let prefix_view = tip.prefix;
+    // The brush's prefix-τ texture — image brushes from the asset store, the round tip
+    // generated and cached from its hardness — resolved by `render_range`'s own gate
+    // and handed down. It used to be re-resolved here behind an `expect` naming that
+    // gate, which is a claim about a caller where passing the value is a fact.
+    let prefix_view = tip.prefix.clone();
     let prefix_bg = desc::bind_group_for(
         device,
         "stark sweep prefix bg",

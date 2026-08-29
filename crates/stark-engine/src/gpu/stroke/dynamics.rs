@@ -26,6 +26,7 @@ mod slots;
 
 pub(in crate::gpu::stroke) use bleed::BLEED_TRAVEL_QUANTUM;
 pub(super) use kit::{DynamicsKit, build_dynamics_kit};
+pub(in crate::gpu::stroke) use run::LoopBrush;
 
 /// Which path a stroke takes, as [`dynamics_setup`] decides it.
 ///
@@ -34,8 +35,16 @@ pub(super) use kit::{DynamicsKit, build_dynamics_kit};
 /// it was given. Only the caller knows how loudly to say so, so the distinction is
 /// carried out rather than resolved here.
 pub(super) enum StrokePath {
-    /// Run the sequential stamp loop.
-    Loop,
+    /// Run the sequential stamp loop, with the axes that sent it here.
+    ///
+    /// The variant carries what it proved. `dynamics_setup` reads the axes off the
+    /// `Paint` effect to decide this arm at all, so a stroke on this path is a paint
+    /// stroke by construction — which the run then re-derived twice through a helper
+    /// whose `expect` said "the stamp loop draws paint brushes". A value that is in
+    /// hand at the decision does not need an assertion at the use.
+    Loop {
+        dynamics: stark_model::document::BrushDynamics,
+    },
     /// The brush manipulates no paint already on the canvas, so the swept deposit
     /// *is* the whole stroke — one pass, no region, nothing given up.
     Swept,
@@ -134,7 +143,7 @@ pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
     // the renderer can quote it.
     let wanted = dynamics_len(b);
     StrokePlan {
-        path: StrokePath::Loop,
+        path: StrokePath::Loop { dynamics: d },
         tol,
         shortened: (fit < wanted).then_some(Shortened { wanted, got: fit }),
     }
@@ -178,13 +187,13 @@ mod tests {
     fn only_a_tip_that_alone_overflows_the_region_degrades() {
         assert!(matches!(
             dynamics_setup(&brush(1.0, 0.5)).path,
-            StrokePath::Loop
+            StrokePath::Loop { .. }
         ));
         // The largest brush the UI offers (`panels::brush::MAX_RADIUS`), at rates
         // gentle enough to earn the fully relaxed segment length.
         assert!(matches!(
             dynamics_setup(&brush(500.0, 0.05)).path,
-            StrokePath::Loop
+            StrokePath::Loop { .. }
         ));
         // A tip wider than the whole region cannot fit at any segment length.
         let b = brush(super::super::budget::MAX_REGION_DIM as f32, 0.5);
@@ -202,7 +211,10 @@ mod tests {
         let mut b = brush(500.0, 0.05);
         b.shape = stark_model::document::BrushShape::Stamp(stark_model::AssetId([7u8; 32]));
         let plan = dynamics_setup(&b);
-        assert!(matches!(plan.path, StrokePath::Loop), "the loop must run");
+        assert!(
+            matches!(plan.path, StrokePath::Loop { .. }),
+            "the loop must run"
+        );
         assert!(
             plan.shortened.is_none(),
             "a stamp's tip costs its radius, not √2 of it — nothing to shorten",
@@ -248,7 +260,7 @@ mod tests {
                     b.stretch = knob;
                     let reach = size * BrushParams::elongation(knob);
                     let fits = reach <= max_tip_reach(&b);
-                    let drawn = matches!(dynamics_setup(&b).path, StrokePath::Loop);
+                    let drawn = matches!(dynamics_setup(&b).path, StrokePath::Loop { .. });
                     assert_eq!(
                         drawn,
                         fits,
@@ -300,7 +312,7 @@ mod tests {
                 b.paint_mut().expect("a paint brush").dynamics.bleed = bleed;
                 b.stretch = max_stretch(&b);
                 assert!(
-                    matches!(dynamics_setup(&b).path, StrokePath::Loop),
+                    matches!(dynamics_setup(&b).path, StrokePath::Loop { .. }),
                     "size {size}, bleed {bleed}: the editor's top stretch of {} \
                      degrades",
                     b.stretch,

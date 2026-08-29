@@ -2,15 +2,19 @@
 //! fires (§6.2).
 //!
 //! One model, so one file. The cadence lived in `budget.rs` beside the flattening
-//! caps, the stencil solve beside it, and [`bleed_fires`](super::plan::bleed_fires) —
-//! which is the other half of the same thing — a directory away in the plan. They are
-//! together now: the axis is a **diffusivity**, and everything that decides what that
-//! buys is here.
+//! caps, the stencil solve beside it, and [`bleed_fires`] — which is the other half
+//! of the same thing — a directory away in the plan, where it was the only reader of
+//! the two constants above. They are together now: the axis is a **diffusivity**, and
+//! everything that decides what that buys is here. `plan.rs` is left asking
+//! [`bleed_stencil`] what a window costs and nothing about when one fires.
 //!
 //! Nothing here touches the GPU. It is float arithmetic over a radius and a span, which
 //! is what lets the whole calibration be pinned without an adapter (`tests`).
 
 use super::super::budget::TAU_PER_PASS;
+/// The segment vocabulary the cadence is written in: what it reads (a `Segment`'s
+/// `Sweep`) and what it emits (a `BleedFire` carrying a synthetic one).
+use super::super::segments::{BleedFire, Segment, Sweep};
 /// The numbers `dynamics.wesl` computes with, generated from its own declarations
 /// (§6.10) — the bleed stencil's shares. Relations this file has to honour rather
 /// than values it may choose, so it reads them from the shader instead of keeping a
@@ -201,9 +205,212 @@ pub(super) fn bleed_stencil(bleed: f32, radius: f32, span: f32) -> (f32, f32) {
 /// regime where this bites fails a test rather than shipping.
 const BLEED_BLEND_CEILING: f32 = 0.9;
 
+/// The bleed cadence (§6.2): one dedicated **bleed slot** per crossing of
+/// [`BLEED_TRAVEL_QUANTUM`] of absolute arc, as `(after, window)` pairs — the index
+/// of the piece segment the firing follows, and a synthetic segment whose sweep is
+/// the firing's travel window: **exactly one quantum** of path, bending the way the
+/// crossing segment bends. A segment that crosses the cadence twice fires twice, and
+/// the two windows tile back from its end rather than merging into one.
+///
+/// **One quantum per firing is what makes the axis a diffusivity** rather than a
+/// number that means less the faster the hand moves. A window asks the stencil for
+/// `σ² ∝ its own travel`, and what one firing can carry is `2·Σ(share·d²)` — a
+/// property of the stencil, flat in the travel. So a merged N-quantum window asks for
+/// N times what a firing can give and is clamped back to roughly `1/N` of it
+/// ([`bleed_stencil`]). That is not the exotic case: a segment at the travel cap
+/// crosses a half-radius cadence twice, so an ordinary fast stroke was already
+/// diffusing a tenth short before this fired per crossing. Variance adds linearly in
+/// travel across firings, so N of them deliver N quanta's worth exactly — more steps,
+/// not bigger ones, as in any explicit diffusion solver.
+///
+/// Counted off the **absolute** arc, so the firings, and the windows they sweep,
+/// are a pure function of the record, independent of how the path was cut (§6.2,
+/// live == committed). Why the lateral flux cannot simply ride the painting segments is a
+/// numeric story told at the shader (`dynamics.wesl`, the bleed-slot note): on real
+/// slow input the fitter emits sub-pixel segments, whose per-texel exposure is
+/// prefix-cancellation noise and whose per-segment fluxes sit under the f16 ULP of
+/// the heights they edit — measured as a 20-level directional ghost on a 177-knot
+/// repro. A half-radius window has neither problem.
+///
+/// Each window is an **arc**, not the chord across one. At this cadence the two are
+/// a fraction of a texel apart, so this is not a correction — it is that a window
+/// *is* a stretch of the path, and a representation that says so cannot be wrong at
+/// whatever cadence some later tuning picks. Its start is walked **back along the
+/// crossing segment's own arc** rather than looked up among the segments in hand, so a
+/// window is never truncated by where the range being drawn happens to begin — see the
+/// note at the walk itself for what that truncation cost.
+pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> (Vec<BleedFire>, bool) {
+    let mut fires = Vec::new();
+    // Whether any segment wanted more firings than it may have — see the cap below.
+    let mut capped = false;
+    // The brush's own axis, so *which* windows fire stays a function of the geometry
+    // and the brush alone; how hard each one relaxes is the pen's business, and comes
+    // off the crossing segment below. A brush at zero bleed can be modulated nowhere
+    // above zero, so this early-out is exact (`document::Modulation`).
+    if bleed <= 0.0 {
+        return (fires, capped);
+    }
+    for (i, seg) in segments.iter().enumerate() {
+        let s = &seg.sweep;
+        let bq = BLEED_TRAVEL_QUANTUM * s.radius;
+        // Before the division, not after it. A tip with no width sweeps nothing and has
+        // nothing to relax, and asking how many quanta fit in it first made `crossings`
+        // a NaN that only fell through by the grace of `NaN < 1.0` being false.
+        // `generate_segments_in` floors the radius at 0.5, so no real segment reaches
+        // here — which is the reason to state the guard plainly rather than lean on the
+        // ordering of two comparisons.
+        if bq <= 1e-3 {
+            continue;
+        }
+        let crossings = ((s.dist + s.length) / bq).floor() - (s.dist / bq).floor();
+        if crossings < 1.0 {
+            continue;
+        }
+        // Capped so a plan stays bounded. `crossings` is the segment's travel over its
+        // *own* radius' quantum, and those two are priced apart: the flattener buys
+        // segment length off the brush's nominal radius while the cadence is the
+        // modulated one, so a pen thinning the tip drives the count up without
+        // shortening anything. Sixteen covers a tip down to a quarter of the brush;
+        // under that the axis under-delivers, on a tip carrying almost no paint to
+        // spread. Without a cap this is a memory blow-up on a degenerate stroke, which
+        // is a worse failure than a gentle one.
+        capped |= crossings as usize > MAX_BLEED_FIRES_PER_SEGMENT;
+        let crossings = (crossings as usize).min(MAX_BLEED_FIRES_PER_SEGMENT);
+        let (end, end_dir) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length);
+        // Walked **back along the crossing segment's own arc**, rather than looked up
+        // in the segments this piece happens to hold. Reversing an arc is negating
+        // both its direction and its curvature, so this is the same circle traced the
+        // other way and is exact for any path the segment itself describes.
+        //
+        // It is history-free, and that is the point. Looking the position up means
+        // clamping to the first segment in hand, so a window reaching further back
+        // than the range being drawn comes out short — and a live tail always starts at
+        // a span boundary while the commit renders the whole stroke from zero, so the
+        // two would relax different amounts of paint at exactly that seam. That is a
+        // `preview == committed` break (§1.3), in the one place it cannot be
+        // repainted, and a visible one: a bleeding stroke lightens when the pointer
+        // comes up.
+        //
+        // What it costs is extrapolating one segment's curvature over the window —
+        // the same bend for the whole span rather than each segment's own, which is
+        // what walking the true path would give. Bounded by
+        // [`MAX_TIP_TURN`](super::budget::MAX_TIP_TURN), which caps how far the tip's
+        // curvature may move at all, and the window is the arc that extrapolation
+        // describes rather than a chord across it, so nothing else is given up on top.
+        //
+        // Emitted oldest first: the firings tile back from the segment's end, but they
+        // edit the canvas in sequence and paint laid earlier should relax first.
+        for n in (0..crossings).rev() {
+            let back = (n + 1) as f32 * bq;
+            let (start, back_dir) = crate::path::arc_at(end, end_dir * -1.0, -s.curvature, back);
+            fires.push(BleedFire {
+                after: i,
+                // The window inherits the crossing segment's `bleed`, and **only** that
+                // — it is that segment's own firing, and the axis is the one thing the
+                // slot it becomes will read. A [`Sweep`] has nowhere to put the other
+                // rates, which is what keeps `dynamics_plan` from having to zero them
+                // back out lane by lane. Reading the axis from one point of the window
+                // is the cadence's usual approximation about the radius it fires at.
+                bleed: seg.paint.bleed,
+                window: Sweep {
+                    start,
+                    // The reversed walk arrives pointing back the way it came, so the
+                    // window's own heading is its negation — the tangent the path had
+                    // at `start`, which is where the arc below is measured from.
+                    dir: back_dir * -1.0,
+                    // **The window bends with the path it stands for.** Its two
+                    // endpoints were always on the arc; carrying the curvature is what
+                    // puts the sweep between them there too. At this cadence a chord
+                    // would sit `span²·κ/8` off the paint, which the tip covers many
+                    // times over — so this is not a correction, it is that a window
+                    // *is* a stretch of the path and nothing is gained by representing
+                    // it as something else. Nothing downstream needs telling:
+                    // `coverage_bounds` already grows a box by the sagitta, and
+                    // `deposit` sweeps an arc for every painting segment by unrolling
+                    // the annulus (`stamp_common::sweep_at`) — a bleed slot just takes
+                    // the same path. The unroll's own error is `radius·|curvature|/2`,
+                    // which the window inherits from the crossing segment and the
+                    // flattener has capped
+                    // ([`MAX_TIP_TURN`](super::budget::MAX_TIP_TURN)).
+                    curvature: s.curvature,
+                    radius: s.radius,
+                    // **A window does not ramp**, even when the segment it fires after
+                    // does. A firing is a stretch of lateral diffusion at one tip, and
+                    // that tip is the radius `bleed_stencil` solved its reach and rate
+                    // against (`plan`, below) — a sweep whose rim moved under it would
+                    // be diffusing at a width its own stencil was not built for. The
+                    // cadence's usual approximation about the radius it fires at, and
+                    // the same one the inherited rates below make.
+                    ramp: 0.0,
+                    // The crossing segment's shape is the window's shape — a firing is
+                    // that segment relaxing its own extent, so it reaches exactly as
+                    // far from the centreline.
+                    reach: s.reach,
+                    // One quantum of arc length, which is what `sweep_at` measures
+                    // travel in — and what `bleed_stencil` is calibrated against.
+                    length: bq,
+                    orient: s.orient,
+                    // The window is that segment's extent relaxing, so it is the
+                    // same extent — drawn out along the same axis by the same
+                    // amount, which is already folded into the `orient` beside it
+                    // (§6.6). The reach it inherits above was measured with it.
+                    stretch: s.stretch,
+                    dist: s.dist + s.length - back,
+                },
+            });
+        }
+    }
+    (fires, capped)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::super::segments::{Paint, Stretch};
     use super::*;
+    use stark_model::geom::Vec2;
+
+    /// A straight sweep of `length` from `start` along `dir`, at arc length `dist`.
+    fn sweep(start: Vec2, dir: Vec2, length: f32, radius: f32, dist: f32) -> Sweep {
+        Sweep {
+            start,
+            dir,
+            curvature: 0.0,
+            radius,
+            // A tip that holds still, so the frame the shader unrolls is the one
+            // these builders are being measured against and nothing else.
+            ramp: 0.0,
+            // A tip that reaches its own radius: the plan builders are being
+            // measured here, not the width of any one shape.
+            reach: radius,
+            length,
+            orient: 0.0,
+            // An unstretched tip — the plan builders are being measured here.
+            stretch: Stretch::NONE,
+            dist,
+        }
+    }
+
+    /// The same, as a whole segment. The plan builders read the frame, the radius and
+    /// the arc clock; the paint rates are left at [`Paint::default`]'s zero except
+    /// where a test sets one, so a value that mattered would have to be given
+    /// deliberately.
+    fn seg(start: Vec2, dir: Vec2, length: f32, radius: f32, dist: f32) -> Segment {
+        Segment {
+            sweep: sweep(start, dir, length, radius, dist),
+            paint: Paint::default(),
+        }
+    }
+
+    /// `n` straight segments of `len` each, running +x from the origin — a stroke cut
+    /// the way the flattener would cut a steady drag.
+    fn run(n: usize, len: f32, radius: f32) -> Vec<Segment> {
+        (0..n)
+            .map(|i| {
+                let d = i as f32 * len;
+                seg(Vec2::new(d, 0.0), Vec2::new(1.0, 0.0), len, radius, d)
+            })
+            .collect()
+    }
 
     /// The diffusivity a firing actually delivers, recovered from what
     /// [`bleed_stencil`] hands the shader — the reach it builds its stencil at and the
@@ -377,6 +584,162 @@ mod tests {
                 merged < 0.95 * one,
                 "a {n}-quantum window delivered {merged} against the {one} a firing \
                  per crossing gets, so the shortfall this guards has gone away",
+            );
+        }
+    }
+
+    /// **The claim `bleed_fires` is built on**: which windows fire, and what each one
+    /// sweeps, is a pure function of the record — not of where the renderer happened to
+    /// cut the stroke into pieces or ranges.
+    ///
+    /// This is a `preview == committed` property (§1.3) in the one place it cannot be
+    /// repainted. A live tail always starts at a span boundary while the commit renders
+    /// the whole stroke from zero, so if a window came out shorter for one than the
+    /// other, a bleeding stroke would visibly lighten the moment the pointer came up —
+    /// which it did, before the window learned to walk back along the crossing
+    /// segment's own arc instead of looking its start up among the segments in hand.
+    ///
+    /// Checked at every cut point rather than one, since the interesting cuts are
+    /// exactly the ones that land mid-window.
+    #[test]
+    fn bleed_firings_do_not_depend_on_where_the_stroke_was_cut() {
+        // Segments well under the quantum (0.5 · radius = 5px), so windows routinely
+        // reach back over several of them and a cut can land inside one.
+        let all = run(40, 1.5, 10.0);
+        let whole: Vec<_> = bleed_fires(0.4, &all)
+            .0
+            .into_iter()
+            .map(|f| (f.after, f.window.start, f.window.length, f.window.dist))
+            .collect();
+        assert!(
+            whole.len() > 3,
+            "the case does not fire often enough to be interesting: {}",
+            whole.len()
+        );
+
+        for cut in 1..all.len() {
+            let mut split: Vec<_> = bleed_fires(0.4, &all[..cut])
+                .0
+                .into_iter()
+                .map(|f| (f.after, f.window.start, f.window.length, f.window.dist))
+                .collect();
+            split.extend(bleed_fires(0.4, &all[cut..]).0.into_iter().map(|f| {
+                (
+                    f.after + cut,
+                    f.window.start,
+                    f.window.length,
+                    f.window.dist,
+                )
+            }));
+            assert_eq!(
+                split, whole,
+                "cutting after segment {cut} changed the firings"
+            );
+        }
+    }
+
+    /// The firings of a curved segment **tile it**, a quantum each, and every one of
+    /// them lies on the path rather than on a chord across it.
+    ///
+    /// Two properties that hold each other up. Tiling is what makes the axis a
+    /// diffusivity: a firing carries a fixed variance, so N quanta of travel have to
+    /// arrive as N firings or the axis is quietly scaled by `1/N` (`bleed_stencil`).
+    /// And a window on the arc is what makes each of those tiles a stretch of the path
+    /// rather than an approximation to one — at this cadence the bow a chord would sit
+    /// off it is under a thousandth of a texel, so this is not a correction the picture
+    /// needs today; it is that the representation cannot go wrong if the cadence is
+    /// ever coarsened, which is the lever `BLEED_REACH_MAX` names as the way to
+    /// diffuse further.
+    #[test]
+    fn a_segments_firings_tile_it_along_its_own_arc() {
+        use crate::gpu::stroke::budget::MAX_TIP_TURN;
+        // A 40 px brush at the tightest arc the flattener will sweep it along, its
+        // size modulated down to a 3 px tip — and segments at the travel cap, which is
+        // priced off the 40 rather than the 3, so each crosses the cadence many times.
+        let (nominal, tip, len) = (40.0f32, 3.0f32, 40.0f32);
+        let kappa = MAX_TIP_TURN / nominal;
+        let r = 1.0 / kappa;
+        let centre = Vec2::new(0.0, r);
+        let quantum = BLEED_TRAVEL_QUANTUM * tip;
+
+        let mut segs = Vec::new();
+        let (mut p, mut d, mut dist) = (Vec2::ZERO, Vec2::new(1.0, 0.0), 0.0);
+        for _ in 0..20 {
+            let mut s = seg(p, d, len, tip, dist);
+            s.sweep.curvature = kappa;
+            segs.push(s);
+            (p, d) = crate::path::arc_at(p, d, kappa, len);
+            dist += len;
+        }
+
+        let (fires, _) = bleed_fires(0.4, &segs);
+        // The cap is what stops this being `len / quantum` = 53 per segment.
+        assert_eq!(fires.len(), 20 * MAX_BLEED_FIRES_PER_SEGMENT);
+        for f in &fires {
+            let w = &f.window;
+            assert_eq!(
+                w.length, quantum,
+                "a firing swept more than its own quantum"
+            );
+            // Every point of the window sits on the circle the path traced — not just
+            // its two ends, which the walk back along the crossing segment's own arc
+            // already put there.
+            for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let on = crate::path::arc_at(w.start, w.dir, w.curvature, w.length * t).0;
+                assert!(
+                    ((on - centre).length() - r).abs() < 1e-2,
+                    "the window left the path {} px at t = {t}",
+                    (on - centre).length() - r,
+                );
+            }
+            // Butted end to end, back from the segment's end: no quantum of travel is
+            // diffused twice, and none is skipped between the cap and that end.
+            let s = &segs[f.after].sweep;
+            let from_end = s.dist + s.length - w.dist;
+            let quanta = from_end / quantum;
+            assert!(
+                (quanta - quanta.round()).abs() < 1e-3
+                    && quanta <= MAX_BLEED_FIRES_PER_SEGMENT as f32 + 1e-3,
+                "a firing sits {quanta} quanta back from its segment's end",
+            );
+        }
+    }
+
+    /// A brush that does not bleed fires nothing at all — the early-out is exact, and
+    /// is what lets every non-bleeding stroke keep the no-bleed path bit-for-bit.
+    #[test]
+    fn a_brush_that_does_not_bleed_fires_nothing() {
+        assert!(bleed_fires(0.0, &run(40, 1.5, 10.0)).0.is_empty());
+    }
+
+    /// **Why the cadence exists at all**: a firing's window is a quarter-radius of travel
+    /// however finely the path was cut, so its exposure is a well-conditioned prefix
+    /// difference rather than the f16 noise a per-segment flux would be.
+    ///
+    /// A hand that draws slowly is fitted at a control point per pointer sample — the
+    /// repro that prompted this carried 177 knots over 68 px — and at that cut a texel's
+    /// per-segment flux lands under the f16 ULP of the height it is editing, so every
+    /// store either snaps it away or ratchets a whole ULP. One firing moves what those
+    /// micro-segments would each have tried to move, in a step far above the floor.
+    #[test]
+    fn a_firing_sweeps_its_own_quantum_however_finely_the_path_was_cut() {
+        let radius = 20.0;
+        let quantum = BLEED_TRAVEL_QUANTUM * radius;
+        // 0.39 px a segment — the repro's mean span.
+        let fine = run(400, 0.39, radius);
+        let (fires, _) = bleed_fires(0.4, &fine);
+        assert!(fires.len() > 5, "only {} firings", fires.len());
+        for f in &fires {
+            let w = &f.window;
+            assert!(
+                (w.length - quantum).abs() < 0.5,
+                "a firing swept {} of the {quantum} its cadence carries",
+                w.length,
+            );
+            assert!(
+                w.length > 10.0 * 0.39,
+                "the window is segment-sized, which is the regime the cadence exists \
+                 to leave",
             );
         }
     }

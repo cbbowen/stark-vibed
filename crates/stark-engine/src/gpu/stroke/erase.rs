@@ -43,6 +43,7 @@ use super::accum::{
 use super::incremental::{Carried, Resume};
 use super::segments::generate_segments_in;
 use super::swept::{SweptKit, sweep_binds, sweep_draws};
+use super::tips::ResolvedTip;
 use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
 use crate::gpu::scratch::{BufKey, Key};
 
@@ -168,15 +169,13 @@ impl StrokeRenderer {
         spans: StrokeSpans,
         resume: Resume<'_>,
         tol: crate::path::FlattenTolerance,
+        tip: &ResolvedTip,
     ) -> (TileMap, StrokeCarry) {
         crate::timing::span!("stroke.erase");
         // The pool and the selection are the accumulator's — it is what acquires
         // the copy-on-write destinations and gates each one by its mask (§6.8).
         let StrokeScene {
-            assets,
-            base,
-            substrate,
-            ..
+            base, substrate, ..
         } = scene;
         let k = self.stroke_constants(rec, substrate, scene.selection);
         let (segments, end_dist) = generate_segments_in(rec, tol, spans);
@@ -190,7 +189,7 @@ impl StrokeRenderer {
         // The brush's textures, bound exactly as the swept path binds them — one
         // derivation (`sweep_binds`), and `fs_erase` reads the same prefix-τ,
         // substrate and stroke uniform (the noise field rides along unread).
-        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, assets, rec, substrate, &k);
+        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, &k);
         let draws = sweep_draws(self, &mut scope, rec, &k, &segments);
 
         // The stroke's ceiling, once per *call* — `StrokeConstants` resolved it with
