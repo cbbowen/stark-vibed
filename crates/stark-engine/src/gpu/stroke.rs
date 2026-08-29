@@ -168,9 +168,12 @@ impl StrokeRenderer {
         // that uses them, and the brush textures both paths resolve live with their
         // caches. What is left here is the pair of them plus the scene-independent
         // things a renderer is handed.
-        let swept = build_swept_kit(&ctx.device, color_space.as_ref());
+        // One compile of `stamp.wesl`, lent to the two kits that draw the swept
+        // extent through it (`swept::stamp_module`).
+        let stamp = swept::stamp_module(&ctx.device, color_space.as_ref());
+        let swept = build_swept_kit(&ctx.device, color_space.as_ref(), &stamp);
         let dynamics = build_dynamics_kit(ctx, color_space.as_ref(), tile_bgl);
-        let erase = build_erase_kit(&ctx.device, color_space.as_ref(), &swept);
+        let erase = build_erase_kit(&ctx.device, color_space.as_ref(), &swept, &stamp);
 
         Self {
             ctx: ctx.clone(),

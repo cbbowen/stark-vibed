@@ -43,7 +43,7 @@ pub(crate) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
 /// That asks their formats to be filterable, which `Rgba16Float`/`R16Float` are
 /// everywhere this runs — including WebGPU's core feature set — and costs the point
 /// filters nothing: a sampled declaration still serves their exact `textureLoad`s.
-pub(crate) const FILTER_SLOTS: &[Slot] = &[
+const FILTER_SLOTS: &[Slot] = &[
     Slot::dynamic(fcd::F),
     Slot::sampled(fcd::BACK_COLOR),
     Slot::sampled(fcd::BACK_AUX),

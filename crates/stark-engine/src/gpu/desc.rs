@@ -356,8 +356,6 @@ pub(crate) fn pipeline_layout(
     })
 }
 
-// ---- bind group entries --------------------------------------------------------
-
 // ---- render pass attachments ---------------------------------------------------
 
 /// Clear to transparent, then store. What every target fully rewritten by its own

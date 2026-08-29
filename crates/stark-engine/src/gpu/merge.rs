@@ -304,7 +304,8 @@ impl MergeRenderer {
     pub fn apply_filter(&self, pool: &TilePool, dest: &TileMap, draw: &FilterDraw) -> TileMap {
         debug_assert!(
             draw.kind != stark_shaders::mirror::filter_common::FILTER_CHROMATIC,
-            "a resampling filter cannot be merged (§14.11.7) — `merge::plan` declines              it, because no apron makes a gather a function of canvas position (§6.4)",
+            "a resampling filter cannot be merged (§14.11.7) — `merge::plan` declines \
+             it, because no apron makes a gather a function of canvas position (§6.4)",
         );
         let uniform = self.filter_uniform(draw);
         let mut scope = TileScope::new(&self.ctx, "stark merge filter");
@@ -322,13 +323,11 @@ impl MergeRenderer {
     /// One tile's channels through the compositor's own filter shader, tile-space
     /// entry point (§14.11.7).
     ///
-    /// The bind group is [`Compositor::encode_filter`]'s, slot for slot, because it is
-    /// the same layout: the tile's three channel textures stand where the
-    /// accumulator's do, and the pigment LUT is the blend pass's, as it is on screen.
-    /// The sampler at 3 is bound and never read — `fs_tile` takes no taps — because a
-    /// bind group answers to the whole layout.
+    /// The bind group is the **filter pass's own**, built by it
+    /// ([`FilterPass::bind_group`](crate::gpu::composite::FilterPass)): the tile's
+    /// three channel textures stand where the accumulator's do, and the pigment LUT
+    /// is the blend pass's, as it is on screen.
     ///
-    /// [`Compositor::encode_filter`]: crate::gpu::composite
     /// The tile is not an `Option` where the merge's other encoders take one: a
     /// filter layer is *defined* as a function of the paint beneath it (§21), so a
     /// tile the lower layer does not have is a tile this merge never plans — the
@@ -347,11 +346,7 @@ impl MergeRenderer {
         let bg = self.filter.bind_group(
             &self.ctx.device,
             uniform.resource(),
-            Targets {
-                color: tile.color_view(),
-                aux: tile.aux_view(),
-                resid: tile.resid_view().filter(|_| self.formats.has_resid()),
-            },
+            tile.targets(),
             &self.blend.pigment,
         );
         pass(
@@ -364,13 +359,12 @@ impl MergeRenderer {
         );
     }
 
-    /// The filter pass's uniform, in a buffer wide enough for its dynamic-offset slot.
+    /// The filter pass's uniform, in a buffer of one slot.
     ///
-    /// [`blend_uniform`](Self::blend_uniform)'s twin, and it differs in one number:
-    /// this uniform is wider than a slot (it carries the gradient map's ramp), so the
-    /// buffer is sized to the struct rather than to `UNIFORM_SLOT`. The `disp` lane is
-    /// zero and stays zero — it is the *view's* number, and the only kind that reads
-    /// it is the one this merge refuses.
+    /// [`blend_uniform`](Self::blend_uniform)'s twin, and now the same call: what used
+    /// to differ was that this uniform is wider than an alignment quantum (it carries
+    /// the gradient map's ramp), which `UniformSlots` takes from the type rather than
+    /// from a constant either of them had to remember.
     fn filter_uniform(&self, draw: &FilterDraw) -> UniformSlots<FilterUniform> {
         // The compositor's own assembly, at the identity view. The one lane that is a
         // fact about the *view* is the chromatic gather's dispersion — measured in
@@ -549,7 +543,7 @@ impl MergeRenderer {
 
     /// One uniform in a buffer of exactly one slot.
     ///
-    /// [`UniformSlots`] rather than a hand-rolled buffer of [`UNIFORM_SLOT`] bytes,
+    /// [`UniformSlots`] rather than a hand-rolled buffer of one alignment quantum,
     /// which is what this was: the layouts a merge borrows are the screen's and
     /// declare a dynamic offset, since several merges share one buffer in a frame —
     /// and the type that answers "what is a dynamic-offset slot" already exists, gets

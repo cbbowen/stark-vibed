@@ -79,9 +79,11 @@
 // `lib/paint_common.wesl`. The importers take it directly, so there is one guard on
 // this boundary rather than a per-module `EPS` at whatever magnitude each picked.)
 
-// Blend-mode codes. Mirrored by `blend_code` in `gpu/composite.rs` — this is the
-// shader ABI for `BlendMode`, so it lives next to the shader rather than in the
-// enum, which has no business knowing a `u32`.
+// Blend-mode codes. This is the shader ABI for `BlendMode`, so it lives next to the
+// shader rather than in the enum, which has no business knowing a `u32`. The host
+// reads these very declarations through the generated mirror and maps the enum onto
+// them in `blend_code` (`gpu/composite/blend.rs`) — a mapping, not a second copy of
+// the numbers (§6.10).
 //
 // `MODE_NORMAL` reaches this pass only when the layer is **clipped**
 // (§14.4): an unclipped normal layer needs no isolation and draws

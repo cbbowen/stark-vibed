@@ -33,31 +33,41 @@ fn bytes_per_texel(texture: &wgpu::Texture) -> u32 {
         .expect("readback of an uncompressed texture")
 }
 
-/// One texture→buffer copy's geometry: how wide a row really is, how wide the copy
-/// has to make it, and how far apart the textures sit in the staging buffer.
+/// **The whole of a staging buffer's layout**: how wide a row really is, how wide the
+/// copy had to make it, how many rows a texture has, and how many textures are in
+/// there.
 ///
-/// Three numbers rather than three arguments threaded separately, because a mismatch
-/// between any two of them does not fail — it hands back rows shifted by the
-/// difference, which reads as a picture skewing progressively sideways.
+/// One value rather than numbers threaded separately, because a mismatch between any
+/// two of them does not fail — it hands back rows shifted by the difference, which
+/// reads as a picture skewing progressively sideways. [`begin_read`] returns this and
+/// [`take_rows`] takes nothing else, so the layout that was written and the layout
+/// that is read are the same value and cannot be given different arguments.
 struct Rows {
     /// A row's real bytes.
     unpadded: u32,
     /// A row's bytes in the staging buffer, rounded up to `COPY_BYTES_PER_ROW_ALIGNMENT`.
     padded: u32,
-    /// One texture's whole span in the staging buffer.
-    slot: u64,
+    /// Rows per texture.
+    height: u32,
+    /// How many textures are in the buffer, one slot each.
+    count: usize,
 }
 
 impl Rows {
-    fn of(texture: &wgpu::Texture, size: Extent2) -> Self {
+    fn of(texture: &wgpu::Texture, size: Extent2, count: usize) -> Self {
         let unpadded = size.width * bytes_per_texel(texture);
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded = unpadded.div_ceil(align) * align;
         Self {
             unpadded,
-            padded,
-            slot: u64::from(padded) * u64::from(size.height),
+            padded: unpadded.div_ceil(align) * align,
+            height: size.height,
+            count,
         }
+    }
+
+    /// One texture's whole span in the staging buffer.
+    fn slot(&self) -> u64 {
+        u64::from(self.padded) * u64::from(self.height)
     }
 }
 
@@ -76,11 +86,11 @@ fn begin_read(
     size: Extent2,
 ) -> (wgpu::Buffer, Rows) {
     let first = textures.first().expect("a read of no textures");
-    let rows = Rows::of(first, size);
+    let rows = Rows::of(first, size, textures.len());
 
     let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("stark readback"),
-        size: rows.slot * textures.len() as u64,
+        size: rows.slot() * rows.count as u64,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -96,9 +106,9 @@ fn begin_read(
             wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
                 layout: wgpu::TexelCopyBufferLayout {
-                    offset: rows.slot * i as u64,
+                    offset: rows.slot() * i as u64,
                     bytes_per_row: Some(rows.padded),
-                    rows_per_image: Some(size.height),
+                    rows_per_image: Some(rows.height),
                 },
             },
             wgpu::Extent3d {
@@ -121,16 +131,16 @@ fn begin_read(
 /// leaving that to a collector is how the tab OOMs. Safe here for the same reason it
 /// is there: the copy that filled it has already been submitted *and* waited on, so
 /// nothing is in flight against it.
-fn take_rows(buffer: wgpu::Buffer, count: usize, size: Extent2, rows: &Rows) -> Vec<Vec<u8>> {
+fn take_rows(buffer: wgpu::Buffer, rows: &Rows) -> Vec<Vec<u8>> {
     let data = buffer
         .slice(..)
         .get_mapped_range()
         .expect("readback buffer is mapped");
-    let out = (0..count)
+    let out = (0..rows.count)
         .map(|i| {
-            let base = (rows.slot * i as u64) as usize;
-            let mut bytes = Vec::with_capacity((rows.unpadded * size.height) as usize);
-            for row in 0..size.height {
+            let base = (rows.slot() * i as u64) as usize;
+            let mut bytes = Vec::with_capacity((rows.unpadded * rows.height) as usize);
+            for row in 0..rows.height {
                 let start = base + (row * rows.padded) as usize;
                 bytes.extend_from_slice(&data[start..start + rows.unpadded as usize]);
             }
@@ -164,20 +174,36 @@ fn take_rows(buffer: wgpu::Buffer, count: usize, size: Extent2, rows: &Rows) -> 
 /// told the readback failed can still save the document; that is the whole point of
 /// there being an error to tell it with.
 async fn wait_mapped(ctx: &GpuContext, buffer: &wgpu::Buffer) -> Result<()> {
-    let (tx, rx) = futures_channel::oneshot::channel();
-    buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
-    });
+    /// The wait itself, so the caller below can destroy on either outcome without
+    /// writing the destruction twice.
+    async fn poll_and_await(ctx: &GpuContext, buffer: &wgpu::Buffer) -> Result<()> {
+        let (tx, rx) = futures_channel::oneshot::channel();
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
 
-    #[cfg(not(target_arch = "wasm32"))]
-    ctx.device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .map_err(|e| readback_failed(ctx, format!("poll: {e}")))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        ctx.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| readback_failed(ctx, format!("poll: {e}")))?;
 
-    rx.await
-        .map_err(|_| readback_failed(ctx, "the map callback was dropped".into()))?
-        .map_err(|e| readback_failed(ctx, format!("map: {e}")))?;
-    Ok(())
+        rx.await
+            .map_err(|_| readback_failed(ctx, "the map callback was dropped".into()))?
+            .map_err(|e| readback_failed(ctx, format!("map: {e}")))?;
+        Ok(())
+    }
+
+    let waited = poll_and_await(ctx, buffer).await;
+    if waited.is_err() {
+        // **Destroyed on the failing path too**, which is the path that most wants
+        // it: the argument in [`take_rows`] is that a dropped readback buffer only
+        // releases its JS handle and waits for a collector, and this is a lost or
+        // exhausted device — the moment a tab can least afford 268 MB left to GC.
+        // Sound for the same reason: the copy that filled it was submitted, and a
+        // map that failed has nothing in flight against it either.
+        buffer.destroy();
+    }
+    waited
 }
 
 /// The error a failed readback reports, preferring what the **device** said over
@@ -202,7 +228,7 @@ pub async fn read_rgba8(
 ) -> Result<Vec<u8>> {
     let (buffer, rows) = begin_read(ctx, &[texture], size);
     wait_mapped(ctx, &buffer).await?;
-    Ok(take_rows(buffer, 1, size, &rows)
+    Ok(take_rows(buffer, &rows)
         .pop()
         .expect("one texture in, one string out"))
 }
@@ -222,7 +248,7 @@ pub fn read_rgba8_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Exte
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll device");
-    take_rows(buffer, 1, size, &rows)
+    take_rows(buffer, &rows)
         .pop()
         .expect("one texture in, one string out")
 }
@@ -268,7 +294,7 @@ pub async fn read_many_rgba16f(
     }
     let (buffer, rows) = begin_read(ctx, textures, size);
     wait_mapped(ctx, &buffer).await?;
-    Ok(take_rows(buffer, textures.len(), size, &rows)
+    Ok(take_rows(buffer, &rows)
         .iter()
         .map(|bytes| decode_rgba16f(bytes))
         .collect())

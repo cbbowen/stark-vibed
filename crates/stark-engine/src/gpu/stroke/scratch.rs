@@ -262,11 +262,7 @@ impl ScratchPool {
         }
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(key.label),
-            size: wgpu::Extent3d {
-                width: key.size.0,
-                height: key.size.1,
-                depth_or_array_layers: 1,
-            },
+            size: key.extent(),
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,

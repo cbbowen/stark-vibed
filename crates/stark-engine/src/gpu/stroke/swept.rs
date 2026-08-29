@@ -152,22 +152,33 @@ pub(super) struct SweptKit {
     /// and the stamp loop's `deposit` uses.
     pub(super) integrate_pipeline: wgpu::RenderPipeline,
     pub(super) integrate_bgl: wgpu::BindGroupLayout,
-    /// The compiled `stamp.wesl`, kept because the **erase** kit builds its own
-    /// pipeline over the very same module (§6.12): only the fragment entry point and
-    /// the target list differ, so a second `create_shader_module` was a second parse
-    /// and a second translation of the same source — startup cost, on the web, of a
-    /// shader whose text is already in hand.
-    pub(super) shader: wgpu::ShaderModule,
+}
+
+/// Compile `stamp.wesl` for `color_space` (§6.2, §6.7).
+///
+/// **Once per renderer, lent to both kits.** The erase pass builds its own pipeline
+/// over the very same module (§6.12) — only the fragment entry point and the target
+/// list differ — so a second `create_shader_module` was a second parse and a second
+/// translation of source already in hand, which on the web is startup the artist
+/// waits through. A module is immutable and entry points are resolved per pipeline,
+/// so lending it is all there is to it.
+pub(super) fn stamp_module(
+    device: &wgpu::Device,
+    color_space: &dyn ColorSpace,
+) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("stark stamp"),
+        source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader().into()),
+    })
 }
 
 /// Build the swept fast path's kit (§6.2): the sweep pipeline over its three bind
 /// group layouts, and the integrate that lands its scratch on the base.
-pub(super) fn build_swept_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> SweptKit {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("stark sweep"),
-        source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader().into()),
-    });
-
+pub(super) fn build_swept_kit(
+    device: &wgpu::Device,
+    color_space: &dyn ColorSpace,
+    shader: &wgpu::ShaderModule,
+) -> SweptKit {
     let frag = wgpu::ShaderStages::FRAGMENT;
     // One slot per affected tile, selected by a dynamic offset
     // ([`XFORM_STRIDE`]) — so a stroke crossing many tiles binds one buffer rather
@@ -202,7 +213,7 @@ pub(super) fn build_swept_kit(device: &wgpu::Device, color_space: &dyn ColorSpac
         desc::RenderPipe {
             label: "stark sweep pipeline",
             layout: &layout,
-            module: &shader,
+            module: shader,
             vs: "vs_main",
             fs: "fs_main",
             primitive: desc::QUAD_STRIP,
@@ -232,7 +243,6 @@ pub(super) fn build_swept_kit(device: &wgpu::Device, color_space: &dyn ColorSpac
         noise_bgl,
         integrate_pipeline,
         integrate_bgl,
-        shader,
     }
 }
 

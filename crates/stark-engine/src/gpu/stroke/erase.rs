@@ -99,11 +99,8 @@ pub(super) fn build_erase_kit(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
     swept: &SweptKit,
+    shader: &wgpu::ShaderModule,
 ) -> EraseKit {
-    // The swept kit's own module, not a second compile of the same source: this
-    // pipeline is that path's over the same layouts, differing in its fragment entry
-    // point and its targets (see the doc above).
-    let shader = &swept.shader;
     let layout = desc::pipeline_layout(
         device,
         "stark erase sweep layout",

@@ -35,7 +35,7 @@ pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
 /// partition used to be held by a comment in each file; the slot list names the
 /// declarations, so the host cannot disagree with any of the three about an index, and
 /// `build.rs` checks the linked artifact for a collision between them.
-pub(crate) const BLEND_SLOTS: &[Slot] = &[
+const BLEND_SLOTS: &[Slot] = &[
     // One slot per blend group in the frame; see [`UniformSlots`].
     Slot::dynamic(bcd::B),
     Slot::at(bcd::BACK_COLOR),
@@ -64,7 +64,7 @@ pub(crate) const BLEND_SLOTS: &[Slot] = &[
 /// `Normal` reaches the pass only when the group is **clipped** or carries an
 /// opacity of its own (§14.4); an ordinary normal layer is the
 /// absence of a pass.
-pub(crate) fn blend_code(mode: BlendMode) -> u32 {
+pub(super) fn blend_code(mode: BlendMode) -> u32 {
     use stark_shaders::mirror::blend_common as bc;
     match mode {
         BlendMode::Normal => bc::MODE_NORMAL,
