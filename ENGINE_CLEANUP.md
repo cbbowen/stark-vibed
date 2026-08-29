@@ -134,6 +134,8 @@ because they are what the findings were *for*:
   closed the reported case and left the contrived one — take, flush, write, finish —
   and would have cost an empty command buffer for a lease nobody wrote. Precise is also
   structural here: a caller cannot spell the hazard without reaching past the type.
+  Closed in `891b164`.
+
   The erase path's opacity uniform was the same class one file over — piece tier, run
   lifetime, correct only because `accum::run` happens not to flush, which is verbatim
   the argument the ring's own comment makes against itself.
@@ -233,7 +235,7 @@ present.
 | [O](#o-the-accumulated-extent-render-loop-is-written-three-times) | The accumulated-extent render loop is written three times | maintainability | `719a78f` |
 | [P](#p-planslot-is-a-hand-maintained-twin-of-the-generated-stamp) | `plan::Slot` is a hand-maintained twin of the generated `Stamp` | maintainability | |
 | [Q](#q-the-descriptor-boilerplate-descrs-was-written-to-end) | The descriptor boilerplate `desc.rs` was written to end | maintainability | `bdbe46c`, `2c581ae`, `ec7090b` |
-| [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need) | Two scratch pools and two submit scopes for one need | maintainability | `d8c0691`, `5104e9e`, `f33b2f1` |
+| [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need) | Two scratch pools and two submit scopes for one need | maintainability | `d8c0691`, `5104e9e`, `f33b2f1`, `891b164` |
 | [S](#s-four-copies-of-the-paint-edit-gate-and-uneven-minted-layer-claims) | Four copies of the paint-edit gate, and uneven minted-layer claims | maintainability | `2c6303b` |
 | [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | `35e60ff`, `2efbf05`, `f33b2f1` (module splits open) |
 | [U](#u-comments-that-narrate-history-or-describe-code-that-is-gone) | Comments that narrate history, or describe code that is gone | maintainability | `dbf4dad`, `f33b2f1` |
