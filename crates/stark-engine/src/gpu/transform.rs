@@ -47,9 +47,9 @@ use crate::gpu::desc;
 use crate::gpu::desc::Slot;
 use crate::gpu::scratch::{ScratchPool, SubmitScope};
 use crate::gpu::selection::{SelectionRenderer, outside_clear};
-use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool};
+use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool, mask_tex_origin};
 use stark_model::document::{Homography, TransformMap};
-use stark_model::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
+use stark_model::geom::{Affine2, Mat2, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use stark_shaders::mirror::transform::binding as t;
 use stark_shaders::mirror::transform::decl as td;
 use stark_shaders::mirror::transform::{
@@ -117,9 +117,9 @@ const COMBINE_SLOTS: &[Slot] = &[
 /// One source tile's interior quad, drawn into `dest`'s texture (paint and mask
 /// tiles share the `TILE_TEX` geometry).
 fn quad_uniform(affine: Affine2, src: TileCoord, dest: TileCoord, opacity: f32) -> QuadUniform {
-    let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
+    let dest_origin = mask_tex_origin(dest);
     let src_origin = src.origin();
-    let src_tex_origin = src_origin - Vec2::splat(TILE_APRON as f32);
+    let src_tex_origin = mask_tex_origin(src);
     let m = affine.matrix2;
     let t = affine.translation;
     // The fragment stage maps back through the inverse (see `src_uv` in the
@@ -153,7 +153,7 @@ fn gated_uniform(
     let c = &unit.corners;
     u.c0 = [c[0].x, c[0].y, c[1].x, c[1].y];
     u.c1 = [c[2].x, c[2].y, c[3].x, c[3].y];
-    let src_tex_origin = unit.src.origin() - Vec2::splat(TILE_APRON as f32);
+    let src_tex_origin = mask_tex_origin(unit.src);
     u.t = [src_tex_origin.x, src_tex_origin.y, opacity, 0.0];
     match &unit.frag {
         FragMap::Persp => {
@@ -184,7 +184,7 @@ fn gated_uniform(
 /// The uniform for `fs_mask_base`: only the destination origin and the gate rect
 /// matter — the residue pass has no piece.
 fn gated_base(rect: (Vec2, Vec2), dest: TileCoord) -> GatedUniform {
-    let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
+    let dest_origin = mask_tex_origin(dest);
     let mut u = GatedUniform::zeroed();
     u.a = [dest_origin.x, dest_origin.y, TILE_TEX as f32, 0.0];
     u.r = [rect.0.x, rect.0.y, rect.1.x, rect.1.y];
@@ -200,7 +200,7 @@ fn set_rows(u: &mut GatedUniform, rows: &[[f32; 3]; 3]) {
 /// Whether (and where) the cut is gated by a source rect. The affine path binds the
 /// zero gate, whose arithmetic is untouched from before the gate existed.
 fn combine_uniform(dest: TileCoord, gate: Option<(Vec2, Vec2)>, opacity: f32) -> CombineUniform {
-    let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
+    let dest_origin = mask_tex_origin(dest);
     match gate {
         Some(rect) => CombineUniform {
             a: [dest_origin.x, dest_origin.y, 1.0, opacity],

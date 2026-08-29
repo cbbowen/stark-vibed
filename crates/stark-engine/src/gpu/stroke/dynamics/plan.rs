@@ -35,7 +35,7 @@ use super::bleed::bleed_stencil;
 //
 // Every slot is a pure function of the `StrokeRecord` and the piece's own geometry,
 // computed in plain CPU float math, so replay is deterministic (§12.1).
-use stark_shaders::mirror::dynamics::{Stamp, TILE_WG};
+use stark_shaders::mirror::dynamics::{CELL_BORDER, Stamp, TILE_WG};
 
 /// One slot's window into the stamp buffer, and the `min_binding_size` its layout
 /// declares — both of which have to be `Stamp`'s own size, so they are taken from it
@@ -506,21 +506,14 @@ fn snapshot_square(rects: &[Rect]) -> u32 {
 /// allocates from it — so no slot a plan can build reads cells the scratch does not
 /// hold.
 pub(super) fn cell_scratch_size(dsize: u32) -> u32 {
-    dsize.div_ceil(2) + 2 + 2 * CELL_BORDER
+    dsize.div_ceil(2) + 2 + (2 * CELL_BORDER) as u32
 }
-
-/// Cells of hoist beyond the rect's own, on each side, that `deposit_coarse`'s
-/// bilinear read needs (§6.2): a texel in the leading half of the first cell
-/// interpolates against the cell before it, and one in the trailing half of the last
-/// against the cell after. The shader spends it at the low end — `cell_base` starts
-/// the scratch one cell below the rect's first — so the count here covers both.
-const CELL_BORDER: u32 = 1;
 
 /// Cells the hoist must write to cover `span` texels from region texel `base`
 /// (already offset by the anchor), border included — the window
 /// `deposit_coarse`'s taps are asserted to sit inside.
 fn cell_span(base: i32, span: i32, c: i32) -> u32 {
-    ((base + span - 1).div_euclid(c) - base.div_euclid(c) + 1) as u32 + 2 * CELL_BORDER
+    ((base + span - 1).div_euclid(c) - base.div_euclid(c) + 1) as u32 + (2 * CELL_BORDER) as u32
 }
 
 /// The coarse deposit's per-slot geometry (§6.2): the cell grid's canvas anchor, and
@@ -1297,7 +1290,7 @@ mod tests {
                     assert!(groups.is_some(), "a cell above 1 must take the coarse path");
                     let (c, a) = (cell as i32, anchor.x as i32);
                     // The shader's `cell_base`: the rect's first cell, less the border.
-                    let base = (rect_origin as i32 + a).div_euclid(c) - CELL_BORDER as i32;
+                    let base = (rect_origin as i32 + a).div_euclid(c) - CELL_BORDER;
                     // The texels the deposit scans: its rect as rounded to whole
                     // workgroups, clamped to the snapshot square — what `cells` counts.
                     let span = (rect.groups().0 * TILE_WG).min(dsize) as i32;

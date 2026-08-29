@@ -1943,13 +1943,24 @@ fn div_floor2(n: vec2<i32>, c: i32) -> vec2<i32> {
     );
 }
 
-// The scratch's origin: one cell *below* the first the dispatch rect touches, because
-// a texel in that first cell's leading half interpolates against the cell before it.
-// Both kernels derive it from the same uniform, so the two agree on which texel of the
-// scratch is which cell, and the host counts the same two-cell surplus into the grid
-// it dispatches (`cell_geometry`).
+// Cells of hoist beyond the rect's own, on each side, that `deposit_coarse`'s bilinear
+// read needs: a texel in the leading half of the first cell interpolates against the
+// cell before it, and one in the trailing half of the last against the cell after.
+// `cell_base` spends the ring at the low end, so a count carrying it on both sides
+// covers both.
+//
+// Declared here so the host counts the same ring rather than transcribing it (§6.10),
+// which is what `TILE_WG` above already does for the workgroup side. Before this the
+// two sides were kept in step by a comment. A drift under-counts the hoist grid, and
+// the tap then reads a cell the hoist never wrote — the previous segment's tip, left
+// in the scratch. A wrong picture, not a validation error.
+const CELL_BORDER: i32 = 1;
+
+// The scratch's origin: a `CELL_BORDER` ring *below* the first cell the dispatch rect
+// touches. Both kernels derive it from the same uniform, so the two agree on which
+// texel of the scratch is which cell; `cell_geometry` is the host's counterpart.
 fn cell_base() -> vec2<i32> {
-    return div_floor2(st.rect_origin + st.cell_anchor, st.cell_px) - vec2<i32>(1, 1);
+    return div_floor2(st.rect_origin + st.cell_anchor, st.cell_px) - vec2<i32>(CELL_BORDER);
 }
 
 // One thread per cell: the exact kernel's front half, evaluated at the cell's centre
