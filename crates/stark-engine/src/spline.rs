@@ -433,13 +433,25 @@ impl SplineIndex {
             }
             lambda *= 10.0;
         }
-        // Genuinely unreachable for admissible input — a ridge-regularized normal
-        // matrix is positive definite, and `lambda` escalates until it dominates.
-        // What reaches it is a non-finite entry, and the two doors a sample can
-        // arrive by refuse one: `InputSample::is_admissible` bounds the position as
-        // well as requiring it finite, so no difference of two samples is infinite
-        // either (C2).
-        unreachable!("ridge-regularized normal equations are positive definite")
+        // Unreachable for admissible input — a ridge-regularized normal matrix is
+        // positive definite, and `lambda` escalates until it dominates. What reaches
+        // it is a non-finite entry, and the fitter's door refuses one:
+        // `InputSample::is_admissible` bounds the position as well as requiring it
+        // finite, so no difference of two samples is infinite either (C2).
+        //
+        // **That argument covers one of the two doors.** `fit_channels` and `fit_into`
+        // are `pub`, and the shape assist reaches them from `AssistShape` geometry
+        // (`assist::realize`), which no sample ever passed `is_admissible` to produce.
+        // Its own producers do guard finiteness today, so nothing reaches here — but
+        // the guarantee would be spread across three modules and stated by none of
+        // the entry points, which is a check a call site could forget (CLAUDE.md).
+        //
+        // So this answers instead of panicking, and the answer is the *correct* one
+        // rather than a fallback: with the system unsolvable at every ridge, what the
+        // ridge alone determines is `control` exactly — which is what the
+        // `frozen + tail >= m` branch above returns, for the same reason and by the
+        // same argument. Leaving the polygon as it arrived is the honest reading of
+        // data that determined nothing.
     }
 }
 

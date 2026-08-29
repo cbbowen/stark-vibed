@@ -56,6 +56,7 @@
 
 use crate::gpu::context::GpuContext;
 use stark_model::document::NoiseKind;
+use std::num::NonZeroU8;
 
 /// Texels per side of a baked 2-D noise tile. Enough for fields that vary
 /// smoothly across a cell; [`NoiseKind::Mosaic`] needs more (see [`MOSAIC_RES`]).
@@ -72,6 +73,20 @@ pub const NOISE_TILE_PX: f32 = 256.0;
 /// Simplex lattice units per noise tile — the tile holds this many noise
 /// "features" per side. Must be a multiple of 3 (see the module docs).
 const SIMPLEX_PERIOD: i32 = 6;
+/// The simplex lattice only closes on a period that is a multiple of 3 (module docs).
+///
+/// A `const` block rather than the `debug_assert!` this replaced: the property is of
+/// the constant, so it is decidable once at compile time, where the assertion asked it
+/// again per texel — 64² × 3 channels per bake, to re-derive something no run can
+/// change. `periodic_simplex` still takes `period`, because it reads it as a modulus.
+const _: () = assert!(
+    SIMPLEX_PERIOD % 3 == 0,
+    "the simplex lattice only closes on a period that is a multiple of 3",
+);
+
+/// Rings the mosaic tabulates around the period (see [`Sites::new`]). Two, because a
+/// mosaic's facet can be won by a site two cells away where a plain Voronoi's cannot.
+const MOSAIC_RING: NonZeroU8 = NonZeroU8::new(2).unwrap();
 /// Voronoi cells per noise tile per side — matched to [`SIMPLEX_PERIOD`] so the
 /// frequency knobs mean the same thing whichever kind is chosen.
 const VORONOI_PERIOD: i32 = 6;
@@ -189,9 +204,11 @@ impl Field {
             NoiseKind::Simplex => Field::Simplex(seeds),
             // The 3×3 search is exact for the continuous field, the 5×5 for the
             // flat one — see `periodic_voronoi` and `periodic_mosaic`.
-            NoiseKind::Voronoi => Field::Voronoi(seeds.map(|s| Sites::new(VORONOI_PERIOD, s, 1))),
+            NoiseKind::Voronoi => {
+                Field::Voronoi(seeds.map(|s| Sites::new(VORONOI_PERIOD, s, NonZeroU8::MIN)))
+            }
             NoiseKind::Mosaic => Field::Mosaic {
-                sites: Sites::new(VORONOI_PERIOD, MOSAIC_SITE_SALT ^ seed, 2),
+                sites: Sites::new(VORONOI_PERIOD, MOSAIC_SITE_SALT ^ seed, MOSAIC_RING),
                 values: MOSAIC_VALUE_SALT ^ seed,
             },
         }
@@ -305,11 +322,6 @@ fn grad_at(i: i64, j: i64, k: i64, period: i32, seed: u32) -> [f32; 3] {
 fn periodic_simplex(p: [f32; 3], period: i32, seed: u32) -> f32 {
     const F3: f32 = 1.0 / 3.0;
     const G3: f32 = 1.0 / 6.0;
-    debug_assert!(
-        period % 3 == 0,
-        "the simplex lattice only closes on a period that is a multiple of 3"
-    );
-
     let s = (p[0] + p[1] + p[2]) * F3;
     let i = (p[0] + s).floor();
     let j = (p[1] + s).floor();
@@ -378,6 +390,8 @@ fn periodic_simplex(p: [f32; 3], period: i32, seed: u32) -> f32 {
 /// period can touch, indexed directly.
 struct Sites {
     period: i64,
+    /// Rings of wrapped cells tabulated around the period, and so the widest search
+    /// [`Sites::nearest`] can make. At least one — see [`Sites::new`].
     ring: i64,
     shift: [f32; 2],
     /// The `(period + 2·ring)`² cells, row-major from cell `(−ring, −ring)`.
@@ -396,8 +410,14 @@ struct Site {
 
 impl Sites {
     /// `period` cells per side, searched `ring` cells out from a sample's own.
-    fn new(period: i32, seed: u32, ring: i64) -> Self {
+    ///
+    /// `ring` is a [`NonZeroU8`](std::num::NonZeroU8) because a table of no rings is
+    /// one [`Sites::nearest`] cannot answer from: its search widens outward and has
+    /// nowhere to stop. That used to be an `unreachable!` at the end of the loop,
+    /// reachable by writing `0` at either call site; the parameter says it instead.
+    fn new(period: i32, seed: u32, ring: std::num::NonZeroU8) -> Self {
         let m = period as i64;
+        let ring = i64::from(ring.get());
         let o = pcg4d([seed, 0, 0, 0x9e37_79b9]);
         let shift = [unit(o[0]) * period as f32, unit(o[1]) * period as f32];
         let w = m + 2 * ring;
@@ -446,13 +466,14 @@ impl Sites {
         // its usual cost — a sample's own cell holds a site, so the first square
         // settles nearly every sample, and the rescans it costs the rare
         // widening are cheaper than a skip test in the loop that runs always.
-        for r in 1..=self.ring {
+        let mut r = 1;
+        loop {
             let found = self.within(p, cell, r);
-            if found.0 <= (r * r) as f32 || r == self.ring {
+            if found.0 <= (r * r) as f32 || r >= self.ring {
                 return found;
             }
+            r += 1;
         }
-        unreachable!("a table has at least one ring");
     }
 
     /// The nearest site among the `(2·r + 1)²` cells around `cell`.
@@ -540,7 +561,7 @@ mod tests {
     fn voronoi_is_periodic() {
         let p = VORONOI_PERIOD as f32;
         for seed in SEEDS {
-            let sites = Sites::new(VORONOI_PERIOD, seed, 1);
+            let sites = Sites::new(VORONOI_PERIOD, seed, NonZeroU8::MIN);
             for n in 0..64 {
                 let h = pcg4d([n, 7, 11, seed]);
                 let base = [unit(h[0]) * p, unit(h[1]) * p];
@@ -567,7 +588,7 @@ mod tests {
         let n = 4000;
         let step = VORONOI_PERIOD as f32 / n as f32;
         for seed in SEEDS {
-            let sites = Sites::new(VORONOI_PERIOD, seed, 1);
+            let sites = Sites::new(VORONOI_PERIOD, seed, NonZeroU8::MIN);
             for axis in 0..2 {
                 for line in 0..8u32 {
                     let h = pcg4d([line, 3, 5, 77]);
@@ -630,7 +651,7 @@ mod tests {
     fn mosaic_is_periodic() {
         let p = VORONOI_PERIOD as f32;
         for seed in SEEDS {
-            let sites = Sites::new(VORONOI_PERIOD, MOSAIC_SITE_SALT ^ seed, 2);
+            let sites = Sites::new(VORONOI_PERIOD, MOSAIC_SITE_SALT ^ seed, MOSAIC_RING);
             let values = MOSAIC_VALUE_SALT ^ seed;
             for n in 0..256 {
                 let h = pcg4d([n, 7, 11, seed]);

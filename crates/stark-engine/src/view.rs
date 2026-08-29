@@ -246,7 +246,9 @@ impl ViewTransform {
         self.center.is_finite() && self.rotation.is_finite() && self.zoom.is_finite()
             // Not merely finite: `inverse_linear` divides by it, so a zoom of zero
             // sends every screen→canvas map to infinity just as surely as a NaN does.
-            && self.zoom > 0.0
+            // Nor merely positive — a subnormal zoom is `> 0.0` and still reciprocates
+            // to infinity, so the test is the division the map actually performs.
+            && self.zoom.recip().is_finite()
     }
 
     /// Adopt `candidate` if it is one this view could be used as — the funnel every
