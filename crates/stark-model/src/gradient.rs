@@ -3,7 +3,7 @@
 //! A gradient here is a small list of positioned color stops, interpolated in
 //! **Oklab** so a ramp between two colors passes through the colors an artist
 //! would mix on the way (§1.6). Stops store straight sRGB — the same convention
-//! as every other color on a CPU boundary (`BrushParams::color`, §6.5) — and
+//! as every other color on a CPU boundary (`PaintEffect::color`, §6.5) — and
 //! convert to Oklab only to interpolate, so a stop round-trips through the
 //! picker and the library unchanged.
 //!

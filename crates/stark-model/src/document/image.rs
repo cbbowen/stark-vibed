@@ -8,7 +8,7 @@
 //! The split is the crate's own rule read straight off (§2, `lib.rs`): an **id** is
 //! in the log, a **resource** is beside it. `PlaceImage` carries an
 //! [`AssetId`](crate::AssetId) exactly as a stamp brush does, the pixels ride in
-//! [`DocumentFile::pictures`](crate::io::DocumentFile) and over the wire as a blob,
+//! [`DocumentFile::content`](crate::io::DocumentFile) and over the wire as a blob,
 //! and `crate::content` is what says a document naming one has to have it.
 
 use crate::geom::{IVec2, TILE_APRON, TILE_SIZE, TileCoord, TileRect, Vec2, tiles_of};
@@ -33,7 +33,8 @@ pub const MAX_IMAGE_TILES: usize = {
 ///
 /// `PlaceImage` promises the image's texels land on canvas pixels one for one, with
 /// nothing filtered between the file and the tiles — which is why `at` is an
-/// [`IVec2`] and why scaling is a separate [`Transform`] where resampling is already
+/// [`IVec2`] and why scaling is a separate
+/// [`Transform`](super::ActionKind::Transform) where resampling is already
 /// pinned (§16.4). That promise is about the *arithmetic*, and the arithmetic goes
 /// through `f32`: every integer up to `2^24` is exactly representable, and past it
 /// the cast starts rounding — silently, to as much as a whole tile at the far end of

@@ -39,7 +39,7 @@ use crate::gradient::Gradient;
 /// carry no strength of its own: a matte's transparency is its *layer* opacity
 /// (§15.3) and its paint is a full-strength coat. That is why a solid keeps three
 /// channels rather than four and why nothing here has a per-unit opacity. A fill
-/// states its strength in [`FillOp::opacity`](super::FillOp::opacity)(super::FillOp::opacity) instead, one
+/// states its strength in [`FillOp::opacity`](super::FillOp::opacity) instead, one
 /// number for the whole fill — so this type says **what** paint, and each action says
 /// how much of it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]

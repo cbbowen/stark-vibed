@@ -490,7 +490,9 @@ impl BrushModulations {
     };
 
     /// [`Self::PRESSURE_SIZE`] as a function, for `#[serde(default = "…")]` — which
-    /// takes a path to call and cannot name a constant.
+    /// takes a path to call and cannot name a constant. Its one caller is
+    /// [`BrushParams::modulation`], which is where the argument for it is written
+    /// out.
     pub fn pressure_size() -> Self {
         Self::PRESSURE_SIZE
     }
@@ -682,7 +684,7 @@ pub struct ToothParams {
     /// What it scales is the exposure the stroke presents per unit swept optical
     /// depth, gated per texel by whether the substrate clears the level this tool
     /// settles to (`paint_common.wesl::tooth_gate`). Inert on a `Flat` canvas
-    /// whatever it says, because `Surface::relief` is 0 there — so the axis is
+    /// whatever it says, because the substrate's rise is 0 there — so the axis is
     /// orthogonal to every golden that paints on `Flat`.
     ///
     /// `#[serde(default = "…")]` and not a bare `#[serde(default)]`: 0 is *maximum*
@@ -1137,7 +1139,16 @@ pub struct BrushParams {
     /// radius scaling, held here as data so a preset can drop it or aim it
     /// elsewhere. An effect's own rates are mapped where they live
     /// ([`PaintEffect::modulation`], [`EraseEffect::modulation`]).
-    #[serde(default)]
+    ///
+    /// `#[serde(default = "…")]` and not a bare `#[serde(default)]`, for
+    /// [`ToothParams::give`]'s reason (§8): [`BrushModulations`]'s own `Default` is
+    /// **no mapping at all**, and a bare attribute would hand a file that predates
+    /// this field the empty set — which is not what its absence meant. Before the
+    /// mappings were data, the pressure → radius scaling was wired into the segment
+    /// generator, so every such stroke replays at full width with its taper gone:
+    /// a silent, pixel-changing read of an older log, which is the one thing the
+    /// format's name-based reconciliation exists to prevent.
+    #[serde(default = "BrushModulations::pressure_size")]
     pub modulation: BrushModulations,
 }
 
@@ -1397,6 +1408,54 @@ mod tests {
     /// only take a parameter *away* (see [`Modulation`]). If this ever fails, the
     /// frozen-span radius bound, the region fit and the exchange step are all being
     /// computed against a number the renderer can exceed.
+    /// **A brush from before the mappings were data still tapers with pressure.**
+    ///
+    /// The save format reconciles a file's schema against today's types by *name*
+    /// (§8), so a field this build added arrives from its serde default — and that
+    /// default is the file's only way of saying what its absence meant. For
+    /// [`BrushParams::modulation`] the absence meant the pressure → radius scaling
+    /// the segment generator used to carry, not [`BrushModulations`]'s own
+    /// `Default`, which is no mapping at all.
+    ///
+    /// The two disagree by a whole taper: `mod_factor(None, ..)` is exactly 1, so
+    /// the empty set replays every such stroke at full width. Nothing else in the
+    /// suite can see it — the field is present on everything this build writes.
+    #[test]
+    fn a_brush_from_before_the_mappings_were_data_still_follows_pressure() {
+        /// `BrushParams` as it stood before `modulation` — spelled with the names
+        /// the real type carries, since names are what carbonite reconciles on, and
+        /// carrying only the fields that have no default of their own.
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "BrushParams")]
+        struct OldBrush {
+            size: f32,
+            shape: BrushShape,
+            drain: f32,
+        }
+
+        let bytes = carbonite::to_vec_static(&OldBrush {
+            size: 24.0,
+            shape: BrushShape::default(),
+            drain: 0.5,
+        })
+        .expect("encode the old shape");
+        let back =
+            carbonite::from_slice_static::<BrushParams>(&bytes).expect("an older shape loads");
+
+        assert_eq!(back.size, 24.0, "what both shapes share comes through");
+        assert_eq!(
+            back.modulation,
+            BrushModulations::PRESSURE_SIZE,
+            "an absent modulation means the mapping the generator used to carry",
+        );
+        // Said as the picture rather than as the value: what the wrong default
+        // costs is a stroke that no longer thins as the hand lifts.
+        assert!(
+            back.modulation.size(pen(0.25)) < back.modulation.size(pen(1.0)),
+            "a lighter press must still make a narrower stroke",
+        );
+    }
+
     #[test]
     fn a_factor_never_leaves_the_unit_interval() {
         for m in shapes() {

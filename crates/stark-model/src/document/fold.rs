@@ -86,7 +86,17 @@ pub trait Materialize: Clone {
     /// which is fine for a test and not for a release fold — and because a violation
     /// is a bug in *this* crate's tables, not a state a shipped build should try to
     /// survive.
-    #[cfg(debug_assertions)]
+    ///
+    /// **The gate is on the call, not on this declaration.** Both live here
+    /// unconditionally so the trait has *one shape in every profile*: gated, its
+    /// members would depend on `debug_assertions` at the definition, and the
+    /// arrangement would hold only for as long as every crate that names this
+    /// trait is compiled under one profile. A `[profile.*.package.stark-model]`
+    /// override, or any split that reaches one side of the boundary and not the
+    /// other, would report itself as "`audit` is not a member of trait
+    /// `Materialize`" from a line nobody edited. An implementor is free to gate
+    /// *its* override — `DocState` does — and falls back to this no-op where the
+    /// gate is off, which is the same release fold either way.
     fn audit(_before: &Self, _after: &Self, _action: &Action, _footprint: &Footprint) {}
 
     /// Whether [`audit`](Self::audit) has anything to say — and so whether the fold
@@ -95,7 +105,6 @@ pub trait Materialize: Clone {
     /// `false` by default so the clone is not paid for a no-op audit. `DocState`'s
     /// clone is a handful of `Arc` bumps (§5.1), which is what makes turning it on
     /// affordable there.
-    #[cfg(debug_assertions)]
     const AUDITED: bool = false;
 }
 

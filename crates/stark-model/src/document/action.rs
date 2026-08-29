@@ -375,7 +375,7 @@ pub enum ActionKind {
     /// Warp of the selected paint on `layer` within the mesh's source rect
     /// (§16.9): the same cut/stack/carry as
     /// [`TransformPerspective`](Self::TransformPerspective), under the smooth
-    /// substrate through the map's control grid. The log carries only the grid —
+    /// surface through the map's control grid. The log carries only the grid —
     /// a few dozen floats — and every peer subdivides it identically.
     ///
     /// Deterministically **rejected** when the mesh folds (any sub-cell's
@@ -470,7 +470,7 @@ pub enum ActionKind {
     ///
     /// **The pixels are not the payload.** The picture is named by content id, like
     /// a stamp brush's shape, and travels beside the log — bundled in
-    /// `DocumentFile::pictures`, and over the wire on the blob ALPN (§23). It was
+    /// `DocumentFile::content`, and over the wire on the blob ALPN (§23). It was
     /// briefly built the other way, with the image in the action behind an `Arc`;
     /// `docs/images.md` records why that was wrong in three places at once, of which
     /// the sharpest is that an action is *cloned constantly* — a commit clones one
@@ -857,7 +857,7 @@ impl ActionKind {
 /// suites went on passing having never driven it.
 ///
 /// So the roster is **one list**, below, and everything else is derived from it: the
-/// enum, [`ALL`](Self::ALL), and [`label`](Self::label) all come out of the same
+/// enum, [`ALL`](ActionTag::ALL), and [`label`](ActionTag::label) all come out of the same
 /// macro invocation, and [`ActionKind::tag`] is the one exhaustive match that binds
 /// a variant to its tag. A new kind now fails to compile in exactly one place it did
 /// not before, and cannot be missing from a list at all, because there is no second

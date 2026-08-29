@@ -22,8 +22,9 @@
 //!   over, and a lift brush can scrape it back. It stacks by the shared parcel law
 //!   (`paint_common.wesl`), the very law a stroke deposits through.
 //!
-//! Pure CPU geometry, like `document::transform`: `stark-engine`'s `document::fill::plan` decides *which* tiles, and
-//! [`crate::gpu::fill::FillRenderer`] does the GPU work.
+//! Pure CPU geometry, like `document::transform`: `stark-engine`'s
+//! `document::fill::plan` decides *which* tiles, and `stark-engine`'s
+//! `gpu::fill::FillRenderer` does the GPU work.
 
 use serde::{Deserialize, Serialize};
 
@@ -195,8 +196,8 @@ impl FillOp {
     ///
     /// The rasterizer's ramp is `clamp(0.5 − sd/w, 0, 1)` with `w = max(feather, 1)`
     /// (`selection.wesl`), so coverage is exactly zero beyond `w/2` — and the apron
-    /// carries a tile's write one band further. Tighter than
-    /// [`Selection::plan`](super::Selection)'s padding on purpose: that one is sized
+    /// carries a tile's write one band further. Tighter than `stark-engine`'s
+    /// `Selection::plan` padding on purpose: that one is sized
     /// so the *outline* pass can find a boundary by differencing, and reusing it
     /// here would ring every fill with a band of all-zero paint tiles that would
     /// then pollute `bounds` and hold pool memory.

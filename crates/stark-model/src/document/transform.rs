@@ -2,9 +2,9 @@
 //! affine, and the rect-scoped perspective (§16.8) and warp (§16.9).
 //!
 //! Pure tile-level geometry — which tiles are cut, which are rewritten, which
-//! source quads land on each — mirroring [`Selection::plan`]'s split: the CPU
-//! decides *what*, [`crate::gpu::transform::TransformRenderer`] does the GPU
-//! work. Everything here is a deterministic function of the tile-coordinate
+//! source quads land on each — mirroring `stark-engine`'s `Selection::plan`
+//! split: the CPU decides *what*, `stark-engine`'s
+//! `gpu::transform::TransformRenderer` does the GPU work. Everything here is a deterministic function of the tile-coordinate
 //! sets, the selection's shape, and the map's few floats, so peers and
 //! replays always agree — including about rejection.
 

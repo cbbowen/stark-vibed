@@ -5,7 +5,8 @@
 //! **carries**.
 //!
 //! A layer stacks with premultiplied "over" unless its [`BlendMode`] says
-//! otherwise or it is [`clip`](Layer::clip)ped, in which case the compositor
+//! otherwise or it is clipped ([`SetLayerClip`](super::ActionKind::SetLayerClip),
+//! [`Prop::Clip`](super::Prop::Clip)), in which case the compositor
 //! isolates it and merges it through the mode (§18.0.4). A
 //! layer that carries others is a **group** — there is no separate group type —
 //! and the same isolation, recursed, is what composites it (§14.7).

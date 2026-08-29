@@ -14,7 +14,7 @@
 //! # Which side of the line a type belongs on
 //!
 //! An **id** is in the log; a **resource** is in the engine. The pairs were there
-//! before the crates were: [`AssetId`]/`AssetStore`, [`SubstrateId`]/`Surface`,
+//! before the crates were: [`AssetId`]/`AssetStore`, [`SubstrateId`]/`SubstrateMap`,
 //! [`ColorSpaceId`]/`ColorSpace`, [`LayerId`](document::LayerId)/`Layer`,
 //! [`SelectionOp`](document::SelectionOp)/`Selection`,
 //! [`Action`](document::Action)/`DocState`.
@@ -77,7 +77,7 @@ pub use substrate::{SubstrateId, SubstrateScale};
 ///
 /// It grew up in `document::brush`, which is where the values it guards were first
 /// coming from, and moved here when the fourth caller was a
-/// [`Gradient`](gradient::Gradient) — a type outside `document` entirely. Every
+/// [`Gradient`] — a type outside `document` entirely. Every
 /// deserialization gate in the crate spells the bound this way now
 /// ([`SelectionOp::at`](document::SelectionOp::at),
 /// [`FillOp::with_paint`](document::FillOp::with_paint)), and each of them at some

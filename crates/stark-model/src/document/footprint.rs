@@ -573,10 +573,25 @@ pub fn compute_footprint(action: &Action) -> Footprint {
 /// The tile-aligned reach of a rect-scoped transform: its source rect unioned
 /// with its image bound, padded one tile so apron rewrites are covered.
 /// `None` for the image (an unusable map) claims everything.
+///
+/// **Both halves are tested for finiteness here**, and neither can be left to
+/// [`claim`]: `Vec2::min`/`max` return the non-NaN operand, so a non-finite
+/// corner is *swallowed* by the union rather than carried into
+/// [`TileRect::covering`]'s guard — the box arrives finite and tight-looking,
+/// which is the one answer §12.6 does not permit. The same test, for the same
+/// reason, as the one [`stroke_rect`] makes per control point.
+///
+/// The `image` half became an [`Option`] for exactly this (see
+/// `PerspectiveMap::image_aabb`), which left the `rect` half honest only
+/// because `usable`/`shape_ok` refuse a non-finite map at `apply` — honesty
+/// resting on a refusal in another file, the thing that change set out to stop.
 fn gated_rect(rect: (Vec2, Vec2), image: Option<(Vec2, Vec2)>) -> TileRect {
     let Some(image) = image else {
         return TileRect::ALL;
     };
+    if !(rect.0.is_finite() && rect.1.is_finite()) {
+        return TileRect::ALL;
+    }
     claim(rect.0.min(image.0), rect.1.max(image.1), 1)
 }
 
@@ -664,6 +679,88 @@ mod tests {
             }
         }
         assert_eq!(Prop::ALL.len(), 7, "a new Prop needs a place in ALL");
+    }
+
+    /// Every [`Resource`] variant is visited, and one of each meets **exactly** what
+    /// it names: itself, plus whatever [`Resource::Layer`] coarsens over.
+    ///
+    /// `overlaps` is the only match in the crate over this enum that ends in a `_`
+    /// arm — every other one (`layer`, and `ActionKind`'s five) is exhaustive so a
+    /// new variant cannot slip past unanswered. It cannot be spelled exhaustively
+    /// without a quadratic match, and it is also the predicate where a wrong answer
+    /// is the expensive kind: a resource that wrongly reports "no overlap" silently
+    /// diverges peers, where [`Prop`]'s equivalent mistake only makes a coarse claim
+    /// finer than it says.
+    ///
+    /// So the visit is forced here instead, exactly as [`every_prop_is_named_in_all`]
+    /// forces one: the array below does not compile until a new variant is named in
+    /// it, and naming it means saying whether it is about a layer — which is the
+    /// only thing `overlaps` needs to know about it.
+    #[test]
+    fn every_resource_is_visited_and_meets_exactly_what_it_names() {
+        let layer = LayerId::solo(4);
+        // One of every variant, each paired with whether it is about `layer` — the
+        // question the coarse claim asks. Written out rather than read off
+        // `Resource::layer`, which is the helper `overlaps` is built from: an
+        // expectation computed the same way as the answer agrees with it by
+        // construction, which is the trap `overlaps`' own doc names.
+        let samples = [
+            (Resource::Paint(layer, TileRect::ALL), true),
+            (Resource::Existence(layer), true),
+            (Resource::Prop(layer, Prop::Name), true),
+            (Resource::Layer(layer), true),
+            (Resource::StackOrder, false),
+            (Resource::Selection(ActorId(1)), false),
+            (Resource::Substrate, false),
+            (Resource::SubstrateColor, false),
+            (Resource::Guides, false),
+        ];
+        for (r, _) in &samples {
+            match r {
+                Resource::Paint(..)
+                | Resource::Existence(_)
+                | Resource::Prop(..)
+                | Resource::Layer(_)
+                | Resource::StackOrder
+                | Resource::Selection(_)
+                | Resource::Substrate
+                | Resource::SubstrateColor
+                | Resource::Guides => {}
+            }
+        }
+        assert_eq!(
+            samples.len(),
+            9,
+            "a new Resource needs a row in the overlap matrix",
+        );
+
+        for (a, a_is_layers) in &samples {
+            for (b, b_is_layers) in &samples {
+                let coarse = |r: &Resource| matches!(r, Resource::Layer(_));
+                // The whole spec: a resource meets itself, and the coarse claim
+                // additionally meets everything about the same layer.
+                let want = a == b || (coarse(a) && *b_is_layers) || (coarse(b) && *a_is_layers);
+                assert_eq!(a.overlaps(b), want, "{a:?} vs {b:?}");
+            }
+        }
+
+        // And nothing about one layer reaches another — the coarse claim included,
+        // which is the arm that has a layer id to get wrong.
+        let elsewhere = LayerId::solo(9);
+        for (r, is_layers) in &samples {
+            if !is_layers {
+                continue;
+            }
+            for other in [
+                Resource::Layer(elsewhere),
+                Resource::Existence(elsewhere),
+                Resource::Paint(elsewhere, TileRect::ALL),
+                Resource::Prop(elsewhere, Prop::Name),
+            ] {
+                assert!(!r.overlaps(&other), "{r:?} must not meet {other:?}");
+                assert!(!other.overlaps(r), "…and from the other side");
+            }
+        }
     }
 
     /// The coarse resource claims **everything** about its layer, and claims it
@@ -999,6 +1096,86 @@ mod tests {
         assert!(claims_all(&far));
         // …and an ordinary stroke still claims an ordinary box.
         let ordinary = stroke(1, LayerId::ROOT, Vec2::ZERO, Vec2::splat(50.0), 16.0);
+        assert!(!claims_all(&ordinary));
+        assert!(commutes(&ordinary, &elsewhere));
+    }
+
+    /// A rect-scoped transform whose **source rect** cannot be measured claims the
+    /// whole layer, exactly as one whose image cannot be does.
+    ///
+    /// The union in [`gated_rect`] is `Vec2::min`/`max`, which return the non-NaN
+    /// operand — so a non-finite `min`/`max` against a finite image does not reach
+    /// [`TileRect::covering`]'s guard at all: it is discarded, and the claim comes
+    /// back tight and wrong. That is the under-claim §12.6 cannot survive, and it
+    /// is invisible in a picture, since `apply` refuses such a map anyway and no
+    /// pixel is ever written by the action that lied about its reach.
+    ///
+    /// The `image` half of this was closed by making `image_aabb` an `Option`; the
+    /// `rect` half rested on `usable`/`shape_ok` — a refusal in another file.
+    #[test]
+    fn a_transform_with_an_unmeasurable_rect_claims_the_layer() {
+        use crate::document::transform::{PerspectiveMap, rect_corners};
+        use crate::document::warp::WarpMap;
+
+        let elsewhere = stroke(
+            2,
+            LayerId::ROOT,
+            Vec2::splat(9000.0),
+            Vec2::splat(9100.0),
+            8.0,
+        );
+        let claims_all = |a: &Action| {
+            compute_footprint(a)
+                .writes
+                .iter()
+                .any(|r| matches!(r, Resource::Paint(_, rect) if *rect == TileRect::ALL))
+        };
+
+        let (lo, hi) = (Vec2::ZERO, Vec2::splat(100.0));
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for corner in [Vec2::new(bad, 0.0), Vec2::new(0.0, bad)] {
+                // The corners stay finite, so the image *is* measurable and the
+                // `None` arm never fires — the rect alone is what cannot be read.
+                let perspective = act(
+                    1,
+                    ActionKind::TransformPerspective {
+                        layer: LayerId::ROOT,
+                        map: PerspectiveMap {
+                            min: corner,
+                            max: hi,
+                            corners: rect_corners(lo, hi),
+                        },
+                    },
+                );
+                assert!(claims_all(&perspective), "rect min {corner:?}");
+                assert!(!commutes(&perspective, &elsewhere));
+
+                let mut mesh = WarpMap::identity(lo, hi, 3, 3);
+                mesh.max = corner;
+                let warp = act(
+                    1,
+                    ActionKind::TransformWarp {
+                        layer: LayerId::ROOT,
+                        map: mesh,
+                    },
+                );
+                assert!(claims_all(&warp), "rect max {corner:?}");
+                assert!(!commutes(&warp, &elsewhere));
+            }
+        }
+
+        // …and a measurable one still claims an ordinary box on both arms.
+        let ordinary = act(
+            1,
+            ActionKind::TransformPerspective {
+                layer: LayerId::ROOT,
+                map: PerspectiveMap {
+                    min: lo,
+                    max: hi,
+                    corners: rect_corners(lo, hi),
+                },
+            },
+        );
         assert!(!claims_all(&ordinary));
         assert!(commutes(&ordinary, &elsewhere));
     }

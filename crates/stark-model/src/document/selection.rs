@@ -23,7 +23,7 @@
 //! What is *stored in the log* is the op, not the mask: [`SelectionOp`] is a few
 //! floats (or a decimated polyline), and every peer rasterizes it the same way from
 //! the same shader. That keeps the action log compact and replay exact, and it is why
-//! the selection lives in [`DocState`](super::DocState) rather than in the session —
+//! the selection lives in `stark-engine`'s `DocState` rather than in the session —
 //! a stroke's pixels depend on it, so replay must be able to reconstruct it.
 
 use serde::{Deserialize, Serialize};
