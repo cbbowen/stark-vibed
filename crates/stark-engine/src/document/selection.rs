@@ -180,6 +180,40 @@ impl Selection {
         self.tiles.size()
     }
 
+    /// Whether two selections are the same state, for the fold's audit (§12.6).
+    ///
+    /// **Written as a destructuring `let`, and that is the whole point.** This is
+    /// what `document::audit` asks to decide whether a selection differed, so it is
+    /// the one place that has to learn about a new field — and a `let` over the
+    /// whole struct stops compiling until somebody teaches it, where a chain of
+    /// accessor comparisons would silently keep answering about the fields it
+    /// already knew. It used to be that chain, and it had already stopped covering
+    /// two of the five.
+    ///
+    /// `hull` is deliberately *not* compared, and the exclusion is a decision rather
+    /// than an omission: it is a conservative box carried through the op algebra —
+    /// `Subtract` keeps the previous one, `Intersect` intersects — so it is
+    /// path-dependent by construction, and nothing about the mask depends on it
+    /// (§16 hangs transform handles on it and that is all). `level` *is* compared,
+    /// conservative in the same sense but load-bearing: it decides the outline
+    /// contour and the reflection [`plan_invert`](Self::plan_invert) takes.
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        let Self {
+            tiles,
+            outside,
+            level,
+            opacity,
+            hull: _,
+        } = self;
+        *outside == other.outside
+            && *level == other.level
+            && *opacity == other.opacity
+            && tiles.size() == other.tiles.size()
+            && tiles
+                .iter()
+                .all(|(c, h)| other.tiles.get(c).is_some_and(|o| o.same(h)))
+    }
+
     /// The mask map itself — cloning it is a handful of `Arc` bumps, which is how the
     /// renderer builds the next selection on top of this one.
     pub(crate) fn tile_map(&self) -> &MaskMap {

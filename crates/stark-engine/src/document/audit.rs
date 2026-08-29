@@ -138,46 +138,51 @@ fn shape(state: &DocState) -> Vec<(LayerId, usize)> {
 /// Whether two masks are the same selection. Mask tiles are rasterized afresh rather
 /// than rewritten, so handle identity is the content test here too.
 fn selections_agree(a: &Selection, b: &Selection) -> bool {
-    a.outside() == b.outside()
-        && a.opacity() == b.opacity()
-        && a.tile_count() == b.tile_count()
-        && a.tiles()
-            .all(|(c, h)| b.tile(*c).is_some_and(|o| o.same(h)))
+    // Asked of the type rather than assembled here: this used to be a chain of four
+    // accessor comparisons, and `Selection` has five fields — `level` and `hull` were
+    // simply absent, so a divergence in the level that decides the outline contour
+    // and the invert reflection would have passed the audit. `Selection::same` is a
+    // destructuring `let`, which cannot lose a field that way.
+    a.same(b)
 }
 
 /// Which presentation properties differ — at exactly the granularity [`Prop`] splits
 /// them into, since that is the granularity undo restores them at.
 fn props(a: &Layer, b: &Layer) -> Vec<Prop> {
+    Prop::ALL
+        .into_iter()
+        .filter(|p| differs(a, b, *p))
+        .collect()
+}
+
+/// Whether `p` names something these two layers disagree about.
+///
+/// **A `match`, which is the point.** This was seven `if a.x != b.x` statements, and
+/// seven statements are what a new [`Prop`] variant slips past: the function goes on
+/// compiling and the audit quietly stops covering the property, in the one checker
+/// that carries §12.6 on every fold. Every other reader of `Prop` is already held to
+/// the variant list by the compiler — `patch::capture_resource` matches, `Prop::ALL`
+/// has `every_prop_is_named_in_all`, `patch`'s round-trip test matches — and this was
+/// the last one that did not.
+///
+/// Its order is [`Prop::ALL`]'s, which is why [`props`] can collect straight from it.
+fn differs(a: &Layer, b: &Layer, p: Prop) -> bool {
     let matte_of = |l: &Layer| match &l.content {
         LayerContent::Matte { region, paint } => Some((*region, paint.clone())),
         LayerContent::Paint(_) | LayerContent::Filter(_) => None,
     };
-    let mut out = Vec::new();
-    // Split finer than the struct: `CompositeParams` travels as one value through
-    // compositing, but undo restores each of the three on its own — a clip toggle has
-    // to commute with a blend change on the same layer (§12.6).
-    if a.composite.blend != b.composite.blend {
-        out.push(Prop::Blend);
+    match p {
+        // Split finer than the struct: `CompositeParams` travels as one value through
+        // compositing, but undo restores each of the three on its own — a clip toggle has
+        // to commute with a blend change on the same layer (§12.6).
+        Prop::Blend => a.composite.blend != b.composite.blend,
+        Prop::Clip => a.composite.clip != b.composite.clip,
+        Prop::Opacity => a.composite.opacity != b.composite.opacity,
+        Prop::Visible => a.visible != b.visible,
+        Prop::Name => a.name != b.name,
+        Prop::Matte => matte_of(a) != matte_of(b),
+        Prop::Filter => a.filter() != b.filter(),
     }
-    if a.composite.clip != b.composite.clip {
-        out.push(Prop::Clip);
-    }
-    if a.composite.opacity != b.composite.opacity {
-        out.push(Prop::Opacity);
-    }
-    if a.visible != b.visible {
-        out.push(Prop::Visible);
-    }
-    if a.name != b.name {
-        out.push(Prop::Name);
-    }
-    if matte_of(a) != matte_of(b) {
-        out.push(Prop::Matte);
-    }
-    if a.filter() != b.filter() {
-        out.push(Prop::Filter);
-    }
-    out
 }
 
 /// Everything that differs between two states, as resources.
