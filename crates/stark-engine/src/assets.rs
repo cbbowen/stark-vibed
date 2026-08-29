@@ -172,8 +172,16 @@ impl AssetStore {
         Ok(id)
     }
 
-    /// A clonable view of the brush's prefix-τ texture for `id` under `orientation`, if
-    /// loaded (the running integral of `−ln(1−coverage)` along the travel axis, §6.2).
+    /// Resolve the prefix-τ volume and plain coverage mask from the same loaded
+    /// asset state — **the one way to ask**, under one store lock. The stroke renderer
+    /// needs both for the dynamics path, and asking twice could find the prefix hot
+    /// and the coverage cold.
+    ///
+    /// It replaced a `prefix_view`/`coverage_view` pair, which is where the argument
+    /// below arrived; both outlived their last caller and are gone. The plain coverage
+    /// is one texture for both orientation sources, unlike the prefix-τ volume: the
+    /// loop samples it in the **shape's own frame**, rotating the lookup rather than
+    /// the mask, so nothing there is ever turned and there is no corner to lose.
     ///
     /// **The two orientation sources read different volumes**, because they ask
     /// different questions of the same mask (§6.6). `FollowStroke` keeps the shape's
@@ -189,31 +197,10 @@ impl AssetStore {
     /// The pen volume is built here on first ask and kept. `&self` throughout: the
     /// store is `Arc<Mutex<_>>` behind a `Clone`, and this is the one place the cache
     /// grows after import.
-    pub fn prefix_view(
-        &self,
-        id: AssetId,
-        orientation: stark_model::document::OrientationSource,
-    ) -> Option<wgpu::TextureView> {
-        let mut inner = unpoisoned(self.inner.lock());
-        let mask = inner.masks.get_mut(&id)?;
-        Some(mask.prefix(&self.ctx, orientation))
-    }
-
-    /// A clonable view of the brush's plain coverage mask for `id`, if loaded —
-    /// sampled per stamp by the brush-dynamics loop (§6.2).
     ///
-    /// One texture for both orientation sources, unlike the prefix-τ above: the loop
-    /// samples this in the **shape's own frame**, rotating the lookup rather than the
-    /// mask, so nothing here is ever turned and there is no corner to lose.
-    pub fn coverage_view(&self, id: AssetId) -> Option<wgpu::TextureView> {
-        unpoisoned(self.inner.lock())
-            .masks
-            .get(&id)
-            .map(|m| m.coverage_view.clone())
-    }
-
-    /// Resolve the prefix-Ï„ volume and plain coverage mask from the same loaded
-    /// asset state. The stroke renderer needs both for the dynamics path.
+    /// The pen volume is built here on first ask and kept. `&self` throughout: the
+    /// store is `Arc<Mutex<_>>` behind a `Clone`, and this is the one place the cache
+    /// grows after import.
     pub(crate) fn mask_views(
         &self,
         id: AssetId,
@@ -254,7 +241,7 @@ impl AssetStore {
 /// Largest number of orientation slices a brush's pen-oriented prefix-τ volume holds
 /// (§6.6). With linear interpolation between adjacent layers this is ~5.6° resolution
 /// — smooth for any practical pen rotation.
-pub const MAX_ORIENTATION_LAYERS: u32 = 64;
+const MAX_ORIENTATION_LAYERS: u32 = 64;
 
 /// Memory budget (bytes) for one brush's pen-oriented prefix-τ volume. The layer count
 /// is chosen so `width × height × layers × 4 (R32Float)` stays under this — so a large
@@ -265,7 +252,7 @@ const PREFIX_BUDGET_BYTES: u32 = 64 << 20; // 64 MiB
 
 /// How many orientation slices to build for a `width × height` volume: as many as
 /// the memory budget allows, capped at [`MAX_ORIENTATION_LAYERS`] and at least 1.
-pub fn orientation_layers(width: u32, height: u32) -> u32 {
+fn orientation_layers(width: u32, height: u32) -> u32 {
     let per_layer = (width * height * 4).max(1);
     (PREFIX_BUDGET_BYTES / per_layer).clamp(1, MAX_ORIENTATION_LAYERS)
 }
@@ -355,7 +342,7 @@ pub(crate) fn tau_of(coverage: f32) -> f32 {
 ///
 /// Returns the view alone: it holds its own reference to the texture, so there is
 /// nothing for a caller to keep beside it.
-pub fn build_prefix_tau(
+pub(crate) fn build_prefix_tau(
     ctx: &GpuContext,
     width: u32,
     height: u32,
@@ -414,7 +401,7 @@ pub fn build_prefix_tau(
 /// store (image brushes) and the stroke renderer (the round tip, per hardness).
 ///
 /// Returns the view alone, like [`build_prefix_tau`].
-pub fn build_coverage_r8(
+pub(crate) fn build_coverage_r8(
     ctx: &GpuContext,
     width: u32,
     height: u32,

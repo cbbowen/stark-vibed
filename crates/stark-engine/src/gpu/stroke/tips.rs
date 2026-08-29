@@ -123,9 +123,6 @@ impl TipCache {
         }
     }
 
-    /// The brush's plain coverage mask — the weights a reservoir texel carries
-    /// (§6.2). Resolved exactly as [`Self::prefix_view`] is, from the same two
-    /// sources; only the stamp loop asks for it.
     /// The round tip's baked textures for a given `hardness`, cached so live preview
     /// — which re-renders per pointer move — doesn't rebuild them each frame.
     ///
