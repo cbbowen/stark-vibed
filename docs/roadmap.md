@@ -196,7 +196,7 @@ it. The seam this section predicted for a mapping UI turned out not to need one:
 the parameter is part of the mode, so the log action, the footprint, the patch, the
 merge rule and the shader uniform all took it without moving. What the panel grew
 is one row that exists only while the mode does, previewed per sample and committed
-once, through the same `settle` the opacity slider and the filter bar use.
+once, through the same `commit` the opacity slider and the filter bar use.
 
 **The gradient fill is built** (§22.4), and it attached at exactly the seam
 this section predicted: not a new pipeline but a `FillOp` whose parcel varies

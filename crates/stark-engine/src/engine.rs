@@ -871,36 +871,15 @@ impl Engine {
         let initial = DocState::with_layer(ROOT_LAYER);
         let initial_substrate = initial.substrate;
         let timeline = Timeline::Linear(LinearTimeline::new(initial));
-        let session = crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER);
 
-        let mut engine = Self {
-            shared: built.shared,
-            compositor: built.compositor,
-            compositor_pipeline: built.compositor_pipeline,
+        Ok(Self::assemble(
+            built.shared,
+            built.compositor,
+            built.compositor_pipeline,
             initial_substrate,
             timeline,
-            session,
-            peers: Peers::new(),
-            now: 0.0,
-            preview: Default::default(),
-            doc_revision: 0,
-            doc_origin: 0,
-            draw_cache: None,
-            layer_cache: std::cell::RefCell::new(None),
-            guide_cache: std::cell::RefCell::new(None),
-            guide_epoch: 0,
-            history_budget: DEFAULT_HISTORY_BUDGET,
-            fast_commit: DEFAULT_FAST_COMMIT,
-            strokes_reused: 0,
-            #[cfg(feature = "debug-unfrozen")]
-            debug_samples: Vec::new(),
-            authoring: Authoring::solo(),
-        };
-        // Point the substrate registry at the document's substrate. A no-op for a fresh
-        // document (both are `Flat`), and not for one seeded by `new_document`,
-        // where it parks the registry on the id so the substrate actually renders.
-        engine.apply_document_substrate();
-        Ok(engine)
+            viewport,
+        ))
     }
 
     /// A second engine on `donor`'s device, **sharing** everything expensive and
@@ -957,7 +936,6 @@ impl Engine {
                 .with_substrate(initial_substrate)
                 .with_substrate_scale(substrate.scale),
         ));
-        let session = crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER);
         // Its own three view settings over the shared passes — the whole of what a
         // sibling's compositor costs ([`CompositorPipeline::sharing`]), seeded from
         // `shared` so it opens mirroring the canvas it came from.
@@ -968,13 +946,51 @@ impl Engine {
             shared.media,
         );
         let compositor = Compositor::new(&compositor_pipeline);
+        Self::assemble(
+            shared,
+            compositor,
+            compositor_pipeline,
+            initial_substrate,
+            timeline,
+            viewport,
+        )
+    }
+
+    /// The fields every engine opens with, wrapped around the handful that differ —
+    /// and the [`apply_document_substrate`](Self::apply_document_substrate) both
+    /// constructors owe once they are set.
+    ///
+    /// **This closes [`EngineShared`]'s failure one level up.** That type exists
+    /// because a renderer added to [`ApplyCtx`] was shared by every engine except the
+    /// one whose constructor listed its siblings by hand, and nothing said so until a
+    /// preview canvas used it. Two struct literals naming fourteen identical fields
+    /// were the same shape waiting to happen: a field given a value in one and
+    /// forgotten in the other is invisible on the main canvas and shows up only on a
+    /// preview or a thumbnail — the hardest surface in the app to notice on. A field
+    /// added to [`Engine`] now has one place to be given a value, and the compiler
+    /// asks for it there.
+    ///
+    /// Every parameter is a distinct type, so a transposed argument list is a compile
+    /// error rather than a silently wrong engine — which is what makes six positional
+    /// values safe here, where a parameter struct would only move the literal.
+    fn assemble(
+        shared: EngineShared,
+        compositor: Compositor,
+        compositor_pipeline: CompositorPipeline,
+        initial_substrate: SubstrateId,
+        timeline: Timeline,
+        viewport: Extent2,
+    ) -> Self {
         let mut engine = Self {
             shared,
             compositor,
             compositor_pipeline,
             initial_substrate,
             timeline,
-            session,
+            // Built here rather than handed in, because both constructors built the
+            // same one: an engine opens on its viewport, aimed at the root layer its
+            // timeline was seeded with.
+            session: crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER),
             peers: Peers::new(),
             now: 0.0,
             preview: Default::default(),
@@ -991,9 +1007,12 @@ impl Engine {
             debug_samples: Vec::new(),
             authoring: Authoring::solo(),
         };
-        // Park the sibling registry on the document's substrate — a no-op here, since
-        // both were just seeded from the same place, but stated so this constructor
-        // upholds the invariant the same way `new_with_color_space` does.
+        // Park the substrate registry on the document's substrate. A no-op for a fresh
+        // document (both are `Flat`) and for a sibling, whose two halves were just
+        // seeded from the same place — and not for one `new_document` seeded, where it
+        // is what makes the substrate actually render. Here rather than at the two
+        // call sites for the reason the fields above are: an invariant every engine
+        // holds belongs where every engine is built.
         engine.apply_document_substrate();
         engine
     }
@@ -1189,11 +1208,8 @@ impl Engine {
             }
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
             DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
-            // `settle`, not `commit`, like every other slider's answer: a drag that
-            // travelled out and came back must log nothing, and must still drop the
-            // preview it left up.
             DocCommand::SetSelectionOpacity(opacity) => {
-                self.settle(ActionKind::SetSelectionOpacity(opacity))
+                self.commit(ActionKind::SetSelectionOpacity(opacity))
             }
             DocCommand::Fill { layer, op } => self.commit(ActionKind::Fill { layer, op }),
             DocCommand::Transform { layer, map } => {
@@ -1213,20 +1229,20 @@ impl Engine {
                     });
                 } else {
                     // Nothing is logged, but the gesture's preview still has to be
-                    // superseded — `settle`'s bargain, made by hand because the
+                    // superseded — `commit`'s bargain, made by hand because the
                     // refusal is about the map rather than about the document.
                     self.preview.set_doc(None);
                 }
             }
             DocCommand::SetSubstrate(id) => {
-                self.settle(ActionKind::SetSubstrate(id));
+                self.commit(ActionKind::SetSubstrate(id));
                 // Unconditional, and a no-op when the substrate did not move: the
                 // registry is brought level with the document rather than with what
                 // this command asked for.
                 self.apply_document_substrate();
             }
             DocCommand::SetSubstrateScale(scale) => {
-                self.settle(ActionKind::SetSubstrateScale(scale));
+                self.commit(ActionKind::SetSubstrateScale(scale));
                 // The same call for the same reason, and it is the same *state*: a
                 // `SubstrateMap` is built from the substrate and its scale together, so laying
                 // the substrate larger invalidates the bound substrate exactly as switching
@@ -1298,19 +1314,15 @@ impl Engine {
                 // selects it, which is what raises its bar.
             }
             DocCommand::SetFilter(id, filter) => {
-                // Normalized on the way through `settle`, where the action is
-                // minted, so replay puts back what was applied rather than
-                // re-deriving it from rules that may have moved (§21.5) — and so
-                // `is_noop_on` can compare payloads directly.
-                self.settle(ActionKind::SetFilter(id, filter));
+                self.commit(ActionKind::SetFilter(id, filter));
             }
             DocCommand::SetMatteRect(id, min, max) => {
-                self.settle(ActionKind::SetMatteRect(id, min, max))
+                self.commit(ActionKind::SetMatteRect(id, min, max))
             }
             DocCommand::SetMattePaint(id, paint) => {
-                self.settle(ActionKind::SetMattePaint(id, paint))
+                self.commit(ActionKind::SetMattePaint(id, paint))
             }
-            DocCommand::SetSubstrateColor(rgb) => self.settle(ActionKind::SetSubstrateColor(rgb)),
+            DocCommand::SetSubstrateColor(rgb) => self.commit(ActionKind::SetSubstrateColor(rgb)),
             DocCommand::DuplicateLayer(source) => {
                 // One minted id per layer of the subtree, paired with the layer it
                 // copies, in composite order — the map the action carries (§14.8).
@@ -1369,26 +1381,17 @@ impl Engine {
                 }
             }
             DocCommand::SetLayerBlend(id, blend) => {
-                // Normalized on the way through `settle`, where the action is
-                // minted, so replay puts back what was applied rather than
-                // re-deriving it from rules that may have moved — the same funnel
-                // `SetFilter` goes through, and the reason `is_noop_on` compares
-                // the sanitized value rather than the raw one.
-                self.settle(ActionKind::SetLayerBlend(id, blend))
+                self.commit(ActionKind::SetLayerBlend(id, blend))
             }
-            DocCommand::SetLayerClip(id, clip) => self.settle(ActionKind::SetLayerClip(id, clip)),
+            DocCommand::SetLayerClip(id, clip) => self.commit(ActionKind::SetLayerClip(id, clip)),
             DocCommand::SetLayerOpacity(id, opacity) => {
-                // Clamped here rather than compared raw, because that is what the
-                // action would store (`DocState::set_layer_opacity`): without it a
-                // slider that reports 1.0000001 would log a step that changes
-                // nothing when reached.
-                self.settle(ActionKind::SetLayerOpacity(id, opacity.clamp(0.0, 1.0)))
+                self.commit(ActionKind::SetLayerOpacity(id, opacity))
             }
             DocCommand::SetLayerVisible(id, visible) => {
-                self.settle(ActionKind::SetLayerVisible(id, visible))
+                self.commit(ActionKind::SetLayerVisible(id, visible))
             }
             DocCommand::SetLayerName(id, name) => {
-                self.settle(ActionKind::SetLayerName(id, normalize_name(name)))
+                self.commit(ActionKind::SetLayerName(id, normalize_name(name)))
             }
             DocCommand::MoveLayer { id, carrier, at } => {
                 self.commit(ActionKind::MoveLayer { id, carrier, at })
@@ -1407,19 +1410,14 @@ impl Engine {
                 });
             }
             DocCommand::RemoveGuide(id) => self.commit(ActionKind::RemoveGuide(id)),
-            // `settle` rather than `commit`, like every other control that is
-            // dragged: a gesture released on the pose it was pressed on must not
-            // leave an undo step that does nothing when it is reached.
-            DocCommand::SetGuide(id, guide) => self.settle(ActionKind::SetGuide(id, guide)),
+            DocCommand::SetGuide(id, guide) => self.commit(ActionKind::SetGuide(id, guide)),
             DocCommand::SetGuideName(id, name) => {
-                self.settle(ActionKind::SetGuideName(id, normalize_name(name)))
+                self.commit(ActionKind::SetGuideName(id, normalize_name(name)))
             }
-            DocCommand::MoveGuide { id, after } => self.settle(ActionKind::MoveGuide { id, after }),
+            DocCommand::MoveGuide { id, after } => self.commit(ActionKind::MoveGuide { id, after }),
         }
     }
 
-    /// View-state mutations: nothing here is logged, replicated, or reachable by
-    /// undo.
     /// Show the document the action `kind` would leave behind, without logging it —
     /// the body every `Preview*` setter arm below shares (§21.5).
     ///
@@ -1440,6 +1438,8 @@ impl Engine {
         self.set_doc_preview(preview);
     }
 
+    /// View-state mutations: nothing here is logged, replicated, or reachable by
+    /// undo.
     fn process_view(&mut self, command: ViewCommand) {
         match command {
             ViewCommand::SetTool(tool) => {
@@ -2026,7 +2026,11 @@ impl Engine {
     ) {
         self.preview.set_doc(None);
         if let Some(target) = as_action(&self.timeline) {
-            self.commit(ActionKind::Undo(target));
+            // The unconditional door: a step the timeline has just said it can take
+            // must land, and a declined `Undo` would report a move the playhead did
+            // not make.
+            let id = self.next_action_id();
+            self.commit_with_id(id, ActionKind::Undo(target));
         } else {
             step(&mut self.timeline, &mut self.shared.apply);
             self.committed_changed();
@@ -2036,25 +2040,81 @@ impl Engine {
         self.apply_document_substrate();
     }
 
-    /// Log one action and apply it.
+    /// Log one action and apply it — **unless the document already reads that way**
+    /// ([`is_noop_on`](crate::document::apply::is_noop_on)), in which case nothing is
+    /// logged and the drag in flight is still dropped.
     ///
-    /// **The unlogged drag in flight is dropped here**, once, rather than at each
-    /// commit site that remembered to. A drag preview is a whole document standing
-    /// in for the committed one (§17.6), so anything that moves the committed
-    /// document supersedes it — leaving it up pins the canvas to the last dragged
-    /// value and shadows every later edit. Written out at the call sites it was
-    /// present at eight of them and absent from thirteen, including the gesture
+    /// **One door, so an arm of [`process_doc_inner`](Self::process_doc_inner) is one
+    /// word.** The no-op question used to be a second entry point beside this one, and
+    /// which of the two an arm reached for was a per-arm judgement nothing checked.
+    /// A per-arm judgement about this question has produced a bug before:
+    /// `SetLayerVisible` logged a step for setting the value it already held while
+    /// `SetLayerOpacity` did not. Unifying the two *bodies* fixed that instance and
+    /// left the *choice*; unifying the choice rules out the class (CLAUDE.md). Folding them costs nothing, because every kind
+    /// that took the unchecked door — a stroke, a fill, a transform, a selection, a
+    /// removal, a merge, a move — sits in `is_noop_on`'s exhaustive `false` arm and so
+    /// answers the new question by construction.
+    ///
+    /// **The unlogged drag in flight is dropped on every path through here**, once,
+    /// rather than at each commit site that remembered to. A drag preview is a whole
+    /// document standing in for the committed one (§17.6), so anything that moves the
+    /// committed document supersedes it — leaving it up pins the canvas to the last
+    /// dragged value and shadows every later edit. Written out at the call sites it
+    /// was present at eight of them and absent from thirteen, including the gesture
     /// commit, and which thirteen was not a decision anybody had made.
+    ///
+    /// The declining path drops it too, which is the other half of a setter's
+    /// bargain: a slider dragged out and back must log nothing *and* must still
+    /// supersede the preview it left up, because a preview is superseded by something
+    /// or not at all.
     fn commit(&mut self, kind: ActionKind) {
+        // Sanitized before the comparison, not after: `is_noop_on` compares the
+        // payload against the one already in the document, and the stored one has
+        // been through this funnel. Left raw, a slider released on the value it was
+        // pressed on would compare unequal to its own sanitized twin and log an
+        // action that changes nothing — the case the check exists to catch.
+        let kind = kind.sanitized();
+        if crate::document::apply::is_noop_on(&kind, self.document(), self.actor()) {
+            self.preview.set_doc(None);
+            return;
+        }
+        // Drawn only once the action is known to be worth logging, so a slider
+        // dragged out and back spends no Lamport tick.
         let id = self.next_action_id();
-        self.commit_with_id(id, kind);
+        self.commit_sanitized(id, kind);
     }
 
-    /// [`commit`](Self::commit) with the action id already drawn — the half
-    /// [`commit_minting`](Self::commit_minting) needs, since a kind that names the
-    /// layers it mints has to be built from the id before it can be committed under
-    /// it.
+    /// [`commit`](Self::commit) with the action id drawn by the caller and **the
+    /// no-op question not asked** — the unconditional door.
+    ///
+    /// The id comes from outside because two callers cannot let this draw it:
+    /// [`commit_minting`](Self::commit_minting) has to build the kind *from* the id,
+    /// since a layer's id is the id of the action that mints it, and
+    /// [`replay_stroke_seeded`](Self::replay_stroke_seeded) answers with it.
+    ///
+    /// The question is not asked because for these callers a decline would be silent
+    /// damage rather than a saved undo step, which is why the exemption is a door and
+    /// not a list of kinds. `commit_minting` has already baked the id into the kind's
+    /// layer ids, so declining would leave them naming an action that never happened;
+    /// [`commit_stroke`](Self::commit_stroke) has an offer of already-rendered tiles
+    /// riding the context for exactly this push (`PreparedStroke`, §6.2); and an
+    /// `Undo` that declined would leave the playhead where it was
+    /// ([`navigate`](Self::navigate)). That none of their kinds *could* answer "no-op"
+    /// today is a fact about `is_noop_on`, not a contract they rest on.
     fn commit_with_id(&mut self, id: ActionId, kind: ActionKind) {
+        self.commit_sanitized(id, kind.sanitized());
+    }
+
+    /// What both doors above open onto: log `kind` under `id` and apply it, with the
+    /// payload already through the funnel.
+    ///
+    /// The precondition is in the name for a reason that is not the saved pass:
+    /// `Logged::new` runs the funnel again on the way into the log, deliberately, so
+    /// that a footprint is built from what the fold will actually see. What the
+    /// precondition buys is that [`commit`](Self::commit) **logs the very value it
+    /// compared** — the no-op answer and the stored payload cannot come apart, and a
+    /// reader need not know `sanitized` is idempotent to trust that they agree.
+    fn commit_sanitized(&mut self, id: ActionId, kind: ActionKind) {
         // Every logged edit, whatever kind — a stroke landing at pen-up, a fill, a
         // layer move. One row rather than one per `ActionKind`, because what a
         // profile is being asked here is "is a commit the hitch the artist felt",
@@ -2064,21 +2124,18 @@ impl Engine {
         // where one that took its preview's tiles (`commit_stroke`) has none.
         crate::timing::span!("doc.commit");
         self.preview.set_doc(None);
-        let action = Action {
-            id,
-            // The **minted** half of the sanitizing funnel (§21.5); `Logged::new`
-            // is the "enters state" half. Here rather than inside the timeline so
-            // that the log and the wire carry *what was applied* — the broadcast
-            // clone below is taken from this action, so a peer that received the
-            // raw kind and cleaned it on arrival would agree about pixels while
-            // disagreeing about the log.
-            //
-            // One call for every kind, rather than the three payload-level calls
-            // this replaces (`AddFilter`, `SetFilter`, `SetLayerBlend`), which were
-            // a list every new action-with-a-knob had to be added to and the brush,
-            // the fill and the selection op never were.
-            kind: kind.sanitized(),
-        };
+        // `kind` arrives having been through the **minted** half of the sanitizing
+        // funnel (§21.5); `Logged::new` is the "enters state" half. It runs in the two
+        // doors above rather than inside the timeline so that the log and the wire
+        // carry *what was applied* — the broadcast clone below is taken from this
+        // action, so a peer that received the raw kind and cleaned it on arrival would
+        // agree about pixels while disagreeing about the log.
+        //
+        // One call for every kind, rather than the three payload-level calls this
+        // replaces (`AddFilter`, `SetFilter`, `SetLayerBlend`), which were a list
+        // every new action-with-a-knob had to be added to and the brush, the fill
+        // and the selection op never were.
+        let action = Action { id, kind };
         // Cloned only when there is somewhere for the copy to go. A `CommitStroke`
         // carries the stroke's whole fitted control-point list — the largest thing
         // in the log — and a solo session was duplicating one per commit to drop it
@@ -2124,7 +2181,12 @@ impl Engine {
             .shared
             .apply
             .offer(prepared.filter(|_| self.fast_commit));
-        self.commit(ActionKind::CommitStroke(rec));
+        // The unconditional door, and the one place a decline would cost paint rather
+        // than an undo step: `reclaim` would take the offered tiles back safely enough,
+        // but a `CommitStroke` that never reached the log is a stroke the artist drew
+        // and the document does not have.
+        let id = self.next_action_id();
+        self.commit_with_id(id, ActionKind::CommitStroke(rec));
         // A slot still full after the push was declined; an empty one was taken.
         if offered && !self.shared.apply.reclaim() {
             self.strokes_reused += 1;
@@ -2171,32 +2233,6 @@ impl Engine {
                 resident_mb = self.shared.apply.pool.resident_bytes() / (1 << 20),
                 "gave up undo depth to release retained tiles",
             );
-        }
-    }
-
-    /// [`commit`](Self::commit), unless the document already reads that way
-    /// ([`is_noop_on`](crate::document::apply::is_noop_on)) — the shape every *setter* command takes.
-    ///
-    /// The two halves are one bargain and that is why they are one call. A slider
-    /// drag previews per pointer move and commits on release, so a drag that
-    /// travels out and comes back must log nothing — and must still drop the
-    /// preview it left up, because a preview is superseded by *something* or not at
-    /// all. Splitting those apart is how `SetLayerVisible` came to log a step for
-    /// setting the value it already held while `SetLayerOpacity` did not.
-    fn settle(&mut self, kind: ActionKind) {
-        // Before the comparison, not after: `is_noop_on` compares the payload
-        // against the one already in the document, and the stored one has been
-        // through this funnel. Left raw, a slider released on the value it was
-        // pressed on would compare unequal to its own sanitized twin and log an
-        // action that changes nothing — which is the case this whole function
-        // exists to catch.
-        let kind = kind.sanitized();
-        if crate::document::apply::is_noop_on(&kind, self.document(), self.actor()) {
-            // Nothing to log, and the drag still has to be superseded: a slider
-            // released on the value it was pressed on left a preview up.
-            self.preview.set_doc(None);
-        } else {
-            self.commit(kind);
         }
     }
 

@@ -721,39 +721,6 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
     }
 }
 
-/// Whether applying this to `state` would leave it exactly as it found it —
-/// so a command that would spend an undo step on nothing can decline to log
-/// one (§5.4).
-///
-/// **The question belongs here, beside `apply`.** It was asked six times over
-/// in the engine's command handler, in four different shapes, each reaching
-/// into a layer's content to ask what kind of layer it is — and the comments
-/// there say why that is uncomfortable: it is "a second rule about what a matte
-/// is, kept somewhere `apply` cannot see". The four that had a check were not
-/// the four that needed one, either: `SetLayerVisible`, `SetLayerClip`,
-/// `SetMatteRect` and `SetSubstrateColor` had none, so setting a value to the value
-/// it already held cost an undo step that appears to do nothing when reached.
-///
-/// Asked of the action **as it will be logged**. The engine sanitizes at mint
-/// (§21.5, §6.3) so that replay puts back what was applied rather than
-/// re-deriving it, which means the payload compared here is the payload that
-/// would be stored — a slider reporting `0.6000001` is clamped before it gets
-/// this far.
-///
-/// Conservative in the one safe direction: everything whose effect is pixels
-/// answers `false`. A stroke, a fill or a transform *could* leave a layer
-/// byte-identical, but finding that out means doing the work, and the point of
-/// the question is to avoid it. A false "no" costs an undo step; a false "yes"
-/// would silently drop an edit.
-///
-/// An action naming a layer that does not exist answers `false` too, and
-/// deliberately: it is inert *here*, but the same action reaching a peer whose
-/// tree is one step ahead is not, and a log that omits it would be a different
-/// log on the two clients (§12.1).
-///
-/// **Exhaustive, with no `_` arm**, for [`minted_layers`](ActionKind::minted_layers)'s
-/// reason: a variant added later must be made to answer rather than defaulted
-/// into the safe answer and forgotten.
 /// The document as committing `kind` would leave it, **without logging it** — the
 /// preview half of every setter command (§21.5).
 ///
@@ -795,6 +762,43 @@ pub(crate) fn preview_of(
     apply(&action, state.clone(), ctx)
 }
 
+/// Whether applying this to `state` would leave it exactly as it found it —
+/// so a command that would spend an undo step on nothing can decline to log
+/// one (§5.4).
+///
+/// **The question belongs here, beside `apply`.** It was asked six times over
+/// in the engine's command handler, in four different shapes, each reaching
+/// into a layer's content to ask what kind of layer it is — and the comments
+/// there say why that is uncomfortable: it is "a second rule about what a matte
+/// is, kept somewhere `apply` cannot see". The four that had a check were not
+/// the four that needed one, either: `SetLayerVisible`, `SetLayerClip`,
+/// `SetMatteRect` and `SetSubstrateColor` had none, so setting a value to the value
+/// it already held cost an undo step that appears to do nothing when reached.
+///
+/// Asked of the action **as it will be logged**. The engine runs the sanitizing
+/// funnel (§21.5, §6.3) before it asks, so that replay puts back what was applied
+/// rather than re-deriving it — which means the payload compared here is the payload
+/// that would be stored, and a slider reporting `0.6000001` is clamped before it
+/// gets this far.
+///
+/// Conservative in the one safe direction: everything whose effect is pixels
+/// answers `false`. A stroke, a fill or a transform *could* leave a layer
+/// byte-identical, but finding that out means doing the work, and the point of
+/// the question is to avoid it. A false "no" costs an undo step; a false "yes"
+/// would silently drop an edit.
+///
+/// That arm is also what lets the engine ask this of **every** action rather than of
+/// the ones somebody classified as setters (`Engine::commit`): a kind whose effect
+/// is pixels answers "no" by construction, so no arm has to choose a door by kind.
+///
+/// An action naming a layer that does not exist answers `false` too, and
+/// deliberately: it is inert *here*, but the same action reaching a peer whose
+/// tree is one step ahead is not, and a log that omits it would be a different
+/// log on the two clients (§12.1).
+///
+/// **Exhaustive, with no `_` arm**, for [`minted_layers`](ActionKind::minted_layers)'s
+/// reason: a variant added later must be made to answer rather than defaulted
+/// into the safe answer and forgotten.
 pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState, actor: ActorId) -> bool {
     // The layer this action names, or `false` from every arm below when it is
     // absent — see the doc comment.
