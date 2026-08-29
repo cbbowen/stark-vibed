@@ -30,11 +30,34 @@ pub enum EngineError {
     ///
     /// Distinct from [`Self::Export`], which is about a request that does not make
     /// sense (a frame too small, a size past the device's limit). That is answerable
-    /// by asking for something else; this is not answerable at all, and
-    /// [`ObservableState::gpu_failure`](crate::ObservableState::gpu_failure) is where
-    /// a frontend learns it is permanent.
+    /// by asking for something else; this is not answerable at all.
+    ///
+    /// **Carries the failure, not a rendering of it.** It was `Gpu(String)`, built by
+    /// `to_string()`-ing a [`DeviceFailure`](crate::DeviceFailure) the constructor had
+    /// in hand — so a caller could not tell `FailureKind::Lost` (permanent; recovery
+    /// means building a new device) from `FailureKind::OutOfMemory` (not necessarily
+    /// terminal) without going to
+    /// [`ObservableState::gpu_failure`](crate::ObservableState::gpu_failure) to be told
+    /// what the error itself had just erased. That second channel is still how a
+    /// frontend watches the device; it is no longer how it learns what happened.
+    ///
+    /// Carried by value rather than as a `#[from]` source: [`DeviceFailure`] is a
+    /// plain reportable fact — `Clone`, comparable, free of any borrow of the device
+    /// that died — precisely so it can also cross into `ObservableState`, and making
+    /// it an `Error` to gain a conversion nothing asks for would be the tail wagging
+    /// the dog. There is one construction site, and it names the variant.
+    ///
+    /// [`DeviceFailure`]: crate::DeviceFailure
     #[error("{0}")]
-    Gpu(String),
+    Gpu(crate::gpu::DeviceFailure),
+
+    /// A GPU operation failed while the device reports nothing wrong with itself.
+    ///
+    /// The other half of what [`Self::Gpu`] used to conflate: a readback that came
+    /// back empty on a live device is a different fact from a dead one, and only one
+    /// of the two is worth retrying.
+    #[error("readback failed ({0})")]
+    Readback(String),
 
     /// Something went wrong with the *document* rather than with the renderer — a
     /// file that will not decode, a space this build lacks, content it was never
@@ -117,4 +140,11 @@ impl From<stark_assetid::AssetError> for EngineError {
 }
 
 /// Convenience alias used throughout the engine.
+///
+/// **Fixed rather than defaulted.** `Result<T, E = EngineError>` would widen this to
+/// a superset of `std::result::Result` and save the two places below that spell the
+/// std one out — but a type-parameter default is not used for *inference*, so
+/// `stark_engine::Result::Ok(v)` in expression position stops resolving `E`, and that
+/// is exactly how a frontend closure pins its error type (`stark-ui`'s `collab`). Two
+/// in-crate spellings is the cheaper side of that trade.
 pub type Result<T> = std::result::Result<T, EngineError>;

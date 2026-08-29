@@ -213,10 +213,9 @@ async fn wait_mapped(ctx: &GpuContext, buffer: &wgpu::Buffer) -> Result<()> {
 /// device-lost callback holds the cause (`GpuHealth`). Reporting the cause where
 /// there is one is what makes the message name a driver reset rather than a buffer.
 fn readback_failed(ctx: &GpuContext, detail: String) -> EngineError {
-    match ctx.health().failure() {
-        Some(failure) => EngineError::Gpu(failure.to_string()),
-        None => EngineError::Gpu(format!("readback failed ({detail})")),
-    }
+    ctx.health()
+        .failure()
+        .map_or(EngineError::Readback(detail), EngineError::Gpu)
 }
 
 /// Read an 8-bit, 4-channel (e.g. `Rgba8Unorm`) texture back to tightly-packed

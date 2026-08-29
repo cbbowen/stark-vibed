@@ -76,13 +76,12 @@ impl GpuHealth {
         }
     }
 
-    /// Poisoning cannot matter here: what is guarded is one `Option` that is only
-    /// ever moved in whole, and the alternative — propagating another thread's panic
-    /// as ours — would turn a reportable failure into an unreportable one.
+    /// One `Option`, moved in whole — [`crate::unpoisoned`]'s own argument, which is
+    /// why this calls it rather than restating it. Every lock in the crate goes
+    /// through that function, and a second copy of its body is how a crate-wide rule
+    /// decays into one that holds on the paths somebody remembered.
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<DeviceFailure>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::unpoisoned(self.0.lock())
     }
 }
 

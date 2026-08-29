@@ -86,7 +86,8 @@ pub mod view;
 /// (`gpu::stroke::tips`), a pooled scratch list (`gpu::scratch`), the tile
 /// pool's free list and census (`gpu::tile`), the decoded brush masks ([`assets`])
 /// and substrate/environment builds (`gpu::registry`), the seed of the last stroke
-/// complained about, the timing histograms ([`timing`]) — whose values are moved in
+/// complained about, the timing histograms ([`timing`]), the device's failure slot
+/// (`gpu::context::GpuHealth`) — whose values are moved in
 /// whole after the work producing them has finished, so a panic while the lock is
 /// held cannot leave a torn value behind. All poisoning tells us is that some
 /// *other* thread panicked while it happened to be looking something up;
