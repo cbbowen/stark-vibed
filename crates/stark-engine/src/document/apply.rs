@@ -466,6 +466,13 @@ impl Materialize for DocState {
 /// is `stark-model`'s now and this needs the renderers: the division the orphan rule
 /// forced is the one the split is about (§2).
 ///
+/// **What is left here is the nine kinds that need a renderer** — a stroke, a placed
+/// image, the two selection ops, the three transforms, a merge and a fill. Everything
+/// else folds without touching one and is [`apply_pure`]'s, which this match ends by
+/// handing over to. Both matches are exhaustive with no `_` arm, so a kind added
+/// later has to name itself on one side of the line rather than defaulting into
+/// either.
+///
 /// **Total.** An action that cannot be honoured — a stroke on a missing layer, a
 /// transform past the tile caps — returns the state unchanged rather than an error,
 /// so every peer declines it identically (`Materialize::fold`).
@@ -513,7 +520,6 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
                 Some(tiles)
             },
         ),
-        ActionKind::AddLayer { id, carrier, above } => state.insert_layer(*id, *carrier, *above),
         // An image from outside the document, as a layer holding it (§23). The layer
         // arrives first and by exactly the same call an `AddLayer` makes, so an unknown
         // carrier declines it identically — and the tiles are only built once the layer
@@ -557,45 +563,6 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
                 }
             }
         }
-        // The copy's tiles are the shared handles the source already holds, so
-        // duplicating a layer costs no GPU memory until one of the two is
-        // painted on — copy-on-write is what makes this a cheap action rather
-        // than a re-render of everything under it (§5.2).
-        ActionKind::DuplicateLayer { ids } => state.duplicate_layer(ids),
-        // **Declined unless the subtree is what the action names** (§12.6). Every id
-        // in it is a `Resource::Layer` write, so a group holding one the action does
-        // not name — a peer's concurrent add — would write state nothing declared,
-        // which is the divergence `ActionKind::RemoveLayer` describes. Asked of the
-        // state being folded, so peers and replays decline the same action;
-        // `duplicate_layer` refuses on the same terms.
-        ActionKind::RemoveLayer { id, carried } => {
-            match state.carried_ids(*id) {
-                // Absent: nothing to remove, and the arm below would say the same.
-                None => state,
-                Some(holds) if holds == *carried => state.remove_layer(*id),
-                Some(holds) => {
-                    tracing::warn!(
-                        ?id,
-                        named = carried.len(),
-                        holds = holds.len(),
-                        "a group removal names a subtree the document no longer holds; ignored",
-                    );
-                    state
-                }
-            }
-        }
-        ActionKind::SetLayerBlend(id, blend) => state.set_layer_blend(*id, *blend),
-        ActionKind::SetLayerClip(id, clip) => state.set_layer_clip(*id, *clip),
-        ActionKind::SetLayerOpacity(id, opacity) => state.set_layer_opacity(*id, *opacity),
-        ActionKind::SetLayerVisible(id, visible) => state.set_layer_visible(*id, *visible),
-        ActionKind::SetLayerName(id, name) => {
-            state.set_layer_name(*id, name.as_deref().map(Into::into))
-        }
-        ActionKind::MoveLayer { id, carrier, at } => state.move_layer(*id, *carrier, *at),
-        // Resolved at the timeline layer (effective-sequence filtering); an
-        // `Undo` should never be materialized through `apply`. Identity, so
-        // a stray one is harmless rather than wrong.
-        ActionKind::Undo(_) => state,
         // The author's own selection, and only ever the author's: the key is
         // taken from `action.id.actor`, never from the payload, so an action
         // cannot address anyone else's mask (§17.3).
@@ -618,57 +585,6 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             let selection = ctx.selection.invert(&ctx.pool, &prev);
             state.with_selection(action.id.actor, selection)
         }
-        // The author's own mask, keyed like every other selection edit off
-        // `action.id.actor`. Rasterizes nothing at all: the strength is how the mask
-        // is read, so this touches one number and no tile (§6.8).
-        ActionKind::SetSelectionOpacity(opacity) => {
-            state.with_selection_opacity(action.id.actor, *opacity)
-        }
-        ActionKind::SetSubstrate(id) => state.with_substrate(*id),
-        ActionKind::SetSubstrateScale(scale) => state.with_substrate_scale(*scale),
-        ActionKind::AddMatte {
-            id,
-            carrier,
-            at,
-            region,
-            paint,
-        } => state.insert_matte(*id, *carrier, *at, *region, paint.clone()),
-        // The payload is sanitized inside `insert_filter`/`set_filter` — the
-        // funnel sits in state, where replayed files and remote peers land too,
-        // not only where a local command is minted (§21.5).
-        ActionKind::AddFilter {
-            id,
-            carrier,
-            above,
-            filter,
-        } => state.insert_filter(*id, *carrier, *above, filter.clone()),
-        ActionKind::SetFilter(id, filter) => state.set_filter(*id, filter.clone()),
-        ActionKind::SetMatteRect(id, min, max) => state.set_matte_rect(*id, *min, *max),
-        ActionKind::SetMattePaint(id, paint) => state.set_matte_paint(*id, paint.clone()),
-        ActionKind::SetSubstrateColor(rgb) => state.with_substrate_color(*rgb),
-
-        // The drawing guides (§20.5). The one family of actions with no pixel on
-        // the other side of it: a guide is geometry to construct through, so
-        // applying one moves a roster and nothing else — which is also why none
-        // of these touches `ctx`.
-        //
-        // **The id is the adding action's own** (`GuideId`), and the action carries
-        // it rather than the fold deriving it: an id derived here is not part of the
-        // action, and `start_collaboration` rewrites solo-authored `ActionId`s
-        // (§17.9). Everything else names one that was minted earlier and no-ops when
-        // it is not there, the way every action naming an absent layer does.
-        ActionKind::AddGuide {
-            id,
-            guide,
-            after,
-            name,
-        } => state.insert_guide(*id, *guide, *after, name.as_deref().map(Arc::from)),
-        ActionKind::RemoveGuide(id) => state.remove_guide(*id),
-        ActionKind::SetGuide(id, guide) => state.set_guide(*id, *guide),
-        ActionKind::SetGuideName(id, name) => {
-            state.set_guide_name(*id, name.as_deref().map(Arc::from))
-        }
-        ActionKind::MoveGuide { id, after } => state.move_guide(*id, *after),
         // Cut the author's selected paint, restack it under the affine, and
         // carry the author's mask with it (§16). Gated and
         // keyed exactly as a stroke is: the mask comes off the state being
@@ -718,7 +634,164 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             // taking `paint_edit` says rather than a `None` it has to pass.
             |_, base, selection| ctx.fill.apply(&ctx.pool, base, selection, op),
         ),
+
+        // Everything that needs no renderer, written out rather than swept up by a
+        // `_`: which side of the line a new kind belongs on is a question the
+        // compiler should be the one to ask.
+        kind @ (ActionKind::AddLayer { .. }
+        | ActionKind::DuplicateLayer { .. }
+        | ActionKind::RemoveLayer { .. }
+        | ActionKind::SetLayerBlend(..)
+        | ActionKind::SetLayerClip(..)
+        | ActionKind::SetLayerOpacity(..)
+        | ActionKind::SetLayerVisible(..)
+        | ActionKind::SetLayerName(..)
+        | ActionKind::MoveLayer { .. }
+        | ActionKind::Undo(_)
+        | ActionKind::SetSelectionOpacity(_)
+        | ActionKind::SetSubstrate(_)
+        | ActionKind::SetSubstrateScale(_)
+        | ActionKind::SetSubstrateColor(_)
+        | ActionKind::AddMatte { .. }
+        | ActionKind::SetMatteRect(..)
+        | ActionKind::SetMattePaint(..)
+        | ActionKind::AddFilter { .. }
+        | ActionKind::SetFilter(..)
+        | ActionKind::AddGuide { .. }
+        | ActionKind::RemoveGuide(_)
+        | ActionKind::SetGuide(..)
+        | ActionKind::SetGuideName(..)
+        | ActionKind::MoveGuide { .. }) => apply_pure(kind, state, action.id.actor)
+            .expect("the kinds named here are exactly the ones `apply_pure` folds"),
     }
+}
+
+/// The arms of [`apply`] that are a [`DocState`] call and nothing else — two thirds
+/// of the fold, answered without a tile pool, a renderer or an adapter.
+///
+/// `None` for the nine kinds that do need one, so [`apply`] keeps those and hands
+/// everything else here. **The partition is the compiler's**: this function has no
+/// [`ApplyCtx`] to name, so an arm that reaches for a renderer does not compile —
+/// which is the whole point of the shape, and the reason nothing is threaded in here
+/// against the day one might.
+///
+/// Split out because these arms were being *reconstructed* to be tested. `patch.rs`
+/// checks that folding an action and unapplying it puts the document back, and the
+/// fold it was checking against was a hand-written match in its own test module: a
+/// third statement of the same mutation, with nothing tying it to this one. A
+/// sanitize or a refusal added to an arm here would leave that round trip passing,
+/// having tested a fold nobody runs. It calls this now.
+///
+/// Takes the actor rather than the [`Action`] because that is all any arm reads of
+/// it: the author's own mask is keyed by it (§17.3) and `SetSelectionOpacity` writes
+/// through it. Nothing here reads the Lamport clock.
+pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> Option<DocState> {
+    Some(match kind {
+        ActionKind::AddLayer { id, carrier, above } => state.insert_layer(*id, *carrier, *above),
+        // The copy's tiles are the shared handles the source already holds, so
+        // duplicating a layer costs no GPU memory until one of the two is
+        // painted on — copy-on-write is what makes this a cheap action rather
+        // than a re-render of everything under it (§5.2).
+        ActionKind::DuplicateLayer { ids } => state.duplicate_layer(ids),
+        // **Declined unless the subtree is what the action names** (§12.6). Every id
+        // in it is a `Resource::Layer` write, so a group holding one the action does
+        // not name — a peer's concurrent add — would write state nothing declared,
+        // which is the divergence `ActionKind::RemoveLayer` describes. Asked of the
+        // state being folded, so peers and replays decline the same action;
+        // `duplicate_layer` refuses on the same terms.
+        ActionKind::RemoveLayer { id, carried } => {
+            match state.carried_ids(*id) {
+                // Absent: nothing to remove, and the arm below would say the same.
+                None => state,
+                Some(holds) if holds == *carried => state.remove_layer(*id),
+                Some(holds) => {
+                    tracing::warn!(
+                        ?id,
+                        named = carried.len(),
+                        holds = holds.len(),
+                        "a group removal names a subtree the document no longer holds; ignored",
+                    );
+                    state
+                }
+            }
+        }
+        ActionKind::SetLayerBlend(id, blend) => state.set_layer_blend(*id, *blend),
+        ActionKind::SetLayerClip(id, clip) => state.set_layer_clip(*id, *clip),
+        ActionKind::SetLayerOpacity(id, opacity) => state.set_layer_opacity(*id, *opacity),
+        ActionKind::SetLayerVisible(id, visible) => state.set_layer_visible(*id, *visible),
+        ActionKind::SetLayerName(id, name) => {
+            state.set_layer_name(*id, name.as_deref().map(Into::into))
+        }
+        ActionKind::MoveLayer { id, carrier, at } => state.move_layer(*id, *carrier, *at),
+        // Resolved at the timeline layer (effective-sequence filtering); an
+        // `Undo` should never be materialized through `apply`. Identity, so
+        // a stray one is harmless rather than wrong.
+        ActionKind::Undo(_) => state,
+        // The author's own mask, keyed like every other selection edit off
+        // `action.id.actor`. Rasterizes nothing at all: the strength is how the mask
+        // is read, so this touches one number and no tile (§6.8) — which is exactly
+        // why it is here and its two siblings are not.
+        ActionKind::SetSelectionOpacity(opacity) => state.with_selection_opacity(actor, *opacity),
+        ActionKind::SetSubstrate(id) => state.with_substrate(*id),
+        ActionKind::SetSubstrateScale(scale) => state.with_substrate_scale(*scale),
+        ActionKind::SetSubstrateColor(rgb) => state.with_substrate_color(*rgb),
+        ActionKind::AddMatte {
+            id,
+            carrier,
+            at,
+            region,
+            paint,
+        } => state.insert_matte(*id, *carrier, *at, *region, paint.clone()),
+        ActionKind::SetMatteRect(id, min, max) => state.set_matte_rect(*id, *min, *max),
+        ActionKind::SetMattePaint(id, paint) => state.set_matte_paint(*id, paint.clone()),
+        // The payload is sanitized inside `insert_filter`/`set_filter` — the
+        // funnel sits in state, where replayed files and remote peers land too,
+        // not only where a local command is minted (§21.5).
+        ActionKind::AddFilter {
+            id,
+            carrier,
+            above,
+            filter,
+        } => state.insert_filter(*id, *carrier, *above, filter.clone()),
+        ActionKind::SetFilter(id, filter) => state.set_filter(*id, filter.clone()),
+
+        // The drawing guides (§20.5). The one family of actions with no pixel on
+        // the other side of it: a guide is geometry to construct through, so
+        // applying one moves a roster and nothing else — which is also why none
+        // of these needed `ctx` even before there was somewhere to say so.
+        //
+        // **The id is the adding action's own** (`GuideId`), and the action carries
+        // it rather than the fold deriving it: an id derived here is not part of the
+        // action, and `start_collaboration` rewrites solo-authored `ActionId`s
+        // (§17.9). Everything else names one that was minted earlier and no-ops when
+        // it is not there, the way every action naming an absent layer does.
+        ActionKind::AddGuide {
+            id,
+            guide,
+            after,
+            name,
+        } => state.insert_guide(*id, *guide, *after, name.as_deref().map(Arc::from)),
+        ActionKind::RemoveGuide(id) => state.remove_guide(*id),
+        ActionKind::SetGuide(id, guide) => state.set_guide(*id, *guide),
+        ActionKind::SetGuideName(id, name) => {
+            state.set_guide_name(*id, name.as_deref().map(Arc::from))
+        }
+        ActionKind::MoveGuide { id, after } => state.move_guide(*id, *after),
+
+        // The nine whose answer is pixels, and so is a renderer's. Declined here
+        // rather than absent, so that a kind added later has to say which side it is
+        // on in this match too — and so that [`apply`]'s list and this one cannot
+        // both quietly omit it.
+        ActionKind::CommitStroke(_)
+        | ActionKind::PlaceImage { .. }
+        | ActionKind::Select(_)
+        | ActionKind::InvertSelection
+        | ActionKind::Transform { .. }
+        | ActionKind::TransformPerspective { .. }
+        | ActionKind::TransformWarp { .. }
+        | ActionKind::MergeLayerDown { .. }
+        | ActionKind::Fill { .. } => return None,
+    })
 }
 
 /// The document as committing `kind` would leave it, **without logging it** — the

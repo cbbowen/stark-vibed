@@ -430,9 +430,28 @@ mod tests {
     fn undo(action: &Action, before: &DocState, after: &DocState) -> DocState {
         unapply(action, &compute_footprint(action), before, after)
     }
-    use stark_model::SubstrateId;
+
+    /// The action folded into `state` — **the fold itself**, through the half of
+    /// [`apply`](super::super::apply) that is a `DocState` call and nothing else (§4).
+    ///
+    /// Written out here it was a third statement of the same mutation: a match over
+    /// `ActionKind` in a test, with nothing tying it to the real one, so a sanitize
+    /// or a refusal added to an arm left this whole module round-tripping a fold
+    /// nobody runs. That is the hazard [`StatePatch::capture`] argues against one
+    /// level up, and it was sitting here.
+    ///
+    /// A GPU kind answers `None` and there is nothing here to render it with, which
+    /// is what makes "this suite drives the ctx-free half" a fact rather than a
+    /// convention.
+    fn fold(action: &Action, state: &DocState) -> DocState {
+        apply_pure(&action.kind, state.clone(), action.id.actor)
+            .expect("this suite drives the ctx-free half of the fold")
+    }
+    use super::super::apply::apply_pure;
+    use super::super::audit::undeclared;
     use stark_model::document::Place;
-    use stark_model::document::{ActionId, ActionKind};
+    use stark_model::document::{ActionId, ActionKind, ActionTag, GuideId};
+    use stark_model::{AssetId, SubstrateId, SubstrateScale};
 
     const A: LayerId = LayerId::ROOT;
     const B: LayerId = LayerId::solo(1);
@@ -536,21 +555,7 @@ mod tests {
                 ),
             };
             let action = act(kind);
-            // Applied by hand: these arms of `apply` are pure `DocState` calls, so
-            // the GPU context it nominally takes has nothing to do here — which is
-            // what lets this whole module be tested without an adapter.
-            let after = match &action.kind {
-                ActionKind::SetLayerBlend(id, v) => before.set_layer_blend(*id, *v),
-                ActionKind::SetLayerClip(id, v) => before.set_layer_clip(*id, *v),
-                ActionKind::SetLayerOpacity(id, v) => before.set_layer_opacity(*id, *v),
-                ActionKind::SetLayerVisible(id, v) => before.set_layer_visible(*id, *v),
-                ActionKind::SetLayerName(id, v) => {
-                    before.set_layer_name(*id, v.as_deref().map(Into::into))
-                }
-                ActionKind::SetMattePaint(id, v) => before.set_matte_paint(*id, v.clone()),
-                ActionKind::SetFilter(id, v) => before.set_filter(*id, v.clone()),
-                other => unreachable!("{other:?} is not a property write"),
-            };
+            let after = fold(&action, &before);
             let was = props(before.layer(target).expect("target exists"));
             let now = props(after.layer(target).expect("target exists"));
             // …the action really did change something, or the round trip below is
@@ -712,5 +717,276 @@ mod tests {
         for id in [A, B, C] {
             assert!(ids.contains(&id), "{id:?} survived");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // The whole ctx-free half of the fold, round-tripped without an adapter
+
+    const MATTE: LayerId = LayerId::solo(3);
+    const FILTER: LayerId = LayerId::solo(4);
+    /// An id `furnished` does not hold, for the four kinds that mint a layer.
+    const FRESH: LayerId = LayerId::solo(9);
+    /// The copy a `DuplicateLayer` names, likewise unheld.
+    const COPY: LayerId = LayerId::solo(10);
+
+    /// A guide's identity is the adding action's own id (§20.5), so three of them
+    /// are three action ids.
+    const fn guide(lamport: u64) -> GuideId {
+        GuideId(ActionId {
+            lamport,
+            actor: ActorId(1),
+        })
+    }
+    const G1: GuideId = guide(1);
+    const G2: GuideId = guide(2);
+    const G3: GuideId = guide(3);
+
+    /// [`flat`] with one of everything the ctx-free fold can bite on: a matte, a
+    /// filter layer and a two-row guide roster.
+    ///
+    /// The furniture is what keeps [`sample`] honest. A `SetFilter` on a document
+    /// with no filter layer, a `SetMatteRect` with no matte, a `MoveGuide` with no
+    /// roster are all *no-ops* — they would round-trip perfectly and prove nothing,
+    /// which is the way this test would rot if nothing watched for it. The run
+    /// asserts that exactly one kind came out inert.
+    fn furnished() -> DocState {
+        use stark_model::document::{ColorAdjust, Parcel, PerspectiveGuide};
+        use stark_model::geom::Vec2;
+        flat()
+            .insert_matte(
+                MATTE,
+                None,
+                Place::Bottom,
+                MatteRegion::OutsideRect {
+                    min: Vec2::ZERO,
+                    max: Vec2::splat(64.0),
+                },
+                Parcel::Solid(Srgb::new([0.2, 0.4, 0.6])),
+            )
+            .insert_filter(FILTER, None, None, Filter::Color(ColorAdjust::NEUTRAL))
+            .insert_guide(G1, PerspectiveGuide::default(), None, None)
+            .insert_guide(
+                G2,
+                PerspectiveGuide::default(),
+                Some(G1),
+                Some("horizon".into()),
+            )
+    }
+
+    /// One action of every kind in the roster, each payload aimed at [`furnished`].
+    ///
+    /// **Exhaustive over [`ActionTag`], with no `_` arm**, which is the whole reason
+    /// it is keyed by the tag rather than written as a list: the roster is the
+    /// model's own and a kind added later stops this compiling until it has a sample
+    /// (§8, §17.9).
+    ///
+    /// It holds the GPU kinds too, and deliberately. Which half of the fold a kind
+    /// belongs to is not restated here — `apply_pure` answers `None` for the ones
+    /// that need a renderer and the run below skips exactly those, so an arm moved
+    /// across that line moves here with it and no second list can disagree.
+    fn sample(tag: ActionTag) -> ActionKind {
+        use stark_model::document::{
+            BrushParams, ColorAdjust, FillOp, Parcel, PerspectiveGuide, PerspectiveMap,
+            SelectionMode, SelectionOp, SelectionShape, StrokeRecord, WarpMap, rect_corners,
+        };
+        use stark_model::geom::{Affine2, IVec2, Vec2};
+
+        let box_ = || SelectionShape::Rect {
+            min: Vec2::ZERO,
+            max: Vec2::splat(8.0),
+        };
+        let desaturated = || {
+            Filter::Color(ColorAdjust {
+                saturation: 0.0,
+                ..ColorAdjust::NEUTRAL
+            })
+        };
+        match tag {
+            // The renderer's half. Never folded here — the payloads are the smallest
+            // well-formed ones, since what they are for is to make this list one of
+            // *every* kind rather than of the ones a GPU-free test can drive.
+            ActionTag::CommitStroke => ActionKind::CommitStroke(StrokeRecord {
+                layer: B,
+                brush: BrushParams::default(),
+                path: Vec::new(),
+                seed: 1,
+                start: 0.0,
+            }),
+            ActionTag::PlaceImage => ActionKind::PlaceImage {
+                id: FRESH,
+                carrier: None,
+                above: None,
+                at: IVec2::ZERO,
+                name: None,
+                image: AssetId([4; 32]),
+            },
+            ActionTag::Select => {
+                ActionKind::Select(SelectionOp::at(SelectionMode::Subtract, box_(), 0.0, 1.0))
+            }
+            ActionTag::InvertSelection => ActionKind::InvertSelection,
+            ActionTag::Transform => ActionKind::Transform {
+                layer: B,
+                affine: Affine2::IDENTITY,
+            },
+            ActionTag::TransformPerspective => ActionKind::TransformPerspective {
+                layer: B,
+                map: PerspectiveMap {
+                    min: Vec2::ZERO,
+                    max: Vec2::splat(32.0),
+                    corners: rect_corners(Vec2::ZERO, Vec2::splat(32.0)),
+                },
+            },
+            ActionTag::TransformWarp => ActionKind::TransformWarp {
+                layer: B,
+                map: WarpMap::identity(Vec2::ZERO, Vec2::splat(32.0), 2, 2),
+            },
+            ActionTag::MergeLayerDown => ActionKind::MergeLayerDown { source: C, dest: B },
+            ActionTag::Fill => ActionKind::Fill {
+                layer: B,
+                op: FillOp::new(box_(), 0.0, Srgb::new([0.3, 0.6, 0.9]), 1.0),
+            },
+
+            // The ctx-free half, each aimed to actually move `furnished()` — see
+            // there for why an inert sample would be worse than a failing one.
+            ActionTag::AddLayer => ActionKind::AddLayer {
+                id: FRESH,
+                carrier: None,
+                above: Some(A),
+            },
+            // `B` is a leaf, so it carries nothing and the action's subtree is the
+            // empty one the state agrees with (§12.6).
+            ActionTag::RemoveLayer => ActionKind::RemoveLayer {
+                id: B,
+                carried: Vec::new(),
+            },
+            ActionTag::DuplicateLayer => ActionKind::DuplicateLayer {
+                ids: vec![(B, COPY)],
+            },
+            ActionTag::MoveLayer => ActionKind::MoveLayer {
+                id: C,
+                carrier: Some(A),
+                at: Place::Top,
+            },
+            ActionTag::SetLayerBlend => ActionKind::SetLayerBlend(B, BlendMode::Multiply),
+            ActionTag::SetLayerClip => ActionKind::SetLayerClip(B, true),
+            ActionTag::SetLayerOpacity => ActionKind::SetLayerOpacity(B, 0.25),
+            ActionTag::SetLayerVisible => ActionKind::SetLayerVisible(B, false),
+            ActionTag::SetLayerName => ActionKind::SetLayerName(B, Some("wash".into())),
+            // The one kind that is identity by design: resolved at the timeline and
+            // never materialized, which is why its footprint is empty.
+            ActionTag::Undo => ActionKind::Undo(ActionId {
+                lamport: 1,
+                actor: ActorId(1),
+            }),
+            ActionTag::SetSelectionOpacity => ActionKind::SetSelectionOpacity(0.5),
+            // Away from `DEFAULT_SUBSTRATE`, which is `Flat` — naming that one would
+            // be a no-op on a fresh document.
+            ActionTag::SetSubstrate => {
+                ActionKind::SetSubstrate(SubstrateId::Image(AssetId([7; 32])))
+            }
+            ActionTag::SetSubstrateScale => ActionKind::SetSubstrateScale(SubstrateScale::new(140)),
+            ActionTag::SetSubstrateColor => {
+                ActionKind::SetSubstrateColor(Srgb::new([0.1, 0.2, 0.3]))
+            }
+            ActionTag::AddMatte => ActionKind::AddMatte {
+                id: FRESH,
+                carrier: None,
+                at: Place::Top,
+                region: MatteRegion::Everything,
+                paint: Parcel::Solid(Srgb::WHITE),
+            },
+            ActionTag::SetMatteRect => {
+                ActionKind::SetMatteRect(MATTE, Vec2::splat(-8.0), Vec2::splat(24.0))
+            }
+            ActionTag::SetMattePaint => {
+                ActionKind::SetMattePaint(MATTE, Parcel::Solid(Srgb::new([1.0, 0.0, 0.5])))
+            }
+            ActionTag::AddFilter => ActionKind::AddFilter {
+                id: FRESH,
+                carrier: None,
+                above: None,
+                filter: desaturated(),
+            },
+            ActionTag::SetFilter => ActionKind::SetFilter(FILTER, desaturated()),
+            ActionTag::AddGuide => ActionKind::AddGuide {
+                id: G3,
+                guide: PerspectiveGuide::default(),
+                after: Some(G2),
+                name: None,
+            },
+            ActionTag::RemoveGuide => ActionKind::RemoveGuide(G1),
+            ActionTag::SetGuide => ActionKind::SetGuide(
+                G1,
+                PerspectiveGuide {
+                    center: Vec2::splat(37.0),
+                    focal: 512.0,
+                    ..PerspectiveGuide::default()
+                },
+            ),
+            ActionTag::SetGuideName => ActionKind::SetGuideName(G1, Some("vanishing".into())),
+            ActionTag::MoveGuide => ActionKind::MoveGuide {
+                id: G1,
+                after: Some(G2),
+            },
+        }
+    }
+
+    /// **Fold, then unfold, and the document is exactly where it started** — over
+    /// every kind the ctx-free half of `apply` can answer, with no adapter in the
+    /// room.
+    ///
+    /// The three claims are all asked through [`undeclared`], which is the one
+    /// enumeration of what can differ between two states (§12.6) — so a `DocState`
+    /// field that grows is a field this test compares without being told:
+    ///
+    /// - the fold **did something**, or the round trip proves nothing. `Undo` is the
+    ///   one kind that is identity by design, so the inert set is asserted to be
+    ///   exactly that rather than each sample being trusted to bite;
+    /// - the fold touched **only what its footprint declares** — the rule
+    ///   `Materialize::audit` holds every fold in the workspace to, and which every
+    ///   run of it until now needed a GPU to reach at all (`tests/footprint.rs`);
+    /// - the unfold put back **everything**, asked against an empty footprint, which
+    ///   declares no writes and so reports any surviving difference at all.
+    ///
+    /// It is the round trip the tests above make one kind at a time, made over the
+    /// vocabulary — possible only because `apply_pure` exists to be called. That
+    /// function's own note has what was standing in for it here.
+    #[test]
+    fn every_pure_kind_folds_and_unfolds_exactly() {
+        let before = furnished();
+        let actor = ActorId(1);
+        let mut inert = Vec::new();
+        for tag in ActionTag::ALL {
+            let kind = sample(*tag);
+            assert_eq!(kind.tag(), *tag, "the sample list is keyed by its own tag");
+            let what = tag.label();
+            // The renderer's half declines, and this is the only place the split is
+            // consulted — see `sample`.
+            let Some(after) = apply_pure(&kind, before.clone(), actor) else {
+                continue;
+            };
+            let action = act(kind);
+            let footprint = compute_footprint(&action);
+            if undeclared(&before, &after, &Footprint::default()).is_empty() {
+                inert.push(what);
+            }
+            assert_eq!(
+                undeclared(&before, &after, &footprint),
+                Vec::<String>::new(),
+                "{what}: the fold changed state its footprint does not declare",
+            );
+            let back = unapply(&action, &footprint, &before, &after);
+            assert_eq!(
+                undeclared(&before, &back, &Footprint::default()),
+                Vec::<String>::new(),
+                "{what}: the unfold left the document somewhere other than it started",
+            );
+        }
+        assert_eq!(
+            inert,
+            ["Undo"],
+            "only `Undo` folds to identity; anything else here has stopped testing \
+             what it says it does",
+        );
     }
 }
