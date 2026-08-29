@@ -746,7 +746,11 @@ pub(super) fn sweep_draws(
     let device = &r.ctx.device;
     let touched = tiles_with_segments(segments);
     let coords: Vec<TileCoord> = touched.keys().copied().collect();
-    let mut instances: Vec<SegmentInstance> = Vec::new();
+    // Both reserved: the instance count is the sum of the per-tile lists, which
+    // `touched` already holds. `runs` was reserved and `instances` — the larger of the
+    // two by an order of magnitude — was not.
+    let mut instances: Vec<SegmentInstance> =
+        Vec::with_capacity(touched.values().map(Vec::len).sum());
     let mut runs: Vec<std::ops::Range<u32>> = Vec::with_capacity(touched.len());
     for idx in touched.values() {
         let from = instances.len() as u32;

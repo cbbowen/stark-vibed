@@ -664,7 +664,10 @@ pub(super) fn generate_segments_in(
     let reaches_end = spans.range.end >= crate::path::span_count(rec.path.len());
     let pts = crate::path::flatten_spans_from(&rec.path, rec.start, spans.range, dist0, tol);
     let end_dist = pts.last().map_or(dist0, |p| p.dist);
-    let mut segs = Vec::new();
+    // One segment per flattened edge at least; the taper only ever cuts an edge into
+    // more. Reserved rather than grown from nothing because a `Segment` is 80 bytes and
+    // a commit's stroke runs to thousands of them, on the interactive path.
+    let mut segs = Vec::with_capacity(pts.len().saturating_sub(1));
     if pts.is_empty() {
         return (segs, end_dist);
     }

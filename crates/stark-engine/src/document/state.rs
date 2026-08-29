@@ -88,6 +88,20 @@ pub struct LayerSite {
 /// The full document: a **tree** of layers (each may carry others — a group is
 /// a layer with a non-empty `carries`, §14.2), the explored
 /// bounds, and the selection masks that gate where tools may act.
+///
+/// # Who may produce one
+///
+/// **The readers are `pub`; every mutator is `pub(crate)`.** A `DocState` is supposed
+/// to be a fold of the action log and nothing else — that is the founding sentence of
+/// the whole design (§1) — and while the ~two dozen setters below were public the
+/// answer to "who can make one that is not" was "anything that links this crate".
+///
+/// Inside the crate they have exactly three callers, and each is the log: `apply`
+/// (the fold), `patch` (its inverse), and the unlogged drag previews in `engine`,
+/// which fold the very action their release will commit
+/// (`document::apply::preview_of`). Nothing outside names one — checked against
+/// `stark-ui`, the integration tests, the benches and `stark-net`, which between them
+/// use only the readers.
 #[derive(Clone)]
 pub struct DocState {
     /// The root stack, bottom-to-top. The tree lives *inside* it: a layer's
@@ -258,7 +272,7 @@ impl DocState {
     }
 
     /// The same document on a different canvas substrate (§6.4).
-    pub fn with_substrate(&self, substrate: SubstrateId) -> Self {
+    pub(crate) fn with_substrate(&self, substrate: SubstrateId) -> Self {
         Self {
             substrate,
             ..self.clone()
@@ -280,7 +294,7 @@ impl DocState {
     }
 
     /// The same document with its substrate laid at a different size (§6.4).
-    pub fn with_substrate_scale(&self, substrate_scale: SubstrateScale) -> Self {
+    pub(crate) fn with_substrate_scale(&self, substrate_scale: SubstrateScale) -> Self {
         Self {
             substrate_scale,
             ..self.clone()
@@ -288,7 +302,7 @@ impl DocState {
     }
 
     /// The same document on a different substrate color (§15.5).
-    pub fn with_substrate_color(&self, substrate_color: Srgb) -> Self {
+    pub(crate) fn with_substrate_color(&self, substrate_color: Srgb) -> Self {
         Self {
             substrate_color,
             ..self.clone()
@@ -320,7 +334,7 @@ impl DocState {
     /// An anchor that is not there lands the guide at the head — deterministic,
     /// taken the same way by every peer, and the same shape [`Place::Above`]
     /// takes for a sibling that has gone.
-    pub fn insert_guide(
+    pub(crate) fn insert_guide(
         &self,
         id: GuideId,
         camera: PerspectiveGuide,
@@ -343,7 +357,7 @@ impl DocState {
     }
 
     /// The roster without `id`. A no-op when it is already gone.
-    pub fn remove_guide(&self, id: GuideId) -> Self {
+    pub(crate) fn remove_guide(&self, id: GuideId) -> Self {
         let Some(i) = self.guides.iter().position(|g| g.id == id) else {
             return self.clone();
         };
@@ -355,7 +369,7 @@ impl DocState {
 
     /// Reshape a guide — the whole camera at once (§20.5). A no-op on a guide
     /// that is not there.
-    pub fn set_guide(&self, id: GuideId, camera: PerspectiveGuide) -> Self {
+    pub(crate) fn set_guide(&self, id: GuideId, camera: PerspectiveGuide) -> Self {
         self.map_guide(id, |g| Guide {
             camera,
             ..g.clone()
@@ -364,7 +378,7 @@ impl DocState {
 
     /// Name a guide, or with `None` take its name away so it goes back to being
     /// described by its place in the roster.
-    pub fn set_guide_name(&self, id: GuideId, name: Option<Arc<str>>) -> Self {
+    pub(crate) fn set_guide_name(&self, id: GuideId, name: Option<Arc<str>>) -> Self {
         self.map_guide(id, |g| Guide {
             name: name.clone(),
             ..g.clone()
@@ -377,7 +391,7 @@ impl DocState {
     /// which `after` is an anchor in the roster the drag was drawn against: the
     /// slot is re-derived against the shortened list, so an anchor above the row
     /// that left keeps the place it names rather than one past it.
-    pub fn move_guide(&self, id: GuideId, after: Option<GuideId>) -> Self {
+    pub(crate) fn move_guide(&self, id: GuideId, after: Option<GuideId>) -> Self {
         let Some(from) = self.guides.iter().position(|g| g.id == id) else {
             return self.clone();
         };
@@ -451,7 +465,7 @@ impl DocState {
     /// masks nothing — [`has_selection`](Self::has_selection) still says no — but
     /// its number is the strength the next region will take, and the whole
     /// canvas's until then (`Selection::opacity`).
-    pub fn with_selection(&self, actor: ActorId, selection: Selection) -> Self {
+    pub(crate) fn with_selection(&self, actor: ActorId, selection: Selection) -> Self {
         let selections = if selection.is_everything() {
             self.selections.remove(&actor)
         } else {
@@ -467,7 +481,7 @@ impl DocState {
     /// moves, which is what lets the slider reach a region already drawn. With
     /// nothing selected it is the strength the next region will take, and the
     /// whole canvas's until one is drawn.
-    pub fn with_selection_opacity(&self, actor: ActorId, opacity: f32) -> Self {
+    pub(crate) fn with_selection_opacity(&self, actor: ActorId, opacity: f32) -> Self {
         self.with_selection(actor, self.selection_of(actor).with_opacity(opacity))
     }
 
@@ -561,7 +575,7 @@ impl DocState {
     /// Insert a new empty paint layer into the stack carried by `carrier` (the
     /// root stack when `None`), directly above `above` — or on top of that stack
     /// when `above` is absent or lives somewhere else.
-    pub fn insert_layer(
+    pub(crate) fn insert_layer(
         &self,
         id: LayerId,
         carrier: Option<LayerId>,
@@ -582,7 +596,7 @@ impl DocState {
     /// and every replay refuses the same one. The paint beside it *is* clamped, by
     /// `ActionKind::sanitized` on the way in, because a color out of range does have
     /// a nearest legal value.
-    pub fn insert_matte(
+    pub(crate) fn insert_matte(
         &self,
         id: LayerId,
         carrier: Option<LayerId>,
@@ -600,7 +614,7 @@ impl DocState {
     /// composited beneath it in the stack it lands in.
     ///
     /// Sanitized on the way in, as [`set_filter`](Self::set_filter) is — see there.
-    pub fn insert_filter(
+    pub(crate) fn insert_filter(
         &self,
         id: LayerId,
         carrier: Option<LayerId>,
@@ -665,7 +679,7 @@ impl DocState {
     /// source is absent, or when the subtree holds a layer `ids` does not name.
     ///
     /// [`ActionKind::DuplicateLayer`]: stark_model::document::ActionKind::DuplicateLayer
-    pub fn duplicate_layer(&self, ids: &[(LayerId, LayerId)]) -> Self {
+    pub(crate) fn duplicate_layer(&self, ids: &[(LayerId, LayerId)]) -> Self {
         let Some((source, _)) = ids.first() else {
             return self.clone();
         };
@@ -766,7 +780,7 @@ impl DocState {
     /// Move a matte layer's rect (the frame drag's commit). A no-op on a paint
     /// layer, an absent id — or a region that has no rect to move
     /// ([`MatteRegion::with_rect`]).
-    pub fn set_matte_rect(&self, id: LayerId, min: Vec2, max: Vec2) -> Self {
+    pub(crate) fn set_matte_rect(&self, id: LayerId, min: Vec2, max: Vec2) -> Self {
         self.map_content(id, |c| match c {
             // Refused rather than repaired when the rect cannot be measured, for
             // [`insert_matte`](Self::insert_matte)'s reason — spelled as the same
@@ -799,7 +813,7 @@ impl DocState {
 
     /// Set a matte layer's paint — a flat color or a gradient ramp (§15.4,
     /// §22.4). A no-op on a paint layer or an absent id.
-    pub fn set_matte_paint(&self, id: LayerId, paint: Parcel) -> Self {
+    pub(crate) fn set_matte_paint(&self, id: LayerId, paint: Parcel) -> Self {
         self.map_content(id, |c| match c {
             LayerContent::Matte { region, .. } => Some(LayerContent::Matte {
                 region: *region,
@@ -825,7 +839,7 @@ impl DocState {
     /// NaN smuggled in by a crafted or corrupted log would poison every texel of
     /// the frame. Idempotent for any log this engine wrote, so replay still puts
     /// back exactly what was applied.
-    pub fn set_filter(&self, id: LayerId, filter: Filter) -> Self {
+    pub(crate) fn set_filter(&self, id: LayerId, filter: Filter) -> Self {
         self.map_content(id, |c| match c {
             LayerContent::Filter(_) => Some(LayerContent::Filter(filter.sanitized())),
             LayerContent::Paint(_) | LayerContent::Matte { .. } => None,
@@ -877,7 +891,7 @@ impl DocState {
     /// `apply`'s arm — which asks [`carried_ids`](Self::carried_ids) *first*,
     /// because whether the action may remove this subtree is a question about the
     /// action's footprint rather than about the tree surgery.
-    pub fn remove_layer(&self, id: LayerId) -> Self {
+    pub(crate) fn remove_layer(&self, id: LayerId) -> Self {
         match remove_in(&self.layers, id) {
             Some((layers, _)) => self.with_layers(layers),
             None => self.clone(),
@@ -899,7 +913,7 @@ impl DocState {
     /// The mode is **sanitized on the way in**, as a filter is (§21.5): a mode now
     /// carries numbers of its own, and a file or a peer reaches this without passing
     /// through `Engine::process`.
-    pub fn set_layer_blend(&self, id: LayerId, blend: BlendMode) -> Self {
+    pub(crate) fn set_layer_blend(&self, id: LayerId, blend: BlendMode) -> Self {
         let blend = blend.sanitized();
         self.map_layer(id, |l| match &l.content {
             LayerContent::Filter(_) => l.clone(),
@@ -925,7 +939,7 @@ impl DocState {
     /// filter that is what it does anyway — the flag is a bit-exact no-op — and for a
     /// filter that *gathers* (§21.10) it is the difference between a fringe held
     /// inside the silhouette and one spilling past it.
-    pub fn set_layer_clip(&self, id: LayerId, clip: bool) -> Self {
+    pub(crate) fn set_layer_clip(&self, id: LayerId, clip: bool) -> Self {
         self.map_layer(id, |l| Layer {
             composite: CompositeParams {
                 clip,
@@ -936,7 +950,7 @@ impl DocState {
     }
 
     /// Set a layer's opacity, clamped to [0, 1] (no-op if absent).
-    pub fn set_layer_opacity(&self, id: LayerId, opacity: f32) -> Self {
+    pub(crate) fn set_layer_opacity(&self, id: LayerId, opacity: f32) -> Self {
         self.map_layer(id, |l| Layer {
             composite: CompositeParams {
                 opacity: opacity.clamp(0.0, 1.0),
@@ -947,7 +961,7 @@ impl DocState {
     }
 
     /// Set a layer's visibility (no-op if absent).
-    pub fn set_layer_visible(&self, id: LayerId, visible: bool) -> Self {
+    pub(crate) fn set_layer_visible(&self, id: LayerId, visible: bool) -> Self {
         self.map_layer(id, |l| Layer {
             visible,
             ..l.clone()
@@ -960,7 +974,7 @@ impl DocState {
     /// minted ([`Engine::process`](crate::Engine::process)), so a replay of the log
     /// puts back exactly what was recorded rather than re-deriving it from rules
     /// that may have changed since.
-    pub fn set_layer_name(&self, id: LayerId, name: Option<Arc<str>>) -> Self {
+    pub(crate) fn set_layer_name(&self, id: LayerId, name: Option<Arc<str>>) -> Self {
         self.map_layer(id, |l| Layer {
             name: name.clone(),
             ..l.clone()
@@ -988,7 +1002,7 @@ impl DocState {
     ///   `(lamport, actor)` means the second to apply sees the first's result and
     ///   refuses, so no tree-CRDT cycle machinery is needed (§17.9).
     /// - **An unknown carrier**, for the reason [`Self::insert`] gives.
-    pub fn move_layer(&self, id: LayerId, carrier: Option<LayerId>, at: Place) -> Self {
+    pub(crate) fn move_layer(&self, id: LayerId, carrier: Option<LayerId>, at: Place) -> Self {
         // Declined before anything is taken apart: a filter never carries (§21.2)
         // — see `insert`, which refuses the same carrier for the same reason.
         if self.cannot_carry(carrier) {

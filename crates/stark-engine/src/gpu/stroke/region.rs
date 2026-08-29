@@ -34,13 +34,22 @@ use super::segments::{BleedFire, Segment, Sweep};
 /// prefix-τ taps that are equal and writes nothing at all (see [`coverage_bounds`]).
 /// Zero through the `over` blend and zero through the additive one are both exact
 /// identities, so which segments a tile is handed cannot change what lands in it.
+///
+/// **Returns the box it walked**, which is what makes `cover`'s "single walk" one:
+/// each sweep's bounds decide the tiles it touches, so accumulating them here is free,
+/// where asking `Coverage::add` for them afterwards evaluated `segment_bounds` — and
+/// with it `arc_at`, trigonometric for a curved segment — a second time per sweep.
+/// Callers that only want the tiles ignore it.
 fn for_each_touched<'a>(
     sweeps: impl Iterator<Item = &'a Sweep>,
     mut f: impl FnMut(usize, TileCoord),
-) {
+) -> Coverage {
     let tile = TILE_SIZE as f32;
+    let mut bounds = Coverage::default();
     for (i, s) in sweeps.enumerate() {
         let (lo, hi) = segment_bounds(s);
+        bounds.lo = bounds.lo.min(lo);
+        bounds.hi = bounds.hi.max(hi);
         let (x0, x1) = ((lo.x / tile).floor() as i32, (hi.x / tile).floor() as i32);
         let (y0, y1) = ((lo.y / tile).floor() as i32, (hi.y / tile).floor() as i32);
         for y in y0..=y1 {
@@ -49,6 +58,7 @@ fn for_each_touched<'a>(
             }
         }
     }
+    bounds
 }
 
 /// Every sweep a piece will rasterize: its painting segments **and its bleed firings'
@@ -157,14 +167,9 @@ pub(super) struct Covered {
 /// Walk a piece's sweeps once, collecting the tiles they touch and the box they span.
 pub(super) fn cover(segments: &[Segment], fires: &[BleedFire]) -> Covered {
     let mut tiles = BTreeSet::new();
-    let mut bounds = Coverage::default();
-    let sweeps = piece_sweeps(segments, fires);
-    for_each_touched(sweeps.clone(), |_, c| {
+    let bounds = for_each_touched(piece_sweeps(segments, fires), |_, c| {
         tiles.insert(c);
     });
-    for s in sweeps {
-        bounds.add(s);
-    }
     Covered { tiles, bounds }
 }
 
@@ -184,7 +189,8 @@ pub(super) fn cover(segments: &[Segment], fires: &[BleedFire]) -> Covered {
 /// sees the stroke's own order over the subset that reaches it.
 pub(super) fn tiles_with_segments(segments: &[Segment]) -> BTreeMap<TileCoord, Vec<u32>> {
     let mut map: BTreeMap<TileCoord, Vec<u32>> = BTreeMap::new();
-    for_each_touched(segments.iter().map(|s| &s.sweep), |i, c| {
+    // The box is `cover`'s business; this caller wants only the assignment.
+    let _ = for_each_touched(segments.iter().map(|s| &s.sweep), |i, c| {
         map.entry(c).or_default().push(i as u32)
     });
     map
@@ -330,17 +336,22 @@ impl Covered {
         // re-floored off the box, which is the same point: `dims` is a span between
         // exactly these origins.
         let mut lo = Vec2::splat(f32::INFINITY);
-        let mut halo: BTreeSet<TileCoord> = BTreeSet::new();
+        // Sorted and deduped rather than inserted into a `BTreeSet` nine times per
+        // touched tile: the halo is consumed as a flat list, so the ordered set was
+        // paying for a tree it never queried. Same order out, one allocation.
+        let mut halo: Vec<TileCoord> = Vec::with_capacity(self.tiles.len() * 9);
         for c in &self.tiles {
             lo = lo.min(c.origin());
             for dy in -1..=1 {
                 for dx in -1..=1 {
-                    halo.insert(TileCoord::new(c.x + dx, c.y + dy));
+                    halo.push(TileCoord::new(c.x + dx, c.y + dy));
                 }
             }
         }
+        halo.sort_unstable();
+        halo.dedup();
         Some(RegionRect {
-            halo: halo.into_iter().collect(),
+            halo,
             lo,
             origin: lo - Vec2::splat(TILE_APRON as f32),
             w,
